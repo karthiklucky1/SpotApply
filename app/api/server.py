@@ -273,6 +273,7 @@ def dashboard(request: Request):
     shortlisted = []
     bot_filled = []
     submitted = []
+    skipped = []
     
     for app_model, job_model in results:
         if app_model.status in [ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED]:
@@ -281,6 +282,8 @@ def dashboard(request: Request):
             bot_filled.append((app_model, job_model))
         elif app_model.status in [ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING]:
             submitted.append((app_model, job_model))
+        elif app_model.status == ApplicationStatus.SKIPPED:
+            skipped.append((app_model, job_model))
             
     # Sort shortlisted by rerank_score descending (highest score at top)
     shortlisted.sort(key=lambda x: x[1].rerank_score or 0, reverse=True)
@@ -292,6 +295,7 @@ def dashboard(request: Request):
             "shortlisted": shortlisted,
             "bot_filled": bot_filled,
             "submitted": submitted,
+            "skipped": skipped,
         }
     )
 
@@ -345,6 +349,19 @@ def mark_as_submitted(application_id: int) -> dict:
             raise HTTPException(status_code=404, detail="Application not found")
         application.status = ApplicationStatus.SUBMITTED
         application.submitted_at = datetime.utcnow()
+        session.add(application)
+        session.commit()
+    return {"success": True, "application_id": application_id}
+
+
+@app.post("/application/{application_id}/skip")
+def skip_application(application_id: int) -> dict:
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Application not found")
+        application.status = ApplicationStatus.SKIPPED
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}
