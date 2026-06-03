@@ -30,9 +30,9 @@ Score rubric:
 - 0-39: Wrong role or hard blocker (explicit no-sponsorship, unrelated field).
 
 Candidate Context:
-- ~2.5 years of professional Python/ML/AI experience in India (intern 2022-2023, developer 2023-2024), currently completing a Master of Engineering at University of Cincinnati (graduating Aug 2026).
-- Strong in: Python, PyTorch, Transformers, LLMs, RAG, FAISS, FastAPI, Docker, AWS, agent orchestration.
-- Best fit: Entry-level, Junior, Mid-level, or "New Grad" AI/ML/Python/Backend roles.
+- 3+ years of professional AI/ML engineering experience, including roles as an AI/ML Engineer at Home Depot (Jun 2025 - Mar 2026) and NTT DATA (May 2022 - Aug 2024). Currently completing a Master of Engineering at the University of Cincinnati (graduating Aug 2026).
+- Strong in: Python, PyTorch, TensorFlow, Scikit-learn, XGBoost, LLMs, RAG pipelines, multi-agent systems, FAISS, FastAPI, Spark, Kubeflow, Vertex AI, Docker, Kubernetes, AWS/GCP, and CI/CD.
+- Best fit: AI/ML Engineer, NLP Engineer, MLOps/Platform Engineer, or Backend Python Developer roles (Junior, Mid-level, or New Grad).
 - Can stretch for roles titled "Senior" if the actual requirements match the candidate's skills.
 - Work authorization: F-1 visa, eligible for OPT. Requires H-1B sponsorship long-term. ONLY score 0-10 if the posting EXPLICITLY states "No sponsorship" or "US Citizens/Permanent Residents only" or requires active security clearance. If the posting is silent on sponsorship, assume it is possible.
 - Location: Cincinnati, OH or fully remote preferred. For on-site roles outside Cincinnati, score ≤50 (a stretch but not disqualifying if it's a strong skill match). Fully remote roles get no location penalty.
