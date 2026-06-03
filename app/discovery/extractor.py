@@ -1,0 +1,190 @@
+"""Extractor to scrape, parse, and score job descriptions from any job portal URL."""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from typing import Dict, Any, Tuple
+from urllib.parse import urlparse
+
+from playwright.async_api import async_playwright
+from anthropic import Anthropic
+import numpy as np
+from sqlmodel import select
+
+from app.config import settings
+from app.db.init_db import get_session
+from app.db.models import Job, JobSource, Application, ApplicationStatus
+from app.matching.matcher import Matcher
+from app.matching.reranker import Reranker
+from app.matching.pipeline import _load_resume
+
+log = logging.getLogger(__name__)
+
+SYSTEM_PARSING = """You are a job posting parser. Given the raw text content of a job page, extract the job details in a clean JSON format.
+
+Return ONLY a JSON object:
+{
+  "company": "<Company Name>",
+  "title": "<Job Title>",
+  "location": "<Location (e.g. Cincinnati, OH, Remote, San Francisco, CA)>",
+  "description": "<Cleaned, structured full job description text with sections, responsibilities, and requirements>",
+  "apply_url": "<The URL to apply directly, or null if it cannot be found>"
+}
+
+Ensure the description contains all relevant requirements, technologies, and responsibilities. Keep it clean without raw HTML, header navigation links, or footer links from the webpage.
+Return JSON only. No explanation, no markdown wrap."""
+
+
+def make_external_id(url: str) -> str:
+    """Generate a deterministic external ID from the URL."""
+    return hashlib.md5(url.strip().lower().encode("utf-8")).hexdigest()
+
+
+def map_url_to_source(url: str) -> JobSource:
+    """Map URL domain to our JobSource enum."""
+    host = urlparse(url).netloc.lower()
+    if "greenhouse.io" in host:
+        return JobSource.GREENHOUSE
+    elif "lever.co" in host:
+        return JobSource.LEVER
+    elif "ashbyhq.com" in host:
+        return JobSource.ASHBY
+    else:
+        return JobSource.MANUAL
+
+
+async def scrape_job_page(url: str) -> str:
+    """Use Playwright to render the page and extract all text content."""
+    log.info("Scraping job page URL: %s", url)
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)  # Wait for JS hydration
+            body_text = await page.evaluate("() => document.body.innerText")
+            return body_text
+        finally:
+            await browser.close()
+
+
+def parse_job_text_with_llm(text: str) -> Dict[str, Any]:
+    """Use Claude to parse the raw text into structured job fields."""
+    log.info("Sending job text to Claude for structured parsing...")
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    prompt = f"Scraped Job Page Text:\n---\n{text[:12000]}\n---"
+    
+    resp = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1500,
+        system=[{"type": "text", "text": SYSTEM_PARSING}],
+        messages=[{"role": "user", "content": prompt}],
+    )
+    
+    raw_content = resp.content[0].text.strip()
+    raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(raw_content)
+
+
+async def extract_and_rank_job(url: str) -> int:
+    """Scrapes URL, parses details, runs matcher & reranker, and creates Application.
+    
+    Returns the created Application ID.
+    """
+    external_id = make_external_id(url)
+    source = map_url_to_source(url)
+
+    # 1. Check if job already exists
+    with get_session() as session:
+        existing_job = session.exec(
+            select(Job).where(Job.external_id == external_id, Job.source == source)
+        ).first()
+        if existing_job:
+            log.info("Job already exists in DB (ID: %d). Re-checking application...", existing_job.id)
+            existing_app = session.exec(
+                select(Application).where(Application.job_id == existing_job.id)
+            ).first()
+            if existing_app:
+                return existing_app.id
+            
+            # Create application for existing job
+            new_app = Application(
+                job_id=existing_job.id,
+                status=ApplicationStatus.SHORTLISTED,
+                apply_url=existing_job.url
+            )
+            session.add(new_app)
+            session.commit()
+            session.refresh(new_app)
+            return new_app.id
+
+    # 2. Scrape & Parse Job Page
+    raw_text = await scrape_job_page(url)
+    parsed = parse_job_text_with_llm(raw_text)
+
+    # Format company name nicely if extracted
+    company_name = parsed.get("company", "Unknown Company").strip()
+    company_name = company_name.replace("-", " ").replace("_", " ").title()
+
+    # 3. Create Job model
+    job = Job(
+        source=source,
+        external_id=external_id,
+        company=company_name,
+        title=parsed.get("title", "Unknown Title").strip(),
+        location=parsed.get("location", "Remote").strip(),
+        url=url,
+        description=parsed.get("description", "").strip(),
+        remote="remote" in parsed.get("location", "").lower()
+    )
+
+    # 4. Compute similarity and match scores
+    resume = _load_resume()
+    
+    # Calculate similarity score
+    try:
+        matcher = Matcher()
+        q = matcher.encode([resume])
+        job_text = matcher._job_text(job)
+        emb = matcher.encode([job_text])
+        similarity = float(np.dot(q[0], emb[0]))
+        job.similarity_score = similarity
+    except Exception as e:
+        log.warning("Could not calculate similarity: %s", e)
+        job.similarity_score = 1.0
+
+    # Calculate rerank score
+    try:
+        reranker = Reranker()
+        score, reason, concerns = reranker.score(resume, job)
+        job.rerank_score = score
+        job.rerank_reasoning = reason + (
+            ("\nConcerns: " + "; ".join(concerns)) if concerns else ""
+        )
+    except Exception as e:
+        log.warning("Could not calculate rerank score: %s", e)
+        job.rerank_score = 70.0
+        job.rerank_reasoning = f"Manually imported via link. Reranker failed: {e}"
+
+    with get_session() as session:
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        # 5. Create Application in SHORTLISTED state
+        apply_url = parsed.get("apply_url") or url
+        app = Application(
+            job_id=job.id,
+            status=ApplicationStatus.SHORTLISTED,
+            apply_url=apply_url
+        )
+        session.add(app)
+        session.commit()
+        session.refresh(app)
+        
+        log.info("Created Application ID: %d in SHORTLISTED state for job '%s' at '%s'", app.id, job.title, job.company)
+        return app.id

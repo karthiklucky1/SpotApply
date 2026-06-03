@@ -1,0 +1,1307 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JobAgent Pro — AI Job Hunting Console</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: radial-gradient(circle at 50% 0%, #0f172a 0%, #020617 100%);
+            color: #f8fafc;
+        }
+
+        .glass {
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .glass-dark {
+            background: rgba(8, 12, 28, 0.85);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .card-glow-blue:hover {
+            box-shadow: 0 0 30px rgba(99, 102, 241, 0.15);
+            border-color: rgba(99, 102, 241, 0.4);
+        }
+
+        .card-glow-amber:hover {
+            box-shadow: 0 0 30px rgba(245, 158, 11, 0.15);
+            border-color: rgba(245, 158, 11, 0.4);
+        }
+
+        .card-glow-green:hover {
+            box-shadow: 0 0 30px rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.4);
+        }
+
+        .pulse-dot {
+            animation: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 12px rgba(16, 185, 129, 0.6); }
+            50% { opacity: .4; transform: scale(0.9); box-shadow: 0 0 4px rgba(16, 185, 129, 0.2); }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.3);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 99px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.16);
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #6366f1;
+            cursor: pointer;
+            box-shadow: 0 0 8px rgba(99, 102, 241, 0.8);
+            transition: all 0.15s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            background: #818cf8;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen pb-12">
+
+    <!-- Top Glow Overlay -->
+    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-[350px] bg-gradient-to-b from-indigo-500/10 via-transparent to-transparent blur-[120px] pointer-events-none -z-10"></div>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+        
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 mb-8 pb-6 border-b border-slate-800/60">
+            <div>
+                <div class="flex items-center gap-2.5 mb-2">
+                    <span class="relative flex h-3 w-3">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 pulse-dot"></span>
+                    </span>
+                    <span class="text-xs text-emerald-400 font-extrabold tracking-widest uppercase">Agent Cluster Online</span>
+                </div>
+                <h1 class="text-4xl font-extrabold tracking-tight text-white bg-gradient-to-r from-slate-50 via-slate-100 to-indigo-300 bg-clip-text text-transparent">JobAgent Pro Console</h1>
+                <p class="text-sm text-slate-400 mt-1.5 font-medium">Next-Gen AI Funnel Engine: Auto-Scraping, Cross-Encoder Scoring, LLM Re-Ranking &amp; Auto-Form Fill.</p>
+            </div>
+
+            <!-- Global Pipeline Stats -->
+            <div class="flex flex-wrap items-center gap-3 shrink-0">
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-indigo-500/30 bg-indigo-500/5">
+                    <div id="stat-pool" class="text-3xl font-extrabold text-indigo-400">11,290</div>
+                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Total Pool</div>
+                </div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-emerald-500/30 bg-emerald-500/5">
+                    <div id="stat-shortlist" class="text-3xl font-extrabold text-emerald-400">{{ shortlisted|length }}</div>
+                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Shortlisted</div>
+                </div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-amber-500/30 bg-amber-500/5">
+                    <div id="stat-review" class="text-3xl font-extrabold text-amber-400">{{ bot_filled|length }}</div>
+                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Awaiting Rev</div>
+                </div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-sky-500/30 bg-sky-500/5">
+                    <div id="stat-submitted" class="text-3xl font-extrabold text-sky-400">{{ submitted|length }}</div>
+                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Submitted</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Pipeline Funnel & Stats Grid -->
+        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+            <!-- Glassmorphic Funnel Visualizer -->
+            <div class="glass rounded-[32px] p-6 lg:col-span-2 flex flex-col justify-between">
+                <div>
+                    <h2 class="text-sm font-bold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <span>📊</span> AI Candidate Matching Funnel
+                    </h2>
+                    
+                    <div class="flex flex-wrap md:flex-nowrap items-center justify-around gap-4 pt-2">
+                        <!-- Stage 1 -->
+                        <div class="flex flex-col items-center">
+                            <div class="w-24 h-24 rounded-full bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center items-center shadow-lg hover:shadow-slate-500/10 transition-all duration-300">
+                                <span class="text-xl font-black text-slate-200" id="funnel-pool">11.3k</span>
+                                <span class="text-[9px] font-bold text-slate-400 uppercase mt-0.5">Harvested</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center">Base Pool</div>
+                        </div>
+                        
+                        <!-- Connector -->
+                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
+
+                        <!-- Stage 2 -->
+                        <div class="flex flex-col items-center">
+                            <div class="w-24 h-24 rounded-full bg-indigo-950/20 border border-indigo-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-indigo-500/20 transition-all duration-300">
+                                <span class="text-xl font-black text-indigo-400" id="funnel-cross">200</span>
+                                <span class="text-[9px] font-bold text-indigo-300/80 uppercase mt-0.5">Cross-Enc</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-cross-pct">Top 1.7%</div>
+                        </div>
+
+                        <!-- Connector -->
+                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
+
+                        <!-- Stage 3 -->
+                        <div class="flex flex-col items-center">
+                            <div class="w-24 h-24 rounded-full bg-violet-950/20 border border-violet-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-violet-500/20 transition-all duration-300">
+                                <span class="text-xl font-black text-violet-400" id="funnel-llm">50</span>
+                                <span class="text-[9px] font-bold text-violet-300/80 uppercase mt-0.5">LLM Scored</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-llm-pct">Top 0.4%</div>
+                        </div>
+
+                        <!-- Connector -->
+                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
+
+                        <!-- Stage 4 -->
+                        <div class="flex flex-col items-center">
+                            <div class="w-24 h-24 rounded-full bg-emerald-950/20 border border-emerald-500/40 flex flex-col justify-center items-center shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.25)] transition-all duration-300">
+                                <span class="text-xl font-black text-emerald-400" id="funnel-short">13</span>
+                                <span class="text-[9px] font-bold text-emerald-300/80 uppercase mt-0.5">Shortlist</span>
+                            </div>
+                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-short-pct">Top 0.1%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4 flex items-center justify-between text-xs text-slate-500 border-t border-slate-800/40 pt-3">
+                    <span>💡 Funnel health: <strong class="text-emerald-400" id="funnel-health-msg">Optimized matching parameters loaded.</strong></span>
+                    <span id="funnel-match-rate" class="font-semibold text-slate-400">Match Rate: 0.11%</span>
+                </div>
+            </div>
+
+            <!-- Score Distribution Chart -->
+            <div class="glass rounded-3xl p-6 flex flex-col justify-between">
+                <div>
+                    <h2 class="text-sm font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <span>📈</span> LLM Fit-Score Distribution
+                    </h2>
+                    <div class="h-32 flex items-center justify-center relative">
+                        <canvas id="scoreDistChart"></canvas>
+                    </div>
+                </div>
+                <div class="grid grid-cols-4 text-center text-[10px] font-semibold text-slate-400 pt-3 border-t border-slate-800/40">
+                    <div>
+                        <span class="block text-emerald-400" id="band-strong">0</span>
+                        <span>85-100</span>
+                    </div>
+                    <div>
+                        <span class="block text-blue-400" id="band-good">0</span>
+                        <span>60-84</span>
+                    </div>
+                    <div>
+                        <span class="block text-amber-400" id="band-weak">0</span>
+                        <span>40-59</span>
+                    </div>
+                    <div>
+                        <span class="block text-rose-500" id="band-wrong">0</span>
+                        <span>0-39</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Command Console & Search Grid -->
+        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
+            
+            <!-- Quick Command Panel -->
+            <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-col gap-4">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <span>⚙️</span> Orchestrator Triggers
+                </h3>
+                <div class="grid grid-cols-3 gap-2">
+                    <button onclick="runAction('/run/discovery', 'Discovery')" class="text-[11px] bg-slate-800/80 hover:bg-slate-700/90 text-slate-100 font-bold py-3 px-2 rounded-full transition duration-200 border border-slate-700/60 hover:border-slate-600/80 flex flex-col items-center gap-1.5 shadow-md">
+                        <span class="text-lg">🧭</span>
+                        <span>Discover</span>
+                    </button>
+                    <button onclick="runAction('/run/matching', 'Matching')" class="text-[11px] bg-indigo-600/20 hover:bg-indigo-600/35 text-indigo-300 font-bold py-3 px-2 rounded-full transition duration-200 border border-indigo-500/20 hover:border-indigo-500/40 flex flex-col items-center gap-1.5 shadow-md">
+                        <span class="text-lg">🔥</span>
+                        <span>Match Jobs</span>
+                    </button>
+                    <button onclick="runAction('/run/tailor', 'Tailoring')" class="text-[11px] bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 font-bold py-3 px-2 rounded-full transition duration-200 border border-emerald-500/20 hover:border-emerald-500/40 flex flex-col items-center gap-1.5 shadow-md">
+                        <span class="text-lg">📄</span>
+                        <span>Tailor Docs</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Manual URL Extractor -->
+            <div class="glass rounded-[32px] p-5 border-slate-800 lg:col-span-2 flex flex-col justify-between h-full">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                    <span>🔗</span> Extract &amp; Auto-fill Job from Link
+                </h3>
+                <form id="extractLinkForm" onsubmit="extractLink(event)" class="flex flex-col sm:flex-row gap-3">
+                    <input type="url" id="jobUrlInput" required 
+                        placeholder="Paste job posting URL from LinkedIn, Greenhouse, Lever, Ashby, etc." 
+                        class="flex-1 text-xs bg-slate-950/65 border border-slate-800/80 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 rounded-full px-5 py-3 text-white placeholder-slate-500 outline-none transition duration-200" />
+                    <button type="submit" id="extractBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 px-6 rounded-full transition duration-200 flex items-center justify-center gap-2 shrink-0 shadow-lg shadow-indigo-600/20 hover:shadow-indigo-600/30">
+                        ⚡ Match &amp; Tailor
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <!-- Main Tab Control -->
+        <div class="inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-8 gap-1 glass shadow-inner max-w-full overflow-x-auto">
+            <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="bg-indigo-600 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0 shadow-md">
+                📋 Applications Kanban
+            </button>
+            <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0">
+                🔍 All Jobs Explorer (<span id="explorer-total-count">...</span>)
+            </button>
+            <button id="view-tab-registry" onclick="switchViewTab('registry')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0">
+                ⚙️ ATS Company Boards
+            </button>
+        </div>
+
+        <!-- TAB 1: Kanban Board View -->
+        <div id="view-content-kanban" class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+            
+            <!-- Column 1: Shortlisted -->
+            <div class="glass rounded-[32px] p-5 border border-indigo-500/25 shadow-[0_0_15px_rgba(99,102,241,0.05)] flex flex-col gap-4">
+                <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+                        <h2 class="font-bold text-white text-sm">Shortlisted Fits</h2>
+                    </div>
+                    <span class="bg-indigo-500/10 text-indigo-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-indigo-500/20">{{ shortlisted|length }}</span>
+                </div>
+                
+                <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                    {% for app, job in shortlisted %}
+                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                        <div class="flex justify-between items-start mb-2.5 gap-2">
+                            <div class="flex-1 min-w-0">
+                                <h3 class="text-xs font-bold text-white tracking-tight hover:text-indigo-400 transition leading-snug line-clamp-2">{{ job.title }}</h3>
+                                <p class="text-[11px] font-semibold text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
+                                    <span>🏢 {{ job.company }}</span>
+                                    <span class="company-badge text-[8px] bg-indigo-950/60 text-indigo-300 border border-indigo-900/40 px-2 py-0.5 rounded-full font-bold uppercase hidden" data-company="{{ job.company }}">Startup</span>
+                                </p>
+                            </div>
+                            
+                            <!-- Sleek ATS source indicator instead of redundant status -->
+                            {% if job.source.value == 'greenhouse' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">Greenhouse</span>
+                            {% elif job.source.value == 'lever' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">Lever</span>
+                            {% elif job.source.value == 'ashby' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20 shrink-0">Ashby</span>
+                            {% else %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 shrink-0">{{ job.source.value }}</span>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800/50">
+                            <span class="text-[10px] text-slate-400 flex items-center gap-1 font-medium">📍 {{ job.location or 'Remote' }}</span>
+                            {% if job.rerank_score %}
+                            <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-indigo-300 border-indigo-500/30">Match: {{ job.rerank_score|int }}%</span>
+                            {% endif %}
+                        </div>
+
+                        <!-- Card Reasoning Block: Sleek Glass Quote style -->
+                        {% if job.rerank_reasoning %}
+                        <div class="mt-2.5 px-3 py-2 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[10.5px] text-slate-400 leading-normal">
+                            <span class="text-indigo-400 font-extrabold text-[9px] uppercase tracking-wider block mb-0.5">AI Fit Analysis</span>
+                            "{{ job.rerank_reasoning.split('\n')[0] }}"
+                        </div>
+                        {% endif %}
+                        
+                        <div class="mt-3.5 flex flex-col gap-2">
+                            <div class="grid grid-cols-2 gap-2">
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
+                                    📄 Docs
+                                </button>
+                                <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-[10px] bg-slate-800/20 hover:bg-slate-750 text-slate-400 py-2 rounded-full font-bold border border-slate-800 flex items-center justify-center transition">
+                                    ↗ Job Link
+                                </a>
+                            </div>
+                            <button type="button" id="autofill-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); autofillForm(+this.dataset.appId, this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-indigo-950/50 hover:shadow-indigo-600/20">
+                                ⚡ Auto-fill Application
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                        <div class="text-3xl mb-2 opacity-60">🔍</div>
+                        <p class="text-slate-500 text-xs font-semibold">No shortlisted roles yet.</p>
+                        <p class="text-slate-600 text-[10px] mt-1">Run matching to filter from pool.</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            
+            <!-- Column 2: Awaiting Review -->
+            <div class="glass rounded-[32px] p-5 border border-amber-500/25 shadow-[0_0_15px_rgba(245,158,11,0.05)] flex flex-col gap-4">
+                <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                        <h2 class="font-bold text-white text-sm">Awaiting Review</h2>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-amber-500/20">{{ bot_filled|length }}</span>
+                </div>
+                
+                <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                    {% for app, job in bot_filled %}
+                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                        <div class="flex justify-between items-start mb-2.5 gap-2">
+                            <div class="flex-1 min-w-0">
+                                <h3 class="text-xs font-bold text-white tracking-tight hover:text-amber-400 transition leading-snug line-clamp-2">{{ job.title }}</h3>
+                                <p class="text-[11px] font-semibold text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
+                                    <span>🏢 {{ job.company }}</span>
+                                    <span class="company-badge text-[8px] bg-indigo-950/60 text-indigo-300 border border-indigo-900/40 px-2 py-0.5 rounded-full font-bold uppercase hidden" data-company="{{ job.company }}">Startup</span>
+                                </p>
+                            </div>
+                            
+                            <!-- Sleek ATS source indicator -->
+                            {% if job.source.value == 'greenhouse' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">Greenhouse</span>
+                            {% elif job.source.value == 'lever' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">Lever</span>
+                            {% elif job.source.value == 'ashby' %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20 shrink-0">Ashby</span>
+                            {% else %}
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 shrink-0">{{ job.source.value }}</span>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800/50 text-[10px] text-slate-400 font-medium">
+                            <span>📍 {{ job.location or 'Remote' }}</span>
+                            <span>Filled: {{ app.updated_at.strftime('%b %d') if app.updated_at else '—' }}</span>
+                        </div>
+                        
+                        <!-- Rerank score if present -->
+                        {% if job.rerank_score %}
+                        <div class="flex justify-end mt-2">
+                            <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-amber-300 border-amber-500/30">Match: {{ job.rerank_score|int }}%</span>
+                        </div>
+                        {% endif %}
+ 
+                        <!-- Card Reasoning Block: Sleek Glass Quote style -->
+                        {% if job.rerank_reasoning %}
+                        <div class="mt-2.5 px-3 py-2 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[10.5px] text-slate-400 leading-normal">
+                            <span class="text-amber-400 font-extrabold text-[9px] uppercase tracking-wider block mb-0.5">Autofill Check</span>
+                            Review information in browser before submitting.
+                        </div>
+                        {% endif %}
+                        
+                        <div class="mt-3.5 flex flex-col gap-2">
+                            <div class="grid grid-cols-2 gap-2">
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition">
+                                    📄 Docs
+                                </button>
+                                <button type="button" id="verify-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); verifyForm(+this.dataset.appId, this)" class="text-[10px] bg-amber-500/10 hover:bg-amber-500/25 text-amber-400 py-2 rounded-full font-bold border border-amber-500/20 transition">
+                                    🖥️ Verify
+                                </button>
+                            </div>
+                            <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-emerald-950/50 hover:shadow-emerald-600/20">
+                                ✅ Mark Submitted
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                        <div class="text-3xl mb-2 opacity-60">🤖</div>
+                        <p class="text-slate-500 text-xs font-semibold">No autofilled forms ready.</p>
+                        <p class="text-slate-600 text-[10px] mt-1">Form filling triggers after tailoring.</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            
+            <!-- Column 3: Submitted -->
+            <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4">
+                <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                        <h2 class="font-bold text-white text-sm">Submitted Pipeline</h2>
+                    </div>
+                    <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ submitted|length }}</span>
+                </div>
+                
+                <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                    {% for app, job in submitted %}
+                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-emerald-500/30 transition duration-200 ease-out cursor-pointer card-glow-green relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                        <div class="flex justify-between items-start mb-2.5 gap-2">
+                            <div class="flex-1 min-w-0">
+                                <h3 class="text-xs font-bold text-white tracking-tight hover:text-emerald-400 transition leading-snug line-clamp-2">{{ job.title }}</h3>
+                                <p class="text-[11px] font-semibold text-slate-400 mt-1 flex items-center gap-1">
+                                    🏢 {{ job.company }}
+                                    <span class="company-badge text-[9px] bg-indigo-950/40 text-indigo-300 border border-indigo-900/40 px-2 py-0.5 rounded-full hidden" data-company="{{ job.company }}">Startup</span>
+                                </p>
+                            </div>
+                            <span class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">{{ app.status.value }}</span>
+                        </div>
+                        
+                        <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800/50 text-[10px] text-slate-400 font-medium">
+                            <span>📍 {{ job.location or 'Remote' }}</span>
+                            <span>
+                                {% if app.submitted_at %}Sent: {{ app.submitted_at.strftime('%b %d') }}{% elif app.updated_at %}{{ app.updated_at.strftime('%b %d') }}{% else %}—{% endif %}
+                            </span>
+                        </div>
+                        
+                        <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="mt-3.5 w-full text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-full font-bold border border-slate-700">
+                            📄 View tailored documents
+                        </button>
+                    </div>
+                    {% else %}
+                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                        <div class="text-3xl mb-2 opacity-60">🚀</div>
+                        <p class="text-slate-500 text-xs font-semibold">No submitted roles yet.</p>
+                        <p class="text-slate-600 text-[10px] mt-1">Complete reviews to submit.</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: Jobs Explorer View -->
+        <div id="view-content-explorer" class="hidden flex flex-col gap-6">
+            <!-- Filter Bar -->
+            <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end">
+                <div class="flex-1 min-w-[200px]">
+                    <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label>
+                    <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" />
+                </div>
+                
+                <div class="w-40">
+                    <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label>
+                    <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer">
+                        <option value="">All Styles</option>
+                        <option value="true">Fully Remote</option>
+                        <option value="false">On-site / Hybrid</option>
+                    </select>
+                </div>
+                
+                <div class="w-44">
+                    <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label>
+                    <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer">
+                        <option value="">All Jobs</option>
+                        <option value="unprocessed">Unprocessed Only</option>
+                        <option value="shortlisted">Shortlisted (Fit)</option>
+                        <option value="submitted">Submitted Only</option>
+                    </select>
+                </div>
+
+                <div class="w-48">
+                    <div class="flex justify-between items-center mb-1">
+                        <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label>
+                    </div>
+                    <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" />
+                </div>
+                
+                <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200">
+                    Reset
+                </button>
+            </div>
+
+            <!-- Job Explorer Results Table -->
+            <div class="glass rounded-3xl overflow-hidden shadow-2xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                <th class="py-4 px-6">Score</th>
+                                <th class="py-4 px-4">Title / Company</th>
+                                <th class="py-4 px-4">Location</th>
+                                <th class="py-4 px-4">ATS Link</th>
+                                <th class="py-4 px-4">Status</th>
+                                <th class="py-4 px-6 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="explorer-table-body" class="divide-y divide-slate-800/50 text-xs">
+                            <tr>
+                                <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Loading job database...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Table Pagination -->
+                <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400">
+                    <span id="explorer-page-info">Showing page 1 of ...</span>
+                    <div class="flex gap-2">
+                        <button id="explorer-btn-first" onclick="explorePage(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button>
+                        <button id="explorer-btn-prev" onclick="explorePrevPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button>
+                        <button id="explorer-btn-next" onclick="exploreNextPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button>
+                        <button id="explorer-btn-last" onclick="exploreLastPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: Registry View -->
+        <div id="view-content-registry" class="hidden flex flex-col gap-6">
+            <!-- Summary stats -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="glass rounded-3xl p-5 border-slate-800">
+                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Registry Harvest Scale</h4>
+                    <p class="text-3xl font-extrabold text-white mt-2" id="reg-stat-total">...</p>
+                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Total ATS board configurations seeded</p>
+                </div>
+                <div class="glass rounded-3xl p-5 border-slate-800">
+                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Active Boards Crawler</h4>
+                    <p class="text-3xl font-extrabold text-indigo-400" id="reg-stat-active">...</p>
+                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Boards with active API responses</p>
+                </div>
+                <div class="glass rounded-3xl p-5 border-slate-800">
+                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Crawler Knowledge Base</h4>
+                    <p class="text-3xl font-extrabold text-emerald-400" id="reg-stat-jobs">...</p>
+                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Total active postings verified in ATS APIs</p>
+                </div>
+            </div>
+
+            <!-- Detailed info -->
+            <div class="glass rounded-[32px] p-6 border-slate-800">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                    <h3 class="font-bold text-white text-base">ATS Registry Strategy</h3>
+                    <div class="flex gap-2">
+                        <button onclick="runAction('/run/discovery', 'Registry Scrape')" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/20 px-4 py-2 rounded-full transition font-bold flex items-center gap-1.5">
+                            🧭 Re-Scrape Boards
+                        </button>
+                    </div>
+                </div>
+                <div class="text-xs text-slate-400 space-y-3 leading-relaxed">
+                    <p>To avoid scraping generic corporate boards, the <strong class="text-slate-200">Company Registry</strong> maintains API hooks to specific company job boards on Greenhouse, Lever, and Ashby. During each discovery loop, it validates active endpoints, pulls their job counts, and ingests postings matching AI keywords into our vector database.</p>
+                    <p>We recently added key AI startup boards: <strong class="text-indigo-400">Weights &amp; Biases</strong>, <strong class="text-indigo-400">Fireworks AI</strong>, <strong class="text-indigo-400">Lightning AI</strong>, and <strong class="text-indigo-400">Cerebras</strong>. These companies hire early-career ML developers, increasing matching throughput.</p>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Document Modal -->
+    <div id="modal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 modal-backdrop" onclick="closeModal(event)">
+        <div class="glass rounded-[32px] w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl border-white/10" onclick="event.stopPropagation()">
+            <!-- Modal Header -->
+            <div class="flex items-start justify-between p-6 border-b border-white/5">
+                <div>
+                    <div id="modal-status" class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 inline-block mb-3"></div>
+                    <h2 id="modal-title" class="text-lg font-bold text-white tracking-tight leading-snug"></h2>
+                    <p id="modal-company" class="text-xs font-semibold text-slate-400 mt-1"></p>
+                </div>
+                <div class="flex items-center gap-3 ml-4 shrink-0">
+                    <button type="button" id="modal-submit-btn" onclick="submitFormFromModal()" class="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden">
+                        ✅ Mark Submitted
+                    </button>
+                    <button type="button" id="modal-verify-btn" onclick="verifyFormFromModal()" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden">
+                        🖥️ Verify Form
+                    </button>
+                    <button type="button" id="modal-autofill-btn" onclick="autofillFormFromModal()" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden">
+                        ⚡ Auto-fill Form
+                    </button>
+                    <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button>
+                </div>
+            </div>
+
+            <!-- Tabs (Capsule Style) -->
+            <div class="px-6 pt-4 pb-2">
+                <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner">
+                    <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all">📄 Tailored Resume</button>
+                    <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium">✉️ Cover Letter</button>
+                </div>
+            </div>
+
+            <!-- Scrollable Content -->
+            <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40">
+                <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div>
+                <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre>
+                <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Alerts -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+    <script>
+        let currentTab = 'resume';
+        let currentData = null;
+        let currentAppId = null;
+
+        // Explorer parameters
+        let explorerCurrentPage = 1;
+        let explorerTotalPages = 1;
+        let explorerSearchVal = '';
+        let explorerRemoteVal = '';
+        let explorerStatusVal = '';
+        let explorerScoreVal = 0;
+
+        // Startup list matching
+        const STARTUP_COMPANIES = new Set([
+            "anthropic", "cohere", "openai", "perplexity", "midjourney", "elevenlabs", "mistral", "suno", "runway", "stability",
+            "pinecone", "weaviate", "chroma", "qdrant", "milvus", "luma", "replicate", "together", "anyscale", "modal", 
+            "baseten", "deepgram", "assemblyai", "cursor", "sourcegraph", "codeium", "supermaven", "linear", "vercel", 
+            "replit", "supabase", "railway", "render", "vultr", "loom", "mural", "miro", "glide", "bubble", "ramp", 
+            "notion", "plaid", "writer", "langchain", "browserbase", "abridge", "neon", "prefect", "airbyte", "hightouch", 
+            "posthog", "statsig", "sanity", "wandb", "shieldai", "zoox"
+        ]);
+
+        function isStartup(companyName) {
+            if (!companyName) return false;
+            const normalized = companyName.toLowerCase().replace(/[^a-z5-9]/g, '');
+            for (const slug of STARTUP_COMPANIES) {
+                if (normalized.includes(slug) || slug.includes(normalized)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Initialize UI Elements
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            initStartupBadges();
+            searchJobs(); // Load first page of explorer database
+        });
+
+        function initStartupBadges() {
+            document.querySelectorAll('.company-badge').forEach(badge => {
+                const company = badge.dataset.company;
+                if (isStartup(company)) {
+                    badge.classList.remove('hidden');
+                }
+            });
+        }
+
+        // Toast Helper
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `flex items-center gap-3 px-4 py-3 rounded-2xl border shadow-2xl transition-all duration-300 transform translate-y-2 opacity-0 glass text-xs font-semibold`;
+            
+            if (type === 'success') {
+                toast.className += ' text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
+                toast.innerHTML = `🟢 <span>${message}</span>`;
+            } else if (type === 'error') {
+                toast.className += ' text-rose-400 border-rose-500/30 bg-rose-500/5';
+                toast.innerHTML = `🔴 <span>${message}</span>`;
+            } else {
+                toast.className += ' text-indigo-400 border-indigo-500/30 bg-indigo-500/5';
+                toast.innerHTML = `🔵 <span>${message}</span>`;
+            }
+            
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 50);
+            
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => toast.remove(), 3000);
+            }, 5000);
+        }
+
+        // Load stats from API
+        let distChartInstance = null;
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats');
+                if (!res.ok) return;
+                const stats = await res.json();
+                
+                // Update metrics
+                document.getElementById('stat-pool').textContent = stats.total_jobs.toLocaleString();
+                document.getElementById('funnel-pool').textContent = (stats.total_jobs / 1000).toFixed(1) + 'k';
+                document.getElementById('funnel-cross').textContent = stats.funnel.cross_encoder_passed;
+                document.getElementById('funnel-llm').textContent = stats.funnel.reranker_scored;
+                document.getElementById('funnel-short').textContent = stats.funnel.shortlisted;
+                
+                // Percentages
+                const crossPct = stats.total_jobs ? ((stats.funnel.cross_encoder_passed / stats.total_jobs) * 100).toFixed(1) : 0;
+                const llmPct = stats.total_jobs ? ((stats.funnel.reranker_scored / stats.total_jobs) * 100).toFixed(1) : 0;
+                const shortPct = stats.total_jobs ? ((stats.funnel.shortlisted / stats.total_jobs) * 100).toFixed(2) : 0;
+                
+                document.getElementById('funnel-cross-pct').textContent = `Top ${crossPct}%`;
+                document.getElementById('funnel-llm-pct').textContent = `Top ${llmPct}%`;
+                document.getElementById('funnel-short-pct').textContent = `Top ${shortPct}%`;
+                document.getElementById('funnel-match-rate').textContent = `Match Rate: ${shortPct}%`;
+                
+                // Registry Stats
+                document.getElementById('reg-stat-total').textContent = stats.registry.total_boards;
+                document.getElementById('reg-stat-active').textContent = stats.registry.active_boards;
+                document.getElementById('reg-stat-jobs').textContent = stats.registry.total_validated_jobs.toLocaleString();
+                
+                // Distribution Numbers
+                document.getElementById('band-strong').textContent = stats.scores.band_85_100;
+                document.getElementById('band-good').textContent = stats.scores.band_60_84;
+                document.getElementById('band-weak').textContent = stats.scores.band_40_59;
+                document.getElementById('band-wrong').textContent = stats.scores.band_0_39;
+                
+                // Reranker prompt explanation based on pipeline state
+                const funnelHealth = document.getElementById('funnel-health-msg');
+                if (stats.funnel.shortlisted > 13) {
+                    funnelHealth.innerHTML = `<span class="text-emerald-400 font-bold">Funnel expanding!</span> Matcher relaxation added candidate variety.`;
+                } else {
+                    funnelHealth.innerHTML = `Running relaxed rules. Next matching cycle will process expanded list.`;
+                }
+
+                // Render Chart.js
+                renderChart(stats.scores);
+                
+            } catch (e) {
+                console.error("Failed to load stats API: ", e);
+            }
+        }
+
+        function renderChart(scores) {
+            const ctx = document.getElementById('scoreDistChart').getContext('2d');
+            if (distChartInstance) {
+                distChartInstance.destroy();
+            }
+            
+            distChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['85-100', '60-84', '40-59', '0-39'],
+                    datasets: [{
+                        data: [scores.band_85_100, scores.band_60_84, scores.band_40_59, scores.band_0_39],
+                        backgroundColor: [
+                            'rgba(16, 185, 129, 0.45)', // emerald
+                            'rgba(99, 102, 241, 0.45)',  // indigo
+                            'rgba(245, 158, 11, 0.45)',  // amber
+                            'rgba(244, 63, 94, 0.3)'     // rose
+                        ],
+                        borderColor: [
+                            '#10b981', '#6366f1', '#f59e0b', '#f43f5e'
+                        ],
+                        borderWidth: 1.5,
+                        borderRadius: 99
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: true }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#94a3b8', font: { size: 9, family: 'Outfit' } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.03)' },
+                            ticks: { color: '#94a3b8', font: { size: 8 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Action Trigger
+        async function runAction(endpoint, actionName) {
+            showToast(`Triggering ${actionName}...`, 'info');
+            try {
+                const res = await fetch(endpoint, { method: 'POST' });
+                if (res.ok) {
+                    showToast(`${actionName} pipeline started successfully!`, 'success');
+                } else {
+                    showToast(`Failed to trigger ${actionName}.`, 'error');
+                }
+            } catch (e) {
+                showToast(`Network error triggering ${actionName}: ${e}`, 'error');
+            }
+        }
+
+        // Tab View Switching
+        function switchViewTab(tab) {
+            ['kanban', 'explorer', 'registry'].forEach(t => {
+                const btn = document.getElementById(`view-tab-${t}`);
+                const content = document.getElementById(`view-content-${t}`);
+                if (t === tab) {
+                    btn.className = "bg-indigo-600 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0 shadow-md";
+                    content.classList.remove('hidden');
+                } else {
+                    btn.className = "bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0";
+                    content.classList.add('hidden');
+                }
+            });
+        }
+
+        // Job Explorer database functions
+        function updateScoreVal(val) {
+            document.getElementById('score-val').textContent = val;
+            explorerScoreVal = parseInt(val);
+            searchJobs();
+        }
+
+        function resetFilters() {
+            document.getElementById('filter-search').value = '';
+            document.getElementById('filter-remote').value = '';
+            document.getElementById('filter-status').value = '';
+            document.getElementById('filter-score').value = 0;
+            document.getElementById('score-val').textContent = 0;
+            
+            explorerSearchVal = '';
+            explorerRemoteVal = '';
+            explorerStatusVal = '';
+            explorerScoreVal = 0;
+            
+            searchJobs();
+        }
+
+        let searchDebounceTimer = null;
+        function searchJobs() {
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(() => {
+                explorerSearchVal = document.getElementById('filter-search').value;
+                explorerRemoteVal = document.getElementById('filter-remote').value;
+                explorerStatusVal = document.getElementById('filter-status').value;
+                loadJobsPage(1);
+            }, 300);
+        }
+
+        async function loadJobsPage(page) {
+            explorerCurrentPage = page;
+            const tBody = document.getElementById('explorer-table-body');
+            tBody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-12 text-slate-500 font-semibold">
+                        <div class="inline-block animate-spin w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full mr-2"></div>
+                        Searching all positions...
+                    </td>
+                </tr>
+            `;
+
+            let url = `/api/jobs?page=${page}&limit=25`;
+            if (explorerSearchVal) url += `&search=${encodeURIComponent(explorerSearchVal)}`;
+            if (explorerRemoteVal) url += `&remote=${explorerRemoteVal}`;
+            if (explorerStatusVal) url += `&status=${explorerStatusVal}`;
+            if (explorerScoreVal > 0) url += `&min_score=${explorerScoreVal}`;
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) {
+                    tBody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-rose-400 font-bold">API responded with error.</td></tr>`;
+                    return;
+                }
+                const data = await res.json();
+                
+                explorerTotalPages = data.pages;
+                document.getElementById('explorer-total-count').textContent = data.total.toLocaleString();
+                document.getElementById('explorer-page-info').textContent = `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} total jobs)`;
+
+                // Update pagination buttons
+                document.getElementById('explorer-btn-first').disabled = data.page === 1;
+                document.getElementById('explorer-btn-prev').disabled = data.page === 1;
+                document.getElementById('explorer-btn-next').disabled = data.page === data.pages || data.pages === 0;
+                document.getElementById('explorer-btn-last').disabled = data.page === data.pages || data.pages === 0;
+
+                if (!data.jobs || data.jobs.length === 0) {
+                    tBody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center py-16 text-slate-600 font-semibold">
+                                <div class="text-2xl mb-2">🔭</div>
+                                No matching jobs in database. Try widening filters.
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                let html = '';
+                data.jobs.forEach(j => {
+                    const startup = isStartup(j.company);
+                    const startupBadge = startup ? `<span class="text-[9px] bg-indigo-950/80 text-indigo-300 border border-indigo-800/40 px-2 py-0.5 rounded-full font-bold ml-1.5 uppercase shrink-0">Startup</span>` : '';
+                    
+                    let scoreBadge = `<span class="text-slate-500 font-mono">-</span>`;
+                    if (j.rerank !== null) {
+                        const rank = Math.round(j.rerank);
+                        if (rank >= 85) scoreBadge = `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-mono font-black">${rank}%</span>`;
+                        else if (rank >= 60) scoreBadge = `<span class="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full font-mono font-black">${rank}%</span>`;
+                        else if (rank >= 40) scoreBadge = `<span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full font-mono font-bold">${rank}%</span>`;
+                        else scoreBadge = `<span class="bg-rose-500/10 text-rose-500 border border-rose-500/10 px-2 py-0.5 rounded-full font-mono">${rank}%</span>`;
+                    }
+
+                    let statusBadge = `<span class="text-slate-600 font-medium">Unprocessed</span>`;
+                    if (j.application) {
+                        const status = j.application.status;
+                        if (status === 'shortlisted' || status === 'tailored') statusBadge = `<span class="bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
+                        else if (status === 'submitted' || status === 'interviewing') statusBadge = `<span class="bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
+                        else if (status === 'autofilled' || status === 'awaiting_user') statusBadge = `<span class="bg-amber-500/15 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
+                        else statusBadge = `<span class="bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-full uppercase tracking-wider text-[9px]">${status}</span>`;
+                    }
+
+                    let actionBtn = '';
+                    if (j.application) {
+                        actionBtn = `<button onclick="openModal(${j.application.id})" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-350 font-bold py-1.5 px-4 rounded-full border border-slate-700 transition">View Docs</button>`;
+                    } else {
+                        actionBtn = `<button onclick="manualShortlist('${encodeURIComponent(j.url)}', this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 px-4 rounded-full shadow shadow-indigo-600/25 transition">Shortlist</button>`;
+                    }
+
+                    const subDetails = j.reason ? `<p class="text-[10px] text-slate-500 mt-1 line-clamp-1 italic">"${j.reason}"</p>` : '';
+
+                    html += `
+                        <tr class="hover:bg-slate-900/30 transition">
+                            <td class="py-3 px-6 font-bold">${scoreBadge}</td>
+                            <td class="py-3 px-4">
+                                <div class="font-bold text-white leading-tight line-clamp-1">${j.title}</div>
+                                <div class="text-[11px] text-slate-400 flex items-center mt-0.5 font-semibold">
+                                    🏢 ${j.company} ${startupBadge}
+                                </div>
+                                ${subDetails}
+                            </td>
+                            <td class="py-3 px-4 text-slate-400 font-medium">${j.location || 'Remote'}</td>
+                            <td class="py-3 px-4">
+                                <a href="${j.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-0.5">
+                                    Link ↗
+                                </a>
+                            </td>
+                            <td class="py-3 px-4">${statusBadge}</td>
+                            <td class="py-3 px-6 text-right">${actionBtn}</td>
+                        </tr>
+                    `;
+                });
+                tBody.innerHTML = html;
+            } catch (e) {
+                tBody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-rose-400 font-bold">Failed to load jobs database: ${e}</td></tr>`;
+            }
+        }
+
+        function explorePage(page) {
+            loadJobsPage(page);
+        }
+
+        function explorePrevPage() {
+            if (explorerCurrentPage > 1) {
+                loadJobsPage(explorerCurrentPage - 1);
+            }
+        }
+
+        function exploreNextPage() {
+            if (explorerCurrentPage < explorerTotalPages) {
+                loadJobsPage(explorerCurrentPage + 1);
+            }
+        }
+
+        function exploreLastPage() {
+            loadJobsPage(explorerTotalPages);
+        }
+
+        async function manualShortlist(jobUrlEncoded, btn) {
+            const url = decodeURIComponent(jobUrlEncoded);
+            const orig = btn.textContent;
+            btn.textContent = '⏳ ...';
+            btn.disabled = true;
+            showToast('Adding job to shortlist pipeline...', 'info');
+            try {
+                const res = await fetch('/run/extract-link', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!res.ok) {
+                    showToast('Shortlist failed.', 'error');
+                    btn.textContent = '❌';
+                    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+
+                showToast('Successfully shortlisted manually! Documents queuing.', 'success');
+                btn.textContent = '✅';
+                btn.className = "text-[10px] bg-emerald-600 text-white font-bold py-1.5 px-4 rounded-full";
+                setTimeout(() => {
+                    searchJobs();
+                    loadStats();
+                }, 1500);
+            } catch (e) {
+                showToast('Error during shortlisting.', 'error');
+                btn.textContent = '❌';
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        // Document Modal Logic
+        async function openModal(appId) {
+            currentAppId = appId;
+            currentData = null;
+            document.getElementById('tab-content-resume').classList.add('hidden');
+            document.getElementById('tab-content-cover').classList.add('hidden');
+            document.getElementById('tab-content-resume').textContent = '';
+            document.getElementById('tab-content-cover').textContent = '';
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('loading').textContent = 'Loading documents…';
+            document.getElementById('modal').classList.remove('hidden');
+
+            try {
+                const res = await fetch(`/application/${appId}/details`);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    document.getElementById('loading').textContent = `Error: ${err.detail || res.statusText}`;
+                    return;
+                }
+                const data = await res.json();
+                currentData = data;
+
+                document.getElementById('modal-title').textContent = data.title || '(unknown)';
+                document.getElementById('modal-company').textContent = data.company || '';
+                document.getElementById('modal-status').textContent = data.status || '';
+
+                const verifyBtn = document.getElementById('modal-verify-btn');
+                const submitBtn = document.getElementById('modal-submit-btn');
+                const filledStatuses = ['autofilled', 'awaiting_user', 'ready_to_submit'];
+                if (filledStatuses.includes(data.status)) {
+                    verifyBtn.classList.remove('hidden');
+                    submitBtn.classList.remove('hidden');
+                } else {
+                    verifyBtn.classList.add('hidden');
+                    submitBtn.classList.add('hidden');
+                }
+
+                const autofillBtn = document.getElementById('modal-autofill-btn');
+                const fillableStatuses = ['shortlisted', 'tailored'];
+                if (fillableStatuses.includes(data.status)) {
+                    autofillBtn.classList.remove('hidden');
+                } else {
+                    autofillBtn.classList.add('hidden');
+                }
+
+                document.getElementById('loading').classList.add('hidden');
+                switchTab('resume');
+            } catch (e) {
+                document.getElementById('loading').textContent = 'Error loading documents.';
+            }
+        }
+
+        async function autofillForm(appId, btn) {
+            const orig = btn.innerHTML;
+            btn.innerHTML = '⏳ ...';
+            btn.disabled = true;
+            showToast('Triggering autofill browser in background...', 'info');
+            try {
+                const res = await fetch(`/run/autofill/${appId}`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.innerHTML = '❌';
+                    showToast('Autofill failed.', 'error');
+                    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                btn.innerHTML = '🤖 Active';
+                showToast('Autofill agent started filling form. Reloading dashboard shortly.', 'success');
+                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; window.location.reload(); }, 4000);
+            } catch (e) {
+                btn.innerHTML = '❌';
+                showToast('Failed to trigger autofill.', 'error');
+                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function autofillFormFromModal() {
+            if (!currentAppId) return;
+            const btn = document.getElementById('modal-autofill-btn');
+            const orig = btn.innerHTML;
+            btn.innerHTML = '⏳ Filling...';
+            btn.disabled = true;
+            showToast('Triggering autofill browser...', 'info');
+            try {
+                const res = await fetch(`/run/autofill/${currentAppId}`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.innerHTML = '❌ Failed';
+                    showToast('Autofill initiation failed.', 'error');
+                    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                btn.innerHTML = '🤖 Active';
+                showToast('Autofill agent started!', 'success');
+                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; closeModal(); window.location.reload(); }, 3000);
+            } catch (e) {
+                btn.innerHTML = '❌ Error';
+                showToast('Failed to trigger autofill.', 'error');
+                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function verifyForm(appId, btn) {
+            const orig = btn.textContent;
+            btn.textContent = '⏳ ...';
+            btn.disabled = true;
+            showToast('Launching verification preview browser...', 'info');
+            try {
+                const res = await fetch(`/run/preview/${appId}`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.textContent = '❌';
+                    showToast('Verification launch failed.', 'error');
+                    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                btn.textContent = '🖥️ Active';
+                showToast('Playwright browser launched. Complete submission on your screen!', 'success');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
+            } catch (e) {
+                btn.textContent = '❌';
+                showToast('Failed to trigger form preview.', 'error');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function verifyFormFromModal() {
+            if (!currentAppId) return;
+            const btn = document.getElementById('modal-verify-btn');
+            const orig = btn.textContent;
+            btn.textContent = '⏳ Launching...';
+            btn.disabled = true;
+            showToast('Launching verification preview...', 'info');
+            try {
+                const res = await fetch(`/run/preview/${currentAppId}`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.textContent = '❌ Failed';
+                    showToast('Form verification launch failed.', 'error');
+                    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                btn.textContent = '🖥️ Active';
+                showToast('Browser launched.', 'success');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
+            } catch (e) {
+                btn.textContent = '❌ Error';
+                showToast('Failed to trigger form preview.', 'error');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            ['resume', 'cover'].forEach(t => {
+                document.getElementById(`tab-${t}`).className = t === tab
+                    ? 'bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all shadow-md'
+                    : 'bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all';
+                document.getElementById(`tab-content-${t}`).classList.add('hidden');
+            });
+
+            if (!currentData) return;
+            const el = document.getElementById(`tab-content-${tab}`);
+            el.textContent = tab === 'resume'
+                ? (currentData.resume || '(No tailored resume yet)')
+                : (currentData.cover_letter || '(No cover letter yet)');
+            el.classList.remove('hidden');
+        }
+
+        function closeModal(event) {
+            if (!event || event.target === document.getElementById('modal')) {
+                document.getElementById('modal').classList.add('hidden');
+                currentData = null;
+                currentAppId = null;
+            }
+        }
+
+        async function extractLink(event) {
+            event.preventDefault();
+            const input = document.getElementById('jobUrlInput');
+            const btn = document.getElementById('extractBtn');
+            const url = input.value.trim();
+            if (!url) return;
+
+            const origText = btn.innerHTML;
+            btn.innerHTML = '⏳ Scrape...';
+            btn.disabled = true;
+            showToast('Parsing job details and matching...', 'info');
+
+            try {
+                const res = await fetch('/run/extract-link', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    showToast(`Failed: ${err.detail || res.statusText}`, 'error');
+                    btn.innerHTML = '❌ Failed';
+                    setTimeout(() => { btn.innerHTML = origText; btn.disabled = false; }, 3000);
+                    return;
+                }
+
+                showToast('Job extracted & shortlisted manually! Docs tailoring started.', 'success');
+                input.value = '';
+                btn.innerHTML = '✅ Shortlisted';
+                setTimeout(() => { 
+                    btn.innerHTML = origText; 
+                    btn.disabled = false; 
+                    window.location.reload(); 
+                }, 2000);
+            } catch (e) {
+                showToast('Connection error during job extraction.', 'error');
+                btn.innerHTML = '❌ Error';
+                setTimeout(() => { btn.innerHTML = origText; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function markSubmitted(appId, btn) {
+            const orig = btn.textContent;
+            btn.textContent = '⏳ ...';
+            btn.disabled = true;
+            try {
+                const res = await fetch(`/application/${appId}/submit`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.textContent = '❌';
+                    showToast('Failed to mark as submitted.', 'error');
+                    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                showToast('Application marked as submitted successfully!', 'success');
+                setTimeout(() => { window.location.reload(); }, 1000);
+            } catch (e) {
+                btn.textContent = '❌';
+                showToast('Error updating application status.', 'error');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function submitFormFromModal() {
+            if (!currentAppId) return;
+            const btn = document.getElementById('modal-submit-btn');
+            const orig = btn.textContent;
+            btn.textContent = '⏳ Updating...';
+            btn.disabled = true;
+            try {
+                const res = await fetch(`/application/${currentAppId}/submit`, { method: 'POST' });
+                if (!res.ok) {
+                    btn.textContent = '❌ Failed';
+                    showToast('Failed to mark as submitted.', 'error');
+                    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+                    return;
+                }
+                showToast('Application marked as submitted successfully!', 'success');
+                closeModal();
+                setTimeout(() => { window.location.reload(); }, 1000);
+            } catch (e) {
+                btn.textContent = '❌ Error';
+                showToast('Error updating application status.', 'error');
+                setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+    </script>
+</body>
+
+</html>

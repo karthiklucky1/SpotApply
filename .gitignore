@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.db
+data/*.db
+data/*.faiss
+data/*.npy
+data/tailored/
+data/resume_master.md
+data/resume_master.docx
+.pytest_cache/
+.ruff_cache/
+.DS_Store
