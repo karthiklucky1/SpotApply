@@ -735,26 +735,36 @@ async def _fill_lever(page: Page, resume_docx: str, cover_text: str, job: Job, r
 # ---------- Ashby handler ----------
 
 async def _fill_ashby(page: Page, resume_docx: str, cover_text: str, job: Job, resume_text: str) -> List[UnknownField]:
-    pf = _personal_fields()
-    selectors = {
-        "input[name='name']": pf["first_name"] + " " + pf["last_name"],
-        "input[name='email']": pf["email"],
-        "input[name='phone']": pf["phone"],
-    }
-    for sel, val in selectors.items():
-        if not val or not str(val).strip():
-            continue
-        try:
-            el = await page.query_selector(sel)
-            if el:
-                curr_val = await el.input_value()
-                if curr_val != val:
-                    await el.fill(val)
-        except Exception as e:
-            log.debug("Ashby fill skipped for %s: %s", sel, e)
+    # 1. Switch to Application tab if present
+    app_tab = await page.query_selector("text=Application")
+    if app_tab:
+        log.info("Ashby: Found 'Application' tab, clicking it to reveal form...")
+        await app_tab.click()
+        await page.wait_for_timeout(1500)
 
+    pf = _personal_fields()
+    name_val = pf["first_name"] + " " + pf["last_name"]
+    email_val = pf["email"]
+    phone_val = pf["phone"]
+
+    # Fill Name
+    name_el = await page.query_selector("input[name='_systemfield_name'], input[name='name']")
+    if name_el:
+        await name_el.fill(name_val)
+
+    # Fill Email
+    email_el = await page.query_selector("input[name='_systemfield_email'], input[name='email'], input[type='email']")
+    if email_el:
+        await email_el.fill(email_val)
+
+    # Fill Phone
+    phone_el = await page.query_selector("input[type='tel'], input[name*='phone']")
+    if phone_el:
+        await phone_el.fill(phone_val)
+
+    # Upload Resume
     try:
-        file_input = await page.query_selector("input[type='file']")
+        file_input = await page.query_selector("input[id='_systemfield_resume'], input[type='file']")
         if file_input and resume_docx:
             await file_input.set_input_files(os.path.abspath(resume_docx))
     except Exception as e:
@@ -779,13 +789,16 @@ async def _fill_ashby(page: Page, resume_docx: str, cover_text: str, job: Job, r
             }""")
             tag = await el.evaluate("(e) => e.tagName.toLowerCase()")
             
-            # Skip fields we already handled by name
-            name_attr = await el.get_attribute("name")
-            if name_attr in ["name", "email", "phone", "resume"]:
+            # Skip fields we already handled by name or type
+            name_attr = await el.get_attribute("name") or ""
+            el_id = await el.get_attribute("id") or ""
+            el_type = await el.get_attribute("type") or "text"
+            if (name_attr in ["name", "email", "phone", "resume", "_systemfield_name", "_systemfield_email", "_systemfield_resume"] or
+                el_id in ["_systemfield_name", "_systemfield_email", "_systemfield_resume"] or
+                el_type == "tel"):
                 continue
                 
             cached_ans = _check_memory(label)
-            el_type = await el.get_attribute("type") or "text"
             if not cached_ans and tag in ["input", "textarea"] and el_type not in ["checkbox", "radio"]:
                 cached_ans = _answer_question_with_llm(label, job, resume_text)
                 if cached_ans:
@@ -810,11 +823,16 @@ async def _fill_ashby(page: Page, resume_docx: str, cover_text: str, job: Job, r
                 except Exception as e:
                     log.warning("Failed to auto-fill cached answer for %s: %s", label, e)
                     
-            unknown.append(UnknownField(label=label, selector=f"*[name='{name_attr}']", field_type=tag))
+            unknown.append(UnknownField(label=label, selector=f"*[name='{name_attr}']" if name_attr else f"#{el_id}", field_type=tag))
         except Exception:
             continue
 
     # Post-fill standard field verification
+    selectors = {
+        "input[name='_systemfield_name']": name_val,
+        "input[name='_systemfield_email']": email_val,
+        "input[type='tel']": phone_val,
+    }
     for sel, val in selectors.items():
         try:
             el = await page.query_selector(sel)
