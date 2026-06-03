@@ -143,8 +143,8 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
 
         out_dir = settings.data_dir / "tailored" / f"app_{application_id}"
         out_dir.mkdir(parents=True, exist_ok=True)
-        resume_path = out_dir / f"resume_{job.company}_{job.id}.docx"
-        cover_path = out_dir / f"cover_{job.company}_{job.id}.txt"
+        resume_path = out_dir / "Karthik_Amruthaluri_Resume.docx"
+        cover_path = out_dir / "Karthik_Amruthaluri_Cover_Letter.txt"
         _md_to_docx(resume_md, resume_path)
         cover_path.write_text(cover, encoding="utf-8")
 
