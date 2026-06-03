@@ -98,11 +98,11 @@ def _resolve_deterministic_question(label: str) -> str | None:
         log.info("Deterministic match: Work Authorization -> Yes")
         return "Yes"
 
-    # 2. Sponsorship now or future (Yes - will need sponsorship for H-1B in the future)
+    # 2. Sponsorship now or future (No - candidate wishes to answer No to avoid auto-filtering)
     spons_kws = ["require sponsorship", "sponsorship now or in the future", "visa sponsorship", "sponsorship in the future", "require visa", "sponsorship requirements"]
     if any(kw in low for kw in spons_kws):
-        log.info("Deterministic match: Visa Sponsorship -> Yes")
-        return "Yes"
+        log.info("Deterministic match: Visa Sponsorship -> No")
+        return "No"
 
     # 3. Security Clearance (No - active security clearances are restricted to US citizens)
     clearance_kws = ["security clearance", "active clearance", "clearance level", "government clearance", "active security clearance"]
@@ -123,7 +123,12 @@ def _resolve_deterministic_question(label: str) -> str | None:
         return "Negotiable"
 
     # 6. US Based (Yes)
-    us_based_kws = ["based in the united states", "reside in the united states", "living in the united states", "based in the us", "currently based in the us", "currently based in the united states"]
+    us_based_kws = [
+        "based in the united states", "reside in the united states", "living in the united states",
+        "based in the us", "currently based in the us", "currently based in the united states",
+        "located in the us", "located in the united states", "currently in the us", "currently in the united states",
+        "residing in the us", "residing in the united states", "are you based in the united states", "are you based in the us"
+    ]
     if any(kw in low for kw in us_based_kws):
         log.info("Deterministic match: US Based -> Yes")
         return "Yes"
@@ -1023,6 +1028,16 @@ async def _fill_ashby(page: Page, resume_docx: str, cover_text: str, job: Job, r
 
             if ans:
                 log.info("Ashby: Filling '%s' -> '%s'", clean_question, ans)
+                
+                # Re-query elements inside container to avoid DOM detachment after LLM delay
+                inputs = await entry.query_selector_all("input, textarea, select")
+                buttons = await entry.query_selector_all("button")
+                yes_no_buttons = []
+                for btn in buttons:
+                    btn_txt = (await btn.inner_text()).strip()
+                    if btn_txt in ["Yes", "No"]:
+                        yes_no_buttons.append(btn)
+
                 if field_type == "yes_no":
                     for btn in yes_no_buttons:
                         btn_txt = (await btn.inner_text()).strip()
