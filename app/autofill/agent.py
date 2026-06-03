@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import List
 from urllib.parse import urlparse
@@ -61,6 +62,33 @@ def _personal_fields() -> dict:
     }
 
 
+US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
+    "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming"
+}
+
+def _get_state_from_location(location: str | None) -> str | None:
+    if not location:
+        return None
+    import re
+    match = re.search(r'\b([A-Z]{2})\b', location)
+    if match:
+        state_code = match.group(1)
+        if state_code in US_STATES:
+            return US_STATES[state_code]
+    for name in US_STATES.values():
+        if name.lower() in location.lower():
+            return name
+    return None
+
 def _resolve_deterministic_question(label: str) -> str | None:
     low = label.lower().strip()
     
@@ -93,6 +121,58 @@ def _resolve_deterministic_question(label: str) -> str | None:
     if any(kw in low for kw in salary_kws):
         log.info("Deterministic match: Salary Expectation -> Negotiable")
         return "Negotiable"
+
+    # 6. US Based (Yes)
+    us_based_kws = ["based in the united states", "reside in the united states", "living in the united states", "based in the us", "currently based in the us", "currently based in the united states"]
+    if any(kw in low for kw in us_based_kws):
+        log.info("Deterministic match: US Based -> Yes")
+        return "Yes"
+
+    # 7. AI Policy Compliance (Yes)
+    ai_policy_kws = ["ai policy", "artificial intelligence policy"]
+    if any(kw in low for kw in ai_policy_kws):
+        log.info("Deterministic match: AI Policy -> Yes")
+        return "Yes"
+
+    # 8. Referral Source / Hear about us (LinkedIn)
+    hear_kws = ["how did you hear", "hear about us", "source of referral"]
+    if any(kw in low for kw in hear_kws):
+        log.info("Deterministic match: Hear about -> LinkedIn")
+        return "LinkedIn"
+
+    # 9. Working location relocation preference
+    reloc_pref_kws = ["where in the united states will you be working from", "working location preference"]
+    if any(kw in low for kw in reloc_pref_kws):
+        log.info("Deterministic match: Relocation Preference -> Yes (Willing to relocate)")
+        return "I do not currently live in New York, San Francisco - but I am willing to relocate within 6 months"
+
+    # 10. State Reside (State Name parsed from location)
+    state_kws = ["which state do you currently reside in", "what state do you currently reside in", "state of residence"]
+    if any(kw in low for kw in state_kws):
+        state_name = _get_state_from_location(settings.applicant_location)
+        if state_name:
+            log.info("Deterministic match: State -> %s", state_name)
+            return state_name
+
+    # 11. LinkedIn Profile URL
+    if "linkedin" in low:
+        log.info("Deterministic match: LinkedIn -> %s", settings.applicant_linkedin)
+        return settings.applicant_linkedin
+
+    # 12. GitHub URL
+    if "github" in low:
+        log.info("Deterministic match: GitHub -> %s", settings.applicant_github)
+        return settings.applicant_github
+
+    # 13. Preferred Name (check this before full name)
+    if "preferred name" in low or "preferred  name" in low:
+        log.info("Deterministic match: Preferred Name -> %s", settings.applicant_first_name)
+        return settings.applicant_first_name
+
+    # 14. Full Name
+    if "full name" in low:
+        log.info("Deterministic match: Full Name -> %s %s", settings.applicant_first_name, settings.applicant_last_name)
+        return f"{settings.applicant_first_name} {settings.applicant_last_name}"
 
     return None
 
@@ -138,9 +218,7 @@ Rules:
 
 
 def _answer_question_with_llm(label: str, job: Job, resume_text: str) -> str:
-    from anthropic import Anthropic
     log.info("Generating LLM answer for screening question: '%s'", label)
-    client = Anthropic(api_key=settings.anthropic_api_key)
     prompt = f"""<resume>
 {resume_text[:6000]}
 </resume>
@@ -154,19 +232,44 @@ Description: {job.description[:4000]}
 Screening Question: "{label}"
 
 Write a professional response answering this question based on the resume and job context."""
-    try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=300,
-            system=[{"type": "text", "text": SYSTEM_QUESTION_ANSWERER}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        ans = resp.content[0].text.strip()
-        log.info("Generated LLM response: '%s...'", ans[:80])
-        return ans
-    except Exception as e:
-        log.warning("LLM question answering failed for '%s': %s", label, e)
-        return ""
+    
+    # 1. Try Anthropic
+    if settings.anthropic_api_key:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=settings.anthropic_api_key)
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                system=[{"type": "text", "text": SYSTEM_QUESTION_ANSWERER}],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            ans = resp.content[0].text.strip()
+            log.info("Generated LLM response (Anthropic): '%s...'", ans[:80])
+            return ans
+        except Exception as e:
+            log.warning("LLM question answering (Anthropic) failed for '%s': %s", label, e)
+
+    # 2. Try OpenAI fallback
+    if settings.openai_api_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.openai_api_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=300,
+                messages=[
+                    {"role": "system", "content": SYSTEM_QUESTION_ANSWERER},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            ans = resp.choices[0].message.content.strip()
+            log.info("Generated LLM response (OpenAI): '%s...'", ans[:80])
+            return ans
+        except Exception as e:
+            log.warning("LLM question answering (OpenAI) failed for '%s': %s", label, e)
+            
+    return ""
 
 
 # ---------- cover letter helper ----------
@@ -773,58 +876,235 @@ async def _fill_ashby(page: Page, resume_docx: str, cover_text: str, job: Job, r
     await _fill_cover_letter_area(page, cover_text)
 
     unknown: List[UnknownField] = []
-    custom_fields = await page.query_selector_all("form input, form textarea, form select")
-    for el in custom_fields:
+    containers_count = len(await page.query_selector_all("[class*='_fieldEntry_']"))
+    log.info("Ashby: Found %d field entry containers", containers_count)
+
+    for idx in range(containers_count):
+        # Re-query on each loop step to avoid React DOM detaching/stale element errors
+        containers = await page.query_selector_all("[class*='_fieldEntry_']")
+        if idx >= len(containers):
+            break
+        entry = containers[idx]
+
         try:
-            value = await el.input_value()
-            if value:
-                continue
-            required = await el.evaluate("(e) => e.required || e.getAttribute('aria-required') === 'true'")
-            if not required:
-                continue
-            label = await el.evaluate("""(e) => {
-                const lbl = e.closest('label');
-                if (lbl) return lbl.innerText.trim().split('\\n')[0];
-                return e.name || '(unlabeled)';
+            # Extract question label
+            question_text = await entry.evaluate("""(e) => {
+                const label_el = e.querySelector('label, legend, span[class*="_label_"], div[class*="_label_"]');
+                if (label_el) return label_el.innerText.trim();
+                return e.innerText.split('\\n')[0].strip();
             }""")
-            tag = await el.evaluate("(e) => e.tagName.toLowerCase()")
             
-            # Skip fields we already handled by name or type
-            name_attr = await el.get_attribute("name") or ""
-            el_id = await el.get_attribute("id") or ""
-            el_type = await el.get_attribute("type") or "text"
+            clean_question = question_text.replace('*', '').replace('\xa0', ' ').strip()
+            
+            # Check if required
+            is_required = await entry.evaluate("""(e) => {
+                const text = e.innerText || '';
+                if (text.includes('*')) return true;
+                const input = e.querySelector('input, textarea, select');
+                if (input && (input.required || input.getAttribute('aria-required') === 'true')) return true;
+                const req_indicator = e.querySelector('[class*="required"], [class*="Required"], ._asterisk_');
+                if (req_indicator) return true;
+                return false;
+            }""")
+
+            # Find inputs and buttons inside container
+            inputs = await entry.query_selector_all("input, textarea, select")
+            buttons = await entry.query_selector_all("button")
+
+            # Determine type of question and if already answered
+            is_answered = False
+            field_type = "text"
+            
+            yes_no_buttons = []
+            for btn in buttons:
+                btn_txt = (await btn.inner_text()).strip()
+                if btn_txt in ["Yes", "No"]:
+                    yes_no_buttons.append(btn)
+
+            input_types = []
+            input_roles = []
+            input_aria_popups = []
+            input_checked_states = []
+            input_values = []
+            
+            for inp in inputs:
+                input_types.append(await inp.get_attribute("type") or "")
+                input_roles.append(await inp.evaluate("e => e.role === 'combobox'") or "")
+                input_aria_popups.append(await inp.get_attribute("aria-haspopup") or "")
+                
+                tag = await inp.evaluate("e => e.tagName.toLowerCase()")
+                el_type = await inp.get_attribute("type") or ""
+                if tag == "input" and el_type in ["checkbox", "radio"]:
+                    input_checked_states.append(await inp.evaluate("e => e.checked"))
+                else:
+                    input_checked_states.append(False)
+                    
+                input_values.append(await inp.input_value() if tag in ["input", "textarea"] else "")
+                
+            button_classes = []
+            for btn in buttons:
+                button_classes.append(await btn.get_attribute("class") or "")
+
+            # Classify field entry
+            has_text_input = False
+            for inp in inputs:
+                tag = await inp.evaluate("e => e.tagName.toLowerCase()")
+                el_type = await inp.get_attribute("type") or ""
+                if el_type in ["text", "email", "tel", "url", "number"] or tag == "textarea":
+                    has_text_input = True
+                    break
+
+            if has_text_input:
+                field_type = "text"
+                for inp_idx, val in enumerate(input_values):
+                    el_type = input_types[inp_idx] if inp_idx < len(input_types) else ""
+                    if el_type in ["text", "email", "tel", "url", "number"] or await inputs[inp_idx].evaluate("e => e.tagName.toLowerCase() === 'textarea'"):
+                        if val:
+                            is_answered = True
+                            break
+            elif yes_no_buttons:
+                field_type = "yes_no"
+                for btn in yes_no_buttons:
+                    cls = await btn.get_attribute("class") or ""
+                    if "_active_" in cls:
+                        is_answered = True
+                        break
+            elif "radio" in input_types:
+                field_type = "radio"
+                if any(input_checked_states):
+                    is_answered = True
+            elif "checkbox" in input_types:
+                field_type = "checkbox"
+                if any(input_checked_states):
+                    is_answered = True
+            elif any(input_roles) or any(p == "listbox" for p in input_aria_popups) or any("toggleButton" in c for c in button_classes):
+                field_type = "combobox"
+                if any(val for val in input_values):
+                    is_answered = True
+            else:
+                if "file" in input_types:
+                    field_type = "file"
+                    if "resume" in clean_question.lower():
+                        is_answered = False
+                else:
+                    if any(val for val in input_values):
+                        is_answered = True
+
+            # Skip standard fields that we already filled globally
+            name_attr = await inputs[0].get_attribute("name") or "" if inputs else ""
+            el_id = await inputs[0].get_attribute("id") or "" if inputs else ""
+            el_type = await inputs[0].get_attribute("type") or "" if inputs else ""
             if (name_attr in ["name", "email", "phone", "resume", "_systemfield_name", "_systemfield_email", "_systemfield_resume"] or
                 el_id in ["_systemfield_name", "_systemfield_email", "_systemfield_resume"] or
                 el_type == "tel"):
+                if "resume" not in clean_question.lower():
+                    continue
+
+            if is_answered and field_type != "file":
                 continue
-                
-            cached_ans = _check_memory(label)
-            if not cached_ans and tag in ["input", "textarea"] and el_type not in ["checkbox", "radio"]:
-                cached_ans = _answer_question_with_llm(label, job, resume_text)
-                if cached_ans:
+
+            # Try to get answer from memory/deterministic rules
+            ans = _check_memory(clean_question)
+            
+            # Text/textarea custom LLM fallback
+            if not ans and field_type == "text" and "resume" not in clean_question.lower():
+                ans = _answer_question_with_llm(clean_question, job, resume_text)
+                if ans:
                     try:
                         with get_session() as session:
                             session.add(AnswerMemory(
-                                label_normalized=label.lower().strip(),
-                                label_original=label,
-                                answer=cached_ans
+                                label_normalized=clean_question.lower().strip(),
+                                label_original=clean_question,
+                                answer=ans
                             ))
                             session.commit()
                     except Exception:
                         pass
-            if cached_ans:
-                log.info("Answer memory hit for '%s': %s", label, cached_ans)
-                try:
-                    if tag == "select":
-                        await el.select_option(label=cached_ans)
+
+            if ans:
+                log.info("Ashby: Filling '%s' -> '%s'", clean_question, ans)
+                if field_type == "yes_no":
+                    for btn in yes_no_buttons:
+                        btn_txt = (await btn.inner_text()).strip()
+                        if btn_txt.lower() == ans.lower():
+                            await btn.click()
+                            await page.wait_for_timeout(300)
+                            break
+                elif field_type == "radio":
+                    labels = await entry.query_selector_all("label")
+                    clicked = False
+                    for lbl in labels:
+                        lbl_txt = (await lbl.inner_text()).strip()
+                        if ans.lower() in lbl_txt.lower() or lbl_txt.lower() in ans.lower():
+                            await lbl.click()
+                            await page.wait_for_timeout(300)
+                            clicked = True
+                            break
+                    if not clicked:
+                        opts = await entry.query_selector_all("[class*='_option_']")
+                        for opt in opts:
+                            opt_txt = (await opt.inner_text()).strip()
+                            if ans.lower() in opt_txt.lower() or opt_txt.lower() in ans.lower():
+                                await opt.click()
+                                await page.wait_for_timeout(300)
+                                break
+                elif field_type == "combobox":
+                    inp = await entry.query_selector("input")
+                    if inp:
+                        await inp.focus()
+                        await page.keyboard.press("Meta+A")
+                        await page.keyboard.press("Backspace")
+                        await inp.fill(ans)
+                        await page.wait_for_timeout(1500)
+                        
+                        options = await page.query_selector_all("[role='listbox'] [role='option']")
+                        clicked = False
+                        for opt in options:
+                            opt_txt = (await opt.inner_text()).strip()
+                            if ans.lower() in opt_txt.lower() or opt_txt.lower() in ans.lower():
+                                await opt.click()
+                                await page.wait_for_timeout(300)
+                                clicked = True
+                                break
+                        if not clicked and options:
+                            await options[0].click()
+                            await page.wait_for_timeout(300)
+                elif field_type == "file":
+                    if resume_docx and "resume" in clean_question.lower():
+                        file_input = await entry.query_selector("input[type='file']")
+                        if file_input:
+                            await file_input.set_input_files(os.path.abspath(resume_docx))
+                else:
+                    for inp in inputs:
+                        el_type = await inp.get_attribute("type") or ""
+                        if el_type in ["text", "email", "tel", "url", "number"] or await inp.evaluate("e => e.tagName.toLowerCase() === 'textarea'"):
+                            await inp.fill(ans)
+                            
+                            # Auto-accept communicationConsent radio if Phone field contains it
+                            if "communicationConsent" in input_types:
+                                no_consent = await entry.query_selector("input[name='communicationConsent'][value='notGiven']")
+                                if no_consent:
+                                    parent_lbl = await no_consent.evaluate_handle("e => e.closest('label')")
+                                    if parent_lbl:
+                                        await parent_lbl.as_element().click()
+                                        await page.wait_for_timeout(300)
+                            break
+            else:
+                if is_required:
+                    log.warning("Ashby: Required field unanswered: '%s'", clean_question)
+                    inp_id = await inputs[0].get_attribute("id") if inputs else ""
+                    name_attr = await inputs[0].get_attribute("name") if inputs else ""
+                    if inp_id:
+                        sel = f"#{inp_id}"
+                    elif name_attr:
+                        sel = f"*[name='{name_attr}']"
                     else:
-                        await el.fill(cached_ans)
-                    continue
-                except Exception as e:
-                    log.warning("Failed to auto-fill cached answer for %s: %s", label, e)
-                    
-            unknown.append(UnknownField(label=label, selector=f"*[name='{name_attr}']" if name_attr else f"#{el_id}", field_type=tag))
-        except Exception:
+                        field_path = await entry.get_attribute("data-field-path") or ""
+                        sel = f"div[data-field-path='{field_path}']" if field_path else "[class*='_fieldEntry_']"
+                        
+                    unknown.append(UnknownField(label=clean_question, selector=sel, field_type=field_type))
+        except Exception as e:
+            log.exception("Error filling Ashby field container: %s", e)
             continue
 
     # Post-fill standard field verification
