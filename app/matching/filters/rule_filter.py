@@ -14,7 +14,8 @@ _SALARY_TOO_LOW_MAX  = 80_000    # reject if advertised maximum <= this (e.g. "$
 
 # Pre-compile the range pattern once
 _SALARY_RANGE_RE = re.compile(
-    r'\$([\d,]+)\s*(k)?\s*[-–to]+\s*\$([\d,]+)\s*(k)?'
+    r'\$([\d,]+)\s*(k)?\s*[-–to]+\s*\$([\d,]+)\s*(k)?',
+    re.IGNORECASE,
 )
 _SALARY_SINGLE_RE = re.compile(r'\$([\d,]+)\s*(k)?')
 _SALARY_CONTEXT_RE = re.compile(

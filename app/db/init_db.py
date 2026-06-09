@@ -42,6 +42,14 @@ def init_db() -> None:
             conn.execute(text("ALTER TABLE job ADD COLUMN cross_source_slug VARCHAR"))
         except Exception:
             pass
+        for col, col_type in [
+            ("ghost_score", "FLOAT DEFAULT 0.0"),
+            ("ghost_flags", "TEXT"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE job ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass
             
         # Migrations for job lifecycle tracking columns
         for col, col_type in [

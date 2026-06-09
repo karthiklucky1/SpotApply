@@ -75,6 +75,10 @@ class Job(SQLModel, table=True):
     rerank_reasoning: Optional[str] = None
     cross_source_slug: Optional[str] = Field(default=None, index=True)
 
+    # Ghost job detection score (0.0 = definitely real, 1.0 = likely ghost)
+    ghost_score: float = Field(default=0.0)
+    ghost_flags: Optional[str] = Field(default=None)  # JSON list of flag strings
+
     class Config:
         arbitrary_types_allowed = True
 
