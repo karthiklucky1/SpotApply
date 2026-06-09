@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     # LLM
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    tavily_api_key: str = ""
+    exa_api_key: str = ""
+
+    # Job board APIs
+    serpapi_key: str = ""            # serpapi.com — Google Jobs (LinkedIn/Indeed/Glassdoor). Free: 100/mo
+    remotive_enabled: bool = True    # Remotive public API — no key needed
+    remoteok_enabled: bool = True    # RemoteOK public API — no key needed
+    max_jobs_per_source: int = 50    # Cap per source per discovery run
 
     # Telegram
     telegram_bot_token: str = ""
@@ -26,8 +34,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     resume_path: Path = Path("./data/resume_master.md")
     resume_docx_path: Path = Path("./data/resume_master.docx")
+    profiles_dir: Path = Path("./data/profiles")
     faiss_index_path: Path = Path("./data/jobs.faiss")
     sqlite_path: Path = Path("./data/jobagent.db")
+    bootstrap_path: Path = Path("./data/bootstrap_companies.json")
 
     # Applicant
     applicant_first_name: str = "Karthik"
@@ -40,9 +50,24 @@ class Settings(BaseSettings):
     applicant_work_auth: str = ""
 
     # Matching
-    min_match_score: float = 0.55
-    top_k_rerank: int = 50
+    min_match_score: float = 0.20
+    top_k_rerank: int = 500
     daily_apply_limit: int = 25
+
+    # Models
+    scoring_model: str = "claude-3-5-haiku-20241022"
+    tailoring_model: str = "claude-sonnet-4-6"
+    doctor_model: str = "claude-haiku-4-5-20251001"   # cheap Haiku for Doctor LLM verdict
+
+    # Thresholds & Constraints
+    min_embedding_score: float = 0.35
+    qa_confidence_threshold: float = 0.7
+    grounding_similarity_threshold: float = 0.5
+
+    # Submission Delays & Limits
+    submission_jitter_min: float = 180.0
+    submission_jitter_max: float = 480.0
+    headless: bool = True
 
     # Discovery
     greenhouse_boards: str = ""

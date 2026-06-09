@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 from typing import List, Tuple
 
 import numpy as np
@@ -20,8 +21,13 @@ from sqlmodel import select
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Job
+from app.qa_store.resolver import QAResolver
+from app.matching.filters.constants import NON_US_LOCATIONS
 
 log = logging.getLogger(__name__)
+
+# Initialize canonical QA Resolver
+qa_resolver = QAResolver()
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DIM = 384
@@ -44,11 +50,21 @@ def _chunk_resume(resume_text: str) -> List[str]:
     # Keep only non-empty, reasonably-sized chunks
     chunks = [c for c in raw_chunks if len(c.strip()) > 50]
     
-    # High-impact search profile summarizing target titles and tech stack
+    # Generate search profile dynamically from Q&A store fields
+    data = qa_resolver.data
+    identity = data.get("identity", {})
+    bg = data.get("background", {})
+    pref = data.get("preferences", {})
+
+    roles = "AI/ML Engineer, NLP Engineer, MLOps/Platform Engineer, or Backend Python Developer"
+    tech = bg.get("tech_stack", "Python, PyTorch, TensorFlow, Scikit-learn, XGBoost, NLP, Generative AI, LLMs, RAG, LangChain, Multi-Agent Systems, Spark, PySpark, MLflow, Kubeflow, Vertex AI, BigQuery, Kafka, Airflow, AWS, GCP, Docker, Kubernetes, FastAPI, FAISS, PostgreSQL, MongoDB")
+    loc = identity.get("location", "Cincinnati, OH")
+    arrangement = pref.get("work_arrangement", "Open to remote, hybrid, or onsite")
+
     summary_chunk = (
-        "Role Target: Python Developer, AI/ML Systems Engineer, LLM & Deep Learning Infrastructure Engineer.\n"
-        "Key Technologies: Python, PyTorch, Transformers, LLMs, RAG, FAISS Vector Search, Semantic Caching, "
-        "Agent Orchestration, FastAPI, MLOps, Docker, AWS ECS/Lambda."
+        f"Role Target: {roles}.\n"
+        f"Preferred Location: {loc} ({arrangement}).\n"
+        f"Key Technologies: {tech}."
     )
     chunks.append(summary_chunk)
     return chunks
@@ -82,29 +98,91 @@ class Matcher:
     # ---------- index lifecycle ----------
 
     def rebuild(self) -> int:
-        """Embed every job in DB and rebuild the index from scratch."""
+        """Incrementally update the FAISS index with any unindexed jobs in the DB."""
         import faiss
+        
+        # Load existing index if available
+        existing_index = None
+        existing_ids = set()
+        
+        if self.index_path.exists() and self.id_map_path.exists():
+            try:
+                existing_index = faiss.read_index(str(self.index_path))
+                existing_ids_arr = np.load(self.id_map_path)
+                existing_ids = set(existing_ids_arr.tolist())
+                self.index = existing_index
+                self.job_ids = existing_ids_arr
+                log.info("Loaded existing FAISS index with %d vectors.", len(existing_ids))
+            except Exception as e:
+                log.warning("Failed to load existing FAISS index, rebuilding from scratch: %s", e)
+                existing_index = None
+                
         with get_session() as session:
-            jobs = session.exec(select(Job)).all()
-
-        if not jobs:
+            all_jobs = session.exec(select(Job)).all()
+            
+        if not all_jobs:
             log.warning("No jobs in DB to index.")
             return 0
-
-        texts = [self._job_text(j) for j in jobs]
-        embs = self.encode(texts)
-
-        index = faiss.IndexFlatIP(DIM)
-        index.add(embs)
-
-        ids = np.array([j.id for j in jobs], dtype="int64")
-        np.save(self.id_map_path, ids)
-        faiss.write_index(index, str(self.index_path))
-
-        self.index = index
-        self.job_ids = ids
-        log.info("FAISS index built: %d vectors", len(jobs))
-        return len(jobs)
+            
+        # Find new and updated jobs
+        new_jobs = [j for j in all_jobs if j.id not in existing_ids]
+        updated_jobs = [j for j in all_jobs if j.id in existing_ids and j.embedding_id is None]
+        
+        # If there are updated jobs, we must do a full rebuild to clean up stale vectors
+        force_rebuild = len(updated_jobs) > 0
+        
+        if not new_jobs and not force_rebuild:
+            log.info("All %d jobs are already indexed. No update needed.", len(all_jobs))
+            return len(all_jobs)
+            
+        if force_rebuild or existing_index is None or self.job_ids is None:
+            # Build from scratch
+            log.info("Building new FAISS index from scratch with %d vectors (forced rebuild=%s)...", len(all_jobs), force_rebuild)
+            texts = [self._job_text(j) for j in all_jobs]
+            embs = self.encode(texts)
+            index = faiss.IndexFlatIP(DIM)
+            index.add(embs)
+            ids = np.array([j.id for j in all_jobs], dtype="int64")
+            np.save(self.id_map_path, ids)
+            faiss.write_index(index, str(self.index_path))
+            self.index = index
+            self.job_ids = ids
+            
+            # Save embedding_ids back to DB
+            with get_session() as session:
+                for idx, j in enumerate(all_jobs):
+                    db_job = session.get(Job, j.id)
+                    if db_job:
+                        db_job.embedding_id = idx
+                        session.add(db_job)
+                session.commit()
+                
+            log.info("FAISS index built from scratch: %d vectors", len(all_jobs))
+        else:
+            # Incremental append
+            log.info("Indexing %d new jobs incrementally...", len(new_jobs))
+            new_texts = [self._job_text(j) for j in new_jobs]
+            new_embs = self.encode(new_texts)
+            
+            start_idx = len(self.job_ids)
+            existing_index.add(new_embs)
+            new_ids_arr = np.array([j.id for j in new_jobs], dtype="int64")
+            self.job_ids = np.concatenate([self.job_ids, new_ids_arr])
+            faiss.write_index(existing_index, str(self.index_path))
+            np.save(self.id_map_path, self.job_ids)
+            
+            # Save embedding_ids back to DB
+            with get_session() as session:
+                for idx, j in enumerate(new_jobs):
+                    db_job = session.get(Job, j.id)
+                    if db_job:
+                        db_job.embedding_id = start_idx + idx
+                        session.add(db_job)
+                session.commit()
+                
+            log.info("FAISS index updated. Total vectors: %d", len(self.job_ids))
+            
+        return len(self.job_ids)
 
     def load(self) -> None:
         import faiss
@@ -127,6 +205,38 @@ class Matcher:
 
         with get_session() as session:
             jobs = session.exec(select(Job)).all()
+
+        if not jobs:
+            return []
+
+        # Filter out jobs outside the US or with foreign locations (uses shared constants)
+        non_us_locations = NON_US_LOCATIONS
+        
+        filtered_jobs = []
+        for j in jobs:
+            loc_low = (j.location or "").lower()
+            title_low = j.title.lower()
+            
+            is_outside = False
+            # Check location field
+            if loc_low:
+                for loc in non_us_locations:
+                    if loc in loc_low:
+                        is_outside = True
+                        break
+            else:
+                # Check title context
+                for loc in non_us_locations:
+                    # Look for word boundaries e.g. "Korea" or "(Korea)" or "Seoul"
+                    pattern = rf"\b{loc}\b"
+                    if re.search(pattern, title_low) or (f"({loc})" in title_low):
+                        is_outside = True
+                        break
+            
+            if not is_outside:
+                filtered_jobs.append(j)
+                
+        jobs = filtered_jobs
 
         if not jobs:
             return []
@@ -168,7 +278,7 @@ class Matcher:
             for score, idx in zip(scores, idxs):
                 if idx >= 0:
                     jid = int(self.job_ids[idx])
-                    if score > job_max_faiss[jid]:
+                    if jid in job_max_faiss and score > job_max_faiss[jid]:
                         job_max_faiss[jid] = score
 
         faiss_ranking = sorted(jobs, key=lambda j: job_max_faiss[j.id], reverse=True)

@@ -10,7 +10,11 @@ Endpoints:
 """
 from __future__ import annotations
 
-from fastapi import BackgroundTasks, FastAPI, Request
+import logging
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+
+log = logging.getLogger(__name__)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
@@ -127,13 +131,23 @@ def api_stats() -> dict:
             .limit(10)
         ).all()
         top_companies = [{"company": company, "count": count} for company, count in top_companies_res]
-        
+
+        # Per-source job counts (for source breakdown bar in UI)
+        from app.db.models import JobSource as JS
+        source_counts: dict[str, int] = {}
+        for src in JS:
+            cnt = session.exec(
+                select(func.count(Job.id)).where(Job.source == src)
+            ).first() or 0
+            if cnt:
+                source_counts[src.value] = cnt
+
         # Company registry stats
         from app.db.models import CompanyRegistry
         total_boards = session.exec(select(func.count(CompanyRegistry.id))).first() or 0
         active_boards = session.exec(select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)).first() or 0
         total_validated_jobs = session.exec(select(func.sum(CompanyRegistry.job_count))).first() or 0
-        
+
     return {
         "total_jobs": total_jobs,
         "total_companies": total_companies,
@@ -151,6 +165,7 @@ def api_stats() -> dict:
             "band_0_39": band_0_39,
             "unranked": unranked,
         },
+        "sources": source_counts,
         "top_companies": top_companies,
         "registry": {
             "total_boards": total_boards,
@@ -159,6 +174,8 @@ def api_stats() -> dict:
         }
     }
 
+
+_AUTOFILL_SOURCES = {"greenhouse", "lever", "ashby", "workday", "smartrecruiters"}
 
 @app.get("/api/jobs")
 def api_jobs(
@@ -169,21 +186,27 @@ def api_jobs(
     status: str = None,
     min_score: int = None,
     max_score: int = None,
-    remote: str = None
+    remote: str = None,
+    track: str = None,   # "autofill" | "manual"
 ) -> dict:
     offset = (page - 1) * limit
-    
+
     with get_session() as session:
         # Base query
         query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id)
-        
+
         # Apply filters
         if search:
             search_pattern = f"%{search}%"
             query = query.where(Job.title.like(search_pattern) | Job.company.like(search_pattern) | Job.location.like(search_pattern))
-        
+
         if company:
             query = query.where(Job.company == company)
+
+        if track == "autofill":
+            query = query.where(Job.source.in_(list(_AUTOFILL_SOURCES)))
+        elif track == "manual":
+            query = query.where(Job.source.not_in(list(_AUTOFILL_SOURCES)))
             
         if status:
             if status == "unprocessed":
@@ -232,6 +255,7 @@ def api_jobs(
         for job, app in results:
             jobs_list.append({
                 "id": job.id,
+                "source": job.source.value if job.source else "manual",
                 "company": job.company,
                 "title": job.title,
                 "location": job.location,
@@ -243,6 +267,7 @@ def api_jobs(
                 "application": {
                     "id": app.id,
                     "status": app.status.value,
+                    "apply_track": app.apply_track,
                     "created_at": app.created_at.isoformat() if app.created_at else None,
                     "updated_at": app.updated_at.isoformat() if app.updated_at else None,
                 } if app else None
@@ -271,29 +296,44 @@ def dashboard(request: Request):
         ).all()
         
     shortlisted = []
-    bot_filled = []
+    bot_filled = []    # autofill-track: form filled, pending review
+    manual_queue = []  # manual-track: materials ready, waiting for human to apply
     submitted = []
     skipped = []
-    
+
+    _AUTOFILL_REVIEW_STATUSES = {
+        ApplicationStatus.AUTOFILLED,
+        ApplicationStatus.AWAITING_USER,
+        ApplicationStatus.READY_TO_SUBMIT,
+    }
+
     for app_model, job_model in results:
         if app_model.status in [ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED]:
             shortlisted.append((app_model, job_model))
-        elif app_model.status in [ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER, ApplicationStatus.READY_TO_SUBMIT]:
-            bot_filled.append((app_model, job_model))
+        elif app_model.status in _AUTOFILL_REVIEW_STATUSES:
+            if app_model.apply_track == "manual":
+                manual_queue.append((app_model, job_model))
+            else:
+                bot_filled.append((app_model, job_model))
         elif app_model.status in [ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING]:
             submitted.append((app_model, job_model))
         elif app_model.status == ApplicationStatus.SKIPPED:
             skipped.append((app_model, job_model))
-            
-    # Sort shortlisted by rerank_score descending (highest score at top)
-    shortlisted.sort(key=lambda x: x[1].rerank_score or 0, reverse=True)
-            
+
+    from datetime import datetime as _dt
+    shortlisted.sort(
+        key=lambda x: (x[1].posted_at or x[1].discovered_at or _dt.min, x[1].rerank_score or 0),
+        reverse=True,
+    )
+    manual_queue.sort(key=lambda x: x[1].rerank_score or 0, reverse=True)
+
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
             "shortlisted": shortlisted,
             "bot_filled": bot_filled,
+            "manual_queue": manual_queue,
             "submitted": submitted,
             "skipped": skipped,
         }
@@ -334,6 +374,7 @@ def application_details(application_id: int) -> dict:
         "title": job.title,
         "apply_url": application.apply_url or job.url,
         "status": application.status.value,
+        "source": job.source.value,
         "resume": resume_text,
         "cover_letter": cover_text,
     }
@@ -388,7 +429,7 @@ def trigger_tailor(bg: BackgroundTasks) -> dict:
 
 @app.post("/run/autofill/{application_id}")
 def trigger_autofill(application_id: int, bg: BackgroundTasks) -> dict:
-    bg.add_task(autofill, application_id)
+    bg.add_task(autofill, application_id, bypass_delay=True)
     return {"started": "autofill", "application_id": application_id}
 
 
@@ -409,11 +450,14 @@ class ExtractLinkRequest(BaseModel):
 async def trigger_extract_link(req: ExtractLinkRequest, bg: BackgroundTasks) -> dict:
     from app.discovery.extractor import extract_and_rank_job
     from app.tailoring.tailor import tailor_for_application
-    
+
     log.info("Extracting manual link: %s", req.url)
-    app_id = await extract_and_rank_job(req.url)
-    
+    try:
+        app_id = await extract_and_rank_job(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     # Tailor in the background
     bg.add_task(tailor_for_application, app_id)
-    
+
     return {"success": True, "application_id": app_id}

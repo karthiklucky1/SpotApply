@@ -1,0 +1,24 @@
+# Company and Title Matching rules config
+company_blacklist:
+  - "cybercoders"
+  - "robert half"
+  - "teksystems"
+  - "revature"
+  - "collabera"
+
+company_whitelist:
+  - "google"
+  - "meta"
+  - "openai"
+  - "anthropic"
+
+opt_friendly_employers:
+  - "amazon"
+  - "uber"
+  - "stripe"
+
+avoid_title_patterns:
+  - "unpaid"
+  - "volunteer"
+  - "intern"
+  - "undergraduate"

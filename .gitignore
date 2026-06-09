@@ -9,6 +9,8 @@ data/*.npy
 data/tailored/
 data/resume_master.md
 data/resume_master.docx
+data/*.png
+scratch/*.png
 .pytest_cache/
 .ruff_cache/
 .DS_Store

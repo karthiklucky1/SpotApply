@@ -28,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.autofill.agent import autofill
+from app.autofill.agent import autofill, preview
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import (
@@ -43,6 +43,11 @@ from app.matching.pipeline import run_matching
 from app.tailoring.tailor import tailor_all_shortlisted
 
 log = logging.getLogger(__name__)
+
+# Tracks which application's questions the bot is currently asking.
+# Prevents answers from crossing into a different application when two
+# autofill runs queue pending questions concurrently.
+_active_application_id: int | None = None
 
 # Common yes/no options for typical HR questions
 _YES_NO_KEYWORDS = [
@@ -99,7 +104,9 @@ def _detect_buttons(label: str, options_json: str | None) -> list[list[str]] | N
         return _YES_NO_BUTTONS
     if "open to" in low or "willing to" in low:
         return _OPEN_TO_BUTTONS
-    if "have you ever" in low or "did you" in low or "do you" in low:
+    
+    yes_no_verbs = ["are you", "is your", "do you", "did you", "have you", "will you", "can you", "would you", "should you", "were you", "has you"]
+    if any(low.startswith(p) for p in yes_no_verbs) or "have you ever" in low or "yes/no" in low or "yes or no" in low:
         return _YES_NO_BUTTONS
 
     return None  # free-text answer
@@ -114,14 +121,25 @@ def _make_keyboard(button_rows: list[list[str]]) -> InlineKeyboardMarkup:
 
 
 async def _send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    global _active_application_id
     with get_session() as session:
-        pq = session.exec(
-            select(PendingQuestion).where(PendingQuestion.answer.is_(None))
-        ).first()
+        # Prefer questions for the currently active application; fall back to any unanswered
+        query = select(PendingQuestion).where(PendingQuestion.answer.is_(None))
+        if _active_application_id is not None:
+            query = query.where(PendingQuestion.application_id == _active_application_id)
+        pq = session.exec(query).first()
+        if pq is None and _active_application_id is not None:
+            # Active app is done — pick the next available from any app
+            _active_application_id = None
+            pq = session.exec(
+                select(PendingQuestion).where(PendingQuestion.answer.is_(None))
+            ).first()
         if not pq:
             return False
 
-        # Count remaining
+        _active_application_id = pq.application_id
+
+        # Count remaining for this application
         total_unanswered = len(session.exec(
             select(PendingQuestion)
             .where(PendingQuestion.application_id == pq.application_id)
@@ -139,7 +157,6 @@ async def _send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id: int) 
 
         button_rows = _detect_buttons(pq.field_label, pq.options)
         if button_rows:
-            # Add a "Type my own" option at the bottom
             keyboard = _make_keyboard(button_rows)
             await context.bot.send_message(
                 chat_id=chat_id, text=msg, parse_mode="Markdown", reply_markup=keyboard
@@ -155,6 +172,8 @@ async def _send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id: int) 
 
 async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
     """Save answer to PendingQuestion and AnswerMemory. Returns (all_done, remaining_count)."""
+    global _active_application_id
+    from sqlalchemy.exc import IntegrityError
     with get_session() as session:
         pq = session.get(PendingQuestion, pq_id)
         if not pq:
@@ -163,7 +182,7 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
         pq.answered_at = datetime.utcnow()
         session.add(pq)
 
-        # Cache in AnswerMemory
+        # Cache in AnswerMemory (upsert with IntegrityError guard for concurrent fills)
         norm = pq.field_label.lower().strip()
         existing = session.exec(
             select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
@@ -174,13 +193,25 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
             existing.last_used_at = datetime.utcnow()
             session.add(existing)
         else:
-            session.add(AnswerMemory(
-                label_normalized=norm,
-                label_original=pq.field_label,
-                answer=answer,
-            ))
+            try:
+                session.add(AnswerMemory(
+                    label_normalized=norm,
+                    label_original=pq.field_label,
+                    answer=answer,
+                ))
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                existing = session.exec(
+                    select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
+                ).first()
+                if existing:
+                    existing.answer = answer
+                    existing.use_count += 1
+                    existing.last_used_at = datetime.utcnow()
+                    session.add(existing)
 
-        # Check remaining
+        # Check remaining for this application only
         remaining = session.exec(
             select(PendingQuestion).where(
                 PendingQuestion.application_id == pq.application_id,
@@ -190,7 +221,9 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
         if not remaining:
             app = session.get(Application, pq.application_id)
             app.status = ApplicationStatus.READY_TO_SUBMIT
+            app.updated_at = datetime.utcnow()
             session.add(app)
+            _active_application_id = None  # unlock for next application
         session.commit()
         return len(remaining) == 0, len(remaining)
 
@@ -241,6 +274,7 @@ async def unskip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         job = session.get(Job, app.job_id)
         app.status = ApplicationStatus.AWAITING_USER
+        app.updated_at = datetime.utcnow()
         session.add(app)
         # Un-skip all pending questions for this app
         pqs = session.exec(
@@ -263,15 +297,21 @@ async def unskip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _active_application_id
     if await _reject_if_not_owner(update):
         return
     with get_session() as session:
-        pq = session.exec(select(PendingQuestion).where(PendingQuestion.answer.is_(None))).first()
+        q = select(PendingQuestion).where(PendingQuestion.answer.is_(None))
+        if _active_application_id is not None:
+            q = q.where(PendingQuestion.application_id == _active_application_id)
+        pq = session.exec(q).first()
         if not pq:
             await update.message.reply_text("Nothing to skip.")
             return
         app = session.get(Application, pq.application_id)
         app.status = ApplicationStatus.SKIPPED
+        app.updated_at = datetime.utcnow()
+        _active_application_id = None
         session.add(app)
         for q in session.exec(
             select(PendingQuestion).where(PendingQuestion.application_id == app.id)
@@ -293,18 +333,75 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.callback_query
     await query.answer()
     data = query.data or ""
+
+    if data.startswith("review:approve:"):
+        app_id = int(data.split(":")[-1])
+        from app.autofill.agent import _pending_events, _event_data, _pending_event_loops
+        event_id = f"review_{app_id}"
+        if event_id in _pending_events:
+            _event_data[event_id] = "approve"
+            ev = _pending_events[event_id]
+            lp = _pending_event_loops.get(event_id)
+            if lp and lp.is_running():
+                lp.call_soon_threadsafe(ev.set)
+            else:
+                ev.set()
+            await query.edit_message_caption("✅ *Approved!* Submitting application...", parse_mode="Markdown")
+        else:
+            await query.edit_message_caption("⚠️ *Timeout or already processed.*", parse_mode="Markdown")
+        return
+    elif data.startswith("review:reject:"):
+        app_id = int(data.split(":")[-1])
+        from app.autofill.agent import _pending_events, _event_data, _pending_event_loops
+        event_id = f"review_{app_id}"
+        if event_id in _pending_events:
+            _event_data[event_id] = "reject"
+            ev = _pending_events[event_id]
+            lp = _pending_event_loops.get(event_id)
+            if lp and lp.is_running():
+                lp.call_soon_threadsafe(ev.set)
+            else:
+                ev.set()
+            await query.edit_message_caption("❌ *Rejected.* Aborting application...", parse_mode="Markdown")
+        else:
+            await query.edit_message_caption("⚠️ *Timeout or already processed.*", parse_mode="Markdown")
+        return
+    elif data.startswith("captcha:solve:"):
+        app_id = int(data.split(":")[-1])
+        preview(app_id)
+        await query.edit_message_caption("🔓 *Opening browser window* on your computer to solve the CAPTCHA...", parse_mode="Markdown")
+        return
+    elif data.startswith("captcha:solved:"):
+        app_id = int(data.split(":")[-1])
+        from app.autofill.agent import _pending_events, _event_data, _pending_event_loops
+        event_id = f"captcha_{app_id}"
+        if event_id in _pending_events:
+            _event_data[event_id] = "solved"
+            ev = _pending_events[event_id]
+            lp = _pending_event_loops.get(event_id)
+            if lp and lp.is_running():
+                lp.call_soon_threadsafe(ev.set)
+            else:
+                ev.set()
+            await query.edit_message_caption("🔓 *Solved.* Continuing...", parse_mode="Markdown")
+        else:
+            await query.edit_message_caption("⚠️ *Timeout or already processed.*", parse_mode="Markdown")
+        return
+
     if not data.startswith("ans:"):
         return
     answer = data[4:]
 
     with get_session() as session:
-        pq = session.exec(
-            select(PendingQuestion).where(PendingQuestion.answer.is_(None))
-        ).first()
+        q = select(PendingQuestion).where(PendingQuestion.answer.is_(None))
+        if _active_application_id is not None:
+            q = q.where(PendingQuestion.application_id == _active_application_id)
+        pq = session.exec(q).first()
         if not pq:
             await query.edit_message_text("No pending question to answer.")
             return
         pq_id = pq.id
+        app_id = pq.application_id
 
     all_done, remaining = await _save_answer(pq_id, answer)
     await query.edit_message_text(f"✅ Saved: *{answer}*", parse_mode="Markdown")
@@ -312,9 +409,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if all_done:
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text="🎉 All questions answered! Application is *Ready to Submit*.\nOpen the dashboard and click Verify Form.",
+            text="🎉 *All questions answered!* Resuming autofill and preparing pre-submit review...",
             parse_mode="Markdown",
         )
+        import asyncio
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, autofill, app_id, True)
     else:
         sent = await _send_next_question(context, query.message.chat_id)
         if not sent:
@@ -329,29 +429,67 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not text:
         return
     with get_session() as session:
-        pq = session.exec(
-            select(PendingQuestion).where(PendingQuestion.answer.is_(None))
-        ).first()
+        q = select(PendingQuestion).where(PendingQuestion.answer.is_(None))
+        if _active_application_id is not None:
+            q = q.where(PendingQuestion.application_id == _active_application_id)
+        pq = session.exec(q).first()
         if not pq:
             await update.message.reply_text(
                 "No pending question to answer. Use /next to fetch one."
             )
             return
         pq_id = pq.id
+        app_id = pq.application_id
 
     all_done, remaining = await _save_answer(pq_id, text)
     await update.message.reply_text(f"Got it ✅  _{remaining} question(s) remaining._", parse_mode="Markdown")
 
     if all_done:
         await update.message.reply_text(
-            "🎉 *All questions answered!* Application is *Ready to Submit*.\n"
-            "Open the dashboard and click Verify Form.",
+            "🎉 *All questions answered!* Resuming autofill and preparing pre-submit review...",
             parse_mode="Markdown",
         )
+        import asyncio
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, autofill, app_id, True)
     else:
         sent = await _send_next_question(context, update.effective_chat.id)
         if not sent:
             await update.message.reply_text("All caught up! ✅")
+
+
+async def list_manual_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/manual — list manual-track applications waiting for human apply."""
+    if await _reject_if_not_owner(update):
+        return
+    with get_session() as session:
+        rows = session.exec(
+            select(Application, Job)
+            .join(Job)
+            .where(Application.apply_track == "manual")
+            .where(Application.status.in_([
+                ApplicationStatus.SHORTLISTED,
+                ApplicationStatus.TAILORED,
+                ApplicationStatus.AWAITING_USER,
+            ]))
+            .order_by(Application.updated_at.desc())
+        ).all()
+    if not rows:
+        await update.message.reply_text("No manual-track applications pending. ✅")
+        return
+    lines = [f"*Manual Apply Queue* ({len(rows)} jobs):\n"]
+    for app_row, job_row in rows[:15]:
+        score = job_row.rerank_score or 0
+        source = job_row.source.value.upper()
+        apply_url = app_row.apply_url or job_row.url
+        lines.append(
+            f"• [{job_row.company} — {job_row.title}]({apply_url})\n"
+            f"  Score: {score:.0f} | {source} | ID: `{app_row.id}`"
+        )
+    lines.append("\nClick a link to open the application page directly.")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True
+    )
 
 
 async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -369,17 +507,23 @@ async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ApplicationStatus.AWAITING_USER,
                 ApplicationStatus.READY_TO_SUBMIT,
             ]))
-            .order_by(Job.rerank_score.desc())
+            .order_by(Job.discovered_at.desc())
         ).all()
     if not rows:
         await update.message.reply_text("No shortlisted applications yet. Use /discover then /match.")
         return
     lines = ["*Top Applications:*\n"]
     for app_row, job_row in rows[:10]:
-        score = job_row.rerank_score or 0
+        rerank = job_row.rerank_score or 0
+        senior = app_row.senior_fit_score
+        score_str = f"{rerank:.0f}"
+        if senior is not None:
+            score_str = f"rerank:{rerank:.0f} | sr:{senior:.0f}"
+        profile_tag = f" | `{app_row.profile_variant}`" if app_row.profile_variant else ""
+        date_str = (job_row.posted_at or job_row.discovered_at).strftime("%b %d")
         lines.append(
             f"• *{job_row.company}* — {job_row.title}\n"
-            f"  Score: {score:.0f} | {app_row.status.value} | ID: `{app_row.id}`"
+            f"  {score_str}{profile_tag} | {app_row.status.value} | ID: `{app_row.id}` | 📅 {date_str}"
         )
     lines.append("\nUse `/apply <id>` to start autofill.")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -396,7 +540,7 @@ async def apply_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Starting autofill for application `{app_id}`… 🤖", parse_mode="Markdown")
     import asyncio
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, autofill, app_id)
+    loop.run_in_executor(None, autofill, app_id, True)
 
 
 def _notify_owner_sync(msg: str) -> None:
@@ -463,6 +607,7 @@ def build_app() -> TgApplication:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("jobs", list_jobs))
+    app.add_handler(CommandHandler("manual", list_manual_jobs))
     app.add_handler(CommandHandler("apply", apply_job))
     app.add_handler(CommandHandler("discover", cmd_discover))
     app.add_handler(CommandHandler("match", cmd_match))

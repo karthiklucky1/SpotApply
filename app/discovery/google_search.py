@@ -65,10 +65,16 @@ class GoogleSearchDiscovery:
         }
         
         # Search queries: combined queries search Greenhouse, Lever, and Ashby simultaneously
-        queries = [
-            f'(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com) "{k}" "{self.experience_level}"'
-            for k in self.keywords
-        ]
+        base_queries = []
+        for k in self.keywords:
+            base_queries.append(f'(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com) "{k}" "United States"')
+            base_queries.append(f'(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com) "{k}" "remote"')
+        base_queries.append('(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com) "AI Engineer" OR "Machine Learning" "US"')
+
+        # Sample a subset of queries to be polite to Google and avoid rate limiting
+        import random
+        random.shuffle(base_queries)
+        queries = base_queries[:5]
 
         for q in queries:
             urls = await self._search_google_playwright(q)
@@ -94,12 +100,45 @@ class GoogleSearchDiscovery:
         return found
 
     async def fetch_all_discovered(self) -> List[RawJob]:
-        """Discovers slugs and then fetches jobs from all of them."""
+        """Discovers slugs, saves them to CompanyRegistry, and then fetches jobs."""
         slugs = await self.discover_slugs()
         all_jobs = []
         
+        from app.db.init_db import get_session
+        from app.db.models import CompanyRegistry, JobSource
+        from sqlmodel import select
+
+        # Save discovered slugs to database
+        with get_session() as session:
+            for board_type, board_slugs in slugs.items():
+                try:
+                    ats_source = JobSource(board_type)
+                except ValueError:
+                    continue
+                for slug in board_slugs:
+                    slug = slug.strip().lower()
+                    if not slug:
+                        continue
+                    existing = session.exec(
+                        select(CompanyRegistry).where(
+                            CompanyRegistry.slug == slug,
+                            CompanyRegistry.ats == ats_source
+                        )
+                    ).first()
+                    if not existing:
+                        log.info("Registering newly discovered company board: %s (%s)", slug, board_type)
+                        session.add(
+                            CompanyRegistry(
+                                slug=slug,
+                                ats=ats_source,
+                                is_active=True,
+                                source="google_discovery"
+                            )
+                        )
+            session.commit()
+        
         for board_type, board_slugs in slugs.items():
-            log.info("Discovered %d %s boards: %s", len(board_slugs), board_type, list(board_slugs))
+            log.info("Scraping discovered %d %s boards: %s", len(board_slugs), board_type, list(board_slugs))
             for slug in board_slugs:
                 try:
                     if board_type == "greenhouse":

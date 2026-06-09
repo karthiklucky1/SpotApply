@@ -1,0 +1,70 @@
+identity:
+  first_name: "Karthik"
+  last_name: "Amruthaluri"
+  email: "karthikamruthaluri2002@gmail.com"
+  phone: "(513) 276-3950"
+  location: "Cincinnati, OH"
+  github: "https://github.com/karthiklucky1"
+  linkedin: "https://www.linkedin.com/in/amruthaluri/"
+
+work_authorization:
+  authorized_to_work_us: true
+  requires_sponsorship: false        # Defaulting to false (answering "No" to sponsorship questions to avoid auto-filtering)
+  visa_type: "OPT"
+  sponsorship_timeline: "OPT/STEM-OPT eligible, requires future H-1B sponsorship"
+
+employment:
+  current_employer: ""
+  previous_employer: "Home Depot"
+  current_title: ""
+  previous_title: "AI/ML Engineer"
+  notice_period: "Immediately available"
+
+preferences:
+  salary_range: "Negotiable"
+  willing_to_relocate: true
+  relocation_details: "Open to relocation for the right opportunity"
+  preferred_locations: ["Cincinnati, OH", "Remote"]
+  work_arrangement: "Open to remote, hybrid, or onsite"
+
+experience:
+  total_yoe: 3
+  python_yoe: 3
+  ml_yoe: 3
+  llm_yoe: 2
+  cloud_yoe: 3
+
+eeo:
+  gender: "Male"
+  race: "Asian"
+  hispanic_latino: false
+  veteran_status: "I am not a protected veteran"
+  disability_status: "No, I do not have a disability, or history/record of having a disability"
+
+general:
+  how_did_you_hear: "LinkedIn"
+  earliest_start_date: "Immediately"
+  requires_clearance: false
+  has_criminal_record: false
+  has_noncompete: false
+  previously_employed_here: false
+
+education:
+  university: "University of Cincinnati"
+  degree: "Master of Engineering"
+  graduation_year: 2026
+  graduation_date: "April 30, 2026"
+  graduation_status: "Graduated"
+
+background:
+  experience_summary: "AI/ML Engineer at Home Depot (Jun 2025 – Mar 2026), AI/ML Engineer at NTT DATA (May 2022 – Aug 2024). 3+ years of experience building production ML systems, LLM applications, recommendation engines, forecasting solutions, and enterprise AI platforms across retail and healthcare domains."
+  flagship_project: "Volta — LLM Hallucination Verification Platform. Trained a 120M parameter Transformer model from scratch using PyTorch. Built a multi-agent verification framework combining semantic retrieval, trust scoring, conflict detection, and FAISS-based caching."
+  tech_stack: "Python, PyTorch, TensorFlow, Scikit-learn, XGBoost, NLP, Generative AI, LLMs, RAG, LangChain, Multi-Agent Systems, Spark, PySpark, MLflow, Kubeflow, Vertex AI, BigQuery, Kafka, Airflow, AWS, GCP, Docker, Kubernetes, FastAPI, FAISS, PostgreSQL, MongoDB."
+
+always_ask_human:
+  - "did you use ai"
+  - "artificial intelligence"
+  - "automated tool"
+  - "use of ai"
+  - "ai usage"
+  - "did you use artificial intelligence"

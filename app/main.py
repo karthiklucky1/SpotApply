@@ -18,15 +18,17 @@ from app.discovery.pipeline import run_discovery
 from app.matching.pipeline import run_matching
 from app.tailoring.tailor import tailor_all_shortlisted
 from app.telegram_bot.bot import build_app as build_tg
+from app.analytics.reporter import FunnelReporter
 
 log = logging.getLogger(__name__)
 
 
 def run_harvester_sync():
     import asyncio
-    from app.discovery.registry import harvest_common_crawl
+    from app.discovery.registry import run_validation_loop
     try:
-        asyncio.run(harvest_common_crawl())
+        # Weekly pass: validate a larger batch (500) to refresh the full registry
+        asyncio.run(run_validation_loop(limit=500))
     except Exception as e:
         log.error("Registry weekly harvest job failed: %s", e)
 
@@ -52,6 +54,8 @@ def start_scheduler() -> BackgroundScheduler:
     sched.add_job(run_harvester_sync, "cron", day_of_week="sun", hour=2, minute=0, id="harvester")
     # Validator daily (Daily at 3 AM)
     sched.add_job(run_validator_sync, "cron", hour=3, minute=0, id="validator")
+    # Daily funnel report at 8 PM local
+    sched.add_job(FunnelReporter.send_daily_report, "cron", hour=20, minute=0, id="funnel_report")
     sched.start()
     log.info("Scheduler started.")
     return sched

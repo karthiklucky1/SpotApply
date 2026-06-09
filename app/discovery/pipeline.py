@@ -2,20 +2,53 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import re
 from typing import List
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from app.config import settings
 from app.db.init_db import get_session
-from app.db.models import Job, JobSource, CompanyRegistry
+from app.db.models import Job, JobSource, CompanyRegistry, Application, ApplicationStatus
 from app.discovery.ashby import AshbyScraper
 from app.discovery.base import RawJob
 from app.discovery.greenhouse import GreenhouseScraper
 from app.discovery.lever import LeverScraper
-from app.discovery.google_search import GoogleSearchDiscovery
+from app.discovery.smartrecruiters import SmartRecruitersScraper
+from app.discovery.workday import WorkdayScraper
 
 log = logging.getLogger(__name__)
+
+# Permissive/Negative filtering to exclude obvious non-tech roles
+_TECH_TITLE_RE = re.compile(
+    r'\b(engineer|scientist|developer|researcher|architect|analyst|'
+    r'mlops|devops|sre|quantitative|quant|statistician|'
+    r'programmer|technologist|intelligence|nlp|llm|'
+    r'platform|infrastructure|backend|fullstack|full[\-\s]stack|frontend|front[\-\s]stack|'
+    r'machine\s*learning|deep\s*learning|computer\s*vision|data|technical|member\s+of\s+technical\s+staff)\b',
+    re.IGNORECASE,
+)
+
+_NON_TECH_TITLE_RE = re.compile(
+    r'\b(sales|marketing|recruiter|hr|talent\s+acquisition|people\s+ops|'
+    r'finance|accountant|accounting|payroll|billing|auditor|'
+    r'legal|counsel|lawyer|compliance|'
+    r'receptionist|administrative|assistant|secretary|office\s+manager|'
+    r'customer\s+support|customer\s+success|sales\s+rep|account\s+exec|'
+    r'copywriter|content\s+writer|editor|translator|'
+    r'nurse|doctor|medical|therapist|chef|cook|driver|cashier|'
+    r'facilities|janitor|security\s+guard|maintenance)\b',
+    re.IGNORECASE,
+)
+
+def is_obvious_non_tech(title: str) -> bool:
+    if _NON_TECH_TITLE_RE.search(title):
+        if _TECH_TITLE_RE.search(title):
+            return False
+        return True
+    return False
 
 
 def _all_scrapers():
@@ -35,6 +68,10 @@ def _all_scrapers():
                     scrapers.append(LeverScraper(comp.slug))
                 elif comp.ats == JobSource.ASHBY:
                     scrapers.append(AshbyScraper(comp.slug))
+                elif comp.ats == JobSource.SMARTRECRUITERS:
+                    scrapers.append(SmartRecruitersScraper(comp.slug))
+                elif comp.ats == JobSource.WORKDAY:
+                    scrapers.append(WorkdayScraper(comp.slug, comp.career_url))
     except Exception as e:
         log.warning("Could not load scrapers from CompanyRegistry database: %s. Falling back to .env", e)
 
@@ -62,21 +99,125 @@ def _all_scrapers():
     return deduped
 
 
+def _normalize(text: str) -> str:
+    """Normalize company name by stripping common suffixes and spacing."""
+    text = text.lower().strip()
+    text = re.sub(r'[.,\/#!$%\^&\*;:{}=\-_`~()]', '', text)
+    text = re.sub(r'\b(inc|llc|corp|co|corporation|ltd|gmbh|sa)\b', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _normalize_title(text: str) -> str:
+    """Normalize job title to standard abbreviations."""
+    text = text.lower().strip()
+    text = re.sub(r'[.,\/#!$%\^&\*;:{}=\-_`~()]', '', text)
+    text = re.sub(r'\bsr\b', 'senior', text)
+    text = re.sub(r'\bjr\b', 'junior', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _normalize_location(text: str) -> str:
+    """Normalize location for slug comparison."""
+    if not text:
+        return ""
+    text = text.lower().strip()
+    text = re.sub(r'[.,\/#!$%\^&\*;:{}=\-_`~()]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _cross_source_slug(company: str, title: str, location: str) -> str:
+    """Generate unique hash identifier for cross-source job duplication check."""
+    c = _normalize(company)
+    t = _normalize_title(title)
+    l = _normalize_location(location)
+    return hashlib.sha256(f"{c}|{t}|{l}".encode("utf-8")).hexdigest()
+
+
 def _upsert(raw_jobs: List[RawJob]) -> int:
-    """Insert new jobs; skip duplicates by (source, external_id)."""
+    """Insert new jobs; skip duplicates by (source, external_id) and cross-source slug.
+
+    Each job is committed individually so a race-condition IntegrityError from
+    concurrent scrapers only drops that one duplicate rather than rolling back
+    the entire batch.
+    """
+    from app.analytics.funnel import FunnelTracker
+    from datetime import datetime
     inserted = 0
-    with get_session() as session:
-        for r in raw_jobs:
-            existing = session.exec(
-                select(Job).where(
-                    Job.source == JobSource(r.source),
-                    Job.external_id == r.external_id,
-                )
-            ).first()
-            if existing:
-                continue
-            session.add(
-                Job(
+
+    for r in raw_jobs:
+        # Permissive gate: only skip obvious non-tech titles before any DB work
+        if is_obvious_non_tech(r.title or ""):
+            continue
+            
+        content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
+        
+        try:
+            with get_session() as session:
+                # 1. Check exact source + external_id duplicate
+                existing = session.exec(
+                    select(Job).where(
+                        Job.source == JobSource(r.source),
+                        Job.external_id == r.external_id,
+                    )
+                ).first()
+                if existing:
+                    # Update description/content_hash if changed
+                    if existing.content_hash != content_hash:
+                        existing.description = r.description
+                        existing.content_hash = content_hash
+                        existing.embedding_id = None  # force re-embed
+                        existing.last_seen = datetime.utcnow()
+                        session.add(existing)
+                        session.commit()
+                    else:
+                        existing.last_seen = datetime.utcnow()
+                        session.add(existing)
+                        session.commit()
+                    continue
+
+                # 2. Check cross-source slug duplicate
+                slug = _cross_source_slug(r.company, r.title, r.location)
+                existing_cross = session.exec(
+                    select(Job).where(Job.cross_source_slug == slug)
+                ).first()
+                if existing_cross:
+                    direct_ats_sources = {
+                        JobSource.GREENHOUSE,
+                        JobSource.LEVER,
+                        JobSource.ASHBY,
+                        JobSource.WORKDAY,
+                        JobSource.SMARTRECRUITERS
+                    }
+                    # Upgrade to direct ATS version if existing was from a manual/aggregator source
+                    if existing_cross.source not in direct_ats_sources and JobSource(r.source) in direct_ats_sources:
+                        log.info(
+                            "Discovery: Upgrading cross-source job from manual '%s' to direct ATS '%s' for '%s' @ '%s'",
+                            existing_cross.source, r.source, r.title, r.company
+                        )
+                        existing_cross.source = JobSource(r.source)
+                        existing_cross.external_id = r.external_id
+                        existing_cross.url = r.url
+                        existing_cross.description = r.description
+                        existing_cross.content_hash = content_hash
+                        existing_cross.embedding_id = None  # force re-embed
+                        existing_cross.last_seen = datetime.utcnow()
+                        session.add(existing_cross)
+                        
+                        # Update the application track to autofill
+                        existing_app = session.exec(
+                            select(Application).where(Application.job_id == existing_cross.id)
+                        ).first()
+                        if existing_app:
+                            existing_app.apply_track = "autofill"
+                            existing_app.apply_url = r.url
+                            session.add(existing_app)
+                        session.commit()
+                    continue
+
+                job = Job(
                     source=JobSource(r.source),
                     external_id=r.external_id,
                     company=r.company,
@@ -86,41 +227,232 @@ def _upsert(raw_jobs: List[RawJob]) -> int:
                     url=r.url,
                     description=r.description,
                     posted_at=r.posted_at,
+                    first_seen=datetime.utcnow(),
+                    last_seen=datetime.utcnow(),
+                    content_hash=content_hash,
+                    cross_source_slug=slug,
                 )
-            )
-            inserted += 1
-        session.commit()
+                session.add(job)
+                session.commit()
+                session.refresh(job)
+                FunnelTracker.record(job.id, "discovered", True)
+                inserted += 1
+        except IntegrityError:
+            log.debug("IntegrityError (concurrent duplicate) skipped for '%s' @ '%s'", r.title, r.company)
+
     return inserted
 
 
-def run_discovery() -> int:
-    """Run every configured scraper, return total newly inserted jobs."""
-    total_new = 0
+def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str]):
+    """Mark jobs that disappeared from a direct ATS board as closed."""
+    from datetime import datetime
+    with get_session() as session:
+        # Find all open jobs for this source and company
+        jobs = session.exec(
+            select(Job).where(
+                Job.source == JobSource(source),
+                Job.company == company,
+                Job.is_closed == False
+            )
+        ).all()
+        
+        closed_count = 0
+        for job in jobs:
+            if job.external_id not in active_external_ids:
+                job.is_closed = True
+                session.add(job)
+                closed_count += 1
+                
+                # Update any active applications associated with this job
+                app_model = session.exec(
+                    select(Application).where(Application.job_id == job.id)
+                ).first()
+                if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
+                    app_model.status = ApplicationStatus.SKIPPED
+                    app_model.notes = (app_model.notes or "") + "\nJob closed/removed from ATS."
+                    session.add(app_model)
+                    
+        session.commit()
+        if closed_count > 0:
+            log.info("Closed %d ghost jobs for %s (%s)", closed_count, company, source)
+
+
+async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):
+    """Extract companies from aggregator jobs, resolve their ATS, and register them."""
+    from app.discovery.registry import register_discovered_companies
+    from app.discovery.sources.base import DiscoveredCompany
+    from app.discovery.resolver import ATSDetector
     
-    # 1. Run static scrapers
-    for scraper in _all_scrapers():
+    discovered = []
+    seen_keys = set()
+    
+    for r in raw_jobs:
+        if not r.company:
+            continue
+        
+        # Check if URL itself points directly to a known ATS
+        detected = ATSDetector.detect_from_url(r.url)
+        if detected:
+            ats_type, slug = detected
+            key = (ats_type, slug.lower().strip())
+            if key not in seen_keys:
+                seen_keys.add(key)
+                discovered.append(DiscoveredCompany(
+                    name=r.company,
+                    slug=slug,
+                    ats=ats_type,
+                    career_url=r.url,
+                    source="aggregator_feeder"
+                ))
+        else:
+            # Let the CareerResolver attempt to resolve the URL in register_discovered_companies
+            key = ("unknown", r.company.lower().strip())
+            if key not in seen_keys:
+                seen_keys.add(key)
+                discovered.append(DiscoveredCompany(
+                    name=r.company,
+                    slug=r.company.lower().strip(),
+                    ats="unknown",
+                    career_url=r.url,
+                    source="aggregator_feeder"
+                ))
+                
+    if discovered:
+        new_regs = await register_discovered_companies(discovered)
+        log.info("Aggregator feeder: registered %d new companies from %d candidates", new_regs, len(discovered))
+
+
+def run_discovery() -> int:
+    """Orchestrates the self-growing company graph discovery:
+    1. Seed DB from fallback/bootstrap if empty.
+    2. Run pluggable sources to discover candidate companies.
+    3. Resolve ATS and slugs for discovered companies, register them.
+    4. Run validation loop on pending/active companies (update metadata, scores).
+    5. Run scrapers for all active boards in the registry (Greenhouse, Lever, Ashby, SmartRecruiters, Workday).
+    6. Return total newly inserted jobs.
+    """
+    import asyncio
+    
+    # Run async parts of the pipeline: discovery, registration, validation
+    async def run_discovery_async():
+        # A. Seed registry
+        from app.discovery.registry import seed_registry
+        seed_registry()
+        
+        # B. Run pluggable sources
+        from app.discovery.sources.builtin_fallback import BuiltinFallbackSource
+        from app.discovery.sources.yc_companies import YCCompanySource
+        from app.discovery.sources.search_engine import SearchEngineSource
+        
+        log.info("Running pluggable company discovery sources...")
+        discovered_list = []
+        
+        # Builtin Fallback (JSON)
+        try:
+            fallback_src = BuiltinFallbackSource()
+            res = await fallback_src.discover()
+            discovered_list.extend(res)
+            log.info("Fallback source returned %d candidates", len(res))
+        except Exception as e:
+            log.warning("Builtin Fallback discovery failed: %s", e)
+            
+        # YC Startup directory
+        try:
+            yc_src = YCCompanySource()
+            res = await yc_src.discover()
+            discovered_list.extend(res)
+            log.info("YC Startup source returned %d candidates", len(res))
+        except Exception as e:
+            log.warning("YC Startup discovery failed: %s", e)
+            
+        # Search Engine Source (Tavily/Exa/Google)
+        try:
+            search_src = SearchEngineSource(keywords=settings.jobs_keywords_list)
+            res = await search_src.discover()
+            discovered_list.extend(res)
+            log.info("Search Engine source returned %d candidates", len(res))
+        except Exception as e:
+            log.warning("Search Engine discovery failed: %s", e)
+            
+        # C. Register and resolve discovered companies
+        from app.discovery.registry import register_discovered_companies
+        new_regs = await register_discovered_companies(discovered_list)
+        log.info("Registered %d new companies in database.", new_regs)
+        
+        # D. Run validation loop
+        from app.discovery.registry import run_validation_loop
+        validated = await run_validation_loop(limit=100)
+        log.info("Validated %d candidate company boards.", validated)
+
+    # Execute async setup
+    try:
+        asyncio.run(run_discovery_async())
+    except Exception as e:
+        log.exception("Async company discovery/validation loop failed: %s", e)
+
+    # E. Run scrapers for all active boards in the registry (Greenhouse, Lever, Ashby, SmartRecruiters, Workday)
+    total_new = 0
+    scrapers = _all_scrapers()
+    log.info("Executing job scraping for %d active boards...", len(scrapers))
+    for scraper in scrapers:
         try:
             raw = scraper.fetch()
-            new = _upsert(raw)
-            total_new += new
-            log.info("%s: %d new (%d total fetched)", scraper.name, new, len(raw))
+            if raw is not None:
+                new = _upsert(raw)
+                total_new += new
+                
+                # Close ghost jobs: any job in our DB for this source/company that was not fetched
+                active_ids = [r.external_id for r in raw]
+                company_name = getattr(scraper, "company_slug", None) or getattr(scraper, "board_slug", None) or getattr(scraper, "org_slug", None)
+                if company_name:
+                    company_name = company_name.replace("-", " ").replace("_", " ").title()
+                if raw and len(raw) > 0:
+                    company_name = raw[0].company
+                if company_name:
+                    mark_ghost_jobs(scraper.name, company_name, active_ids)
+            else:
+                log.warning("%s scraper fetch returned None (failed)", scraper.name)
         except Exception as e:
             log.exception("Scraper %s failed: %s", scraper.name, e)
 
-    # 2. Run Dynamic Google Search Discovery
-    log.info("Starting Dynamic Google Search Discovery (Playwright)...")
-    discovery = GoogleSearchDiscovery(keywords=settings.jobs_keywords_list, experience_level="2 years")
-    try:
-        # Since run_discovery is sync, we use asyncio.run or similar if needed, 
-        # but the pipeline is called in a way that allows us to manage the loop.
-        import asyncio
-        raw = asyncio.run(discovery.fetch_all_discovered())
-        new = _upsert(raw)
-        total_new += new
-        log.info("Google Discovery: %d new jobs found from the web", new)
-    except Exception as e:
-        log.error("Google Discovery failed: %s", e)
+    # F. Direct job-board sources — SerpAPI (Google Jobs) / Indeed RSS / Remotive / Arbeitnow
+    # These are now treated as company-discovery sources. We extract companies, resolve their ATS,
+    # and feed them to the registry. We do NOT upsert these jobs directly.
+    async def run_direct_sources_async() -> int:
+        from app.discovery.sources.serpapi import SerpAPISource
+        from app.discovery.sources.hn_jobs import HNJobsSource
+        from app.discovery.sources.remotive import RemotiveSource
+        from app.discovery.sources.remoteok import RemoteOKSource
 
+        direct_sources = [
+            ("SerpAPI Google Jobs (LinkedIn/Indeed/Glassdoor)", SerpAPISource),
+            ("HN Jobs (Hacker News)", HNJobsSource),
+            ("Remotive", RemotiveSource),
+            ("RemoteOK", RemoteOKSource),
+        ]
+        
+        all_raw_jobs = []
+        for name, src_cls in direct_sources:
+            try:
+                src = src_cls(keywords=settings.jobs_keywords_list)
+                raw_jobs = await src.fetch_jobs()
+                all_raw_jobs.extend(raw_jobs)
+                log.info("%s: fetched %d jobs for company discovery", name, len(raw_jobs))
+            except Exception as e:
+                log.warning("Direct source '%s' failed: %s", name, e)
+                
+        if all_raw_jobs:
+            await feed_companies_from_aggregators(all_raw_jobs)
+            
+        return 0
+
+    try:
+        direct_new = asyncio.run(run_direct_sources_async())
+        total_new += direct_new
+    except Exception as e:
+        log.exception("Direct job-board sources failed: %s", e)
+
+    log.info("Discovery complete. Total new jobs inserted: %d", total_new)
     return total_new
 
 

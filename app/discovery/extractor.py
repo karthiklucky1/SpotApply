@@ -87,7 +87,10 @@ def parse_job_text_with_llm(text: str) -> Dict[str, Any]:
     
     raw_content = resp.content[0].text.strip()
     raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(raw_content)
+    try:
+        return json.loads(raw_content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Claude returned unparseable JSON for job page: {e}") from e
 
 
 async def extract_and_rank_job(url: str) -> int:
@@ -155,7 +158,7 @@ async def extract_and_rank_job(url: str) -> int:
         job.similarity_score = similarity
     except Exception as e:
         log.warning("Could not calculate similarity: %s", e)
-        job.similarity_score = 1.0
+        job.similarity_score = None  # None signals "not scored" — not a perfect match
 
     # Calculate rerank score
     try:

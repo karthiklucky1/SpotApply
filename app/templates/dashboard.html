@@ -89,6 +89,73 @@
             transform: scale(1.2);
             background: #818cf8;
         }
+
+        /* ── Animation System — GPU-only (transform + opacity, no reflow) ── */
+        @keyframes fadeSlideUp {
+            from { opacity: 0; transform: translateY(18px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(0.82); }
+            to   { opacity: 1; transform: scale(1); }
+        }
+        @keyframes countUpNum {
+            from { opacity: 0; transform: translateY(8px) scale(0.88); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* Card stagger entrance — paused until JS sets delay + starts it */
+        .kanban-card {
+            opacity: 0;
+            animation: fadeSlideUp 0.44s cubic-bezier(0.34, 1.28, 0.64, 1) both;
+            animation-play-state: paused;
+        }
+        /* Funnel bubbles — delay in HTML attr, auto-start */
+        .funnel-step {
+            opacity: 0;
+            animation: scaleIn 0.4s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+        }
+        /* Stat header counters — delay in HTML attr, auto-start */
+        .stat-num {
+            display: block;
+            opacity: 0;
+            animation: countUpNum 0.5s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+        }
+        /* Section-level fade — delay in HTML attr, auto-start */
+        .anim-fade-up {
+            opacity: 0;
+            animation: fadeSlideUp 0.5s cubic-bezier(0.34, 1.26, 0.64, 1) both;
+        }
+        /* Safety net: never leave anything invisible if animations are off */
+        @media (prefers-reduced-motion: reduce) {
+            .kanban-card, .funnel-step, .stat-num, .anim-fade-up {
+                opacity: 1 !important;
+                animation: none !important;
+                transform: none !important;
+            }
+        }
+
+        /* Sliding tab indicator — layoutId equivalent using CSS transform */
+        #tab-indicator {
+            position: absolute;
+            top: 6px; bottom: 6px; left: 0;
+            background: linear-gradient(135deg, #4338ca, #6366f1);
+            border-radius: 9999px;
+            transition: transform 0.36s cubic-bezier(0.34, 1.3, 0.64, 1),
+                        width   0.36s cubic-bezier(0.34, 1.3, 0.64, 1);
+            box-shadow: 0 2px 18px rgba(99, 102, 241, 0.45);
+            pointer-events: none;
+            will-change: transform, width;
+        }
+
+        /* Button press micro-interaction */
+        .btn-micro { transition: transform 0.1s ease, background-color 0.2s, box-shadow 0.2s; }
+        .btn-micro:not(:disabled):active { transform: scale(0.93); }
+
+        /* High-score badge glow (senior reviewer approved) */
+        .score-approved {
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.55);
+        }
     </style>
 </head>
 
@@ -115,20 +182,24 @@
 
             <!-- Global Pipeline Stats -->
             <div class="flex flex-wrap items-center gap-3 shrink-0">
-                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-indigo-500/30 bg-indigo-500/5">
-                    <div id="stat-pool" class="text-3xl font-extrabold text-indigo-400">11,290</div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-indigo-500/30 bg-indigo-500/5 anim-fade-up" style="animation-delay:80ms">
+                    <div id="stat-pool" class="stat-num text-3xl font-extrabold text-indigo-400" style="animation-delay:80ms">11,290</div>
                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Total Pool</div>
                 </div>
-                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-emerald-500/30 bg-emerald-500/5">
-                    <div id="stat-shortlist" class="text-3xl font-extrabold text-emerald-400">{{ shortlisted|length }}</div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-emerald-500/30 bg-emerald-500/5 anim-fade-up" style="animation-delay:140ms">
+                    <div id="stat-shortlist" class="stat-num text-3xl font-extrabold text-emerald-400" style="animation-delay:140ms">{{ shortlisted|length }}</div>
                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Shortlisted</div>
                 </div>
-                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-amber-500/30 bg-amber-500/5">
-                    <div id="stat-review" class="text-3xl font-extrabold text-amber-400">{{ bot_filled|length }}</div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-amber-500/30 bg-amber-500/5 anim-fade-up" style="animation-delay:200ms">
+                    <div id="stat-review" class="stat-num text-3xl font-extrabold text-amber-400" style="animation-delay:200ms">{{ bot_filled|length }}</div>
                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Awaiting Rev</div>
                 </div>
-                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-sky-500/30 bg-sky-500/5">
-                    <div id="stat-submitted" class="text-3xl font-extrabold text-sky-400">{{ submitted|length }}</div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-violet-500/30 bg-violet-500/5 anim-fade-up" style="animation-delay:260ms">
+                    <div id="stat-manual" class="stat-num text-3xl font-extrabold text-violet-400" style="animation-delay:260ms">{{ manual_queue|length }}</div>
+                    <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Manual Apply</div>
+                </div>
+                <div class="glass rounded-full px-6 py-3.5 text-center min-w-[110px] shadow-lg border border-sky-500/30 bg-sky-500/5 anim-fade-up" style="animation-delay:320ms">
+                    <div id="stat-submitted" class="stat-num text-3xl font-extrabold text-sky-400" style="animation-delay:320ms">{{ submitted|length }}</div>
                     <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Submitted</div>
                 </div>
             </div>
@@ -145,7 +216,7 @@
                     
                     <div class="flex flex-wrap md:flex-nowrap items-center justify-around gap-4 pt-2">
                         <!-- Stage 1 -->
-                        <div class="flex flex-col items-center">
+                        <div class="flex flex-col items-center funnel-step" style="animation-delay:300ms">
                             <div class="w-24 h-24 rounded-full bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center items-center shadow-lg hover:shadow-slate-500/10 transition-all duration-300">
                                 <span class="text-xl font-black text-slate-200" id="funnel-pool">11.3k</span>
                                 <span class="text-[9px] font-bold text-slate-400 uppercase mt-0.5">Harvested</span>
@@ -157,7 +228,7 @@
                         <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
 
                         <!-- Stage 2 -->
-                        <div class="flex flex-col items-center">
+                        <div class="flex flex-col items-center funnel-step" style="animation-delay:420ms">
                             <div class="w-24 h-24 rounded-full bg-indigo-950/20 border border-indigo-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-indigo-500/20 transition-all duration-300">
                                 <span class="text-xl font-black text-indigo-400" id="funnel-cross">200</span>
                                 <span class="text-[9px] font-bold text-indigo-300/80 uppercase mt-0.5">Cross-Enc</span>
@@ -169,7 +240,7 @@
                         <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
 
                         <!-- Stage 3 -->
-                        <div class="flex flex-col items-center">
+                        <div class="flex flex-col items-center funnel-step" style="animation-delay:540ms">
                             <div class="w-24 h-24 rounded-full bg-violet-950/20 border border-violet-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-violet-500/20 transition-all duration-300">
                                 <span class="text-xl font-black text-violet-400" id="funnel-llm">50</span>
                                 <span class="text-[9px] font-bold text-violet-300/80 uppercase mt-0.5">LLM Scored</span>
@@ -181,7 +252,7 @@
                         <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
 
                         <!-- Stage 4 -->
-                        <div class="flex flex-col items-center">
+                        <div class="flex flex-col items-center funnel-step" style="animation-delay:660ms">
                             <div class="w-24 h-24 rounded-full bg-emerald-950/20 border border-emerald-500/40 flex flex-col justify-center items-center shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.25)] transition-all duration-300">
                                 <span class="text-xl font-black text-emerald-400" id="funnel-short">13</span>
                                 <span class="text-[9px] font-bold text-emerald-300/80 uppercase mt-0.5">Shortlist</span>
@@ -228,6 +299,23 @@
             </div>
         </section>
 
+        <!-- Source Breakdown Bar -->
+        <section class="glass rounded-[28px] p-5 mb-8 border border-slate-800/60">
+            <div class="flex flex-wrap items-center justify-between gap-4">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 shrink-0">
+                    <span>🌐</span> Discovery Sources
+                </h3>
+                <div class="flex flex-wrap gap-3" id="source-breakdown">
+                    <!-- Populated by JS from /api/stats -->
+                    <span class="text-[11px] text-slate-500 italic">Loading source stats...</span>
+                </div>
+                <div class="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider shrink-0">
+                    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> <span class="text-emerald-400">⚡ Autofill</span></span>
+                    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-violet-500 inline-block"></span> <span class="text-violet-400">🖱 Manual</span></span>
+                </div>
+            </div>
+        </section>
+
         <!-- Command Console & Search Grid -->
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
             
@@ -269,15 +357,20 @@
         </section>
 
         <!-- Main Tab Control -->
-        <div class="inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-8 gap-1 glass shadow-inner max-w-full overflow-x-auto">
-            <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="bg-indigo-600 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0 shadow-md">
-                📋 Applications Kanban
+        <div id="tab-nav-bar" class="relative inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-8 gap-1 glass shadow-inner max-w-full overflow-x-auto">
+            <!-- Sliding active indicator — moves via JS transform (layoutId pattern) -->
+            <span id="tab-indicator"></span>
+            <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="relative z-10 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
+                📋 Autofill Pipeline
             </button>
-            <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0">
-                🔍 All Jobs Explorer (<span id="explorer-total-count">...</span>)
+            <button id="view-tab-manual" onclick="switchViewTab('manual')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
+                🖱️ Manual Apply <span class="bg-violet-500/20 text-violet-400 text-[10px] font-black px-2 py-0.5 rounded-full border border-violet-500/30 ml-1">{{ manual_queue|length }}</span>
             </button>
-            <button id="view-tab-registry" onclick="switchViewTab('registry')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0">
-                ⚙️ ATS Company Boards
+            <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
+                🔍 All Jobs (<span id="explorer-total-count">...</span>)
+            </button>
+            <button id="view-tab-registry" onclick="switchViewTab('registry')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
+                ⚙️ Boards
             </button>
         </div>
 
@@ -296,7 +389,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in shortlisted %}
-                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -309,23 +402,28 @@
                                 </p>
                             </div>
                             
-                            <!-- Sleek ATS source indicator instead of redundant status -->
-                            {% if job.source.value == 'greenhouse' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">Greenhouse</span>
-                            {% elif job.source.value == 'lever' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">Lever</span>
-                            {% elif job.source.value == 'ashby' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20 shrink-0">Ashby</span>
-                            {% else %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 shrink-0">{{ job.source.value }}</span>
-                            {% endif %}
+                            <!-- Sleek ATS source indicator and Auto-fill status -->
+                            <div class="flex flex-col items-end gap-1 shrink-0">
+                                {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
+                                <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">⚡ Auto-fill available</span>
+                                {% else %}
+                                <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 shrink-0">🖥️ Manual apply</span>
+                                {% endif %}
+                                <span class="text-[8px] font-bold text-slate-400 uppercase tracking-wider">{{ job.source.value }}</span>
+                            </div>
                         </div>
                         
                         <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800/50">
                             <span class="text-[10px] text-slate-400 flex items-center gap-1 font-medium">📍 {{ job.location or 'Remote' }}</span>
-                            {% if job.rerank_score %}
-                            <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-indigo-300 border-indigo-500/30">Match: {{ job.rerank_score|int }}%</span>
-                            {% endif %}
+                            <div class="flex items-center gap-1.5 flex-wrap justify-end">
+                                {% set post_date = job.posted_at or job.discovered_at %}
+                                {% if post_date %}
+                                <span class="text-[10px] text-slate-500 font-medium" title="Posted by company">📅 {{ post_date.strftime('%b %d') }}</span>
+                                {% endif %}
+                                {% if job.rerank_score %}
+                                <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-indigo-300 border-indigo-500/30">Match: {{ job.rerank_score|int }}%</span>
+                                {% endif %}
+                            </div>
                         </div>
 
                         <!-- Card Reasoning Block: Sleek Glass Quote style -->
@@ -337,6 +435,7 @@
                         {% endif %}
                         
                         <div class="mt-3.5 flex flex-col gap-2">
+                            {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
                             <div class="grid grid-cols-2 gap-2">
                                 <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
                                     📄 Docs
@@ -348,6 +447,19 @@
                             <button type="button" id="autofill-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); autofillForm(+this.dataset.appId, this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-indigo-950/50 hover:shadow-indigo-600/20">
                                 ⚡ Auto-fill Application
                             </button>
+                            {% else %}
+                            <div class="grid grid-cols-2 gap-2">
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
+                                    📄 Docs
+                                </button>
+                                <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="text-[10px] bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 py-2 rounded-full font-bold border border-emerald-500/20 transition text-center">
+                                    ✅ Mark Done
+                                </button>
+                            </div>
+                            <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-[10px] bg-sky-600 hover:bg-sky-500 text-white py-2.5 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-sky-950/50 hover:shadow-sky-600/20 flex items-center justify-center">
+                                🖥️ Open &amp; Manual Fill
+                            </a>
+                            {% endif %}
                         </div>
                     </div>
                     {% else %}
@@ -372,7 +484,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in bot_filled %}
-                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -385,16 +497,15 @@
                                 </p>
                             </div>
                             
-                            <!-- Sleek ATS source indicator -->
-                            {% if job.source.value == 'greenhouse' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">Greenhouse</span>
-                            {% elif job.source.value == 'lever' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">Lever</span>
-                            {% elif job.source.value == 'ashby' %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20 shrink-0">Ashby</span>
-                            {% else %}
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 shrink-0">{{ job.source.value }}</span>
-                            {% endif %}
+                            <!-- Sleek ATS source indicator and Auto-fill status -->
+                            <div class="flex flex-col items-end gap-1 shrink-0">
+                                {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
+                                <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">⚡ Auto-fill available</span>
+                                {% else %}
+                                <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 shrink-0">🖥️ Manual apply</span>
+                                {% endif %}
+                                <span class="text-[8px] font-bold text-slate-400 uppercase tracking-wider">{{ job.source.value }}</span>
+                            </div>
                         </div>
                         
                         <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800/50 text-[10px] text-slate-400 font-medium">
@@ -453,7 +564,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in submitted %}
-                    <div class="glass rounded-[24px] p-5 border-slate-800 hover:border-emerald-500/30 transition duration-200 ease-out cursor-pointer card-glow-green relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-emerald-500/30 transition duration-200 ease-out cursor-pointer card-glow-green relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
                         <div class="flex justify-between items-start mb-2.5 gap-2">
                             <div class="flex-1 min-w-0">
                                 <h3 class="text-xs font-bold text-white tracking-tight hover:text-emerald-400 transition leading-snug line-clamp-2">{{ job.title }}</h3>
@@ -518,7 +629,61 @@
             </div>
         </section>
 
-        <!-- TAB 2: Jobs Explorer View -->
+        <!-- TAB 2: Manual Apply -->
+        <div id="view-content-manual" class="hidden">
+            {% if manual_queue %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {% for app, job in manual_queue %}
+                <div class="glass rounded-[28px] p-5 border border-violet-500/15 hover:border-violet-500/35 transition duration-200 ease-out relative flex flex-col gap-3">
+                    <button type="button" onclick="removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-600 hover:text-rose-400 transition w-6 h-6 flex items-center justify-center rounded-full font-bold z-10">&times;</button>
+
+                    <div class="pr-7">
+                        <div class="flex items-center gap-2 mb-1.5">
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20">{{ job.source.value }}</span>
+                            {% if job.rerank_score %}
+                            <span class="text-[9px] font-mono font-bold text-emerald-400 ml-auto">{{ job.rerank_score|int }}%</span>
+                            {% endif %}
+                        </div>
+                        <h3 class="text-xs font-bold text-white leading-snug line-clamp-2">{{ job.title }}</h3>
+                        <p class="text-[11px] text-slate-400 font-semibold mt-1">🏢 {{ job.company }}</p>
+                        <p class="text-[10px] text-slate-500 mt-0.5">📍 {{ job.location or 'Remote' }}</p>
+                    </div>
+
+                    {% if job.rerank_reasoning %}
+                    <div class="px-3 py-2 rounded-2xl bg-slate-950/40 border border-slate-800/50 text-[10px] text-slate-400 leading-relaxed line-clamp-2">
+                        "{{ job.rerank_reasoning.split('\n')[0] }}"
+                    </div>
+                    {% endif %}
+
+                    <div class="flex flex-col gap-2 mt-auto">
+                        <a href="{{ app.apply_url or job.url }}" target="_blank" rel="noopener noreferrer"
+                           class="text-[10px] bg-violet-600 hover:bg-violet-500 text-white py-2.5 rounded-full font-bold transition text-center shadow-lg shadow-violet-950/40 flex items-center justify-center gap-1.5">
+                            🖱️ Open &amp; Apply
+                        </a>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button type="button" onclick="openModal({{ app.id }})"
+                                class="text-[10px] bg-slate-800/80 hover:bg-slate-700 text-slate-300 py-2 rounded-full font-bold border border-slate-700 transition">
+                                📄 Resume
+                            </button>
+                            <button type="button" onclick="markSubmitted({{ app.id }}, this)"
+                                class="text-[10px] bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 py-2 rounded-full font-bold border border-emerald-500/20 transition">
+                                ✅ Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="glass rounded-[32px] p-16 text-center border border-slate-800/60">
+                <div class="text-5xl mb-4 opacity-40">🖱️</div>
+                <p class="text-slate-400 font-semibold text-sm">No manual apply jobs yet.</p>
+                <p class="text-slate-600 text-xs mt-2">Run <strong class="text-slate-400">/discover</strong> then <strong class="text-slate-400">/match</strong> — LinkedIn, RemoteOK, HN Jobs will appear here.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- TAB 3: Jobs Explorer View -->
         <div id="view-content-explorer" class="hidden flex flex-col gap-6">
             <!-- Filter Bar -->
             <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end">
@@ -545,6 +710,14 @@
                         <option value="submitted">Submitted Only</option>
                     </select>
                 </div>
+                <div class="w-40">
+                    <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label>
+                    <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer">
+                        <option value="">All Sources</option>
+                        <option value="autofill">⚡ Autofill (GH/Lever/Ashby)</option>
+                        <option value="manual">🖱 Manual (LinkedIn/Indeed)</option>
+                    </select>
+                </div>
 
                 <div class="w-48">
                     <div class="flex justify-between items-center mb-1">
@@ -567,7 +740,7 @@
                                 <th class="py-4 px-6">Score</th>
                                 <th class="py-4 px-4">Title / Company</th>
                                 <th class="py-4 px-4">Location</th>
-                                <th class="py-4 px-4">ATS Link</th>
+                                <th class="py-4 px-4">Source / Track</th>
                                 <th class="py-4 px-4">Status</th>
                                 <th class="py-4 px-6 text-right">Actions</th>
                             </tr>
@@ -593,7 +766,7 @@
             </div>
         </div>
 
-        <!-- TAB 3: Registry View -->
+        <!-- TAB 4: Registry View -->
         <div id="view-content-registry" class="hidden flex flex-col gap-6">
             <!-- Summary stats -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -689,6 +862,7 @@
         let explorerRemoteVal = '';
         let explorerStatusVal = '';
         let explorerScoreVal = 0;
+        let explorerTrackVal = '';
 
         // Startup list matching
         const STARTUP_COMPANIES = new Set([
@@ -716,6 +890,7 @@
             loadStats();
             initStartupBadges();
             searchJobs(); // Load first page of explorer database
+            _initAnimations();
         });
 
         function initStartupBadges() {
@@ -799,6 +974,25 @@
                     funnelHealth.innerHTML = `Running relaxed rules. Next matching cycle will process expanded list.`;
                 }
 
+                // Source breakdown bar
+                if (stats.sources) {
+                    const bar = document.getElementById('source-breakdown');
+                    bar.innerHTML = '';
+                    const order = ['greenhouse','lever','ashby','linkedin','indeed','serpapi','remotive','remoteok','manual'];
+                    order.forEach(src => {
+                        const count = stats.sources[src];
+                        if (!count) return;
+                        const cfg = SOURCE_CONFIG[src] || { label: src, color: 'slate', track: 'manual' };
+                        const isAuto = cfg.track === 'autofill';
+                        const colorCls = isAuto
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                            : 'bg-violet-500/10 text-violet-400 border-violet-500/20';
+                        bar.innerHTML += `<span class="text-[10px] font-bold px-3 py-1.5 rounded-full border ${colorCls} flex items-center gap-1.5">
+                            ${isAuto ? '⚡' : '🖱'} ${cfg.label} <strong>${count.toLocaleString()}</strong>
+                        </span>`;
+                    });
+                }
+
                 // Render Chart.js
                 renderChart(stats.scores);
                 
@@ -868,19 +1062,48 @@
             }
         }
 
-        // Tab View Switching
+        // Tab View Switching — sliding indicator (layoutId pattern)
+        const _TAB_BASE = "relative z-10 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0";
         function switchViewTab(tab) {
-            ['kanban', 'explorer', 'registry'].forEach(t => {
+            ['kanban', 'manual', 'explorer', 'registry'].forEach(t => {
                 const btn = document.getElementById(`view-tab-${t}`);
                 const content = document.getElementById(`view-content-${t}`);
+                if (!btn || !content) return;
                 if (t === tab) {
-                    btn.className = "bg-indigo-600 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0 shadow-md";
+                    btn.className = `${_TAB_BASE} text-white`;
                     content.classList.remove('hidden');
+                    // Re-trigger stagger animation on newly revealed cards
+                    content.querySelectorAll('.kanban-card').forEach((card, i) => {
+                        card.style.animationPlayState = 'paused';
+                        card.style.animationDelay = `${i * 60}ms`;
+                        void card.offsetWidth; // force reflow to restart animation
+                        card.style.animationPlayState = 'running';
+                    });
                 } else {
-                    btn.className = "bg-transparent text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition duration-200 shrink-0";
+                    btn.className = `${_TAB_BASE} text-slate-400 hover:text-slate-200`;
                     content.classList.add('hidden');
                 }
             });
+            _moveTabIndicator(tab);
+        }
+
+        function _moveTabIndicator(tabName) {
+            const bar = document.getElementById('tab-nav-bar');
+            const btn = document.getElementById(`view-tab-${tabName}`);
+            const indicator = document.getElementById('tab-indicator');
+            if (!bar || !btn || !indicator) return;
+            indicator.style.width = `${btn.offsetWidth}px`;
+            indicator.style.transform = `translateX(${btn.offsetLeft}px)`;
+        }
+
+        function _initAnimations() {
+            // Stagger kanban cards: set delay then start (was paused in CSS)
+            document.querySelectorAll('.kanban-card').forEach((card, i) => {
+                card.style.animationDelay = `${80 + i * 60}ms`;
+                card.style.animationPlayState = 'running';
+            });
+            // Position the sliding tab indicator on the default active tab
+            requestAnimationFrame(() => _moveTabIndicator('kanban'));
         }
 
         // Job Explorer database functions
@@ -895,13 +1118,15 @@
             document.getElementById('filter-remote').value = '';
             document.getElementById('filter-status').value = '';
             document.getElementById('filter-score').value = 0;
+            document.getElementById('filter-track').value = '';
             document.getElementById('score-val').textContent = 0;
-            
+
             explorerSearchVal = '';
             explorerRemoteVal = '';
             explorerStatusVal = '';
             explorerScoreVal = 0;
-            
+            explorerTrackVal = '';
+
             searchJobs();
         }
 
@@ -912,8 +1137,35 @@
                 explorerSearchVal = document.getElementById('filter-search').value;
                 explorerRemoteVal = document.getElementById('filter-remote').value;
                 explorerStatusVal = document.getElementById('filter-status').value;
+                explorerTrackVal = document.getElementById('filter-track').value;
                 loadJobsPage(1);
             }, 300);
+        }
+
+        const SOURCE_CONFIG = {
+            greenhouse: { label: 'Greenhouse', color: 'emerald', track: 'autofill' },
+            lever:      { label: 'Lever',      color: 'emerald', track: 'autofill' },
+            ashby:      { label: 'Ashby',      color: 'emerald', track: 'autofill' },
+            linkedin:   { label: 'LinkedIn',   color: 'blue',    track: 'manual' },
+            indeed:     { label: 'Indeed',     color: 'blue',    track: 'manual' },
+            serpapi:    { label: 'Google Jobs', color: 'violet',  track: 'manual' },
+            remotive:   { label: 'Remotive',   color: 'violet',  track: 'manual' },
+            remoteok:   { label: 'RemoteOK',   color: 'violet',  track: 'manual' },
+            manual:     { label: 'Manual URL', color: 'slate',   track: 'autofill' },
+        };
+
+        function sourceTrackBadge(source) {
+            const cfg = SOURCE_CONFIG[source] || { label: source, color: 'slate', track: 'manual' };
+            const isAuto = cfg.track === 'autofill';
+            const colorMap = {
+                emerald: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                blue:    'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                violet:  'bg-violet-500/10 text-violet-400 border-violet-500/20',
+                slate:   'bg-slate-800 text-slate-400 border-slate-700',
+            };
+            const cls = colorMap[cfg.color] || colorMap.slate;
+            const icon = isAuto ? '⚡' : '🖱';
+            return `<span class="text-[8px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${cls}">${icon} ${cfg.label}</span>`;
         }
 
         async function loadJobsPage(page) {
@@ -932,6 +1184,7 @@
             if (explorerSearchVal) url += `&search=${encodeURIComponent(explorerSearchVal)}`;
             if (explorerRemoteVal) url += `&remote=${explorerRemoteVal}`;
             if (explorerStatusVal) url += `&status=${explorerStatusVal}`;
+            if (explorerTrackVal) url += `&track=${explorerTrackVal}`;
             if (explorerScoreVal > 0) url += `&min_score=${explorerScoreVal}`;
 
             try {
@@ -996,22 +1249,21 @@
 
                     const subDetails = j.reason ? `<p class="text-[10px] text-slate-500 mt-1 line-clamp-1 italic">"${j.reason}"</p>` : '';
 
+                    const srcBadge = sourceTrackBadge(j.source || 'manual');
                     html += `
                         <tr class="hover:bg-slate-900/30 transition">
                             <td class="py-3 px-6 font-bold">${scoreBadge}</td>
                             <td class="py-3 px-4">
-                                <div class="font-bold text-white leading-tight line-clamp-1">${j.title}</div>
+                                <div class="font-bold text-white leading-tight line-clamp-1">
+                                    <a href="${j.url}" target="_blank" class="hover:text-indigo-300 transition">${j.title} ↗</a>
+                                </div>
                                 <div class="text-[11px] text-slate-400 flex items-center mt-0.5 font-semibold">
                                     🏢 ${j.company} ${startupBadge}
                                 </div>
                                 ${subDetails}
                             </td>
                             <td class="py-3 px-4 text-slate-400 font-medium">${j.location || 'Remote'}</td>
-                            <td class="py-3 px-4">
-                                <a href="${j.url}" target="_blank" class="text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-0.5">
-                                    Link ↗
-                                </a>
-                            </td>
+                            <td class="py-3 px-4">${srcBadge}</td>
                             <td class="py-3 px-4">${statusBadge}</td>
                             <td class="py-3 px-6 text-right">${actionBtn}</td>
                         </tr>
@@ -1116,7 +1368,8 @@
 
                 const autofillBtn = document.getElementById('modal-autofill-btn');
                 const fillableStatuses = ['shortlisted', 'tailored'];
-                if (fillableStatuses.includes(data.status)) {
+                const isAutoFillableSource = ['greenhouse', 'lever', 'ashby'].includes(data.source);
+                if (fillableStatuses.includes(data.status) && isAutoFillableSource) {
                     autofillBtn.classList.remove('hidden');
                 } else {
                     autofillBtn.classList.add('hidden');
@@ -1131,7 +1384,7 @@
 
         async function autofillForm(appId, btn) {
             const orig = btn.innerHTML;
-            btn.innerHTML = '⏳ ...';
+            btn.innerHTML = '⏳ Autofilling...';
             btn.disabled = true;
             showToast('Triggering autofill browser in background...', 'info');
             try {
@@ -1142,9 +1395,34 @@
                     setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
                     return;
                 }
-                btn.innerHTML = '🤖 Active';
-                showToast('Autofill agent started filling form. Reloading dashboard shortly.', 'success');
-                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; window.location.reload(); }, 4000);
+                
+                showToast('Autofill agent started. Checking status in background...', 'success');
+                
+                // Poll application details to check when status changes
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const statusRes = await fetch(`/application/${appId}/details`);
+                        if (statusRes.ok) {
+                            const data = await statusRes.json();
+                            const filledStatuses = ['autofilled', 'awaiting_user', 'ready_to_submit', 'error'];
+                            if (filledStatuses.includes(data.status)) {
+                                clearInterval(pollInterval);
+                                showToast(`Autofill completed with status: ${data.status}! Reloading...`, 'success');
+                                setTimeout(() => { window.location.reload(); }, 1200);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Status check failed:", e);
+                    }
+                }, 3000); // poll every 3 seconds
+                
+                // Safety timeout after 90 seconds
+                setTimeout(() => {
+                    clearInterval(pollInterval);
+                    btn.innerHTML = orig;
+                    btn.disabled = false;
+                }, 90000);
+                
             } catch (e) {
                 btn.innerHTML = '❌';
                 showToast('Failed to trigger autofill.', 'error');
@@ -1167,9 +1445,35 @@
                     setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
                     return;
                 }
-                btn.innerHTML = '🤖 Active';
-                showToast('Autofill agent started!', 'success');
-                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; closeModal(); window.location.reload(); }, 3000);
+                
+                showToast('Autofill agent started! Checking status...', 'success');
+                
+                // Poll application details to check when status changes
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const statusRes = await fetch(`/application/${currentAppId}/details`);
+                        if (statusRes.ok) {
+                            const data = await statusRes.json();
+                            const filledStatuses = ['autofilled', 'awaiting_user', 'ready_to_submit', 'error'];
+                            if (filledStatuses.includes(data.status)) {
+                                clearInterval(pollInterval);
+                                showToast(`Autofill completed: ${data.status}! Reloading...`, 'success');
+                                closeModal();
+                                setTimeout(() => { window.location.reload(); }, 1200);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Status check failed:", e);
+                    }
+                }, 3000); // poll every 3 seconds
+                
+                // Safety timeout after 90 seconds
+                setTimeout(() => {
+                    clearInterval(pollInterval);
+                    btn.innerHTML = orig;
+                    btn.disabled = false;
+                }, 90000);
+                
             } catch (e) {
                 btn.innerHTML = '❌ Error';
                 showToast('Failed to trigger autofill.', 'error');
