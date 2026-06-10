@@ -131,3 +131,33 @@ def test_api_jobs_excludes_closed():
         for j in s.exec(_select(Job).where(Job.external_id.like("closed-%"))).all():
             s.delete(j)
         s.commit()
+
+
+def test_empty_company_jobs_not_collapsed():
+    """Jobs with blank company must NOT be capped together — each distinct role
+    should render (reproduces the '19 shortlisted but only 2 shown' bug)."""
+    from sqlmodel import select as _select
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("blankco-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+        for i in range(5):
+            j = Job(source=JobSource.REMOTEOK, external_id=f"blankco-{i}", company="",
+                    title=f"Remote Role {i}", url=f"http://r/{i}", description="x",
+                    rerank_score=70 + i, blended_score=70 + i)
+            s.add(j); s.commit(); s.refresh(j)
+            s.add(Application(job_id=j.id, status=ApplicationStatus.SHORTLISTED, apply_track="manual"))
+        s.commit()
+
+    html = _client().get("/dashboard").text
+    shown = sum(1 for i in range(5) if f"Remote Role {i}" in html)
+    assert shown == 5, f"all 5 blank-company roles should show, showed {shown}"
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("blankco-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()

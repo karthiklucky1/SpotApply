@@ -342,11 +342,17 @@ def dashboard(request: Request):
     # Job-based, not company-based: show at most 2 roles per company in the
     # shortlist so a single company can't dominate the view. Keeps the
     # highest-priority 2 (list is already sorted best-first).
+    # NOTE: jobs with an empty/unknown company must NOT be collapsed together —
+    # otherwise dozens of distinct aggregator postings (RemoteOK/HN often have a
+    # blank company field) all share key "" and get capped to 2 globally, which
+    # is why the shortlist count showed 19 but only 2 rendered.
     def _cap_per_company(items, cap: int = 2):
         seen: dict[str, int] = {}
         capped = []
         for app_model, job_model in items:
-            key = (job_model.company or "").strip().lower()
+            company = (job_model.company or "").strip().lower()
+            # Distinct key per row when company is unknown → never grouped.
+            key = company if company else f"__unknown__:{job_model.id}"
             if seen.get(key, 0) >= cap:
                 continue
             seen[key] = seen.get(key, 0) + 1
