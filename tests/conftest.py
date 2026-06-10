@@ -8,6 +8,21 @@ but NEVER override a real, installed package.
 """
 from __future__ import annotations
 
+# ── Test database isolation ───────────────────────────────────────────────────
+# CRITICAL: point the test suite at a throwaway SQLite file BEFORE any app module
+# is imported. The engine in app.db.init_db is built from settings.sqlite_url at
+# import time, and Settings reads SQLITE_PATH from the environment. Without this,
+# tests seed/delete rows in the real ./data/jobagent.db — which is how FunnelCo
+# rows and orphan applications leaked into production. Setting it here guarantees
+# tests never touch real data.
+import os
+import pathlib
+import tempfile
+
+_TEST_DB = pathlib.Path(tempfile.gettempdir()) / f"jobagent_test_{os.getpid()}.db"
+os.environ["SQLITE_PATH"] = str(_TEST_DB)
+os.environ["FAISS_INDEX_PATH"] = str(_TEST_DB.with_suffix(".faiss"))
+
 import importlib.util
 import sys
 import types
@@ -54,8 +69,20 @@ def _init_db():
     so create the schema (+ migrations) once per test session.
     """
     from app.db.init_db import init_db
+    from app.config import settings
+    # Safety net: never run the suite against the real production database.
+    assert "jobagent_test_" in str(settings.sqlite_path), (
+        f"Test DB isolation failed — tests are pointing at {settings.sqlite_path}. "
+        "SQLITE_PATH must resolve to a temp file (see top of conftest.py)."
+    )
     init_db()
     yield
+    # Tear down the throwaway DB + index after the session.
+    for p in (_TEST_DB, _TEST_DB.with_suffix(".faiss")):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # True only when the real sentence-transformers/torch stack is installed.
