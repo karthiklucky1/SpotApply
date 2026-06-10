@@ -23,6 +23,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db.models import Job
+from app.matching.external_signals import check_github_hiring, check_crunchbase_funding
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +149,26 @@ def score_hire_probability(job: Job, session: Session) -> HireProbabilityResult:
     if any(s in desc for s in _ENTERPRISE_BLOAT_SIGNALS):
         score -= 0.10
         signals.append("enterprise_scale_penalty")
+
+    # ── 6. External: GitHub /hiring file ─────────────────────────────────────
+    if job.company:
+        try:
+            gh_boost, gh_signal = check_github_hiring(job.company)
+            if gh_boost > 0:
+                score += gh_boost
+                signals.append(gh_signal)
+        except Exception:
+            pass
+
+    # ── 7. External: Crunchbase funding round ─────────────────────────────────
+    if job.company:
+        try:
+            cb_boost, cb_signal = check_crunchbase_funding(job.company)
+            if cb_boost > 0:
+                score += cb_boost
+                signals.append(cb_signal)
+        except Exception:
+            pass
 
     score = round(min(max(score, 0.0), 1.0), 3)
     return HireProbabilityResult(
