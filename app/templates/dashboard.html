@@ -597,9 +597,14 @@
                             </span>
                         </div>
                         
-                        <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="mt-3.5 w-full text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-full font-bold border border-slate-700">
-                            📄 View tailored documents
-                        </button>
+                        <div class="grid grid-cols-2 gap-2 mt-3.5">
+                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 py-2 rounded-full font-bold border border-slate-700">
+                                📄 Documents
+                            </button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="text-[10px] bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 py-2 rounded-full font-bold border border-rose-800/50">
+                                ❌ Rejected
+                            </button>
+                        </div>
                     </div>
                     {% else %}
                     <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
@@ -612,30 +617,63 @@
             </div>
         </div>
 
-        <!-- Section for Removed / Cancelled Applications -->
-        <section class="mt-12">
-            <div class="glass rounded-[32px] p-6 border-slate-800/60 shadow-[0_0_15px_rgba(244,63,94,0.02)]">
+        <!-- Rejected + Removed: fixed-height, each scrolls internally so the page stays short -->
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-12">
+            <!-- Rejected (heard back: no) -->
+            <div class="glass rounded-[32px] p-6 border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.03)] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
-                        <h2 class="font-bold text-white text-sm">Removed / Cancelled Applications</h2>
+                        <h2 class="font-bold text-white text-sm">Rejected</h2>
                     </div>
-                    <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="skipped-count">{{ skipped|length }}</span>
+                    <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="rejected-count">{{ rejected|length }}</span>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="skipped-container">
-                    {% for app, job in skipped %}
-                    <div class="glass rounded-[24px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200 relative flex flex-col justify-between" id="skipped-card-{{ app.id }}">
+                <div class="space-y-3 max-h-[55vh] overflow-y-auto pr-1" id="rejected-container">
+                    {% for app, job in rejected %}
+                    <div class="glass rounded-[20px] p-4 border-rose-900/30 opacity-70 hover:opacity-100 transition-opacity duration-200" id="rejected-card-{{ app.id }}">
                         <div class="flex justify-between items-start gap-2">
                             <div class="min-w-0 flex-1">
                                 <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3>
-                                <p class="text-[10px] text-slate-500 font-semibold mt-1">🏢 {{ job.company }} | 📍 {{ job.location or 'Remote' }}</p>
+                                <p class="text-[10px] text-slate-500 font-semibold mt-1">🏢 {{ job.company or 'Unknown' }} | 📍 {{ job.location or 'Remote' }}</p>
                             </div>
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 shrink-0">Removed</span>
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/25 shrink-0">Rejected</span>
+                        </div>
+                        <div class="text-[9px] text-slate-600 font-medium mt-2">
+                            {% if app.updated_at %}Updated: {{ app.updated_at.strftime('%b %d') }}{% endif %}
                         </div>
                     </div>
                     {% else %}
-                    <div class="col-span-full text-center py-6 text-slate-600 text-xs font-semibold" id="no-skipped-msg">
+                    <div class="text-center py-8 text-slate-600 text-xs font-semibold" id="no-rejected-msg">
+                        No rejections logged. Mark a submitted role "❌ Rejected" when you hear back.
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Removed / Cancelled -->
+            <div class="glass rounded-[32px] p-6 border-slate-800/60 shadow-[0_0_15px_rgba(244,63,94,0.02)] flex flex-col">
+                <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+                        <h2 class="font-bold text-white text-sm">Removed / Cancelled</h2>
+                    </div>
+                    <span class="bg-slate-500/10 text-slate-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-500/20" id="skipped-count">{{ skipped|length }}</span>
+                </div>
+
+                <div class="space-y-3 max-h-[55vh] overflow-y-auto pr-1" id="skipped-container">
+                    {% for app, job in skipped %}
+                    <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}">
+                        <div class="flex justify-between items-start gap-2">
+                            <div class="min-w-0 flex-1">
+                                <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3>
+                                <p class="text-[10px] text-slate-500 font-semibold mt-1">🏢 {{ job.company or 'Unknown' }} | 📍 {{ job.location or 'Remote' }}</p>
+                            </div>
+                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="text-center py-8 text-slate-600 text-xs font-semibold" id="no-skipped-msg">
                         No removed or cancelled applications.
                     </div>
                     {% endfor %}
@@ -1628,6 +1666,21 @@
                 btn.textContent = '❌';
                 showToast('Error updating application status.', 'error');
                 setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+            }
+        }
+
+        async function markRejected(appId) {
+            if (!confirm('Mark this application as rejected? It moves to the Rejected list.')) return;
+            try {
+                const res = await fetch(`/application/${appId}/reject`, { method: 'POST' });
+                if (!res.ok) {
+                    showToast('Failed to mark as rejected.', 'error');
+                    return;
+                }
+                showToast('Marked as rejected.', 'success');
+                setTimeout(() => { window.location.reload(); }, 800);
+            } catch (e) {
+                showToast('Error updating application status.', 'error');
             }
         }
 

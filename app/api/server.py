@@ -304,6 +304,7 @@ def dashboard(request: Request):
     manual_queue = []  # manual-track: materials ready, waiting for human to apply
     submitted = []
     skipped = []
+    rejected = []      # heard back: no — collected separately
 
     _AUTOFILL_REVIEW_STATUSES = {
         ApplicationStatus.AUTOFILLED,
@@ -321,6 +322,8 @@ def dashboard(request: Request):
                 bot_filled.append((app_model, job_model))
         elif app_model.status in [ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING]:
             submitted.append((app_model, job_model))
+        elif app_model.status == ApplicationStatus.REJECTED:
+            rejected.append((app_model, job_model))
         elif app_model.status == ApplicationStatus.SKIPPED:
             skipped.append((app_model, job_model))
 
@@ -371,6 +374,7 @@ def dashboard(request: Request):
             "manual_queue": manual_queue,
             "submitted": submitted,
             "skipped": skipped,
+            "rejected": rejected,
         }
     )
 
@@ -442,6 +446,23 @@ def skip_application(application_id: int) -> dict:
         session.commit()
     return {"success": True, "application_id": application_id}
 
+
+
+@app.post("/application/{application_id}/reject")
+def mark_as_rejected(application_id: int) -> dict:
+    """Manually mark an application as rejected (you received a rejection)."""
+    from datetime import datetime
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Application not found")
+        application.status = ApplicationStatus.REJECTED
+        application.updated_at = datetime.utcnow()
+        application.notes = (application.notes or "") + f"\nMarked rejected on {datetime.utcnow():%Y-%m-%d}."
+        session.add(application)
+        session.commit()
+    return {"success": True, "application_id": application_id}
 
 
 @app.post("/run/discovery")
