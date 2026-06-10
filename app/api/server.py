@@ -194,8 +194,8 @@ def api_jobs(
     offset = (page - 1) * limit
 
     with get_session() as session:
-        # Base query
-        query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id)
+        # Base query — exclude closed/purged jobs from the Jobs table.
+        query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id).where(Job.is_closed == False)
 
         # Apply filters
         if search:
@@ -226,8 +226,8 @@ def api_jobs(
             is_remote = remote.lower() == "true"
             query = query.where(Job.remote == is_remote)
             
-        # Get total count (for pagination)
-        count_query = select(func.count(Job.id))
+        # Get total count (for pagination) — also exclude closed jobs.
+        count_query = select(func.count(Job.id)).where(Job.is_closed == False)
         if search:
             search_pattern = f"%{search}%"
             count_query = count_query.where(Job.title.like(search_pattern) | Job.company.like(search_pattern) | Job.location.like(search_pattern))

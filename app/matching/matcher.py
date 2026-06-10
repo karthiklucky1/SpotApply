@@ -118,8 +118,9 @@ class Matcher:
                 existing_index = None
                 
         with get_session() as session:
-            all_jobs = session.exec(select(Job)).all()
-            
+            # Only index open jobs — closed/purged jobs must never re-enter matching.
+            all_jobs = session.exec(select(Job).where(Job.is_closed == False)).all()
+
         if not all_jobs:
             log.warning("No jobs in DB to index.")
             return 0
@@ -204,7 +205,8 @@ class Matcher:
             self.load()
 
         with get_session() as session:
-            jobs = session.exec(select(Job)).all()
+            # Exclude closed/purged jobs from candidate retrieval.
+            jobs = session.exec(select(Job).where(Job.is_closed == False)).all()
 
         if not jobs:
             return []

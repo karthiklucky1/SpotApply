@@ -168,6 +168,10 @@ def run_matching() -> List[int]:
             if not job:
                 continue
 
+            # Skip closed/purged jobs — they must never be (re-)shortlisted.
+            if job.is_closed:
+                continue
+
             # Check if job is already scored to avoid wasting LLM tokens and time
             if job.rerank_score is not None:
                 if job.rerank_score >= 60:

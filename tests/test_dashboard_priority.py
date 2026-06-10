@@ -105,3 +105,29 @@ def test_dashboard_caps_two_per_company():
                 s.delete(a)
             s.delete(j)
         s.commit()
+
+
+def test_api_jobs_excludes_closed():
+    """Purged (is_closed) jobs must not appear in the Jobs table API."""
+    from sqlmodel import select as _select
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("closed-%"))).all():
+            s.delete(j)
+        s.commit()
+        s.add(Job(source=JobSource.GREENHOUSE, external_id="closed-open", company="OpenCo",
+                  title="Open Role", url="http://o", description="x", rerank_score=75,
+                  blended_score=75, is_closed=False))
+        s.add(Job(source=JobSource.GREENHOUSE, external_id="closed-shut", company="ShutCo",
+                  title="Closed Role", url="http://c", description="x", rerank_score=75,
+                  blended_score=75, is_closed=True))
+        s.commit()
+
+    data = _client().get("/api/jobs?limit=500").json()
+    companies = {j["company"] for j in data["jobs"]}
+    assert "OpenCo" in companies
+    assert "ShutCo" not in companies
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("closed-%"))).all():
+            s.delete(j)
+        s.commit()
