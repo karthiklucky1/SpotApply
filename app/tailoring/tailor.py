@@ -98,12 +98,31 @@ class Tailor:
                 pass
 
     def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a") -> str:
+        # ── ATS exact-phrase targeting ──────────────────────────────────────
+        # Find the JD phrases an ATS will scan for that are NOT already verbatim
+        # in the master resume, so the tailor can incorporate them honestly.
+        ats_block = ""
+        try:
+            from app.tailoring.ats_keywords import analyze as ats_analyze
+            ats = ats_analyze(job.description or "", master_resume_md)
+            if ats.missing:
+                ats_block = (
+                    "\n\nATS PRIORITY PHRASES — these exact terms appear in the JD but are "
+                    "MISSING verbatim from the resume. Where the candidate's real experience "
+                    "supports it, incorporate the EXACT phrasing below (do not paraphrase, "
+                    "do not invent experience):\n"
+                    + "\n".join(f"  - {p}" for p in ats.missing)
+                    + f"\n(Already covered: {', '.join(ats.matched[:8])})"
+                )
+        except Exception as e:
+            log.warning("ATS keyword analysis failed (continuing without it): %s", e)
+
         prompt = f"""Job description:
 ---
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----
+---{ats_block}
 
 Return the tailored resume in markdown. No commentary."""
 
