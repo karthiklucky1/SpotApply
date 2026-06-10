@@ -82,6 +82,8 @@ def shortlist():
             "url": j.url,
             "similarity": j.similarity_score,
             "rerank": j.rerank_score,
+            "hire_probability": j.hire_probability_score,
+            "blended": j.blended_score,
             "reason": j.rerank_reasoning,
         }
         for j in jobs
@@ -247,7 +249,7 @@ def api_jobs(
         total = session.exec(count_query).first() or 0
         
         # Apply pagination and sorting
-        query = query.order_by(desc(Job.rerank_score), desc(Job.similarity_score), desc(Job.id)).offset(offset).limit(limit)
+        query = query.order_by(desc(Job.blended_score), desc(Job.rerank_score), desc(Job.similarity_score), desc(Job.id)).offset(offset).limit(limit)
         
         results = session.exec(query).all()
         
@@ -263,6 +265,8 @@ def api_jobs(
                 "url": job.url,
                 "similarity": job.similarity_score,
                 "rerank": job.rerank_score,
+                "hire_probability": job.hire_probability_score,
+                "blended": job.blended_score,
                 "reason": job.rerank_reasoning,
                 "application": {
                     "id": app.id,
@@ -321,11 +325,19 @@ def dashboard(request: Request):
             skipped.append((app_model, job_model))
 
     from datetime import datetime as _dt
+
+    def _priority(job) -> float:
+        """Rank by blended score (fit + hiring intent) when available, else fall back to rerank."""
+        if job.blended_score is not None:
+            return job.blended_score
+        return job.rerank_score or 0
+
+    # Highest-priority roles first; recency breaks ties so fresh postings float up.
     shortlisted.sort(
-        key=lambda x: (x[1].posted_at or x[1].discovered_at or _dt.min, x[1].rerank_score or 0),
+        key=lambda x: (_priority(x[1]), x[1].posted_at or x[1].discovered_at or _dt.min),
         reverse=True,
     )
-    manual_queue.sort(key=lambda x: x[1].rerank_score or 0, reverse=True)
+    manual_queue.sort(key=lambda x: _priority(x[1]), reverse=True)
 
     return templates.TemplateResponse(
         request=request,
