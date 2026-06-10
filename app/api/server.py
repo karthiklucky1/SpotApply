@@ -57,12 +57,17 @@ def health() -> dict:
 @app.get("/stats")
 def stats() -> dict:
     with get_session() as session:
-        total_jobs = len(session.exec(select(Job)).all())
+        total_jobs = len(session.exec(select(Job).where(Job.is_closed == False)).all())
         by_status = {}
         for st in ApplicationStatus:
-            apps = session.exec(select(Application).where(Application.status == st)).all()
-            if apps:
-                by_status[st.value] = len(apps)
+            # Exclude orphan applications (Job row deleted) by joining Job.
+            count = session.exec(
+                select(func.count(Application.id))
+                .join(Job, Application.job_id == Job.id)
+                .where(Application.status == st)
+            ).first() or 0
+            if count:
+                by_status[st.value] = count
     return {"total_jobs": total_jobs, "applications": by_status}
 
 
@@ -108,11 +113,15 @@ def api_stats() -> dict:
             select(func.count(Job.id)).where(Job.rerank_score.is_not(None))
         ).first() or 0
         
-        # Application counts by status
+        # Application counts by status — JOIN Job so orphan applications (whose
+        # Job row was deleted) are excluded; otherwise counts here disagree with
+        # the dashboard kanban, which inner-joins Job and never shows orphans.
         app_counts = {}
         for status in ApplicationStatus:
             count = session.exec(
-                select(func.count(Application.id)).where(Application.status == status)
+                select(func.count(Application.id))
+                .join(Job, Application.job_id == Job.id)
+                .where(Application.status == status)
             ).first() or 0
             app_counts[status.value] = count
             
