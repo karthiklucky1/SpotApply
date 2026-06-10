@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
@@ -26,7 +26,81 @@ from app.intelligence.senior_reviewer import SeniorReviewer
 # Sources where the bot can fill the form automatically
 _AUTOFILL_SOURCES = {JobSource.GREENHOUSE, JobSource.LEVER, JobSource.ASHBY, JobSource.WORKDAY, JobSource.SMARTRECRUITERS}
 
+# ── Company cap (job-based, not company-based) ────────────────────────────────
+# Statuses that count as an "active" application toward the per-company cap.
+# IMPORTANT: SUBMITTED and INTERVIEWING are included — otherwise submitting an
+# application would drop its company count to 0 and let the company flood the
+# shortlist again, which is exactly the bug we are fixing.
+_CAP_ACTIVE_STATUSES = [
+    ApplicationStatus.SHORTLISTED,
+    ApplicationStatus.TAILORED,
+    ApplicationStatus.AUTOFILLED,
+    ApplicationStatus.AWAITING_USER,
+    ApplicationStatus.READY_TO_SUBMIT,
+    ApplicationStatus.SUBMITTED,
+    ApplicationStatus.INTERVIEWING,
+]
+_COMPANY_CAP = 2              # max active applications per company
+_COMPANY_COOLDOWN_DAYS = 40   # once at the cap, a company is locked until its
+                              # existing applications are this many days old
+
 log = logging.getLogger(__name__)
+
+
+def _app_age_days(app: Application) -> float:
+    """Days since this application became active (submission date if known)."""
+    ref = app.submitted_at or app.created_at
+    if ref is None:
+        return 0.0
+    return (datetime.utcnow() - ref).total_seconds() / 86400.0
+
+
+def _check_and_enforce_company_cap(session, job: Job, score: float) -> bool:
+    """Decide whether a new application may be created for ``job`` under the
+    per-company cap + cooldown rule.
+
+    Rules:
+      • At most ``_COMPANY_CAP`` (2) active applications per company at a time.
+      • Once a company is at the cap, NO new role from that company is shortlisted
+        until its existing active applications are ``_COMPANY_COOLDOWN_DAYS`` (40)
+        days old. Applications past that age are treated as expired: they are
+        marked SKIPPED to reopen the slot, and the new (fresher) role is allowed.
+
+    Returns True if a new application is allowed (slots have been freed if needed),
+    False if the company is still within cooldown and the job must be skipped.
+    """
+    active = session.exec(
+        select(Application).join(Job, Application.job_id == Job.id)
+        .where(Job.company == job.company)
+        .where(Application.status.in_(_CAP_ACTIVE_STATUSES))
+    ).all()
+
+    if len(active) < _COMPANY_CAP:
+        return True  # room available
+
+    # At the cap — only proceed if enough existing apps have aged out (>=40d).
+    expired = [a for a in active if _app_age_days(a) >= _COMPANY_COOLDOWN_DAYS]
+    if not expired:
+        log.info(
+            "Company cap: %s already has %d active app(s), none older than %dd — "
+            "skipping '%s' until cooldown expires.",
+            job.company, len(active), _COMPANY_COOLDOWN_DAYS, job.title,
+        )
+        return False
+
+    # Free up slots by expiring the oldest aged-out applications.
+    expired.sort(key=_app_age_days, reverse=True)  # oldest first
+    slots_to_free = len(active) - _COMPANY_CAP + 1  # need at least 1 free slot
+    for a in expired[:slots_to_free]:
+        a.status = ApplicationStatus.SKIPPED
+        a.notes = (a.notes or "") + (
+            f"\nExpired after {_app_age_days(a):.0f}d (>{_COMPANY_COOLDOWN_DAYS}d cooldown) "
+            f"— slot reopened for newer '{job.title}'."
+        )
+        session.add(a)
+        log.info("Company cap: expired app %d at %s (age %.0fd) to reopen a slot.",
+                 a.id, job.company, _app_age_days(a))
+    return True
 
 
 def _load_resume() -> str:
@@ -102,6 +176,12 @@ def run_matching() -> List[int]:
                     ).first()
                     if not existing:
                         if today_count < settings.daily_apply_limit:
+                            # Company cap + 40-day cooldown applies here too —
+                            # previously this already-scored path skipped the cap,
+                            # which let a single company flood the shortlist.
+                            if not _check_and_enforce_company_cap(session, job, job.rerank_score):
+                                session.commit()
+                                continue
                             _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
                             session.add(
                                 Application(
@@ -195,34 +275,10 @@ def run_matching() -> List[int]:
                 ).first()
                 if not existing:
                     if today_count < settings.daily_apply_limit:
-                        # ── Company cap: max 2 active applications per company ──
-                        active_for_company = session.exec(
-                            select(Application).join(Job, Application.job_id == Job.id)
-                            .where(Job.company == job.company)
-                            .where(Application.status.in_([
-                                ApplicationStatus.SHORTLISTED,
-                                ApplicationStatus.TAILORED,
-                                ApplicationStatus.AUTOFILLED,
-                                ApplicationStatus.AWAITING_USER,
-                                ApplicationStatus.READY_TO_SUBMIT,
-                            ]))
-                        ).all()
-                        if len(active_for_company) >= 2:
-                            # Only bump in if this score beats the weakest existing slot
-                            weakest = min(active_for_company,
-                                         key=lambda a: session.get(Job, a.job_id).rerank_score or 0)
-                            weakest_score = session.get(Job, weakest.job_id).rerank_score or 0
-                            if score > weakest_score:
-                                weakest.status = ApplicationStatus.SKIPPED
-                                weakest.notes = f"Displaced by higher-scoring role (score={score:.0f} vs {weakest_score:.0f}) — company cap enforced"
-                                session.add(weakest)
-                                log.info("Company cap: displaced app %d (score=%.0f) for %s @ %s (score=%.0f)",
-                                         weakest.id, weakest_score, job.title, job.company, score)
-                            else:
-                                log.info("Company cap: already have 2 active apps at %s, new score %.0f doesn't beat weakest %.0f — skipping",
-                                         job.company, score, weakest_score)
-                                session.commit()
-                                continue
+                        # ── Company cap (max 2 active) + 40-day cooldown ──
+                        if not _check_and_enforce_company_cap(session, job, score):
+                            session.commit()
+                            continue
 
                         _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
                         new_app = Application(

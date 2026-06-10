@@ -339,6 +339,23 @@ def dashboard(request: Request):
     )
     manual_queue.sort(key=lambda x: _priority(x[1]), reverse=True)
 
+    # Job-based, not company-based: show at most 2 roles per company in the
+    # shortlist so a single company can't dominate the view. Keeps the
+    # highest-priority 2 (list is already sorted best-first).
+    def _cap_per_company(items, cap: int = 2):
+        seen: dict[str, int] = {}
+        capped = []
+        for app_model, job_model in items:
+            key = (job_model.company or "").strip().lower()
+            if seen.get(key, 0) >= cap:
+                continue
+            seen[key] = seen.get(key, 0) + 1
+            capped.append((app_model, job_model))
+        return capped
+
+    shortlisted = _cap_per_company(shortlisted)
+    manual_queue = _cap_per_company(manual_queue)
+
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",

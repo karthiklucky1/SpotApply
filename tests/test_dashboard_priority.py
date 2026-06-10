@@ -71,3 +71,37 @@ def test_api_jobs_exposes_new_fields(_seeded_jobs):
     assert "hire_probability" in top
     # highest blended should sort first
     assert top["company"] == "BetaAI"
+
+
+def test_dashboard_caps_two_per_company():
+    """Three shortlisted roles at the same company → dashboard shows at most 2."""
+    from sqlmodel import select as _select
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("capdisp-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+        ids = []
+        for i in range(3):
+            j = Job(source=JobSource.GREENHOUSE, external_id=f"capdisp-{i}",
+                    company="FloodCorp", title=f"Engineer {i}", url=f"http://f/{i}",
+                    description="x", rerank_score=70 + i, blended_score=70 + i)
+            s.add(j); s.commit(); s.refresh(j)
+            s.add(Application(job_id=j.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
+            ids.append(j.id)
+        s.commit()
+
+    html = _client().get("/dashboard").text
+    # Only the 2 highest-priority roles (Engineer 2, Engineer 1) should render;
+    # the lowest (Engineer 0) is dropped by the per-company cap.
+    shown = sum(1 for i in range(3) if f"Engineer {i}" in html)
+    assert shown == 2, f"shortlist must cap to 2 roles per company, showed {shown}"
+    assert "Engineer 0" not in html  # lowest priority dropped
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("capdisp-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
