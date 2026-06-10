@@ -30,6 +30,8 @@ class JobSource(str, Enum):
     SERPAPI = "serpapi"    # Google Jobs via SerpAPI (LinkedIn/Indeed/Glassdoor)
     REMOTIVE = "remotive"
     REMOTEOK = "remoteok"
+    THEMUSE = "themuse"       # The Muse public API — free, no key
+    ARBEITNOW = "arbeitnow"   # Arbeitnow job-board API — free, no key
 
 
 class ApplicationStatus(str, Enum):

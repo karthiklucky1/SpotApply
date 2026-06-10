@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     remotive_enabled: bool = True    # Remotive public API — no key needed
     remoteok_enabled: bool = True    # RemoteOK public API — no key needed
     hn_whoishiring_enabled: bool = True  # HN monthly "Who is hiring?" thread — no key, early signal
+    themuse_enabled: bool = True     # The Muse public API — no key needed; optional THEMUSE_API_KEY for higher rate limit
+    themuse_api_key: str = ""        # optional — raises rate limits
+    arbeitnow_enabled: bool = True   # Arbeitnow public API — no key needed
     scrape_company_boards: bool = False  # JOB-FIRST by default: discovery is driven purely by job
                                          # aggregators (SerpAPI/Remotive/RemoteOK/HN), NOT a fixed company list.
                                          # Set True to also scrape the bootstrap company ATS boards

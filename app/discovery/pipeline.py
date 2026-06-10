@@ -451,12 +451,16 @@ def run_discovery() -> int:
         from app.discovery.sources.hn_jobs import HNJobsSource
         from app.discovery.sources.remotive import RemotiveSource
         from app.discovery.sources.remoteok import RemoteOKSource
+        from app.discovery.sources.themuse import TheMuseSource
+        from app.discovery.sources.arbeitnow import ArbeitnowSource
 
         direct_sources = [
             ("SerpAPI Google Jobs (LinkedIn/Indeed/Glassdoor)", SerpAPISource),
             ("HN Jobs (Hacker News)", HNJobsSource),
             ("Remotive", RemotiveSource),
             ("RemoteOK", RemoteOKSource),
+            ("The Muse", TheMuseSource),
+            ("Arbeitnow", ArbeitnowSource),
         ]
 
         all_raw_jobs = []
