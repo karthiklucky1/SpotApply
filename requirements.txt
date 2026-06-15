@@ -7,6 +7,11 @@ python-dotenv>=1.0
 apscheduler>=3.10
 pyyaml>=6.0
 
+# Database
+supabase>=2.4.0          # Supabase Python client (auth + storage + realtime)
+psycopg2-binary>=2.9     # PostgreSQL driver for SQLAlchemy/SQLModel
+python-jose[cryptography]>=3.3  # JWT verification for Supabase auth tokens
+
 # ML / matching
 sentence-transformers>=2.5
 faiss-cpu>=1.7.4

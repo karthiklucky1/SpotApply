@@ -61,6 +61,8 @@ class Job(SQLModel, table=True):
         UniqueConstraint("source", "external_id", name="uq_job_source_external_id"),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
+    # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.
+    user_id: Optional[str] = Field(default=None, index=True)
     source: JobSource
     external_id: str = Field(index=True)
     company: str
@@ -99,6 +101,7 @@ class Job(SQLModel, table=True):
 class Application(SQLModel, table=True):
     """One application per (job, attempt). Tracks lifecycle."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     job_id: int = Field(foreign_key="job.id", index=True)
     status: ApplicationStatus = ApplicationStatus.DISCOVERED
     tailored_resume_path: Optional[str] = None
@@ -177,6 +180,8 @@ class CompanyRegistry(SQLModel, table=True):
 class UserProfile(SQLModel, table=True):
     """One row per user. Stores all fields needed to fill any job application form."""
     id: Optional[int] = Field(default=None, primary_key=True)
+    # Supabase user UUID — links this profile to the authenticated user
+    user_id: Optional[str] = Field(default=None, index=True, unique=True)
     # Identity
     first_name: str = ""
     last_name: str = ""

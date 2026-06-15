@@ -30,6 +30,39 @@ from app.tailoring.tailor import tailor_all_shortlisted
 app = FastAPI(title="JobAgent")
 
 
+# ── Supabase session-refresh middleware ─────────────────────────────────────
+# When SUPABASE_URL is configured, every response gets a refreshed access
+# token in the X-Supabase-Token header so the frontend can keep the session
+# alive without the user having to re-login every hour.
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+class SupabaseSessionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        from app.config import settings
+        if not settings.use_supabase:
+            return response
+        # Only attempt refresh if a bearer token is present
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return response
+        token = auth_header.split(" ", 1)[1]
+        try:
+            from app.db.supabase_client import anon_client
+            sb = anon_client()
+            result = sb.auth.refresh_session(token)
+            if result and result.session:
+                response.headers["X-Supabase-Token"] = result.session.access_token
+        except Exception:
+            pass
+        return response
+
+app.add_middleware(SupabaseSessionMiddleware)
+
+
 @app.on_event("startup")
 async def startup_event():
     import asyncio

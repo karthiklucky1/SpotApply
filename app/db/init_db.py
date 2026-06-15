@@ -1,4 +1,9 @@
-"""DB engine, session, init."""
+"""DB engine, session, init.
+
+Supports two backends:
+- SQLite  (default, zero config)  — set nothing in .env
+- Supabase PostgreSQL (production) — set DATABASE_URL + SUPABASE_URL in .env
+"""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -8,10 +13,20 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
 
-engine = create_engine(
-    settings.sqlite_url,
-    echo=False,
-    connect_args={"timeout": 30, "check_same_thread": False},
+if settings.use_supabase:
+    # PostgreSQL — no check_same_thread, use connection pooling
+    engine = create_engine(
+        settings.sqlite_url,   # returns database_url when use_supabase=True
+        echo=False,
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,    # reconnect after Supabase idle timeout
+    )
+else:
+    engine = create_engine(
+        settings.sqlite_url,
+        echo=False,
+        connect_args={"timeout": 30, "check_same_thread": False},
 )
 
 
@@ -81,6 +96,13 @@ def init_db() -> None:
         ]:
             try:
                 conn.execute(text(f"ALTER TABLE companyregistry ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass
+
+        # Multi-tenant user_id columns
+        for tbl in ["job", "application", "userprofile"]:
+            try:
+                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN user_id VARCHAR"))
             except Exception:
                 pass
 

@@ -58,6 +58,22 @@ class Settings(BaseSettings):
     profiles_dir: Path = Path("./data/profiles")
     faiss_index_path: Path = Path("./data/jobs.faiss")
     sqlite_path: Path = Path("./data/jobagent.db")
+
+    # Supabase — set these to migrate from SQLite to PostgreSQL
+    supabase_url: str = ""             # https://xxxx.supabase.co
+    supabase_anon_key: str = ""        # public anon key (safe to expose in browser)
+    supabase_service_role_key: str = ""  # service role key (server-only, never expose)
+    database_url: str = ""             # postgresql://postgres:[password]@db.xxxx.supabase.co:5432/postgres
+
+    @property
+    def use_supabase(self) -> bool:
+        return bool(self.database_url and self.supabase_url)
+
+    @property
+    def sqlite_url(self) -> str:
+        if self.use_supabase:
+            return self.database_url
+        return f"sqlite:///{self.sqlite_path}"
     bootstrap_path: Path = Path("./data/bootstrap_companies.json")
 
     # Applicant
@@ -114,10 +130,5 @@ class Settings(BaseSettings):
     @property
     def ashby_boards_list(self) -> List[str]:
         return [b.strip() for b in self.ashby_boards.split(",") if b.strip()]
-
-    @property
-    def sqlite_url(self) -> str:
-        return f"sqlite:///{self.sqlite_path}"
-
 
 settings = Settings()
