@@ -22,6 +22,10 @@ import tempfile
 _TEST_DB = pathlib.Path(tempfile.gettempdir()) / f"jobagent_test_{os.getpid()}.db"
 os.environ["SQLITE_PATH"] = str(_TEST_DB)
 os.environ["FAISS_INDEX_PATH"] = str(_TEST_DB.with_suffix(".faiss"))
+os.environ["DATABASE_URL"] = ""
+os.environ["SUPABASE_URL"] = ""
+os.environ["SUPABASE_ANON_KEY"] = ""
+os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
 
 import importlib.util
 import sys
