@@ -460,6 +460,8 @@ def run_discovery() -> int:
         from app.discovery.sources.reed import ReedSource
         from app.discovery.sources.jooble import JoobleSource
         from app.discovery.sources.linkedin_rapidapi import LinkedInRapidAPISource
+        from app.discovery.sources.greenhouse_search import GreenhouseKeywordSource
+        from app.discovery.sources.lever_search import LeverKeywordSource
 
         direct_sources = [
             ("SerpAPI Google Jobs", SerpAPISource),
@@ -475,6 +477,8 @@ def run_discovery() -> int:
             ("Reed.co.uk", ReedSource),
             ("Jooble", JoobleSource),
             ("LinkedIn (RapidAPI)", LinkedInRapidAPISource),
+            ("Greenhouse (keyword search)", GreenhouseKeywordSource),
+            ("Lever (keyword search)", LeverKeywordSource),
         ]
 
         all_raw_jobs = []
