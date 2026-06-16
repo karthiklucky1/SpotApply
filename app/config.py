@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     tavily_api_key: str = ""
     exa_api_key: str = ""
+    magic_api_key: str = ""
 
     # Job board APIs
     serpapi_key: str = ""            # serpapi.com — Google Jobs (LinkedIn/Indeed/Glassdoor). Free: 100/mo
