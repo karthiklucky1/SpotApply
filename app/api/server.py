@@ -108,6 +108,9 @@ async def startup_event():
     import asyncio
     from app.autofill.agent import set_main_loop
     set_main_loop(asyncio.get_running_loop())
+    # Create all DB tables at runtime (after env vars are injected by Railway)
+    from app.db.init_db import init_db
+    init_db()
 
 
 @app.get("/")
