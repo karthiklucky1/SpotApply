@@ -1587,10 +1587,12 @@
         function setSidebarAvatar(url) {
             const img = document.getElementById('sb-avatar-img');
             const ph = document.getElementById('sb-avatar-placeholder');
-            if (!url) { img.classList.add('hidden'); ph.classList.remove('hidden'); return; }
+            // NOTE: the elements carry inline display styles, which override CSS
+            // classes — so toggle inline display directly, not a 'hidden' class.
+            if (!url) { img.style.display = 'none'; ph.style.display = 'flex'; return; }
             img.src = url;
-            img.classList.remove('hidden');
-            ph.classList.add('hidden');
+            img.style.display = 'block';
+            ph.style.display = 'none';
         }
 
         async function loadSidebarAvatar() {

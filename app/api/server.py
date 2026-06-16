@@ -1026,6 +1026,15 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
 
 # ── Profile Avatar endpoints ────────────────────────────────────────────────
 
+def _sign_avatar(bucket, path: str) -> str | None:
+    """Return a signed URL for an avatar object, or None if it doesn't exist."""
+    try:
+        signed = bucket.create_signed_url(path, 3600)
+    except Exception:
+        return None
+    return (signed or {}).get("signedURL") or (signed or {}).get("signedUrl")
+
+
 @app.get("/api/profile/avatar")
 def get_avatar(request: Request) -> dict:
     """Return the signed URL for the user's profile avatar, or null."""
@@ -1034,14 +1043,23 @@ def get_avatar(request: Request) -> dict:
     if settings.use_supabase and uid and uid != "local":
         try:
             from app.db.supabase_client import service_client
-            sb = service_client()
-            files = sb.storage.from_("avatars").list(uid)
-            if files:
+            bucket = service_client().storage.from_("avatars")
+            # Upload always stores {uid}/avatar.<ext> — try known extensions
+            # directly. This avoids relying on list(), which can return empty.
+            for ext in ("jpg", "jpeg", "png", "webp", "gif"):
+                url = _sign_avatar(bucket, f"{uid}/avatar.{ext}")
+                if url:
+                    return {"url": url}
+            # Fallback: list the folder for any unexpected filename.
+            try:
+                files = bucket.list(uid) or []
                 names = [f.get("name", "") for f in files if f.get("name", "").startswith("avatar.")]
                 if names:
-                    signed = sb.storage.from_("avatars").create_signed_url(f"{uid}/{names[0]}", 3600)
-                    url = (signed or {}).get("signedURL") or (signed or {}).get("signedUrl")
-                    return {"url": url}
+                    url = _sign_avatar(bucket, f"{uid}/{names[0]}")
+                    if url:
+                        return {"url": url}
+            except Exception:
+                pass
         except Exception:
             pass
     return {"url": None}
