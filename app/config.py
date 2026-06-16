@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     arbeitnow_enabled: bool = True   # Arbeitnow public API — no key needed
     jobicy_enabled: bool = True      # Jobicy public API — no key needed
     weworkremotely_enabled: bool = True  # WeWorkRemotely RSS feeds — no key needed
-    indeed_rss_enabled: bool = True  # Indeed public RSS — no key, ~10 results/query
+    indeed_rss_enabled: bool = False  # Indeed killed public RSS + blocks bots (and ToS forbids it) — off by default
     adzuna_enabled: bool = False     # Adzuna API — needs app_id + app_key (free tier)
     adzuna_app_id: str = ""
     adzuna_app_key: str = ""
@@ -90,7 +90,8 @@ class Settings(BaseSettings):
     # Matching
     min_match_score: float = 0.20
     top_k_rerank: int = 500
-    daily_apply_limit: int = 25
+    daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)
+    daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
 
     # Models
     scoring_model: str = "claude-haiku-4-5-20251001"

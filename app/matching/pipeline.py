@@ -205,7 +205,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                         select(Application).where(Application.job_id == job.id)
                     ).first()
                     if not existing:
-                        if today_count < settings.daily_apply_limit:
+                        if today_count < settings.daily_shortlist_limit:
                             # Company cap + 40-day cooldown applies here too —
                             # previously this already-scored path skipped the cap,
                             # which let a single company flood the shortlist.
@@ -305,7 +305,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     select(Application).where(Application.job_id == job.id)
                 ).first()
                 if not existing:
-                    if today_count < settings.daily_apply_limit:
+                    if today_count < settings.daily_shortlist_limit:
                         # ── Company cap (max 2 active) + 40-day cooldown ──
                         if not _check_and_enforce_company_cap(session, job, score):
                             session.commit()
@@ -325,7 +325,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                         shortlisted.append(job.id)
                         today_count += 1
                     else:
-                        log.info("Daily apply limit (%d) reached — skipping application creation for job %s.", settings.daily_apply_limit, job.title)
+                        log.info("Daily shortlist limit (%d) reached — skipping application creation for job %s.", settings.daily_shortlist_limit, job.title)
 
             session.commit()
             log.info("Job %s @ %s: sim=%.3f rerank=%.0f — %s",

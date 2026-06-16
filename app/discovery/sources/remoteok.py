@@ -57,10 +57,11 @@ class RemoteOKSource:
             async with httpx.AsyncClient(headers=_HEADERS, timeout=20.0) as client:
                 r = await client.get(_API_URL)
                 if r.status_code != 200:
-                    log.warning("RemoteOK: HTTP %d", r.status_code)
-                    return []
-
-                data = r.json()
+                    raise RuntimeError(f"HTTP {r.status_code} (likely Cloudflare/bot block)")
+                try:
+                    data = r.json()
+                except Exception:
+                    raise RuntimeError("non-JSON response (likely Cloudflare/HTML block)")
                 # First item is a legal/metadata object — skip it
                 for item in data[1:]:
                     if len(jobs) >= limit:
@@ -113,7 +114,10 @@ class RemoteOKSource:
                         log.debug("RemoteOK: failed to parse item: %s", e)
 
         except Exception as e:
+            # Re-raise so the discovery run summary records *why* RemoteOK
+            # returned nothing (e.g. a Cloudflare block) instead of a silent 0.
             log.warning("RemoteOK: fetch failed: %s", e)
+            raise
 
         log.info("RemoteOKSource: fetched %d jobs", len(jobs))
         return jobs
