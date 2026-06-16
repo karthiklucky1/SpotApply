@@ -472,7 +472,7 @@
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
             <!-- Column 1: Shortlisted -->
-            <div class="glass rounded-[32px] p-5 border border-indigo-500/25 shadow-[0_0_15px_rgba(99,102,241,0.05)] flex flex-col gap-4">
+            <div class="glass rounded-[32px] p-5 border border-indigo-500/25 shadow-[0_0_15px_rgba(99,102,241,0.05)] flex flex-col gap-4 min-h-[300px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
@@ -576,7 +576,7 @@
                         </div>
                     </div>
                     {% else %}
-                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                    <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl">
                         <div class="text-3xl mb-2 opacity-60">🔍</div>
                         <p class="text-slate-500 text-xs font-semibold">No shortlisted roles yet.</p>
                         <p class="text-slate-600 text-[10px] mt-1">Run matching to filter from pool.</p>
@@ -586,7 +586,7 @@
             </div>
             
             <!-- Column 2: Awaiting Review -->
-            <div class="glass rounded-[32px] p-5 border border-amber-500/25 shadow-[0_0_15px_rgba(245,158,11,0.05)] flex flex-col gap-4">
+            <div class="glass rounded-[32px] p-5 border border-amber-500/25 shadow-[0_0_15px_rgba(245,158,11,0.05)] flex flex-col gap-4 min-h-[300px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
@@ -656,7 +656,7 @@
                         </div>
                     </div>
                     {% else %}
-                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                    <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl">
                         <div class="text-3xl mb-2 opacity-60">🤖</div>
                         <p class="text-slate-500 text-xs font-semibold">No autofilled forms ready.</p>
                         <p class="text-slate-600 text-[10px] mt-1">Form filling triggers after tailoring.</p>
@@ -666,7 +666,7 @@
             </div>
             
             <!-- Column 3: Submitted -->
-            <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4">
+            <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4 min-h-[300px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
@@ -706,7 +706,7 @@
                         </div>
                     </div>
                     {% else %}
-                    <div class="text-center py-12 border-2 border-dashed border-slate-800/60 rounded-2xl">
+                    <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl">
                         <div class="text-3xl mb-2 opacity-60">🚀</div>
                         <p class="text-slate-500 text-xs font-semibold">No submitted roles yet.</p>
                         <p class="text-slate-600 text-[10px] mt-1">Complete reviews to submit.</p>
@@ -718,10 +718,16 @@
 
           </div><!-- /kanban 3-col grid -->
 
+        <!-- Divider — separates the active pipeline from the archive -->
+        <div class="flex items-center gap-4 mt-10 mb-2">
+            <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest shrink-0">Archive</span>
+            <div class="flex-1 h-px bg-gradient-to-r from-slate-700/50 to-transparent"></div>
+        </div>
+
         <!-- Rejected + Removed: fixed-height, each scrolls internally so the page stays short -->
         <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <!-- Rejected (heard back: no) -->
-            <div class="glass rounded-[32px] p-6 border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.03)] flex flex-col">
+            <div class="glass rounded-[32px] p-6 border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.03)] flex flex-col min-h-[200px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
@@ -753,7 +759,7 @@
             </div>
 
             <!-- Removed / Cancelled -->
-            <div class="glass rounded-[32px] p-6 border-slate-800/60 shadow-[0_0_15px_rgba(244,63,94,0.02)] flex flex-col">
+            <div class="glass rounded-[32px] p-6 border-slate-800/60 shadow-[0_0_15px_rgba(244,63,94,0.02)] flex flex-col min-h-[200px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
