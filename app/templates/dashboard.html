@@ -714,21 +714,15 @@
                     {% endfor %}
                 </div>
             </div>
-        </div>
+            <!-- /Submitted column -->
 
           </div><!-- /kanban 3-col grid -->
 
-        <!-- Divider — separates the active pipeline from the archive -->
-        <div class="flex items-center gap-4 mt-10 mb-2">
-            <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest shrink-0">Archive</span>
-            <div class="flex-1 h-px bg-gradient-to-r from-slate-700/50 to-transparent"></div>
-        </div>
-
-        <!-- Rejected + Removed: fixed-height, each scrolls internally so the page stays short -->
-        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <!-- Rejected + Removed archive row — tight spacing, clean and compact -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-2">
             <!-- Rejected (heard back: no) -->
-            <div class="glass rounded-[32px] p-6 border-rose-500/20 shadow-[0_0_15px_rgba(244,63,94,0.03)] flex flex-col min-h-[200px]">
-                <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
+            <div class="glass rounded-[28px] p-5 border border-rose-500/15 flex flex-col">
+                <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
                         <h2 class="font-bold text-white text-sm">Rejected</h2>
@@ -736,7 +730,7 @@
                     <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="rejected-count">{{ rejected|length }}</span>
                 </div>
 
-                <div class="space-y-3 max-h-[55vh] overflow-y-auto pr-1" id="rejected-container">
+                <div class="space-y-2.5 max-h-[40vh] overflow-y-auto pr-1" id="rejected-container">
                     {% for app, job in rejected %}
                     <div class="glass rounded-[20px] p-4 border-rose-900/30 opacity-70 hover:opacity-100 transition-opacity duration-200" id="rejected-card-{{ app.id }}">
                         <div class="flex justify-between items-start gap-2">
@@ -759,8 +753,8 @@
             </div>
 
             <!-- Removed / Cancelled -->
-            <div class="glass rounded-[32px] p-6 border-slate-800/60 shadow-[0_0_15px_rgba(244,63,94,0.02)] flex flex-col min-h-[200px]">
-                <div class="flex items-center justify-between border-b border-slate-800/40 pb-3 mb-4">
+            <div class="glass rounded-[28px] p-5 border border-slate-700/30 flex flex-col">
+                <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
                         <h2 class="font-bold text-white text-sm">Removed / Cancelled</h2>
@@ -768,7 +762,7 @@
                     <span class="bg-slate-500/10 text-slate-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-500/20" id="skipped-count">{{ skipped|length }}</span>
                 </div>
 
-                <div class="space-y-3 max-h-[55vh] overflow-y-auto pr-1" id="skipped-container">
+                <div class="space-y-2.5 max-h-[40vh] overflow-y-auto pr-1" id="skipped-container">
                     {% for app, job in skipped %}
                     <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}">
                         <div class="flex justify-between items-start gap-2">
@@ -786,7 +780,8 @@
                     {% endfor %}
                 </div>
             </div>
-        </section>
+          </div><!-- /archive row -->
+
         </div><!-- /view-content-kanban -->
 
         <!-- TAB 2 removed (manual apply) -->
@@ -875,40 +870,35 @@
         </div>
 
         <!-- TAB 4: Registry View -->
-        <div id="view-content-registry" class="hidden flex flex-col gap-6">
-            <!-- Summary stats -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="glass rounded-3xl p-5 border-slate-800">
-                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Registry Harvest Scale</h4>
-                    <p class="text-3xl font-extrabold text-white mt-2" id="reg-stat-total">...</p>
-                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Total ATS board configurations seeded</p>
+        <div id="view-content-registry" class="hidden flex flex-col gap-5 w-full">
+            <!-- 3 stat cards — even columns, no clipping -->
+            <div class="grid grid-cols-3 gap-5 w-full">
+                <div class="glass rounded-[24px] p-5 border border-slate-700/40 flex flex-col gap-1">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Boards Seeded</span>
+                    <span class="text-3xl font-extrabold text-white mt-1" id="reg-stat-total">...</span>
+                    <span class="text-[10px] text-slate-600">Total ATS board configs</span>
                 </div>
-                <div class="glass rounded-3xl p-5 border-slate-800">
-                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Active Boards Crawler</h4>
-                    <p class="text-3xl font-extrabold text-indigo-400" id="reg-stat-active">...</p>
-                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Boards with active API responses</p>
+                <div class="glass rounded-[24px] p-5 border border-indigo-500/20 flex flex-col gap-1">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Active Crawlers</span>
+                    <span class="text-3xl font-extrabold text-indigo-400 mt-1" id="reg-stat-active">...</span>
+                    <span class="text-[10px] text-slate-600">Boards with live API responses</span>
                 </div>
-                <div class="glass rounded-3xl p-5 border-slate-800">
-                    <h4 class="text-slate-400 text-xs font-bold uppercase tracking-wider">Crawler Knowledge Base</h4>
-                    <p class="text-3xl font-extrabold text-emerald-400" id="reg-stat-jobs">...</p>
-                    <p class="text-[10px] text-slate-500 mt-1 font-semibold">Total active postings verified in ATS APIs</p>
+                <div class="glass rounded-[24px] p-5 border border-emerald-500/20 flex flex-col gap-1">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Jobs Verified</span>
+                    <span class="text-3xl font-extrabold text-emerald-400 mt-1" id="reg-stat-jobs">...</span>
+                    <span class="text-[10px] text-slate-600">Postings confirmed in ATS APIs</span>
                 </div>
             </div>
 
-            <!-- Detailed info -->
-            <div class="glass rounded-[32px] p-6 border-slate-800">
-                <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-                    <h3 class="font-bold text-white text-base">ATS Registry Strategy</h3>
-                    <div class="flex gap-2">
-                        <button onclick="runAction('/run/discovery', 'Registry Scrape')" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/20 px-4 py-2 rounded-full transition font-bold flex items-center gap-1.5">
-                            🧭 Re-Scrape Boards
-                        </button>
-                    </div>
+            <!-- Rescrape + info -->
+            <div class="glass rounded-[24px] p-5 border border-slate-700/40">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-bold text-white text-sm">How Boards Crawling Works</h3>
+                    <button onclick="startDiscover()" class="text-xs btn-primary text-white font-bold px-4 py-2 rounded-xl flex items-center gap-1.5">
+                        🧭 Re-Scrape Boards
+                    </button>
                 </div>
-                <div class="text-xs text-slate-400 space-y-3 leading-relaxed">
-                    <p>To avoid scraping generic corporate boards, the <strong class="text-slate-200">Company Registry</strong> maintains API hooks to specific company job boards on Greenhouse, Lever, and Ashby. During each discovery loop, it validates active endpoints, pulls their job counts, and ingests postings matching AI keywords into our vector database.</p>
-                    <p>We recently added key AI startup boards: <strong class="text-indigo-400">Weights &amp; Biases</strong>, <strong class="text-indigo-400">Fireworks AI</strong>, <strong class="text-indigo-400">Lightning AI</strong>, and <strong class="text-indigo-400">Cerebras</strong>. These companies hire early-career ML developers, increasing matching throughput.</p>
-                </div>
+                <p class="text-xs text-slate-400 leading-relaxed">HirePath connects directly to Greenhouse, Lever, Ashby, SmartRecruiters, and Workday APIs for companies in the registry. Every 6 hours it validates active endpoints and pulls new postings into your pool. Jobs from aggregators (LinkedIn, Indeed, RemoteOK, etc.) are also fetched via job-board APIs and merged with deduplication.</p>
             </div>
         </div>
 
