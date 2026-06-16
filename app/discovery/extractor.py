@@ -93,19 +93,20 @@ def parse_job_text_with_llm(text: str) -> Dict[str, Any]:
         raise ValueError(f"Claude returned unparseable JSON for job page: {e}") from e
 
 
-async def extract_and_rank_job(url: str) -> int:
+async def extract_and_rank_job(url: str, user_id: str | None = None) -> int:
     """Scrapes URL, parses details, runs matcher & reranker, and creates Application.
-    
+
     Returns the created Application ID.
     """
     external_id = make_external_id(url)
     source = map_url_to_source(url)
 
-    # 1. Check if job already exists
+    # 1. Check if job already exists (scoped to this user)
     with get_session() as session:
-        existing_job = session.exec(
-            select(Job).where(Job.external_id == external_id, Job.source == source)
-        ).first()
+        eq = select(Job).where(Job.external_id == external_id, Job.source == source)
+        if user_id:
+            eq = eq.where(Job.user_id == user_id)
+        existing_job = session.exec(eq).first()
         if existing_job:
             log.info("Job already exists in DB (ID: %d). Re-checking application...", existing_job.id)
             existing_app = session.exec(
@@ -113,12 +114,13 @@ async def extract_and_rank_job(url: str) -> int:
             ).first()
             if existing_app:
                 return existing_app.id
-            
+
             # Create application for existing job
             new_app = Application(
                 job_id=existing_job.id,
                 status=ApplicationStatus.SHORTLISTED,
-                apply_url=existing_job.url
+                apply_url=existing_job.url,
+                user_id=user_id,
             )
             session.add(new_app)
             session.commit()
@@ -142,11 +144,12 @@ async def extract_and_rank_job(url: str) -> int:
         location=parsed.get("location", "Remote").strip(),
         url=url,
         description=parsed.get("description", "").strip(),
-        remote="remote" in parsed.get("location", "").lower()
+        remote="remote" in parsed.get("location", "").lower(),
+        user_id=user_id,
     )
 
     # 4. Compute similarity and match scores
-    resume = _load_resume()
+    resume = _load_resume(user_id=user_id)
     
     # Calculate similarity score
     try:
@@ -183,7 +186,8 @@ async def extract_and_rank_job(url: str) -> int:
         app = Application(
             job_id=job.id,
             status=ApplicationStatus.SHORTLISTED,
-            apply_url=apply_url
+            apply_url=apply_url,
+            user_id=user_id,
         )
         session.add(app)
         session.commit()

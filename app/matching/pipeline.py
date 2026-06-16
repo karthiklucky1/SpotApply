@@ -165,7 +165,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     matcher = Matcher()
     matcher.rebuild(user_id=user_id)
 
-    candidates = matcher.search_for_resume(resume, k=settings.top_k_rerank)
+    candidates = matcher.search_for_resume(resume, k=settings.top_k_rerank, user_id=user_id)
     candidates = [(jid, score) for jid, score in candidates if score >= settings.min_match_score]
     log.info("%d candidates above cross-encoder threshold %.2f", len(candidates), settings.min_match_score)
 

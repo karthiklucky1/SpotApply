@@ -86,6 +86,23 @@ def _require_user(request: Request) -> str:
     return uid
 
 
+def _require_owned_application(request: Request, application_id: int):
+    """Load an Application, enforcing that it belongs to the requesting user.
+
+    Raises 401 if unauthenticated, 404 if missing or owned by someone else
+    (404 not 403 — don't leak that the ID exists). In SQLite single-user mode
+    (uid == "local") ownership is not enforced.
+    """
+    uid = _require_user(request)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if uid != "local" and application.user_id != uid:
+            raise HTTPException(status_code=404, detail="Application not found")
+    return uid
+
+
 @app.on_event("startup")
 async def startup_event():
     import asyncio
@@ -539,13 +556,13 @@ def dashboard(request: Request):
 
 
 @app.get("/application/{application_id}/details")
-def application_details(application_id: int) -> dict:
+def application_details(application_id: int, request: Request) -> dict:
     """Return tailored resume + cover letter text for modal preview."""
     from pathlib import Path
+    _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
 
@@ -579,12 +596,12 @@ def application_details(application_id: int) -> dict:
 
 
 @app.post("/application/{application_id}/submit")
-def mark_as_submitted(application_id: int) -> dict:
+def mark_as_submitted(application_id: int, request: Request) -> dict:
     from datetime import datetime
+    _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Application not found")
         application.status = ApplicationStatus.SUBMITTED
         application.submitted_at = datetime.utcnow()
@@ -594,11 +611,11 @@ def mark_as_submitted(application_id: int) -> dict:
 
 
 @app.post("/application/{application_id}/skip")
-def skip_application(application_id: int) -> dict:
+def skip_application(application_id: int, request: Request) -> dict:
+    _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Application not found")
         application.status = ApplicationStatus.SKIPPED
         session.add(application)
@@ -608,13 +625,13 @@ def skip_application(application_id: int) -> dict:
 
 
 @app.post("/application/{application_id}/reject")
-def mark_as_rejected(application_id: int) -> dict:
+def mark_as_rejected(application_id: int, request: Request) -> dict:
     """Manually mark an application as rejected (you received a rejection)."""
     from datetime import datetime
+    _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Application not found")
         application.status = ApplicationStatus.REJECTED
         application.updated_at = datetime.utcnow()
@@ -646,14 +663,16 @@ def trigger_tailor(request: Request, bg: BackgroundTasks) -> dict:
 
 
 @app.post("/run/autofill/{application_id}")
-def trigger_autofill(application_id: int, bg: BackgroundTasks) -> dict:
+def trigger_autofill(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
+    _require_owned_application(request, application_id)
     bg.add_task(autofill, application_id, bypass_delay=True)
     return {"started": "autofill", "application_id": application_id}
 
 
 @app.post("/run/preview/{application_id}")
-def trigger_preview(application_id: int, bg: BackgroundTasks) -> dict:
+def trigger_preview(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
     """Re-open the filled form in a visible Playwright browser for user review."""
+    _require_owned_application(request, application_id)
     bg.add_task(preview, application_id)
     return {"started": "preview", "application_id": application_id}
 
@@ -752,9 +771,10 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
 # ── Answer Pack endpoint ────────────────────────────────────────────────────
 
 @app.get("/application/{application_id}/answer-pack")
-def get_answer_pack(application_id: int) -> dict:
+def get_answer_pack(application_id: int, request: Request) -> dict:
     """Generate (or return cached) answer pack for one application."""
     from app.autofill.answer_pack import generate_answer_pack
+    _require_owned_application(request, application_id)
     try:
         return generate_answer_pack(application_id)
     except ValueError as e:
@@ -769,13 +789,14 @@ class ExtractLinkRequest(BaseModel):
 
 
 @app.post("/run/extract-link")
-async def trigger_extract_link(req: ExtractLinkRequest, bg: BackgroundTasks) -> dict:
+async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: BackgroundTasks) -> dict:
     from app.discovery.extractor import extract_and_rank_job
     from app.tailoring.tailor import tailor_for_application
 
+    uid = _get_user_id(request)
     log.info("Extracting manual link: %s", req.url)
     try:
-        app_id = await extract_and_rank_job(req.url)
+        app_id = await extract_and_rank_job(req.url, user_id=uid if uid != "local" else None)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
