@@ -1,6 +1,7 @@
 # Core
 fastapi>=0.110
 uvicorn[standard]>=0.27
+python-multipart>=0.0.9
 sqlmodel>=0.0.16
 pydantic-settings>=2.2
 python-dotenv>=1.0
