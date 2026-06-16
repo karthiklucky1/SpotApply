@@ -1146,18 +1146,18 @@
 
         // ── Onboarding / Discover Gate ────────────────────────────────────────
         async function startDiscover() {
-            // Check if profile exists and has a name set
+            // Discovery requires a resume — without one there's nothing to match
+            // against, so we'd only surface noise. Gate on resume presence.
             try {
-                const res = await fetch('/api/profile');
+                const res = await fetch('/api/resume/status');
                 if (res.ok) {
                     const data = await res.json();
-                    if (data && data.full_name && data.full_name.trim()) {
-                        // Profile is complete — just run discovery
+                    if (data && data.has_resume) {
                         return runAction('/run/discovery', 'Discovery');
                     }
                 }
             } catch(e) { /* fall through to onboarding */ }
-            // No profile — show onboarding modal
+            // No resume — show onboarding modal to collect details first
             document.getElementById('onboarding-modal').classList.remove('hidden');
         }
 
@@ -1222,17 +1222,24 @@
                 showToast('Name and email are required.', 'error');
                 return;
             }
+            const parts = name.split(/\s+/);
+            const first = parts.shift() || '';
+            const last = parts.join(' ');
+            const target = document.getElementById('ob-target-role').value.trim();
             const payload = {
-                full_name: name,
+                first_name: first,
+                last_name: last,
                 email: email,
                 current_title: document.getElementById('ob-title').value.trim(),
-                target_role: document.getElementById('ob-target-role').value.trim(),
                 location: document.getElementById('ob-location').value.trim(),
-                skills: document.getElementById('ob-skills').value.trim(),
+                key_skills: document.getElementById('ob-skills').value.trim(),
+                professional_summary: target ? ('Targeting roles: ' + target) : '',
             };
             try {
                 const res = await fetch('/api/profile', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                 if (!res.ok) { showToast('Could not save profile.', 'error'); return; }
+                // Build a basic resume from the entered details so matching works.
+                await fetch('/api/resume/synthesize', { method: 'POST' });
                 showToast('Profile saved! Starting discovery…', 'success');
                 closeOnboarding();
                 runAction('/run/discovery', 'Discovery');

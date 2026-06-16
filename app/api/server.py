@@ -86,6 +86,25 @@ def _require_user(request: Request) -> str:
     return uid
 
 
+def _user_has_resume(uid: str | None) -> bool:
+    """True if the user has uploaded (or synthesized) a resume.
+
+    Supabase mode → check the ``resumes/{uid}/`` storage folder.
+    Local mode    → check for any ``./data/resume_master.*`` file.
+    """
+    from app.config import settings
+    if settings.use_supabase and uid and uid != "local":
+        try:
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            files = sb.storage.from_("resumes").list(uid)
+            return any((f.get("name") or "").startswith("resume.") for f in (files or []))
+        except Exception:
+            return False
+    import glob
+    return bool(glob.glob("./data/resume_master.*"))
+
+
 def _require_owned_application(request: Request, application_id: int):
     """Load an Application, enforcing that it belongs to the requesting user.
 
@@ -209,6 +228,53 @@ async def upload_resume(request: Request):
         with open(local_path, "wb") as f:
             f.write(content)
         return {"success": True, "path": local_path}
+
+@app.get("/api/resume/status")
+def resume_status(request: Request) -> dict:
+    """Whether the current user has a resume on file. Drives the Discover gate."""
+    uid = _get_user_id(request)
+    return {"has_resume": _user_has_resume(uid)}
+
+
+@app.post("/api/resume/synthesize")
+def synthesize_resume(request: Request) -> dict:
+    """Build a minimal markdown resume from the user's profile fields.
+
+    Used when the user fills their details in manually instead of uploading a
+    file — gives the matcher something to work with so discovery isn't blocked.
+    """
+    uid = _require_user(request)
+    from app.autofill.answer_pack import _get_or_create_profile
+    profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    name = f"{profile.first_name} {profile.last_name}".strip() or "Candidate"
+    md = (
+        f"# {name}\n\n"
+        f"**Email:** {profile.email}\n"
+        f"**Location:** {profile.location}\n"
+        f"**Current Title:** {profile.current_title}\n\n"
+        f"## Summary\n{profile.professional_summary or ''}\n\n"
+        f"## Skills\n{profile.key_skills or ''}\n\n"
+        f"## Experience\n{profile.current_title or ''}\n"
+    )
+    from app.config import settings
+    if settings.use_supabase and uid != "local":
+        try:
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            sb.storage.from_("resumes").upload(
+                f"{uid}/resume.md",
+                md.encode("utf-8"),
+                {"upsert": "true", "content-type": "text/markdown"},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not save resume: {e}")
+    else:
+        import os
+        os.makedirs("./data", exist_ok=True)
+        with open("./data/resume_master.md", "w", encoding="utf-8") as f:
+            f.write(md)
+    return {"success": True}
+
 
 @app.get("/health")
 def health() -> dict:
@@ -669,6 +735,13 @@ def mark_as_rejected(application_id: int, request: Request) -> dict:
 @app.post("/run/discovery")
 def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
     uid = _get_user_id(request)
+    # Gate: no resume → no discovery. Without a resume there is nothing to match
+    # against, so scraping jobs into the user's pool would only show noise.
+    if not _user_has_resume(uid):
+        raise HTTPException(
+            status_code=400,
+            detail="Upload your resume (or fill in your profile) before discovering jobs.",
+        )
     bg.add_task(run_discovery, uid if uid != "local" else None)
     return {"started": "discovery"}
 
