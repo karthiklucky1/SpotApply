@@ -10,7 +10,7 @@ calling these raises RuntimeError so callers know to fall back to SQLite.
 Usage:
     from app.db.supabase_client import service_client
     sb = service_client()
-    sb.storage.from_("resumes").upload(...)
+    sb.storage.from_("resume").upload(...)
 """
 from __future__ import annotations
 

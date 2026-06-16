@@ -112,7 +112,7 @@ def _load_resume(user_id: str | None = None) -> str:
                 from app.db.supabase_client import service_client
                 sb = service_client()
                 path = f"{user_id}/resume.{ext}"
-                data = sb.storage.from_("resumes").download(path)
+                data = sb.storage.from_("resume").download(path)
                 if data:
                     if ext == "md":
                         return data.decode("utf-8")

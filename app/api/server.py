@@ -97,7 +97,7 @@ def _user_has_resume(uid: str | None) -> bool:
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
-            files = sb.storage.from_("resumes").list(uid)
+            files = sb.storage.from_("resume").list(uid)
             return any((f.get("name") or "").startswith("resume.") for f in (files or []))
         except Exception:
             return False
@@ -223,8 +223,8 @@ async def upload_resume(request: Request):
             from app.db.supabase_client import service_client
             sb = service_client()
             path = f"{uid}/resume.{ext}"
-            sb.storage.from_("resumes").upload(path, content, {"upsert": "true", "content-type": file.content_type})
-            public_url = sb.storage.from_("resumes").get_public_url(path)
+            sb.storage.from_("resume").upload(path, content, {"upsert": "true", "content-type": file.content_type})
+            public_url = sb.storage.from_("resume").get_public_url(path)
             return {"success": True, "url": public_url, "path": path}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
@@ -346,7 +346,7 @@ def synthesize_resume(request: Request) -> dict:
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
-            sb.storage.from_("resumes").upload(
+            sb.storage.from_("resume").upload(
                 f"{uid}/resume.md",
                 md.encode("utf-8"),
                 {"upsert": "true", "content-type": "text/markdown"},
