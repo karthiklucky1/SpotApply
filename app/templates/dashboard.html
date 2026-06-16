@@ -1159,6 +1159,12 @@
             searchJobs(); // Load first page of explorer database
             _initAnimations();
             loadSidebarAvatar();
+            // After a discovery run, land on the "All Jobs" tab so the newly
+            // discovered jobs are visible (the Pipeline only shows shortlisted).
+            if (localStorage.getItem('jb_post_discover')) {
+                localStorage.removeItem('jb_post_discover');
+                try { sbSwitchTab('explorer'); } catch (e) {}
+            }
         });
 
         function initStartupBadges() {
@@ -1377,7 +1383,7 @@
             const ok = document.getElementById('discover-close').dataset.ok;
             document.getElementById('discover-status').className = 'text-xs text-indigo-300 font-semibold h-4';
             document.getElementById('discover-summary').classList.add('hidden');
-            if (ok) window.location.reload();
+            if (ok) { localStorage.setItem('jb_post_discover', '1'); window.location.reload(); }
         }
         async function _getLastRun() {
             try {
