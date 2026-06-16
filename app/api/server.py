@@ -882,9 +882,18 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     from app.db.models import UserProfile
 
     uid = _get_user_id(request)
-    profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    user_id_arg = uid if uid != "local" else None
+    # Get-or-create inside the same session to avoid detached-instance issues
     with get_session() as session:
-        db_profile = session.get(UserProfile, profile.id)
+        q = select(UserProfile)
+        if user_id_arg:
+            q = q.where(UserProfile.user_id == user_id_arg)
+        db_profile = session.exec(q).first()
+        if not db_profile:
+            # Create it fresh
+            db_profile = UserProfile(user_id=user_id_arg)
+            session.add(db_profile)
+            session.flush()
         for field, value in update.model_dump(exclude_none=True).items():
             setattr(db_profile, field, value)
         db_profile.updated_at = _dt.utcnow()

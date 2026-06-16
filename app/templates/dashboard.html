@@ -1406,7 +1406,9 @@
                 professional_summary: target ? ('Targeting roles: ' + target) : '',
             };
             try {
-                const res = await fetch('/api/profile', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                const token = localStorage.getItem('sb_token');
+                const authH = token ? { 'Authorization': `Bearer ${token}` } : {};
+                const res = await fetch('/api/profile', { method: 'PUT', headers: { ...authH, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!res.ok) { showToast('Could not save profile.', 'error'); return; }
                 // Build a basic resume from the entered details so matching works.
                 await fetch('/api/resume/synthesize', { method: 'POST' });
