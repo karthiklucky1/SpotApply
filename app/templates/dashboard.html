@@ -7,6 +7,25 @@
     <title>JobAgent Pro — AI Job Hunting Console</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="module">
+        // Auth guard — redirect to /login if no session
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+        const SUPABASE_URL = '{{ supabase_url }}'
+        const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
+        if (SUPABASE_URL) {
+            const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+            const { data: { session } } = await sb.auth.getSession()
+            if (!session) { window.location.href = '/login'; }
+            else {
+                localStorage.setItem('sb_token', session.access_token)
+                // Keep token fresh
+                sb.auth.onAuthStateChange((_event, s) => {
+                    if (s) localStorage.setItem('sb_token', s.access_token)
+                    else { localStorage.removeItem('sb_token'); window.location.href = '/login'; }
+                })
+            }
+        }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     
@@ -204,8 +223,14 @@
                 </div>
             </div>
             <div class="flex items-center gap-3 mt-4 md:mt-0">
+                <button onclick="openResumeUpload()" class="glass flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-slate-300 hover:text-white border border-slate-700/60 hover:border-emerald-500/50 transition">
+                    📄 Upload Resume
+                </button>
                 <button onclick="openProfileModal()" class="glass flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-slate-300 hover:text-white border border-slate-700/60 hover:border-indigo-500/50 transition">
                     👤 My Profile
+                </button>
+                <button onclick="handleLogout()" class="glass flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-slate-400 hover:text-red-400 border border-slate-700/60 hover:border-red-500/30 transition">
+                    Sign Out
                 </button>
             </div>
         </header>
@@ -1733,7 +1758,63 @@
             }
         }
 
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); } });
+        // ── Auth helpers ──────────────────────────────────────────────────────────
+        function authHeaders() {
+            const token = localStorage.getItem('sb_token')
+            return token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' }
+        }
+
+        async function handleLogout() {
+            try {
+                const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm')
+                const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
+                await sb.auth.signOut()
+            } catch(e) {}
+            localStorage.removeItem('sb_token')
+            window.location.href = '/login'
+        }
+
+        // Patch all fetch calls to include auth token
+        const _origFetch = window.fetch
+        window.fetch = function(url, opts = {}) {
+            if (typeof url === 'string' && url.startsWith('/')) {
+                opts.headers = { ...authHeaders(), ...(opts.headers || {}) }
+            }
+            return _origFetch(url, opts)
+        }
+
+        // ── Resume Upload Modal ───────────────────────────────────────────────────
+        function openResumeUpload() {
+            document.getElementById('resume-upload-modal').classList.remove('hidden')
+        }
+        function closeResumeUpload() {
+            document.getElementById('resume-upload-modal').classList.add('hidden')
+        }
+        async function uploadResume(e) {
+            e.preventDefault()
+            const file = document.getElementById('resume-file').files[0]
+            if (!file) return
+            const btn = e.target.querySelector('button[type="submit"]')
+            btn.textContent = 'Uploading...'; btn.disabled = true
+            const fd = new FormData()
+            fd.append('file', file)
+            const token = localStorage.getItem('sb_token')
+            const res = await fetch('/api/resume/upload', {
+                method: 'POST',
+                headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+                body: fd
+            })
+            if (res.ok) {
+                showToast('Resume uploaded successfully!', 'success')
+                closeResumeUpload()
+            } else {
+                const err = await res.json().catch(() => ({}))
+                showToast(`Upload failed: ${err.detail || res.statusText}`, 'error')
+            }
+            btn.textContent = 'Upload'; btn.disabled = false
+        }
+
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); } });
 
         // ── Profile Modal ────────────────────────────────────────────────────────
         async function openProfileModal() {
@@ -1860,6 +1941,28 @@
             document.getElementById('answer-pack-content').innerHTML = html;
         }
     </script>
+
+    <!-- Resume Upload Modal -->
+    <div id="resume-upload-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeResumeUpload()"></div>
+        <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-md border border-slate-700/50 shadow-2xl">
+            <div class="flex items-center justify-between mb-5">
+                <h2 class="text-lg font-bold text-white">📄 Upload Your Resume</h2>
+                <button onclick="closeResumeUpload()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <p class="text-xs text-slate-400 mb-4">Upload your master resume. The AI will tailor it for each job application automatically.</p>
+            <form onsubmit="uploadResume(event)" class="space-y-4">
+                <div class="border-2 border-dashed border-slate-600 hover:border-indigo-500 rounded-xl p-8 text-center transition cursor-pointer" onclick="document.getElementById('resume-file').click()">
+                    <div class="text-3xl mb-2">📎</div>
+                    <p class="text-sm text-slate-300 font-medium">Click to select file</p>
+                    <p class="text-xs text-slate-500 mt-1">PDF, DOCX, or Markdown — max 5MB</p>
+                    <input type="file" id="resume-file" accept=".pdf,.docx,.md,.txt" class="hidden" onchange="document.querySelector('#resume-file-name').textContent = this.files[0]?.name || ''" />
+                </div>
+                <p id="resume-file-name" class="text-xs text-indigo-400 text-center font-medium"></p>
+                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm">Upload</button>
+            </form>
+        </div>
+    </div>
 
     <!-- Profile Modal -->
     <div id="profile-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">

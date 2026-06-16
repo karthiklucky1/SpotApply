@@ -63,6 +63,29 @@ class SupabaseSessionMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SupabaseSessionMiddleware)
 
 
+# ── Auth helpers ─────────────────────────────────────────────────────────────
+
+def _get_user_id(request: Request) -> str | None:
+    """Extract user_id from Bearer token. Returns None if not authenticated."""
+    from app.config import settings
+    if not settings.use_supabase:
+        return "local"   # single-user mode — no auth
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1]
+    from app.db.supabase_client import get_user_id_from_token
+    return get_user_id_from_token(token)
+
+
+def _require_user(request: Request) -> str:
+    """Like _get_user_id but raises 401 if not authenticated."""
+    uid = _get_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return uid
+
+
 @app.on_event("startup")
 async def startup_event():
     import asyncio
@@ -72,15 +95,78 @@ async def startup_event():
 
 @app.get("/")
 def index_redirect():
-    """Redirect to the dashboard by default."""
     return RedirectResponse(url="/dashboard")
+
 
 try:
     templates = Jinja2Templates(directory="app/templates")
 except Exception:
-    # Fallback if running from a different working directory
     import os
     templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "..", "templates"))
+
+
+# ── Auth pages ───────────────────────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    from app.config import settings
+    return templates.TemplateResponse(request=request, name="auth.html", context={
+        "supabase_url": settings.supabase_url,
+        "supabase_anon_key": settings.supabase_anon_key,
+    })
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def auth_callback(request: Request):
+    from app.config import settings
+    return templates.TemplateResponse(request=request, name="auth_callback.html", context={
+        "supabase_url": settings.supabase_url,
+        "supabase_anon_key": settings.supabase_anon_key,
+    })
+
+
+@app.post("/auth/logout")
+def logout():
+    return {"success": True}
+
+
+# ── Resume upload ─────────────────────────────────────────────────────────────
+
+@app.post("/api/resume/upload")
+async def upload_resume(request: Request):
+    """Upload resume file. Stores in Supabase Storage (production) or local disk (dev)."""
+    from fastapi import UploadFile, File
+    uid = _require_user(request)
+    form = await request.form()
+    file: UploadFile = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    content = await file.read()
+    filename = file.filename
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+    if ext not in ("pdf", "docx", "md", "txt"):
+        raise HTTPException(status_code=400, detail="Only PDF, DOCX, MD, TXT allowed")
+
+    from app.config import settings
+    if settings.use_supabase:
+        try:
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            path = f"{uid}/resume.{ext}"
+            sb.storage.from_("resumes").upload(path, content, {"upsert": "true", "content-type": file.content_type})
+            public_url = sb.storage.from_("resumes").get_public_url(path)
+            return {"success": True, "url": public_url, "path": path}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
+    else:
+        # Local dev — save to data/
+        import os
+        os.makedirs("./data", exist_ok=True)
+        local_path = f"./data/resume_master.{ext}"
+        with open(local_path, "wb") as f:
+            f.write(content)
+        return {"success": True, "path": local_path}
 
 @app.get("/health")
 def health() -> dict:
@@ -407,6 +493,7 @@ def dashboard(request: Request):
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
+    from app.config import settings
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -417,6 +504,8 @@ def dashboard(request: Request):
             "submitted": submitted,
             "skipped": skipped,
             "rejected": rejected,
+            "supabase_url": settings.supabase_url,
+            "supabase_anon_key": settings.supabase_anon_key,
         }
     )
 

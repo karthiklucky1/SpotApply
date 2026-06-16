@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HirePath — Signing in...</title>
+    <style>
+        body { font-family: sans-serif; background: #020617; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    </style>
+</head>
+<body>
+    <p>Signing you in...</p>
+    <script type="module">
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+        const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
+        const { data: { session } } = await sb.auth.getSession()
+        if (session) {
+            localStorage.setItem('sb_token', session.access_token)
+            // Bootstrap profile from Google metadata
+            const meta = session.user.user_metadata || {}
+            if (meta.full_name || meta.name) {
+                const parts = (meta.full_name || meta.name || '').split(' ')
+                await fetch('/api/profile', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+                    body: JSON.stringify({ first_name: parts[0] || '', last_name: parts.slice(1).join(' ') || '', email: session.user.email || '' })
+                })
+            }
+            window.location.href = '/dashboard'
+        } else {
+            window.location.href = '/login'
+        }
+    </script>
+</body>
+</html>
