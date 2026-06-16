@@ -280,6 +280,26 @@
     </div>
 </header>
 
+        <!-- ── Discover Hero CTA ─────────────────────────────────────────── -->
+        <div id="discover-hero-banner" class="mb-8 rounded-[28px] border border-indigo-500/25 overflow-hidden relative" style="background: linear-gradient(135deg, rgba(79,70,229,0.12) 0%, rgba(124,58,237,0.08) 50%, rgba(6,182,212,0.05) 100%); box-shadow: 0 0 60px rgba(99,102,241,0.08);">
+            <!-- Glow blob -->
+            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(99,102,241,0.6), transparent 70%);"></div>
+            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-15 pointer-events-none" style="background: radial-gradient(circle, rgba(139,92,246,0.5), transparent 70%);"></div>
+            <div class="relative z-10 px-8 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
+                <div class="flex items-center gap-4">
+                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(124,58,237,0.15)); border: 1px solid rgba(99,102,241,0.3);">🧭</div>
+                    <div>
+                        <div class="text-white font-black text-lg leading-tight">Find Your Next Job — Automatically</div>
+                        <div class="text-slate-400 text-sm mt-0.5">HirePath scans 1000+ job boards every 6 hours and ranks the best matches for your profile.</div>
+                    </div>
+                </div>
+                <button onclick="startDiscover()" class="btn-primary shrink-0 text-white text-sm font-black py-3.5 px-8 rounded-2xl flex items-center gap-2.5 whitespace-nowrap" style="min-width:180px; justify-content:center;">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    Discover Jobs
+                </button>
+            </div>
+        </div>
+
         <!-- Pipeline Funnel & Stats Grid -->
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
             <!-- Glassmorphic Funnel Visualizer -->
@@ -400,9 +420,9 @@
                     <span>⚙️</span> Orchestrator Triggers
                 </h3>
                 <div class="grid grid-cols-3 gap-2">
-                    <button onclick="runAction('/run/discovery', 'Discovery')" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-white/[0.06] hover:border-slate-600/60 hover:bg-white/[0.04]" style="background: rgba(255,255,255,0.03);">
-                        <span class="w-8 h-8 rounded-lg bg-slate-700/60 flex items-center justify-center text-base">🧭</span>
-                        <span class="text-slate-300">Discover</span>
+                    <button onclick="startDiscover()" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-indigo-500/30 hover:border-indigo-500/60" style="background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(79,70,229,0.08));">
+                        <span class="w-8 h-8 rounded-lg bg-indigo-500/25 flex items-center justify-center text-base">🧭</span>
+                        <span class="text-indigo-300">Discover</span>
                     </button>
                     <button onclick="runAction('/run/matching', 'Matching')" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-indigo-500/20 hover:border-indigo-500/40" style="background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(79,70,229,0.06));">
                         <span class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-base">🔥</span>
@@ -1124,6 +1144,117 @@
             });
         }
 
+        // ── Onboarding / Discover Gate ────────────────────────────────────────
+        async function startDiscover() {
+            // Check if profile exists and has a name set
+            try {
+                const res = await fetch('/api/profile');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.full_name && data.full_name.trim()) {
+                        // Profile is complete — just run discovery
+                        return runAction('/run/discovery', 'Discovery');
+                    }
+                }
+            } catch(e) { /* fall through to onboarding */ }
+            // No profile — show onboarding modal
+            document.getElementById('onboarding-modal').classList.remove('hidden');
+        }
+
+        function closeOnboarding() {
+            document.getElementById('onboarding-modal').classList.add('hidden');
+        }
+
+        function obFileChosen(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const nameEl = document.getElementById('ob-file-name');
+            nameEl.textContent = '✓ ' + file.name;
+            nameEl.classList.remove('hidden');
+            document.getElementById('ob-drop-zone').style.borderColor = 'rgba(99,102,241,0.6)';
+        }
+
+        async function obUploadResume() {
+            const input = document.getElementById('ob-resume-input');
+            if (!input.files[0]) {
+                // No file — go to manual
+                obSkipToManual();
+                return;
+            }
+            const btn = document.getElementById('ob-upload-btn');
+            btn.textContent = 'Uploading…'; btn.disabled = true;
+            try {
+                const fd = new FormData();
+                fd.append('file', input.files[0]);
+                const res = await fetch('/api/resume/upload', { method: 'POST', body: fd });
+                if (res.ok) {
+                    showToast('Resume uploaded! Starting discovery…', 'success');
+                    closeOnboarding();
+                    runAction('/run/discovery', 'Discovery');
+                } else {
+                    showToast('Upload failed — please fill manually.', 'error');
+                    obSkipToManual();
+                }
+            } catch(e) {
+                showToast('Upload error — please fill manually.', 'error');
+                obSkipToManual();
+            }
+            btn.textContent = 'Upload & Continue'; btn.disabled = false;
+        }
+
+        function obSkipToManual() {
+            document.getElementById('ob-step-1').classList.add('hidden');
+            document.getElementById('ob-step-2').classList.remove('hidden');
+            document.getElementById('ob-step-dot-1').style.background = 'linear-gradient(90deg,#6366f1,#8b5cf6)';
+            document.getElementById('ob-step-dot-2').style.background = 'linear-gradient(90deg,#6366f1,#8b5cf6)';
+        }
+
+        function obGoBack() {
+            document.getElementById('ob-step-2').classList.add('hidden');
+            document.getElementById('ob-step-1').classList.remove('hidden');
+            document.getElementById('ob-step-dot-2').style.background = '#334155';
+        }
+
+        async function obSaveAndDiscover() {
+            const name = document.getElementById('ob-name').value.trim();
+            const email = document.getElementById('ob-email').value.trim();
+            if (!name || !email) {
+                showToast('Name and email are required.', 'error');
+                return;
+            }
+            const payload = {
+                full_name: name,
+                email: email,
+                current_title: document.getElementById('ob-title').value.trim(),
+                target_role: document.getElementById('ob-target-role').value.trim(),
+                location: document.getElementById('ob-location').value.trim(),
+                skills: document.getElementById('ob-skills').value.trim(),
+            };
+            try {
+                const res = await fetch('/api/profile', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+                if (!res.ok) { showToast('Could not save profile.', 'error'); return; }
+                showToast('Profile saved! Starting discovery…', 'success');
+                closeOnboarding();
+                runAction('/run/discovery', 'Discovery');
+            } catch(e) { showToast('Network error.', 'error'); }
+        }
+
+        // drag-and-drop on the onboarding drop zone
+        document.addEventListener('DOMContentLoaded', () => {
+            const dz = document.getElementById('ob-drop-zone');
+            if (!dz) return;
+            dz.addEventListener('dragover', e => { e.preventDefault(); dz.style.borderColor = 'rgba(99,102,241,0.7)'; });
+            dz.addEventListener('dragleave', () => { dz.style.borderColor = ''; });
+            dz.addEventListener('drop', e => {
+                e.preventDefault();
+                const file = e.dataTransfer.files[0];
+                if (!file) return;
+                const input = document.getElementById('ob-resume-input');
+                const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
+                obFileChosen(input);
+            });
+        });
+
         // Action Trigger
         async function runAction(endpoint, actionName) {
             showToast(`Triggering ${actionName}...`, 'info');
@@ -1804,7 +1935,7 @@
             btn.textContent = 'Upload'; btn.disabled = false
         }
 
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); } });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); } });
 
         // ── Profile Modal ────────────────────────────────────────────────────────
         async function openProfileModal() {
@@ -1931,6 +2062,98 @@
             document.getElementById('answer-pack-content').innerHTML = html;
         }
     </script>
+
+    <!-- ── Onboarding / Discover Gate Modal ──────────────────────────────── -->
+    <div id="onboarding-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/75 backdrop-blur-md" onclick="closeOnboarding()"></div>
+        <div class="relative glass-dark rounded-[32px] w-full max-w-lg border border-indigo-500/20 shadow-2xl overflow-hidden" style="box-shadow: 0 0 80px rgba(99,102,241,0.15);">
+            <!-- Top gradient strip -->
+            <div class="h-1 w-full" style="background: linear-gradient(90deg, #6366f1, #8b5cf6, #06b6d4);"></div>
+            <div class="p-7">
+                <div class="flex items-center gap-3 mb-1">
+                    <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0" style="background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(124,58,237,0.15)); border: 1px solid rgba(99,102,241,0.3);">🧭</div>
+                    <div>
+                        <div class="text-white font-black text-lg leading-tight">Set Up Your Profile</div>
+                        <div class="text-slate-400 text-xs mt-0.5">HirePath needs your details to find matching jobs</div>
+                    </div>
+                    <button onclick="closeOnboarding()" class="ml-auto text-slate-500 hover:text-white transition-colors text-xl leading-none">&times;</button>
+                </div>
+
+                <!-- Step indicator -->
+                <div class="flex items-center gap-2 mt-5 mb-6">
+                    <div id="ob-step-dot-1" class="h-1 rounded-full flex-1 transition-all duration-300" style="background: linear-gradient(90deg,#6366f1,#8b5cf6);"></div>
+                    <div id="ob-step-dot-2" class="h-1 rounded-full flex-1 bg-slate-700 transition-all duration-300"></div>
+                </div>
+
+                <!-- Step 1: Upload Resume -->
+                <div id="ob-step-1">
+                    <p class="text-slate-300 text-sm mb-4">Upload your resume and we'll auto-fill your profile and find jobs that match your skills.</p>
+                    <label class="block w-full cursor-pointer">
+                        <div id="ob-drop-zone" class="rounded-2xl border-2 border-dashed border-slate-700 hover:border-indigo-500/60 transition-all duration-200 p-8 text-center" style="background: rgba(99,102,241,0.03);">
+                            <div class="text-3xl mb-2">📄</div>
+                            <div class="text-slate-300 font-bold text-sm">Drop your resume here</div>
+                            <div class="text-slate-500 text-xs mt-1">PDF, DOCX, or TXT · max 5 MB</div>
+                            <div id="ob-file-name" class="text-indigo-400 text-xs font-bold mt-2 hidden"></div>
+                        </div>
+                        <input type="file" id="ob-resume-input" accept=".pdf,.doc,.docx,.txt" class="hidden" onchange="obFileChosen(this)">
+                    </label>
+                    <div class="flex items-center gap-3 my-4">
+                        <div class="flex-1 h-px bg-slate-800"></div>
+                        <span class="text-slate-600 text-xs font-bold">or fill in manually</span>
+                        <div class="flex-1 h-px bg-slate-800"></div>
+                    </div>
+                    <div class="flex gap-3">
+                        <button onclick="obSkipToManual()" class="flex-1 text-sm font-bold py-3 rounded-xl border border-slate-700 text-slate-400 hover:text-white hover:border-slate-600 transition-all">Fill manually →</button>
+                        <button onclick="obUploadResume()" id="ob-upload-btn" class="flex-1 btn-primary text-white text-sm font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                            Upload &amp; Continue
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Manual key fields -->
+                <div id="ob-step-2" class="hidden">
+                    <p class="text-slate-400 text-xs mb-4">Just a few key details — you can fill the rest in My Profile later.</p>
+                    <div class="space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Full Name *</label>
+                                <input id="ob-name" type="text" placeholder="Jane Doe" class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Email *</label>
+                                <input id="ob-email" type="email" placeholder="jane@example.com" class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Current / Most Recent Title</label>
+                            <input id="ob-title" type="text" placeholder="e.g. Software Engineer, Data Scientist" class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Target Role</label>
+                                <input id="ob-target-role" type="text" placeholder="e.g. ML Engineer" class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Location</label>
+                                <input id="ob-location" type="text" placeholder="City, State or Remote" class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">Key Skills (comma separated)</label>
+                            <input id="ob-skills" type="text" placeholder="Python, React, Machine Learning..." class="w-full text-sm bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 outline-none transition">
+                        </div>
+                    </div>
+                    <div class="flex gap-3 mt-5">
+                        <button onclick="obGoBack()" class="px-5 text-sm font-bold py-3 rounded-xl border border-slate-700 text-slate-400 hover:text-white transition-all">← Back</button>
+                        <button onclick="obSaveAndDiscover()" class="flex-1 btn-primary text-white text-sm font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                            🧭 Save &amp; Start Discovering
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Resume Upload Modal -->
     <div id="resume-upload-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
