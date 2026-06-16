@@ -111,6 +111,28 @@ async def startup_event():
     # Create all DB tables at runtime (after env vars are injected by Railway)
     from app.db.init_db import init_db
     init_db()
+    # Start background scheduler — runs discovery + matching every 6 hours
+    asyncio.create_task(_scheduler())
+
+
+async def _scheduler():
+    """Run discovery → matching every 6 hours for all users."""
+    import asyncio
+    import logging
+    _log = logging.getLogger("scheduler")
+    INTERVAL = 6 * 60 * 60  # 6 hours in seconds
+    # Wait 2 min after boot before first run so the server is fully ready
+    await asyncio.sleep(120)
+    while True:
+        try:
+            _log.info("Scheduler: starting discovery run")
+            await asyncio.to_thread(run_discovery)
+            _log.info("Scheduler: discovery done, starting matching")
+            await asyncio.to_thread(run_matching)
+            _log.info("Scheduler: matching done, sleeping %dh", INTERVAL // 3600)
+        except Exception as e:
+            _log.exception("Scheduler error: %s", e)
+        await asyncio.sleep(INTERVAL)
 
 
 @app.get("/")

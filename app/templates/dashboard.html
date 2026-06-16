@@ -436,10 +436,7 @@
             <!-- Sliding active indicator — moves via JS transform (layoutId pattern) -->
             <span id="tab-indicator"></span>
             <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="relative z-10 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
-                📋 Autofill Pipeline
-            </button>
-            <button id="view-tab-manual" onclick="switchViewTab('manual')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
-                🖱️ Manual Apply <span class="bg-violet-500/20 text-violet-400 text-[10px] font-black px-2 py-0.5 rounded-full border border-violet-500/30 ml-1">{{ manual_queue|length }}</span>
+                📋 Pipeline
             </button>
             <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
                 🔍 All Jobs (<span id="explorer-total-count">...</span>)
@@ -761,59 +758,7 @@
             </div>
         </section>
 
-        <!-- TAB 2: Manual Apply -->
-        <div id="view-content-manual" class="hidden">
-            {% if manual_queue %}
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-                {% for app, job in manual_queue %}
-                <div class="glass rounded-[28px] p-5 border border-violet-500/15 hover:border-violet-500/35 transition duration-200 ease-out relative flex flex-col gap-3">
-                    <button type="button" onclick="removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-600 hover:text-rose-400 transition w-6 h-6 flex items-center justify-center rounded-full font-bold z-10">&times;</button>
-
-                    <div class="pr-7">
-                        <div class="flex items-center gap-2 mb-1.5">
-                            <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-500/20">{{ job.source.value }}</span>
-                            {% if job.rerank_score %}
-                            <span class="text-[9px] font-mono font-bold text-emerald-400 ml-auto">{{ job.rerank_score|int }}%</span>
-                            {% endif %}
-                        </div>
-                        <h3 class="text-xs font-bold text-white leading-snug line-clamp-2">{{ job.title }}</h3>
-                        <p class="text-[11px] text-slate-400 font-semibold mt-1">🏢 {{ job.company }}</p>
-                        <p class="text-[10px] text-slate-500 mt-0.5">📍 {{ job.location or 'Remote' }}</p>
-                    </div>
-
-                    {% if job.rerank_reasoning %}
-                    <div class="px-3 py-2 rounded-2xl bg-slate-950/40 border border-slate-800/50 text-[10px] text-slate-400 leading-relaxed line-clamp-2">
-                        "{{ job.rerank_reasoning.split('\n')[0] }}"
-                    </div>
-                    {% endif %}
-
-                    <div class="flex flex-col gap-2 mt-auto">
-                        <a href="{{ app.apply_url or job.url }}" target="_blank" rel="noopener noreferrer"
-                           class="text-[10px] bg-violet-600 hover:bg-violet-500 text-white py-2.5 rounded-full font-bold transition text-center shadow-lg shadow-violet-950/40 flex items-center justify-center gap-1.5">
-                            🖱️ Open &amp; Apply
-                        </a>
-                        <div class="grid grid-cols-2 gap-2">
-                            <button type="button" onclick="openModal({{ app.id }})"
-                                class="text-[10px] bg-slate-800/80 hover:bg-slate-700 text-slate-300 py-2 rounded-full font-bold border border-slate-700 transition">
-                                📄 Resume
-                            </button>
-                            <button type="button" onclick="markSubmitted({{ app.id }}, this)"
-                                class="text-[10px] bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 py-2 rounded-full font-bold border border-emerald-500/20 transition">
-                                ✅ Done
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <div class="glass rounded-[32px] p-16 text-center border border-slate-800/60">
-                <div class="text-5xl mb-4 opacity-40">🖱️</div>
-                <p class="text-slate-400 font-semibold text-sm">No manual apply jobs yet.</p>
-                <p class="text-slate-600 text-xs mt-2">Run <strong class="text-slate-400">/discover</strong> then <strong class="text-slate-400">/match</strong> — LinkedIn, RemoteOK, HN Jobs will appear here.</p>
-            </div>
-            {% endif %}
-        </div>
+        <!-- TAB 2 removed (manual apply) -->
 
         <!-- TAB 3: Jobs Explorer View -->
         <div id="view-content-explorer" class="hidden flex flex-col gap-6">
