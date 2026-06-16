@@ -1406,6 +1406,7 @@
                     <span class="font-bold ${n > 0 ? 'text-white' : 'text-slate-500'}">${n}</span>
                 </div>`;
             }).join('') : '<p class="text-[11px] text-slate-500 text-center">No source data recorded.</p>';
+            summary.innerHTML += '<p class="text-[11px] text-indigo-300 text-center pt-1.5">🔄 Matching new jobs onto your board… reload in a moment.</p>';
             summary.classList.remove('hidden');
             closeBtn.textContent = 'View jobs';
             closeBtn.dataset.ok = '1';

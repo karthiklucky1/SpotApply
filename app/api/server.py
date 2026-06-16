@@ -906,6 +906,18 @@ def mark_as_rejected(application_id: int, request: Request) -> dict:
     return {"success": True, "application_id": application_id}
 
 
+def _discover_then_match(user_id) -> None:
+    """Run discovery, then matching, so newly discovered jobs flow onto the board."""
+    try:
+        run_discovery(user_id)
+    except Exception as e:
+        log.exception("Discovery failed: %s", e)
+    try:
+        run_matching(user_id)
+    except Exception as e:
+        log.exception("Matching failed: %s", e)
+
+
 @app.post("/run/discovery")
 def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
     uid = _get_user_id(request)
@@ -916,7 +928,7 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
             status_code=400,
             detail="Upload your resume (or fill in your profile) before discovering jobs.",
         )
-    bg.add_task(run_discovery, uid if uid != "local" else None)
+    bg.add_task(_discover_then_match, uid if uid != "local" else None)
     return {"started": "discovery"}
 
 
