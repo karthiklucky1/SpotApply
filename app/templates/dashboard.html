@@ -90,17 +90,28 @@
     }
 
     /* Premium card hover glows */
-    .card-glow-blue { transition: box-shadow 0.25s ease, border-color 0.25s ease; }
-    .card-glow-blue:hover { box-shadow: 0 0 40px rgba(99,102,241,0.18), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(99,102,241,0.45) !important; }
-    .card-glow-amber:hover { box-shadow: 0 0 40px rgba(245,158,11,0.15), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(245,158,11,0.4) !important; }
+    .card-glow-blue {
+        transition: box-shadow 0.25s ease, border-color 0.25s ease;
+        box-shadow: 0 0 12px rgba(99,102,241,0.08), 0 4px 16px rgba(0,0,0,0.3);
+    }
+    .card-glow-blue:hover { box-shadow: 0 0 40px rgba(99,102,241,0.28), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(99,102,241,0.55) !important; }
+    .card-glow-amber { box-shadow: 0 0 10px rgba(245,158,11,0.08), 0 4px 16px rgba(0,0,0,0.3); }
+    .card-glow-amber:hover { box-shadow: 0 0 40px rgba(245,158,11,0.22), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(245,158,11,0.5) !important; }
     .card-glow-green:hover { box-shadow: 0 0 40px rgba(16,185,129,0.15), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(16,185,129,0.4) !important; }
 
-    /* Strong-match glow (rerank score >= 80) — pulsing emerald, like the hiring/online glow */
-    .high-match { border-color: rgba(16,185,129,0.55) !important; animation: high-match-pulse 2.8s ease-in-out infinite; }
+    /* Strong-match glow (rerank score >= 80) — pulsing emerald */
+    .high-match { border-color: rgba(16,185,129,0.65) !important; animation: high-match-pulse 2.4s ease-in-out infinite; }
     @keyframes high-match-pulse {
-        0%,100% { box-shadow: 0 0 16px rgba(16,185,129,0.22), 0 8px 32px rgba(0,0,0,0.4); }
-        50%     { box-shadow: 0 0 34px rgba(16,185,129,0.50), 0 8px 32px rgba(0,0,0,0.4); }
+        0%,100% { box-shadow: 0 0 18px rgba(16,185,129,0.30), 0 8px 32px rgba(0,0,0,0.4); }
+        50%     { box-shadow: 0 0 42px rgba(16,185,129,0.65), 0 8px 32px rgba(0,0,0,0.4); }
     }
+    /* Shimmer animation for newly-added card */
+    @keyframes card-shimmer {
+        0%   { box-shadow: 0 0 0 2px #818cf8, 0 0 30px rgba(99,102,241,0.5); }
+        50%  { box-shadow: 0 0 0 3px #a5b4fc, 0 0 50px rgba(99,102,241,0.8); }
+        100% { box-shadow: 0 0 0 2px #818cf8, 0 0 30px rgba(99,102,241,0.5); }
+    }
+    .card-new-highlight { animation: card-shimmer 0.9s ease-in-out 3, high-match-pulse 2.4s ease-in-out infinite 2.7s; }
     .match-badge-strong { color:#34d399 !important; background:rgba(16,185,129,0.12) !important; border-color:rgba(16,185,129,0.45) !important; box-shadow:0 0 10px rgba(16,185,129,0.35); }
     .row-high-match { background:rgba(16,185,129,0.06) !important; box-shadow: inset 3px 0 0 rgba(16,185,129,0.65); }
 
@@ -666,28 +677,28 @@
                             <div class="w-6 h-6 rounded-full bg-indigo-500/30 flex items-center justify-center text-xs font-black text-indigo-300 shrink-0 mt-0.5">1</div>
                             <div>
                                 <p class="text-xs font-bold text-white mb-0.5">Upload Resume</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Click the <strong class="text-slate-300">📄 Resume</strong> button in the top bar to upload your PDF resume so the AI can learn your skills.</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">📄 Resume</strong> in the sidebar. Upload your PDF — the AI reads your skills, experience and location to match jobs.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
                             <div class="w-6 h-6 rounded-full bg-violet-500/30 flex items-center justify-center text-xs font-black text-violet-300 shrink-0 mt-0.5">2</div>
                             <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Run Discovery</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Hit <strong class="text-slate-300">🧭 Discover</strong> to scrape 1000+ job boards. This fills your pool with fresh postings. Runs auto every 6h.</p>
+                                <p class="text-xs font-bold text-white mb-0.5">Paste a Job Link</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Use <strong class="text-slate-300">🔗 Add Job from Link</strong> below. Paste any job URL — LinkedIn, Greenhouse, Indeed, Workday. We fetch the JD and calculate your match % + hire probability instantly.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
                             <div class="w-6 h-6 rounded-full bg-sky-500/30 flex items-center justify-center text-xs font-black text-sky-300 shrink-0 mt-0.5">3</div>
                             <div>
-                                <p class="text-xs font-bold text-white mb-0.5">AI Matching</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">🔥 Match</strong> to run the AI pipeline — 5 stages rank every job by hire probability and shortlist the best.</p>
+                                <p class="text-xs font-bold text-white mb-0.5">Tailored Docs</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">In <strong class="text-slate-300">📋 Pipeline</strong>, click <strong class="text-slate-300">✨ Tailor</strong> on any shortlisted job. AI rewrites your resume bullets and writes a cover letter matched to that exact job description.</p>
                             </div>
                         </div>
                         <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
                             <div class="w-6 h-6 rounded-full bg-emerald-500/30 flex items-center justify-center text-xs font-black text-emerald-300 shrink-0 mt-0.5">4</div>
                             <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Review &amp; Apply</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Open <strong class="text-slate-300">📋 Pipeline</strong> — tailor your resume, auto-fill forms, then approve via Telegram before submission.</p>
+                                <p class="text-xs font-bold text-white mb-0.5">Apply</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">📋 View Tailored Docs</strong> to read your resume & cover letter, then <strong class="text-slate-300">🖥️ Open Form</strong> + <strong class="text-slate-300">📝 Answer Pack</strong> to apply. Greenhouse/Lever/Ashby jobs get ⚡ Auto-fill (Pro).</p>
                             </div>
                         </div>
                     </div>
@@ -889,41 +900,52 @@
                         {% endif %}
                         
                         <div class="mt-3.5 flex flex-col gap-2">
-                            <!-- ✨ Tailor button — always visible on shortlisted cards -->
+                            <!-- Tailor: regenerates resume & cover letter specifically for this job -->
                             <button type="button" id="tailor-btn-{{ app.id }}" data-app-id="{{ app.id }}"
                                 onclick="event.stopPropagation(); tailorJob(+this.dataset.appId, this)"
-                                class="text-[10px] bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 py-2 rounded-full font-bold border border-violet-500/30 transition w-full text-center">
+                                class="text-[10px] bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 py-2 rounded-full font-bold border border-violet-500/30 transition w-full text-center"
+                                title="AI rewrites your resume bullets and generates a cover letter specifically for this job's requirements">
                                 ✨ Tailor Resume &amp; Cover Letter
                             </button>
                             {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
                             <div class="grid grid-cols-2 gap-2">
-                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
-                                    📄 Docs
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center"
+                                    title="View your tailored resume and cover letter for this job">
+                                    📋 View Tailored Docs
                                 </button>
                                 <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-[10px] bg-slate-800/20 hover:bg-slate-750 text-slate-400 py-2 rounded-full font-bold border border-slate-800 flex items-center justify-center transition">
                                     ↗ Job Link
                                 </a>
                             </div>
-                            <button type="button" id="autofill-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); autofillForm(+this.dataset.appId, this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-indigo-950/50 hover:shadow-indigo-600/20">
-                                ⚡ Auto-fill Application
+                            <button type="button" id="autofill-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); autofillForm(+this.dataset.appId, this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-full font-bold transition duration-200 text-center w-full shadow-lg shadow-indigo-950/50 hover:shadow-indigo-600/20"
+                                title="Bot opens the ATS form and fills it with your tailored answers automatically">
+                                ⚡ Auto-fill &amp; Apply
                             </button>
                             {% else %}
                             <div class="grid grid-cols-2 gap-2">
-                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
-                                    📄 Docs
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center"
+                                    title="View your tailored resume and cover letter for this job">
+                                    📋 View Tailored Docs
                                 </button>
                                 <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="text-[10px] bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 py-2 rounded-full font-bold border border-emerald-500/20 transition text-center">
                                     ✅ Mark Done
                                 </button>
                             </div>
                             <div class="grid grid-cols-2 gap-2">
-                                <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-[10px] bg-sky-600 hover:bg-sky-500 text-white py-2 rounded-full font-bold transition duration-200 text-center shadow-lg shadow-sky-950/50 flex items-center justify-center">
+                                <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-[10px] bg-sky-600 hover:bg-sky-500 text-white py-2 rounded-full font-bold transition duration-200 text-center shadow-lg shadow-sky-950/50 flex items-center justify-center"
+                                    title="Open the job application form in a new tab — use your Answer Pack to fill it">
                                     🖥️ Open Form
                                 </a>
-                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openAnswerPack(+this.dataset.appId)" class="text-[10px] bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 py-2 rounded-full font-bold border border-violet-500/20 transition text-center">
-                                    📋 Answer Pack
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openAnswerPack(+this.dataset.appId)" class="text-[10px] bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 py-2 rounded-full font-bold border border-violet-500/20 transition text-center"
+                                    title="AI-generated answers for every question on this application form">
+                                    📝 Answer Pack
                                 </button>
                             </div>
+                            <!-- Auto Apply (Pro) teaser for non-ATS sources -->
+                            <button onclick="event.stopPropagation(); openSettings('pricing')" class="text-[9px] font-bold text-slate-500 hover:text-indigo-300 border border-dashed border-slate-700/60 hover:border-indigo-500/40 rounded-full py-1.5 w-full transition text-center"
+                                title="Upgrade to Pro to get bot auto-fill on this job board">
+                                ⚡ Auto Apply available in Pro →
+                            </button>
                             {% endif %}
                         </div>
                     </div>
@@ -943,9 +965,17 @@
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
                         <h2 class="font-bold text-white text-sm">Awaiting Review</h2>
+                        <span class="text-[9px] text-slate-500 font-semibold cursor-help" title="Jobs move here after the bot auto-fills a Greenhouse/Lever/Ashby form. You review and confirm before it submits. Manual-source jobs stay in Shortlisted — use Open Form + Answer Pack instead.">ⓘ after auto-fill</span>
                     </div>
                     <span class="bg-amber-500/10 text-amber-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-amber-500/20">{{ bot_filled|length }}</span>
                 </div>
+                {% if bot_filled|length == 0 %}
+                <div class="text-center py-6 border-2 border-dashed border-amber-800/30 rounded-2xl">
+                    <div class="text-2xl mb-2 opacity-50">⚡</div>
+                    <p class="text-slate-500 text-xs font-semibold">Nothing awaiting yet</p>
+                    <p class="text-slate-600 text-[10px] mt-1 leading-relaxed px-2">Jobs appear here after the bot auto-fills a <strong class="text-slate-500">Greenhouse / Lever / Ashby</strong> form and waits for your approval. For other sites use <strong class="text-slate-500">Open Form</strong> in Shortlisted.</p>
+                </div>
+                {% endif %}
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in bot_filled %}
@@ -998,11 +1028,12 @@
                                 🖥️ Open &amp; Submit in Browser
                             </button>
                             <div class="grid grid-cols-2 gap-2">
-                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
-                                    📄 Docs
+                                <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center"
+                                    title="View your tailored resume and cover letter">
+                                    📋 View Docs
                                 </button>
                                 <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="text-[10px] bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 py-2 rounded-full font-bold border border-emerald-500/20 transition text-center">
-                                    ✅ Mark Done
+                                    ✅ Mark Submitted
                                 </button>
                             </div>
                         </div>
@@ -1418,9 +1449,8 @@
                     const card = document.querySelector(`[data-app-id="${highlightApp}"]`)?.closest('.kanban-card');
                     if (card) {
                         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        card.style.transition = 'box-shadow .3s ease';
-                        card.style.boxShadow = '0 0 0 2px #818cf8, 0 0 30px rgba(99,102,241,0.5)';
-                        setTimeout(() => { card.style.boxShadow = ''; }, 3000);
+                        card.classList.add('card-new-highlight');
+                        setTimeout(() => card.classList.remove('card-new-highlight'), 6000);
                     }
                 }, 400);
             }
