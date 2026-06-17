@@ -137,7 +137,7 @@
             email: document.getElementById('signin-email').value,
             password: document.getElementById('signin-password').value,
         })
-        if (error) { showMsg(error.message); btn.textContent = 'Sign In'; btn.disabled = false; return }
+        if (error) { showMsg(error.message); btn.textContent = 'Sign In'; btn.disabled = false; const pwEl = document.getElementById('signin-password'); pwEl.value = ''; pwEl.focus(); return }
         localStorage.setItem('sb_token', data.session.access_token)
         window.location.href = '/dashboard'
     }
