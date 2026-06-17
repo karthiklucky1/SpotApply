@@ -657,6 +657,49 @@
             </div>
         </section>
 
+        <!-- Onboarding checklist — shown only to new users with no jobs in pool -->
+        <div id="onboarding-banner" class="hidden glass rounded-[24px] p-5 mb-8 border border-indigo-500/30 bg-indigo-500/5">
+            <div class="flex items-start justify-between gap-4">
+                <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="text-lg">👋</span>
+                        <h3 class="font-bold text-white text-sm">Welcome to HirePath — here's how to get started</h3>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
+                            <div class="w-6 h-6 rounded-full bg-indigo-500/30 flex items-center justify-center text-xs font-black text-indigo-300 shrink-0 mt-0.5">1</div>
+                            <div>
+                                <p class="text-xs font-bold text-white mb-0.5">Upload Resume</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Click the <strong class="text-slate-300">📄 Resume</strong> button in the top bar to upload your PDF resume so the AI can learn your skills.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
+                            <div class="w-6 h-6 rounded-full bg-violet-500/30 flex items-center justify-center text-xs font-black text-violet-300 shrink-0 mt-0.5">2</div>
+                            <div>
+                                <p class="text-xs font-bold text-white mb-0.5">Run Discovery</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Hit <strong class="text-slate-300">🧭 Discover</strong> to scrape 1000+ job boards. This fills your pool with fresh postings. Runs auto every 6h.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
+                            <div class="w-6 h-6 rounded-full bg-sky-500/30 flex items-center justify-center text-xs font-black text-sky-300 shrink-0 mt-0.5">3</div>
+                            <div>
+                                <p class="text-xs font-bold text-white mb-0.5">AI Matching</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">🔥 Match</strong> to run the AI pipeline — 5 stages rank every job by hire probability and shortlist the best.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
+                            <div class="w-6 h-6 rounded-full bg-emerald-500/30 flex items-center justify-center text-xs font-black text-emerald-300 shrink-0 mt-0.5">4</div>
+                            <div>
+                                <p class="text-xs font-bold text-white mb-0.5">Review &amp; Apply</p>
+                                <p class="text-[10px] text-slate-400 leading-relaxed">Open <strong class="text-slate-300">📋 Pipeline</strong> — tailor your resume, auto-fill forms, then approve via Telegram before submission.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button onclick="document.getElementById('onboarding-banner').remove(); localStorage.setItem('hp_onboarding_dismissed','1')" class="text-slate-500 hover:text-white transition-colors shrink-0 mt-1 text-lg">✕</button>
+            </div>
+        </div>
+
         <!-- Source Breakdown Bar -->
         <section class="glass rounded-[28px] p-5 mb-8 border border-slate-800/60">
             <div class="flex flex-wrap items-center justify-between gap-4">
@@ -732,6 +775,38 @@
 
         <!-- TAB 1: Kanban Board View -->
         <div id="view-content-kanban" class="flex flex-col gap-6">
+          <!-- Application flow guide -->
+          <div class="glass rounded-[20px] px-5 py-3 border border-slate-800/60 flex items-center gap-0 overflow-x-auto">
+            <div class="flex items-center gap-1.5 shrink-0">
+                <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+                <span class="text-[10px] font-bold text-indigo-300">Shortlisted</span>
+                <span class="text-[9px] text-slate-500 ml-0.5">AI matched roles</span>
+            </div>
+            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <span class="text-[10px]">✨</span>
+                <span class="text-[10px] font-bold text-violet-300">Tailor</span>
+                <span class="text-[9px] text-slate-500 ml-0.5">AI resume &amp; cover letter</span>
+            </div>
+            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <span class="text-[10px]">⚡</span>
+                <span class="text-[10px] font-bold text-sky-300">Auto-fill</span>
+                <span class="text-[9px] text-slate-500 ml-0.5">Bot fills the form</span>
+            </div>
+            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                <span class="text-[10px] font-bold text-amber-300">Awaiting Review</span>
+                <span class="text-[9px] text-slate-500 ml-0.5">You approve via Telegram</span>
+            </div>
+            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span class="text-[10px] font-bold text-emerald-300">Submitted</span>
+                <span class="text-[9px] text-slate-500 ml-0.5">Application sent</span>
+            </div>
+          </div>
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
             <!-- Column 1: Shortlisted -->
@@ -806,6 +881,12 @@
                         {% endif %}
                         
                         <div class="mt-3.5 flex flex-col gap-2">
+                            <!-- ✨ Tailor button — always visible on shortlisted cards -->
+                            <button type="button" id="tailor-btn-{{ app.id }}" data-app-id="{{ app.id }}"
+                                onclick="event.stopPropagation(); tailorJob(+this.dataset.appId, this)"
+                                class="text-[10px] bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 py-2 rounded-full font-bold border border-violet-500/30 transition w-full text-center">
+                                ✨ Tailor Resume &amp; Cover Letter
+                            </button>
                             {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
                             <div class="grid grid-cols-2 gap-2">
                                 <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="text-[10px] bg-slate-850/80 hover:bg-slate-750 text-slate-300 py-2 rounded-full font-bold border border-slate-750 transition text-center">
@@ -1153,15 +1234,57 @@
                 </div>
             </div>
 
-            <!-- Rescrape + info -->
+            <!-- Source breakdown table -->
             <div class="glass rounded-[24px] p-5 border border-slate-700/40">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="font-bold text-white text-sm">How Boards Crawling Works</h3>
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-white text-sm">Job Sources</h3>
                     <button onclick="startDiscover()" class="text-xs btn-primary text-white font-bold px-4 py-2 rounded-xl flex items-center gap-1.5">
-                        🧭 Re-Scrape Boards
+                        🧭 Re-Scrape Now
                     </button>
                 </div>
-                <p class="text-xs text-slate-400 leading-relaxed">HirePath connects directly to Greenhouse, Lever, Ashby, SmartRecruiters, and Workday APIs for companies in the registry. Every 6 hours it validates active endpoints and pulls new postings into your pool. Jobs from aggregators (LinkedIn, Indeed, RemoteOK, etc.) are also fetched via job-board APIs and merged with deduplication.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-800/60">
+                                <th class="text-left py-2 pr-4 font-bold">Source</th>
+                                <th class="text-left py-2 pr-4 font-bold">Type</th>
+                                <th class="text-right py-2 pr-4 font-bold">Jobs</th>
+                                <th class="text-center py-2 font-bold">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="boards-source-table" class="divide-y divide-slate-800/30">
+                            <tr class="text-slate-500"><td colspan="4" class="py-4 text-center text-[10px]">Loading sources…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- How it works -->
+            <div class="glass rounded-[24px] p-5 border border-slate-700/40">
+                <h3 class="font-bold text-white text-sm mb-3">How Board Crawling Works</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="flex gap-3 items-start">
+                        <div class="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm shrink-0">1</div>
+                        <div>
+                            <p class="text-white text-xs font-bold mb-0.5">ATS Direct</p>
+                            <p class="text-slate-500 text-[10px] leading-relaxed">Greenhouse, Lever, Ashby & Workday APIs are queried directly for companies in your registry — no middleman, freshest data.</p>
+                        </div>
+                    </div>
+                    <div class="flex gap-3 items-start">
+                        <div class="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center text-sm shrink-0">2</div>
+                        <div>
+                            <p class="text-white text-xs font-bold mb-0.5">Aggregators</p>
+                            <p class="text-slate-500 text-[10px] leading-relaxed">LinkedIn, Jooble, Reed, RemoteOK & SerpAPI are scraped every 6h and merged with deduplication across all sources.</p>
+                        </div>
+                    </div>
+                    <div class="flex gap-3 items-start">
+                        <div class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-sm shrink-0">3</div>
+                        <div>
+                            <p class="text-white text-xs font-bold mb-0.5">AI Matching</p>
+                            <p class="text-slate-500 text-[10px] leading-relaxed">Discovered jobs are scored against your profile via BM25 → FAISS → cross-encoder → Claude LLM, then shortlisted by hire probability.</p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1384,6 +1507,38 @@
                             ${isAuto ? '⚡' : '🖱'} ${cfg.label} <strong>${count.toLocaleString()}</strong>
                         </span>`;
                     });
+                }
+
+                // Show onboarding banner for new users (no jobs in pool, not dismissed)
+                if (stats.total_jobs === 0 && !localStorage.getItem('hp_onboarding_dismissed')) {
+                    const ob = document.getElementById('onboarding-banner');
+                    if (ob) ob.classList.remove('hidden');
+                }
+
+                // Boards source breakdown table
+                if (stats.sources) {
+                    const tbody = document.getElementById('boards-source-table');
+                    if (tbody) {
+                        const ATS_DIRECT = new Set(['greenhouse', 'lever', 'ashby', 'workday', 'smartrecruiters']);
+                        const entries = Object.entries(stats.sources).sort((a, b) => b[1] - a[1]);
+                        if (!entries.length) {
+                            tbody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-[10px] text-slate-500">No jobs yet — run Re-Scrape.</td></tr>';
+                        } else {
+                            tbody.innerHTML = entries.map(([src, count]) => {
+                                const cfg = SOURCE_CONFIG[src] || { label: src.charAt(0).toUpperCase() + src.slice(1) };
+                                const isDirect = ATS_DIRECT.has(src);
+                                const typeLabel = isDirect ? 'ATS Direct' : 'Aggregator';
+                                const typeCls = isDirect ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' : 'text-violet-400 bg-violet-500/10 border-violet-500/20';
+                                const statusDot = count > 0 ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1"></span>Active' : '<span class="inline-block w-1.5 h-1.5 rounded-full bg-slate-600 mr-1"></span>Empty';
+                                return `<tr class="hover:bg-white/[0.02] transition-colors">
+                                    <td class="py-2.5 pr-4 text-slate-300 font-semibold">${cfg.label || src}</td>
+                                    <td class="py-2.5 pr-4"><span class="text-[9px] font-bold px-2 py-0.5 rounded-full border ${typeCls}">${typeLabel}</span></td>
+                                    <td class="py-2.5 pr-4 text-right font-bold text-white">${count.toLocaleString()}</td>
+                                    <td class="py-2.5 text-center text-[10px] text-slate-400 flex items-center justify-center">${statusDot}</td>
+                                </tr>`;
+                            }).join('');
+                        }
+                    }
                 }
 
                 // Render Chart.js
@@ -1865,6 +2020,10 @@
                 if (!btn) return;
                 btn.classList.toggle('active', t === tab);
             });
+            // Scroll tab nav into view so user sees the section
+            const tabNav = document.getElementById('tab-nav-bar');
+            if (tabNav) tabNav.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (window.innerWidth <= 768) toggleSidebar();
         }
 
         // Sidebar avatar
@@ -2277,6 +2436,32 @@
                 switchTab('resume');
             } catch (e) {
                 document.getElementById('loading').textContent = 'Error loading documents.';
+            }
+        }
+
+        async function tailorJob(appId, btn) {
+            const orig = btn.innerHTML;
+            btn.innerHTML = '⏳ Tailoring...';
+            btn.disabled = true;
+            showToast('AI is tailoring your resume & cover letter for this role…', 'info');
+            try {
+                const _tok = localStorage.getItem('sb_token');
+                const _hdr = _tok ? { 'Authorization': `Bearer ${_tok}` } : {};
+                const r = await fetch(`/run/tailor/${appId}`, { method: 'POST', headers: _hdr });
+                const res = r.ok ? await r.json() : null;
+                if (res && res.started) {
+                    btn.innerHTML = '✅ Tailored!';
+                    showToast('Tailoring started! Check Docs once complete.', 'success');
+                    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 4000);
+                } else {
+                    btn.innerHTML = '❌ Failed';
+                    showToast('Tailoring failed — please retry.', 'error');
+                    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
+                }
+            } catch(e) {
+                btn.innerHTML = '❌ Error';
+                showToast(`Tailoring error: ${e}`, 'error');
+                setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 3000);
             }
         }
 

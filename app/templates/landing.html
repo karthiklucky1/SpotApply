@@ -267,5 +267,17 @@
     </div>
 </footer>
 
+<script>
+// Redirect already-logged-in users to dashboard
+(function() {
+    try {
+        const token = localStorage.getItem('sb_token');
+        if (token) {
+            // Update all CTA links to point to dashboard
+            document.querySelectorAll('a[href="/login"]').forEach(a => a.setAttribute('href', '/dashboard'));
+        }
+    } catch(e) {}
+})();
+</script>
 </body>
 </html>

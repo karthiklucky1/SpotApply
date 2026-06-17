@@ -1018,6 +1018,15 @@ def trigger_tailor(request: Request, bg: BackgroundTasks) -> dict:
     return {"started": "tailoring"}
 
 
+@app.post("/run/tailor/{application_id}")
+def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
+    """Tailor resume + cover letter for one specific application."""
+    _require_owned_application(request, application_id)
+    from app.tailoring.tailor import tailor_for_application
+    bg.add_task(tailor_for_application, application_id)
+    return {"started": "tailoring", "application_id": application_id}
+
+
 @app.post("/run/autofill/{application_id}")
 def trigger_autofill(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
     _require_owned_application(request, application_id)
