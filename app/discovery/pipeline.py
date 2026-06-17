@@ -164,6 +164,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
                     )
                 ).first()
                 if existing:
+                    # Claim previously-orphaned jobs for this user so re-discovery
+                    # makes them visible (dashboards filter by user_id).
+                    if user_id and existing.user_id is None:
+                        existing.user_id = user_id
                     # Update description/content_hash if changed
                     if existing.content_hash != content_hash:
                         existing.description = r.description
@@ -184,6 +188,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
                     select(Job).where(Job.cross_source_slug == slug)
                 ).first()
                 if existing_cross:
+                    if user_id and existing_cross.user_id is None:
+                        existing_cross.user_id = user_id
+                        session.add(existing_cross)
+                        session.commit()
                     direct_ats_sources = {
                         JobSource.GREENHOUSE,
                         JobSource.LEVER,
@@ -392,6 +400,23 @@ def run_discovery(user_id: str | None = None) -> int:
     total_new = 0
     from datetime import datetime as _dtm
     _run_started = _dtm.utcnow()
+
+    # Claim any previously-orphaned jobs (user_id IS NULL) for this user. Earlier
+    # runs/paths left jobs untagged, so they were invisible on the user-filtered
+    # dashboard — this makes the full existing pool show up again.
+    if user_id:
+        try:
+            from sqlalchemy import update as _sa_update
+            with get_session() as session:
+                result = session.execute(
+                    _sa_update(Job).where(Job.user_id.is_(None)).values(user_id=user_id)
+                )
+                session.commit()
+                claimed = getattr(result, "rowcount", 0) or 0
+                if claimed:
+                    log.info("Claimed %d orphaned jobs for user %s", claimed, user_id)
+        except Exception as e:
+            log.warning("Orphan job claim failed (non-fatal): %s", e)
     source_stats: dict[str, dict] = {}  # per-source {"fetched": n, "error": "..."} for the run summary
     _boards_fetched = 0
     scrapers = _all_scrapers() if settings.scrape_company_boards else []
