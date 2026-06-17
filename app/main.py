@@ -1,7 +1,11 @@
-"""Single-process orchestrator: FastAPI + scheduler + Telegram bot.
+"""Single-process orchestrator: FastAPI + Telegram bot (local dev only).
 
-For Karthik's personal job-search workflow. The API binds to localhost by
-default; the Telegram bot is the external handoff surface.
+Production (Railway) runs: uvicorn app.api.server:app
+The FastAPI server has its own built-in asyncio scheduler that handles
+discovery + matching every 6h, so we don't duplicate those jobs here.
+
+This file is only used locally (python -m app.main) to also start the
+Telegram bot and the registry harvester/validator on a schedule.
 """
 from __future__ import annotations
 
@@ -14,9 +18,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.api.server import app as fastapi_app
 from app.config import settings
-from app.discovery.pipeline import run_discovery
-from app.matching.pipeline import run_matching
-from app.tailoring.tailor import tailor_all_shortlisted
 from app.telegram_bot.bot import build_app as build_tg
 from app.analytics.reporter import FunnelReporter
 
@@ -27,7 +28,6 @@ def run_harvester_sync():
     import asyncio
     from app.discovery.registry import run_validation_loop
     try:
-        # Weekly pass: validate a larger batch (500) to refresh the full registry
         asyncio.run(run_validation_loop(limit=500))
     except Exception as e:
         log.error("Registry weekly harvest job failed: %s", e)
@@ -44,12 +44,9 @@ def run_validator_sync():
 
 def start_scheduler() -> BackgroundScheduler:
     sched = BackgroundScheduler(daemon=True)
-    # Discovery every 6h
-    sched.add_job(run_discovery, "interval", hours=6, id="discovery")
-    # Matching daily at 7am local
-    sched.add_job(run_matching, "cron", hour=7, minute=0, id="matching")
-    # Tailoring 30 min after matching
-    sched.add_job(tailor_all_shortlisted, "cron", hour=7, minute=30, id="tailoring")
+    # NOTE: discovery/matching/tailoring are intentionally NOT here.
+    # server.py's asyncio _scheduler() handles those every 6h in both
+    # local and production — adding them here would double the runs.
     # Harvester weekly (Sundays at 2 AM)
     sched.add_job(run_harvester_sync, "cron", day_of_week="sun", hour=2, minute=0, id="harvester")
     # Validator daily (Daily at 3 AM)
@@ -57,7 +54,7 @@ def start_scheduler() -> BackgroundScheduler:
     # Daily funnel report at 8 PM local
     sched.add_job(FunnelReporter.send_daily_report, "cron", hour=20, minute=0, id="funnel_report")
     sched.start()
-    log.info("Scheduler started.")
+    log.info("Scheduler started (local dev — discovery handled by server.py).")
     return sched
 
 
@@ -75,9 +72,7 @@ def start_bot() -> None:
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     start_scheduler()
-    # Bot on a worker thread
     threading.Thread(target=start_bot, daemon=True, name="tg-bot").start()
-    # API on main thread (blocking)
     start_api()
 
 
