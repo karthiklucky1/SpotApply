@@ -54,6 +54,47 @@ def map_url_to_source(url: str) -> JobSource:
         return JobSource.MANUAL
 
 
+async def scrape_linkedin_job(url: str) -> str:
+    """Fetch a LinkedIn job page via plain HTTP (no login needed for public view pages)."""
+    import re
+    import httpx
+
+    # Extract job ID from URL like /jobs/view/1234567890/
+    m = re.search(r"/jobs/view/(\d+)", url)
+    job_id = m.group(1) if m else None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+    }
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+        # Try the public guest jobs page first (no auth needed)
+        if job_id:
+            guest_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+            resp = await client.get(guest_url, headers=headers)
+        else:
+            resp = await client.get(url, headers=headers)
+
+        if resp.status_code == 200:
+            # Strip HTML tags to get plain text
+            text = re.sub(r"<[^>]+>", " ", resp.text)
+            text = re.sub(r"\s{3,}", "\n\n", text)
+            if len(text.strip()) > 200:
+                log.info("LinkedIn page fetched via HTTP (%d chars)", len(text))
+                return text[:15000]
+
+    raise ValueError(
+        "Could not fetch the LinkedIn job page. The posting may be private or expired. "
+        "Try the direct company ATS link (Greenhouse/Lever/Ashby) if available."
+    )
+
+
 async def scrape_job_page(url: str) -> str:
     """Use Playwright to render the page and extract all text content."""
     log.info("Scraping job page URL: %s", url)
@@ -128,7 +169,12 @@ async def extract_and_rank_job(url: str, user_id: str | None = None) -> int:
             return new_app.id
 
     # 2. Scrape & Parse Job Page
-    raw_text = await scrape_job_page(url)
+    from urllib.parse import urlparse as _up
+    _host = _up(url).netloc.lower()
+    if "linkedin.com" in _host:
+        raw_text = await scrape_linkedin_job(url)
+    else:
+        raw_text = await scrape_job_page(url)
     parsed = parse_job_text_with_llm(raw_text)
 
     # Format company name nicely if extracted
