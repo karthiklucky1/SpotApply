@@ -300,24 +300,24 @@
         animation: pulse-glow 2.5s infinite;
     }
 
-    /* Tooltip for sidebar buttons */
+    /* Tooltip for sidebar buttons - subtle, delayed */
     #app-sidebar .sb-btn::after {
         content: attr(data-tip);
         position: absolute;
-        left: calc(100% + 12px);
+        left: calc(100% + 10px);
         top: 50%; transform: translateY(-50%);
-        background: rgba(15,20,40,0.95);
-        border: 1px solid rgba(255,255,255,0.08);
-        color: #e2e8f0;
-        font-size: 11px; font-weight: 600;
-        padding: 5px 10px;
-        border-radius: 8px;
+        background: rgba(15,20,40,0.92);
+        border: 1px solid rgba(255,255,255,0.07);
+        color: #cbd5e1;
+        font-size: 10px; font-weight: 600;
+        padding: 4px 9px;
+        border-radius: 7px;
         white-space: nowrap;
         opacity: 0; pointer-events: none;
-        transition: opacity 0.15s ease;
+        transition: opacity 0.12s ease 0.6s;
         z-index: 100;
     }
-    #app-sidebar .sb-btn:hover::after { opacity: 1; }
+    #app-sidebar .sb-btn:hover::after { opacity: 0.85; transition-delay: 0.6s; }
 </style>
 </head>
 
@@ -345,7 +345,7 @@
                 <span class="sb-label">All Jobs</span>
             </button>
             <button id="sb-nav-registry" class="sb-btn" onclick="sbSwitchTab('registry')" data-tip="Job Boards">
-                <span class="sb-icon">⚙️</span>
+                <span class="sb-icon">🗂️</span>
                 <span class="sb-label">Boards</span>
             </button>
 
@@ -355,18 +355,18 @@
                 <span class="sb-icon">🧭</span>
                 <span class="sb-label">Discover</span>
             </button>
-            <button class="sb-btn" onclick="openResumeUpload()" data-tip="Upload Resume">
+            <button class="sb-btn" onclick="openResumeViewer()" data-tip="My Resume">
                 <span class="sb-icon">📄</span>
                 <span class="sb-label">Resume</span>
             </button>
 
             <div class="sb-divider"></div>
 
-            <button class="sb-btn" onclick="handleLogout()" data-tip="Sign Out" style="color:#64748b;">
+            <button class="sb-btn" onclick="openSettingsModal()" data-tip="Settings">
                 <span class="sb-icon" style="font-size:16px;">
-                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
                 </span>
-                <span class="sb-label">Logout</span>
+                <span class="sb-label">Settings</span>
             </button>
         </div>
 
@@ -2524,7 +2524,149 @@
             btn.textContent = 'Upload'; btn.disabled = false
         }
 
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); } });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); closeResumeViewer(); closeSettingsModal(); closeAboutModal(); } });
+
+        // ── Resume Viewer ─────────────────────────────────────────────────────────
+        async function openResumeViewer() {
+            document.getElementById('resume-viewer-modal').classList.remove('hidden');
+            const content = document.getElementById('resume-viewer-content');
+            content.innerHTML = '<div class="flex flex-col items-center justify-center py-12 gap-4"><div class="text-4xl">⏳</div><p class="text-slate-400 text-sm">Loading resume…</p></div>';
+            try {
+                await tokenReady();
+                const res = await fetch('/api/resume/view', { headers: authHeaders() });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.url) {
+                    const ext = data.url.split('?')[0].split('.').pop().toLowerCase();
+                    if (ext === 'pdf') {
+                        content.innerHTML = `<iframe src="${data.url}" class="w-full rounded-xl border border-slate-700/40" style="height:65vh;min-height:400px;" frameborder="0"></iframe>`;
+                    } else {
+                        content.innerHTML = `
+                            <div class="flex flex-col items-center justify-center py-10 gap-5">
+                                <div class="text-5xl">📄</div>
+                                <div class="text-center">
+                                    <p class="text-white font-semibold text-sm mb-1">Resume on file</p>
+                                    <p class="text-slate-400 text-xs mb-5">.${ext} format — click to open or download</p>
+                                    <a href="${data.url}" target="_blank" class="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white transition" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);">Open Resume ↗</a>
+                                </div>
+                            </div>`;
+                    }
+                } else {
+                    content.innerHTML = `
+                        <div class="flex flex-col items-center justify-center py-12 gap-4">
+                            <div class="text-4xl">📭</div>
+                            <p class="text-white font-semibold text-sm">No resume uploaded yet</p>
+                            <p class="text-slate-400 text-xs">Upload your resume to get started</p>
+                            <button onclick="closeResumeViewer();openResumeUpload()" class="mt-2 px-6 py-2.5 rounded-xl text-sm font-bold text-white transition" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);">Upload Resume</button>
+                        </div>`;
+                }
+            } catch(e) {
+                content.innerHTML = '<div class="text-center py-10"><p class="text-rose-400 text-sm">Failed to load resume. Try again.</p></div>';
+            }
+        }
+        function closeResumeViewer() {
+            document.getElementById('resume-viewer-modal').classList.add('hidden');
+        }
+
+        // ── Settings Modal ────────────────────────────────────────────────────────
+        function openSettingsModal() {
+            document.getElementById('settings-modal').classList.remove('hidden');
+        }
+        function closeSettingsModal() {
+            document.getElementById('settings-modal').classList.add('hidden');
+        }
+
+        // ── About / Legal / Contact Modal ─────────────────────────────────────────
+        const _aboutContent = {
+            about: {
+                title: '✨ About HirePath',
+                html: `
+                    <div class="flex items-center gap-3 mb-5">
+                        <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div>
+                            <div class="font-black text-white text-lg">HirePath</div>
+                            <div class="text-xs text-indigo-400 font-semibold">AI Job Agent · v1.0</div>
+                        </div>
+                    </div>
+                    <p>HirePath is an AI-powered job search agent that finds, ranks, and applies to jobs on your behalf — so you can focus on preparing for interviews, not sifting through listings.</p>
+                    <h3 class="text-white font-bold text-sm mt-5 mb-2">How it works</h3>
+                    <ul class="space-y-2 text-slate-400">
+                        <li class="flex gap-2"><span class="text-indigo-400 font-bold flex-shrink-0">1.</span>Upload your resume and we extract your profile automatically.</li>
+                        <li class="flex gap-2"><span class="text-indigo-400 font-bold flex-shrink-0">2.</span>Our agent discovers thousands of jobs from direct ATS boards and aggregators.</li>
+                        <li class="flex gap-2"><span class="text-indigo-400 font-bold flex-shrink-0">3.</span>AI cross-encoder + LLM scoring ranks every job by how well it matches you.</li>
+                        <li class="flex gap-2"><span class="text-indigo-400 font-bold flex-shrink-0">4.</span>Tailored resumes and cover letters are auto-generated for each shortlisted role.</li>
+                        <li class="flex gap-2"><span class="text-indigo-400 font-bold flex-shrink-0">5.</span>Applications are auto-filled in Greenhouse, Lever, and Ashby — one click to submit.</li>
+                    </ul>
+                    <h3 class="text-white font-bold text-sm mt-5 mb-2">Built for job seekers</h3>
+                    <p>We built HirePath because the job search process is broken — endless scrolling, copy-pasting, and writing the same cover letter over and over. HirePath automates the repetitive parts so you can spend your energy on what matters: conversations.</p>`
+            },
+            contact: {
+                title: '📬 Contact Us',
+                html: `
+                    <p>Have a question, feedback, or found a bug? We'd love to hear from you.</p>
+                    <div class="mt-5 space-y-3">
+                        <div class="rounded-xl p-4 border border-slate-700/60" style="background:rgba(255,255,255,0.03);">
+                            <div class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">General Inquiries</div>
+                            <div class="text-white text-sm font-semibold">hello@hirepath.ai</div>
+                        </div>
+                        <div class="rounded-xl p-4 border border-slate-700/60" style="background:rgba(255,255,255,0.03);">
+                            <div class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Bug Reports & Support</div>
+                            <div class="text-white text-sm font-semibold">support@hirepath.ai</div>
+                        </div>
+                    </div>
+                    <p class="mt-5 text-slate-500 text-xs">We typically respond within 1–2 business days. For urgent issues, include your account email in the subject line.</p>`
+            },
+            privacy: {
+                title: '🔒 Privacy Policy',
+                html: `
+                    <p class="text-xs text-slate-500">Last updated: January 2025</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">What we collect</h3>
+                    <p>We collect information you provide directly: your resume, profile details (name, email, skills, experience), and job preferences. We also store application activity data (jobs discovered, applied, statuses).</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">How we use your data</h3>
+                    <ul class="list-disc list-inside space-y-1 text-slate-400">
+                        <li>To match you with relevant job opportunities</li>
+                        <li>To auto-generate tailored resumes and cover letters</li>
+                        <li>To auto-fill application forms on your behalf</li>
+                        <li>To improve our AI matching models (anonymized)</li>
+                    </ul>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Data storage</h3>
+                    <p>Your data is stored securely on Supabase (PostgreSQL) with row-level security ensuring only you can access your data. Resumes and avatars are stored in encrypted cloud storage.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Third parties</h3>
+                    <p>We use Supabase for auth and storage, and Anthropic's Claude API for AI processing. We do not sell your data to any third party.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Your rights</h3>
+                    <p>You can delete your account and all associated data at any time by contacting us at privacy@hirepath.ai.</p>`
+            },
+            terms: {
+                title: '📋 Terms of Service',
+                html: `
+                    <p class="text-xs text-slate-500">Last updated: January 2025</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Acceptance</h3>
+                    <p>By using HirePath, you agree to these terms. If you do not agree, do not use the service.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Use of service</h3>
+                    <p>HirePath is for personal job searching only. You may not use it to submit applications fraudulently, create fake profiles, or scrape job data for commercial redistribution.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">AI-generated content</h3>
+                    <p>Resumes, cover letters, and answers are AI-generated drafts. You are responsible for reviewing them for accuracy before submission. HirePath is not liable for any content submitted to employers.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Account</h3>
+                    <p>You are responsible for keeping your account credentials secure. We reserve the right to suspend accounts that violate these terms.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Availability</h3>
+                    <p>We aim for high availability but do not guarantee uptime. Job discovery depends on third-party ATS APIs which may change without notice.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Limitation of liability</h3>
+                    <p>HirePath is provided "as is." We are not liable for missed job opportunities, application failures, or decisions made by employers.</p>
+                    <h3 class="text-white font-bold text-sm mt-4 mb-2">Contact</h3>
+                    <p>For questions about these terms: legal@hirepath.ai</p>`
+            }
+        };
+        function openAboutModal(section) {
+            const data = _aboutContent[section];
+            if (!data) return;
+            document.getElementById('about-modal-title').textContent = data.title;
+            document.getElementById('about-modal-content').innerHTML = data.html;
+            document.getElementById('about-modal').classList.remove('hidden');
+        }
+        function closeAboutModal() {
+            document.getElementById('about-modal').classList.add('hidden');
+        }
 
         // ── Profile Modal ────────────────────────────────────────────────────────
         async function openProfileModal() {
@@ -2856,7 +2998,155 @@
             <div id="answer-pack-content"></div>
         </div>
     </div>
+    <!-- ── Footer ──────────────────────────────────────────────────────── -->
+    <footer class="mt-16 border-t border-white/[0.05]" style="background:rgba(6,9,20,0.7);backdrop-filter:blur(12px);">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
+                <!-- Brand -->
+                <div>
+                    <div class="flex items-center gap-2.5 mb-3">
+                        <div style="width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <span class="font-black text-white text-sm tracking-tight">HirePath</span>
+                    </div>
+                    <p class="text-xs text-slate-500 leading-relaxed max-w-[200px]">AI-powered job discovery and application automation. Find your next role — automatically.</p>
+                </div>
+                <!-- Product -->
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-3">Product</p>
+                    <ul class="space-y-2">
+                        <li><button onclick="sbSwitchTab('kanban')" class="text-xs text-slate-400 hover:text-white transition">Pipeline</button></li>
+                        <li><button onclick="sbSwitchTab('explorer')" class="text-xs text-slate-400 hover:text-white transition">All Jobs</button></li>
+                        <li><button onclick="sbSwitchTab('registry')" class="text-xs text-slate-400 hover:text-white transition">Job Boards</button></li>
+                        <li><button onclick="openResumeViewer()" class="text-xs text-slate-400 hover:text-white transition">My Resume</button></li>
+                    </ul>
+                </div>
+                <!-- Legal + Contact -->
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-600 mb-3">Company</p>
+                    <ul class="space-y-2">
+                        <li><button onclick="openAboutModal('about')" class="text-xs text-slate-400 hover:text-white transition">About</button></li>
+                        <li><button onclick="openAboutModal('contact')" class="text-xs text-slate-400 hover:text-white transition">Contact</button></li>
+                        <li><button onclick="openAboutModal('privacy')" class="text-xs text-slate-400 hover:text-white transition">Privacy Policy</button></li>
+                        <li><button onclick="openAboutModal('terms')" class="text-xs text-slate-400 hover:text-white transition">Terms of Service</button></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-white/[0.04] pt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <p class="text-[11px] text-slate-600">© 2025 HirePath. All rights reserved.</p>
+                <p class="text-[11px] text-slate-600">Built with AI · Made for job seekers</p>
+            </div>
+        </div>
+    </footer>
+
     </div><!-- /#main-wrapper -->
+
+    <!-- ── Resume Viewer Modal ───────────────────────────────────────────── -->
+    <div id="resume-viewer-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/75 backdrop-blur-sm" onclick="closeResumeViewer()"></div>
+        <div class="relative glass-dark rounded-[28px] w-full max-w-2xl max-h-[90vh] flex flex-col border border-slate-700/50 shadow-2xl overflow-hidden">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800/60 flex-shrink-0">
+                <div>
+                    <h2 class="text-base font-bold text-white">📄 My Resume</h2>
+                    <p class="text-xs text-slate-500 mt-0.5">Your uploaded resume on file</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button onclick="openResumeUpload()" class="text-xs font-bold px-4 py-2 rounded-xl border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 transition">⬆ Upload New</button>
+                    <button onclick="closeResumeViewer()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+                </div>
+            </div>
+            <div id="resume-viewer-content" class="flex-1 overflow-y-auto p-6">
+                <div class="flex flex-col items-center justify-center py-12 gap-4">
+                    <div class="text-4xl">⏳</div>
+                    <p class="text-slate-400 text-sm">Loading resume…</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Settings Modal ─────────────────────────────────────────────────── -->
+    <div id="settings-modal" class="hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeSettingsModal()"></div>
+        <div class="relative glass-dark w-full sm:max-w-md rounded-t-[28px] sm:rounded-[28px] border border-slate-700/50 shadow-2xl overflow-hidden" style="max-height:90vh;overflow-y:auto;">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
+                <h2 class="text-base font-bold text-white">Settings</h2>
+                <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div class="p-5 space-y-2">
+                <!-- Account Section -->
+                <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 px-1 pt-1 pb-2">Account</p>
+                <button onclick="closeSettingsModal();openProfileModal()" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-white/[0.04] transition text-left group">
+                    <span class="text-lg">👤</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-slate-200 group-hover:text-white transition">My Profile</div>
+                        <div class="text-xs text-slate-500">Edit personal info, skills, resume preferences</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-600 group-hover:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+                <button onclick="closeSettingsModal();openResumeViewer()" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-white/[0.04] transition text-left group">
+                    <span class="text-lg">📄</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-slate-200 group-hover:text-white transition">My Resume</div>
+                        <div class="text-xs text-slate-500">View or replace your uploaded resume</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-600 group-hover:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+
+                <div class="h-px bg-slate-800/70 my-2"></div>
+                <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 px-1 pb-2">Legal</p>
+
+                <button onclick="closeSettingsModal();openAboutModal('privacy')" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-white/[0.04] transition text-left group">
+                    <span class="text-lg">🔒</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-slate-200 group-hover:text-white transition">Privacy Policy</div>
+                        <div class="text-xs text-slate-500">How we handle your data</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-600 group-hover:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+                <button onclick="closeSettingsModal();openAboutModal('terms')" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-white/[0.04] transition text-left group">
+                    <span class="text-lg">📋</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-slate-200 group-hover:text-white transition">Terms of Service</div>
+                        <div class="text-xs text-slate-500">Rules and usage terms</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-600 group-hover:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+                <button onclick="closeSettingsModal();openAboutModal('about')" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-white/[0.04] transition text-left group">
+                    <span class="text-lg">✨</span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-slate-200 group-hover:text-white transition">About HirePath</div>
+                        <div class="text-xs text-slate-500">Our mission and how it works</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-600 group-hover:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                </button>
+
+                <div class="h-px bg-slate-800/70 my-2"></div>
+
+                <button onclick="handleLogout()" class="w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl hover:bg-rose-500/[0.08] transition text-left group">
+                    <span class="text-lg">
+                        <svg width="18" height="18" fill="none" stroke="#f43f5e" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                    </span>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-rose-400 group-hover:text-rose-300 transition">Sign Out</div>
+                        <div class="text-xs text-slate-500">Log out of your account</div>
+                    </div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── About / Legal Modal ────────────────────────────────────────────── -->
+    <div id="about-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/75 backdrop-blur-sm" onclick="closeAboutModal()"></div>
+        <div class="relative glass-dark rounded-[28px] w-full max-w-xl max-h-[85vh] flex flex-col border border-slate-700/50 shadow-2xl overflow-hidden">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800/60 flex-shrink-0">
+                <h2 id="about-modal-title" class="text-base font-bold text-white">About HirePath</h2>
+                <button onclick="closeAboutModal()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <div id="about-modal-content" class="flex-1 overflow-y-auto p-6 text-sm text-slate-300 leading-relaxed space-y-4"></div>
+        </div>
+    </div>
 
     <!-- ── Photo Crop Modal ─────────────────────────────────────────────── -->
     <div id="crop-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4">
