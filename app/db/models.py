@@ -238,6 +238,8 @@ class DiscoveryRun(SQLModel, table=True):
     finished_at: Optional[datetime] = None
     total_fetched: int = 0
     total_inserted: int = 0
+    total_shortlisted: int = 0
     source_counts: str = ""   # JSON: {"<source name>": {"fetched": n, "error": "..."}}
-    status: str = "done"      # done | error
+    status: str = "discovering"   # discovering | ranking | done | error
+    error: Optional[str] = None
 

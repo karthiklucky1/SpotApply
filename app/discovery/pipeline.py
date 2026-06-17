@@ -321,7 +321,7 @@ async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):
         log.info("Aggregator feeder: registered %d new companies from %d candidates", new_regs, len(discovered))
 
 
-def run_discovery(user_id: str | None = None) -> int:
+def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
     """Orchestrates the self-growing company graph discovery:
     1. Seed DB from fallback/bootstrap if empty.
     2. Run pluggable sources to discover candidate companies.
@@ -552,7 +552,8 @@ def run_discovery(user_id: str | None = None) -> int:
     if _boards_fetched:
         source_stats["Company ATS boards"] = {"fetched": _boards_fetched}
     try:
-        _write_discovery_run(user_id, source_stats, total_new, _run_started)
+        _write_discovery_run(user_id, source_stats, total_new, _run_started,
+                             run_id=run_id, status="ranking" if run_id else "done")
     except Exception as e:
         log.warning("Could not write discovery run summary (non-fatal): %s", e)
 
@@ -573,13 +574,24 @@ def run_discovery(user_id: str | None = None) -> int:
     return total_new
 
 
-def _write_discovery_run(user_id, source_stats: dict, total_inserted: int, started_at) -> None:
-    """Save a DiscoveryRun row summarizing per-source fetch counts."""
+def _write_discovery_run(user_id, source_stats: dict, total_inserted: int, started_at,
+                         run_id: int | None = None, status: str = "done") -> None:
+    """Record per-source counts. Updates an existing run row if run_id is given."""
     import json
     from datetime import datetime
     from app.db.models import DiscoveryRun
     total_fetched = sum(int(v.get("fetched", 0)) for v in source_stats.values())
     with get_session() as session:
+        if run_id:
+            row = session.get(DiscoveryRun, run_id)
+            if row:
+                row.total_fetched = total_fetched
+                row.total_inserted = total_inserted
+                row.source_counts = json.dumps(source_stats)
+                row.status = status
+                session.add(row)
+                session.commit()
+                return
         session.add(DiscoveryRun(
             user_id=user_id,
             started_at=started_at,
@@ -587,9 +599,49 @@ def _write_discovery_run(user_id, source_stats: dict, total_inserted: int, start
             total_fetched=total_fetched,
             total_inserted=total_inserted,
             source_counts=json.dumps(source_stats),
-            status="done",
+            status=status,
         ))
         session.commit()
+
+
+def create_discovery_run(user_id) -> int | None:
+    """Create a 'discovering' run row up-front so the UI can show live status."""
+    from datetime import datetime
+    from app.db.models import DiscoveryRun
+    try:
+        with get_session() as session:
+            row = DiscoveryRun(user_id=user_id, started_at=datetime.utcnow(),
+                               status="discovering", source_counts="{}")
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row.id
+    except Exception as e:
+        log.warning("Could not create discovery run: %s", e)
+        return None
+
+
+def finish_discovery_run(run_id: int | None, status: str,
+                         total_shortlisted: int = 0, error: str | None = None) -> None:
+    """Mark a run row as done/error with the final shortlist count."""
+    from datetime import datetime
+    from app.db.models import DiscoveryRun
+    if not run_id:
+        return
+    try:
+        with get_session() as session:
+            row = session.get(DiscoveryRun, run_id)
+            if not row:
+                return
+            row.status = status
+            row.total_shortlisted = total_shortlisted
+            if error:
+                row.error = error[:300]
+            row.finished_at = datetime.utcnow()
+            session.add(row)
+            session.commit()
+    except Exception as e:
+        log.warning("Could not finish discovery run: %s", e)
 
 
 def run_ats_upgrade_for_shortlisted() -> int:

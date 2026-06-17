@@ -1165,6 +1165,8 @@
                 localStorage.removeItem('jb_post_discover');
                 try { sbSwitchTab('explorer'); } catch (e) {}
             }
+            // Resume showing progress if a discovery is still running in the background.
+            try { checkActiveDiscovery(); } catch (e) {}
         });
 
         function initStartupBadges() {
@@ -1340,49 +1342,43 @@
         }
 
         // ── Discover running overlay ───────────────────────────────────────────────
-        let _discoverTimer = null;
+        let _discoverPoll = null;
+        let _discoverAnim = null;
         const _DISCOVER_STEPS = [
             '🌐 Scanning career boards…',
             '📥 Extracting job postings…',
-            '🧠 Scoring & ranking matches…',
-            '🎯 Shortlisting the best fits…',
-            '✨ Finalizing your pipeline…',
+            '🔎 Searching aggregators…',
+            '🧩 De-duplicating roles…',
         ];
-        function _showDiscoverOverlay() {
-            const ov = document.getElementById('discover-overlay');
-            const statusEl = document.getElementById('discover-status');
-            const bar = document.getElementById('discover-bar');
-            const closeBtn = document.getElementById('discover-close');
-            ov.classList.remove('hidden');
-            closeBtn.classList.add('hidden');
-            let i = 0;
-            statusEl.textContent = _DISCOVER_STEPS[0];
-            bar.style.width = '8%';
-            clearInterval(_discoverTimer);
-            _discoverTimer = setInterval(() => {
-                i = Math.min(i + 1, _DISCOVER_STEPS.length - 1);
-                statusEl.textContent = _DISCOVER_STEPS[i];
-                bar.style.width = (12 + (i + 1) / _DISCOVER_STEPS.length * 78) + '%';
-            }, 1600);
+        function _setDiscoverStatus(text, cls) {
+            const el = document.getElementById('discover-status');
+            el.className = 'text-xs font-semibold h-4 ' + (cls || 'text-indigo-300');
+            el.textContent = text;
         }
-        function _finishDiscoverOverlay(ok) {
-            clearInterval(_discoverTimer);
-            const statusEl = document.getElementById('discover-status');
+        function _animateDiscovering() {
             const bar = document.getElementById('discover-bar');
-            const closeBtn = document.getElementById('discover-close');
-            bar.style.width = '100%';
-            statusEl.textContent = ok ? '✅ Discovery running — new jobs are on the way!' : '⚠️ Could not start discovery.';
-            statusEl.className = 'text-xs font-semibold h-4 ' + (ok ? 'text-emerald-400' : 'text-rose-400');
-            closeBtn.textContent = ok ? 'View jobs' : 'Close';
-            closeBtn.classList.remove('hidden');
-            closeBtn.dataset.ok = ok ? '1' : '';
+            let i = 0;
+            _setDiscoverStatus(_DISCOVER_STEPS[0]);
+            bar.style.width = '10%';
+            clearInterval(_discoverAnim);
+            _discoverAnim = setInterval(() => {
+                i = (i + 1) % _DISCOVER_STEPS.length;
+                _setDiscoverStatus(_DISCOVER_STEPS[i]);
+                const w = parseFloat(bar.style.width) || 10;
+                bar.style.width = Math.min(w + 6, 70) + '%';
+            }, 1500);
+        }
+        function _showDiscoverOverlay() {
+            document.getElementById('discover-overlay').classList.remove('hidden');
+            document.getElementById('discover-close').classList.add('hidden');
+            document.getElementById('discover-summary').classList.add('hidden');
+            _animateDiscovering();
         }
         function closeDiscoverOverlay() {
             document.getElementById('discover-overlay').classList.add('hidden');
-            clearInterval(_discoverTimer);
+            clearInterval(_discoverAnim);
             const ok = document.getElementById('discover-close').dataset.ok;
-            document.getElementById('discover-status').className = 'text-xs text-indigo-300 font-semibold h-4';
-            document.getElementById('discover-summary').classList.add('hidden');
+            // Keep polling in the background (pill) even if they dismiss the modal.
             if (ok) { localStorage.setItem('jb_post_discover', '1'); window.location.reload(); }
         }
         async function _getLastRun() {
@@ -1392,61 +1388,124 @@
             } catch (e) {}
             return null;
         }
-        function _renderDiscoverSummary(run) {
-            clearInterval(_discoverTimer);
-            const statusEl = document.getElementById('discover-status');
-            const bar = document.getElementById('discover-bar');
+        function _renderSources(run) {
             const summary = document.getElementById('discover-summary');
-            const closeBtn = document.getElementById('discover-close');
-            bar.style.width = '100%';
-            statusEl.className = 'text-xs font-semibold h-4 text-emerald-400';
-            statusEl.textContent = `✅ ${run.total_inserted} new jobs · ${run.total_fetched} fetched`;
-            const entries = Object.entries(run.sources || {})
-                .sort((a, b) => (b[1].fetched || 0) - (a[1].fetched || 0));
-            summary.innerHTML = entries.length ? entries.map(([name, s]) => {
+            const entries = Object.entries(run.sources || {}).sort((a, b) => (b[1].fetched || 0) - (a[1].fetched || 0));
+            if (!entries.length) { summary.classList.add('hidden'); return; }
+            summary.innerHTML = entries.map(([name, s]) => {
                 const n = s.fetched || 0;
-                const err = s.error ? ` title="${s.error.replace(/"/g, '')}"` : '';
+                const err = s.error ? ` title="${(s.error || '').replace(/"/g, '')}"` : '';
                 const dot = s.error ? '#f43f5e' : (n > 0 ? '#34d399' : '#64748b');
                 return `<div class="flex items-center justify-between text-[11px] px-3 py-1.5 rounded-lg" style="background:rgba(255,255,255,0.03);"${err}>
                     <span class="flex items-center gap-2 text-slate-300"><span style="width:7px;height:7px;border-radius:50%;background:${dot};display:inline-block;"></span>${name}${s.error ? ' ⚠️' : ''}</span>
                     <span class="font-bold ${n > 0 ? 'text-white' : 'text-slate-500'}">${n}</span>
                 </div>`;
-            }).join('') : '<p class="text-[11px] text-slate-500 text-center">No source data recorded.</p>';
-            summary.innerHTML += '<p class="text-[11px] text-indigo-300 text-center pt-1.5">🔄 Matching new jobs onto your board… reload in a moment.</p>';
+            }).join('');
             summary.classList.remove('hidden');
-            closeBtn.textContent = 'View jobs';
-            closeBtn.dataset.ok = '1';
-            closeBtn.classList.remove('hidden');
+        }
+        // Update the overlay (when open) to reflect a run's live stage.
+        function _renderDiscoverState(run) {
+            const bar = document.getElementById('discover-bar');
+            const closeBtn = document.getElementById('discover-close');
+            if (run.status === 'discovering') return; // keep the searching animation
+            clearInterval(_discoverAnim);
+            if (run.status === 'ranking') {
+                _renderSources(run);
+                bar.style.width = '88%';
+                _setDiscoverStatus(`🧠 Ranking & matching ${run.total_inserted} new jobs… almost there`);
+                closeBtn.textContent = 'Run in background';
+                closeBtn.dataset.ok = '';
+                closeBtn.classList.remove('hidden');
+            } else if (run.status === 'done') {
+                _renderSources(run);
+                bar.style.width = '100%';
+                _setDiscoverStatus(`✅ Found ${run.total_inserted} new jobs · ${run.total_shortlisted} shortlisted`, 'text-emerald-400');
+                closeBtn.textContent = 'View jobs';
+                closeBtn.dataset.ok = '1';
+                closeBtn.classList.remove('hidden');
+            } else if (run.status === 'error') {
+                bar.style.width = '100%';
+                _setDiscoverStatus(`⚠️ ${run.error || 'Something went wrong'}`, 'text-rose-400');
+                closeBtn.textContent = 'Close';
+                closeBtn.dataset.ok = '';
+                closeBtn.classList.remove('hidden');
+            }
+        }
+        function _requestNotify() {
+            try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
+        }
+        function _notify(title, body) {
+            try { if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body }); } catch (e) {}
+        }
+        // Persistent pill (bottom-right) so progress is visible even if the modal is closed/reloaded.
+        function _setPill(text, active) {
+            let pill = document.getElementById('discovery-pill');
+            if (!pill) {
+                pill = document.createElement('div');
+                pill.id = 'discovery-pill';
+                pill.onclick = () => document.getElementById('discover-overlay').classList.remove('hidden');
+                pill.style.cssText = 'position:fixed;bottom:18px;right:18px;z-index:60;cursor:pointer;padding:10px 16px;border-radius:9999px;font-size:12px;font-weight:700;color:#fff;background:linear-gradient(135deg,#4f46e5,#7c3aed);box-shadow:0 10px 30px -8px rgba(99,102,241,0.6);display:flex;align-items:center;gap:8px;';
+                document.body.appendChild(pill);
+            }
+            const spinner = active ? '<span class="animate-spin" style="width:12px;height:12px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;display:inline-block;"></span>' : '✅';
+            pill.innerHTML = `${spinner}<span>${text}</span>`;
+            pill.style.display = 'flex';
+        }
+        function _hidePill() { const p = document.getElementById('discovery-pill'); if (p) p.style.display = 'none'; }
+        // Drive overlay + pill + notification from a run's status. Returns true when terminal.
+        function _trackRun(run) {
+            const overlayOpen = !document.getElementById('discover-overlay').classList.contains('hidden');
+            if (overlayOpen) _renderDiscoverState(run);
+            if (run.status === 'discovering') { _setPill('Discovering jobs…', true); return false; }
+            if (run.status === 'ranking') { _setPill(`Ranking ${run.total_inserted} jobs…`, true); return false; }
+            if (run.status === 'done') {
+                _setPill(`${run.total_inserted} jobs · ${run.total_shortlisted} shortlisted`, false);
+                _notify('JobAgent — discovery complete', `Found ${run.total_inserted} new jobs · ${run.total_shortlisted} shortlisted.`);
+                if (!overlayOpen) showToast(`✅ Discovery done: ${run.total_inserted} jobs, ${run.total_shortlisted} shortlisted`, 'success');
+                setTimeout(_hidePill, 10000);
+                return true;
+            }
+            if (run.status === 'error') { _setPill('Discovery failed', false); setTimeout(_hidePill, 10000); return true; }
+            return false;
+        }
+        function _pollRun(prevId) {
+            clearInterval(_discoverPoll);
+            const deadline = Date.now() + 900000; // 15-min safety cap
+            _discoverPoll = setInterval(async () => {
+                if (Date.now() > deadline) { clearInterval(_discoverPoll); return; }
+                const run = await _getLastRun();
+                if (!run) return;
+                if (prevId != null && run.id === prevId) return; // wait for the new run to appear
+                if (_trackRun(run)) clearInterval(_discoverPoll);
+            }, 2500);
         }
         async function runDiscovery() {
-            _showDiscoverOverlay();
-            document.getElementById('discover-summary').classList.add('hidden');
+            _requestNotify();
             const prev = await _getLastRun();
-            const prevKey = prev ? prev.finished_at : null;
+            const prevId = prev ? prev.id : null;
+            _showDiscoverOverlay();
             let ok = false;
             try {
                 const res = await fetch('/run/discovery', { method: 'POST', headers: authHeaders() });
                 ok = res.ok;
                 if (!ok) {
                     const err = await res.json().catch(() => ({}));
-                    if (err.detail) { document.getElementById('discover-status').textContent = err.detail; }
+                    clearInterval(_discoverAnim);
+                    _setDiscoverStatus('⚠️ ' + (err.detail || 'Could not start discovery'), 'text-rose-400');
+                    const cb = document.getElementById('discover-close');
+                    cb.textContent = 'Close'; cb.dataset.ok = ''; cb.classList.remove('hidden');
                 }
             } catch (e) { ok = false; }
-            if (!ok) { setTimeout(() => _finishDiscoverOverlay(false), 1200); return; }
-            // Poll for the new run summary (discovery runs in the background).
-            const deadline = Date.now() + 240000;
-            (function poll() {
-                setTimeout(async () => {
-                    const run = await _getLastRun();
-                    if (run && run.finished_at && run.finished_at !== prevKey) {
-                        _renderDiscoverSummary(run);
-                    } else if (Date.now() < deadline) {
-                        poll();
-                    } else {
-                        _finishDiscoverOverlay(true);  // still running — let them view what's there
-                    }
-                }, 2500);
-            })();
+            if (!ok) return;
+            _pollRun(prevId);
+        }
+        // On page load, resume tracking if a discovery is still in progress.
+        async function checkActiveDiscovery() {
+            const run = await _getLastRun();
+            if (run && (run.status === 'discovering' || run.status === 'ranking')) {
+                _setPill(run.status === 'ranking' ? `Ranking ${run.total_inserted} jobs…` : 'Discovering jobs…', true);
+                _pollRun(null);
+            }
         }
 
         function closeOnboarding() {
@@ -2644,12 +2703,13 @@
                 <div class="absolute inset-0 rounded-full border-4 border-transparent border-t-indigo-400 animate-spin"></div>
                 <div class="absolute inset-0 flex items-center justify-center text-2xl">🧭</div>
             </div>
-            <h3 class="text-base font-black text-white mb-1.5">Discovering jobs</h3>
+            <h3 class="text-base font-black text-white mb-1.5">Finding your jobs</h3>
             <p id="discover-status" class="text-xs text-indigo-300 font-semibold h-4">Scanning career boards…</p>
             <div class="mt-5 h-1.5 rounded-full bg-slate-800 overflow-hidden">
                 <div id="discover-bar" class="h-full rounded-full" style="width:0%;background:linear-gradient(90deg,#6366f1,#8b5cf6,#06b6d4);transition:width .6s ease;"></div>
             </div>
-            <div id="discover-summary" class="hidden mt-5 text-left max-h-56 overflow-y-auto space-y-1.5"></div>
+            <p class="text-[10px] text-slate-500 mt-3">This takes a couple of minutes — searching every source and ranking matches. You can keep using the app; we'll notify you when it's done.</p>
+            <div id="discover-summary" class="hidden mt-4 text-left max-h-56 overflow-y-auto space-y-1.5"></div>
             <button id="discover-close" onclick="closeDiscoverOverlay()" class="hidden mt-5 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-sm transition">View jobs</button>
         </div>
     </div>

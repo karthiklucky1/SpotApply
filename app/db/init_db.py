@@ -131,6 +131,16 @@ def init_db() -> None:
             except Exception:
                 pass
 
+        # DiscoveryRun table migration — staged status + shortlist count
+        for col, col_type in [
+            ("total_shortlisted", "INTEGER DEFAULT 0"),
+            ("error", "VARCHAR"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE discoveryrun ADD COLUMN {col} {col_type}"))
+            except Exception:
+                pass
+
 
 @contextmanager
 def get_session() -> Iterator[Session]:

@@ -151,10 +151,8 @@ async def _scheduler():
                 _log.info("Scheduler: no users with resumes, skipping run")
             for uid in user_ids:
                 try:
-                    _log.info("Scheduler: running discovery for user %s", uid)
-                    await asyncio.to_thread(run_discovery, uid)
-                    _log.info("Scheduler: running matching for user %s", uid)
-                    await asyncio.to_thread(run_matching, uid)
+                    _log.info("Scheduler: running discovery + matching for user %s", uid)
+                    await asyncio.to_thread(_discover_then_match, uid)
                 except Exception as e:
                     _log.exception("Scheduler error for user %s: %s", uid, e)
         except Exception as e:
@@ -339,9 +337,14 @@ def discovery_last_run(request: Request) -> dict:
         except Exception:
             counts = {}
         return {"run": {
+            "id": run.id,
+            "status": run.status,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
             "total_fetched": run.total_fetched,
             "total_inserted": run.total_inserted,
+            "total_shortlisted": run.total_shortlisted,
+            "error": run.error,
             "sources": counts,
         }}
 
@@ -907,15 +910,22 @@ def mark_as_rejected(application_id: int, request: Request) -> dict:
 
 
 def _discover_then_match(user_id) -> None:
-    """Run discovery, then matching, so newly discovered jobs flow onto the board."""
+    """Discover → rank, tracking staged status (discovering → ranking → done)
+    in a DiscoveryRun row so the UI can show live progress + a final summary."""
+    from app.discovery.pipeline import create_discovery_run, finish_discovery_run
+    run_id = create_discovery_run(user_id)
     try:
-        run_discovery(user_id)
+        run_discovery(user_id, run_id=run_id)   # marks the row 'ranking' + per-source counts
     except Exception as e:
         log.exception("Discovery failed: %s", e)
+        finish_discovery_run(run_id, "error", error=str(e))
+        return
     try:
-        run_matching(user_id)
+        shortlisted = run_matching(user_id)
+        finish_discovery_run(run_id, "done", total_shortlisted=len(shortlisted or []))
     except Exception as e:
         log.exception("Matching failed: %s", e)
+        finish_discovery_run(run_id, "error", error=str(e))
 
 
 @app.post("/run/discovery")
