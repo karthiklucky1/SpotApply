@@ -1049,7 +1049,6 @@ def _get_user_plan(uid: str) -> PlanTier:
 def _get_or_create_usage(session, uid: str):
     from datetime import date, timedelta
     today = date.today()
-    # Monday of current week
     week_start = today - timedelta(days=today.weekday())
     row = session.exec(
         select(UserUsage).where(
@@ -1126,7 +1125,7 @@ def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     with get_session() as session:
         used = _get_week_autofill_count(session, uid)
     if used >= weekly_limit:
-        upgrade = "Pro ($49/mo)" if plan == PlanTier.BASIC else "Agency Killer ($99/mo)"
+        upgrade = "Pro ($49/mo)" if plan == PlanTier.BASIC else "Agency ($99/mo)"
         return False, (
             f"Weekly auto-fill limit reached ({used}/{weekly_limit}). "
             f"Resets Monday midnight UTC. Upgrade to {upgrade} for more."
@@ -1181,17 +1180,25 @@ def trigger_tailor(request: Request, bg: BackgroundTasks) -> dict:
 @app.post("/run/tailor/{application_id}")
 def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
     """Tailor resume + cover letter for one specific application."""
-    _require_owned_application(request, application_id)
+    uid = _require_owned_application(request, application_id)
+    allowed, detail, usage = _check_tailor_limit(uid)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=detail)
     from app.tailoring.tailor import tailor_for_application
     bg.add_task(tailor_for_application, application_id)
-    return {"started": "tailoring", "application_id": application_id}
+    _increment_tailor(uid)
+    return {"started": "tailoring", "application_id": application_id, "usage": usage}
 
 
 @app.post("/run/autofill/{application_id}")
 def trigger_autofill(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
-    _require_owned_application(request, application_id)
+    uid = _require_owned_application(request, application_id)
+    allowed, detail, usage = _check_autofill_limit(uid)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=detail)
     bg.add_task(autofill, application_id, bypass_delay=True)
-    return {"started": "autofill", "application_id": application_id}
+    _increment_autofill(uid)
+    return {"started": "autofill", "application_id": application_id, "usage": usage}
 
 
 @app.post("/run/preview/{application_id}")

@@ -217,6 +217,56 @@ class UserProfile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class PlanTier(str, Enum):
+    FREE    = "free"
+    BASIC   = "basic"      # $19/mo
+    PRO     = "pro"        # $49/mo
+    AGENCY  = "agency"     # $99/mo
+
+
+# Per-plan limits
+PLAN_LIMITS = {
+    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 0},
+    PlanTier.BASIC:  {"tailor_daily": 20, "autofill_weekly": 10},
+    PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None},   # None = unlimited
+    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None},
+}
+
+PLAN_PRICES = {
+    PlanTier.FREE:   0,
+    PlanTier.BASIC:  19,
+    PlanTier.PRO:    49,
+    PlanTier.AGENCY: 99,
+}
+
+
+class UserSubscription(SQLModel, table=True):
+    """One row per user — tracks their current plan."""
+    __tablename__ = "user_subscription"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True, unique=True)
+    plan: PlanTier = Field(default=PlanTier.FREE)
+    stripe_customer_id: Optional[str] = Field(default=None)
+    stripe_subscription_id: Optional[str] = Field(default=None)
+    current_period_end: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserUsage(SQLModel, table=True):
+    """Daily + weekly usage counters per user. One row per user per day."""
+    __tablename__ = "user_usage"
+    __table_args__ = (
+        UniqueConstraint("user_id", "usage_date", name="uq_user_usage_date"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    usage_date: date = Field(index=True)          # the calendar day (UTC)
+    week_start: date = Field(index=True)          # Monday of the current week
+    tailor_count: int = Field(default=0)          # tailors used today
+    autofill_count_week: int = Field(default=0)   # autofills used this week (stored on Monday row)
+
+
 class FunnelEvent(SQLModel, table=True):
     """Event log for job application funnel analysis."""
     __tablename__ = "funnel_events"

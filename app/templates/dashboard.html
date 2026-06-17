@@ -766,7 +766,7 @@
         </section>
 
         <!-- Plan banner -->
-        <div class="glass rounded-[20px] px-5 py-3 mb-6 border border-slate-800/60 flex items-center justify-between gap-4">
+        <div class="glass rounded-[20px] px-5 py-3 mb-4 border border-slate-800/60 flex items-center justify-between gap-4">
             <div class="flex items-center gap-3">
                 <span class="text-lg">💎</span>
                 <div>
@@ -775,6 +775,31 @@
                 </div>
             </div>
             <button onclick="openSettings('pricing')" class="text-[10px] font-bold text-indigo-300 hover:text-white border border-indigo-500/30 hover:border-indigo-500/60 rounded-full px-4 py-1.5 transition whitespace-nowrap shrink-0">View Plans →</button>
+        </div>
+
+        <!-- Usage meter -->
+        <div id="usage-meter" class="glass rounded-[20px] px-5 py-3 mb-6 border border-slate-800/60 flex items-center gap-6 flex-wrap">
+            <div class="flex items-center gap-2">
+                <span class="text-sm">✨</span>
+                <div>
+                    <p class="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Tailors today</p>
+                    <p class="text-xs font-black text-white" id="usage-tailor-text">Loading...</p>
+                </div>
+                <div class="w-24 h-1.5 rounded-full bg-slate-800 overflow-hidden ml-1">
+                    <div id="usage-tailor-bar" class="h-full rounded-full bg-violet-500 transition-all" style="width:0%"></div>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-sm">⚡</span>
+                <div>
+                    <p class="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Autofills this week</p>
+                    <p class="text-xs font-black text-white" id="usage-autofill-text">Loading...</p>
+                </div>
+                <div class="w-24 h-1.5 rounded-full bg-slate-800 overflow-hidden ml-1">
+                    <div id="usage-autofill-bar" class="h-full rounded-full bg-sky-500 transition-all" style="width:0%"></div>
+                </div>
+            </div>
+            <button onclick="openSettings('pricing')" class="ml-auto text-[9px] font-bold text-indigo-400 hover:text-white border border-indigo-500/20 hover:border-indigo-500/50 rounded-full px-3 py-1 transition whitespace-nowrap shrink-0">Upgrade →</button>
         </div>
 
         <!-- Main Tab Control -->
@@ -1428,6 +1453,7 @@
         // Initialize UI Elements
         document.addEventListener('DOMContentLoaded', () => {
             loadStats();
+            loadUsage();
             initStartupBadges();
             searchJobs(); // Load first page of explorer database
             _initAnimations();
@@ -2526,6 +2552,32 @@
             }
         }
 
+        async function loadUsage() {
+            try {
+                const _tok = localStorage.getItem('sb_token');
+                const _hdr = _tok ? { 'Authorization': `Bearer ${_tok}` } : {};
+                const r = await fetch('/api/usage', { headers: _hdr });
+                if (!r.ok) return;
+                const d = await r.json();
+                const tUsed = d.tailor_used ?? 0;
+                const tLimit = d.tailor_daily_limit;
+                const aUsed = d.autofill_used_week ?? 0;
+                const aLimit = d.autofill_weekly_limit;
+                const tailorEl = document.getElementById('usage-tailor-text');
+                const tailorBar = document.getElementById('usage-tailor-bar');
+                const autofillEl = document.getElementById('usage-autofill-text');
+                const autofillBar = document.getElementById('usage-autofill-bar');
+                if (tailorEl) {
+                    tailorEl.textContent = tLimit === null ? `${tUsed} / ∞ today` : `${tUsed}/${tLimit} today`;
+                    if (tailorBar) tailorBar.style.width = tLimit ? `${Math.min(100, tUsed / tLimit * 100)}%` : '0%';
+                }
+                if (autofillEl) {
+                    autofillEl.textContent = aLimit === null ? `${aUsed} / ∞ this week` : aLimit === 0 ? `0 (upgrade to unlock)` : `${aUsed}/${aLimit} this week`;
+                    if (autofillBar) autofillBar.style.width = aLimit ? `${Math.min(100, aUsed / aLimit * 100)}%` : '0%';
+                }
+            } catch(e) { /* non-fatal */ }
+        }
+
         async function tailorJob(appId, btn) {
             const orig = btn.innerHTML;
             btn.innerHTML = '⏳ Tailoring...';
@@ -2535,10 +2587,19 @@
                 const _tok = localStorage.getItem('sb_token');
                 const _hdr = _tok ? { 'Authorization': `Bearer ${_tok}` } : {};
                 const r = await fetch(`/run/tailor/${appId}`, { method: 'POST', headers: _hdr });
+                if (r.status === 429) {
+                    const err = await r.json().catch(() => ({}));
+                    btn.innerHTML = orig;
+                    btn.disabled = false;
+                    alert(err.detail || 'Daily limit reached — upgrade to Basic ($19/mo) for 20 tailors/day.');
+                    loadUsage();
+                    return;
+                }
                 const res = r.ok ? await r.json() : null;
                 if (res && res.started) {
                     btn.innerHTML = '✅ Tailored!';
                     showToast('Tailoring started! Check Docs once complete.', 'success');
+                    loadUsage();
                     setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 4000);
                 } else {
                     btn.innerHTML = '❌ Failed';
@@ -2558,7 +2619,17 @@
             btn.disabled = true;
             showToast('Triggering autofill browser in background...', 'info');
             try {
-                const res = await fetch(`/run/autofill/${appId}`, { method: 'POST' });
+                const _tok = localStorage.getItem('sb_token');
+                const _ahdr = _tok ? { 'Authorization': `Bearer ${_tok}` } : {};
+                const res = await fetch(`/run/autofill/${appId}`, { method: 'POST', headers: _ahdr });
+                if (res.status === 429) {
+                    const err = await res.json().catch(() => ({}));
+                    btn.innerHTML = orig;
+                    btn.disabled = false;
+                    alert(err.detail || 'Daily limit reached — upgrade to Basic ($19/mo) for 20 tailors/day.');
+                    loadUsage();
+                    return;
+                }
                 if (!res.ok) {
                     btn.innerHTML = '❌';
                     showToast('Autofill failed.', 'error');
@@ -2955,23 +3026,35 @@
                         </div>
                         <ul class="space-y-1.5 text-xs text-slate-400">
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Paste any job link &amp; get AI match score + hire probability</li>
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Tailor resume &amp; cover letter (unlimited)</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 5 tailored resumes/day</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Answer pack generation for any application</li>
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Up to 10 manually added jobs/month</li>
+                            <li class="flex items-center gap-2"><span class="text-slate-600">–</span> No auto-fills</li>
                             <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-discovery across 1000+ job boards</li>
                             <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-fill Greenhouse / Lever / Ashby / Workday</li>
-                            <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Telegram approval flow</li>
                         </ul>
+                    </div>
+                    <div class="rounded-2xl border border-sky-500/40 p-4 bg-sky-500/5">
+                        <div class="flex items-center justify-between mb-3">
+                            <div><p class="font-black text-white text-sm flex items-center gap-2">Basic <span class="text-[9px] font-bold bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">More tailors + auto-fill access</p></div>
+                            <div class="text-right"><span class="text-2xl font-black text-white">$19</span><span class="text-slate-500 text-xs">/mo</span></div>
+                        </div>
+                        <ul class="space-y-1.5 text-xs text-slate-400">
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 20 tailored resumes/day</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 10 auto-fills per week</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Free</li>
+                            <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-discovery</li>
+                        </ul>
+                        <p class="text-[10px] text-slate-600 mt-3">Get early access → <a href="mailto:karthiklucky899@gmail.com" class="text-sky-400 hover:text-white">karthiklucky899@gmail.com</a></p>
                     </div>
                     <div class="rounded-2xl border border-indigo-500/40 p-4 bg-indigo-500/5">
                         <div class="flex items-center justify-between mb-3">
                             <div><p class="font-black text-white text-sm flex items-center gap-2">Pro <span class="text-[9px] font-bold bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">Full automation — apply while you sleep</p></div>
-                            <div class="text-right"><span class="text-2xl font-black text-white">$29</span><span class="text-slate-500 text-xs">/mo</span></div>
+                            <div class="text-right"><span class="text-2xl font-black text-white">$49</span><span class="text-slate-500 text-xs">/mo</span></div>
                         </div>
                         <ul class="space-y-1.5 text-xs text-slate-400">
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Free, unlimited</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited tailors</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited auto-fills</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Auto-discovery — 1000+ boards scraped every 6h</li>
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Auto-fill &amp; submit applications via browser bot</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Telegram approval flow before each submission</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority AI matching queue</li>
                         </ul>
@@ -2979,12 +3062,12 @@
                     </div>
                     <div class="rounded-2xl border border-violet-500/30 p-4 bg-violet-500/5">
                         <div class="flex items-center justify-between mb-3">
-                            <div><p class="font-black text-white text-sm flex items-center gap-2">Team <span class="text-[9px] font-bold bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">Up to 5 seats</p></div>
+                            <div><p class="font-black text-white text-sm flex items-center gap-2">Agency <span class="text-[9px] font-bold bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">Everything in Pro + team features</p></div>
                             <div class="text-right"><span class="text-2xl font-black text-white">$99</span><span class="text-slate-500 text-xs">/mo</span></div>
                         </div>
                         <ul class="space-y-1.5 text-xs text-slate-400">
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Pro × 5 seats</li>
-                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Shared job pool &amp; pipeline</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Pro</li>
+                            <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Team seats &amp; shared pipeline</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Team analytics dashboard</li>
                             <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Dedicated support</li>
                         </ul>
