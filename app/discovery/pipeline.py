@@ -532,15 +532,13 @@ def run_discovery(user_id: str | None = None) -> int:
             # JOB-FIRST: insert the postings directly into the DB.
             inserted = _upsert(all_raw_jobs, user_id=user_id)
             log.info("Aggregator job-first upsert: %d new jobs from %d fetched", inserted, len(all_raw_jobs))
-            # Bonus: also register the companies so a direct-ATS scrape can later
-            # upgrade these rows to autofill-capable boards (best-effort, non-fatal).
-            try:
-                await feed_companies_from_aggregators(all_raw_jobs)
-            except Exception as e:
-                log.warning("Aggregator company feeder failed (non-fatal): %s", e)
+            # Stash the raw jobs so company-registration can run AFTER the run
+            # summary is written (it's slow and must not delay the UI breakdown).
+            _direct_raw_holder.extend(all_raw_jobs)
 
         return inserted
 
+    _direct_raw_holder = []
     try:
         direct_new = asyncio.run(run_direct_sources_async())
         total_new += direct_new
@@ -549,23 +547,28 @@ def run_discovery(user_id: str | None = None) -> int:
 
     log.info("Discovery complete. Total new jobs inserted: %d", total_new)
 
-    # G. Selective ATS upgrade — for shortlisted/tailored jobs, detect if the
-    # company uses Greenhouse/Lever/Ashby from the URL and register only those
-    # boards. This converts apply_track from "manual" → "autofill" for jobs
-    # that already matched the resume.
-    try:
-        ats_upgraded = run_ats_upgrade_for_shortlisted()
-        log.info("ATS upgrade: registered %d boards from shortlisted companies", ats_upgraded)
-    except Exception as e:
-        log.warning("Selective ATS upgrade failed (non-fatal): %s", e)
-
-    # Persist a per-source summary of this run so the UI can show where jobs came from.
+    # Persist the per-source summary FIRST so the UI gets the breakdown quickly,
+    # before the slower best-effort post-processing below.
     if _boards_fetched:
         source_stats["Company ATS boards"] = {"fetched": _boards_fetched}
     try:
         _write_discovery_run(user_id, source_stats, total_new, _run_started)
     except Exception as e:
         log.warning("Could not write discovery run summary (non-fatal): %s", e)
+
+    # Slow, best-effort post-processing — runs after the summary so it never
+    # delays the UI. Registers companies for future direct-ATS upgrades, and
+    # upgrades shortlisted jobs to autofill where an ATS is detectable.
+    if _direct_raw_holder:
+        try:
+            asyncio.run(feed_companies_from_aggregators(_direct_raw_holder))
+        except Exception as e:
+            log.warning("Aggregator company feeder failed (non-fatal): %s", e)
+    try:
+        ats_upgraded = run_ats_upgrade_for_shortlisted()
+        log.info("ATS upgrade: registered %d boards from shortlisted companies", ats_upgraded)
+    except Exception as e:
+        log.warning("Selective ATS upgrade failed (non-fatal): %s", e)
 
     return total_new
 
