@@ -1407,6 +1407,23 @@
                 localStorage.removeItem('jb_post_discover');
                 try { sbSwitchTab('explorer'); } catch (e) {}
             }
+            // After a manual link extraction, open Pipeline and highlight the card.
+            const openTab = sessionStorage.getItem('hp_open_tab');
+            const highlightApp = sessionStorage.getItem('hp_highlight_app');
+            if (openTab) { sessionStorage.removeItem('hp_open_tab'); try { sbSwitchTab(openTab); } catch(e) {} }
+            if (highlightApp) {
+                sessionStorage.removeItem('hp_highlight_app');
+                // Wait for Jinja cards to render then scroll to and pulse the new card
+                setTimeout(() => {
+                    const card = document.querySelector(`[data-app-id="${highlightApp}"]`)?.closest('.kanban-card');
+                    if (card) {
+                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        card.style.transition = 'box-shadow .3s ease';
+                        card.style.boxShadow = '0 0 0 2px #818cf8, 0 0 30px rgba(99,102,241,0.5)';
+                        setTimeout(() => { card.style.boxShadow = ''; }, 3000);
+                    }
+                }, 400);
+            }
             // Resume showing progress if a discovery is still running in the background.
             try { checkActiveDiscovery(); } catch (e) {}
             const fy = document.getElementById('footer-year'); if (fy) fy.textContent = new Date().getFullYear();
@@ -1694,6 +1711,7 @@
         function _renderDiscoverState(run) {
             const bar = document.getElementById('discover-bar');
             const closeBtn = document.getElementById('discover-close');
+            const cancelBtn = document.getElementById('discover-cancel');
             if (run.status === 'discovering') return; // keep the searching animation
             clearInterval(_discoverAnim);
             if (run.status === 'ranking') {
@@ -1710,12 +1728,42 @@
                 closeBtn.textContent = 'View jobs';
                 closeBtn.dataset.ok = '1';
                 closeBtn.classList.remove('hidden');
+                if (cancelBtn) cancelBtn.classList.add('hidden');
+            } else if (run.status === 'cancelled') {
+                bar.style.width = '100%';
+                bar.style.background = '#6b7280';
+                _setDiscoverStatus('🛑 Discovery stopped by you', 'text-slate-400');
+                closeBtn.textContent = 'Close';
+                closeBtn.dataset.ok = '';
+                closeBtn.classList.remove('hidden');
+                if (cancelBtn) cancelBtn.classList.add('hidden');
             } else if (run.status === 'error') {
                 bar.style.width = '100%';
                 _setDiscoverStatus(`⚠️ ${run.error || 'Something went wrong'}`, 'text-rose-400');
                 closeBtn.textContent = 'Close';
                 closeBtn.dataset.ok = '';
                 closeBtn.classList.remove('hidden');
+                if (cancelBtn) cancelBtn.classList.add('hidden');
+            }
+        }
+
+        async function cancelDiscovery(btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ Stopping…';
+            try {
+                const tok = localStorage.getItem('sb_token');
+                const h = tok ? { 'Authorization': `Bearer ${tok}` } : {};
+                await fetch('/run/discovery', { method: 'DELETE', headers: h });
+                clearInterval(_discoverPoll);
+                _setDiscoverStatus('🛑 Discovery stopped', 'text-slate-400');
+                document.getElementById('discover-bar').style.width = '100%';
+                document.getElementById('discover-bar').style.background = '#6b7280';
+                const closeBtn = document.getElementById('discover-close');
+                closeBtn.textContent = 'Close'; closeBtn.classList.remove('hidden');
+                btn.classList.add('hidden');
+                _hidePill();
+            } catch(e) {
+                btn.disabled = false; btn.textContent = '✕ Stop';
             }
         }
         function _requestNotify() {
@@ -1752,6 +1800,7 @@
                 setTimeout(_hidePill, 10000);
                 return true;
             }
+            if (run.status === 'cancelled') { _hidePill(); return true; }
             if (run.status === 'error') { _setPill('Discovery failed', false); setTimeout(_hidePill, 10000); return true; }
             return false;
         }
@@ -2676,10 +2725,16 @@
                 }
 
                 const data = await res.json().catch(() => ({}));
-                showToast('✅ Job extracted! AI match scores calculated — tailoring in background.', 'success');
+                showToast('✅ Job added to Pipeline! Match score calculated — tailoring in background.', 'success');
                 input.value = '';
-                btn.innerHTML = '✅ Shortlisted!';
-                setTimeout(() => { btn.innerHTML = origText; btn.disabled = false; window.location.reload(); }, 2000);
+                btn.innerHTML = '✅ Added!';
+                // Store app ID to highlight the card after reload
+                if (data.application_id) sessionStorage.setItem('hp_highlight_app', String(data.application_id));
+                setTimeout(() => {
+                    btn.innerHTML = origText; btn.disabled = false;
+                    sessionStorage.setItem('hp_open_tab', 'kanban');
+                    window.location.reload();
+                }, 1200);
             } catch (e) {
                 showToast('Connection error during job extraction.', 'error');
                 btn.innerHTML = '❌ Error';
@@ -3239,7 +3294,10 @@
             </div>
             <p class="text-[10px] text-slate-500 mt-3">This takes a couple of minutes — searching every source and ranking matches. You can keep using the app; we'll notify you when it's done.</p>
             <div id="discover-summary" class="hidden mt-4 text-left max-h-56 overflow-y-auto space-y-1.5"></div>
-            <button id="discover-close" onclick="closeDiscoverOverlay()" class="hidden mt-5 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-sm transition">View jobs</button>
+            <div class="flex gap-2 mt-5">
+                <button id="discover-cancel" onclick="cancelDiscovery(this)" class="flex-1 bg-rose-600/15 hover:bg-rose-600/30 text-rose-400 font-bold py-2.5 rounded-xl text-sm transition border border-rose-500/20">✕ Stop</button>
+                <button id="discover-close" onclick="closeDiscoverOverlay()" class="hidden flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-sm transition">View jobs</button>
+            </div>
         </div>
     </div>
 

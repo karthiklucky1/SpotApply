@@ -972,6 +972,25 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
     return {"started": "discovery"}
 
 
+@app.delete("/run/discovery")
+def cancel_discovery(request: Request) -> dict:
+    """Mark the active discovery run as cancelled so the poller stops tracking it."""
+    from app.db.models import DiscoveryRun
+    uid = _get_user_id(request)
+    with get_session() as session:
+        q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
+        if uid and uid != "local":
+            q = q.where(DiscoveryRun.user_id == uid)
+        run = session.exec(q).first()
+        if run and run.status in ("discovering", "ranking"):
+            run.status = "cancelled"
+            run.error = "Cancelled by user"
+            session.add(run)
+            session.commit()
+            return {"cancelled": True}
+    return {"cancelled": False}
+
+
 def _discovery_gate(uid) -> tuple[bool, str]:
     """Block a manual discovery if one is in progress or within the cooldown."""
     from datetime import datetime
