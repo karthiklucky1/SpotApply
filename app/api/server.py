@@ -331,12 +331,13 @@ def discovery_last_run(request: Request) -> dict:
             q = q.where(DiscoveryRun.user_id == uid)
         run = session.exec(q).first()
         if not run:
-            return {"run": None}
+            return {"run": None, "can_run": True, "gate_detail": ""}
         try:
             counts = json.loads(run.source_counts or "{}")
         except Exception:
             counts = {}
-        return {"run": {
+        allowed, detail = _discovery_gate(uid)
+        return {"can_run": allowed, "gate_detail": detail, "run": {
             "id": run.id,
             "status": run.status,
             "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -938,8 +939,45 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
             status_code=400,
             detail="Upload your resume (or fill in your profile) before discovering jobs.",
         )
+    # Gate: prevent overlapping runs + enforce a cooldown so repeated clicks
+    # don't waste API calls / LLM tokens (discovery also auto-runs every 6h).
+    allowed, detail = _discovery_gate(uid)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=detail)
     bg.add_task(_discover_then_match, uid if uid != "local" else None)
     return {"started": "discovery"}
+
+
+def _discovery_gate(uid) -> tuple[bool, str]:
+    """Block a manual discovery if one is in progress or within the cooldown."""
+    from datetime import datetime
+    from app.config import settings
+    from app.db.models import DiscoveryRun
+    with get_session() as session:
+        q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
+        if uid and uid != "local":
+            q = q.where(DiscoveryRun.user_id == uid)
+        run = session.exec(q).first()
+    if not run:
+        return True, ""
+    now = datetime.utcnow()
+    # In progress — block unless it looks stale (likely crashed/hung).
+    if run.status in ("discovering", "ranking"):
+        age = (now - (run.started_at or now)).total_seconds()
+        if age < 1800:  # 30 min
+            return False, "A discovery is already running — please wait for it to finish."
+        return True, ""  # stale, allow a fresh run
+    # Cooldown since the last completed run.
+    cooldown = max(0, settings.discovery_cooldown_hours) * 3600
+    ref = run.finished_at or run.started_at
+    if cooldown and ref:
+        elapsed = (now - ref).total_seconds()
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed)
+            h, m = remaining // 3600, (remaining % 3600) // 60
+            when = f"{h}h {m}m" if h else f"{m}m"
+            return False, f"Discovery already ran recently. Next run available in ~{when} (it also auto-runs every {settings.discovery_cooldown_hours}h)."
+    return True, ""
 
 
 @app.post("/run/matching")

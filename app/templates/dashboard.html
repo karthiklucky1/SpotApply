@@ -1401,6 +1401,13 @@
             } catch (e) {}
             return null;
         }
+        async function _getDiscoveryState() {
+            try {
+                const r = await fetch('/api/discovery/last-run', { headers: authHeaders() });
+                if (r.ok) return await r.json();
+            } catch (e) {}
+            return null;
+        }
         function _renderSources(run) {
             const summary = document.getElementById('discover-summary');
             const entries = Object.entries(run.sources || {}).sort((a, b) => (b[1].fetched || 0) - (a[1].fetched || 0));
@@ -1494,7 +1501,20 @@
         }
         async function runDiscovery() {
             _requestNotify();
-            const prev = await _getLastRun();
+            const state = await _getDiscoveryState();
+            const prev = state ? state.run : null;
+            // Already running → just show/track it instead of starting another.
+            if (prev && (prev.status === 'discovering' || prev.status === 'ranking')) {
+                _showDiscoverOverlay();
+                _trackRun(prev);
+                _pollRun(null);
+                return;
+            }
+            // Within cooldown → friendly toast, don't open the overlay or burn calls.
+            if (state && state.can_run === false) {
+                showToast(state.gate_detail || 'Discovery ran recently — please wait.', 'info');
+                return;
+            }
             const prevId = prev ? prev.id : null;
             _showDiscoverOverlay();
             let ok = false;
