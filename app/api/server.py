@@ -22,7 +22,10 @@ from sqlalchemy import func, desc
 
 from app.autofill.agent import autofill, preview
 from app.db.init_db import get_session
-from app.db.models import Application, ApplicationStatus, Job
+from app.db.models import (
+    Application, ApplicationStatus, Job,
+    UserSubscription, UserUsage, PlanTier, PLAN_LIMITS,
+)
 from app.discovery.pipeline import run_discovery
 from app.matching.pipeline import run_matching
 from app.tailoring.tailor import tailor_all_shortlisted
@@ -1028,6 +1031,144 @@ def trigger_matching(request: Request, bg: BackgroundTasks) -> dict:
     uid = _get_user_id(request)
     bg.add_task(run_matching, uid if uid != "local" else None)
     return {"started": "matching"}
+
+
+# ── Usage / Plan helpers ─────────────────────────────────────────────────────
+
+def _get_user_plan(uid: str) -> PlanTier:
+    """Return the user's current plan tier. Defaults to FREE."""
+    with get_session() as session:
+        sub = session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == uid)
+        ).first()
+    if not sub:
+        return PlanTier.FREE
+    return sub.plan
+
+
+def _get_or_create_usage(session, uid: str):
+    from datetime import date, timedelta
+    today = date.today()
+    # Monday of current week
+    week_start = today - timedelta(days=today.weekday())
+    row = session.exec(
+        select(UserUsage).where(
+            UserUsage.user_id == uid,
+            UserUsage.usage_date == today,
+        )
+    ).first()
+    if not row:
+        row = UserUsage(user_id=uid, usage_date=today, week_start=week_start)
+        session.add(row)
+        session.flush()
+    return row
+
+
+def _get_week_autofill_count(session, uid: str) -> int:
+    """Sum autofill_count_week across all rows in the current Mon–Sun window."""
+    from datetime import date, timedelta
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    rows = session.exec(
+        select(UserUsage).where(
+            UserUsage.user_id == uid,
+            UserUsage.week_start == week_start,
+        )
+    ).all()
+    return sum(r.autofill_count_week for r in rows)
+
+
+def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
+    """Returns (allowed, detail_msg, usage_info)."""
+    if uid == "local":
+        return True, "", {}
+    plan = _get_user_plan(uid)
+    limits = PLAN_LIMITS[plan]
+    daily_limit = limits["tailor_daily"]
+    if daily_limit is None:
+        return True, "", {"plan": plan, "daily_limit": None}
+    with get_session() as session:
+        row = _get_or_create_usage(session, uid)
+        used = row.tailor_count
+        session.commit()
+    if used >= daily_limit:
+        upgrade = "Basic ($19/mo)" if plan == PlanTier.FREE else "Pro ($49/mo)"
+        return False, (
+            f"Daily tailoring limit reached ({used}/{daily_limit}). "
+            f"Resets at midnight UTC. Upgrade to {upgrade} for more."
+        ), {"plan": plan, "used": used, "daily_limit": daily_limit}
+    return True, "", {"plan": plan, "used": used, "daily_limit": daily_limit}
+
+
+def _increment_tailor(uid: str):
+    if uid == "local":
+        return
+    with get_session() as session:
+        row = _get_or_create_usage(session, uid)
+        row.tailor_count += 1
+        session.add(row)
+        session.commit()
+
+
+def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
+    if uid == "local":
+        return True, "", {}
+    plan = _get_user_plan(uid)
+    limits = PLAN_LIMITS[plan]
+    weekly_limit = limits["autofill_weekly"]
+    if weekly_limit is None:
+        return True, "", {"plan": plan, "weekly_limit": None}
+    if weekly_limit == 0:
+        return False, (
+            "Auto-fill is not available on the Free plan. "
+            "Upgrade to Basic ($19/mo) to get 10 auto-fills per week."
+        ), {"plan": plan, "weekly_limit": 0}
+    with get_session() as session:
+        used = _get_week_autofill_count(session, uid)
+    if used >= weekly_limit:
+        upgrade = "Pro ($49/mo)" if plan == PlanTier.BASIC else "Agency Killer ($99/mo)"
+        return False, (
+            f"Weekly auto-fill limit reached ({used}/{weekly_limit}). "
+            f"Resets Monday midnight UTC. Upgrade to {upgrade} for more."
+        ), {"plan": plan, "used": used, "weekly_limit": weekly_limit}
+    return True, "", {"plan": plan, "used": used, "weekly_limit": weekly_limit}
+
+
+def _increment_autofill(uid: str):
+    if uid == "local":
+        return
+    with get_session() as session:
+        row = _get_or_create_usage(session, uid)
+        row.autofill_count_week += 1
+        session.add(row)
+        session.commit()
+
+
+@app.get("/api/usage")
+def get_usage(request: Request) -> dict:
+    """Return current plan + usage counters for the dashboard meter."""
+    from datetime import date, timedelta
+    uid = _get_user_id(request)
+    if uid == "local":
+        return {"plan": "local", "tailor_used": 0, "tailor_daily_limit": None,
+                "autofill_used_week": 0, "autofill_weekly_limit": None}
+    plan = _get_user_plan(uid)
+    limits = PLAN_LIMITS[plan]
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    with get_session() as session:
+        row = _get_or_create_usage(session, uid)
+        tailor_used = row.tailor_count
+        autofill_used = _get_week_autofill_count(session, uid)
+        session.commit()
+    return {
+        "plan": plan,
+        "tailor_used": tailor_used,
+        "tailor_daily_limit": limits["tailor_daily"],
+        "autofill_used_week": autofill_used,
+        "autofill_weekly_limit": limits["autofill_weekly"],
+        "week_start": week_start.isoformat(),
+    }
 
 
 @app.post("/run/tailor")
