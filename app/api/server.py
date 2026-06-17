@@ -160,16 +160,33 @@ async def _scheduler():
         await asyncio.sleep(INTERVAL)
 
 
-@app.get("/")
-def index_redirect():
-    return RedirectResponse(url="/dashboard")
-
-
 try:
     templates = Jinja2Templates(directory="app/templates")
 except Exception:
     import os
     templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "..", "templates"))
+
+
+# ── Public / marketing pages ─────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse(request=request, name="landing.html", context={})
+
+
+@app.get("/pricing", response_class=HTMLResponse)
+def pricing_page(request: Request):
+    return templates.TemplateResponse(request=request, name="pricing.html", context={})
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page(request: Request):
+    return templates.TemplateResponse(request=request, name="privacy.html", context={})
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page(request: Request):
+    return templates.TemplateResponse(request=request, name="terms.html", context={})
 
 
 # ── Auth pages ───────────────────────────────────────────────────────────────
@@ -1222,3 +1239,101 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
     bg.add_task(tailor_for_application, app_id)
 
     return {"success": True, "application_id": app_id}
+
+
+# ── GDPR / Account deletion ──────────────────────────────────────────────────
+
+@app.delete("/api/account")
+def delete_account(request: Request) -> dict:
+    """Permanently delete all data for the authenticated user."""
+    uid = _require_user(request)
+    from app.db.models import UserProfile, PendingQuestion, AnswerMemory
+    from app.db.init_db import get_session
+    from sqlmodel import select, delete as sql_delete
+
+    with get_session() as session:
+        # Collect application IDs for this user
+        if uid != "local":
+            app_ids = [
+                a.id for a in session.exec(
+                    select(Application).where(Application.user_id == uid)
+                ).all()
+            ]
+            # Delete pending questions linked to those applications
+            if app_ids:
+                session.exec(sql_delete(PendingQuestion).where(PendingQuestion.application_id.in_(app_ids)))
+            # Delete applications
+            session.exec(sql_delete(Application).where(Application.user_id == uid))
+            # Delete jobs
+            session.exec(sql_delete(Job).where(Job.user_id == uid))
+            # Delete profile
+            session.exec(sql_delete(UserProfile).where(UserProfile.user_id == uid))
+            session.commit()
+
+    # Delete resume files from Supabase Storage
+    from app.config import settings
+    if settings.use_supabase and uid and uid != "local":
+        try:
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            files = sb.storage.from_("resume").list(uid) or []
+            paths = [f"{uid}/{f['name']}" for f in files if f.get("name")]
+            if paths:
+                sb.storage.from_("resume").remove(paths)
+            # Also delete Supabase Auth user
+            sb.auth.admin.delete_user(uid)
+        except Exception:
+            pass
+
+    return {"success": True, "message": "All account data deleted."}
+
+
+# ── CSV export ───────────────────────────────────────────────────────────────
+
+@app.get("/api/export/applications.csv")
+def export_applications_csv(request: Request):
+    """Download all applications as a CSV file."""
+    import csv, io
+    from fastapi.responses import StreamingResponse
+
+    uid = _require_user(request)
+    _uid_filter = uid and uid != "local"
+
+    with get_session() as session:
+        q = select(Application, Job).join(Job)
+        if _uid_filter:
+            q = q.where(Application.user_id == uid)
+        results = session.exec(q).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id", "company", "title", "location", "remote", "source",
+        "status", "apply_track", "rerank_score", "blended_score",
+        "url", "created_at", "updated_at", "submitted_at", "notes"
+    ])
+    for app_row, job_row in results:
+        writer.writerow([
+            app_row.id,
+            job_row.company,
+            job_row.title,
+            job_row.location,
+            job_row.remote,
+            job_row.source.value if job_row.source else "",
+            app_row.status.value if app_row.status else "",
+            app_row.apply_track or "",
+            job_row.rerank_score,
+            job_row.blended_score,
+            job_row.url,
+            app_row.created_at.isoformat() if app_row.created_at else "",
+            app_row.updated_at.isoformat() if app_row.updated_at else "",
+            app_row.submitted_at.isoformat() if app_row.submitted_at else "",
+            (app_row.notes or "").replace("\n", " "),
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=applications.csv"},
+    )

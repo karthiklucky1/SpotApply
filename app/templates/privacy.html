@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy — HirePath</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%234f46e5'/><stop offset='100%25' stop-color='%237c3aed'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Outfit', sans-serif; background: #070b14; color: #f8fafc; }
+        .gradient-text { background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 40%, #c4b5fd 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.07); }
+        .prose-dark h2 { font-size: 1.25rem; font-weight: 800; color: #f8fafc; margin-top: 2rem; margin-bottom: 0.75rem; }
+        .prose-dark p, .prose-dark li { color: #94a3b8; line-height: 1.75; font-size: 0.9375rem; }
+        .prose-dark ul { list-style: disc; padding-left: 1.5rem; margin-top: 0.5rem; }
+        .prose-dark li { margin-bottom: 0.35rem; }
+        .prose-dark a { color: #818cf8; text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<nav class="fixed top-0 left-0 right-0 z-50 glass border-b border-white/[0.05]">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <span class="font-black text-lg gradient-text">HirePath</span>
+        </a>
+        <a href="/login" class="text-sm font-bold text-slate-300 hover:text-white transition-colors">Sign in</a>
+    </div>
+</nav>
+
+<main class="pt-28 pb-20 px-4">
+    <div class="max-w-2xl mx-auto">
+        <div class="mb-10">
+            <h1 class="text-4xl font-black mb-2">Privacy Policy</h1>
+            <p class="text-slate-500 text-sm">Last updated: June 2025</p>
+        </div>
+
+        <div class="prose-dark space-y-2">
+
+            <p>HirePath ("we", "us", "our") is committed to protecting your personal data. This Privacy Policy explains what data we collect, how we use it, and your rights.</p>
+
+            <h2>1. What data we collect</h2>
+            <ul>
+                <li><strong>Account data:</strong> Email address and name provided at sign-up via Supabase Auth or Google OAuth.</li>
+                <li><strong>Resume data:</strong> The resume file you upload and the structured profile fields extracted from it (name, skills, experience, education, etc.).</li>
+                <li><strong>Application data:</strong> Job listings discovered, matching scores, tailored documents generated, and application statuses.</li>
+                <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
+            </ul>
+
+            <h2>2. How we use your data</h2>
+            <ul>
+                <li>To discover, rank, and match job listings to your profile.</li>
+                <li>To generate tailored resumes and cover letters for each application.</li>
+                <li>To auto-fill job application forms on your behalf.</li>
+                <li>To send you Telegram notifications and daily summaries.</li>
+                <li>To maintain your application history and pipeline state.</li>
+            </ul>
+            <p>Your data is never sold, licensed, or shared with third parties for advertising purposes.</p>
+
+            <h2>3. Data storage</h2>
+            <p>Your data is stored in Supabase (PostgreSQL database and file storage), hosted on AWS infrastructure in your region. Resume files are stored in Supabase Storage and accessible only to your account. Application data is stored in a private PostgreSQL database.</p>
+
+            <h2>4. Third-party services</h2>
+            <ul>
+                <li><strong>Supabase</strong> — authentication and database hosting.</li>
+                <li><strong>Anthropic (Claude)</strong> — AI model used for resume extraction, job scoring, and document generation. Data sent to Claude is governed by Anthropic's data processing terms.</li>
+                <li><strong>Telegram</strong> — notification delivery. Your Telegram chat ID is stored to route messages to you.</li>
+            </ul>
+
+            <h2>5. Important disclosure — platform terms of service</h2>
+            <p>HirePath automates interactions with job boards and ATS platforms. Some platforms (including LinkedIn and Indeed) prohibit automated scraping in their Terms of Service. By using HirePath, you acknowledge this risk and accept responsibility for any consequences of using automated job search tools on those platforms. We recommend reviewing the ToS of each platform before enabling sources that interact with them.</p>
+
+            <h2>6. Your rights (GDPR / CCPA)</h2>
+            <p>You have the right to:</p>
+            <ul>
+                <li><strong>Access</strong> your data — request a copy of all data we hold about you.</li>
+                <li><strong>Correct</strong> your data — update your profile at any time from the dashboard.</li>
+                <li><strong>Delete</strong> your data — request full account deletion from Settings → "Delete my account". This permanently removes all your jobs, applications, profile data, and uploaded files.</li>
+                <li><strong>Export</strong> your data — download your application history as CSV from the dashboard.</li>
+            </ul>
+            <p>To exercise any of these rights, email us at <a href="mailto:privacy@hirepathapp.com">privacy@hirepathapp.com</a> or use the in-app delete flow.</p>
+
+            <h2>7. Data retention</h2>
+            <p>We retain your data for as long as your account is active. If you delete your account, all data is permanently removed within 30 days.</p>
+
+            <h2>8. Cookies</h2>
+            <p>HirePath does not use tracking cookies. Authentication tokens are stored in your browser's localStorage and used only to maintain your session.</p>
+
+            <h2>9. Changes to this policy</h2>
+            <p>We may update this Privacy Policy from time to time. We will notify you via email or an in-app notice for material changes.</p>
+
+            <h2>10. Contact</h2>
+            <p>Questions about your data? Email <a href="mailto:privacy@hirepathapp.com">privacy@hirepathapp.com</a>.</p>
+        </div>
+
+        <div class="mt-12 pt-8 border-t border-white/[0.06] flex gap-6 text-sm text-slate-500">
+            <a href="/terms" class="hover:text-white transition-colors">Terms of Service</a>
+            <a href="/" class="hover:text-white transition-colors">Home</a>
+        </div>
+    </div>
+</main>
+
+</body>
+</html>

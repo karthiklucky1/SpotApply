@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pricing — HirePath</title>
+    <meta name="description" content="Simple, transparent pricing. Start free and upgrade as your job search scales.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%234f46e5'/><stop offset='100%25' stop-color='%237c3aed'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(167,139,250,0.9)'/></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Outfit', sans-serif; background: #070b14; color: #f8fafc; }
+        .gradient-text { background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 40%, #c4b5fd 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.07); }
+        .btn-primary { background: linear-gradient(135deg, #4f46e5, #7c3aed); box-shadow: 0 4px 24px rgba(99,102,241,0.4); transition: all 0.2s ease; }
+        .btn-primary:hover { box-shadow: 0 6px 32px rgba(99,102,241,0.6); transform: translateY(-1px); }
+        .plan-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 24px; transition: border-color 0.2s; }
+        .plan-card.featured { background: linear-gradient(135deg,rgba(79,70,229,0.1),rgba(124,58,237,0.06)); border-color: rgba(99,102,241,0.35); }
+        .check { color: #10b981; }
+        .dim { color: #475569; }
+    </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav class="fixed top-0 left-0 right-0 z-50 glass border-b border-white/[0.05]">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="12" r="1.5" fill="rgba(167,139,250,0.9)"/></svg>
+            </div>
+            <span class="font-black text-lg gradient-text">HirePath</span>
+        </a>
+        <div class="flex items-center gap-3">
+            <a href="/login" class="text-sm font-bold text-slate-300 hover:text-white transition-colors px-4 py-2">Sign in</a>
+            <a href="/login" class="btn-primary text-white text-sm font-black px-5 py-2.5 rounded-xl">Get started free</a>
+        </div>
+    </div>
+</nav>
+
+<main class="pt-32 pb-20 px-4">
+    <div class="max-w-5xl mx-auto">
+
+        <!-- Header -->
+        <div class="text-center mb-16">
+            <h1 class="text-5xl font-black mb-4">Simple, honest pricing</h1>
+            <p class="text-slate-400 text-lg">Start free. Scale as your search grows. Cancel any time.</p>
+        </div>
+
+        <!-- Plans -->
+        <div class="grid sm:grid-cols-3 gap-6 mb-16">
+
+            <!-- Free -->
+            <div class="plan-card p-7 flex flex-col">
+                <div class="mb-6">
+                    <div class="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">Free</div>
+                    <div class="text-5xl font-black text-white">$0</div>
+                    <div class="text-slate-500 text-sm mt-1">Forever free</div>
+                </div>
+                <ul class="space-y-3 text-sm flex-1 mb-8">
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>10 auto-applications / month</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>5-stage AI ranking</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Dashboard & kanban board</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Telegram notifications</li>
+                    <li class="flex items-center gap-2 dim"><svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>Tailored resumes</li>
+                    <li class="flex items-center gap-2 dim"><svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>Cover letter generation</li>
+                </ul>
+                <a href="/login" class="block text-center py-3 rounded-xl border border-white/10 text-sm font-black text-slate-300 hover:border-white/20 hover:text-white transition-all">Get started free</a>
+            </div>
+
+            <!-- Pro — featured -->
+            <div class="plan-card featured p-7 flex flex-col relative">
+                <div class="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-black" style="background:linear-gradient(135deg,#4f46e5,#7c3aed);">Most popular</div>
+                <div class="mb-6">
+                    <div class="text-xs font-black uppercase tracking-widest text-indigo-400 mb-3">Pro</div>
+                    <div class="text-5xl font-black text-white">$29</div>
+                    <div class="text-slate-500 text-sm mt-1">per month</div>
+                </div>
+                <ul class="space-y-3 text-sm flex-1 mb-8">
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>Unlimited</strong> auto-applications</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>5-stage AI ranking</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Tailored resume per role</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>AI cover letter generation</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Telegram control & daily digest</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Full analytics & CSV export</li>
+                </ul>
+                <a href="/login" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Start Pro — $29/mo</a>
+            </div>
+
+            <!-- Team -->
+            <div class="plan-card p-7 flex flex-col">
+                <div class="mb-6">
+                    <div class="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">Team</div>
+                    <div class="text-5xl font-black text-white">$99</div>
+                    <div class="text-slate-500 text-sm mt-1">per month · up to 5 seats</div>
+                </div>
+                <ul class="space-y-3 text-sm flex-1 mb-8">
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Everything in Pro</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Up to 5 job seekers</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Shared team dashboard</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Priority support</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Bulk profile management</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Bootcamp / outplacement use</li>
+                </ul>
+                <a href="mailto:hello@hirepathapp.com" class="block text-center py-3 rounded-xl border border-white/10 text-sm font-black text-slate-300 hover:border-white/20 hover:text-white transition-all">Contact us</a>
+            </div>
+
+        </div>
+
+        <!-- FAQ -->
+        <div class="max-w-2xl mx-auto">
+            <h2 class="text-2xl font-black text-center mb-8">Common questions</h2>
+            <div class="space-y-4">
+                <details class="glass rounded-xl p-5 cursor-pointer group">
+                    <summary class="font-bold text-slate-200 list-none flex justify-between items-center">
+                        Is there a free trial for Pro?
+                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <p class="text-slate-400 text-sm mt-3 leading-relaxed">Yes — the Free plan lets you try the full pipeline with 10 applications. No credit card required to start.</p>
+                </details>
+                <details class="glass rounded-xl p-5 cursor-pointer group">
+                    <summary class="font-bold text-slate-200 list-none flex justify-between items-center">
+                        Can I cancel any time?
+                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <p class="text-slate-400 text-sm mt-3 leading-relaxed">Absolutely. Cancel from settings at any time. You keep Pro access until the end of your billing period.</p>
+                </details>
+                <details class="glass rounded-xl p-5 cursor-pointer group">
+                    <summary class="font-bold text-slate-200 list-none flex justify-between items-center">
+                        Does anything get submitted without my approval?
+                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <p class="text-slate-400 text-sm mt-3 leading-relaxed">Never. The bot fills forms and sends you a preview via Telegram. You tap Approve — then and only then does it submit. Full control, always.</p>
+                </details>
+                <details class="glass rounded-xl p-5 cursor-pointer group">
+                    <summary class="font-bold text-slate-200 list-none flex justify-between items-center">
+                        Which job boards does it cover?
+                        <svg class="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <p class="text-slate-400 text-sm mt-3 leading-relaxed">Greenhouse, Lever, Ashby, Workday, SmartRecruiters, LinkedIn, Indeed, Remotive, RemoteOK, HN Hiring, The Muse, Arbeitnow, Jobicy, WeWorkRemotely, Adzuna, Reed, Jooble, and more.</p>
+                </details>
+            </div>
+        </div>
+
+    </div>
+</main>
+
+<footer class="border-t border-white/[0.05] py-10 px-4">
+    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+        <span class="font-black text-sm gradient-text">HirePath © 2025</span>
+        <div class="flex items-center gap-6 text-sm text-slate-500">
+            <a href="/" class="hover:text-white transition-colors">Home</a>
+            <a href="/privacy" class="hover:text-white transition-colors">Privacy</a>
+            <a href="/terms" class="hover:text-white transition-colors">Terms</a>
+        </div>
+    </div>
+</footer>
+
+</body>
+</html>
