@@ -1,6 +1,6 @@
 // popup.js — HirePath Extension Popup
 
-const HIREPATH_URL = "https://hirepath.up.railway.app";
+const HIREPATH_URL = "https://hirepath.dev";
 
 function showStatus(msg, type) {
   const el = document.getElementById("status");
