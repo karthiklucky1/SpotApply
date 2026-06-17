@@ -662,7 +662,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in shortlisted %}
-                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" onclick="openJobUrl(this)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -775,7 +775,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in bot_filled %}
-                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" onclick="openJobUrl(this)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -2076,6 +2076,14 @@
         }
 
         // Document Modal Logic
+        // Clicking a job card opens the actual job posting; action buttons
+        // (Docs, Open Form, etc.) stopPropagation so they still work.
+        function openJobUrl(el) {
+            const url = el.dataset.jobUrl;
+            if (url) window.open(url, '_blank', 'noopener');
+            else openModal(+el.dataset.appId);  // fallback if no URL on file
+        }
+
         async function openModal(appId) {
             currentAppId = appId;
             currentData = null;
