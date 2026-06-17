@@ -1,0 +1,40 @@
+{
+  "name": "HirePath — AI Job Agent",
+  "short_name": "HirePath",
+  "description": "AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#070b14",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/static/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "categories": ["productivity", "business"],
+  "shortcuts": [
+    {
+      "name": "Pipeline",
+      "short_name": "Pipeline",
+      "url": "/dashboard",
+      "description": "View your job application pipeline"
+    },
+    {
+      "name": "Discover Jobs",
+      "short_name": "Discover",
+      "url": "/dashboard?action=discover",
+      "description": "Start a new job discovery run"
+    }
+  ]
+}

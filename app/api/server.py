@@ -29,6 +29,13 @@ from app.tailoring.tailor import tailor_all_shortlisted
 
 app = FastAPI(title="JobAgent")
 
+# Serve static files (PWA manifest, icons, service worker)
+from fastapi.staticfiles import StaticFiles
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(__file__), "..", "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
 
 # ── Supabase session-refresh middleware ─────────────────────────────────────
 # When SUPABASE_URL is configured, every response gets a refreshed access
