@@ -82,6 +82,15 @@
     .card-glow-amber:hover { box-shadow: 0 0 40px rgba(245,158,11,0.15), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(245,158,11,0.4) !important; }
     .card-glow-green:hover { box-shadow: 0 0 40px rgba(16,185,129,0.15), 0 8px 32px rgba(0,0,0,0.4); border-color: rgba(16,185,129,0.4) !important; }
 
+    /* Strong-match glow (rerank score >= 80) — pulsing emerald, like the hiring/online glow */
+    .high-match { border-color: rgba(16,185,129,0.55) !important; animation: high-match-pulse 2.8s ease-in-out infinite; }
+    @keyframes high-match-pulse {
+        0%,100% { box-shadow: 0 0 16px rgba(16,185,129,0.22), 0 8px 32px rgba(0,0,0,0.4); }
+        50%     { box-shadow: 0 0 34px rgba(16,185,129,0.50), 0 8px 32px rgba(0,0,0,0.4); }
+    }
+    .match-badge-strong { color:#34d399 !important; background:rgba(16,185,129,0.12) !important; border-color:rgba(16,185,129,0.45) !important; box-shadow:0 0 10px rgba(16,185,129,0.35); }
+    .row-high-match { background:rgba(16,185,129,0.06) !important; box-shadow: inset 3px 0 0 rgba(16,185,129,0.65); }
+
     /* Premium gradient text */
     .gradient-text {
         background: linear-gradient(135deg, #e2e8f0 0%, #a5b4fc 50%, #c4b5fd 100%);
@@ -653,7 +662,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in shortlisted %}
-                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-indigo-500/30 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -685,7 +694,7 @@
                                 <span class="text-[10px] text-slate-500 font-medium" title="Posted by company">📅 {{ post_date.strftime('%b %d') }}</span>
                                 {% endif %}
                                 {% if job.rerank_score %}
-                                <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-indigo-300 border-indigo-500/30">Match: {{ job.rerank_score|int }}%</span>
+                                <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-indigo-300 border-indigo-500/30{% if job.rerank_score >= 80 %} match-badge-strong{% endif %}">{% if job.rerank_score >= 80 %}✨ {% endif %}Match: {{ job.rerank_score|int }}%</span>
                                 {% endif %}
                                 {% if job.hire_probability_score is not none %}
                                 {% set hp = (job.hire_probability_score * 100)|int %}
@@ -766,7 +775,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in bot_filled %}
-                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
+                    <div class="kanban-card glass rounded-[24px] p-5 border-slate-800 hover:border-amber-500/30 transition duration-200 ease-out cursor-pointer card-glow-amber relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)">
                         <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-4 right-4 text-slate-500 hover:text-rose-400 hover:bg-slate-850/80 transition-colors w-6 h-6 flex items-center justify-center rounded-full text-sm font-bold z-10" title="Remove Job">
                             &times;
                         </button>
@@ -798,7 +807,7 @@
                         <!-- Rerank score if present -->
                         {% if job.rerank_score %}
                         <div class="flex justify-end mt-2">
-                            <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-amber-300 border-amber-500/30">Match: {{ job.rerank_score|int }}%</span>
+                            <span class="text-[10px] font-mono font-bold bg-slate-950/60 border px-2 py-0.5 rounded-full text-amber-300 border-amber-500/30{% if job.rerank_score >= 80 %} match-badge-strong{% endif %}">{% if job.rerank_score >= 80 %}✨ {% endif %}Match: {{ job.rerank_score|int }}%</span>
                         </div>
                         {% endif %}
  
@@ -1939,9 +1948,10 @@
                     const startupBadge = startup ? `<span class="text-[9px] bg-indigo-950/80 text-indigo-300 border border-indigo-800/40 px-2 py-0.5 rounded-full font-bold ml-1.5 uppercase shrink-0">Startup</span>` : '';
                     
                     let scoreBadge = `<span class="text-slate-500 font-mono">-</span>`;
+                    let rowHigh = '';
                     if (j.rerank !== null) {
                         const rank = Math.round(j.rerank);
-                        if (rank >= 85) scoreBadge = `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-mono font-black">${rank}%</span>`;
+                        if (rank >= 80) { scoreBadge = `<span class="border px-2 py-0.5 rounded-full font-mono font-black match-badge-strong">✨ ${rank}%</span>`; rowHigh = ' row-high-match'; }
                         else if (rank >= 60) scoreBadge = `<span class="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full font-mono font-black">${rank}%</span>`;
                         else if (rank >= 40) scoreBadge = `<span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full font-mono font-bold">${rank}%</span>`;
                         else scoreBadge = `<span class="bg-rose-500/10 text-rose-500 border border-rose-500/10 px-2 py-0.5 rounded-full font-mono">${rank}%</span>`;
@@ -1967,7 +1977,7 @@
 
                     const srcBadge = sourceTrackBadge(j.source || 'manual');
                     html += `
-                        <tr class="hover:bg-slate-900/30 transition">
+                        <tr class="hover:bg-slate-900/30 transition${rowHigh}">
                             <td class="py-3 px-6 font-bold">${scoreBadge}</td>
                             <td class="py-3 px-4">
                                 <div class="font-bold text-white leading-tight line-clamp-1">
