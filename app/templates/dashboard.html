@@ -19,21 +19,30 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css">
     <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
     <script type="module">
-        // Auth guard — redirect to /login if no session
+        // Auth guard — redirect to /login if no session or token expired
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
         const SUPABASE_URL = '{{ supabase_url }}'
         const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
         if (SUPABASE_URL) {
-            const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-            const { data: { session } } = await sb.auth.getSession()
-            if (!session) { window.location.href = '/login'; }
-            else {
-                localStorage.setItem('sb_token', session.access_token)
-                // Keep token fresh
-                sb.auth.onAuthStateChange((_event, s) => {
-                    if (s) localStorage.setItem('sb_token', s.access_token)
-                    else { localStorage.removeItem('sb_token'); window.location.href = '/login'; }
-                })
+            try {
+                const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+                const { data: { session }, error } = await sb.auth.getSession()
+                if (error || !session) { window.location.href = '/login'; }
+                else {
+                    localStorage.setItem('sb_token', session.access_token)
+                    sb.auth.onAuthStateChange((_event, s) => {
+                        if (s) localStorage.setItem('sb_token', s.access_token)
+                        else { localStorage.removeItem('sb_token'); window.location.href = '/login'; }
+                    })
+                    // Silently verify token is still valid server-side; redirect on 401
+                    sb.auth.getUser().catch(() => {
+                        localStorage.removeItem('sb_token');
+                        window.location.href = '/login';
+                    })
+                }
+            } catch (e) {
+                localStorage.removeItem('sb_token');
+                window.location.href = '/login';
             }
         }
     </script>
