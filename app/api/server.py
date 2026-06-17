@@ -891,6 +891,84 @@ def application_details(application_id: int, request: Request) -> dict:
     }
 
 
+@app.get("/api/fill-pack/{application_id}")
+def get_fill_pack(application_id: int, request: Request) -> dict:
+    """Returns all data the browser extension needs to fill a job application form."""
+    import io, zipfile as _zf
+    from pathlib import Path as _P
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id)
+        from app.db.models import UserProfile
+        profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
+
+    cover_text = ""
+    if application.cover_letter_path:
+        try:
+            cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    resume_text = ""
+    if application.tailored_resume_path:
+        try:
+            resume_text = _P(application.tailored_resume_path).read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    p = profile
+    return {
+        "app_id": application_id,
+        "job_title": job.title if job else "",
+        "company": job.company if job else "",
+        "apply_url": application.apply_url or (job.url if job else ""),
+        "first_name": p.first_name if p else "",
+        "last_name": p.last_name if p else "",
+        "email": p.email if p else "",
+        "phone": p.phone if p else "",
+        "location": p.location if p else "",
+        "linkedin_url": p.linkedin_url if p else "",
+        "github_url": p.github_url if p else "",
+        "portfolio_url": p.portfolio_url if p else "",
+        "current_title": p.current_title if p else "",
+        "years_experience": p.years_experience if p else 0,
+        "salary_min": p.salary_min if p else 0,
+        "work_authorization": p.work_authorization if p else "",
+        "requires_sponsorship": p.requires_sponsorship if p else False,
+        "cover_letter": cover_text,
+        "resume_text": resume_text,
+    }
+
+
+@app.get("/api/extension/download")
+def download_extension():
+    """Bundle the extension/ folder as a downloadable zip for Chrome."""
+    import io, zipfile as _zf
+    from pathlib import Path as _P
+    from fastapi.responses import StreamingResponse
+    ext_dir = _P(__file__).parent.parent / "extension"
+    buf = io.BytesIO()
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        for fpath in sorted(ext_dir.rglob("*")):
+            if fpath.is_file():
+                zf.write(fpath, "hirepath-extension/" + str(fpath.relative_to(ext_dir)))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=hirepath-extension.zip"},
+    )
+
+
+@app.get("/extension")
+def extension_page(request: Request):
+    return templates.TemplateResponse("extension.html", {"request": request})
+
+
 @app.post("/application/{application_id}/submit")
 def mark_as_submitted(application_id: int, request: Request) -> dict:
     from datetime import datetime
