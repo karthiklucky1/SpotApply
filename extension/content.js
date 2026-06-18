@@ -375,9 +375,21 @@ function showBanner(msg) {
   setTimeout(() => { banner.remove(); document.body.style.paddingTop = ""; }, 12000);
 }
 
+// ── Extension context guard ───────────────────────────────────────────────────
+// If the extension is reloaded/updated while this tab is open, the content
+// script becomes orphaned and all chrome.* calls throw "Extension context
+// invalidated". Wrap every chrome API call with this helper.
+function chromeCall(fn) {
+  try { return fn(); } catch (e) {
+    if (e?.message?.includes("Extension context invalidated")) {
+      console.warn("[HirePath] Extension was reloaded — please refresh this tab.");
+    } else { console.error("[HirePath]", e); }
+  }
+}
+
 // ── Message listener (from background.js) ────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chromeCall(() => chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "DO_FILL") {
     console.log("[HirePath] DO_FILL received, starting fill for:", msg.fillPack?.job_title);
     fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
@@ -386,31 +398,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "PING") {
     sendResponse({ ok: true });
   }
-});
+}));
 
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
-// The dashboard page sends window.postMessage with the fill pack.
-// This content script (running on the dashboard page) catches it and forwards
-// to background.js via chrome.runtime.sendMessage so background can open the
-// job tab and auto-fill it (chrome.tabs.create never gets blocked by popup blocker).
 window.addEventListener("message", (e) => {
   if (e.data?.type === "HIREPATH_LOAD_PACK" && e.data?.pack) {
     console.log("[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background");
-    // Acknowledge immediately so dashboard knows extension is installed
+    // Acknowledge so dashboard knows extension handled it (won't fall back to window.open)
     window.postMessage({ type: "HIREPATH_EXT_ACK" }, "*");
-    chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
+    chromeCall(() => chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
       if (chrome.runtime.lastError) {
         console.warn("[HirePath] Could not reach background:", chrome.runtime.lastError.message);
       } else {
         console.log("[HirePath] Background acknowledged OPEN_AND_FILL:", res);
       }
-    });
+    }));
   }
 });
 
-// ── Fallback: auto-fill if storage was set before this tab loaded ─────────────
-// Handles the case where the user reloads the job tab or background already set the flag.
-chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) => {
+// ── Auto-fill on page load if background already set the flag ─────────────────
+chromeCall(() => chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) => {
   if (data.hirepath_auto_fill && data.hirepath_fill_pack) {
     console.log("[HirePath] Auto-fill flag found in storage, filling after delay");
     chrome.storage.local.set({ hirepath_auto_fill: false });
@@ -418,4 +425,4 @@ chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) =>
   } else {
     console.log("[HirePath] Content script loaded on", window.location.hostname, "— no pending auto-fill");
   }
-});
+}));
