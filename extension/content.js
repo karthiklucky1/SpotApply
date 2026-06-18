@@ -63,7 +63,7 @@ async function fillGreenhouse(pack) {
   // If on the job description page (no form visible), click Apply
   let root = document;
   const hasForm = document.querySelector(
-    "#first_name, input[name='job_application[first_name]'], #resume_upload_or_paste, #resume"
+    "#first_name, input[name='job_application[first_name]'], #resume_upload_or_paste, #resume, form#application_form"
   );
   if (!hasForm) {
     const applyBtns = [
@@ -85,7 +85,8 @@ async function fillGreenhouse(pack) {
     } catch (e) {}
   }
 
-  const map = {
+  // ── Fixed fields (standard Greenhouse IDs) ──
+  const fixed = {
     "#first_name": pack.first_name,
     "#last_name": pack.last_name,
     "#email": pack.email,
@@ -99,29 +100,88 @@ async function fillGreenhouse(pack) {
     "#job_application_email": pack.email,
     "#job_application_phone": pack.phone,
   };
-
-  for (const [sel, val] of Object.entries(map)) {
+  for (const [sel, val] of Object.entries(fixed)) {
     const el = root.querySelector(sel);
     if (el) fillInput(el, val);
   }
 
   await delay(300);
 
-  // Cover letter
-  for (const sel of ["#cover_letter", "textarea[name='job_application[cover_letter]']", "textarea[id*='cover']"]) {
+  // ── Cover letter (textarea) ──
+  for (const sel of [
+    "#cover_letter",
+    "textarea[name='job_application[cover_letter]']",
+    "textarea[id*='cover']",
+    "textarea[name*='cover']",
+  ]) {
     const el = root.querySelector(sel);
     if (el) { fillInput(el, pack.cover_letter || ""); break; }
   }
 
-  // LinkedIn / GitHub / Portfolio
-  for (const [kw, val] of [["linkedin", pack.linkedin_url], ["github", pack.github_url], ["portfolio", pack.portfolio_url], ["website", pack.portfolio_url]]) {
-    const el = root.querySelector(`input[id*="${kw}"], input[placeholder*="${kw}"], input[name*="${kw}"]`);
-    if (el && val) fillInput(el, val);
+  // ── LinkedIn / GitHub / Portfolio / Website ──
+  for (const [kw, val] of [
+    ["linkedin", pack.linkedin_url],
+    ["github", pack.github_url],
+    ["portfolio", pack.portfolio_url],
+    ["website", pack.portfolio_url],
+    ["twitter", ""],
+  ]) {
+    if (!val) continue;
+    const el = root.querySelector(
+      `input[id*="${kw}" i], input[placeholder*="${kw}" i], input[name*="${kw}" i]`
+    );
+    if (el) fillInput(el, val);
   }
 
-  // EEOC selects — always decline
-  for (const el of root.querySelectorAll("select[id*='gender'], select[id*='race'], select[id*='ethnicity'], select[id*='veteran'], select[id*='disability']")) {
-    selectOption(el, "decline");
+  // ── Custom questions via label matching ──
+  // Greenhouse custom questions render as <label> + <input|textarea|select>
+  // We scan every visible field and match by its label text.
+  const allInputs = root.querySelectorAll(
+    "input:not([type='hidden']):not([type='file']):not([type='submit']):not([type='checkbox']):not([type='radio']), textarea, select"
+  );
+  for (const inp of allInputs) {
+    const lbl = labelText(inp);
+    if (!lbl) continue;
+
+    // Skip already-filled fixed fields
+    if (inp.value && inp.value.trim()) continue;
+
+    if (/first.?name|given.?name/i.test(lbl)) fillInput(inp, pack.first_name);
+    else if (/last.?name|family.?name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
+    else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
+    else if (/phone|mobile|telephone/i.test(lbl)) fillInput(inp, pack.phone);
+    else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
+    else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
+    else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
+    else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
+    else if (/cover.?letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
+    else if (/years?.*(of\s+)?experience|how.*long.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
+    else if (/current.*title|job.*title|position/i.test(lbl)) fillInput(inp, pack.current_title || "");
+    else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
+    else if (/pronouns/i.test(lbl)) fillInput(inp, "");
+    else if (inp.tagName === "SELECT") {
+      if (/gender/i.test(lbl)) selectOption(inp, "decline");
+      else if (/race|ethnic/i.test(lbl)) selectOption(inp, "decline");
+      else if (/veteran/i.test(lbl)) selectOption(inp, "decline");
+      else if (/disability/i.test(lbl)) selectOption(inp, "decline");
+      else if (/sponsor|visa|authoriz/i.test(lbl)) {
+        if (pack.work_authorization) selectOption(inp, pack.work_authorization);
+      }
+      else if (/country/i.test(lbl)) selectOption(inp, "United States");
+    }
+  }
+
+  // ── EEOC selects (by ID pattern, catches any missed above) ──
+  for (const el of root.querySelectorAll(
+    "select[id*='gender'], select[id*='race'], select[id*='ethnicity'], select[id*='veteran'], select[id*='disability']"
+  )) {
+    if (!el.value || el.value === "") selectOption(el, "decline");
+  }
+
+  // ── Work authorization radio/select ──
+  if (pack.work_authorization) {
+    const authSel = root.querySelector("select[id*='authoriz'], select[name*='authoriz']");
+    if (authSel && !authSel.value) selectOption(authSel, pack.work_authorization);
   }
 
   return true;
