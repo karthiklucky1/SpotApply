@@ -184,6 +184,11 @@ async function fillGreenhouse(pack) {
     if (authSel && !authSel.value) selectOption(authSel, pack.work_authorization);
   }
 
+  // Fill essay questions from AI-generated answers in pack
+  if (pack.ai_answers) {
+    await fillEssayQuestions(root, pack);
+  }
+
   return true;
 }
 
@@ -222,6 +227,10 @@ async function fillLever(pack) {
   const cl = document.querySelector("textarea[name='comments'], textarea[id*='cover']");
   if (cl) fillInput(cl, pack.cover_letter || "");
 
+  if (pack.ai_answers) {
+    await fillEssayQuestions(document, pack);
+  }
+
   return true;
 }
 
@@ -240,6 +249,11 @@ async function fillAshby(pack) {
     else if (/portfolio|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
   }
+
+  if (pack.ai_answers) {
+    await fillEssayQuestions(document, pack);
+  }
+
   return true;
 }
 
@@ -374,7 +388,68 @@ async function fillGeneric(pack) {
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
     else if (inp.tagName === "SELECT" && /gender|race|ethnicity|veteran|disability/i.test(lbl)) selectOption(inp, "decline");
   }
+
+  if (pack && pack.ai_answers) await fillEssayQuestions(document, pack);
   return true;
+}
+
+// ── Essay answer filling ───────────────────────────────────────────────────────
+
+async function fillEssayQuestions(root, pack) {
+  if (!pack.ai_answers) return;
+  const textareas = root.querySelectorAll("textarea");
+  for (const ta of textareas) {
+    if (ta.value && ta.value.trim()) continue; // already filled
+    const q = labelText(ta);
+    if (!q || q.length < 5) continue;
+
+    // Try exact match first, then fuzzy keyword match
+    let answer = pack.ai_answers[q];
+    if (!answer) {
+      // Fuzzy: find the key whose words mostly overlap with q
+      for (const [key, val] of Object.entries(pack.ai_answers)) {
+        if (keywordOverlap(q, key) > 0.4) { answer = val; break; }
+      }
+    }
+    if (answer) {
+      fillInput(ta, answer);
+      observeAnswer(ta, pack); // watch for user edits
+    } else if (pack.hirepath_url && pack.auth_token) {
+      // Still empty — observe so we can save when user types
+      observeAnswer(ta, pack);
+    }
+  }
+}
+
+function keywordOverlap(a, b) {
+  const stopWords = new Set(['do','you','want','to','the','a','an','is','are','your','this','that','at','for','in','of','and','or','why','what','how','tell','us','about']);
+  const wordsA = a.toLowerCase().split(/\W+/).filter(w => w.length > 2 && !stopWords.has(w));
+  const wordsB = b.toLowerCase().split(/\W+/).filter(w => w.length > 2 && !stopWords.has(w));
+  if (!wordsA.length || !wordsB.length) return 0;
+  const setA = new Set(wordsA);
+  const matches = wordsB.filter(w => setA.has(w)).length;
+  return matches / Math.max(wordsA.length, wordsB.length);
+}
+
+function observeAnswer(ta, pack) {
+  if (!pack.hirepath_url || !pack.auth_token) return;
+  const origValue = ta.value;
+  ta.addEventListener('blur', function handler() {
+    const newVal = ta.value.trim();
+    if (!newVal || newVal === origValue.trim()) return;
+    const q = labelText(ta);
+    if (!q) return;
+    ta.removeEventListener('blur', handler);
+    fetch(`${pack.hirepath_url}/api/save-answer`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${pack.auth_token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ question: q, answer: newVal, app_id: pack.app_id })
+    }).catch(() => {});
+    console.log('[HirePath] Saved answer for:', q);
+  });
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────

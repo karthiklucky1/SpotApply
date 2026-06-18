@@ -921,7 +921,7 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
             pass
 
     p = profile
-    return {
+    pack = {
         "app_id": application_id,
         "job_title": job.title if job else "",
         "company": job.company if job else "",
@@ -942,6 +942,62 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "cover_letter": cover_text,
         "resume_text": resume_text,
     }
+
+    # Add AI-generated essay answers
+    try:
+        from app.autofill.answer_pack import get_essay_answers
+        essay_answers = get_essay_answers(application_id, user_id=uid if uid != "local" else None)
+        pack["ai_answers"] = essay_answers
+    except Exception as e:
+        log.warning("Failed to generate essay answers for app %d: %s", application_id, e)
+        pack["ai_answers"] = {}
+
+    # Add hirepath_url and auth_token so extension can save answers back
+    from app.config import settings
+    pack["hirepath_url"] = getattr(settings, "hirepath_url", "https://hirepath.dev")
+    token = request.headers.get("Authorization", "").split(" ", 1)[-1]
+    pack["auth_token"] = token
+
+    return pack
+
+
+class SaveAnswerBody(BaseModel):
+    question: str
+    answer: str
+    app_id: _Opt[int] = None
+
+
+@app.post("/api/save-answer")
+def save_answer(request: Request, body: SaveAnswerBody) -> dict:
+    """Save a user-typed answer back to AnswerMemory so it's used next time."""
+    from datetime import datetime
+    from app.db.models import AnswerMemory
+    uid = _require_user(request)
+    question = body.question.strip()
+    answer = body.answer.strip()
+    if not question or not answer:
+        raise HTTPException(status_code=400, detail="question and answer required")
+    norm = question.lower().strip()
+    user_id_arg = uid if uid != "local" else None
+    with get_session() as session:
+        q = select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
+        if user_id_arg:
+            q = q.where(AnswerMemory.user_id == user_id_arg)
+        existing = session.exec(q).first()
+        if existing:
+            existing.answer = answer
+            existing.use_count += 1
+            existing.last_used_at = datetime.utcnow()
+            session.add(existing)
+        else:
+            session.add(AnswerMemory(
+                user_id=user_id_arg,
+                label_normalized=norm,
+                label_original=question,
+                answer=answer,
+            ))
+        session.commit()
+    return {"ok": True}
 
 
 @app.get("/api/extension/download")

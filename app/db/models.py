@@ -142,9 +142,10 @@ class AnswerMemory(SQLModel, table=True):
     Personal answer memory for repeated application fields.
     """
     __table_args__ = (
-        UniqueConstraint("label_normalized", name="uq_answer_memory_label"),
+        UniqueConstraint("user_id", "label_normalized", name="uq_answer_memory_user_label"),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     label_normalized: str = Field(index=True)
     label_original: str
     answer: str

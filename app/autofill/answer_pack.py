@@ -169,18 +169,48 @@ def _load_resume_text(application: Application) -> str:
     return ""
 
 
-def _lookup_memory(label: str) -> Optional[str]:
+def _lookup_memory(label: str, user_id: str | None = None) -> Optional[str]:
     norm = label.lower().strip()
     with get_session() as session:
-        mem = session.exec(
-            select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
-        ).first()
-        if mem:
-            return mem.answer
-    return None
+        q = select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
+        if user_id:
+            q = q.where(AnswerMemory.user_id == user_id)
+        mem = session.exec(q).first()
+        return mem.answer if mem else None
 
 
-def generate_answer_pack(application_id: int) -> dict:
+def get_essay_answers(application_id: int, user_id: str | None = None) -> dict:
+    """Generate a flat dict of {normalized_question: answer} for common essay questions.
+
+    Checks memory first, then falls back to LLM. Returns only answered questions.
+    If anthropic_api_key is not set, returns only saved memory answers.
+    """
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            return {}
+        job = session.get(Job, application.job_id)
+
+    if not job:
+        return {}
+
+    profile = _get_or_create_profile(user_id=user_id)
+    resume_text = _load_resume_text(application)
+
+    result = {}
+    for question_template in _ESSAY_QUESTIONS:
+        question = question_template.format(company=job.company)
+        norm_key = question.lower().strip()
+        answer = _lookup_memory(question, user_id=user_id)
+        if not answer and settings.anthropic_api_key:
+            answer = _llm_essay_answer(question, job, profile, resume_text)
+        if answer:
+            result[norm_key] = answer
+
+    return result
+
+
+def generate_answer_pack(application_id: int, user_id: str | None = None) -> dict:
     """Generate a complete answer pack for one application.
 
     Returns a dict with:
@@ -195,7 +225,7 @@ def generate_answer_pack(application_id: int) -> dict:
             raise ValueError(f"Application {application_id} not found")
         job = session.get(Job, application.job_id)
 
-    profile = _get_or_create_profile()
+    profile = _get_or_create_profile(user_id=user_id)
     profile_dict = _profile_to_dict(profile)
     resume_text = _load_resume_text(application)
 
@@ -213,7 +243,7 @@ def generate_answer_pack(application_id: int) -> dict:
     for label, key in _STANDARD_FIELDS:
         value = profile_dict.get(key, "")
         if not value:
-            value = _lookup_memory(label) or ""
+            value = _lookup_memory(label, user_id=user_id) or ""
         standard_fields.append({"label": label, "value": str(value)})
 
     # --- Essay answers ---
@@ -221,7 +251,7 @@ def generate_answer_pack(application_id: int) -> dict:
     for question_template in _ESSAY_QUESTIONS:
         question = question_template.format(company=job.company)
         # Check memory first
-        answer = _lookup_memory(question)
+        answer = _lookup_memory(question, user_id=user_id)
         if not answer:
             answer = _llm_essay_answer(question, job, profile, resume_text)
         if answer:
