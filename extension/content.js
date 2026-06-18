@@ -540,123 +540,346 @@ async function attachResume(root, pack) {
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
+// Copilot mode: fill what we can, highlight gaps in yellow, wait for user
+// to click Next, then repeat on the next page. User interaction at every step.
+
+let _copilotActive = false;
+let _copilotPack = null;
 
 async function fillForm(fillPack) {
+  _copilotPack = fillPack;
+  _copilotActive = true;
+  await runCopilotStep();
+}
+
+// ── Step runner ───────────────────────────────────────────────────────────────
+
+async function runCopilotStep() {
+  if (!_copilotActive || !_copilotPack) return;
+  const pack = _copilotPack;
+
+  // Detect login wall or CAPTCHA — pause and guide user
+  if (isLoginWall()) {
+    showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
+    watchForFormAppearance();
+    return;
+  }
+  if (isCaptcha()) {
+    showOverlay('🤖 Please solve the CAPTCHA.<br><small>I\'ll continue automatically after.</small>', [], false);
+    watchForFormAppearance();
+    return;
+  }
+
+  // Run the fill
+  const result = await fillCurrentPage(pack);
+  showStepOverlay(result, pack);
+
+  // Attach resume (don't block the overlay showing)
+  attachResume(document, pack).catch(() => {});
+
+  // Watch for user advancing to next page
+  watchForPageAdvance(pack);
+}
+
+// ── Fill current page ─────────────────────────────────────────────────────────
+
+async function fillCurrentPage(pack) {
   const host = window.location.hostname;
-  let filled = false;
+  let platformFilled = false;
   try {
-    if (host.includes("greenhouse.io")) filled = await fillGreenhouse(fillPack);
-    else if (host.includes("lever.co")) filled = await fillLever(fillPack);
-    else if (host.includes("ashbyhq.com")) filled = await fillAshby(fillPack);
-    else if (host.includes("linkedin.com")) filled = await fillLinkedIn(fillPack);
-    else if (host.includes("indeed.com")) filled = await fillIndeed(fillPack);
-    else if (host.includes("myworkdayjobs.com") || host.includes("workday.com")) filled = await fillWorkday(fillPack);
-    else if (host.includes("smartrecruiters.com")) filled = await fillSmartrecruiters(fillPack);
-    else filled = await fillGeneric(fillPack);
-
-    // Attach the tailored resume to any resume/CV file input on the form
-    try { await attachResume(document, fillPack); } catch (e) { console.warn("[HirePath] attachResume:", e.message); }
-
-    showBanner(
-      filled
-        ? "✅ HirePath filled your form! Review every field, then click Submit."
-        : "⚠️ HirePath: some fields may need manual entry on this site."
-    );
+    if (host.includes('greenhouse.io'))       platformFilled = await fillGreenhouse(pack);
+    else if (host.includes('lever.co'))       platformFilled = await fillLever(pack);
+    else if (host.includes('ashbyhq.com'))    platformFilled = await fillAshby(pack);
+    else if (host.includes('linkedin.com'))   platformFilled = await fillLinkedIn(pack);
+    else if (host.includes('indeed.com'))     platformFilled = await fillIndeed(pack);
+    else if (host.includes('myworkdayjobs.com') || host.includes('workday.com'))
+                                              platformFilled = await fillWorkday(pack);
+    else if (host.includes('smartrecruiters.com')) platformFilled = await fillSmartrecruiters(pack);
+    else                                      platformFilled = await fillGeneric(pack);
   } catch (e) {
-    console.error("[HirePath]", e);
-    showBanner("❌ HirePath error: " + e.message + " — try filling manually.");
+    console.warn('[HirePath] platform fill error:', e.message);
+  }
+
+  // Fill essay questions via AI
+  await fillEssayQuestions(document, pack);
+
+  // Audit all form fields — classify as filled / unfilled / unknown
+  const allInputs = Array.from(document.querySelectorAll(
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
+    'textarea, select'
+  )).filter(el => el.offsetParent !== null); // visible only
+
+  let filled = 0, needUser = 0, skipped = 0;
+  const needUserEls = [];
+
+  for (const el of allInputs) {
+    if (el.type === 'file') { skipped++; continue; }
+    if (el.type === 'checkbox' || el.type === 'radio') { skipped++; continue; }
+    const val = el.value ? el.value.trim() : '';
+    if (val) {
+      filled++;
+      highlightField(el, 'green');
+    } else {
+      needUser++;
+      needUserEls.push(el);
+      highlightField(el, 'yellow');
+    }
+  }
+
+  return { filled, needUser, needUserEls, platformFilled };
+}
+
+// ── Field highlighting ────────────────────────────────────────────────────────
+
+function highlightField(el, color) {
+  el.style.transition = 'box-shadow 0.3s ease, border-color 0.3s ease';
+  if (color === 'green') {
+    el.style.boxShadow = '0 0 0 2px rgba(16,185,129,0.5)';
+    el.style.borderColor = 'rgba(16,185,129,0.7)';
+  } else {
+    el.style.boxShadow = '0 0 0 2px rgba(245,158,11,0.6)';
+    el.style.borderColor = 'rgba(245,158,11,0.8)';
+    // Add pulsing attention ring
+    el.dataset.hirepath = 'needs-fill';
+    el.addEventListener('input', () => {
+      if (el.value.trim()) highlightField(el, 'green');
+    }, { once: true });
   }
 }
 
-// ── Banner ────────────────────────────────────────────────────────────────────
-
-function showBanner(msg) {
-  const existing = document.getElementById("hirepath-ext-banner");
-  if (existing) existing.remove();
-
-  const banner = document.createElement("div");
-  banner.id = "hirepath-ext-banner";
-  banner.style.cssText = [
-    "position:fixed", "top:0", "left:0", "right:0", "z-index:2147483647",
-    "padding:12px 20px", "display:flex", "align-items:center", "gap:12px",
-    "background:linear-gradient(135deg,#4f46e5,#7c3aed)",
-    "color:white", "font:bold 13px/1.4 system-ui,sans-serif",
-    "box-shadow:0 4px 24px rgba(0,0,0,0.35)",
-  ].join(";");
-
-  const text = document.createElement("span");
-  text.style.flex = "1";
-  text.textContent = msg;
-
-  const close = document.createElement("button");
-  close.textContent = "✕";
-  close.style.cssText = "background:none;border:none;color:white;cursor:pointer;font-size:18px;line-height:1;padding:0 4px;opacity:0.8;";
-  close.addEventListener("click", () => banner.remove());
-
-  banner.appendChild(text);
-  banner.appendChild(close);
-  document.body.prepend(banner);
-  document.body.style.paddingTop = "46px";
-  setTimeout(() => { banner.remove(); document.body.style.paddingTop = ""; }, 12000);
+function clearHighlights() {
+  document.querySelectorAll('[data-hirepath]').forEach(el => {
+    el.style.boxShadow = '';
+    el.style.borderColor = '';
+    delete el.dataset.hirepath;
+  });
 }
 
-// ── Extension context guard ───────────────────────────────────────────────────
-// If the extension is reloaded/updated while this tab is open, the content
-// script becomes orphaned and all chrome.* calls throw "Extension context
-// invalidated". Wrap every chrome API call with this helper.
-function chromeCall(fn) {
-  try { return fn(); } catch (e) {
-    if (e?.message?.includes("Extension context invalidated")) {
-      console.warn("[HirePath] Extension was reloaded — please refresh this tab.");
-    } else { console.error("[HirePath]", e); }
+// ── Step overlay ──────────────────────────────────────────────────────────────
+
+function showStepOverlay(result, pack) {
+  const { filled, needUser } = result;
+  const stepText = detectStepText();
+
+  let statusHtml = '';
+  if (filled > 0) statusHtml += `<span style="color:#10b981;font-weight:700">✅ ${filled} filled</span>`;
+  if (needUser > 0) statusHtml += `${filled > 0 ? ' &nbsp;·&nbsp; ' : ''}<span style="color:#f59e0b;font-weight:700">⚠️ ${needUser} need you</span>`;
+  if (filled === 0 && needUser === 0) statusHtml = '<span style="color:#94a3b8">No fields found on this page</span>';
+
+  const stepLabel = stepText ? `<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">${stepText}</div>` : '';
+
+  const instructions = needUser > 0
+    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
+    : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled! Review and click Next.</div>`;
+
+  showOverlay(`${stepLabel}${statusHtml}${instructions}`, [], true);
+}
+
+// ── Pause overlay (login / captcha) ──────────────────────────────────────────
+
+function showOverlay(html, _unused, dismissable) {
+  removeOverlay();
+  const div = document.createElement('div');
+  div.id = 'hp-copilot-overlay';
+  div.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px">
+      <img src="${chrome.runtime.getURL('icon48.png')}" width="22" height="22" style="border-radius:6px;flex-shrink:0" onerror="this.style.display='none'">
+      <div style="flex:1;line-height:1.5">${html}</div>
+      ${dismissable ? `<button onclick="document.getElementById('hp-copilot-overlay').remove()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:16px;padding:0 4px;line-height:1" title="Dismiss">✕</button>` : ''}
+    </div>`;
+  Object.assign(div.style, {
+    position: 'fixed', bottom: '20px', right: '20px', zIndex: '2147483647',
+    background: 'linear-gradient(135deg,rgba(15,23,42,0.97),rgba(30,41,59,0.97))',
+    border: '1px solid rgba(99,102,241,0.4)', borderRadius: '16px',
+    padding: '14px 16px', maxWidth: '320px', minWidth: '220px',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(99,102,241,0.1)',
+    fontFamily: 'system-ui,sans-serif', fontSize: '13px', color: '#e2e8f0',
+    backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+    transition: 'opacity 0.3s ease',
+  });
+  document.body.appendChild(div);
+  // Auto-hide after 30s if dismissable
+  if (dismissable) setTimeout(() => div?.remove(), 30000);
+}
+
+function removeOverlay() {
+  document.getElementById('hp-copilot-overlay')?.remove();
+}
+
+// ── Detect step text (e.g. "Step 2 of 4") ────────────────────────────────────
+
+function detectStepText() {
+  // Look for common step indicators
+  const patterns = [
+    /step\s+\d+\s+of\s+\d+/i,
+    /\d+\s*\/\s*\d+/,
+    /page\s+\d+\s+of\s+\d+/i,
+    /\d+\s+of\s+\d+\s+steps/i,
+  ];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const t = node.textContent.trim();
+    for (const p of patterns) {
+      if (p.test(t)) return t.slice(0, 40);
+    }
   }
+  return null;
 }
 
-// ── Message listener (from background.js) ────────────────────────────────────
+// ── Login / CAPTCHA detection ─────────────────────────────────────────────────
 
-chromeCall(() => chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "DO_FILL") {
-    console.log("[HirePath] DO_FILL received, starting fill for:", msg.fillPack?.job_title);
-    fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
+function isLoginWall() {
+  const body = document.body.innerText.toLowerCase();
+  const hasLoginForm = !!document.querySelector('input[type="password"]');
+  const hasLoginText = /sign in|log in|login|create an? account|register to apply/.test(body);
+  const noRealForm = !document.querySelector('input[type="text"], input[type="email"], textarea');
+  return hasLoginForm || (hasLoginText && noRealForm);
+}
+
+function isCaptcha() {
+  return !!(
+    document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile, #challenge-stage') ||
+    document.body.innerText.toLowerCase().includes('prove you are human')
+  );
+}
+
+// ── Watch for page advance (user clicked Next) ────────────────────────────────
+
+let _advanceObserver = null;
+let _lastUrl = location.href;
+
+function watchForPageAdvance(pack) {
+  if (_advanceObserver) { _advanceObserver.disconnect(); _advanceObserver = null; }
+
+  // Strategy 1: URL change (standard navigations)
+  const urlPoll = setInterval(() => {
+    if (!_copilotActive) { clearInterval(urlPoll); return; }
+    if (location.href !== _lastUrl) {
+      _lastUrl = location.href;
+      clearInterval(urlPoll);
+      if (_advanceObserver) { _advanceObserver.disconnect(); _advanceObserver = null; }
+      clearHighlights();
+      removeOverlay();
+      setTimeout(() => runCopilotStep(), 1500); // wait for new page content
+    }
+  }, 400);
+
+  // Strategy 2: Major DOM change on same URL (SPA / Workday / React)
+  let mutationTimer = null;
+  const snapshot = document.querySelectorAll('input, textarea, select').length;
+  _advanceObserver = new MutationObserver(() => {
+    const now = document.querySelectorAll('input, textarea, select').length;
+    if (now !== snapshot && Math.abs(now - snapshot) >= 2) {
+      clearTimeout(mutationTimer);
+      mutationTimer = setTimeout(() => {
+        if (!_copilotActive) return;
+        if (location.href === _lastUrl) { // only if URL didn't change (handled above)
+          clearHighlights();
+          removeOverlay();
+          runCopilotStep();
+        }
+      }, 800);
+    }
+  });
+  _advanceObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+// ── Watch for form appearance (after login / captcha) ─────────────────────────
+
+function watchForFormAppearance() {
+  const check = setInterval(() => {
+    if (!_copilotActive) { clearInterval(check); return; }
+    if (!isLoginWall() && !isCaptcha()) {
+      clearInterval(check);
+      removeOverlay();
+      setTimeout(() => runCopilotStep(), 1000);
+    }
+  }, 1500);
+}
+
+// ── Apply button finder ───────────────────────────────────────────────────────
+// Used when the extension is on a job description page, not a form yet.
+
+function findAndClickApply(pack) {
+  const btnPatterns = /^(apply|apply now|apply for this job|apply for this position|submit application|apply today|start application)$/i;
+  const candidates = Array.from(document.querySelectorAll('a, button')).filter(el => {
+    const t = el.textContent.trim();
+    return btnPatterns.test(t) && el.offsetParent !== null;
+  });
+  if (candidates.length > 0) {
+    candidates[0].click();
+    console.log('[HirePath] Clicked Apply button:', candidates[0].textContent.trim());
+    showOverlay('🖱️ Clicked <strong>Apply</strong>. Waiting for the form to load…', [], false);
+    watchForFormAppearance();
     return true;
   }
-  if (msg.type === "PING") {
-    sendResponse({ ok: true });
+  // No apply button found — guide the user
+  showOverlay(
+    '👆 I couldn\'t find the <strong>Apply</strong> button automatically.<br>' +
+    '<small style="color:#94a3b8">Please click it yourself — I\'ll take over once the form loads.</small>',
+    [], true
+  );
+  watchForFormAppearance();
+  return false;
+}
+
+// ── Banner (legacy, used only if copilot not active) ─────────────────────────
+
+function showBanner(msg) {
+  const existing = document.getElementById('hirepath-ext-banner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = 'hirepath-ext-banner';
+  banner.style.cssText = [
+    'position:fixed','top:0','left:0','right:0','z-index:2147483647',
+    'padding:12px 20px','display:flex','align-items:center','gap:12px',
+    'background:linear-gradient(135deg,#4f46e5,#7c3aed)',
+    'color:white','font-family:system-ui,sans-serif','font-size:13px','font-weight:500',
+    'box-shadow:0 2px 20px rgba(79,70,229,0.4)',
+  ].join(';');
+  banner.innerHTML = `<span style="font-size:18px">🚀</span><span style="flex:1">${msg}</span>` +
+    `<button onclick="this.parentElement.remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;cursor:pointer;padding:4px 10px;border-radius:8px;font-size:12px">✕</button>`;
+  document.body.prepend(banner);
+  setTimeout(() => banner?.remove(), 12000);
+}
+
+// ── Message listener ──────────────────────────────────────────────────────────
+
+chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'DO_FILL') {
+    console.log('[HirePath] DO_FILL received, starting copilot for:', msg.fillPack?.job_title);
+    fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
+    return true;
   }
 }));
 
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
-window.addEventListener("message", (e) => {
-  if (e.data?.type === "HIREPATH_LOAD_PACK" && e.data?.pack) {
-    console.log("[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background");
-    // Send ACK only AFTER background confirms it received the pack.
-    // If context is invalidated or background doesn't respond, no ACK is sent
-    // and the dashboard falls back to window.open() automatically.
+window.addEventListener('message', (e) => {
+  if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
+    console.log('[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
     try {
-      chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
+      chrome.runtime.sendMessage({ type: 'OPEN_AND_FILL', payload: e.data.pack }, (res) => {
         if (chrome.runtime.lastError) {
-          console.warn("[HirePath] Background error:", chrome.runtime.lastError.message);
-          // No ACK → dashboard will window.open() as fallback
+          console.warn('[HirePath] Background error:', chrome.runtime.lastError.message);
         } else {
-          console.log("[HirePath] Background opened tab, sending ACK to dashboard");
-          window.postMessage({ type: "HIREPATH_EXT_ACK" }, "*");
+          console.log('[HirePath] Background opened tab, sending ACK to dashboard');
+          window.postMessage({ type: 'HIREPATH_EXT_ACK' }, '*');
         }
       });
     } catch (err) {
-      // Extension context invalidated (extension was reloaded while this tab was open).
-      // No ACK sent → dashboard falls back to window.open().
-      console.warn("[HirePath] Extension context invalidated — refresh this tab to restore autofill");
+      console.warn('[HirePath] Extension context invalidated — refresh this tab to restore autofill');
     }
   }
 });
 
 // ── Auto-fill on page load if background already set the flag ─────────────────
-chromeCall(() => chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) => {
+chromeCall(() => chrome.storage.local.get(['hirepath_fill_pack', 'hirepath_auto_fill'], (data) => {
   if (data.hirepath_auto_fill && data.hirepath_fill_pack) {
-    console.log("[HirePath] Auto-fill flag found in storage, filling after delay");
+    console.log('[HirePath] Auto-fill flag found in storage, filling after delay');
     chrome.storage.local.set({ hirepath_auto_fill: false });
     setTimeout(() => fillForm(data.hirepath_fill_pack), 2500);
   } else {
-    console.log("[HirePath] Content script loaded on", window.location.hostname, "— no pending auto-fill");
+    console.log('[HirePath] Content script loaded on', window.location.hostname, '— no pending auto-fill');
   }
 }));

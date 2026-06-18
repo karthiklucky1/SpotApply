@@ -968,7 +968,9 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
 
     # Add hirepath_url and auth_token so extension can save answers back
     from app.config import settings
-    pack["hirepath_url"] = getattr(settings, "hirepath_url", "https://hirepath.dev")
+    # Use request.base_url so local dev hits 127.0.0.1:8000, prod hits hirepath.dev
+    _base = str(request.base_url).rstrip("/")
+    pack["hirepath_url"] = getattr(settings, "hirepath_url", None) or _base
     token = request.headers.get("Authorization", "").split(" ", 1)[-1]
     pack["auth_token"] = token
 

@@ -2799,7 +2799,7 @@
                 window.addEventListener('message', msgHandler, { once: true });
                 window.postMessage({ type: 'HIREPATH_LOAD_PACK', pack }, '*');
                 // Wait briefly to see if extension handled it
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 1000));
                 window.removeEventListener('message', msgHandler);
                 if (!extHandled) {
                     // Extension not installed — open tab manually
