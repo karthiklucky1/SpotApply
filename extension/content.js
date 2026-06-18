@@ -375,10 +375,11 @@ function showBanner(msg) {
   setTimeout(() => { banner.remove(); document.body.style.paddingTop = ""; }, 12000);
 }
 
-// ── Message listener ──────────────────────────────────────────────────────────
+// ── Message listener (from background.js) ────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "DO_FILL") {
+    console.log("[HirePath] DO_FILL received, starting fill for:", msg.fillPack?.job_title);
     fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
     return true;
   }
@@ -387,22 +388,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// Bridge: dashboard page sends postMessage → content script writes to chrome.storage.local
-// This lets the dashboard trigger auto-fill on the job tab that opens next.
+// ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
+// The dashboard page sends window.postMessage with the fill pack.
+// This content script (running on the dashboard page) catches it and forwards
+// to background.js via chrome.runtime.sendMessage so background can open the
+// job tab and auto-fill it (chrome.tabs.create never gets blocked by popup blocker).
 window.addEventListener("message", (e) => {
   if (e.data?.type === "HIREPATH_LOAD_PACK" && e.data?.pack) {
-    chrome.storage.local.set({
-      hirepath_fill_pack: e.data.pack,
-      hirepath_auto_fill: true,
+    console.log("[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background");
+    // Acknowledge immediately so dashboard knows extension is installed
+    window.postMessage({ type: "HIREPATH_EXT_ACK" }, "*");
+    chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
+      if (chrome.runtime.lastError) {
+        console.warn("[HirePath] Could not reach background:", chrome.runtime.lastError.message);
+      } else {
+        console.log("[HirePath] Background acknowledged OPEN_AND_FILL:", res);
+      }
     });
   }
 });
 
-// Auto-fill if background set the flag (new tab opened by dashboard)
+// ── Fallback: auto-fill if storage was set before this tab loaded ─────────────
+// Handles the case where the user reloads the job tab or background already set the flag.
 chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) => {
   if (data.hirepath_auto_fill && data.hirepath_fill_pack) {
-    // Clear flag immediately so re-navigations don't re-fire
+    console.log("[HirePath] Auto-fill flag found in storage, filling after delay");
     chrome.storage.local.set({ hirepath_auto_fill: false });
     setTimeout(() => fillForm(data.hirepath_fill_pack), 2500);
+  } else {
+    console.log("[HirePath] Content script loaded on", window.location.hostname, "— no pending auto-fill");
   }
 });

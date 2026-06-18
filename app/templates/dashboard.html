@@ -2788,13 +2788,26 @@
                     btn.innerHTML = orig; btn.disabled = false; return;
                 }
                 const pack = await res.json();
-                // Send pack to content script running on THIS page — it bridges into chrome.storage.local
-                // The content script sets hirepath_auto_fill=true so when the job tab loads it auto-fills
+                // Send pack to content script on this page via postMessage.
+                // The content script forwards it to background.js (OPEN_AND_FILL)
+                // which opens the job tab via chrome.tabs.create() and auto-fills it.
+                // Fallback: if extension not installed, window.open() opens the tab manually.
+                let extHandled = false;
+                const msgHandler = (e) => {
+                    if (e.data?.type === 'HIREPATH_EXT_ACK') { extHandled = true; }
+                };
+                window.addEventListener('message', msgHandler, { once: true });
                 window.postMessage({ type: 'HIREPATH_LOAD_PACK', pack }, '*');
-                // Small delay so chrome.storage.local write completes before new tab opens
-                await new Promise(r => setTimeout(r, 150));
-                window.open(pack.apply_url, '_blank', 'noopener');
-                showToast('🧩 Form opened! The extension will auto-fill it. Review every field, then submit.', 'success');
+                // Wait briefly to see if extension handled it
+                await new Promise(r => setTimeout(r, 300));
+                window.removeEventListener('message', msgHandler);
+                if (!extHandled) {
+                    // Extension not installed — open tab manually
+                    window.open(pack.apply_url, '_blank', 'noopener');
+                    showToast('🧩 Form opened! Install the HirePath Extension to auto-fill.', 'info');
+                } else {
+                    showToast('🧩 Opening form and auto-filling… Review every field, then submit.', 'success');
+                }
                 btn.innerHTML = '✅ Opening...';
                 setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 5000);
             } catch (e) {
