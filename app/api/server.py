@@ -17,6 +17,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Uplo
 log = logging.getLogger(__name__)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from sqlmodel import select
 from sqlalchemy import func, desc
 
@@ -1350,9 +1351,6 @@ def trigger_preview(application_id: int, request: Request, bg: BackgroundTasks) 
     _require_owned_application(request, application_id)
     bg.add_task(preview, application_id)
     return {"started": "preview", "application_id": application_id}
-
-
-from pydantic import BaseModel
 
 
 # ── User Profile endpoints ──────────────────────────────────────────────────
