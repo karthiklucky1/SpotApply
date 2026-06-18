@@ -151,17 +151,21 @@ Write a concise, honest answer."""
 
 
 def _load_resume_text(application: Application) -> str:
-    if not application.tailored_resume_path:
+    return _load_resume_text_from_path(application.tailored_resume_path)
+
+
+def _load_resume_text_from_path(path: str | None) -> str:
+    if not path:
         return ""
     try:
         from docx import Document
-        doc = Document(application.tailored_resume_path)
+        doc = Document(path)
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     except Exception:
         pass
     try:
         from pathlib import Path
-        p = Path(application.tailored_resume_path)
+        p = Path(path)
         if p.suffix == ".md":
             return p.read_text(encoding="utf-8")
     except Exception:
@@ -226,39 +230,50 @@ def answer_question(question: str, application_id: int, user_id: str | None = No
     This means the user pays ~$0.002 the FIRST time a question type appears,
     then $0 forever after, regardless of how many companies use the same question.
     """
+    # ── Snapshot everything inside the session (avoid DetachedInstanceError) ──
+    class _JobSnap:
+        pass
+
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             return ""
         job = session.get(Job, application.job_id)
-    if not job:
-        return ""
+        if not job:
+            return ""
+        company = job.company
+        resume_path = application.tailored_resume_path
+        job_snap = _JobSnap()
+        job_snap.company = job.company
+        job_snap.title = job.title
+        job_snap.description = job.description
 
-    norm_key = _normalize_question(question, company=job.company)
+    norm_key = _normalize_question(question, company=company)
 
     # ── 1. Check cache ──
     cached = _lookup_memory(norm_key, user_id=user_id)
     if cached:
         # Inject actual company name back into templated answer
-        return cached.replace("{company}", job.company)
+        return cached.replace("{company}", company or "")
 
     # ── 2. Call AI ──
     if not settings.anthropic_api_key:
         return ""
 
     profile = _get_or_create_profile(user_id=user_id)
-    resume_text = _load_resume_text(application)
-    answer = _llm_essay_answer(question, job, profile, resume_text)
+    resume_text = _load_resume_text_from_path(resume_path)
+    answer = _llm_essay_answer(question, job_snap, profile, resume_text)
     if not answer:
         return ""
 
     # ── 3. Save with company replaced by {company} placeholder ──
-    template = answer.replace(job.company, "{company}") if job.company else answer
+    template = answer.replace(company, "{company}") if company else answer
     _save_memory(norm_key, question, template, user_id=user_id)
     log.info("answer_question: generated + cached for key=%r user=%s (~$0.002 cost)", norm_key, user_id)
     return answer
 
 
+def _lookup_memory(label: str, user_id: str | None = None) -> Optional[str]:
     norm = label.lower().strip()
     with get_session() as session:
         q = select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
