@@ -906,6 +906,19 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         job = session.get(Job, application.job_id)
         from app.db.models import UserProfile
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
+        needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
+
+    # Auto-tailor on demand: autofill applications often haven't been through the
+    # tailoring pipeline. Generate a tailored resume + cover letter now so the
+    # extension always has a fresh, role-specific resume to upload.
+    if needs_tailoring:
+        try:
+            from app.tailoring.tailor import tailor_for_application
+            tailor_for_application(application_id)
+            with get_session() as session:
+                application = session.get(Application, application_id)
+        except Exception as e:
+            log.warning("Auto-tailor failed for app %d: %s", application_id, e)
 
     cover_text = ""
     if application.cover_letter_path:
@@ -960,6 +973,42 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     pack["auth_token"] = token
 
     return pack
+
+
+@app.get("/api/fill-pack/{application_id}/resume")
+def get_tailored_resume(application_id: int, request: Request) -> dict:
+    """Return the tailored resume .docx as base64 so the extension can attach it
+    to a form's file input. Auto-tailors first if no resume exists yet."""
+    import base64
+    from pathlib import Path as _P
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        path = application.tailored_resume_path
+
+    if not path or not _P(path).exists():
+        try:
+            from app.tailoring.tailor import tailor_for_application
+            resume_path, _ = tailor_for_application(application_id)
+            path = str(resume_path)
+        except Exception as e:
+            log.warning("Resume tailoring failed for app %d: %s", application_id, e)
+            raise HTTPException(status_code=503, detail="Could not generate resume")
+
+    p = _P(path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Resume file not found")
+
+    data = p.read_bytes()
+    mime = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if p.suffix == ".docx" else "application/octet-stream")
+    return {
+        "filename": p.name,
+        "mime": mime,
+        "base64": base64.b64encode(data).decode("ascii"),
+    }
 
 
 class SaveAnswerBody(BaseModel):

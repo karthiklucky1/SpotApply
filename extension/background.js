@@ -33,6 +33,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "PING") {
     sendResponse({ ok: true, version: chrome.runtime.getManifest().version });
   }
+
+  // Content script asks the background worker to make a cross-origin API call.
+  // Content-script fetches run in the page origin and get blocked by CORS;
+  // the service worker has host_permissions and is exempt.
+  if (msg.type === "API_FETCH") {
+    const { url, method, token, body } = msg.payload || {};
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    fetch(url, {
+      method: method || "POST",
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+      .then(async (res) => {
+        let data = null;
+        try { data = await res.json(); } catch (e) {}
+        sendResponse({ ok: res.ok, status: res.status, data });
+      })
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true; // keep the message channel open for the async response
+  }
 });
 
 // When a tab finishes loading, check if we should auto-fill it

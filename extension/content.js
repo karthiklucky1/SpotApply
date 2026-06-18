@@ -393,6 +393,28 @@ async function fillGeneric(pack) {
   return true;
 }
 
+// ── API helper ──────────────────────────────────────────────────────────────────
+// Routes through the background service worker to bypass CORS (content-script
+// fetches run in the page origin and get blocked).
+function apiFetch(url, method, token, body) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(
+        { type: "API_FETCH", payload: { url, method, token, body } },
+        (res) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(res || { ok: false, error: "no response" });
+          }
+        }
+      );
+    } catch (e) {
+      resolve({ ok: false, error: e.message });
+    }
+  });
+}
+
 // ── Essay answer filling ───────────────────────────────────────────────────────
 // Strategy: cached answers (free) first, then on-demand AI per question (~$0.002
 // first time only). Never pre-generates — only calls AI for questions that actually
@@ -423,22 +445,17 @@ async function fillEssayQuestions(root, pack) {
 
     // 2. If not cached, call /api/answer-question on-demand (~$0.002, cached after)
     if (!answer && pack.hirepath_url && pack.auth_token && pack.app_id) {
-      try {
-        const res = await fetch(`${pack.hirepath_url}/api/answer-question`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${pack.auth_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ question: q, app_id: pack.app_id }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          answer = data.answer || null;
-          if (answer) console.log(`[HirePath] AI answered "${q.slice(0, 60)}…" (cached=${data.cached})`);
-        }
-      } catch (e) {
-        console.warn("[HirePath] answer-question failed:", e.message);
+      const res = await apiFetch(
+        `${pack.hirepath_url}/api/answer-question`,
+        "POST",
+        pack.auth_token,
+        { question: q, app_id: pack.app_id }
+      );
+      if (res.ok && res.data) {
+        answer = res.data.answer || null;
+        if (answer) console.log(`[HirePath] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
+      } else {
+        console.warn("[HirePath] answer-question failed:", res.error || res.status);
       }
     }
 
@@ -468,16 +485,58 @@ function observeAnswer(ta, pack) {
     const q = labelText(ta);
     if (!q) return;
     ta.removeEventListener('blur', handler);
-    fetch(`${pack.hirepath_url}/api/save-answer`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${pack.auth_token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ question: q, answer: newVal, app_id: pack.app_id })
-    }).catch(() => {});
+    apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token,
+      { question: q, answer: newVal, app_id: pack.app_id });
     console.log('[HirePath] Saved answer for:', q);
   });
+}
+
+// ── Resume file attachment ──────────────────────────────────────────────────────
+// Fetches the tailored resume .docx (base64) via the background worker and sets
+// it on any empty file inputs using a synthetic DataTransfer.
+async function attachResume(root, pack) {
+  if (!pack.hirepath_url || !pack.auth_token || !pack.app_id) return;
+  const fileInputs = Array.from(root.querySelectorAll('input[type="file"]')).filter(fi => {
+    if (fi.files && fi.files.length) return false; // already has a file
+    const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "")).toLowerCase();
+    // Only target resume/CV inputs; skip cover-letter/other doc uploads
+    return /resume|cv|résumé/.test(ctx) || /resume/.test(ctx);
+  });
+  if (!fileInputs.length) return;
+
+  const res = await apiFetch(
+    `${pack.hirepath_url}/api/fill-pack/${pack.app_id}/resume`,
+    "GET", pack.auth_token, null
+  );
+  if (!res.ok || !res.data || !res.data.base64) {
+    console.warn("[HirePath] resume fetch failed:", res.error || res.status);
+    return;
+  }
+
+  const { filename, mime, base64 } = res.data;
+  let file;
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    file = new File([bytes], filename, { type: mime });
+  } catch (e) {
+    console.warn("[HirePath] resume decode failed:", e.message);
+    return;
+  }
+
+  for (const fi of fileInputs) {
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      fi.files = dt.files;
+      fi.dispatchEvent(new Event("input", { bubbles: true }));
+      fi.dispatchEvent(new Event("change", { bubbles: true }));
+      console.log("[HirePath] Attached tailored resume:", filename);
+    } catch (e) {
+      console.warn("[HirePath] Could not set file input:", e.message);
+    }
+  }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -494,6 +553,9 @@ async function fillForm(fillPack) {
     else if (host.includes("myworkdayjobs.com") || host.includes("workday.com")) filled = await fillWorkday(fillPack);
     else if (host.includes("smartrecruiters.com")) filled = await fillSmartrecruiters(fillPack);
     else filled = await fillGeneric(fillPack);
+
+    // Attach the tailored resume to any resume/CV file input on the form
+    try { await attachResume(document, fillPack); } catch (e) { console.warn("[HirePath] attachResume:", e.message); }
 
     showBanner(
       filled
