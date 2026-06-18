@@ -404,15 +404,24 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, sender, sendResponse
 window.addEventListener("message", (e) => {
   if (e.data?.type === "HIREPATH_LOAD_PACK" && e.data?.pack) {
     console.log("[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background");
-    // Acknowledge so dashboard knows extension handled it (won't fall back to window.open)
-    window.postMessage({ type: "HIREPATH_EXT_ACK" }, "*");
-    chromeCall(() => chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
-      if (chrome.runtime.lastError) {
-        console.warn("[HirePath] Could not reach background:", chrome.runtime.lastError.message);
-      } else {
-        console.log("[HirePath] Background acknowledged OPEN_AND_FILL:", res);
-      }
-    }));
+    // Send ACK only AFTER background confirms it received the pack.
+    // If context is invalidated or background doesn't respond, no ACK is sent
+    // and the dashboard falls back to window.open() automatically.
+    try {
+      chrome.runtime.sendMessage({ type: "OPEN_AND_FILL", payload: e.data.pack }, (res) => {
+        if (chrome.runtime.lastError) {
+          console.warn("[HirePath] Background error:", chrome.runtime.lastError.message);
+          // No ACK → dashboard will window.open() as fallback
+        } else {
+          console.log("[HirePath] Background opened tab, sending ACK to dashboard");
+          window.postMessage({ type: "HIREPATH_EXT_ACK" }, "*");
+        }
+      });
+    } catch (err) {
+      // Extension context invalidated (extension was reloaded while this tab was open).
+      // No ACK sent → dashboard falls back to window.open().
+      console.warn("[HirePath] Extension context invalidated — refresh this tab to restore autofill");
+    }
   }
 });
 
