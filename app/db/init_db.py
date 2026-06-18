@@ -37,109 +37,107 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
     SQLModel.metadata.create_all(engine)
 
-    # Migrations: Add new columns to existing application table if they don't exist
-    from sqlalchemy import text
-    with engine.begin() as conn:
-        for col, col_type in [
-            ("resume_variant", "VARCHAR"),
-            ("response_type", "VARCHAR DEFAULT 'none'"),
-            ("apply_track", "VARCHAR NOT NULL DEFAULT 'autofill'"),
-            ("profile_variant", "VARCHAR"),
-            ("senior_fit_score", "FLOAT"),
-            ("senior_verdict", "TEXT"),
-            ("custom_highlight_block", "TEXT"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE application ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+    # Migrations: Add new columns if they don't exist
+    from sqlalchemy import text, inspect
+    
+    # Use inspector to check columns per table
+    inspector = inspect(engine)
+    
+    def add_column_if_missing(table_name: str, col: str, col_type: str):
         try:
-            conn.execute(text("ALTER TABLE job ADD COLUMN cross_source_slug VARCHAR"))
-        except Exception:
-            pass
-        for col, col_type in [
-            ("ghost_score", "FLOAT DEFAULT 0.0"),
-            ("ghost_flags", "TEXT"),
-            ("hire_probability_score", "FLOAT"),
-            ("hire_probability_signals", "TEXT"),
-            ("blended_score", "FLOAT"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE job ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
-            
-        # Migrations for job lifecycle tracking columns
-        for col, col_type in [
-            ("first_seen", "DATETIME"),
-            ("last_seen", "DATETIME"),
-            ("is_closed", "BOOLEAN DEFAULT 0"),
-            ("content_hash", "VARCHAR"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE job ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+            if not inspector.has_table(table_name):
+                return
+            existing_cols = {c["name"].lower() for c in inspector.get_columns(table_name)}
+            if col.lower() not in existing_cols:
+                db_type = col_type
+                if settings.use_supabase:
+                    if "DATETIME" in db_type.upper():
+                        db_type = db_type.upper().replace("DATETIME", "TIMESTAMP")
+                    if "BOOLEAN DEFAULT 0" in db_type.upper():
+                        db_type = db_type.upper().replace("BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE")
+                    if "FLOAT" in db_type.upper():
+                        db_type = db_type.upper().replace("FLOAT", "DOUBLE PRECISION")
+                
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {db_type}"))
+                print(f"Added column {col} ({db_type}) to {table_name}")
+        except Exception as e:
+            print(f"Failed to add column {col} to {table_name}: {e}")
+
+    # Migrations for application table
+    for col, col_type in [
+        ("resume_variant", "VARCHAR"),
+        ("response_type", "VARCHAR DEFAULT 'none'"),
+        ("apply_track", "VARCHAR NOT NULL DEFAULT 'autofill'"),
+        ("profile_variant", "VARCHAR"),
+        ("senior_fit_score", "FLOAT"),
+        ("senior_verdict", "TEXT"),
+        ("custom_highlight_block", "TEXT"),
+    ]:
+        add_column_if_missing("application", col, col_type)
+
+    # Migrations for job table
+    add_column_if_missing("job", "cross_source_slug", "VARCHAR")
+    for col, col_type in [
+        ("ghost_score", "FLOAT DEFAULT 0.0"),
+        ("ghost_flags", "TEXT"),
+        ("hire_probability_score", "FLOAT"),
+        ("hire_probability_signals", "TEXT"),
+        ("blended_score", "FLOAT"),
+        ("first_seen", "DATETIME"),
+        ("last_seen", "DATETIME"),
+        ("is_closed", "BOOLEAN DEFAULT 0"),
+        ("content_hash", "VARCHAR"),
+    ]:
+        add_column_if_missing("job", col, col_type)
         
-        # Migrations for CompanyRegistry graph metadata columns
-        for col, col_type in [
-            ("company_name", "VARCHAR"),
-            ("career_url", "VARCHAR"),
-            ("confidence_score", "INTEGER DEFAULT 100"),
-            ("target_fit_score", "FLOAT DEFAULT 0.0"),
-            ("last_validated_at", "DATETIME"),
-            ("failure_count", "INTEGER DEFAULT 0"),
-            ("sponsorship_signal", "VARCHAR"),
-            ("last_error", "VARCHAR"),
-            ("inactive_reason", "VARCHAR"),
-            ("next_retry_at", "DATETIME")
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE companyregistry ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+    # Migrations for companyregistry table
+    for col, col_type in [
+        ("company_name", "VARCHAR"),
+        ("career_url", "VARCHAR"),
+        ("confidence_score", "INTEGER DEFAULT 100"),
+        ("target_fit_score", "FLOAT DEFAULT 0.0"),
+        ("last_validated_at", "DATETIME"),
+        ("failure_count", "INTEGER DEFAULT 0"),
+        ("sponsorship_signal", "VARCHAR"),
+        ("last_error", "VARCHAR"),
+        ("inactive_reason", "VARCHAR"),
+        ("next_retry_at", "DATETIME")
+    ]:
+        add_column_if_missing("companyregistry", col, col_type)
 
-        # Multi-tenant user_id columns
-        for tbl in ["job", "application", "userprofile"]:
-            try:
-                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN user_id VARCHAR"))
-            except Exception:
-                pass
+    # Multi-tenant user_id columns
+    for tbl in ["job", "application", "userprofile"]:
+        add_column_if_missing(tbl, "user_id", "VARCHAR")
 
-        # UserProfile table migration — add columns if table already exists
-        for col, col_type in [
-            ("portfolio_url", "VARCHAR DEFAULT ''"),
-            ("visa_status", "VARCHAR DEFAULT ''"),
-            ("current_title", "VARCHAR DEFAULT ''"),
-            ("years_experience", "INTEGER DEFAULT 0"),
-            ("salary_min", "INTEGER DEFAULT 0"),
-            ("salary_max", "INTEGER DEFAULT 0"),
-            ("salary_currency", "VARCHAR DEFAULT 'USD'"),
-            ("degree", "VARCHAR DEFAULT ''"),
-            ("university", "VARCHAR DEFAULT ''"),
-            ("graduation_year", "INTEGER"),
-            ("gender", "VARCHAR DEFAULT 'Decline to self-identify'"),
-            ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'"),
-            ("veteran_status", "VARCHAR DEFAULT 'I am not a protected veteran'"),
-            ("disability_status", "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'"),
-            ("professional_summary", "TEXT DEFAULT ''"),
-            ("key_skills", "TEXT DEFAULT ''"),
-            ("updated_at", "DATETIME"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE userprofile ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+    # Migrations for userprofile table
+    for col, col_type in [
+        ("portfolio_url", "VARCHAR DEFAULT ''"),
+        ("visa_status", "VARCHAR DEFAULT ''"),
+        ("current_title", "VARCHAR DEFAULT ''"),
+        ("years_experience", "INTEGER DEFAULT 0"),
+        ("salary_min", "INTEGER DEFAULT 0"),
+        ("salary_max", "INTEGER DEFAULT 0"),
+        ("salary_currency", "VARCHAR DEFAULT 'USD'"),
+        ("degree", "VARCHAR DEFAULT ''"),
+        ("university", "VARCHAR DEFAULT ''"),
+        ("graduation_year", "INTEGER"),
+        ("gender", "VARCHAR DEFAULT 'Decline to self-identify'"),
+        ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'"),
+        ("veteran_status", "VARCHAR DEFAULT 'I am not a protected veteran'"),
+        ("disability_status", "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'"),
+        ("professional_summary", "TEXT DEFAULT ''"),
+        ("key_skills", "TEXT DEFAULT ''"),
+        ("updated_at", "DATETIME"),
+    ]:
+        add_column_if_missing("userprofile", col, col_type)
 
-        # DiscoveryRun table migration — staged status + shortlist count
-        for col, col_type in [
-            ("total_shortlisted", "INTEGER DEFAULT 0"),
-            ("error", "VARCHAR"),
-        ]:
-            try:
-                conn.execute(text(f"ALTER TABLE discoveryrun ADD COLUMN {col} {col_type}"))
-            except Exception:
-                pass
+    # Migrations for discoveryrun table
+    for col, col_type in [
+        ("total_shortlisted", "INTEGER DEFAULT 0"),
+        ("error", "VARCHAR"),
+    ]:
+        add_column_if_missing("discoveryrun", col, col_type)
 
 
 @contextmanager

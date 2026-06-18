@@ -430,6 +430,26 @@
         z-index: 100;
     }
     #app-sidebar .sb-btn:hover::after { opacity: 1; }
+
+    /* Custom Themes */
+    body.theme-emerald::before {
+        background:
+            radial-gradient(ellipse 80% 50% at 20% -10%, rgba(16,185,129,0.12) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 40% at 80% 10%, rgba(20,184,166,0.10) 0%, transparent 55%),
+            radial-gradient(ellipse 50% 60% at 50% 100%, rgba(99,102,241,0.06) 0%, transparent 50%);
+    }
+    body.theme-cyber::before {
+        background:
+            radial-gradient(ellipse 80% 50% at 20% -10%, rgba(6,182,212,0.15) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 40% at 80% 10%, rgba(59,130,246,0.12) 0%, transparent 55%),
+            radial-gradient(ellipse 50% 60% at 50% 100%, rgba(99,102,241,0.06) 0%, transparent 50%);
+    }
+    body.theme-rose::before {
+        background:
+            radial-gradient(ellipse 80% 50% at 20% -10%, rgba(244,63,94,0.12) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 40% at 80% 10%, rgba(168,85,247,0.10) 0%, transparent 55%),
+            radial-gradient(ellipse 50% 60% at 50% 100%, rgba(99,102,241,0.06) 0%, transparent 50%);
+    }
 </style>
 </head>
 
@@ -463,6 +483,10 @@
                 <span class="sb-icon">🔍</span>
                 <span class="sb-label">All Jobs</span>
             </button>
+            <button id="sb-nav-registry" class="sb-btn" onclick="sbSwitchTab('registry')" data-tip="Job Boards">
+                <span class="sb-icon">🏢</span>
+                <span class="sb-label">Boards</span>
+            </button>
 
             <div class="sb-divider"></div>
 
@@ -470,14 +494,14 @@
                 <span class="sb-icon">💎</span>
                 <span class="sb-label">Pricing</span>
             </button>
-            <button class="sb-btn" onclick="openResumeUpload()" data-tip="My Resume">
+            <button class="sb-btn" onclick="openResumeViewer()" data-tip="View Resume">
                 <span class="sb-icon">📄</span>
                 <span class="sb-label">Resume</span>
             </button>
 
             <div class="sb-divider"></div>
 
-            <button class="sb-btn" onclick="openSettings()" data-tip="Settings">
+            <button id="sb-nav-settings" class="sb-btn" onclick="openSettings()" data-tip="Settings">
                 <span class="sb-icon">⚙️</span>
                 <span class="sb-label">Settings</span>
             </button>
@@ -523,7 +547,7 @@
 
         <!-- Nav Actions -->
         <div class="flex items-center gap-2">
-            <button onclick="openResumeUpload()" class="flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-bold text-slate-300 hover:text-white border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
+            <button onclick="openResumeViewer()" class="flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-bold text-slate-300 hover:text-white border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
                 <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Resume
             </button>
@@ -3206,6 +3230,19 @@
             if (doc && SETTINGS_DOCS[doc]) showSettingsDoc(doc); else backToSettings()
             const ns = document.getElementById('notif-state')
             if (ns) ns.textContent = ('Notification' in window) ? (Notification.permission === 'granted' ? 'On' : 'Off') : 'N/A'
+
+            // Highlight active theme button
+            const savedTheme = localStorage.getItem('hp_theme') || 'aurora';
+            ['aurora', 'emerald', 'cyber', 'rose'].forEach(t => {
+                const btn = document.getElementById(`theme-btn-${t}`);
+                if (btn) {
+                    if (t === savedTheme) {
+                        btn.className = "text-[10px] font-bold py-1.5 px-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-white transition text-center";
+                    } else {
+                        btn.className = "text-[10px] font-bold py-1.5 px-2 rounded-lg border border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-slate-300 transition text-center";
+                    }
+                }
+            });
         }
         function closeSettings() { document.getElementById('settings-modal').classList.add('hidden') }
         function backToSettings() {
@@ -3265,7 +3302,75 @@
             btn.textContent = 'Upload'; btn.disabled = false
         }
 
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); closeSettings(); } });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); closeSettings(); closeResumeViewer(); } });
+
+        // Appearance Themes Logic
+        function changeTheme(themeName) {
+            const body = document.body;
+            body.classList.remove('theme-aurora', 'theme-emerald', 'theme-cyber', 'theme-rose');
+            if (themeName !== 'aurora') {
+                body.classList.add(`theme-${themeName}`);
+            }
+            localStorage.setItem('hp_theme', themeName);
+            
+            // Highlight active button in settings modal
+            ['aurora', 'emerald', 'cyber', 'rose'].forEach(t => {
+                const btn = document.getElementById(`theme-btn-${t}`);
+                if (btn) {
+                    if (t === themeName) {
+                        btn.className = "text-[10px] font-bold py-1.5 px-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-white transition text-center";
+                    } else {
+                        btn.className = "text-[10px] font-bold py-1.5 px-2 rounded-lg border border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-slate-300 transition text-center";
+                    }
+                }
+            });
+            showToast(`Theme changed to ${themeName.toUpperCase()}`, 'success');
+        }
+        
+        // Load theme on startup
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('hp_theme');
+            if (savedTheme) {
+                changeTheme(savedTheme);
+            }
+        });
+
+        // Resume Viewer Modal Logic
+        async function openResumeViewer() {
+            document.getElementById('resume-viewer-modal').classList.remove('hidden');
+            const iframe = document.getElementById('resume-viewer-iframe');
+            const errDiv = document.getElementById('resume-viewer-error');
+            const filenameEl = document.getElementById('resume-viewer-filename');
+            const downloadLink = document.getElementById('resume-viewer-download');
+            
+            iframe.classList.add('hidden');
+            errDiv.classList.add('hidden');
+            filenameEl.textContent = 'Loading...';
+            downloadLink.classList.add('hidden');
+
+            try {
+                await tokenReady();
+                const res = await fetch('/api/resume/view', { headers: authHeaders() });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.url) {
+                    iframe.src = data.url;
+                    iframe.classList.remove('hidden');
+                    filenameEl.textContent = data.filename || 'resume_master.pdf';
+                    downloadLink.href = data.url;
+                    downloadLink.classList.remove('hidden');
+                } else {
+                    errDiv.classList.remove('hidden');
+                    filenameEl.textContent = 'No file on record';
+                }
+            } catch (e) {
+                errDiv.classList.remove('hidden');
+                filenameEl.textContent = 'Error loading resume';
+            }
+        }
+        function closeResumeViewer() {
+            document.getElementById('resume-viewer-modal').classList.add('hidden');
+            document.getElementById('resume-viewer-iframe').src = '';
+        }
 
         // ── Profile Modal ────────────────────────────────────────────────────────
         async function openProfileModal() {
@@ -3580,7 +3685,17 @@
                     <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Preferences</p>
                     <div class="space-y-2">
                         <button onclick="enableNotifications()" class="settings-row">🔔 <span>Desktop notifications</span><span id="notif-state" class="ml-auto text-[10px] text-slate-500"></span></button>
-                        <div class="settings-row" style="cursor:default;">🎨 <span>Appearance</span><span class="ml-auto text-[10px] text-slate-500">Dark</span></div>
+                        <div class="settings-row flex flex-col gap-2" style="cursor:default; height:auto; padding: 12px 16px;">
+                            <div class="flex items-center justify-between w-full">
+                                <span>🎨 Appearance Theme</span>
+                            </div>
+                            <div class="grid grid-cols-4 gap-2 mt-1.5 w-full">
+                                <button id="theme-btn-aurora" onclick="changeTheme('aurora')" class="text-[10px] font-bold py-1.5 px-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 text-white transition text-center">Aurora</button>
+                                <button id="theme-btn-emerald" onclick="changeTheme('emerald')" class="text-[10px] font-bold py-1.5 px-2 rounded-lg border border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-slate-300 transition text-center">Emerald</button>
+                                <button id="theme-btn-cyber" onclick="changeTheme('cyber')" class="text-[10px] font-bold py-1.5 px-2 rounded-lg border border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-slate-300 transition text-center">Cyber</button>
+                                <button id="theme-btn-rose" onclick="changeTheme('rose')" class="text-[10px] font-bold py-1.5 px-2 rounded-lg border border-slate-800 bg-slate-900/40 hover:bg-slate-800 text-slate-300 transition text-center">Rose</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div>
@@ -3668,7 +3783,10 @@
                 </div>
                 <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Professional Summary <span class="text-slate-600">(used for essay answers)</span></label><textarea name="professional_summary" rows="4" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white resize-none" placeholder="Brief summary of your background, specialties, and career goals..."></textarea></div>
                 <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Key Skills <span class="text-slate-600">(comma-separated)</span></label><input name="key_skills" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" placeholder="Python, PyTorch, FastAPI, LLMs, AWS..." /></div>
-                <div class="pt-2"><button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm">Save Profile</button></div>
+                <div class="pt-2 flex gap-3">
+                    <button type="button" onclick="handleLogout()" class="flex-1 bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 font-bold py-3 rounded-xl border border-rose-500/20 transition text-sm">Sign Out</button>
+                    <button type="submit" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm">Save Profile</button>
+                </div>
             </form>
         </div>
     </div>
@@ -3685,7 +3803,49 @@
             <div id="answer-pack-content"></div>
         </div>
     </div>
+
+    <!-- Footer with About, Contact, Privacy, Terms links -->
+    <footer class="mt-20 border-t border-white/[0.04] pt-8 pb-12 flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500 font-medium">
+        <div>
+            <p>&copy; 2026 HirePath AI. All rights reserved.</p>
+            <p class="text-[10px] text-slate-600 mt-1">Version 2.4.0 · Local Agentic Engine</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-6">
+            <a href="#" onclick="event.preventDefault(); openSettingsModal(); switchSettingsTab('about');" class="hover:text-indigo-400 transition">About & Support</a>
+            <a href="#" onclick="event.preventDefault(); openSettingsModal(); switchSettingsTab('privacy');" class="hover:text-indigo-400 transition">Privacy Policy & Terms</a>
+            <span class="text-slate-700">|</span>
+            <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Service Status: Nominal</span>
+        </div>
+    </footer>
+
     </div><!-- /#main-wrapper -->
+
+    <!-- Resume Viewer Modal -->
+    <div id="resume-viewer-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeResumeViewer()"></div>
+        <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-4xl h-[85vh] flex flex-col border border-slate-700/50 shadow-2xl">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">📄 Your Uploaded Resume</h2>
+                <div class="flex items-center gap-2">
+                    <button onclick="openResumeUpload(); closeResumeViewer();" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg font-bold text-white transition">Update Resume</button>
+                    <button onclick="closeResumeViewer()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+                </div>
+            </div>
+            <div class="flex-1 rounded-xl overflow-hidden bg-slate-950/40 border border-white/5 relative">
+                <iframe id="resume-viewer-iframe" class="w-full h-full border-none" src=""></iframe>
+                <div id="resume-viewer-error" class="hidden absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/90">
+                    <span class="text-3xl mb-3">📄</span>
+                    <h3 class="text-white font-bold mb-2">No Résumé Found</h3>
+                    <p class="text-slate-400 text-xs mb-4">You haven't uploaded a resume yet. Upload one to start matching jobs.</p>
+                    <button onclick="openResumeUpload(); closeResumeViewer();" class="btn-primary text-xs font-bold px-4 py-2 rounded-lg text-white">Upload Resume</button>
+                </div>
+            </div>
+            <div class="flex justify-between items-center mt-4 pt-3 border-t border-white/5">
+                <p id="resume-viewer-filename" class="text-xs text-slate-400 italic">No file loaded</p>
+                <a id="resume-viewer-download" href="#" download class="text-xs font-bold text-indigo-400 hover:text-white transition flex items-center gap-1">Download File 📥</a>
+            </div>
+        </div>
+    </div>
 
     <!-- ── Photo Crop Modal ─────────────────────────────────────────────── -->
     <div id="crop-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4">

@@ -17,6 +17,14 @@ from app.db.models import Job, JobSource, Application, ApplicationStatus
 from app.matching.pipeline import _check_and_enforce_company_cap, _COMPANY_COOLDOWN_DAYS
 
 
+@pytest.fixture(autouse=True)
+def _mock_company_cap():
+    from unittest.mock import patch
+    from app.config import settings
+    with patch.object(settings, "company_cap", 2):
+        yield
+
+
 def _mk_job(session, ext, company="CapCo", score=80):
     j = Job(source=JobSource.LINKEDIN, external_id=ext, company=company,
             title=f"Role {ext}", url=f"http://x/{ext}", description="d",

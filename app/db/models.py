@@ -227,7 +227,7 @@ class PlanTier(str, Enum):
 
 # Per-plan limits
 PLAN_LIMITS = {
-    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 0},
+    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2},
     PlanTier.BASIC:  {"tailor_daily": 20, "autofill_weekly": 10},
     PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None},   # None = unlimited
     PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None},
