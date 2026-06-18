@@ -1040,8 +1040,8 @@ chromeCall(() => chrome.storage.local.get(
 
     // Resume an in-progress copilot session across navigations (e.g. after
     // clicking Apply, even across domains: accenture.com → myworkdayjobs.com).
-    // Time-boxed to 10 minutes; skip the dashboard; only on actionable pages.
-    const SESSION_MS = 10 * 60 * 1000;
+    // 30-min window absorbs slow logins / account creation on Workday etc.
+    const SESSION_MS = 30 * 60 * 1000;
     const fresh = data.hirepath_copilot_ts && (Date.now() - data.hirepath_copilot_ts) < SESSION_MS;
     if (!onDashboard && data.hirepath_copilot_pack && fresh) {
       if (isActionablePage()) {
@@ -1049,7 +1049,6 @@ chromeCall(() => chrome.storage.local.get(
         setTimeout(() => fillForm(data.hirepath_copilot_pack), 2000);
       } else {
         console.log('[HirePath] Copilot session active but page not actionable yet — waiting');
-        // Page may still be loading the form (SPA) — watch briefly
         setTimeout(() => {
           if (_copilotActive) return;
           if (isActionablePage()) fillForm(data.hirepath_copilot_pack);
@@ -1058,15 +1057,48 @@ chromeCall(() => chrome.storage.local.get(
       return;
     }
 
-    // No active session, but if we're sitting on a known ATS application page,
-    // give the user feedback + a one-click way to start (fixes "no notification").
-    if (!onDashboard && isKnownATS() && hasApplyButton()) {
-      showStartHint();
-    }
-
     console.log('[HirePath] Content script loaded on', host, '— no pending autofill');
+
+    // Reliable manual trigger: on any job/application page, show a floating
+    // "Fill with HirePath" button. Works regardless of session timing or
+    // navigation — uses the last pack you loaded from the dashboard.
+    if (!onDashboard) {
+      const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
+      setTimeout(() => {
+        if (_copilotActive) return;
+        if (isActionablePage()) injectFillButton(pack);
+      }, 1500);
+    }
   }
 ));
+
+// ── Floating manual "Fill" button ─────────────────────────────────────────────
+
+function injectFillButton(pack) {
+  if (document.getElementById('hp-fill-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'hp-fill-btn';
+  btn.innerHTML = '⚡ Fill with HirePath';
+  Object.assign(btn.style, {
+    position: 'fixed', bottom: '20px', left: '20px', zIndex: '2147483647',
+    padding: '12px 18px', borderRadius: '14px', border: 'none', cursor: 'pointer',
+    background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', color: '#fff',
+    fontFamily: 'system-ui,sans-serif', fontSize: '13px', fontWeight: '700',
+    boxShadow: '0 8px 24px rgba(79,70,229,0.45)',
+  });
+  btn.addEventListener('click', () => {
+    btn.remove();
+    if (pack) {
+      fillForm(pack);
+    } else {
+      showOverlay(
+        '⚠️ No job loaded yet.<br><small style="color:#94a3b8">Open this job from your HirePath dashboard first, then come back and I\'ll fill it.</small>',
+        [], true
+      );
+    }
+  });
+  document.body.appendChild(btn);
+}
 
 // ── Page classification helpers ───────────────────────────────────────────────
 
@@ -1086,14 +1118,4 @@ function hasApplyButton() {
     return label.length > 0 && label.length <= 30 && /\bapply\b/i.test(label) && el.offsetParent !== null;
   };
   return Array.from(document.querySelectorAll("a, button, [role='button']")).some(isApply);
-}
-
-// Small dismissible hint when we detect a job page but no active session.
-function showStartHint() {
-  showOverlay(
-    '🚀 <strong>HirePath</strong> detected a job application here.<br>' +
-    '<small style="color:#94a3b8">Open this job from your HirePath dashboard to auto-fill it, ' +
-    'or click the HirePath extension icon.</small>',
-    [], true
-  );
 }
