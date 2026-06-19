@@ -5,14 +5,23 @@
 
 function fillInput(el, value) {
   if (!el || value === undefined || value === null || value === "") return;
-  const proto = el.tagName === "TEXTAREA"
+  // Guard: only real <input>/<textarea> elements have the native value setter.
+  // Workday/Avature wrappers carry data-automation-id on <div>/<span> too —
+  // calling the input value setter on those throws "Illegal invocation".
+  const tag = el.tagName;
+  if (tag !== "INPUT" && tag !== "TEXTAREA") return;
+  const proto = tag === "TEXTAREA"
     ? window.HTMLTextAreaElement.prototype
     : window.HTMLInputElement.prototype;
   const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value");
-  if (nativeSetter && nativeSetter.set) {
-    nativeSetter.set.call(el, value);
-  } else {
-    el.value = value;
+  try {
+    if (nativeSetter && nativeSetter.set) {
+      nativeSetter.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+  } catch (e) {
+    try { el.value = value; } catch (_) { return; }
   }
   ["input", "change", "blur"].forEach(ev =>
     el.dispatchEvent(new Event(ev, { bubbles: true }))
@@ -1039,24 +1048,38 @@ chromeCall(() => chrome.storage.local.get(
   (data) => {
     const host = window.location.hostname;
     const onDashboard = /hirepath\.dev$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
-    if (onDashboard) return;
+    if (onDashboard) { console.log('[HirePath] On dashboard — skipping auto-fill'); return; }
 
     const SESSION_MS = 30 * 60 * 1000;
     const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack || null;
     const ts = data.hirepath_copilot_ts || 0;
-    const freshSession = pack && ts && (Date.now() - ts) < SESSION_MS;
+    const sessionAge = ts ? (Date.now() - ts) : Infinity;
+    const freshSession = pack && sessionAge < SESSION_MS;
+    // Also treat having a copilot pack on a known ATS as a valid session — handles
+    // cases where the timestamp was lost/stale but the pack data is still present
+    // (e.g. after a slow cross-domain hop accenture.com → myworkdayjobs.com).
+    const atsMatch = isKnownATS();
+    const hasPackOnATS = pack && atsMatch;
+
+    // ── Diagnostic dump ──
+    console.log('[HirePath] === Storage state on', host, '===');
+    console.log('[HirePath]   auto_fill:', data.hirepath_auto_fill);
+    console.log('[HirePath]   fill_pack:', data.hirepath_fill_pack ? 'YES (' + (data.hirepath_fill_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[HirePath]   copilot_pack:', data.hirepath_copilot_pack ? 'YES (' + (data.hirepath_copilot_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[HirePath]   copilot_ts:', ts, ts ? '(age: ' + Math.round(sessionAge / 1000) + 's)' : '(none)');
+    console.log('[HirePath]   freshSession:', freshSession, '| isKnownATS:', atsMatch, '| hasPackOnATS:', hasPackOnATS);
 
     // One-shot auto_fill flag (set by background when opening a new tab)
     if (data.hirepath_auto_fill && pack) {
-      console.log('[HirePath] Auto-fill flag — starting copilot');
+      console.log('[HirePath] ▶ Auto-fill flag — starting copilot');
       chrome.storage.local.set({ hirepath_auto_fill: false });
       setTimeout(() => fillForm(pack), 2000);
       return;
     }
 
     // Persistent copilot session — survives cross-domain hops and page reloads
-    if (freshSession) {
-      console.log('[HirePath] Copilot session active, checking page…');
+    if (freshSession || hasPackOnATS) {
+      console.log('[HirePath] ▶ Copilot session active, checking page…');
       // Give page 2s to render before checking, then another 3s as fallback
       setTimeout(() => {
         if (_copilotActive) return;
@@ -1080,7 +1103,7 @@ chromeCall(() => chrome.storage.local.get(
       return;
     }
 
-    console.log('[HirePath] Content script loaded on', host, '— no session');
+    console.log('[HirePath] ▶ No active session — showing fill button if actionable');
     // Show floating button on any job/form page so user can trigger manually
     const lastPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
     setTimeout(() => {

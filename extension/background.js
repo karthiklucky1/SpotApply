@@ -80,29 +80,41 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       let tabHost;
       try { tabHost = new URL(tab.url).hostname; } catch (_) { return; }
 
+      const atsMatch = ATS_HOSTS.test(tabHost);
+
       // Determine if this tab should receive DO_FILL:
       // 1. One-shot flag set when we opened the tab (exact host match OR known ATS)
-      // 2. Persistent copilot session active (30-min window) on any ATS/actionable page
+      // 2. Persistent copilot session active (30-min window) on any ATS page
+      // 3. hasPackOnATS: pack present on a known ATS even if timestamp is stale/lost
       const SESSION_MS = 30 * 60 * 1000;
       const freshSession = data.hirepath_copilot_ts && (Date.now() - data.hirepath_copilot_ts) < SESSION_MS;
+      const hasPackOnATS = atsMatch;
+
+      // ── Diagnostic dump ──
+      console.log("[HirePath BG] === Tab loaded:", tabId, tabHost, "===");
+      console.log("[HirePath BG]   auto_fill:", data.hirepath_auto_fill);
+      console.log("[HirePath BG]   copilot_pack:", !!data.hirepath_copilot_pack);
+      console.log("[HirePath BG]   copilot_ts:", data.hirepath_copilot_ts);
+      console.log("[HirePath BG]   ATS match:", atsMatch, "| freshSession:", freshSession);
 
       let shouldFill = false;
       if (data.hirepath_auto_fill) {
         try {
           const jobHost = new URL(pack.apply_url || "").hostname;
           // Same host OR tab is a known ATS (handles accenture → workday cross-domain)
-          if (tabHost === jobHost || ATS_HOSTS.test(tabHost)) shouldFill = true;
+          if (tabHost === jobHost || atsMatch) shouldFill = true;
         } catch (_) {
-          if (ATS_HOSTS.test(tabHost)) shouldFill = true;
+          if (atsMatch) shouldFill = true;
         }
-      } else if (freshSession && ATS_HOSTS.test(tabHost)) {
-        // Copilot session: resume on any ATS page automatically
+      } else if ((freshSession || hasPackOnATS) && atsMatch) {
+        // Copilot session (or stale-but-present pack on ATS): resume automatically
         shouldFill = true;
       }
 
+      console.log("[HirePath BG]   shouldFill:", shouldFill, "hasPackOnATS:", hasPackOnATS);
       if (!shouldFill) return;
 
-      console.log("[HirePath BG] Tab", tabId, "matched — sending DO_FILL in 2s");
+      console.log("[HirePath BG] ▶ Tab", tabId, "matched — sending DO_FILL in 2s");
       if (data.hirepath_auto_fill) chrome.storage.local.set({ hirepath_auto_fill: false });
 
       setTimeout(() => {
