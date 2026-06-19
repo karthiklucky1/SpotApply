@@ -1232,6 +1232,14 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
 
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
 window.addEventListener('message', (e) => {
+  // Liveness ping from the dashboard keepExtAlive() loop
+  if (e.data?.type === 'HIREPATH_EXT_PING') {
+    let alive = false;
+    try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); alive = true; } catch (_) {}
+    window.postMessage({ type: alive ? 'HIREPATH_EXT_PING_OK' : 'HIREPATH_EXT_RELOAD' }, '*');
+    return;
+  }
+
   if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
     console.log('[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
     // Test extension context first with a PING

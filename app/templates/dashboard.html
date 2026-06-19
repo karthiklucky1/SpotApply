@@ -2804,8 +2804,10 @@
                 await new Promise(r => setTimeout(r, 1200));
                 window.removeEventListener('message', msgHandler);
                 if (extReload) {
-                    // Extension context was invalidated (extension was reloaded/updated)
-                    showToast('⚠️ Extension disconnected — please reload this page (F5) then try again.', 'error');
+                    // Extension context invalidated — auto-reload the page so the
+                    // content script reconnects, then the user can try again.
+                    showToast('🔄 Extension reconnecting — reloading page in 2s…', 'info');
+                    setTimeout(() => location.reload(), 2000);
                     btn.innerHTML = orig; btn.disabled = false; return;
                 } else if (!extHandled) {
                     // Extension not installed — open tab manually
@@ -3720,6 +3722,27 @@
         <button onclick="installPWA()" class="shrink-0 bg-white text-indigo-700 font-black text-xs px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition">Install</button>
         <button onclick="dismissPWA()" class="shrink-0 text-indigo-300 hover:text-white text-lg leading-none px-1">&times;</button>
     </div>
+
+<script>
+// Proactively detect when the HirePath extension context gets invalidated
+// (e.g. after the user reloads it in chrome://extensions) and auto-reload
+// the dashboard so the content script reconnects without the user having to
+// do anything manually.
+(function keepExtAlive() {
+  let lastOk = true;
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'HIREPATH_EXT_PING_OK') lastOk = true;
+    if (e.data?.type === 'HIREPATH_EXT_RELOAD' && lastOk) {
+      // Context just died — reload once to reconnect
+      lastOk = false;
+      showToast('🔄 Extension reconnecting — reloading page…', 'info');
+      setTimeout(() => location.reload(), 1500);
+    }
+  });
+  // Ping the extension every 20s; content.js replies HIREPATH_EXT_PING_OK if alive
+  setInterval(() => window.postMessage({ type: 'HIREPATH_EXT_PING' }, '*'), 20000);
+})();
+</script>
 
 </body>
 
