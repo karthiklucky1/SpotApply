@@ -1008,17 +1008,27 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
 window.addEventListener('message', (e) => {
   if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
     console.log('[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
+    // Test extension context first with a PING
+    let ctxOk = false;
+    try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
+    if (!ctxOk) {
+      console.warn('[HirePath] Extension context invalidated');
+      window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
+      return;
+    }
     try {
       chrome.runtime.sendMessage({ type: 'OPEN_AND_FILL', payload: e.data.pack }, (res) => {
         if (chrome.runtime.lastError) {
           console.warn('[HirePath] Background error:', chrome.runtime.lastError.message);
+          window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
         } else {
           console.log('[HirePath] Background opened tab, sending ACK to dashboard');
           window.postMessage({ type: 'HIREPATH_EXT_ACK' }, '*');
         }
       });
     } catch (err) {
-      console.warn('[HirePath] Extension context invalidated — refresh this tab to restore autofill');
+      console.warn('[HirePath] Extension context error:', err.message);
+      window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
     }
   }
 });
@@ -1028,47 +1038,55 @@ chromeCall(() => chrome.storage.local.get(
   ['hirepath_fill_pack', 'hirepath_auto_fill', 'hirepath_copilot_pack', 'hirepath_copilot_ts'],
   (data) => {
     const host = window.location.hostname;
-    // Never auto-run on the HirePath dashboard itself
     const onDashboard = /hirepath\.dev$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
+    if (onDashboard) return;
 
-    if (data.hirepath_auto_fill && data.hirepath_fill_pack) {
-      console.log('[HirePath] Auto-fill flag found, starting copilot after delay');
-      chrome.storage.local.set({ hirepath_auto_fill: false });
-      setTimeout(() => fillForm(data.hirepath_fill_pack), 2500);
-      return;
-    }
-
-    // Resume an in-progress copilot session across navigations (e.g. after
-    // clicking Apply, even across domains: accenture.com → myworkdayjobs.com).
-    // 30-min window absorbs slow logins / account creation on Workday etc.
     const SESSION_MS = 30 * 60 * 1000;
-    const fresh = data.hirepath_copilot_ts && (Date.now() - data.hirepath_copilot_ts) < SESSION_MS;
-    if (!onDashboard && data.hirepath_copilot_pack && fresh) {
-      if (isActionablePage()) {
-        console.log('[HirePath] Resuming copilot session after navigation');
-        setTimeout(() => fillForm(data.hirepath_copilot_pack), 2000);
-      } else {
-        console.log('[HirePath] Copilot session active but page not actionable yet — waiting');
-        setTimeout(() => {
-          if (_copilotActive) return;
-          if (isActionablePage()) fillForm(data.hirepath_copilot_pack);
-        }, 3000);
-      }
+    const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack || null;
+    const ts = data.hirepath_copilot_ts || 0;
+    const freshSession = pack && ts && (Date.now() - ts) < SESSION_MS;
+
+    // One-shot auto_fill flag (set by background when opening a new tab)
+    if (data.hirepath_auto_fill && pack) {
+      console.log('[HirePath] Auto-fill flag — starting copilot');
+      chrome.storage.local.set({ hirepath_auto_fill: false });
+      setTimeout(() => fillForm(pack), 2000);
       return;
     }
 
-    console.log('[HirePath] Content script loaded on', host, '— no pending autofill');
-
-    // Reliable manual trigger: on any job/application page, show a floating
-    // "Fill with HirePath" button. Works regardless of session timing or
-    // navigation — uses the last pack you loaded from the dashboard.
-    if (!onDashboard) {
-      const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
+    // Persistent copilot session — survives cross-domain hops and page reloads
+    if (freshSession) {
+      console.log('[HirePath] Copilot session active, checking page…');
+      // Give page 2s to render before checking, then another 3s as fallback
       setTimeout(() => {
         if (_copilotActive) return;
-        if (isActionablePage()) injectFillButton(pack);
-      }, 1500);
+        if (isActionablePage()) {
+          console.log('[HirePath] Actionable page — resuming copilot');
+          fillForm(pack);
+        } else {
+          // Maybe a SPA that needs more time (e.g. Workday loading)
+          setTimeout(() => {
+            if (_copilotActive) return;
+            if (isActionablePage()) {
+              console.log('[HirePath] Page became actionable — resuming copilot');
+              fillForm(pack);
+            } else {
+              console.log('[HirePath] Page not actionable — injecting fill button');
+              injectFillButton(pack);
+            }
+          }, 3000);
+        }
+      }, 2000);
+      return;
     }
+
+    console.log('[HirePath] Content script loaded on', host, '— no session');
+    // Show floating button on any job/form page so user can trigger manually
+    const lastPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
+    setTimeout(() => {
+      if (_copilotActive) return;
+      if (isActionablePage()) injectFillButton(lastPack);
+    }, 2000);
   }
 ));
 

@@ -64,30 +64,56 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
+const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|linkedin\.com|indeed\.com/i;
+
 // When a tab finishes loading, check if we should auto-fill it
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
-  chrome.storage.local.get(["hirepath_fill_pack", "hirepath_auto_fill"], (data) => {
-    if (!data.hirepath_auto_fill || !data.hirepath_fill_pack) return;
-    const pack = data.hirepath_fill_pack;
-    if (!tab.url || !pack.apply_url) return;
-    try {
-      const tabHost = new URL(tab.url).hostname;
-      const jobHost = new URL(pack.apply_url).hostname;
-      if (tabHost !== jobHost) return;
-    } catch (e) { return; }
+  if (!tab.url || tab.url.startsWith("chrome")) return;
 
-    console.log("[HirePath BG] Tab", tabId, "matches job host — sending DO_FILL in 2.5s");
-    // Clear flag so re-navigations don't re-fire
-    chrome.storage.local.set({ hirepath_auto_fill: false });
-    setTimeout(() => {
-      chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
-        if (chrome.runtime.lastError) {
-          console.warn("[HirePath BG] Could not send DO_FILL to tab:", chrome.runtime.lastError.message);
-        } else {
-          console.log("[HirePath BG] DO_FILL sent, response:", res);
+  chrome.storage.local.get(
+    ["hirepath_fill_pack", "hirepath_auto_fill", "hirepath_copilot_pack", "hirepath_copilot_ts"],
+    (data) => {
+      const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack;
+      if (!pack) return;
+
+      let tabHost;
+      try { tabHost = new URL(tab.url).hostname; } catch (_) { return; }
+
+      // Determine if this tab should receive DO_FILL:
+      // 1. One-shot flag set when we opened the tab (exact host match OR known ATS)
+      // 2. Persistent copilot session active (30-min window) on any ATS/actionable page
+      const SESSION_MS = 30 * 60 * 1000;
+      const freshSession = data.hirepath_copilot_ts && (Date.now() - data.hirepath_copilot_ts) < SESSION_MS;
+
+      let shouldFill = false;
+      if (data.hirepath_auto_fill) {
+        try {
+          const jobHost = new URL(pack.apply_url || "").hostname;
+          // Same host OR tab is a known ATS (handles accenture → workday cross-domain)
+          if (tabHost === jobHost || ATS_HOSTS.test(tabHost)) shouldFill = true;
+        } catch (_) {
+          if (ATS_HOSTS.test(tabHost)) shouldFill = true;
         }
-      });
-    }, 2500);
-  });
+      } else if (freshSession && ATS_HOSTS.test(tabHost)) {
+        // Copilot session: resume on any ATS page automatically
+        shouldFill = true;
+      }
+
+      if (!shouldFill) return;
+
+      console.log("[HirePath BG] Tab", tabId, "matched — sending DO_FILL in 2s");
+      if (data.hirepath_auto_fill) chrome.storage.local.set({ hirepath_auto_fill: false });
+
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
+          if (chrome.runtime.lastError) {
+            console.warn("[HirePath BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
+          } else {
+            console.log("[HirePath BG] DO_FILL sent, response:", res);
+          }
+        });
+      }, 2000);
+    }
+  );
 });
