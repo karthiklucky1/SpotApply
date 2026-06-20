@@ -369,7 +369,7 @@ Return ONLY a JSON object with two keys:
 2. "education": a list of objects, each containing:
    - "school": string
    - "degree": string (e.g. "B.S." or "Bachelor of Science" or "M.S.")
-   - "field_of_study": string (e.g. "Computer Science")
+   - "field_of_study": string (e.g. "Computer Science"; if not explicitly stated in the education section, infer the most appropriate field of study based on the candidate's skills, experience, and projects like "Computer Science" or "Data Science", do not leave empty)
    - "start_date": string (or null)
    - "end_date": string (graduation date, e.g. "May 2021" or "2021-05")
 

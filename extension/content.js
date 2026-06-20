@@ -58,6 +58,16 @@ function selectOption(el, value) {
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function findInteractiveField(elements, filterFn) {
+  const matched = elements.filter(filterFn);
+  if (!matched.length) return null;
+  // Prefer button (custom dropdown) first, then select, then input
+  return matched.find(el => el.tagName === 'BUTTON') || 
+         matched.find(el => el.tagName === 'SELECT') || 
+         matched.find(el => el.tagName === 'INPUT') || 
+         matched[0];
+}
+
 function waitFor(selector, timeout = 8000, root = document) {
   return new Promise((resolve) => {
     const el = root.querySelector(selector);
@@ -445,16 +455,55 @@ function parseDateString(dateStr) {
   return { month, monthName, year };
 }
 
+function matchDegree(optionText, targetVal) {
+  const opt = optionText.toLowerCase().trim();
+  const tgt = targetVal.toLowerCase().trim();
+  
+  if (opt.includes(tgt) || tgt.includes(opt)) return true;
+  
+  // Fuzzy matching for degree levels
+  const levels = [
+    { key: 'master', terms: ['master', 'm.s.', 'ms', 'm.e.', 'me', 'mba'] },
+    { key: 'bachelor', terms: ['bachelor', 'b.s.', 'bs', 'b.a.', 'ba', 'b.t.', 'bt', 'btech'] },
+    { key: 'doctor', terms: ['doctor', 'phd', 'ph.d.'] },
+    { key: 'associate', terms: ['associate', 'a.s.', 'as'] },
+    { key: 'diploma', terms: ['diploma', 'high school', 'secondary'] }
+  ];
+  
+  for (const level of levels) {
+    const optHas = level.terms.some(t => opt.includes(t));
+    const tgtHas = level.terms.some(t => tgt.includes(t));
+    if (optHas && tgtHas) return true;
+  }
+  
+  return false;
+}
+
 async function selectWorkdayDropdown(buttonEl, value) {
   if (!buttonEl || !value) return false;
   buttonEl.click();
   await delay(600); // wait for dropdown to open
   
   const lowerVal = String(value).toLowerCase().trim();
-  const options = Array.from(document.querySelectorAll('[role="option"], [data-automation-id="dropdown-option"], .wd-Dropdown-Option, li'));
+  const options = Array.from(document.querySelectorAll(
+    '[role="option"], [data-automation-id*="option" i], [data-automation-id*="menu" i], ' +
+    '.wd-Dropdown-Option, li, [role="menuitem"], [data-automation-label]'
+  ));
+  
+  // 1. Try exact/substring match first
   for (const opt of options) {
     const text = opt.textContent?.toLowerCase().trim();
     if (text && (text === lowerVal || text.includes(lowerVal) || lowerVal.includes(text))) {
+      opt.click();
+      await delay(400);
+      return true;
+    }
+  }
+  
+  // 2. Try fuzzy degree match
+  for (const opt of options) {
+    const text = opt.textContent;
+    if (text && matchDegree(text, value)) {
       opt.click();
       await delay(400);
       return true;
@@ -527,29 +576,70 @@ async function fillWorkdayExperienceAndEducation(pack) {
         currentCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
       }
       
-      // Start Month / Year
-      const startMonth = container.querySelector('input[data-automation-id*="startDateMonth" i], input[id*="startDateMonth" i], select[data-automation-id*="startDateMonth" i], select[id*="startDateMonth" i]');
-      const startYear = container.querySelector('input[data-automation-id*="startDateYear" i], input[id*="startDateYear" i]');
+      // Start Month / Year / Single Date
+      const allFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
+      const startMonth = findInteractiveField(allFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('start') || sig.includes('from')) && sig.includes('month');
+      });
+      const startYear = findInteractiveField(allFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('start') || sig.includes('from')) && sig.includes('year');
+      });
+      const startDateInput = findInteractiveField(allFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('start') || sig.includes('from')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
+      });
+
       const startInfo = parseDateString(jobData.start_date);
-      if (startInfo.month) {
-        if (startMonth && startMonth.tagName === 'SELECT') selectOption(startMonth, startInfo.monthName || startInfo.month);
-        else if (startMonth) fillInput(startMonth, startInfo.month);
+      if (startInfo.month && startMonth) {
+        if (startMonth.tagName === 'SELECT') {
+          selectOption(startMonth, startInfo.monthName || startInfo.month);
+        } else if (startMonth.tagName === 'BUTTON') {
+          await selectWorkdayDropdown(startMonth, startInfo.monthName || startInfo.month);
+        } else {
+          fillInput(startMonth, startInfo.month);
+        }
       }
       if (startInfo.year && startYear) {
         fillInput(startYear, startInfo.year);
       }
+      if (startDateInput && startInfo.year) {
+        const monthFormatted = startInfo.month ? String(startInfo.month).padStart(2, '0') : '01';
+        fillInput(startDateInput, `${monthFormatted}/${startInfo.year}`);
+      }
       
-      // End Month / Year
+      // End Month / Year / Single Date
       if (!isCurrent) {
-        const endMonth = container.querySelector('input[data-automation-id*="endDateMonth" i], input[id*="endDateMonth" i], select[data-automation-id*="endDateMonth" i], select[id*="endDateMonth" i]');
-        const endYear = container.querySelector('input[data-automation-id*="endDateYear" i], input[id*="endDateYear" i]');
+        const endMonth = findInteractiveField(allFields, el => {
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          return (sig.includes('end') || sig.includes('to')) && sig.includes('month');
+        });
+        const endYear = findInteractiveField(allFields, el => {
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          return (sig.includes('end') || sig.includes('to')) && sig.includes('year');
+        });
+        const endDateInput = findInteractiveField(allFields, el => {
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          return (sig.includes('end') || sig.includes('to')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
+        });
+
         const endInfo = parseDateString(jobData.end_date);
-        if (endInfo.month) {
-          if (endMonth && endMonth.tagName === 'SELECT') selectOption(endMonth, endInfo.monthName || endInfo.month);
-          else if (endMonth) fillInput(endMonth, endInfo.month);
+        if (endInfo.month && endMonth) {
+          if (endMonth.tagName === 'SELECT') {
+            selectOption(endMonth, endInfo.monthName || endInfo.month);
+          } else if (endMonth.tagName === 'BUTTON') {
+            await selectWorkdayDropdown(endMonth, endInfo.monthName || endInfo.month);
+          } else {
+            fillInput(endMonth, endInfo.month);
+          }
         }
         if (endInfo.year && endYear) {
           fillInput(endYear, endInfo.year);
+        }
+        if (endDateInput && endInfo.year) {
+          const monthFormatted = endInfo.month ? String(endInfo.month).padStart(2, '0') : '01';
+          fillInput(endDateInput, `${monthFormatted}/${endInfo.year}`);
         }
       }
     }
@@ -591,8 +681,16 @@ async function fillWorkdayExperienceAndEducation(pack) {
       // School / Institution
       fillInput(schoolInput, eduData.school);
       
-      // Degree
-      const degreeEl = container.querySelector('[data-automation-id="degree"], input[name*="degree" i], button[data-automation-id="select-button"]');
+      // Degree dropdown button/input
+      const degreeWrapper = container.querySelector('[data-automation-id="degree"], [id*="degree" i]');
+      let degreeEl = null;
+      if (degreeWrapper) {
+        const wrapperFields = Array.from(degreeWrapper.querySelectorAll('input, select, textarea, button'));
+        degreeEl = findInteractiveField(wrapperFields, () => true) || degreeWrapper;
+      } else {
+        degreeEl = container.querySelector('[data-automation-id="degree"], select[name*="degree" i], input[name*="degree" i], button[data-automation-id="select-button"]');
+      }
+      
       if (degreeEl) {
         if (degreeEl.tagName === 'SELECT') {
           selectOption(degreeEl, eduData.degree);
@@ -604,14 +702,47 @@ async function fillWorkdayExperienceAndEducation(pack) {
       }
       
       // Field of Study (major)
-      const fieldEl = container.querySelector('[data-automation-id="fieldOfStudy"], input[name*="major" i], input[name*="study" i]');
+      const fieldWrapper = container.querySelector('[data-automation-id="fieldOfStudy"], [id*="fieldOfStudy" i], [id*="major" i], [id*="study" i]');
+      let fieldEl = null;
+      if (fieldWrapper) {
+        const wrapperFields = Array.from(fieldWrapper.querySelectorAll('input, select, textarea, button'));
+        fieldEl = findInteractiveField(wrapperFields, () => true) || fieldWrapper;
+      } else {
+        fieldEl = container.querySelector('[data-automation-id="fieldOfStudy"], input[name*="major" i], input[name*="study" i]');
+      }
       if (fieldEl) fillInput(fieldEl, eduData.field_of_study || eduData.major || '');
       
-      // Graduation Year
-      const gradYearInput = container.querySelector('input[data-automation-id*="Year" i], input[id*="graduationYear" i], input[id*="endDate" i]');
+      // Graduation Year / Month / Single Date
+      const eduFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
+      const gradMonth = findInteractiveField(eduFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('end') || sig.includes('grad') || sig.includes('complete')) && sig.includes('month');
+      });
+      const gradYear = findInteractiveField(eduFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('end') || sig.includes('grad') || sig.includes('complete') || sig.includes('year')) && sig.includes('year');
+      });
+      const gradDateInput = findInteractiveField(eduFields, el => {
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        return (sig.includes('end') || sig.includes('grad') || sig.includes('complete')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
+      });
+
       const endInfo = parseDateString(eduData.end_date);
-      if (endInfo.year && gradYearInput) {
-        fillInput(gradYearInput, endInfo.year);
+      if (endInfo.month && gradMonth) {
+        if (gradMonth.tagName === 'SELECT') {
+          selectOption(gradMonth, endInfo.monthName || endInfo.month);
+        } else if (gradMonth.tagName === 'BUTTON') {
+          await selectWorkdayDropdown(gradMonth, endInfo.monthName || endInfo.month);
+        } else {
+          fillInput(gradMonth, endInfo.month);
+        }
+      }
+      if (endInfo.year && gradYear) {
+        fillInput(gradYear, endInfo.year);
+      }
+      if (gradDateInput && endInfo.year) {
+        const monthFormatted = endInfo.month ? String(endInfo.month).padStart(2, '0') : '01';
+        fillInput(gradDateInput, `${monthFormatted}/${endInfo.year}`);
       }
     }
   }
@@ -938,6 +1069,7 @@ function observeField(el, pack) {
 
     // Don't save standard profile fields or extensions — those come from the profile/direct matches
     if (/first.?name|last.?name|email|phone|mobile|linkedin|github|extension|ext\b/i.test(label)) return;
+    if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label)) return;
 
     console.log('[HirePath] Learning field:', label, '->', val.slice(0, 40));
     apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
@@ -1124,6 +1256,18 @@ async function attachResume(root, pack) {
   const fileInputs = Array.from(root.querySelectorAll('input[type="file"]')).filter(fi => {
     if (fi.files && fi.files.length) return false; // already has a file
 
+    // Check if there is already an uploaded file in the same container/section
+    const container = fi.closest('div, section, fieldset');
+    if (container) {
+      const hasUploaded = container.querySelector('[data-automation-id*="delete" i]') || 
+                          container.textContent.includes('Successfully Uploaded!') ||
+                          container.textContent.includes('Delete') ||
+                          container.querySelector('button[aria-label*="delete" i]');
+      if (hasUploaded) {
+        return false;
+      }
+    }
+
     const label = labelText(fi);
     const name = fi.name || "";
     const id = fi.id || "";
@@ -1134,7 +1278,6 @@ async function attachResume(root, pack) {
     if (/resume|cv|résumé/.test(ctx)) return true;
 
     // Check parent/wrapping container text for section heading
-    const container = fi.closest('div, section, fieldset');
     if (container && /resume|cv|résumé/i.test(container.textContent.slice(0, 800))) {
       return true;
     }
@@ -1158,6 +1301,13 @@ async function attachResume(root, pack) {
   }
 
   const { filename, mime, base64 } = res.data;
+
+  // Check if this filename is already visible in the document (already uploaded)
+  if (document.body.innerText.includes(filename)) {
+    console.log("[HirePath] Resume filename already found on page, skipping upload:", filename);
+    return;
+  }
+
   let file;
   try {
     const bin = atob(base64);
@@ -1189,16 +1339,32 @@ async function attachResume(root, pack) {
 
 let _copilotActive = false;
 let _copilotPack = null;
+let _fillingInProgress = false;
+let _resumeAttachedOnPage = null;
+let _lastFillTimestamp = 0;
 
 async function fillForm(fillPack) {
-  _copilotPack = fillPack;
+  let pack = fillPack;
+
+  // Try to fetch the latest pack from the API to pick up any profile/db changes
+  if (pack && pack.hirepath_url && pack.auth_token && pack.app_id) {
+    const res = await apiFetch(
+      `${pack.hirepath_url}/api/fill-pack/${pack.app_id}`,
+      "GET", pack.auth_token, null
+    );
+    if (res.ok && res.data) {
+      pack = res.data;
+    }
+  }
+
+  _copilotPack = pack;
   _copilotActive = true;
   _lastUrl = location.href;
 
   // Persist the session so copilot survives page navigations (e.g. clicking
   // Apply sends you to a new URL / domain). Resumed by the load handler below.
   chromeCall(() => chrome.storage.local.set({
-    hirepath_copilot_pack: fillPack,
+    hirepath_copilot_pack: pack,
     hirepath_copilot_ts: Date.now(),
   }));
 
@@ -1206,7 +1372,7 @@ async function fillForm(fillPack) {
   // A description page (e.g. accenture.com/.../jobdetails) has search boxes and
   // cookie inputs but no application fields — so we must find & click Apply first.
   if (!hasApplicationForm()) {
-    findAndClickApply(fillPack);
+    findAndClickApply(pack);
     return;
   }
   await runCopilotStep();
@@ -1232,6 +1398,11 @@ function hasApplicationForm() {
 
 async function runCopilotStep() {
   if (!_copilotActive || !_copilotPack) return;
+  // Prevent re-entrant calls (MutationObserver can fire during fill)
+  if (_fillingInProgress) {
+    console.log('[HirePath] runCopilotStep skipped — fill already in progress');
+    return;
+  }
   const pack = _copilotPack;
 
   // Detect login wall or CAPTCHA — pause and guide user
@@ -1246,12 +1417,29 @@ async function runCopilotStep() {
     return;
   }
 
-  // Run the fill
-  const result = await fillCurrentPage(pack);
-  showStepOverlay(result, pack);
+  // Lock to prevent re-entrant calls
+  _fillingInProgress = true;
+  try {
+    // Run the fill
+    const result = await fillCurrentPage(pack);
+    showStepOverlay(result, pack);
 
-  // Attach resume (don't block the overlay showing)
-  attachResume(document, pack).catch(() => {});
+    // Attach resume ONCE per page (guard against re-runs)
+    const pageKey = location.href;
+    if (_resumeAttachedOnPage !== pageKey) {
+      try {
+        await attachResume(document, pack);
+        _resumeAttachedOnPage = pageKey;
+      } catch (e) {
+        console.warn('[HirePath] attachResume error:', e.message);
+      }
+    } else {
+      console.log('[HirePath] Resume already attached on this page, skipping');
+    }
+  } finally {
+    _fillingInProgress = false;
+    _lastFillTimestamp = Date.now();
+  }
 
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
@@ -1491,6 +1679,7 @@ function watchForPageAdvance(pack) {
     if (!_copilotActive) { clearInterval(urlPoll); return; }
     if (location.href !== _lastUrl) {
       _lastUrl = location.href;
+      _resumeAttachedOnPage = null; // reset resume guard on new page
       clearInterval(urlPoll);
       if (_advanceObserver) { _advanceObserver.disconnect(); _advanceObserver = null; }
       clearHighlights();
@@ -1500,20 +1689,31 @@ function watchForPageAdvance(pack) {
   }, 400);
 
   // Strategy 2: Major DOM change on same URL (SPA / Workday / React)
+  // Take the snapshot AFTER a short delay so our own fill doesn't get
+  // included in the baseline count.
   let mutationTimer = null;
   const snapshot = document.querySelectorAll('input, textarea, select').length;
   _advanceObserver = new MutationObserver(() => {
+    // Skip if we're in the middle of filling or within 5s cooldown
+    if (_fillingInProgress) return;
+    if (Date.now() - _lastFillTimestamp < 5000) return;
+
     const now = document.querySelectorAll('input, textarea, select').length;
-    if (now !== snapshot && Math.abs(now - snapshot) >= 2) {
+    // Raise threshold: page advance typically adds many new fields (≥4),
+    // not the small ±1-2 caused by value-change re-renders.
+    if (now !== snapshot && Math.abs(now - snapshot) >= 4) {
       clearTimeout(mutationTimer);
       mutationTimer = setTimeout(() => {
         if (!_copilotActive) return;
+        if (_fillingInProgress) return;
+        if (Date.now() - _lastFillTimestamp < 5000) return;
         if (location.href === _lastUrl) { // only if URL didn't change (handled above)
+          _resumeAttachedOnPage = null; // new page section, allow resume again
           clearHighlights();
           removeOverlay();
           runCopilotStep();
         }
-      }, 800);
+      }, 1200);
     }
   });
   _advanceObserver.observe(document.body, { childList: true, subtree: true });

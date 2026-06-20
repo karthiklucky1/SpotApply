@@ -987,6 +987,17 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     token = request.headers.get("Authorization", "").split(" ", 1)[-1]
     pack["auth_token"] = token
 
+    # Add work experience & education (extracted from resume via LLM, cached)
+    try:
+        from app.autofill.answer_pack import _get_or_extract_experience_education
+        exp_edu = _get_or_extract_experience_education(application, profile, user_id=uid if uid != "local" else None)
+        pack["work_experience"] = exp_edu.get("work_experience", [])
+        pack["education"] = exp_edu.get("education", [])
+    except Exception as e:
+        log.warning("Failed to extract experience/education for app %d: %s", application_id, e)
+        pack["work_experience"] = []
+        pack["education"] = []
+
     return pack
 
 
