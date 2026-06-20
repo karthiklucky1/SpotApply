@@ -1,10 +1,96 @@
 // HirePath Extension — Background Service Worker
 
+// ── Session auth (token refresh) ─────────────────────────────────────────────
+// The fill pack carries a short-lived Supabase access token plus (from the
+// dashboard) a refresh token and Supabase credentials. We pull those secrets
+// OUT of the pack and keep them only in the service worker's private storage —
+// they are NEVER forwarded to the content script running on a third-party ATS
+// page. The worker uses them to silently refresh the access token whenever an
+// authed API call returns 401, so autofill keeps working through long,
+// multi-step forms on any site instead of dying when the token expires.
+
+function stashAuth(pack) {
+  if (!pack || typeof pack !== "object") return;
+  const auth = {};
+  if (pack.refresh_token) auth.refresh_token = pack.refresh_token;
+  if (pack.supabase_url) auth.supabase_url = pack.supabase_url;
+  if (pack.supabase_anon_key) auth.supabase_anon_key = pack.supabase_anon_key;
+  if (pack.auth_token) auth.access_token = pack.auth_token;
+  // Strip the long-lived secrets so page content scripts can never read them.
+  delete pack.refresh_token;
+  delete pack.supabase_url;
+  delete pack.supabase_anon_key;
+  if (!Object.keys(auth).length) return;
+  // Merge over any previously stored creds (e.g. keep a rotated refresh token
+  // if this pack didn't carry one).
+  chrome.storage.local.get(["hirepath_auth"], (s) => {
+    chrome.storage.local.set({ hirepath_auth: Object.assign({}, s.hirepath_auth || {}, auth) });
+  });
+}
+
+async function doFetch(url, method, token, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  try {
+    const res = await fetch(url, {
+      method: method || "POST",
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function refreshAccessToken(auth) {
+  // Exchange the refresh token for a new access token via Supabase's auth API.
+  // Supabase rotates the refresh token on each call, so persist the new one.
+  if (!auth.refresh_token || !auth.supabase_url || !auth.supabase_anon_key) return null;
+  try {
+    const res = await fetch(`${auth.supabase_url}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": auth.supabase_anon_key },
+      body: JSON.stringify({ refresh_token: auth.refresh_token }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.refresh_token) auth.refresh_token = data.refresh_token;
+    return (data && data.access_token) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function handleApiFetch(payload) {
+  const store = await chrome.storage.local.get(["hirepath_auth"]);
+  const auth = store.hirepath_auth || {};
+  // Prefer the freshest access token the worker holds over the (possibly stale)
+  // one the content script sent from its cached pack.
+  const token = auth.access_token || payload.token;
+  let result = await doFetch(payload.url, payload.method, token, payload.body);
+
+  // Only attempt a refresh for calls that were actually authenticated.
+  if (result.status === 401 && payload.token) {
+    const newToken = await refreshAccessToken(auth);
+    if (newToken) {
+      auth.access_token = newToken;
+      await chrome.storage.local.set({ hirepath_auth: auth });
+      console.log("[HirePath BG] Access token refreshed — retrying request");
+      result = await doFetch(payload.url, payload.method, newToken, payload.body);
+    }
+  }
+  return result;
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Popup sends FILL_JOB → send DO_FILL to the currently active tab
   if (msg.type === "FILL_JOB") {
     console.log("[HirePath BG] FILL_JOB received from popup");
+    stashAuth(msg.payload);
     chrome.storage.local.set({ hirepath_fill_pack: msg.payload, hirepath_auto_fill: false }, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0]) { sendResponse({ ok: false, error: "No active tab" }); return; }
@@ -21,6 +107,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "OPEN_AND_FILL") {
     const pack = msg.payload;
     console.log("[HirePath BG] OPEN_AND_FILL received for:", pack?.job_title, pack?.apply_url);
+    stashAuth(pack);
     // Store BOTH a one-shot auto_fill flag AND a persistent copilot session.
     // The copilot session (10-min window) lets autofill survive cross-domain
     // navigations — e.g. accenture.com → myworkdayjobs.com after clicking Apply.
@@ -46,20 +133,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Content-script fetches run in the page origin and get blocked by CORS;
   // the service worker has host_permissions and is exempt.
   if (msg.type === "API_FETCH") {
-    const { url, method, token, body } = msg.payload || {};
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    fetch(url, {
-      method: method || "POST",
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    })
-      .then(async (res) => {
-        let data = null;
-        try { data = await res.json(); } catch (e) {}
-        sendResponse({ ok: res.ok, status: res.status, data });
-      })
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    handleApiFetch(msg.payload || {}).then(sendResponse);
     return true; // keep the message channel open for the async response
   }
 });

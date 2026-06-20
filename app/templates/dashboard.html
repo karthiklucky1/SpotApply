@@ -30,9 +30,17 @@
                 if (error || !session) { window.location.href = '/login'; }
                 else {
                     localStorage.setItem('sb_token', session.access_token)
+                    // Stash refresh token + Supabase creds so the browser extension
+                    // can silently refresh the access token during long autofills.
+                    if (session.refresh_token) localStorage.setItem('sb_refresh', session.refresh_token)
+                    localStorage.setItem('sb_url', SUPABASE_URL)
+                    localStorage.setItem('sb_anon', SUPABASE_ANON_KEY)
                     sb.auth.onAuthStateChange((_event, s) => {
-                        if (s) localStorage.setItem('sb_token', s.access_token)
-                        else { localStorage.removeItem('sb_token'); window.location.href = '/login'; }
+                        if (s) {
+                            localStorage.setItem('sb_token', s.access_token)
+                            if (s.refresh_token) localStorage.setItem('sb_refresh', s.refresh_token)
+                        }
+                        else { localStorage.removeItem('sb_token'); localStorage.removeItem('sb_refresh'); window.location.href = '/login'; }
                     })
                     // Silently verify token is still valid server-side; redirect on 401
                     sb.auth.getUser().catch(() => {
@@ -2812,6 +2820,11 @@
                     btn.innerHTML = orig; btn.disabled = false; return;
                 }
                 const pack = await res.json();
+                // Attach refresh credentials so the extension's background worker
+                // can renew the access token mid-autofill (kept out of page scripts).
+                pack.refresh_token = localStorage.getItem('sb_refresh') || null;
+                pack.supabase_url = localStorage.getItem('sb_url') || null;
+                pack.supabase_anon_key = localStorage.getItem('sb_anon') || null;
                 // Send pack to content script on this page via postMessage.
                 // The content script forwards it to background.js (OPEN_AND_FILL)
                 // which opens the job tab via chrome.tabs.create() and auto-fills it.
