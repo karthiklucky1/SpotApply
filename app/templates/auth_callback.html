@@ -12,23 +12,46 @@
     <script type="module">
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
         const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
-        const { data: { session } } = await sb.auth.getSession()
-        if (session) {
-            localStorage.setItem('sb_token', session.access_token)
-            // Bootstrap profile from Google metadata
-            const meta = session.user.user_metadata || {}
-            if (meta.full_name || meta.name) {
-                const parts = (meta.full_name || meta.name || '').split(' ')
-                await fetch('/api/profile', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-                    body: JSON.stringify({ first_name: parts[0] || '', last_name: parts.slice(1).join(' ') || '', email: session.user.email || '' })
-                })
+        
+        let redirected = false;
+        
+        sb.auth.onAuthStateChange(async (event, session) => {
+            if (session && !redirected) {
+                redirected = true;
+                localStorage.setItem('sb_token', session.access_token)
+                
+                // Bootstrap profile from Google metadata
+                const meta = session.user.user_metadata || {}
+                const name = meta.full_name || meta.name || '';
+                const parts = name.split(' ');
+                
+                try {
+                    await fetch('/api/profile', {
+                        method: 'PUT',
+                        headers: { 
+                            'Content-Type': 'application/json', 
+                            'Authorization': `Bearer ${session.access_token}` 
+                        },
+                        body: JSON.stringify({ 
+                            first_name: parts[0] || '', 
+                            last_name: parts.slice(1).join(' ') || '', 
+                            email: session.user.email || '' 
+                        })
+                    });
+                } catch(e) {
+                    console.error("Error bootstrapping profile:", e);
+                }
+                
+                window.location.href = '/dashboard'
+            } else if (event === 'INITIAL_SESSION' && !session && !redirected) {
+                // Allow a small delay for URL hash parsing to finish in case it's in progress
+                setTimeout(() => {
+                    if (!redirected) {
+                        window.location.href = '/login'
+                    }
+                }, 1000);
             }
-            window.location.href = '/dashboard'
-        } else {
-            window.location.href = '/login'
-        }
+        })
     </script>
 </body>
 </html>

@@ -966,6 +966,10 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "salary_min": p.salary_min if p else 0,
         "work_authorization": p.work_authorization if p else "",
         "requires_sponsorship": p.requires_sponsorship if p else False,
+        "gender": p.gender if p else "Decline to self-identify",
+        "ethnicity": p.ethnicity if p else "Decline to self-identify",
+        "veteran_status": p.veteran_status if p else "I am not a protected veteran",
+        "disability_status": p.disability_status if p else "No, I do not have a disability, or history/record of having a disability",
         "cover_letter": cover_text,
         "resume_text": resume_text,
     }

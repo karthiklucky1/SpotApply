@@ -1,13 +1,89 @@
 // HirePath Extension — Content Script
 // Fills job application forms in the user's browser tab.
 
+// Track user manual changes to prevent autofill overwrites
+document.addEventListener('input', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
+    e.target.dataset.hirepathUserModified = 'true';
+  }
+}, { capture: true, passive: true });
+
+document.addEventListener('change', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
+    e.target.dataset.hirepathUserModified = 'true';
+  }
+}, { capture: true, passive: true });
+
+// Learn custom dropdown selections manually made by the user
+document.addEventListener('click', (e) => {
+  const opt = e.target.closest('[role="option"], [data-automation-id*="option" i], .wd-Dropdown-Option, li, [role="menuitem"]');
+  if (opt) {
+    const activeBtn = document.querySelector('button[aria-expanded="true"], button[data-automation-id="select-button"]:focus, button[aria-haspopup="listbox"]:focus');
+    if (activeBtn) {
+      const val = opt.textContent?.trim();
+      const label = getFieldSignature(activeBtn);
+      if (val && label && label.length >= 3) {
+        console.log('[HirePath] Learning dropdown field:', label, '->', val);
+        chromeCall(() => chrome.storage.local.get(['hirepath_copilot_pack', 'hirepath_fill_pack'], (data) => {
+          const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
+          if (pack && pack.hirepath_url && pack.auth_token) {
+            apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
+              question: label,
+              answer: val,
+              app_id: pack.app_id || null,
+            });
+          }
+        }));
+      }
+    }
+  }
+}, { capture: true, passive: true });
+
+// Detect step advance click immediately (Next/Continue/Save and Continue)
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button, a, input[type="button"], input[type="submit"]');
+  if (btn) {
+    const txt = (btn.textContent || btn.value || '').toLowerCase().trim();
+    if (/next|continue|save.*continue|submit|agree|accept/i.test(txt)) {
+      console.log('[HirePath] User clicked next/continue button — clearing overlay and scheduling check');
+      removeOverlay();
+      _resumeAttachedOnPage = null; // reset for next page
+      
+      // Force a check after 2 seconds to see if we transitioned to a new step
+      setTimeout(() => {
+        if (!_copilotActive) return;
+        if (_fillingInProgress) return;
+        runCopilotStep();
+      }, 2000);
+    }
+  }
+}, { capture: true, passive: true });
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function fillInput(el, value) {
   if (!el || value === undefined || value === null || value === "") return;
+  
+  // Respect manual user edits — do not overwrite
+  if (el.dataset.hirepathUserModified === 'true') {
+    console.log('[HirePath] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
+    return;
+  }
+  
+  // Skip if value is already the same
+  if (el.value === value) return;
+
   // Guard: only operate on actual form elements — prevents "Illegal invocation"
   // when called on DIVs/spans (e.g. Workday data-automation-id containers)
   const tag = el.tagName;
+  if (tag === "BUTTON") {
+    const isWorkday = window.location.hostname.includes('workday.com') || window.location.hostname.includes('myworkdayjobs.com');
+    const isSelectBtn = el.getAttribute('data-automation-id') === 'select-button' || el.getAttribute('aria-haspopup') === 'listbox';
+    if (isWorkday || isSelectBtn) {
+      selectWorkdayDropdown(el, value);
+    }
+    return;
+  }
   if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
     // Try to find an input inside the element (common with Workday containers)
     const inner = el.querySelector('input, textarea');
@@ -68,6 +144,33 @@ function findInteractiveField(elements, filterFn) {
          matched[0];
 }
 
+function findItemContainer(el, selector) {
+  let container = el.closest('fieldset, [data-automation-id*="-item"], [data-automation-id="workExperienceSection"], [data-automation-id="educationSection"], div[class*="FormSection"], div[class*="group"]');
+  if (container && container !== document.body) {
+    const items = container.querySelectorAll(selector);
+    if (items.length > 1) {
+      let current = el.parentElement;
+      while (current && current !== container) {
+        if (current.querySelectorAll(selector).length === 1) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+    }
+    return container;
+  }
+  let current = el.parentElement;
+  let lastSingle = el;
+  while (current && current !== document.body) {
+    if (current.querySelectorAll(selector).length > 1) {
+      return lastSingle;
+    }
+    lastSingle = current;
+    current = current.parentElement;
+  }
+  return lastSingle || el.parentElement || document.body;
+}
+
 function waitFor(selector, timeout = 8000, root = document) {
   return new Promise((resolve) => {
     const el = root.querySelector(selector);
@@ -85,12 +188,36 @@ function labelText(el) {
   if (!el) return "";
   let label = "";
   try {
-    // Access labels only on form elements that support it
-    const win = el.ownerDocument?.defaultView || window;
-    if (el instanceof win.HTMLInputElement || el instanceof win.HTMLSelectElement || el instanceof win.HTMLTextAreaElement) {
-      label = el.labels?.[0]?.textContent || "";
+    // 1. Check aria-labelledby (common on Workday custom fields/buttons)
+    const ariaLabelledBy = el.getAttribute("aria-labelledby");
+    if (ariaLabelledBy) {
+      const ids = ariaLabelledBy.split(/\s+/);
+      const textParts = [];
+      for (const id of ids) {
+        if (!id) continue;
+        const referredEl = document.getElementById(id);
+        if (referredEl) {
+          // Exclude the button's/input's own text if it references itself
+          if (referredEl === el) continue;
+          const txt = referredEl.textContent?.trim();
+          if (txt) textParts.push(txt);
+        }
+      }
+      if (textParts.length > 0) {
+        label = textParts.join(" ");
+      }
     }
   } catch (e) {}
+
+  if (!label) {
+    try {
+      // Access labels only on form elements that support it
+      const win = el.ownerDocument?.defaultView || window;
+      if (el instanceof win.HTMLInputElement || el instanceof win.HTMLSelectElement || el instanceof win.HTMLTextAreaElement) {
+        label = el.labels?.[0]?.textContent || "";
+      }
+    } catch (e) {}
+  }
 
   if (!label && el.id) {
     try {
@@ -104,6 +231,23 @@ function labelText(el) {
         el.getAttribute("placeholder") ||
         el.getAttribute("name") ||
         el.id || "";
+    } catch (e) {}
+  }
+
+  // 2. If still no label, traverse up to find a nearby label/legend
+  if (!label) {
+    try {
+      let parent = el.parentElement;
+      let depth = 0;
+      while (parent && depth < 5 && parent !== document.body) {
+        const labelEl = parent.querySelector("label, legend");
+        if (labelEl) {
+          label = labelEl.textContent || "";
+          break;
+        }
+        parent = parent.parentElement;
+        depth++;
+      }
     } catch (e) {}
   }
 
@@ -213,10 +357,10 @@ async function fillGreenhouse(pack) {
     else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
     else if (/pronouns/i.test(lbl)) fillInput(inp, "");
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) selectOption(inp, "decline");
-      else if (/race|ethnic/i.test(lbl)) selectOption(inp, "decline");
-      else if (/veteran/i.test(lbl)) selectOption(inp, "decline");
-      else if (/disability/i.test(lbl)) selectOption(inp, "decline");
+      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
       else if (/sponsor|visa|authoriz/i.test(lbl)) {
         if (pack.work_authorization) selectOption(inp, pack.work_authorization);
       }
@@ -228,7 +372,13 @@ async function fillGreenhouse(pack) {
   for (const el of root.querySelectorAll(
     "select[id*='gender'], select[id*='race'], select[id*='ethnicity'], select[id*='veteran'], select[id*='disability']"
   )) {
-    if (!el.value || el.value === "") selectOption(el, "decline");
+    if (!el.value || el.value === "") {
+      const id = el.id.toLowerCase();
+      if (id.includes("gender")) selectOption(el, pack.gender || "decline");
+      else if (id.includes("race") || id.includes("ethnicity")) selectOption(el, pack.ethnicity || "decline");
+      else if (id.includes("veteran")) selectOption(el, pack.veteran_status || "decline");
+      else if (id.includes("disability")) selectOption(el, pack.disability_status || "decline");
+    }
   }
 
   // ── Work authorization radio/select ──
@@ -345,7 +495,12 @@ async function fillLinkedIn(pack) {
     else if (/cover.*letter|additional.*info/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience|how many year/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
     else if (/salary|compensation/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
-    else if (inp.tagName === "SELECT" && /gender|race|ethnicity|veteran|disability/i.test(lbl)) selectOption(inp, "decline");
+    else if (inp.tagName === "SELECT") {
+      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
+    }
     else if (/sponsor/i.test(lbl) && pack.requires_sponsorship === false) {
       const noRadio = inp.closest("fieldset")?.querySelector("input[value*='No' i], input[value*='no' i]");
       if (noRadio) noRadio.click();
@@ -373,7 +528,12 @@ async function fillIndeed(pack) {
     else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
-    else if (inp.tagName === "SELECT" && /gender|race|ethnicity|veteran|disability/i.test(lbl)) selectOption(inp, "decline");
+    else if (inp.tagName === "SELECT") {
+      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
+    }
   }
   return true;
 }
@@ -528,21 +688,35 @@ async function setWorkdayDateSection(wrap, kind, value) {
   const section = wrap.querySelector(`[id$="dateSection${kind}"]`);
   const target = input || section;
   if (!target) return false;
+
+  // Respect manual user edits on the date target
+  if (target.dataset.hirepathUserModified === 'true') {
+    return false;
+  }
+
   try { target.scrollIntoView({ block: 'center' }); } catch (_) {}
   target.focus();
+  
   if (input) {
-    // React-compatible value set — same path fillInput uses for other WD inputs.
+    // 1. Set values React-compatibly
     fillInput(input, value);
-  } else {
-    // Pure div spinbutton fallback — simulate digit key presses.
-    for (const ch of value) {
-      const kc = 48 + Number(ch);
-      const init = { key: ch, code: 'Digit' + ch, keyCode: kc, which: kc, bubbles: true, cancelable: true };
-      target.dispatchEvent(new KeyboardEvent('keydown', init));
-      target.dispatchEvent(new KeyboardEvent('keyup', init));
-      await delay(30);
-    }
+    await delay(30);
   }
+
+  // 2. Simulate complete typing key events on the target (input or wrapper div)
+  // to ensure React/Workday state-binding gets triggered.
+  for (const ch of value) {
+    const kc = 48 + Number(ch);
+    const init = { key: ch, code: 'Digit' + ch, keyCode: kc, which: kc, bubbles: true, cancelable: true };
+    target.dispatchEvent(new KeyboardEvent('keydown', init));
+    target.dispatchEvent(new KeyboardEvent('keypress', init));
+    if (input) {
+      input.dispatchEvent(new InputEvent('input', { data: ch, inputType: 'insertText', bubbles: true, cancelable: true }));
+    }
+    target.dispatchEvent(new KeyboardEvent('keyup', init));
+    await delay(50);
+  }
+
   target.dispatchEvent(new Event('change', { bubbles: true }));
   target.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
   return true;
@@ -603,7 +777,7 @@ async function fillWorkdayExperienceAndEducation(pack) {
       if (!jobData) continue;
       
       const jobInput = jobInputs[i];
-      const container = jobInput.closest('fieldset, [data-automation-id="workExperience-item"], div[class*="FormSection"], div[class*="group"]') || workSection;
+      const container = findItemContainer(jobInput, 'input[data-automation-id="jobTitle"], input[id*="jobTitle" i]') || workSection;
       
       // Job Title
       fillInput(jobInput, jobData.title);
@@ -637,15 +811,15 @@ async function fillWorkdayExperienceAndEducation(pack) {
       if (!startWidgetDone) {
         const startFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
         const startMonth = findInteractiveField(startFields, el => {
-          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
           return (sig.includes('start') || sig.includes('from')) && sig.includes('month');
         });
         const startYear = findInteractiveField(startFields, el => {
-          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
           return (sig.includes('start') || sig.includes('from')) && sig.includes('year');
         });
         const startDateInput = findInteractiveField(startFields, el => {
-          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+          const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
           return (sig.includes('start') || sig.includes('from')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
         });
         if (startInfo.month && startMonth) {
@@ -673,15 +847,15 @@ async function fillWorkdayExperienceAndEducation(pack) {
         if (!endWidgetDone) {
           const endFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
           const endMonth = findInteractiveField(endFields, el => {
-            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
             return (sig.includes('end') || sig.includes('to')) && sig.includes('month');
           });
           const endYear = findInteractiveField(endFields, el => {
-            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
             return (sig.includes('end') || sig.includes('to')) && sig.includes('year');
           });
           const endDateInput = findInteractiveField(endFields, el => {
-            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
             return (sig.includes('end') || sig.includes('to')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
           });
           if (endInfo.month && endMonth) {
@@ -736,7 +910,7 @@ async function fillWorkdayExperienceAndEducation(pack) {
       if (!eduData) continue;
       
       const schoolInput = schoolInputs[i];
-      const container = schoolInput.closest('fieldset, [data-automation-id="education-item"], div[class*="FormSection"], div[class*="group"]') || eduSection;
+      const container = findItemContainer(schoolInput, 'input[data-automation-id="school"], input[data-automation-id="institution"], input[id*="school" i], input[id*="institution" i]') || eduSection;
       
       // School / Institution
       fillInput(schoolInput, eduData.school);
@@ -780,15 +954,15 @@ async function fillWorkdayExperienceAndEducation(pack) {
       const isDateContext = (sig) => sig.includes('graduat') || sig.includes('completion') || sig.includes('enddate') || /\bend\b/.test(sig);
       const eduFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
       const gradMonth = findInteractiveField(eduFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
         return !isGpaish(sig) && isDateContext(sig) && sig.includes('month');
       });
       const gradYear = findInteractiveField(eduFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-        return !isGpaish(sig) && sig.includes('year');
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
+        return !isGpaish(sig) && isDateContext(sig) && sig.includes('year');
       });
       const gradDateInput = findInteractiveField(eduFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '') + ' ' + labelText(el)).toLowerCase();
         return !isGpaish(sig) && isDateContext(sig) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
       });
 
@@ -917,7 +1091,10 @@ async function fillAvature(pack) {
   for (const sel of document.querySelectorAll("select")) {
     if (sel.value && sel.value !== "") continue;
     const ctx = (labelText(sel) + " " + (sel.getAttribute("name") || "") + " " + (sel.id || "")).toLowerCase();
-    if (/gender|race|ethnic|veteran|disability/.test(ctx)) selectOption(sel, "decline");
+    if (/gender/i.test(ctx)) selectOption(sel, pack.gender || "decline");
+    else if (/race|ethnic/i.test(ctx)) selectOption(sel, pack.ethnicity || "decline");
+    else if (/veteran/i.test(ctx)) selectOption(sel, pack.veteran_status || "decline");
+    else if (/disability/i.test(ctx)) selectOption(sel, pack.disability_status || "decline");
     else if (/country/.test(ctx)) selectOption(sel, "United States");
     else if (/sponsor|visa|authoriz/.test(ctx) && pack.work_authorization) selectOption(sel, pack.work_authorization);
   }
@@ -926,7 +1103,10 @@ async function fillAvature(pack) {
   for (const combo of document.querySelectorAll("[role='combobox'], .avature-select, .dropdown-trigger")) {
     const ctx = (labelText(combo) + " " + (combo.getAttribute("aria-label") || "")).toLowerCase();
     let want = null;
-    if (/gender|race|ethnic|veteran|disability/.test(ctx)) want = "decline";
+    if (/gender/i.test(ctx)) want = pack.gender || "decline";
+    else if (/race|ethnic/i.test(ctx)) want = pack.ethnicity || "decline";
+    else if (/veteran/i.test(ctx)) want = pack.veteran_status || "decline";
+    else if (/disability/i.test(ctx)) want = pack.disability_status || "decline";
     else if (/country/.test(ctx)) want = "United States";
     if (!want) continue;
     try {
@@ -934,7 +1114,7 @@ async function fillAvature(pack) {
       await delay(300);
       const opts = document.querySelectorAll("[role='option'], li[role='option'], .dropdown-option");
       for (const o of opts) {
-        if (o.textContent.toLowerCase().includes(want === "decline" ? "decline" : want.toLowerCase())) {
+        if (o.textContent.toLowerCase().includes(want.toLowerCase())) {
           o.click();
           break;
         }
@@ -985,7 +1165,12 @@ async function fillGeneric(pack) {
     else if (/portfolio|personal.*site|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
-    else if (inp.tagName === "SELECT" && /gender|race|ethnicity|veteran|disability/i.test(lbl)) selectOption(inp, "decline");
+    else if (inp.tagName === "SELECT") {
+      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
+    }
   }
 
   if (pack && pack.ai_answers) await fillEssayQuestions(document, pack);
@@ -998,14 +1183,21 @@ async function fillGeneric(pack) {
 
 async function fillUniversal(pack) {
   const inputs = document.querySelectorAll(
-    "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='image']), textarea, select"
+    "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='image']), textarea, select, button[data-automation-id='select-button'], button[aria-haspopup='listbox']"
   );
   let filled = 0;
   const loc = parseLocation(pack.location);
 
   for (const inp of inputs) {
     if (!inp.offsetParent) continue; // skip invisible
-    if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT') continue; // already filled
+    
+    // For buttons, treat as empty if text is placeholder
+    if (inp.tagName === 'BUTTON') {
+      const txt = inp.textContent ? inp.textContent.trim() : '';
+      if (txt && !/select\b|choose\b|^-$|select\s+option/i.test(txt)) continue; // already filled
+    } else {
+      if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT') continue; // already filled
+    }
 
     // Gather ALL signals into one text blob for matching
     const signals = [
@@ -1096,8 +1288,22 @@ async function fillUniversal(pack) {
       fillInput(inp, String(pack.salary_min || ''));
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
       selectOption(inp, 'United States');
-    } else if (/gender|race|ethnic|veteran|disability/i.test(signals) && inp.tagName === 'SELECT') {
-      selectOption(inp, 'decline');
+    } else if (/gender/i.test(signals)) {
+      const val = pack.gender || 'decline';
+      if (inp.tagName === 'SELECT') selectOption(inp, val);
+      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+    } else if (/race|ethnic/i.test(signals)) {
+      const val = pack.ethnicity || 'decline';
+      if (inp.tagName === 'SELECT') selectOption(inp, val);
+      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+    } else if (/veteran/i.test(signals)) {
+      const val = pack.veteran_status || 'decline';
+      if (inp.tagName === 'SELECT') selectOption(inp, val);
+      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+    } else if (/disability/i.test(signals)) {
+      const val = pack.disability_status || 'decline';
+      if (inp.tagName === 'SELECT') selectOption(inp, val);
+      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
     } else if (/sponsor|visa|authoriz/i.test(signals) && pack.work_authorization) {
       if (inp.tagName === 'SELECT') selectOption(inp, pack.work_authorization);
       else fillInput(inp, pack.work_authorization);
@@ -1134,7 +1340,8 @@ function observeField(el, pack) {
 
     // Don't save standard profile fields or extensions — those come from the profile/direct matches
     if (/first.?name|last.?name|email|phone|mobile|linkedin|github|extension|ext\b/i.test(label)) return;
-    if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label)) return;
+    // Don't save calendar date fields (excluding years of experience etc.)
+    if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
 
     console.log('[HirePath] Learning field:', label, '->', val.slice(0, 40));
     apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
@@ -1165,8 +1372,15 @@ async function recallFromMemory(root, pack) {
 
   // Collect labels of all empty visible fields
   const emptyFields = Array.from(root.querySelectorAll(
-    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select'
-  )).filter(el => el.offsetParent && (!el.value || !el.value.trim()));
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
+  )).filter(el => {
+    if (!el.offsetParent) return false;
+    if (el.tagName === 'BUTTON') {
+      const txt = el.textContent ? el.textContent.trim() : '';
+      return !txt || /select\b|choose\b|^-$|select\s+option/i.test(txt);
+    }
+    return !el.value || !el.value.trim();
+  });
 
   if (!emptyFields.length) return 0;
 
@@ -1195,6 +1409,9 @@ async function recallFromMemory(root, pack) {
   for (const el of emptyFields) {
     const sig = getFieldSignature(el);
     if (!sig) continue;
+
+    // Ignore calendar date fields in cross-form memory recall
+    if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(sig) && !/experience/i.test(sig)) continue;
 
     // Direct match
     let answer = answers[sig];
@@ -1614,7 +1831,7 @@ async function fillCurrentPage(pack) {
   // Step 5: Audit all form fields — classify as filled / unfilled / unknown
   const allInputs = Array.from(document.querySelectorAll(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
-    'textarea, select'
+    'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   )).filter(el => el.offsetParent !== null); // visible only
 
   let filled = 0, needUser = 0, skipped = 0;
@@ -1623,7 +1840,17 @@ async function fillCurrentPage(pack) {
   for (const el of allInputs) {
     if (el.type === 'file') { skipped++; continue; }
     if (el.type === 'checkbox' || el.type === 'radio') { skipped++; continue; }
-    const val = el.value ? el.value.trim() : '';
+    
+    let val = el.value ? el.value.trim() : '';
+    if (el.tagName === 'BUTTON') {
+      const txt = el.textContent ? el.textContent.trim() : '';
+      if (!txt || /select\b|choose\b|^-$|select\s+option/i.test(txt)) {
+        val = '';
+      } else {
+        val = txt;
+      }
+    }
+
     if (val) {
       filled++;
       highlightField(el, 'green');
@@ -1753,22 +1980,57 @@ function removeOverlay() {
 // ── Detect step text (e.g. "Step 2 of 4") ────────────────────────────────────
 
 function detectStepText() {
-  // Look for common step indicators
   const patterns = [
     /step\s+\d+\s+of\s+\d+/i,
     /\d+\s*\/\s*\d+/,
     /page\s+\d+\s+of\s+\d+/i,
     /\d+\s+of\s+\d+\s+steps/i,
   ];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  let node;
-  while ((node = walker.nextNode())) {
-    const t = node.textContent.trim();
-    for (const p of patterns) {
-      if (p.test(t)) return t.slice(0, 40);
+
+  // 1. Check aria-current="step" or similar active page elements first
+  try {
+    const currentEl = document.querySelector('[aria-current="step"], [aria-current="page"], .wd-active, .active-step');
+    if (currentEl) {
+      const txt = currentEl.textContent?.trim();
+      if (txt) {
+        for (const p of patterns) {
+          const m = txt.match(p);
+          if (m) return m[0];
+        }
+      }
     }
+  } catch (e) {}
+
+  // 2. Walk text nodes and collect matches
+  const matches = [];
+  try {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = node.textContent.trim();
+      for (const p of patterns) {
+        const m = t.match(p);
+        if (m) {
+          matches.push({ text: t.slice(0, 50), matchedPattern: m[0] });
+          break;
+        }
+      }
+    }
+  } catch (e) {}
+
+  if (matches.length === 0) return null;
+
+  // 3. Prefer a match containing "current", "active", "now", or "selected"
+  const currentMatch = matches.find(item => /current|active|now|selected/i.test(item.text));
+  if (currentMatch) return currentMatch.matchedPattern;
+
+  // 4. Exclude matches containing "completed", "done", "previous", "passed" if there are other candidates
+  const activeCandidates = matches.filter(item => !/completed|done|previous|passed/i.test(item.text));
+  if (activeCandidates.length > 0) {
+    return activeCandidates[0].matchedPattern;
   }
-  return null;
+
+  return matches[0].matchedPattern;
 }
 
 // ── Login / CAPTCHA detection ─────────────────────────────────────────────────
@@ -1817,26 +2079,44 @@ function watchForPageAdvance(pack) {
   // Take the snapshot AFTER a short delay so our own fill doesn't get
   // included in the baseline count.
   let mutationTimer = null;
-  const snapshot = document.querySelectorAll('input, textarea, select').length;
+  const snapshot = document.querySelectorAll('input, textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]').length;
   const stepAtStart = detectStepText();
   _advanceObserver = new MutationObserver(() => {
-    // Skip if we're in the middle of filling or within 5s cooldown
+    // Skip if we're in the middle of filling
     if (_fillingInProgress) return;
-    if (Date.now() - _lastFillTimestamp < 5000) return;
 
-    const now = document.querySelectorAll('input, textarea, select').length;
     // A Workday "Save and Continue" advances the wizard WITHOUT a URL change and
     // sometimes WITHOUT a big field-count delta (e.g. the sparse Resume step), so
-    // also treat a change in the "Step X of Y" indicator as a page advance.
+    // treat a change in the "Step X of Y" indicator as an instant page advance.
     const stepNow = detectStepText();
     const stepChanged = !!stepNow && stepNow !== stepAtStart;
-    const fieldsChanged = now !== snapshot && Math.abs(now - snapshot) >= 4;
-    if (stepChanged || fieldsChanged) {
+
+    if (stepChanged) {
       clearTimeout(mutationTimer);
       mutationTimer = setTimeout(() => {
         if (!_copilotActive) return;
         if (_fillingInProgress) return;
-        if (Date.now() - _lastFillTimestamp < 5000) return;
+        if (location.href === _lastUrl) {
+          _resumeAttachedOnPage = null;
+          clearHighlights();
+          removeOverlay();
+          runCopilotStep();
+        }
+      }, 500);
+      return;
+    }
+
+    // Cooldown check for fieldsChanged only, to prevent feedback loop during autofill
+    if (Date.now() - _lastFillTimestamp < 1500) return;
+
+    const now = document.querySelectorAll('input, textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]').length;
+    const fieldsChanged = now !== snapshot && Math.abs(now - snapshot) >= 4;
+    if (fieldsChanged) {
+      clearTimeout(mutationTimer);
+      mutationTimer = setTimeout(() => {
+        if (!_copilotActive) return;
+        if (_fillingInProgress) return;
+        if (Date.now() - _lastFillTimestamp < 1500) return;
         if (location.href === _lastUrl) { // only if URL didn't change (handled above)
           _resumeAttachedOnPage = null; // new page section, allow resume again
           clearHighlights();
@@ -2127,6 +2407,10 @@ function injectFillButton() {
         btn.remove();
         const freshPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
         if (freshPack) {
+          // Clear user modified flags on manual fill trigger
+          document.querySelectorAll('input, textarea, select').forEach(el => {
+            delete el.dataset.hirepathUserModified;
+          });
           console.log('[HirePath] Fill button clicked — starting copilot with fresh pack');
           fillForm(freshPack);
         } else {
