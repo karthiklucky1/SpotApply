@@ -86,6 +86,7 @@ async function handleApiFetch(payload) {
   if (result.status === 401 && payload.token) {
     if (!auth.refresh_token || !auth.supabase_url || !auth.supabase_anon_key) {
       console.warn("[HirePath BG] 401 but no refresh creds available — cannot renew token");
+      result.refreshAvailable = false;
     } else {
       const newToken = await refreshAccessToken(auth);
       if (newToken) {
@@ -95,6 +96,8 @@ async function handleApiFetch(payload) {
         result = await doFetch(payload.url, payload.method, newToken, payload.body);
       } else {
         console.warn("[HirePath BG] Token refresh failed (refresh token rejected/expired)");
+        result.refreshAvailable = true;
+        result.refreshFailed = true;
       }
     }
   }

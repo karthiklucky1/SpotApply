@@ -1231,14 +1231,29 @@ async function recallFromMemory(root, pack) {
 let _authExpired = false;
 let _expiredToken = null;
 
-function notifyAuthExpired(token) {
+function notifyAuthExpired(token, res) {
   _expiredToken = token || _expiredToken;
   if (_authExpired) return;
   _authExpired = true;
-  console.warn(
-    "[HirePath] Session token expired (401). Pausing authed API calls. " +
-    "Re-trigger 'Fill' from the HirePath dashboard to refresh your session."
-  );
+  // The background worker tells us WHY it couldn't refresh, so the page console
+  // shows the actionable cause (no need to open the service-worker console).
+  if (res && res.refreshAvailable === false) {
+    console.warn(
+      "[HirePath] Session expired AND the fill pack carried no refresh token, so " +
+      "the access token can't be renewed. The HirePath dashboard (server) must be " +
+      "redeployed with refresh-token support; then click Fill again."
+    );
+  } else if (res && res.refreshFailed) {
+    console.warn(
+      "[HirePath] Session expired and the refresh token was rejected (it likely " +
+      "expired too). Log in again on the HirePath dashboard, then click Fill."
+    );
+  } else {
+    console.warn(
+      "[HirePath] Session token expired (401). Pausing authed API calls. " +
+      "Re-trigger 'Fill' from the HirePath dashboard to refresh your session."
+    );
+  }
   try {
     showOverlay(
       "🔒 <b>HirePath session expired</b><br>" +
@@ -1265,7 +1280,7 @@ function apiFetch(url, method, token, body) {
             resolve({ ok: false, error: chrome.runtime.lastError.message });
           } else {
             const out = res || { ok: false, error: "no response" };
-            if (out.status === 401 && token) notifyAuthExpired(token);
+            if (out.status === 401 && token) notifyAuthExpired(token, out);
             resolve(out);
           }
         }
@@ -1803,15 +1818,20 @@ function watchForPageAdvance(pack) {
   // included in the baseline count.
   let mutationTimer = null;
   const snapshot = document.querySelectorAll('input, textarea, select').length;
+  const stepAtStart = detectStepText();
   _advanceObserver = new MutationObserver(() => {
     // Skip if we're in the middle of filling or within 5s cooldown
     if (_fillingInProgress) return;
     if (Date.now() - _lastFillTimestamp < 5000) return;
 
     const now = document.querySelectorAll('input, textarea, select').length;
-    // Raise threshold: page advance typically adds many new fields (≥4),
-    // not the small ±1-2 caused by value-change re-renders.
-    if (now !== snapshot && Math.abs(now - snapshot) >= 4) {
+    // A Workday "Save and Continue" advances the wizard WITHOUT a URL change and
+    // sometimes WITHOUT a big field-count delta (e.g. the sparse Resume step), so
+    // also treat a change in the "Step X of Y" indicator as a page advance.
+    const stepNow = detectStepText();
+    const stepChanged = !!stepNow && stepNow !== stepAtStart;
+    const fieldsChanged = now !== snapshot && Math.abs(now - snapshot) >= 4;
+    if (stepChanged || fieldsChanged) {
       clearTimeout(mutationTimer);
       mutationTimer = setTimeout(() => {
         if (!_copilotActive) return;
