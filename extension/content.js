@@ -515,6 +515,50 @@ async function selectWorkdayDropdown(buttonEl, value) {
   return false;
 }
 
+// Modern Workday renders each date as a row of div-based spinbutton "sections"
+// (role=spinbutton, id ending -dateSectionMonth / -dateSectionYear) rather than
+// real <input>s. They accept keyboard digits, so set them by focusing the
+// section and dispatching keydown events for each digit.
+async function setWorkdayDateSpinner(section, digits) {
+  if (!section) return false;
+  digits = String(digits || '').replace(/\D/g, '');
+  if (!digits) return false;
+  try { section.scrollIntoView({ block: 'center' }); } catch (_) {}
+  section.focus();
+  try { section.click(); } catch (_) {}
+  await delay(50);
+  for (const ch of digits) {
+    const kc = 48 + Number(ch);
+    const init = { key: ch, code: 'Digit' + ch, keyCode: kc, which: kc, bubbles: true, cancelable: true };
+    section.dispatchEvent(new KeyboardEvent('keydown', init));
+    section.dispatchEvent(new KeyboardEvent('keypress', init));
+    section.dispatchEvent(new KeyboardEvent('keyup', init));
+    await delay(40);
+  }
+  section.dispatchEvent(new Event('change', { bubbles: true }));
+  section.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+  return true;
+}
+
+// Fill Workday's spinbutton date widget for a given date field ('start'/'end').
+// Returns true only if the widget was found (so callers can fall back to the
+// legacy <input>/<select> date handling for older Workday layouts).
+async function fillWorkdayDateWidget(container, side, info) {
+  if (!container || !info || !info.year) return false;
+  const fieldName = side === 'start' ? 'startDate' : 'endDate';
+  const wrap = container.querySelector(
+    `[data-automation-id="formField-${fieldName}"], [data-fkit-id$="${fieldName}"]`
+  );
+  if (!wrap) return false;
+  const monthSec = wrap.querySelector('[id$="dateSectionMonth"], [data-automation-id*="dateSectionMonth" i]');
+  const yearSec = wrap.querySelector('[id$="dateSectionYear"], [data-automation-id*="dateSectionYear" i]');
+  if (!monthSec && !yearSec) return false;
+  if (monthSec && info.month) await setWorkdayDateSpinner(monthSec, String(info.month).padStart(2, '0'));
+  if (yearSec) await setWorkdayDateSpinner(yearSec, info.year);
+  console.log('[HirePath] Filled Workday', side, 'date spinner:', info.month || '?', '/', info.year);
+  return true;
+}
+
 async function fillWorkdayExperienceAndEducation(pack) {
   // ── Work Experience ──
   if (pack.work_experience && pack.work_experience.length > 0) {
@@ -576,70 +620,78 @@ async function fillWorkdayExperienceAndEducation(pack) {
         currentCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
       }
       
-      // Start Month / Year / Single Date
-      const allFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
-      const startMonth = findInteractiveField(allFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-        return (sig.includes('start') || sig.includes('from')) && sig.includes('month');
-      });
-      const startYear = findInteractiveField(allFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-        return (sig.includes('start') || sig.includes('from')) && sig.includes('year');
-      });
-      const startDateInput = findInteractiveField(allFields, el => {
-        const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-        return (sig.includes('start') || sig.includes('from')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
-      });
-
+      // ── Dates ──
+      // Modern Workday uses div-based spinbutton sections (handled by
+      // fillWorkdayDateWidget); older layouts use real <input>/<select>/<button>
+      // widgets, kept here as a fallback when the spinbutton widget isn't found.
       const startInfo = parseDateString(jobData.start_date);
-      if (startInfo.month && startMonth) {
-        if (startMonth.tagName === 'SELECT') {
-          selectOption(startMonth, startInfo.monthName || startInfo.month);
-        } else if (startMonth.tagName === 'BUTTON') {
-          await selectWorkdayDropdown(startMonth, startInfo.monthName || startInfo.month);
-        } else {
-          fillInput(startMonth, startInfo.month);
-        }
-      }
-      if (startInfo.year && startYear) {
-        fillInput(startYear, startInfo.year);
-      }
-      if (startDateInput && startInfo.year) {
-        const monthFormatted = startInfo.month ? String(startInfo.month).padStart(2, '0') : '01';
-        fillInput(startDateInput, `${monthFormatted}/${startInfo.year}`);
-      }
-      
-      // End Month / Year / Single Date
-      if (!isCurrent) {
-        const endMonth = findInteractiveField(allFields, el => {
+      const startWidgetDone = await fillWorkdayDateWidget(container, 'start', startInfo);
+      if (!startWidgetDone) {
+        const startFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
+        const startMonth = findInteractiveField(startFields, el => {
           const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-          return (sig.includes('end') || sig.includes('to')) && sig.includes('month');
+          return (sig.includes('start') || sig.includes('from')) && sig.includes('month');
         });
-        const endYear = findInteractiveField(allFields, el => {
+        const startYear = findInteractiveField(startFields, el => {
           const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-          return (sig.includes('end') || sig.includes('to')) && sig.includes('year');
+          return (sig.includes('start') || sig.includes('from')) && sig.includes('year');
         });
-        const endDateInput = findInteractiveField(allFields, el => {
+        const startDateInput = findInteractiveField(startFields, el => {
           const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
-          return (sig.includes('end') || sig.includes('to')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
+          return (sig.includes('start') || sig.includes('from')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
         });
-
-        const endInfo = parseDateString(jobData.end_date);
-        if (endInfo.month && endMonth) {
-          if (endMonth.tagName === 'SELECT') {
-            selectOption(endMonth, endInfo.monthName || endInfo.month);
-          } else if (endMonth.tagName === 'BUTTON') {
-            await selectWorkdayDropdown(endMonth, endInfo.monthName || endInfo.month);
+        if (startInfo.month && startMonth) {
+          if (startMonth.tagName === 'SELECT') {
+            selectOption(startMonth, startInfo.monthName || startInfo.month);
+          } else if (startMonth.tagName === 'BUTTON') {
+            await selectWorkdayDropdown(startMonth, startInfo.monthName || startInfo.month);
           } else {
-            fillInput(endMonth, endInfo.month);
+            fillInput(startMonth, startInfo.month);
           }
         }
-        if (endInfo.year && endYear) {
-          fillInput(endYear, endInfo.year);
+        if (startInfo.year && startYear) {
+          fillInput(startYear, startInfo.year);
         }
-        if (endDateInput && endInfo.year) {
-          const monthFormatted = endInfo.month ? String(endInfo.month).padStart(2, '0') : '01';
-          fillInput(endDateInput, `${monthFormatted}/${endInfo.year}`);
+        if (startDateInput && startInfo.year) {
+          const monthFormatted = startInfo.month ? String(startInfo.month).padStart(2, '0') : '01';
+          fillInput(startDateInput, `${monthFormatted}/${startInfo.year}`);
+        }
+      }
+
+      // End date
+      if (!isCurrent) {
+        const endInfo = parseDateString(jobData.end_date);
+        const endWidgetDone = await fillWorkdayDateWidget(container, 'end', endInfo);
+        if (!endWidgetDone) {
+          const endFields = Array.from(container.querySelectorAll('input, select, textarea, button'));
+          const endMonth = findInteractiveField(endFields, el => {
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            return (sig.includes('end') || sig.includes('to')) && sig.includes('month');
+          });
+          const endYear = findInteractiveField(endFields, el => {
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            return (sig.includes('end') || sig.includes('to')) && sig.includes('year');
+          });
+          const endDateInput = findInteractiveField(endFields, el => {
+            const sig = (el.id + ' ' + (el.getAttribute('data-automation-id') || '') + ' ' + (el.name || '')).toLowerCase();
+            return (sig.includes('end') || sig.includes('to')) && !sig.includes('month') && !sig.includes('year') && el.tagName !== 'BUTTON';
+          });
+          if (endInfo.month && endMonth) {
+            if (endMonth.tagName === 'SELECT') {
+              selectOption(endMonth, endInfo.monthName || endInfo.month);
+            } else if (endMonth.tagName === 'BUTTON') {
+              await selectWorkdayDropdown(endMonth, endInfo.monthName || endInfo.month);
+            } else {
+              fillInput(endMonth, endInfo.month);
+            }
+          }
+          if (endInfo.year && endYear) {
+            fillInput(endYear, endInfo.year);
+          }
+          if (endDateInput && endInfo.year) {
+            const monthFormatted = endInfo.month ? String(endInfo.month).padStart(2, '0') : '01';
+            fillInput(endDateInput, `${monthFormatted}/${endInfo.year}`);
+          }
         }
       }
     }
