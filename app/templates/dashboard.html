@@ -523,17 +523,17 @@
     .text-slate-400,.text-slate-500,.text-gray-400,.text-gray-500 { color: var(--muted) !important; }
     .text-slate-600,.text-slate-700,.text-gray-600 { color: var(--muted-2) !important; }
 
-    /* Dark surface utilities → light */
-    .bg-slate-950,.bg-slate-900,.bg-slate-800,.bg-gray-900,.bg-gray-800,.bg-black { background-color: var(--surface) !important; }
-    .bg-slate-800\/50,.bg-slate-900\/50,.bg-slate-900\/60,.bg-white\/5,.bg-white\/10 { background-color: var(--surface-2) !important; }
+    /* Dark surface utilities → light (incl. /opacity variants like bg-slate-950/40) */
+    [class*="bg-slate-950"],[class*="bg-slate-900"],[class*="bg-slate-800"],[class*="bg-gray-900"],[class*="bg-gray-800"],.bg-black { background-color: var(--surface) !important; }
+    [class*="bg-white/"] { background-color: var(--surface-2) !important; }
 
     /* Borders */
-    .border-white\/5,.border-white\/10,.border-white\/20,.border-slate-700,.border-slate-800 { border-color: var(--border) !important; }
+    [class*="border-white/"],[class*="border-slate-7"],[class*="border-slate-8"] { border-color: var(--border) !important; }
 
-    /* Accent: indigo/violet → sage */
-    .text-indigo-300,.text-indigo-400,.text-indigo-500,.text-violet-300,.text-violet-400,.text-purple-400 { color: var(--sage-600) !important; }
-    .bg-indigo-500,.bg-indigo-600,.bg-violet-500,.bg-violet-600,.bg-purple-600 { background-color: var(--sage) !important; }
-    .border-indigo-500,.border-violet-500,.border-indigo-400 { border-color: var(--sage) !important; }
+    /* Accent: indigo/violet/purple → sage (all shades + /opacity variants) */
+    [class*="text-indigo-"],[class*="text-violet-"],[class*="text-purple-"] { color: var(--sage-600) !important; }
+    [class*="bg-indigo-"],[class*="bg-violet-"],[class*="bg-purple-"] { background-color: var(--sage) !important; }
+    [class*="border-indigo-"],[class*="border-violet-"],[class*="border-purple-"] { border-color: var(--sage) !important; }
 
     /* Buttons, nav, accents → sage; keep their text light */
     .btn-primary, .btn-primary:hover, #tab-indicator, #app-sidebar .sb-logo {
@@ -708,19 +708,19 @@
 </header>
 
         <!-- ── Discover Hero CTA ─────────────────────────────────────────── -->
-        <div id="discover-hero-banner" class="mb-8 rounded-[28px] border border-indigo-500/25 overflow-hidden relative" style="background: linear-gradient(135deg, rgba(79,70,229,0.12) 0%, rgba(124,58,237,0.08) 50%, rgba(6,182,212,0.05) 100%); box-shadow: 0 0 60px rgba(99,102,241,0.08);">
+        <div id="discover-hero-banner" class="mb-8 rounded-[28px] overflow-hidden relative" style="background: linear-gradient(135deg, rgba(126,155,108,0.16) 0%, rgba(168,179,120,0.08) 60%, rgba(236,241,230,0.6) 100%); border:1px solid var(--border); box-shadow: 0 8px 26px rgba(46,42,36,0.05);">
             <!-- Glow blob -->
-            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(99,102,241,0.6), transparent 70%);"></div>
-            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-15 pointer-events-none" style="background: radial-gradient(circle, rgba(139,92,246,0.5), transparent 70%);"></div>
+            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-25 pointer-events-none" style="background: radial-gradient(circle, rgba(126,155,108,0.45), transparent 70%);"></div>
+            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(168,179,120,0.4), transparent 70%);"></div>
             <div class="relative z-10 px-8 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
                 <div class="flex items-center gap-4">
-                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(124,58,237,0.15)); border: 1px solid rgba(99,102,241,0.3);">🧭</div>
+                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(126,155,108,0.28), rgba(168,179,120,0.16)); border: 1px solid rgba(126,155,108,0.32);">🧭</div>
                     <div>
-                        <div class="text-white font-black text-lg leading-tight">Find Your Next Job — Automatically</div>
-                        <div class="text-slate-400 text-sm mt-0.5">HirePath scans 1000+ job boards every 6 hours and ranks the best matches for your profile.</div>
+                        <div class="font-black text-lg leading-tight" style="color:var(--ink);">Find Your Next Job — Automatically</div>
+                        <div class="text-sm mt-0.5" style="color:var(--muted);">HirePath scans 1000+ job boards every 6 hours and ranks the best matches for your profile.</div>
                     </div>
                 </div>
-                <button onclick="startDiscovery()" class="shrink-0 text-sm font-black py-3.5 px-8 rounded-2xl flex items-center gap-2.5 whitespace-nowrap" style="min-width:180px; justify-content:center; background:linear-gradient(135deg,#4f46e5,#7c3aed); color:#fff; border:1px solid rgba(99,102,241,0.4); box-shadow:0 0 20px rgba(99,102,241,0.35);">
+                <button onclick="startDiscovery()" class="shrink-0 text-sm font-black py-3.5 px-8 rounded-2xl flex items-center gap-2.5 whitespace-nowrap" style="min-width:180px; justify-content:center; background:linear-gradient(135deg,var(--sage),var(--sage-600)); color:#fff; border:1px solid var(--sage-600); box-shadow:0 4px 18px rgba(104,138,85,0.32);">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     Discover Jobs
                 </button>
@@ -803,25 +803,18 @@
         <!-- Command Console & Search Grid -->
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
             
-            <!-- Quick Nav Panel -->
-            <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-col gap-4">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                    <span>🗂️</span> Quick Navigation
-                </h3>
-                <div class="grid grid-cols-3 gap-2">
-                    <button onclick="sbSwitchTab('kanban')" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-indigo-500/30 hover:border-indigo-500/60" style="background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(79,70,229,0.08));">
-                        <span class="w-8 h-8 rounded-lg bg-indigo-500/25 flex items-center justify-center text-base">📋</span>
-                        <span class="text-indigo-300">Pipeline</span>
-                    </button>
-                    <button onclick="sbSwitchTab('explorer')" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-indigo-500/20 hover:border-indigo-500/40" style="background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(79,70,229,0.06));">
-                        <span class="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center text-base">🔍</span>
-                        <span class="text-indigo-300">All Jobs</span>
-                    </button>
-                    <button onclick="sbSwitchTab('registry')" class="text-[11px] font-bold py-3 px-2 rounded-xl transition duration-200 flex flex-col items-center gap-1.5 border border-emerald-500/20 hover:border-emerald-500/40" style="background: linear-gradient(135deg, rgba(16,185,129,0.10), rgba(5,150,105,0.05));">
-                        <span class="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center text-base">🗂️</span>
-                        <span class="text-emerald-300">Boards</span>
-                    </button>
+            <!-- Target Roles — what we search & rank for -->
+            <div class="glass rounded-[32px] p-5 flex flex-col gap-3" style="border:1px solid var(--border);">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-bold uppercase tracking-widest flex items-center gap-2" style="color:var(--muted);">
+                        <span>🎯</span> Target Roles
+                    </h3>
+                    <button onclick="openProfileModal()" class="text-[10px] font-black" style="color:var(--sage-600);">Edit ›</button>
                 </div>
+                <div id="target-roles-list" class="flex flex-wrap gap-2">
+                    <span class="text-[11px]" style="color:var(--muted-2);">Upload your résumé to set your target roles.</span>
+                </div>
+                <p class="text-[10px] leading-relaxed" style="color:var(--muted-2);">These are the roles we scrape & rank jobs for. Counts appear after you run Discover.</p>
             </div>
 
             <!-- Manual URL Extractor -->
@@ -1534,6 +1527,7 @@
             }
             loadStats();
             loadUsage();
+            loadTargetRoles();
             initStartupBadges();
             searchJobs(); // Load first page of explorer database
             _initAnimations();
@@ -1604,6 +1598,27 @@
 
         // Load stats from API
         let distChartInstance = null;
+        // Populate the "Target Roles" card from the user's profile (current
+        // title + key skills). These are the roles we scrape & rank jobs for.
+        async function loadTargetRoles() {
+            const box = document.getElementById('target-roles-list');
+            if (!box) return;
+            try {
+                const res = await fetch('/api/profile', { headers: authHeaders() });
+                if (!res.ok) return;
+                const p = await res.json();
+                const roles = [];
+                if (p.current_title && p.current_title.trim()) roles.push(p.current_title.trim());
+                (p.key_skills || '').split(/[,\n;|]/).map(s => s.trim()).filter(Boolean).slice(0, 6).forEach(s => {
+                    if (!roles.includes(s)) roles.push(s);
+                });
+                if (!roles.length) return; // keep the "upload résumé" hint
+                box.innerHTML = roles.map(r =>
+                    `<span class="text-[11px] font-bold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid var(--border);">${r.replace(/</g,'&lt;')}</span>`
+                ).join('');
+            } catch (e) { /* leave default hint */ }
+        }
+
         async function loadStats() {
             try {
                 const res = await fetch('/api/stats');
@@ -1934,6 +1949,22 @@
                 if (_trackRun(run)) clearInterval(_discoverPoll);
             }, 2500);
         }
+        // Entry point for the "Discover Jobs" button. Gate on résumé first —
+        // without one there is nothing to match against, so guide the user to
+        // upload instead of silently failing the backend gate.
+        async function startDiscovery() {
+            try {
+                const res = await fetch('/api/resume/status', { headers: authHeaders() });
+                const data = res.ok ? await res.json() : {};
+                if (!data.has_resume) {
+                    showToast('📄 Upload your résumé first — we match jobs against it.', 'info');
+                    if (typeof openResumeUpload === 'function') openResumeUpload();
+                    return;
+                }
+            } catch (e) { /* status check failed — fall through to the backend gate */ }
+            runDiscovery();
+        }
+
         async function runDiscovery() {
             _requestNotify();
             const state = await _getDiscoveryState();
