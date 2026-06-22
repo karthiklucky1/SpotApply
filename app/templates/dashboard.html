@@ -477,6 +477,92 @@
             radial-gradient(ellipse 60% 40% at 80% 10%, rgba(168,85,247,0.10) 0%, transparent 55%),
             radial-gradient(ellipse 50% 60% at 50% 100%, rgba(99,102,241,0.06) 0%, transparent 50%);
     }
+
+    /* ════════════════════════════════════════════════════════════════════
+       WARM-SAGE LIGHT THEME  (pass 1 — additive override layer)
+       Flips the dark UI to a soft, warm, minimal "Notion/Arc" look with a
+       muted sage-green accent. Kept in one block so it's easy to tune/remove.
+       ════════════════════════════════════════════════════════════════════ */
+    :root {
+        --canvas:    #F4F1EA;   /* warm off-white page */
+        --surface:   #FCFAF5;   /* cards */
+        --surface-2: #EFEadF;   /* secondary fills / inputs */
+        --ink:       #2E2A24;   /* primary text */
+        --ink-soft:  #4A453C;
+        --muted:     #8C857A;   /* secondary text */
+        --muted-2:   #A8A092;   /* faint text */
+        --border:    #E6E0D3;   /* hairlines */
+        --sage:      #7E9B6C;   /* accent */
+        --sage-600:  #688A55;   /* accent strong / hover */
+        --sage-700:  #51703F;
+        --sage-tint: #ECF1E6;   /* accent wash */
+    }
+
+    body { background: var(--canvas) !important; color: var(--ink) !important; }
+    body::before {
+        background:
+            radial-gradient(ellipse 80% 50% at 18% -10%, rgba(126,155,108,0.10) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 40% at 85% 6%, rgba(168,179,120,0.08) 0%, transparent 55%) !important;
+    }
+
+    /* Surfaces */
+    .glass { background: var(--surface) !important; border: 1px solid var(--border) !important;
+             backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+             box-shadow: 0 1px 2px rgba(46,42,36,0.03), 0 8px 24px rgba(46,42,36,0.06) !important; }
+    .glass-dark { background: var(--surface) !important; border: 1px solid var(--border) !important;
+                  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+                  box-shadow: 0 8px 30px rgba(46,42,36,0.10) !important; }
+    .card-glow-blue,.card-glow-amber,.card-glow-green {
+        box-shadow: 0 1px 2px rgba(46,42,36,0.04), 0 6px 18px rgba(46,42,36,0.06) !important; }
+    .card-glow-blue:hover,.card-glow-amber:hover,.card-glow-green:hover {
+        box-shadow: 0 6px 26px rgba(126,155,108,0.20) !important; border-color: var(--sage) !important; }
+
+    /* Text — flip bright-on-dark utilities to ink, muted greys stay grey */
+    .text-white,.text-slate-50,.text-slate-100,.text-slate-200,.text-slate-300,
+    .text-gray-100,.text-gray-200,.text-gray-300 { color: var(--ink) !important; }
+    .text-slate-400,.text-slate-500,.text-gray-400,.text-gray-500 { color: var(--muted) !important; }
+    .text-slate-600,.text-slate-700,.text-gray-600 { color: var(--muted-2) !important; }
+
+    /* Dark surface utilities → light */
+    .bg-slate-950,.bg-slate-900,.bg-slate-800,.bg-gray-900,.bg-gray-800,.bg-black { background-color: var(--surface) !important; }
+    .bg-slate-800\/50,.bg-slate-900\/50,.bg-slate-900\/60,.bg-white\/5,.bg-white\/10 { background-color: var(--surface-2) !important; }
+
+    /* Borders */
+    .border-white\/5,.border-white\/10,.border-white\/20,.border-slate-700,.border-slate-800 { border-color: var(--border) !important; }
+
+    /* Accent: indigo/violet → sage */
+    .text-indigo-300,.text-indigo-400,.text-indigo-500,.text-violet-300,.text-violet-400,.text-purple-400 { color: var(--sage-600) !important; }
+    .bg-indigo-500,.bg-indigo-600,.bg-violet-500,.bg-violet-600,.bg-purple-600 { background-color: var(--sage) !important; }
+    .border-indigo-500,.border-violet-500,.border-indigo-400 { border-color: var(--sage) !important; }
+
+    /* Buttons, nav, accents → sage; keep their text light */
+    .btn-primary, .btn-primary:hover, #tab-indicator, #app-sidebar .sb-logo {
+        background: linear-gradient(135deg, var(--sage), var(--sage-600)) !important;
+        box-shadow: 0 4px 16px rgba(104,138,85,0.30) !important; }
+    .btn-primary, .btn-primary * { color: #fff !important; }
+    #app-sidebar { background: var(--surface) !important; border-right: 1px solid var(--border) !important; box-shadow: 4px 0 22px rgba(46,42,36,0.06) !important; }
+    #app-sidebar .sb-btn:hover { background: var(--sage-tint) !important; color: var(--sage-700) !important; }
+
+    /* Gradient text → ink→sage */
+    .gradient-text,.stat-shimmer {
+        background: linear-gradient(135deg, var(--ink) 0%, var(--sage-600) 100%) !important;
+        -webkit-background-clip: text !important; background-clip: text !important;
+        -webkit-text-fill-color: transparent !important; }
+
+    /* Footer, settings rows, scrollbars */
+    .app-footer { border-top-color: var(--border) !important; }
+    .app-footer a { color: var(--muted) !important; }
+    .app-footer a:hover { color: var(--sage-600) !important; }
+    .settings-row { color: var(--ink-soft) !important; background: var(--surface-2) !important; border-color: var(--border) !important; }
+    .settings-row:hover { border-color: var(--sage) !important; color: var(--sage-700) !important; background: var(--sage-tint) !important; }
+    ::-webkit-scrollbar-thumb { background: rgba(46,42,36,0.14) !important; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(46,42,36,0.26) !important; }
+
+    /* Inputs */
+    input, textarea, select {
+        background: var(--surface-2) !important; color: var(--ink) !important;
+        border-color: var(--border) !important; }
+    input::placeholder, textarea::placeholder { color: var(--muted-2) !important; }
 </style>
 </head>
 
@@ -593,7 +679,6 @@
         <!-- Hero Text -->
         <div>
             <h1 class="text-5xl font-black tracking-tight gradient-text leading-none mb-2">AI Job Agent</h1>
-            <p class="text-sm text-slate-500 font-medium">Auto-scraping · Cross-encoder scoring · LLM re-ranking · Smart autofill</p>
         </div>
 
         <!-- Premium Stats Pills -->
