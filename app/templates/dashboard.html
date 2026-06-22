@@ -475,6 +475,7 @@
         --muted-2:   #A8A092;   /* faint text */
         --border:    #E6E0D3;   /* hairlines */
         --sage:      #2FB4A6;   /* accent — light seafoam teal */
+        --sage-rgb:  47,180,166;/* accent as raw RGB for rgba() tints */
         --sage-600:  #1F9C8F;   /* accent strong / hover */
         --sage-700:  #16847A;
         --sage-tint: #E7F5F2;   /* accent wash */
@@ -690,13 +691,13 @@
 </header>
 
         <!-- ── Discover Hero CTA ─────────────────────────────────────────── -->
-        <div id="discover-hero-banner" class="mb-8 rounded-[28px] overflow-hidden relative" style="background: linear-gradient(135deg, rgba(47,180,166,0.16) 0%, rgba(120,205,195,0.08) 60%, rgba(231,245,242,0.6) 100%); border:1px solid var(--border); box-shadow: 0 8px 26px rgba(46,42,36,0.05);">
+        <div id="discover-hero-banner" class="mb-8 rounded-[28px] overflow-hidden relative" style="background: linear-gradient(135deg, rgba(var(--sage-rgb),0.16) 0%, rgba(var(--sage-rgb),0.08) 60%, var(--sage-tint) 100%); border:1px solid var(--border); box-shadow: 0 8px 26px rgba(46,42,36,0.05);">
             <!-- Glow blob -->
-            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-25 pointer-events-none" style="background: radial-gradient(circle, rgba(47,180,166,0.40), transparent 70%);"></div>
-            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(120,205,195,0.4), transparent 70%);"></div>
+            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-25 pointer-events-none" style="background: radial-gradient(circle, rgba(var(--sage-rgb),0.40), transparent 70%);"></div>
+            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(var(--sage-rgb),0.30), transparent 70%);"></div>
             <div class="relative z-10 px-8 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
                 <div class="flex items-center gap-4">
-                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(47,180,166,0.28), rgba(120,205,195,0.16)); border: 1px solid rgba(47,180,166,0.32);">🧭</div>
+                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(var(--sage-rgb),0.28), rgba(var(--sage-rgb),0.16)); border: 1px solid rgba(var(--sage-rgb),0.32);">🧭</div>
                     <div>
                         <div class="font-black text-lg leading-tight" style="color:var(--ink);">Find Your Next Job — Automatically</div>
                         <div class="text-sm mt-0.5" style="color:var(--muted);">HirePath scans 1000+ job boards every 6 hours and ranks the best matches for your profile.</div>
@@ -1352,7 +1353,7 @@
             <div class="glass rounded-[24px] p-5 border border-slate-700/40">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="font-bold text-white text-sm">Job Sources</h3>
-                    <button onclick="startDiscovery()" class="text-xs font-bold px-4 py-2 rounded-xl border border-indigo-500/40" style="background:rgba(99,102,241,0.2);color:#818cf8;">
+                    <button onclick="startDiscovery()" class="text-xs font-bold px-4 py-2 rounded-xl" style="background:rgba(var(--sage-rgb),0.14);border:1px solid rgba(var(--sage-rgb),0.4);color:var(--sage-700);">
                         🧭 Discover
                     </button>
                 </div>
@@ -3341,6 +3342,7 @@
             const t = HP_THEMES[themeName] || HP_THEMES.sage;
             const root = document.documentElement;
             root.style.setProperty('--sage', t.sage);
+            root.style.setProperty('--sage-rgb', _hexRgb(t.sage));
             root.style.setProperty('--sage-600', t.sage600);
             root.style.setProperty('--sage-700', t.sage700);
             root.style.setProperty('--sage-tint', t.sageTint);
