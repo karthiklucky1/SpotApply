@@ -374,7 +374,11 @@ async def extract_profile_from_resume(request: Request) -> dict:
     prompt = f"""Extract the following fields from this resume. Return ONLY a JSON object with these exact keys (use null for missing fields):
 first_name, last_name, email, phone, location, current_title, years_experience (integer),
 linkedin_url, github_url, portfolio_url, degree, university, graduation_year (integer),
-key_skills (comma-separated string), professional_summary (2-3 sentence summary of their background)
+key_skills (comma-separated string), professional_summary (2-3 sentence summary of their background),
+suggested_target_roles (an array of 4-6 specific job titles this candidate is genuinely
+well-qualified for and should apply to right now, ordered best-fit first. Use real,
+searchable titles like "Senior Backend Engineer" or "Data Scientist" — base them on the
+candidate's actual experience, seniority and skills, not generic guesses).
 
 Resume:
 {resume_text[:6000]}
@@ -433,21 +437,29 @@ Return only valid JSON, no markdown, no explanation."""
             q = q.where(UserProfile.user_id == user_id_arg)
         p = session.exec(q).first()
         if p and not (p.target_roles or "").strip():
-            # Derive role titles: current_title first, then skill tokens that
-            # read like roles (contain engineer/scientist/developer/…).
             seen_r: set[str] = set()
             def _add_role(r: str):
                 r = (r or "").strip()
-                if r and r.lower() not in seen_r and len(seeded_roles) < 5:
+                if r and r.lower() not in seen_r and len(seeded_roles) < 6:
                     seen_r.add(r.lower())
                     seeded_roles.append(r)
-            _add_role(extracted.get("current_title") or "")
-            _role_tokens = ("engineer", "scientist", "developer", "manager",
-                            "analyst", "designer", "architect", "lead")
-            for s in (extracted.get("key_skills") or "").split(","):
-                s = s.strip()
-                if s and any(tok in s.lower() for tok in _role_tokens):
-                    _add_role(s)
+            # Prefer the roles Claude chose for this candidate.
+            ai_roles = extracted.get("suggested_target_roles") or []
+            if isinstance(ai_roles, str):
+                ai_roles = [r for r in ai_roles.split(",")]
+            if isinstance(ai_roles, list):
+                for r in ai_roles:
+                    _add_role(r if isinstance(r, str) else str(r))
+            # Fallback heuristic if Claude returned nothing usable: current_title
+            # first, then skill tokens that read like roles.
+            if not seeded_roles:
+                _add_role(extracted.get("current_title") or "")
+                _role_tokens = ("engineer", "scientist", "developer", "manager",
+                                "analyst", "designer", "architect", "lead")
+                for s in (extracted.get("key_skills") or "").split(","):
+                    s = s.strip()
+                    if s and any(tok in s.lower() for tok in _role_tokens):
+                        _add_role(s)
             if seeded_roles:
                 p.target_roles = ", ".join(seeded_roles)
                 p.updated_at = _datetime.datetime.utcnow()
@@ -1747,6 +1759,75 @@ def trigger_preview(application_id: int, request: Request, bg: BackgroundTasks) 
 
 # ── User Profile endpoints ──────────────────────────────────────────────────
 
+# Full UserProfile column set, kept in lock-step with app/db/models.py.
+# (column, sqlite_type, postgres_type)
+_USERPROFILE_COLUMNS = [
+    ("user_id", "VARCHAR", "VARCHAR"),
+    ("first_name", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("last_name", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("email", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("phone", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("location", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("linkedin_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("github_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("portfolio_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("work_authorization", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("requires_sponsorship", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("visa_status", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("current_title", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("years_experience", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("salary_min", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("salary_max", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("salary_currency", "VARCHAR DEFAULT 'USD'", "VARCHAR DEFAULT 'USD'"),
+    ("degree", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("university", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("graduation_year", "INTEGER", "INTEGER"),
+    ("gender", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
+    ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
+    ("veteran_status", "VARCHAR DEFAULT 'I am not a protected veteran'", "VARCHAR DEFAULT 'I am not a protected veteran'"),
+    ("disability_status",
+     "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'",
+     "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'"),
+    ("professional_summary", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+    ("key_skills", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+    ("target_roles", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+    ("created_at", "DATETIME", "TIMESTAMP"),
+    ("updated_at", "DATETIME", "TIMESTAMP"),
+]
+
+
+def _repair_userprofile_schema() -> None:
+    """Idempotently ensure every UserProfile column exists on the live DB.
+
+    Unlike init_db()'s migration helper (which swallows DDL errors and only
+    *prints* them), this raises on a genuine failure — so a real problem
+    (permissions, connection pooler, etc.) surfaces in the API response/logs
+    instead of silently leaving a column missing and looping us back to a 500.
+
+    Postgres uses ``ADD COLUMN IF NOT EXISTS`` (idempotent). SQLite — which has
+    no IF NOT EXISTS for columns — is guarded by an inspector lookup.
+    """
+    from sqlalchemy import text as _text, inspect as _inspect
+    from app.db.init_db import engine as _engine
+    from app.config import settings as _settings
+
+    if _settings.use_supabase:
+        with _engine.begin() as conn:
+            for col, _sq, pg in _USERPROFILE_COLUMNS:
+                conn.execute(_text(
+                    f'ALTER TABLE userprofile ADD COLUMN IF NOT EXISTS {col} {pg}'))
+    else:
+        insp = _inspect(_engine)
+        if not insp.has_table("userprofile"):
+            return
+        existing = {c["name"].lower() for c in insp.get_columns("userprofile")}
+        with _engine.begin() as conn:
+            for col, sq, _pg in _USERPROFILE_COLUMNS:
+                if col.lower() not in existing:
+                    conn.execute(_text(
+                        f'ALTER TABLE userprofile ADD COLUMN {col} {sq}'))
+
+
 @app.get("/api/profile")
 def get_profile(request: Request) -> dict:
     """Return the current user profile (seeds from .env on first call)."""
@@ -1761,9 +1842,8 @@ def get_profile(request: Request) -> dict:
         profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
     except Exception as e:
         # Schema drift self-heal: a not-yet-migrated column makes the read fail.
-        log.exception("Profile read failed; running migrations + retrying: %s", e)
-        from app.db.init_db import init_db
-        init_db()
+        log.exception("Profile read failed; repairing schema + retrying: %s", e)
+        _repair_userprofile_schema()
         profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
     return {
         "id": profile.id,
@@ -1865,14 +1945,14 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     except Exception as e:
         # Most common cause is schema drift — a model column (e.g. target_roles)
         # that hasn't been migrated onto this database yet, which makes the
-        # SELECT * fail. Run migrations once and retry before giving up.
-        log.exception("Profile update failed; running migrations + retrying: %s", e)
+        # SELECT * fail. Repair the schema (surfacing any real DDL error rather
+        # than swallowing it) and retry once before giving up.
+        log.exception("Profile update failed; repairing schema + retrying: %s", e)
         try:
-            from app.db.init_db import init_db
-            init_db()
+            _repair_userprofile_schema()
             _do_update()
         except Exception as e2:
-            log.exception("Profile update failed after migration retry: %s", e2)
+            log.exception("Profile update failed after schema repair: %s", e2)
             raise HTTPException(status_code=500, detail=f"Could not save profile: {e2}")
     return {"success": True}
 
