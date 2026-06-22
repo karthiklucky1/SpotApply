@@ -219,6 +219,10 @@ class UserProfile(SQLModel, table=True):
     # Free-text bio used to generate essay answers
     professional_summary: str = ""
     key_skills: str = ""                # comma-separated
+    # Job titles the user wants us to search & rank for — comma-separated.
+    # Separate from current_title: a user can target roles different from their
+    # current one (e.g. an analyst targeting "Data Scientist"). Drives discovery.
+    target_roles: str = ""              # comma-separated
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

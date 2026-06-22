@@ -323,7 +323,8 @@ async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):
         log.info("Aggregator feeder: registered %d new companies from %d candidates", new_regs, len(discovered))
 
 
-def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
+def run_discovery(user_id: str | None = None, run_id: int | None = None,
+                  keywords: list[str] | None = None) -> int:
     """Orchestrates the self-growing company graph discovery:
     1. Seed DB from fallback/bootstrap if empty.
     2. Run pluggable sources to discover candidate companies.
@@ -331,8 +332,15 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
     4. Run validation loop on pending/active companies (update metadata, scores).
     5. Run scrapers for all active boards in the registry (Greenhouse, Lever, Ashby, SmartRecruiters, Workday).
     6. Return total newly inserted jobs.
+
+    ``keywords`` — the user's Target Roles. When provided, keyword-driven sources
+    search for these instead of the global default list, so discovery is tailored
+    to what each user is actually looking for.
     """
     import asyncio
+
+    # Per-user target roles drive the keyword sources; fall back to the global list.
+    _keywords = keywords if keywords else settings.jobs_keywords_list
 
     # Run async parts of the pipeline: discovery, registration, validation
     async def run_discovery_async():
@@ -368,7 +376,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
             
         # Search Engine Source (Tavily/Exa/Google)
         try:
-            search_src = SearchEngineSource(keywords=settings.jobs_keywords_list)
+            search_src = SearchEngineSource(keywords=_keywords)
             res = await search_src.discover()
             discovered_list.extend(res)
             log.info("Search Engine source returned %d candidates", len(res))
@@ -442,7 +450,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
     if settings.hn_whoishiring_enabled:
         try:
             from app.discovery.sources.hn_whoishiring import HNWhoIsHiringSource
-            src = HNWhoIsHiringSource(keywords=settings.jobs_keywords_list)
+            src = HNWhoIsHiringSource(keywords=_keywords)
             hn_raw = asyncio.run(src.fetch_jobs())
             source_stats["HN Who-is-hiring"] = {"fetched": len(hn_raw or [])}
             if hn_raw:
@@ -499,7 +507,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
         # UI spinning with no summary).
         async def _fetch_one(name, src_cls):
             try:
-                src = src_cls(keywords=settings.jobs_keywords_list)
+                src = src_cls(keywords=_keywords)
                 raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)
                 source_stats[name] = {"fetched": len(raw_jobs)}
                 log.info("%s: fetched %d jobs", name, len(raw_jobs))

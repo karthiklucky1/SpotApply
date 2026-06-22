@@ -128,6 +128,7 @@ def init_db() -> None:
         ("disability_status", "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'"),
         ("professional_summary", "TEXT DEFAULT ''"),
         ("key_skills", "TEXT DEFAULT ''"),
+        ("target_roles", "TEXT DEFAULT ''"),
         ("updated_at", "DATETIME"),
     ]:
         add_column_if_missing("userprofile", col, col_type)

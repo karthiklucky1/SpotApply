@@ -785,18 +785,27 @@
         <!-- Command Console & Search Grid -->
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
             
-            <!-- Target Roles — what we search & rank for -->
+            <!-- Search Setup — Target Roles + Résumé, both required before Discover -->
             <div class="glass rounded-[32px] p-5 flex flex-col gap-3" style="border:1px solid var(--border);">
                 <div class="flex items-center justify-between">
                     <h3 class="text-xs font-bold uppercase tracking-widest flex items-center gap-2" style="color:var(--muted);">
                         <span>🎯</span> Target Roles
                     </h3>
-                    <button onclick="openProfileModal()" class="text-[10px] font-black" style="color:var(--sage-600);">Edit ›</button>
+                    <button onclick="openRolesModal()" class="text-[10px] font-black" style="color:var(--sage-600);">Edit ›</button>
                 </div>
                 <div id="target-roles-list" class="flex flex-wrap gap-2">
-                    <span class="text-[11px]" style="color:var(--muted-2);">Upload your résumé to set your target roles.</span>
+                    <span class="text-[11px]" style="color:var(--muted-2);">No roles yet — tap Edit to add the jobs you want.</span>
                 </div>
                 <p class="text-[10px] leading-relaxed" style="color:var(--muted-2);">These are the roles we scrape & rank jobs for. Counts appear after you run Discover.</p>
+
+                <!-- Résumé status lives here too: roles + résumé are the two gates for Discover. -->
+                <div class="flex items-center justify-between gap-2 mt-1 pt-3" style="border-top:1px solid var(--border);">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span>📄</span>
+                        <span id="setup-resume-status" class="text-[11px] truncate" style="color:var(--muted-2);">Checking résumé…</span>
+                    </div>
+                    <button onclick="openResumeUpload()" class="text-[10px] font-black shrink-0" style="color:var(--sage-600);">Manage ›</button>
+                </div>
             </div>
 
             <!-- Manual URL Extractor -->
@@ -1580,24 +1589,29 @@
 
         // Load stats from API
         let distChartInstance = null;
-        // Populate the "Target Roles" card from the user's profile (current
-        // title + key skills). These are the roles we scrape & rank jobs for.
+        // Populate the "Target Roles" card from the user's saved target roles.
+        // These are the roles we scrape & rank jobs for (separate from profile).
         async function loadTargetRoles() {
             const box = document.getElementById('target-roles-list');
+            const resumeEl = document.getElementById('setup-resume-status');
             if (!box) return;
             try {
-                const res = await fetch('/api/profile', { headers: authHeaders() });
+                if (typeof tokenReady === 'function') await tokenReady();
+                const res = await fetch('/api/target-roles', { headers: authHeaders() });
                 if (!res.ok) return;
-                const p = await res.json();
-                const roles = [];
-                if (p.current_title && p.current_title.trim()) roles.push(p.current_title.trim());
-                (p.key_skills || '').split(/[,\n;|]/).map(s => s.trim()).filter(Boolean).slice(0, 6).forEach(s => {
-                    if (!roles.includes(s)) roles.push(s);
-                });
-                if (!roles.length) return; // keep the "upload résumé" hint
-                box.innerHTML = roles.map(r =>
-                    `<span class="text-[11px] font-bold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid var(--border);">${r.replace(/</g,'&lt;')}</span>`
-                ).join('');
+                const data = await res.json();
+                const roles = data.roles || [];
+                if (!roles.length) {
+                    box.innerHTML = '<span class="text-[11px]" style="color:var(--muted-2);">No roles yet — tap Edit to add the jobs you want.</span>';
+                } else {
+                    box.innerHTML = roles.map(r =>
+                        `<span class="text-[11px] font-bold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid var(--border);">${r.replace(/</g,'&lt;')}</span>`
+                    ).join('');
+                }
+                if (resumeEl) {
+                    resumeEl.textContent = data.has_resume ? '✓ Résumé on file' : 'No résumé yet — add one to discover';
+                    resumeEl.style.color = data.has_resume ? 'var(--sage-700)' : 'var(--muted-2)';
+                }
             } catch (e) { /* leave default hint */ }
         }
 
@@ -1738,19 +1752,25 @@
 
         // ── Onboarding / Discover Gate ────────────────────────────────────────
         async function startDiscover() {
-            // Discovery requires a resume — without one there's nothing to match
-            // against, so we'd only surface noise. Gate on resume presence.
+            // Discovery requires BOTH a résumé (something to match against) and at
+            // least one target role (something to search for). Check both.
             try {
                 await tokenReady();
-                const res = await fetch('/api/resume/status', { headers: authHeaders() });
+                const res = await fetch('/api/target-roles', { headers: authHeaders() });
                 if (res.ok) {
                     const data = await res.json();
-                    if (data && data.has_resume) {
+                    const hasRoles = (data.roles || []).length > 0;
+                    if (data.has_resume && hasRoles) {
                         return runDiscovery();
+                    }
+                    // Résumé present but no roles → send them straight to the roles editor.
+                    if (data.has_resume && !hasRoles) {
+                        showToast('Add at least one target role first.', 'info');
+                        return openRolesModal();
                     }
                 }
             } catch(e) { /* fall through to onboarding */ }
-            // No resume — show onboarding modal to collect details first
+            // No résumé — show onboarding modal to collect details first
             document.getElementById('onboarding-modal').classList.remove('hidden');
         }
 
@@ -2037,13 +2057,16 @@
                     if (extRes.ok) {
                         const data = await extRes.json();
                         const name = [data.extracted?.first_name, data.extracted?.last_name].filter(Boolean).join(' ');
-                        showToast(`✅ Profile auto-filled${name ? ' for ' + name : ''}! Starting discovery…`, 'success');
+                        showToast(`✅ Profile auto-filled${name ? ' for ' + name : ''}! Pick your target roles next.`, 'success');
                     } else {
                         const err = await extRes.json().catch(() => ({}));
-                        showToast(err.detail ? `Resume saved, auto-fill failed: ${err.detail}` : 'Resume uploaded! Starting discovery…', err.detail ? 'error' : 'success');
+                        showToast(err.detail ? `Resume saved, auto-fill failed: ${err.detail}` : 'Resume uploaded! Pick your target roles next.', err.detail ? 'error' : 'success');
                     }
                     closeOnboarding();
-                    runDiscovery();
+                    // Résumé is in — now confirm target roles (the second Discover gate)
+                    // before kicking off discovery. The roles modal seeds suggestions
+                    // from the just-extracted title + skills.
+                    openRolesModal();
                 } else {
                     showToast('Upload failed — please fill manually.', 'error');
                     obSkipToManual();
@@ -2094,9 +2117,22 @@
                 if (!res.ok) { showToast('Could not save profile.', 'error'); return; }
                 // Build a basic resume from the entered details so matching works.
                 await fetch('/api/resume/synthesize', { method: 'POST', headers: authHeaders() });
-                showToast('Profile saved! Starting discovery…', 'success');
+                // Persist target roles (comma/"and" separated) — the second Discover gate.
+                const roleList = target
+                    ? target.split(/[,;]| and /i).map(s => s.trim()).filter(Boolean)
+                    : [];
+                if (roleList.length) {
+                    await fetch('/api/target-roles', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ roles: roleList }) });
+                }
                 closeOnboarding();
-                runDiscovery();
+                if (roleList.length) {
+                    showToast('Profile saved! Starting discovery…', 'success');
+                    runDiscovery();
+                } else {
+                    // No role entered — make them pick one before discovery.
+                    showToast('Profile saved! Pick your target roles next.', 'success');
+                    openRolesModal();
+                }
             } catch(e) { showToast('Network error.', 'error'); }
         }
 
@@ -2201,14 +2237,15 @@
             });
         });
 
-        // Logo click animation
+        // Logo click — spin animation, then refresh the page.
         function animateLogo() {
             const logo = document.getElementById('sb-logo-btn');
             logo.style.animation = 'none';
             logo.style.transform = '';
             void logo.offsetWidth;
             logo.style.animation = 'logo-spin 0.6s ease-in-out forwards';
-            setTimeout(() => { logo.style.animation = 'logo-pulse 3s ease-in-out infinite'; }, 650);
+            // Let the spin play, then reload to a fresh dashboard.
+            setTimeout(() => { window.location.href = '/dashboard'; }, 600);
         }
 
         // Sidebar tab switching — mirrors switchViewTab + updates sidebar active state
@@ -3410,6 +3447,16 @@
                 });
                 document.getElementById('profile-loading').classList.add('hidden');
                 form.classList.remove('hidden');
+                // Snapshot the freshly-loaded values so we can detect edits.
+                // The Save button stays hidden until something actually changes —
+                // this also stops a no-op submit that used to flash "Save failed".
+                _profileSnapshot = _serializeProfileForm(form);
+                _refreshProfileDirty();
+                if (!form._dirtyBound) {
+                    form.addEventListener('input', _refreshProfileDirty);
+                    form.addEventListener('change', _refreshProfileDirty);
+                    form._dirtyBound = true;
+                }
                 // Profile completeness
                 const fields = ['first_name','last_name','email','phone','location','current_title','years_experience','key_skills','professional_summary','degree','linkedin_url'];
                 const missing = fields.filter(f => !data[f] || data[f] === '' || data[f] === '0' || data[f] === 0);
@@ -3429,9 +3476,36 @@
             document.getElementById('profile-modal').classList.add('hidden');
         }
 
+        // ── Profile dirty-state tracking ─────────────────────────────────────
+        // We only show "Save Changes" once a field differs from what was loaded.
+        let _profileSnapshot = '';
+
+        function _serializeProfileForm(form) {
+            const parts = [];
+            form.querySelectorAll('[name]').forEach(el => {
+                const v = el.type === 'checkbox' ? (el.checked ? '1' : '0') : (el.value ?? '');
+                parts.push(el.name + '=' + v);
+            });
+            return parts.join('&');
+        }
+
+        function _refreshProfileDirty() {
+            const form = document.getElementById('profile-form');
+            const btn = document.getElementById('profile-save-btn');
+            if (!form || !btn) return;
+            const dirty = _serializeProfileForm(form) !== _profileSnapshot;
+            btn.style.display = dirty ? '' : 'none';
+        }
+
         async function saveProfile(e) {
             e.preventDefault();
             const form = e.target;
+            // Guard: nothing changed → nothing to save (button shouldn't be visible,
+            // but this keeps a stray Enter-key submit from showing a false error).
+            if (_serializeProfileForm(form) === _profileSnapshot) {
+                closeProfileModal();
+                return;
+            }
             const data = {};
             new FormData(form).forEach((v, k) => { data[k] = v; });
             // Booleans
@@ -3444,10 +3518,118 @@
             btn.textContent = 'Saving...'; btn.disabled = true;
             try {
                 const res = await fetch('/api/profile', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(data) });
-                if (res.ok) { showToast('Profile saved!', 'success'); closeProfileModal(); }
+                if (res.ok) {
+                    showToast('Profile saved!', 'success');
+                    _profileSnapshot = _serializeProfileForm(form);  // changes are now the baseline
+                    _refreshProfileDirty();
+                    closeProfileModal();
+                    if (typeof loadTargetRoles === 'function') loadTargetRoles();
+                }
                 else { showToast('Save failed.', 'error'); }
             } catch(e) { showToast('Network error.', 'error'); }
-            btn.textContent = 'Save Profile'; btn.disabled = false;
+            btn.textContent = 'Save Changes'; btn.disabled = false;
+        }
+
+        // ── Target Roles Modal ───────────────────────────────────────────────
+        let _rolesState = [];        // current roles being edited
+        let _rolesSuggestions = [];  // suggestion pool
+
+        async function openRolesModal() {
+            document.getElementById('roles-modal').classList.remove('hidden');
+            const _ri = document.getElementById('role-input');
+            if (_ri) _ri.value = '';
+            _rolesState = [];
+            _rolesSuggestions = [];
+            _renderRoles();
+            try {
+                await tokenReady();
+                const res = await fetch('/api/target-roles', { headers: authHeaders() });
+                if (res.ok) {
+                    const data = await res.json();
+                    _rolesState = (data.roles || []).slice();
+                    _rolesSuggestions = (data.suggestions || []).slice();
+                }
+            } catch (e) { /* render empty */ }
+            _renderRoles();
+        }
+
+        function closeRolesModal() {
+            document.getElementById('roles-modal').classList.add('hidden');
+        }
+
+        function _esc(s) { return (s || '').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+        function _renderRoles() {
+            const chips = document.getElementById('roles-chips');
+            const sugg = document.getElementById('roles-suggestions');
+            if (chips) {
+                if (!_rolesState.length) {
+                    chips.innerHTML = '<span class="text-[11px] text-slate-500 italic">No roles yet — add a few above.</span>';
+                } else {
+                    chips.innerHTML = _rolesState.map((r, i) =>
+                        `<span class="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-full bg-indigo-500/15 text-indigo-200 border border-indigo-500/30">
+                            ${_esc(r)}
+                            <button type="button" onclick="removeRole(${i})" class="text-indigo-300 hover:text-white leading-none" title="Remove">&times;</button>
+                        </span>`
+                    ).join('');
+                }
+            }
+            if (sugg) {
+                // Hide suggestions already chosen (case-insensitive).
+                const chosen = new Set(_rolesState.map(r => r.toLowerCase()));
+                const avail = _rolesSuggestions.filter(s => !chosen.has(s.toLowerCase()));
+                sugg.innerHTML = avail.length
+                    ? avail.map(s =>
+                        `<button type="button" onclick="addSuggestedRole('${_esc(s).replace(/'/g, "\\'")}')" class="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">+ ${_esc(s)}</button>`
+                      ).join('')
+                    : '<span class="text-[11px] text-slate-600 italic">No more suggestions.</span>';
+            }
+        }
+
+        function addRole(e) {
+            e.preventDefault();
+            const inp = document.getElementById('role-input');
+            const val = (inp.value || '').trim();
+            if (!val) return;
+            if (_rolesState.length >= 12) { showToast('Up to 12 roles.', 'info'); return; }
+            if (!_rolesState.some(r => r.toLowerCase() === val.toLowerCase())) {
+                _rolesState.push(val);
+                _renderRoles();
+            }
+            inp.value = '';
+            inp.focus();
+        }
+
+        function addSuggestedRole(role) {
+            if (_rolesState.length >= 12) { showToast('Up to 12 roles.', 'info'); return; }
+            if (!_rolesState.some(r => r.toLowerCase() === role.toLowerCase())) {
+                _rolesState.push(role);
+                _renderRoles();
+            }
+        }
+
+        function removeRole(i) {
+            _rolesState.splice(i, 1);
+            _renderRoles();
+        }
+
+        async function saveRoles() {
+            const btn = document.getElementById('roles-save-btn');
+            btn.textContent = 'Saving...'; btn.disabled = true;
+            try {
+                const res = await fetch('/api/target-roles', {
+                    method: 'PUT', headers: jsonHeaders(),
+                    body: JSON.stringify({ roles: _rolesState }),
+                });
+                if (res.ok) {
+                    showToast('Target roles saved!', 'success');
+                    closeRolesModal();
+                    loadTargetRoles();
+                } else {
+                    showToast('Could not save roles.', 'error');
+                }
+            } catch (e) { showToast('Network error.', 'error'); }
+            btn.textContent = 'Save Roles'; btn.disabled = false;
         }
 
         // ── Answer Pack Modal ────────────────────────────────────────────────────
@@ -3804,10 +3986,45 @@
                 <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Professional Summary <span class="text-slate-600">(used for essay answers)</span></label><textarea name="professional_summary" rows="4" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white resize-none" placeholder="Brief summary of your background, specialties, and career goals..."></textarea></div>
                 <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Key Skills <span class="text-slate-600">(comma-separated)</span></label><input name="key_skills" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" placeholder="Python, PyTorch, FastAPI, LLMs, AWS..." /></div>
                 <div class="pt-2 flex gap-3">
-                    <button type="button" onclick="handleLogout()" class="flex-1 bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 font-bold py-3 rounded-xl border border-rose-500/20 transition text-sm">Sign Out</button>
-                    <button type="submit" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm">Save Profile</button>
+                    <button type="button" onclick="handleLogout()" id="profile-logout-btn" class="flex-1 bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 font-bold py-3 rounded-xl border border-rose-500/20 transition text-sm">Sign Out</button>
+                    <!-- Hidden until the user actually edits a field (dirty state) -->
+                    <button type="submit" id="profile-save-btn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm" style="display:none;">Save Changes</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Target Roles Modal — standalone editor (not tied to the profile) -->
+    <div id="roles-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeRolesModal()"></div>
+        <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">🎯 Target Roles</h2>
+                <button onclick="closeRolesModal()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            <p class="text-xs text-slate-500 mb-5">The job titles we search &amp; rank for. Add the roles you actually want — discovery is tailored to these.</p>
+
+            <!-- Add a role -->
+            <form id="role-add-form" onsubmit="addRole(event)" class="flex gap-2 mb-4">
+                <input id="role-input" type="text" autocomplete="off" placeholder="e.g. Machine Learning Engineer"
+                    class="flex-1 bg-slate-800 border border-slate-700 focus:border-indigo-500/60 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none" />
+                <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 rounded-xl text-sm shrink-0">Add</button>
+            </form>
+
+            <!-- Current roles (removable chips) -->
+            <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Your roles</p>
+            <div id="roles-chips" class="flex flex-wrap gap-2 mb-5 min-h-[32px]">
+                <span class="text-[11px] text-slate-500 italic">No roles yet — add a few above.</span>
+            </div>
+
+            <!-- Suggestions -->
+            <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Suggested for you <span class="text-slate-600 normal-case font-normal">— tap to add</span></p>
+            <div id="roles-suggestions" class="flex flex-wrap gap-2 mb-6"></div>
+
+            <div class="flex gap-3">
+                <button type="button" onclick="closeRolesModal()" class="flex-1 bg-slate-700/40 hover:bg-slate-700/70 text-slate-300 font-bold py-3 rounded-xl transition text-sm">Cancel</button>
+                <button type="button" id="roles-save-btn" onclick="saveRoles()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition text-sm">Save Roles</button>
+            </div>
         </div>
     </div>
 

@@ -1342,8 +1342,10 @@ def _discover_then_match(user_id) -> None:
     in a DiscoveryRun row so the UI can show live progress + a final summary."""
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
+    # Tailor the keyword search to the user's saved Target Roles when set.
+    roles = _get_target_roles(user_id) or None
     try:
-        run_discovery(user_id, run_id=run_id)   # marks the row 'ranking' + per-source counts
+        run_discovery(user_id, run_id=run_id, keywords=roles)   # marks the row 'ranking' + per-source counts
     except Exception as e:
         log.exception("Discovery failed: %s", e)
         finish_discovery_run(run_id, "error", error=str(e))
@@ -1366,6 +1368,14 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
         raise HTTPException(
             status_code=400,
             detail="Upload your resume (or fill in your profile) before discovering jobs.",
+        )
+    # Gate: no target roles → no discovery. Without roles we don't know what
+    # titles to search for, so the keyword sources would fall back to a generic
+    # list that may not match the user at all.
+    if not _get_target_roles(uid):
+        raise HTTPException(
+            status_code=400,
+            detail="Add at least one target role before discovering jobs.",
         )
     # Gate: prevent overlapping runs + enforce a cooldown so repeated clicks
     # don't waste API calls / LLM tokens (discovery also auto-runs every 6h).
@@ -1652,6 +1662,7 @@ def get_profile(request: Request) -> dict:
         "disability_status": profile.disability_status,
         "professional_summary": profile.professional_summary,
         "key_skills": profile.key_skills,
+        "target_roles": profile.target_roles,
     }
 
 
@@ -1681,6 +1692,7 @@ class ProfileUpdate(BaseModel):
     disability_status: Optional[str] = None
     professional_summary: Optional[str] = None
     key_skills: Optional[str] = None
+    target_roles: Optional[str] = None
 
 
 from typing import Optional as _Opt
@@ -1718,6 +1730,120 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
         session.add(db_profile)
         session.commit()
     return {"success": True}
+
+
+# ── Target Roles endpoints ──────────────────────────────────────────────────
+# Target Roles are the job titles we search & rank for. They live separately
+# from the profile so a user can target roles different from their current one,
+# and so discovery can be gated on "roles set + resume uploaded".
+
+# A small curated pool used to seed suggestions when we can't infer much.
+_ROLE_SUGGESTION_POOL = [
+    "Software Engineer", "Senior Software Engineer", "Backend Engineer",
+    "Frontend Engineer", "Full Stack Engineer", "Machine Learning Engineer",
+    "AI Engineer", "Data Scientist", "Data Engineer", "Data Analyst",
+    "DevOps Engineer", "Platform Engineer", "Product Manager",
+    "Engineering Manager", "Cloud Engineer", "Security Engineer",
+    "Mobile Engineer", "QA Engineer", "Site Reliability Engineer",
+]
+
+
+def _suggest_roles(profile, limit: int = 6) -> list[str]:
+    """Suggest target roles from the user's current title + skills, padded with
+    sensible defaults. Pure string work — no LLM call, so it's instant + free."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(r: str):
+        r = (r or "").strip()
+        if r and r.lower() not in seen:
+            seen.add(r.lower())
+            out.append(r)
+
+    if profile:
+        _add(profile.current_title)
+        # Skills that read like roles (contain "engineer/scientist/developer/...")
+        role_words = ("engineer", "scientist", "developer", "manager", "analyst", "designer")
+        for s in (profile.key_skills or "").split(","):
+            s = s.strip()
+            if s and any(w in s.lower() for w in role_words):
+                _add(s)
+    for r in _ROLE_SUGGESTION_POOL:
+        if len(out) >= limit:
+            break
+        _add(r)
+    return out[:limit]
+
+
+@app.get("/api/target-roles")
+def get_target_roles(request: Request) -> dict:
+    """Return the user's saved target roles + suggestions to pick from."""
+    from app.autofill.answer_pack import _get_or_create_profile
+    from app.config import settings
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    roles = [r.strip() for r in (profile.target_roles or "").split(",") if r.strip()]
+    return {
+        "roles": roles,
+        "suggestions": [s for s in _suggest_roles(profile) if s not in roles],
+        "has_resume": _user_has_resume(uid),
+    }
+
+
+class TargetRolesUpdate(BaseModel):
+    roles: list[str]
+
+
+@app.put("/api/target-roles")
+def update_target_roles(request: Request, body: TargetRolesUpdate) -> dict:
+    """Save the user's target roles (deduped, trimmed, max 12)."""
+    from app.db.models import UserProfile
+    from app.config import settings
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+
+    # Clean + dedupe (case-insensitive), preserve order, cap the list.
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for r in (body.roles or []):
+        r = (r or "").strip()
+        if r and r.lower() not in seen:
+            seen.add(r.lower())
+            cleaned.append(r)
+    cleaned = cleaned[:12]
+
+    with get_session() as session:
+        q = select(UserProfile)
+        if user_id_arg:
+            q = q.where(UserProfile.user_id == user_id_arg)
+        db_profile = session.exec(q).first()
+        if not db_profile:
+            db_profile = UserProfile(user_id=user_id_arg)
+            session.add(db_profile)
+            session.flush()
+        db_profile.target_roles = ", ".join(cleaned)
+        db_profile.updated_at = _dt.utcnow()
+        session.add(db_profile)
+        session.commit()
+    return {"success": True, "roles": cleaned}
+
+
+def _get_target_roles(uid) -> list[str]:
+    """Load saved target roles for a user as a list (empty if none)."""
+    from app.db.models import UserProfile
+    user_id_arg = uid if uid and uid != "local" else None
+    with get_session() as session:
+        q = select(UserProfile)
+        if user_id_arg:
+            q = q.where(UserProfile.user_id == user_id_arg)
+        p = session.exec(q).first()
+    if not p or not p.target_roles:
+        return []
+    return [r.strip() for r in p.target_roles.split(",") if r.strip()]
 
 
 # ── Profile Avatar endpoints ────────────────────────────────────────────────
