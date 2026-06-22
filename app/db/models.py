@@ -56,9 +56,14 @@ class ApplicationStatus(str, Enum):
 
 
 class Job(SQLModel, table=True):
-    """A single job posting. external_id + source uniquely identifies."""
+    """A single job posting, scoped per user.
+
+    Multi-tenant: each user gets their OWN copy of a posting so that per-user
+    match scores (similarity/rerank/blended) and lifecycle status never collide
+    across tenants. Uniqueness is therefore (user_id, source, external_id).
+    """
     __table_args__ = (
-        UniqueConstraint("source", "external_id", name="uq_job_source_external_id"),
+        UniqueConstraint("user_id", "source", "external_id", name="uq_job_user_source_external_id"),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.

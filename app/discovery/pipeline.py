@@ -156,18 +156,16 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
         
         try:
             with get_session() as session:
-                # 1. Check exact source + external_id duplicate
+                # 1. Check exact source + external_id duplicate — scoped to THIS
+                # user, since jobs are per-user (uniqueness is user+source+ext_id).
                 existing = session.exec(
                     select(Job).where(
+                        Job.user_id == user_id,
                         Job.source == JobSource(r.source),
                         Job.external_id == r.external_id,
                     )
                 ).first()
                 if existing:
-                    # Claim previously-orphaned jobs for this user so re-discovery
-                    # makes them visible (dashboards filter by user_id).
-                    if user_id and existing.user_id is None:
-                        existing.user_id = user_id
                     # Update description/content_hash if changed
                     if existing.content_hash != content_hash:
                         existing.description = r.description
@@ -182,16 +180,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
                         session.commit()
                     continue
 
-                # 2. Check cross-source slug duplicate
+                # 2. Check cross-source slug duplicate — also scoped to THIS user.
                 slug = _cross_source_slug(r.company, r.title, r.location)
                 existing_cross = session.exec(
-                    select(Job).where(Job.cross_source_slug == slug)
+                    select(Job).where(
+                        Job.user_id == user_id,
+                        Job.cross_source_slug == slug,
+                    )
                 ).first()
                 if existing_cross:
-                    if user_id and existing_cross.user_id is None:
-                        existing_cross.user_id = user_id
-                        session.add(existing_cross)
-                        session.commit()
                     direct_ats_sources = {
                         JobSource.GREENHOUSE,
                         JobSource.LEVER,
@@ -252,18 +249,23 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
     return inserted
 
 
-def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str]):
-    """Mark jobs that disappeared from a direct ATS board as closed."""
+def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], user_id: str | None = None):
+    """Mark jobs that disappeared from a direct ATS board as closed.
+
+    Scoped to a single user — jobs are per-user, so one user's discovery run must
+    never close another tenant's jobs.
+    """
     from datetime import datetime
     with get_session() as session:
-        # Find all open jobs for this source and company
-        jobs = session.exec(
-            select(Job).where(
-                Job.source == JobSource(source),
-                Job.company == company,
-                Job.is_closed == False
-            )
-        ).all()
+        # Find all open jobs for this source and company (this user only)
+        q = select(Job).where(
+            Job.source == JobSource(source),
+            Job.company == company,
+            Job.is_closed == False,
+        )
+        if user_id is not None:
+            q = q.where(Job.user_id == user_id)
+        jobs = session.exec(q).all()
         
         closed_count = 0
         for job in jobs:
@@ -401,22 +403,10 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
     from datetime import datetime as _dtm
     _run_started = _dtm.utcnow()
 
-    # Claim any previously-orphaned jobs (user_id IS NULL) for this user. Earlier
-    # runs/paths left jobs untagged, so they were invisible on the user-filtered
-    # dashboard — this makes the full existing pool show up again.
-    if user_id:
-        try:
-            from sqlalchemy import update as _sa_update
-            with get_session() as session:
-                result = session.execute(
-                    _sa_update(Job).where(Job.user_id.is_(None)).values(user_id=user_id)
-                )
-                session.commit()
-                claimed = getattr(result, "rowcount", 0) or 0
-                if claimed:
-                    log.info("Claimed %d orphaned jobs for user %s", claimed, user_id)
-        except Exception as e:
-            log.warning("Orphan job claim failed (non-fatal): %s", e)
+    # NOTE: jobs are now per-user (uniqueness = user_id+source+external_id), so
+    # discovery always writes rows owned by THIS user. We deliberately do NOT
+    # claim orphaned (user_id IS NULL) rows — that would hand legacy jobs to
+    # whoever runs discovery first, leaking across tenants.
     source_stats: dict[str, dict] = {}  # per-source {"fetched": n, "error": "..."} for the run summary
     _boards_fetched = 0
     scrapers = _all_scrapers() if settings.scrape_company_boards else []
@@ -439,7 +429,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None) -> int:
                 if raw and len(raw) > 0:
                     company_name = raw[0].company
                 if company_name:
-                    mark_ghost_jobs(scraper.name, company_name, active_ids)
+                    mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
             else:
                 log.warning("%s scraper fetch returned None (failed)", scraper.name)
         except Exception as e:
