@@ -107,10 +107,18 @@
     const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
     const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
+    // Cookie lets server-rendered page loads (GET /dashboard) authenticate the
+    // user — the browser doesn't send the Authorization header on navigations.
+    const setTokenCookie = (t) => {
+        const secure = location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = 'sb_token=' + t + '; path=/; max-age=3600; SameSite=Lax' + secure;
+    };
+
     // If already logged in, go straight to dashboard
     const { data: { session } } = await sb.auth.getSession()
     if (session) {
         localStorage.setItem('sb_token', session.access_token)
+        setTokenCookie(session.access_token)
         window.location.href = '/dashboard'
     }
 
@@ -139,6 +147,7 @@
         })
         if (error) { showMsg(error.message); btn.textContent = 'Sign In'; btn.disabled = false; const pwEl = document.getElementById('signin-password'); pwEl.value = ''; pwEl.focus(); return }
         localStorage.setItem('sb_token', data.session.access_token)
+        setTokenCookie(data.session.access_token)
         window.location.href = '/dashboard'
     }
 
@@ -161,6 +170,7 @@
         if (error) { showMsg(error.message); btn.textContent = 'Create Account'; btn.disabled = false; return }
         if (data.session) {
             localStorage.setItem('sb_token', data.session.access_token)
+            setTokenCookie(data.session.access_token)
             // Bootstrap profile with name from signup
             await fetch('/api/profile', {
                 method: 'PUT',

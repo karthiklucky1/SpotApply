@@ -19,7 +19,13 @@
             if (session && !redirected) {
                 redirected = true;
                 localStorage.setItem('sb_token', session.access_token)
-                
+                // Cookie so the server-rendered /dashboard can authenticate this
+                // navigation (browser sends no Authorization header on page loads).
+                {
+                    const _secure = location.protocol === 'https:' ? '; Secure' : '';
+                    document.cookie = 'sb_token=' + session.access_token + '; path=/; max-age=3600; SameSite=Lax' + _secure;
+                }
+
                 // Bootstrap profile from Google metadata
                 const meta = session.user.user_metadata || {}
                 const name = meta.full_name || meta.name || '';

@@ -23,13 +23,22 @@
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
         const SUPABASE_URL = '{{ supabase_url }}'
         const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
+        // Write the access token to a cookie so SERVER-RENDERED page loads
+        // (GET /dashboard) can authenticate — the browser doesn't attach the
+        // Authorization header to navigations, only to fetch().
+        const _setTokenCookie = (t) => {
+            const secure = location.protocol === 'https:' ? '; Secure' : '';
+            document.cookie = 'sb_token=' + t + '; path=/; max-age=3600; SameSite=Lax' + secure;
+        };
+        const _clearTokenCookie = () => { document.cookie = 'sb_token=; path=/; max-age=0; SameSite=Lax'; };
         if (SUPABASE_URL) {
             try {
                 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
                 const { data: { session }, error } = await sb.auth.getSession()
-                if (error || !session) { window.location.href = '/login'; }
+                if (error || !session) { _clearTokenCookie(); window.location.href = '/login'; }
                 else {
                     localStorage.setItem('sb_token', session.access_token)
+                    _setTokenCookie(session.access_token)
                     // Stash refresh token + Supabase creds so the browser extension
                     // can silently refresh the access token during long autofills.
                     if (session.refresh_token) localStorage.setItem('sb_refresh', session.refresh_token)
@@ -38,18 +47,28 @@
                     sb.auth.onAuthStateChange((_event, s) => {
                         if (s) {
                             localStorage.setItem('sb_token', s.access_token)
+                            _setTokenCookie(s.access_token)
                             if (s.refresh_token) localStorage.setItem('sb_refresh', s.refresh_token)
                         }
-                        else { localStorage.removeItem('sb_token'); localStorage.removeItem('sb_refresh'); window.location.href = '/login'; }
+                        else { localStorage.removeItem('sb_token'); localStorage.removeItem('sb_refresh'); _clearTokenCookie(); window.location.href = '/login'; }
                     })
+                    // If the server rendered this page WITHOUT auth (cookie was
+                    // missing/stale) but we now have a valid session + cookie,
+                    // reload ONCE so the server-rendered pipeline is scoped to us.
+                    if (!{{ ssr_authed|tojson }} && !sessionStorage.getItem('hp_reloaded_for_auth')) {
+                        sessionStorage.setItem('hp_reloaded_for_auth', '1');
+                        location.reload();
+                    } else {
+                        sessionStorage.removeItem('hp_reloaded_for_auth');
+                    }
                     // Silently verify token is still valid server-side; redirect on 401
                     sb.auth.getUser().catch(() => {
-                        localStorage.removeItem('sb_token');
+                        localStorage.removeItem('sb_token'); _clearTokenCookie();
                         window.location.href = '/login';
                     })
                 }
             } catch (e) {
-                localStorage.removeItem('sb_token');
+                localStorage.removeItem('sb_token'); _clearTokenCookie();
                 window.location.href = '/login';
             }
         }
@@ -3090,6 +3109,7 @@
                 await sb.auth.signOut()
             } catch(e) {}
             localStorage.removeItem('sb_token')
+            document.cookie = 'sb_token=; path=/; max-age=0; SameSite=Lax'
             window.location.href = '/login'
         }
 

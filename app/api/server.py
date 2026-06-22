@@ -77,14 +77,23 @@ app.add_middleware(SupabaseSessionMiddleware)
 # ── Auth helpers ─────────────────────────────────────────────────────────────
 
 def _get_user_id(request: Request) -> str | None:
-    """Extract user_id from Bearer token. Returns None if not authenticated."""
+    """Extract user_id from the Supabase JWT. Returns None if not authenticated.
+
+    Token sources, in order:
+    1. Authorization: Bearer header — used by all fetch()/extension API calls.
+    2. sb_token cookie — needed for full-page navigations (e.g. GET /dashboard),
+       since the browser does NOT attach the Authorization header to those, only
+       to fetch(). Without this, server-rendered pages can't identify the user.
+    """
     from app.config import settings
     if not settings.use_supabase:
         return "local"   # single-user mode — no auth
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else None
+    if not token:
+        token = request.cookies.get("sb_token")
+    if not token:
         return None
-    token = auth.split(" ", 1)[1]
     from app.db.supabase_client import get_user_id_from_token
     return get_user_id_from_token(token)
 
@@ -814,13 +823,21 @@ def api_jobs(
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request):
     """Kanban board UI for tracking application progress."""
+    from app.config import settings
     uid = _get_user_id(request)
     _uid_filter = uid and uid != "local"
-    with get_session() as session:
-        q = select(Application, Job).join(Job).order_by(Application.updated_at.desc())
-        if _uid_filter:
-            q = q.where(Application.user_id == uid)
-        results = session.exec(q).all()
+    # SSR auth: whether THIS page navigation was authenticated (via sb_token
+    # cookie). If not, fail closed and render no pipeline data — never leak other
+    # tenants' applications. The client auth-guard sets the cookie and reloads.
+    ssr_authed = bool(uid) or not settings.use_supabase
+    if settings.use_supabase and not uid:
+        results = []
+    else:
+        with get_session() as session:
+            q = select(Application, Job).join(Job).order_by(Application.updated_at.desc())
+            if _uid_filter:
+                q = q.where(Application.user_id == uid)
+            results = session.exec(q).all()
         
     shortlisted = []
     bot_filled = []    # autofill-track: form filled, pending review
@@ -888,7 +905,6 @@ def dashboard(request: Request):
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
-    from app.config import settings
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -899,6 +915,7 @@ def dashboard(request: Request):
             "submitted": submitted,
             "skipped": skipped,
             "rejected": rejected,
+            "ssr_authed": ssr_authed,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
         }
