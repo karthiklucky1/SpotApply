@@ -511,14 +511,30 @@ def debug_tenancy(request: Request) -> dict:
     aren't set on the backend and all users share one tenant.
     """
     from app.config import settings
+    auth = request.headers.get("Authorization", "")
+    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else None
     uid = _get_user_id(request)
+    # If a token was sent but didn't resolve to a user, surface WHY — this is the
+    # usual "authenticated:false while logged in" cause (bad/missing service key,
+    # or a token from a different Supabase project than the backend keys).
+    verify_error = None
+    if token and uid is None and settings.use_supabase:
+        try:
+            from app.db.supabase_client import service_client
+            service_client().auth.get_user(token)
+        except Exception as e:
+            verify_error = f"{type(e).__name__}: {str(e)[:180]}"
     return {
         "use_supabase": settings.use_supabase,
         "database_url_set": bool(settings.database_url),
         "supabase_url_set": bool(settings.supabase_url),
+        "service_role_key_set": bool(settings.supabase_service_role_key),
+        "anon_key_set": bool(settings.supabase_anon_key),
+        "token_present": bool(token),
         "authenticated": uid is not None,
         "your_uid": uid,
         "is_local": uid == "local",
+        "verify_error": verify_error,
     }
 
 
@@ -1518,7 +1534,12 @@ def trigger_preview(application_id: int, request: Request, bg: BackgroundTasks) 
 def get_profile(request: Request) -> dict:
     """Return the current user profile (seeds from .env on first call)."""
     from app.autofill.answer_pack import _get_or_create_profile
+    from app.config import settings
     uid = _get_user_id(request)
+    # In multi-tenant mode an unverified/expired token resolves to uid=None.
+    # Return a clean 401 (frontend can prompt re-login) instead of a 500.
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
     return {
         "id": profile.id,
