@@ -465,6 +465,97 @@ def resume_status(request: Request) -> dict:
     return {"has_resume": _user_has_resume(uid)}
 
 
+@app.get("/api/resume/analysis")
+def resume_analysis(request: Request) -> dict:
+    """General ATS-readiness analysis of the user's résumé — no specific job needed.
+
+    Scores deterministic parse-ability signals (contact info, sections, quantified
+    impact, action verbs, length) plus how well the résumé reflects the user's
+    saved target roles. Fully local: no LLM / network calls, so it's instant + free.
+    """
+    import re as _re
+    uid = _get_user_id(request)
+    from app.config import settings
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not _user_has_resume(uid):
+        return {"has_resume": False}
+    try:
+        from app.matching.pipeline import _load_resume
+        text = _load_resume(user_id=uid)
+    except Exception as e:
+        return {"has_resume": True, "error": f"Could not read résumé: {e}"}
+    if not text or len(text.strip()) < 30:
+        return {"has_resume": True, "error": "Résumé appears empty or unreadable."}
+
+    low = text.lower()
+    words = _re.findall(r"\b\w+\b", text)
+    wc = len(words)
+    findings: list[dict] = []
+
+    def _add(label, ok, detail):
+        findings.append({"label": label, "ok": bool(ok), "detail": detail})
+
+    # 1. Contact info — ATS parsers key on a findable email + phone.
+    has_email = bool(_re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text))
+    has_phone = bool(_re.search(r"(\+?\d[\d\s().-]{7,}\d)", text))
+    _add("Contact details", has_email and has_phone,
+         "Email & phone found" if has_email and has_phone else "Add a clear email and phone number")
+
+    # 2. Standard sections
+    sections = {
+        "experience": any(s in low for s in ("experience", "employment", "work history")),
+        "education": "education" in low,
+        "skills": any(s in low for s in ("skills", "technologies", "technical")),
+    }
+    missing_sec = [k for k, v in sections.items() if not v]
+    _add("Standard sections", not missing_sec,
+         "Experience, education & skills present" if not missing_sec
+         else f"Missing section(s): {', '.join(missing_sec)}")
+
+    # 3. Quantified achievements — numbers/%/$ signal impact.
+    metric_hits = len(_re.findall(r"\b\d+%|\$\s?\d|\b\d{2,}\b", text))
+    _add("Quantified impact", metric_hits >= 3,
+         f"{metric_hits} measurable results" if metric_hits >= 3
+         else "Add metrics (%, $, counts) to your bullets")
+
+    # 4. Action verbs
+    action_verbs = ("built", "led", "designed", "developed", "launched", "created",
+                    "improved", "reduced", "increased", "managed", "shipped", "drove",
+                    "owned", "architected", "delivered", "implemented", "optimized")
+    verb_hits = sum(low.count(v) for v in action_verbs)
+    _add("Action verbs", verb_hits >= 5,
+         f"{verb_hits} strong action verbs" if verb_hits >= 5
+         else "Start bullets with action verbs (Built, Led, Shipped…)")
+
+    # 5. Length
+    good_len = 350 <= wc <= 1100
+    _add("Length", good_len,
+         f"{wc} words — good" if good_len
+         else (f"{wc} words — too short, add detail" if wc < 350 else f"{wc} words — consider trimming"))
+
+    # 6. Target-role alignment — ties roles + résumé together.
+    roles = _get_target_roles(uid)
+    if not roles:
+        _add("Target-role match", False, "Add target roles to check résumé alignment")
+    else:
+        role_terms = set()
+        for r in roles:
+            for tok in _re.findall(r"\b\w+\b", r.lower()):
+                if len(tok) > 2:
+                    role_terms.add(tok)
+        covered = [t for t in role_terms if t in low]
+        role_ok = bool(role_terms) and (len(covered) / len(role_terms) >= 0.5)
+        _add("Target-role match", role_ok,
+             f"Résumé reflects your target roles ({len(covered)}/{len(role_terms)} terms)" if role_ok
+             else "Résumé weakly matches your target roles — weave in relevant keywords")
+
+    score = round(sum(1 for f in findings if f["ok"]) / len(findings) * 100)
+    grade = "Strong" if score >= 80 else "Good" if score >= 60 else "Needs work"
+    return {"has_resume": True, "score": score, "grade": grade,
+            "word_count": wc, "findings": findings}
+
+
 @app.get("/api/discovery/last-run")
 def discovery_last_run(request: Request) -> dict:
     """Return the most recent discovery run's per-source summary for this user."""
@@ -1666,7 +1757,14 @@ def get_profile(request: Request) -> dict:
     # Return a clean 401 (frontend can prompt re-login) instead of a 500.
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    try:
+        profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    except Exception as e:
+        # Schema drift self-heal: a not-yet-migrated column makes the read fail.
+        log.exception("Profile read failed; running migrations + retrying: %s", e)
+        from app.db.init_db import init_db
+        init_db()
+        profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
     return {
         "id": profile.id,
         "first_name": profile.first_name,
@@ -1734,7 +1832,6 @@ from datetime import datetime as _dt
 @app.put("/api/profile")
 def update_profile(request: Request, update: ProfileUpdate) -> dict:
     """Update user profile fields."""
-    from app.autofill.answer_pack import _get_or_create_profile
     from app.db.models import UserProfile
     from app.config import settings
 
@@ -1745,22 +1842,38 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_id_arg = uid if uid != "local" else None
-    # Get-or-create inside the same session to avoid detached-instance issues
-    with get_session() as session:
-        q = select(UserProfile)
-        if user_id_arg:
-            q = q.where(UserProfile.user_id == user_id_arg)
-        db_profile = session.exec(q).first()
-        if not db_profile:
-            # Create it fresh
-            db_profile = UserProfile(user_id=user_id_arg)
+
+    def _do_update():
+        # Get-or-create inside the same session to avoid detached-instance issues
+        with get_session() as session:
+            q = select(UserProfile)
+            if user_id_arg:
+                q = q.where(UserProfile.user_id == user_id_arg)
+            db_profile = session.exec(q).first()
+            if not db_profile:
+                db_profile = UserProfile(user_id=user_id_arg)
+                session.add(db_profile)
+                session.flush()
+            for field, value in update.model_dump(exclude_none=True).items():
+                setattr(db_profile, field, value)
+            db_profile.updated_at = _dt.utcnow()
             session.add(db_profile)
-            session.flush()
-        for field, value in update.model_dump(exclude_none=True).items():
-            setattr(db_profile, field, value)
-        db_profile.updated_at = _dt.utcnow()
-        session.add(db_profile)
-        session.commit()
+            session.commit()
+
+    try:
+        _do_update()
+    except Exception as e:
+        # Most common cause is schema drift — a model column (e.g. target_roles)
+        # that hasn't been migrated onto this database yet, which makes the
+        # SELECT * fail. Run migrations once and retry before giving up.
+        log.exception("Profile update failed; running migrations + retrying: %s", e)
+        try:
+            from app.db.init_db import init_db
+            init_db()
+            _do_update()
+        except Exception as e2:
+            log.exception("Profile update failed after migration retry: %s", e2)
+            raise HTTPException(status_code=500, detail=f"Could not save profile: {e2}")
     return {"success": True}
 
 

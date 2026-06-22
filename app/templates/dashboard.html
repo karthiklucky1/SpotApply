@@ -785,7 +785,7 @@
         <!-- Command Console & Search Grid -->
         <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8 items-start">
             
-            <!-- Search Setup — Target Roles + Résumé, both required before Discover -->
+            <!-- Target Roles — derived from your résumé; edit to add/remove -->
             <div class="glass rounded-[32px] p-5 flex flex-col gap-3" style="border:1px solid var(--border);">
                 <div class="flex items-center justify-between">
                     <h3 class="text-xs font-bold uppercase tracking-widest flex items-center gap-2" style="color:var(--muted);">
@@ -796,16 +796,7 @@
                 <div id="target-roles-list" class="flex flex-wrap gap-2">
                     <span class="text-[11px]" style="color:var(--muted-2);">No roles yet — tap Edit to add the jobs you want.</span>
                 </div>
-                <p class="text-[10px] leading-relaxed" style="color:var(--muted-2);">These are the roles we scrape & rank jobs for. Counts appear after you run Discover.</p>
-
-                <!-- Résumé status lives here too: roles + résumé are the two gates for Discover. -->
-                <div class="flex items-center justify-between gap-2 mt-1 pt-3" style="border-top:1px solid var(--border);">
-                    <div class="flex items-center gap-2 min-w-0">
-                        <span>📄</span>
-                        <span id="setup-resume-status" class="text-[11px] truncate" style="color:var(--muted-2);">Checking résumé…</span>
-                    </div>
-                    <button onclick="openResumeUpload()" class="text-[10px] font-black shrink-0" style="color:var(--sage-600);">Manage ›</button>
-                </div>
+                <p class="text-[10px] leading-relaxed" style="color:var(--muted-2);">Pulled from your résumé. These are the roles we scrape & rank jobs for — tap Edit to refine. Open Edit to see your résumé ATS score.</p>
             </div>
 
             <!-- Manual URL Extractor -->
@@ -1593,7 +1584,6 @@
         // These are the roles we scrape & rank jobs for (separate from profile).
         async function loadTargetRoles() {
             const box = document.getElementById('target-roles-list');
-            const resumeEl = document.getElementById('setup-resume-status');
             if (!box) return;
             try {
                 if (typeof tokenReady === 'function') await tokenReady();
@@ -1607,10 +1597,6 @@
                     box.innerHTML = roles.map(r =>
                         `<span class="text-[11px] font-bold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid var(--border);">${r.replace(/</g,'&lt;')}</span>`
                     ).join('');
-                }
-                if (resumeEl) {
-                    resumeEl.textContent = data.has_resume ? '✓ Résumé on file' : 'No résumé yet — add one to discover';
-                    resumeEl.style.color = data.has_resume ? 'var(--sage-700)' : 'var(--muted-2)';
                 }
             } catch (e) { /* leave default hint */ }
         }
@@ -3562,10 +3548,55 @@
                 }
             } catch (e) { /* render empty */ }
             _renderRoles();
+            loadResumeAnalysis();
         }
 
         function closeRolesModal() {
             document.getElementById('roles-modal').classList.add('hidden');
+        }
+
+        // ── Résumé ATS analysis (shown inside the Target Roles modal) ─────────
+        async function loadResumeAnalysis() {
+            const box = document.getElementById('ats-analysis');
+            const badge = document.getElementById('ats-grade-badge');
+            if (!box) return;
+            box.innerHTML = '<p class="text-[11px] text-slate-500 italic">Analyzing your résumé…</p>';
+            if (badge) { badge.textContent = '—'; badge.className = 'text-[10px] font-black px-2.5 py-1 rounded-full bg-slate-800 text-slate-400'; }
+            try {
+                const res = await fetch('/api/resume/analysis', { headers: authHeaders() });
+                if (!res.ok) { box.innerHTML = '<p class="text-[11px] text-slate-500">Could not analyze résumé.</p>'; return; }
+                const d = await res.json();
+                if (!d.has_resume) {
+                    box.innerHTML = '<p class="text-[11px] text-slate-500">No résumé on file yet. Upload one from Settings → My résumé to get an ATS score.</p>';
+                    return;
+                }
+                if (d.error) { box.innerHTML = `<p class="text-[11px] text-amber-400">${_esc(d.error)}</p>`; return; }
+                // Score colour
+                const score = d.score ?? 0;
+                const col = score >= 80 ? '#10b981' : score >= 60 ? '#f59e0b' : '#f43f5e';
+                if (badge) {
+                    badge.textContent = `${score}/100 · ${d.grade}`;
+                    badge.style.cssText = `color:${col};background:${col}1a;border:1px solid ${col}40;`;
+                    badge.className = 'text-[10px] font-black px-2.5 py-1 rounded-full';
+                }
+                // Score bar + findings checklist
+                const items = (d.findings || []).map(f => `
+                    <li class="flex items-start gap-2 py-1">
+                        <span class="text-sm leading-none mt-0.5">${f.ok ? '✅' : '⚠️'}</span>
+                        <span class="flex-1">
+                            <span class="text-[12px] font-bold ${f.ok ? 'text-slate-300' : 'text-slate-200'}">${_esc(f.label)}</span>
+                            <span class="block text-[11px] text-slate-500">${_esc(f.detail)}</span>
+                        </span>
+                    </li>`).join('');
+                box.innerHTML = `
+                    <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden mb-3">
+                        <div class="h-full rounded-full transition-all duration-700" style="width:${score}%;background:${col};"></div>
+                    </div>
+                    <ul class="space-y-0.5">${items}</ul>
+                    <p class="text-[10px] text-slate-600 mt-2">Heuristic ATS-readiness check — not affiliated with any specific ATS vendor.</p>`;
+            } catch (e) {
+                box.innerHTML = '<p class="text-[11px] text-slate-500">Could not analyze résumé.</p>';
+            }
         }
 
         function _esc(s) { return (s || '').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
@@ -4031,6 +4062,17 @@
             <!-- Suggestions -->
             <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Suggested for you <span class="text-slate-600 normal-case font-normal">— tap to add</span></p>
             <div id="roles-suggestions" class="flex flex-wrap gap-2 mb-6"></div>
+
+            <!-- Résumé ATS analysis -->
+            <div class="border-t border-slate-700/50 pt-5 mb-6">
+                <div class="flex items-center justify-between mb-3">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500">Résumé ATS score</p>
+                    <span id="ats-grade-badge" class="text-[10px] font-black px-2.5 py-1 rounded-full bg-slate-800 text-slate-400">—</span>
+                </div>
+                <div id="ats-analysis" class="text-sm text-slate-400">
+                    <p class="text-[11px] text-slate-500 italic">Analyzing your résumé…</p>
+                </div>
+            </div>
 
             <div class="flex gap-3">
                 <button type="button" onclick="closeRolesModal()" class="flex-1 bg-slate-700/40 hover:bg-slate-700/70 text-slate-300 font-bold py-3 rounded-xl transition text-sm">Cancel</button>
