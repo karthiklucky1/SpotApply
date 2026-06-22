@@ -1016,42 +1016,50 @@
                         {% endif %}
                         
                         <div class="mt-4 flex flex-col gap-2">
-                            <!-- Primary CTA — Tailor: regenerates resume & cover letter for this job -->
+                            {% set has_docs = app.tailored_resume_path or app.cover_letter_path %}
+                            {% if not has_docs %}
+                            <!-- Not tailored yet → lead with the AI action -->
                             <button type="button" id="tailor-btn-{{ app.id }}" data-app-id="{{ app.id }}"
                                 onclick="event.stopPropagation(); tailorJob(+this.dataset.appId, this)"
                                 class="jbtn jbtn-primary text-[11px] py-2.5 w-full"
-                                title="AI rewrites your resume bullets and generates a cover letter specifically for this job's requirements">
+                                title="AI rewrites your resume bullets and writes a cover letter for this job">
                                 ✨ Tailor Resume &amp; Cover Letter
                             </button>
-                            <!-- Apply action -->
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); fillWithExtension(+this.dataset.appId, this)"
                                 class="jbtn jbtn-apply text-[11px] py-2.5 w-full"
                                 title="Opens the job form in your browser and fills every field — you review then submit">
                                 🧩 Fill with Extension
                             </button>
-                            <!-- Quiet utility actions -->
+                            <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn jbtn-done text-[10px] py-2 w-full">
+                                ✅ Mark Done
+                            </button>
+                            {% else %}
+                            <!-- Tailored → apply is primary; docs now exist -->
+                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); fillWithExtension(+this.dataset.appId, this)"
+                                class="jbtn jbtn-primary text-[11px] py-2.5 w-full"
+                                title="Opens the job form in your browser and fills every field — you review then submit">
+                                🧩 Fill with Extension
+                            </button>
                             <div class="grid grid-cols-2 gap-2 mt-0.5">
                                 <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"
-                                    title="View your tailored resume and cover letter for this job">
+                                    title="Read or download your tailored resume and cover letter">
                                     📋 View Docs
                                 </button>
-                                {% if job.source.value in ['greenhouse', 'lever', 'ashby'] %}
-                                <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="jbtn jbtn-ghost text-[10px] py-2">
-                                    ↗ Job Link
-                                </a>
-                                {% else %}
                                 <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openAnswerPack(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"
                                     title="Pre-written answers for every question on this form">
                                     📝 Answer Pack
                                 </button>
-                                {% endif %}
-                                <a href="{{ job.url }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="jbtn jbtn-ghost text-[10px] py-2">
-                                    🖥️ Open Form
-                                </a>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button type="button" id="tailor-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); tailorJob(+this.dataset.appId, this)" class="jbtn jbtn-ghost text-[10px] py-2"
+                                    title="Regenerate your resume and cover letter for this job">
+                                    ↻ Re-tailor
+                                </button>
                                 <button type="button" id="submit-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn jbtn-done text-[10px] py-2">
                                     ✅ Mark Done
                                 </button>
                             </div>
+                            {% endif %}
                         </div>
                     </div>
                     {% else %}
