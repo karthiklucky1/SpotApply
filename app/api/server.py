@@ -423,7 +423,39 @@ Return only valid JSON, no markdown, no explanation."""
         session.add(db_profile)
         session.commit()
 
-    return {"success": True, "extracted": {k: extracted.get(k) for k in field_map}}
+    # Auto-seed target_roles from the extracted data — only when the user
+    # hasn't already set any roles (so we never overwrite deliberate choices).
+    user_id_arg = uid if uid != "local" else None
+    seeded_roles: list[str] = []
+    with get_session() as session:
+        q = select(UserProfile)
+        if user_id_arg:
+            q = q.where(UserProfile.user_id == user_id_arg)
+        p = session.exec(q).first()
+        if p and not (p.target_roles or "").strip():
+            # Derive role titles: current_title first, then skill tokens that
+            # read like roles (contain engineer/scientist/developer/…).
+            seen_r: set[str] = set()
+            def _add_role(r: str):
+                r = (r or "").strip()
+                if r and r.lower() not in seen_r and len(seeded_roles) < 5:
+                    seen_r.add(r.lower())
+                    seeded_roles.append(r)
+            _add_role(extracted.get("current_title") or "")
+            _role_tokens = ("engineer", "scientist", "developer", "manager",
+                            "analyst", "designer", "architect", "lead")
+            for s in (extracted.get("key_skills") or "").split(","):
+                s = s.strip()
+                if s and any(tok in s.lower() for tok in _role_tokens):
+                    _add_role(s)
+            if seeded_roles:
+                p.target_roles = ", ".join(seeded_roles)
+                p.updated_at = _datetime.datetime.utcnow()
+                session.add(p)
+                session.commit()
+
+    return {"success": True, "extracted": {k: extracted.get(k) for k in field_map},
+            "seeded_roles": seeded_roles}
 
 
 @app.get("/api/resume/status")

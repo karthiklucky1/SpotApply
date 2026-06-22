@@ -2054,18 +2054,21 @@
                     btn.innerHTML = '🔍 Reading resume…';
                     // Auto-extract profile
                     const extRes = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authH });
+                    let seededRoles = [];
                     if (extRes.ok) {
                         const data = await extRes.json();
                         const name = [data.extracted?.first_name, data.extracted?.last_name].filter(Boolean).join(' ');
-                        showToast(`✅ Profile auto-filled${name ? ' for ' + name : ''}! Pick your target roles next.`, 'success');
+                        seededRoles = data.seeded_roles || [];
+                        const roleHint = seededRoles.length ? ` Suggested ${seededRoles.length} role${seededRoles.length > 1 ? 's' : ''} — confirm or edit.` : ' Pick your target roles next.';
+                        showToast(`✅ Profile auto-filled${name ? ' for ' + name : ''}!${roleHint}`, 'success');
                     } else {
                         const err = await extRes.json().catch(() => ({}));
                         showToast(err.detail ? `Resume saved, auto-fill failed: ${err.detail}` : 'Resume uploaded! Pick your target roles next.', err.detail ? 'error' : 'success');
                     }
                     closeOnboarding();
-                    // Résumé is in — now confirm target roles (the second Discover gate)
-                    // before kicking off discovery. The roles modal seeds suggestions
-                    // from the just-extracted title + skills.
+                    // Open the roles modal. Server auto-seeded roles from the extraction
+                    // are already saved, so openRolesModal() will fetch them and show
+                    // them as selected chips — user just confirms or adjusts.
                     openRolesModal();
                 } else {
                     showToast('Upload failed — please fill manually.', 'error');
