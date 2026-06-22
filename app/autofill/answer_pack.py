@@ -63,24 +63,40 @@ Return only the answer text, nothing else."""
 
 
 def _get_or_create_profile(user_id: str | None = None) -> UserProfile:
-    """Return the UserProfile row for this user, seeding from config if absent."""
+    """Return the UserProfile row for this user, creating a BLANK one if absent.
+
+    Multi-tenant rules (SaaS):
+    - A real user's profile is ALWAYS scoped by user_id and starts empty — never
+      seeded from another user's data or from the developer's .env defaults.
+    - Seeding from settings.applicant_* is allowed ONLY in single-user local dev
+      (SQLite, no Supabase), where the .env values are the developer's own.
+    """
     with get_session() as session:
         q = select(UserProfile)
         if user_id:
             q = q.where(UserProfile.user_id == user_id)
+        elif settings.use_supabase:
+            # Fail closed: in multi-tenant mode we must never return an arbitrary
+            # (e.g. the first) profile when no user_id was supplied.
+            raise ValueError("user_id is required to load a profile in multi-tenant mode")
         profile = session.exec(q).first()
         if not profile:
-            profile = UserProfile(
-                user_id=user_id,
-                first_name=settings.applicant_first_name,
-                last_name=settings.applicant_last_name,
-                email=settings.applicant_email,
-                phone=settings.applicant_phone,
-                location=settings.applicant_location,
-                linkedin_url=settings.applicant_linkedin,
-                github_url=settings.applicant_github,
-                work_authorization=settings.applicant_work_auth,
-            )
+            if user_id is None and not settings.use_supabase:
+                # Local single-user dev convenience: seed from .env.
+                profile = UserProfile(
+                    user_id=None,
+                    first_name=settings.applicant_first_name,
+                    last_name=settings.applicant_last_name,
+                    email=settings.applicant_email,
+                    phone=settings.applicant_phone,
+                    location=settings.applicant_location,
+                    linkedin_url=settings.applicant_linkedin,
+                    github_url=settings.applicant_github,
+                    work_authorization=settings.applicant_work_auth,
+                )
+            else:
+                # Real SaaS user: start completely blank.
+                profile = UserProfile(user_id=user_id)
             session.add(profile)
             session.commit()
             session.refresh(profile)

@@ -525,12 +525,14 @@ def stats(request: Request) -> dict:
 
 
 @app.get("/shortlist")
-def shortlist():
-    """Top-scored jobs not yet processed."""
+def shortlist(request: Request):
+    """Top-scored jobs not yet processed — scoped to the authenticated user."""
+    uid = _require_user(request)
     with get_session() as session:
-        jobs = session.exec(
-            select(Job).where(Job.rerank_score >= 70).order_by(Job.rerank_score.desc())
-        ).all()
+        q = select(Job).where(Job.rerank_score >= 70)
+        if uid != "local":
+            q = q.where(Job.user_id == uid)
+        jobs = session.exec(q.order_by(Job.rerank_score.desc())).all()
     return [
         {
             "id": j.id,
@@ -1702,7 +1704,10 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
 def delete_account(request: Request) -> dict:
     """Permanently delete all data for the authenticated user."""
     uid = _require_user(request)
-    from app.db.models import UserProfile, PendingQuestion, AnswerMemory
+    from app.db.models import (
+        UserProfile, PendingQuestion, AnswerMemory, DiscoveryRun,
+        UserSubscription, UserUsage,
+    )
     from app.db.init_db import get_session
     from sqlmodel import select, delete as sql_delete
 
@@ -1717,12 +1722,14 @@ def delete_account(request: Request) -> dict:
             # Delete pending questions linked to those applications
             if app_ids:
                 session.exec(sql_delete(PendingQuestion).where(PendingQuestion.application_id.in_(app_ids)))
-            # Delete applications
+            # Delete every user-scoped row so no orphaned data remains (GDPR).
             session.exec(sql_delete(Application).where(Application.user_id == uid))
-            # Delete jobs
             session.exec(sql_delete(Job).where(Job.user_id == uid))
-            # Delete profile
             session.exec(sql_delete(UserProfile).where(UserProfile.user_id == uid))
+            session.exec(sql_delete(AnswerMemory).where(AnswerMemory.user_id == uid))
+            session.exec(sql_delete(DiscoveryRun).where(DiscoveryRun.user_id == uid))
+            session.exec(sql_delete(UserSubscription).where(UserSubscription.user_id == uid))
+            session.exec(sql_delete(UserUsage).where(UserUsage.user_id == uid))
             session.commit()
 
     # Delete resume files from Supabase Storage
