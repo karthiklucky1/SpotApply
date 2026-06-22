@@ -3513,22 +3513,30 @@
             new FormData(form).forEach((v, k) => { data[k] = v; });
             // Booleans
             data.requires_sponsorship = form.querySelector('[name="requires_sponsorship"]').checked;
-            data.years_experience = parseInt(data.years_experience) || 0;
-            data.salary_min = parseInt(data.salary_min) || 0;
-            data.salary_max = parseInt(data.salary_max) || 0;
-            if (data.graduation_year) data.graduation_year = parseInt(data.graduation_year);
+            // Integers — send null (not "") when blank so Pydantic Optional[int] validates
+            data.years_experience   = parseInt(data.years_experience)  || 0;
+            data.salary_min         = parseInt(data.salary_min)        || 0;
+            data.salary_max         = parseInt(data.salary_max)        || 0;
+            data.graduation_year    = data.graduation_year ? (parseInt(data.graduation_year) || null) : null;
             const btn = form.querySelector('[type="submit"]');
             btn.textContent = 'Saving...'; btn.disabled = true;
             try {
                 const res = await fetch('/api/profile', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(data) });
                 if (res.ok) {
                     showToast('Profile saved!', 'success');
-                    _profileSnapshot = _serializeProfileForm(form);  // changes are now the baseline
+                    _profileSnapshot = _serializeProfileForm(form);
                     _refreshProfileDirty();
                     closeProfileModal();
                     if (typeof loadTargetRoles === 'function') loadTargetRoles();
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    const msg = err.detail
+                        ? (Array.isArray(err.detail)
+                            ? err.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+                            : String(err.detail))
+                        : `Save failed (${res.status})`;
+                    showToast(msg, 'error');
                 }
-                else { showToast('Save failed.', 'error'); }
             } catch(e) { showToast('Network error.', 'error'); }
             btn.textContent = 'Save Changes'; btn.disabled = false;
         }
