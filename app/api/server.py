@@ -500,6 +500,28 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/api/debug/tenancy")
+def debug_tenancy(request: Request) -> dict:
+    """Quick check that multi-tenant mode is live and the backend sees the caller
+    as a real user (not the shared 'local' tenant). Auth required.
+
+    Healthy production response looks like:
+        { "use_supabase": true, "your_uid": "<uuid>", "is_local": false, ... }
+    If use_supabase is false or your_uid is "local", DATABASE_URL/SUPABASE_URL
+    aren't set on the backend and all users share one tenant.
+    """
+    from app.config import settings
+    uid = _get_user_id(request)
+    return {
+        "use_supabase": settings.use_supabase,
+        "database_url_set": bool(settings.database_url),
+        "supabase_url_set": bool(settings.supabase_url),
+        "authenticated": uid is not None,
+        "your_uid": uid,
+        "is_local": uid == "local",
+    }
+
+
 @app.get("/stats")
 def stats(request: Request) -> dict:
     uid = _get_user_id(request)
