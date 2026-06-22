@@ -492,17 +492,17 @@
         --muted:     #8C857A;   /* secondary text */
         --muted-2:   #A8A092;   /* faint text */
         --border:    #E6E0D3;   /* hairlines */
-        --sage:      #7E9B6C;   /* accent */
-        --sage-600:  #688A55;   /* accent strong / hover */
-        --sage-700:  #51703F;
-        --sage-tint: #ECF1E6;   /* accent wash */
+        --sage:      #2FB4A6;   /* accent — light seafoam teal */
+        --sage-600:  #1F9C8F;   /* accent strong / hover */
+        --sage-700:  #16847A;
+        --sage-tint: #E7F5F2;   /* accent wash */
     }
 
     body { background: var(--canvas) !important; color: var(--ink) !important; }
     body::before {
         background:
-            radial-gradient(ellipse 80% 50% at 18% -10%, rgba(126,155,108,0.10) 0%, transparent 60%),
-            radial-gradient(ellipse 60% 40% at 85% 6%, rgba(168,179,120,0.08) 0%, transparent 55%) !important;
+            radial-gradient(ellipse 80% 50% at 18% -10%, rgba(47,180,166,0.10) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 40% at 85% 6%, rgba(120,205,195,0.08) 0%, transparent 55%) !important;
     }
 
     /* Surfaces */
@@ -515,7 +515,7 @@
     .card-glow-blue,.card-glow-amber,.card-glow-green {
         box-shadow: 0 1px 2px rgba(46,42,36,0.04), 0 6px 18px rgba(46,42,36,0.06) !important; }
     .card-glow-blue:hover,.card-glow-amber:hover,.card-glow-green:hover {
-        box-shadow: 0 6px 26px rgba(126,155,108,0.20) !important; border-color: var(--sage) !important; }
+        box-shadow: 0 6px 26px rgba(47,180,166,0.20) !important; border-color: var(--sage) !important; }
 
     /* Text — flip bright-on-dark utilities to ink, muted greys stay grey */
     .text-white,.text-slate-50,.text-slate-100,.text-slate-200,.text-slate-300,
@@ -538,7 +538,7 @@
     /* Buttons, nav, accents → sage; keep their text light */
     .btn-primary, .btn-primary:hover, #tab-indicator, #app-sidebar .sb-logo {
         background: linear-gradient(135deg, var(--sage), var(--sage-600)) !important;
-        box-shadow: 0 4px 16px rgba(104,138,85,0.30) !important; }
+        box-shadow: 0 4px 16px rgba(31,156,143,0.30) !important; }
     .btn-primary, .btn-primary * { color: #fff !important; }
     #app-sidebar { background: var(--surface) !important; border-right: 1px solid var(--border) !important; box-shadow: 4px 0 22px rgba(46,42,36,0.06) !important; }
     #app-sidebar .sb-btn:hover { background: var(--sage-tint) !important; color: var(--sage-700) !important; }
@@ -708,19 +708,19 @@
 </header>
 
         <!-- ── Discover Hero CTA ─────────────────────────────────────────── -->
-        <div id="discover-hero-banner" class="mb-8 rounded-[28px] overflow-hidden relative" style="background: linear-gradient(135deg, rgba(126,155,108,0.16) 0%, rgba(168,179,120,0.08) 60%, rgba(236,241,230,0.6) 100%); border:1px solid var(--border); box-shadow: 0 8px 26px rgba(46,42,36,0.05);">
+        <div id="discover-hero-banner" class="mb-8 rounded-[28px] overflow-hidden relative" style="background: linear-gradient(135deg, rgba(47,180,166,0.16) 0%, rgba(120,205,195,0.08) 60%, rgba(231,245,242,0.6) 100%); border:1px solid var(--border); box-shadow: 0 8px 26px rgba(46,42,36,0.05);">
             <!-- Glow blob -->
-            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-25 pointer-events-none" style="background: radial-gradient(circle, rgba(126,155,108,0.45), transparent 70%);"></div>
-            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(168,179,120,0.4), transparent 70%);"></div>
+            <div class="absolute -top-16 -left-16 w-72 h-72 rounded-full opacity-25 pointer-events-none" style="background: radial-gradient(circle, rgba(47,180,166,0.40), transparent 70%);"></div>
+            <div class="absolute -bottom-12 -right-12 w-56 h-56 rounded-full opacity-20 pointer-events-none" style="background: radial-gradient(circle, rgba(120,205,195,0.4), transparent 70%);"></div>
             <div class="relative z-10 px-8 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
                 <div class="flex items-center gap-4">
-                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(126,155,108,0.28), rgba(168,179,120,0.16)); border: 1px solid rgba(126,155,108,0.32);">🧭</div>
+                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 text-2xl" style="background: linear-gradient(135deg, rgba(47,180,166,0.28), rgba(120,205,195,0.16)); border: 1px solid rgba(47,180,166,0.32);">🧭</div>
                     <div>
                         <div class="font-black text-lg leading-tight" style="color:var(--ink);">Find Your Next Job — Automatically</div>
                         <div class="text-sm mt-0.5" style="color:var(--muted);">HirePath scans 1000+ job boards every 6 hours and ranks the best matches for your profile.</div>
                     </div>
                 </div>
-                <button onclick="startDiscovery()" class="shrink-0 text-sm font-black py-3.5 px-8 rounded-2xl flex items-center gap-2.5 whitespace-nowrap" style="min-width:180px; justify-content:center; background:linear-gradient(135deg,var(--sage),var(--sage-600)); color:#fff; border:1px solid var(--sage-600); box-shadow:0 4px 18px rgba(104,138,85,0.32);">
+                <button onclick="startDiscovery()" class="shrink-0 text-sm font-black py-3.5 px-8 rounded-2xl flex items-center gap-2.5 whitespace-nowrap" style="min-width:180px; justify-content:center; background:linear-gradient(135deg,var(--sage),var(--sage-600)); color:#fff; border:1px solid var(--sage-600); box-shadow:0 4px 18px rgba(31,156,143,0.32);">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     Discover Jobs
                 </button>
