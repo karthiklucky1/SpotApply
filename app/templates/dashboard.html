@@ -664,7 +664,7 @@
                 <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Resume
             </button>
-            <button onclick="openProfileModal()" title="My Profile" class="flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-full border border-white/[0.08] hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
+            <button data-tour="profile" onclick="openProfileModal()" title="My Profile" class="flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-full border border-white/[0.08] hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
                 <span style="width:28px;height:28px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(99,102,241,0.45);flex-shrink:0;">
                     <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" />
                     <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px;background:linear-gradient(135deg,rgba(99,102,241,0.25),rgba(124,58,237,0.12));">👤</span>
@@ -727,70 +727,8 @@
             </div>
         </div>
 
-        <!-- Pipeline Funnel & Stats Grid -->
-        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-            <!-- Glassmorphic Funnel Visualizer -->
-            <div class="glass rounded-[32px] p-6 lg:col-span-2 flex flex-col justify-between">
-                <div>
-                    <h2 class="text-sm font-bold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
-                        <span>📊</span> AI Candidate Matching Funnel
-                    </h2>
-                    
-                    <div class="flex flex-wrap md:flex-nowrap items-center justify-around gap-4 pt-2">
-                        <!-- Stage 1 -->
-                        <div class="flex flex-col items-center funnel-step" style="animation-delay:300ms">
-                            <div class="w-24 h-24 rounded-full bg-slate-800/40 border border-slate-700/50 flex flex-col justify-center items-center shadow-lg hover:shadow-slate-500/10 transition-all duration-300">
-                                <span class="text-xl font-black text-slate-200" id="funnel-pool">11.3k</span>
-                                <span class="text-[9px] font-bold text-slate-400 uppercase mt-0.5">Harvested</span>
-                            </div>
-                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center">Base Pool</div>
-                        </div>
-                        
-                        <!-- Connector -->
-                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
-
-                        <!-- Stage 2 -->
-                        <div class="flex flex-col items-center funnel-step" style="animation-delay:420ms">
-                            <div class="w-24 h-24 rounded-full bg-indigo-950/20 border border-indigo-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-indigo-500/20 transition-all duration-300">
-                                <span class="text-xl font-black text-indigo-400" id="funnel-cross">200</span>
-                                <span class="text-[9px] font-bold text-indigo-300/80 uppercase mt-0.5">Cross-Enc</span>
-                            </div>
-                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-cross-pct">Top 1.7%</div>
-                        </div>
-
-                        <!-- Connector -->
-                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
-
-                        <!-- Stage 3 -->
-                        <div class="flex flex-col items-center funnel-step" style="animation-delay:540ms">
-                            <div class="w-24 h-24 rounded-full bg-violet-950/20 border border-violet-900/30 flex flex-col justify-center items-center shadow-lg hover:shadow-violet-500/20 transition-all duration-300">
-                                <span class="text-xl font-black text-violet-400" id="funnel-llm">50</span>
-                                <span class="text-[9px] font-bold text-violet-300/80 uppercase mt-0.5">LLM Scored</span>
-                            </div>
-                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-llm-pct">Top 0.4%</div>
-                        </div>
-
-                        <!-- Connector -->
-                        <div class="hidden md:block text-slate-700 text-lg select-none">➔</div>
-
-                        <!-- Stage 4 -->
-                        <div class="flex flex-col items-center funnel-step" style="animation-delay:660ms">
-                            <div class="w-24 h-24 rounded-full bg-emerald-950/20 border border-emerald-500/40 flex flex-col justify-center items-center shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:shadow-[0_0_20px_rgba(16,185,129,0.25)] transition-all duration-300">
-                                <span class="text-xl font-black text-emerald-400" id="funnel-short">13</span>
-                                <span class="text-[9px] font-bold text-emerald-300/80 uppercase mt-0.5">Shortlist</span>
-                            </div>
-                            <div class="text-[10px] text-slate-500 font-semibold mt-2 text-center" id="funnel-short-pct">Top 0.1%</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="mt-4 flex items-center justify-between text-xs text-slate-500 border-t border-slate-800/40 pt-3">
-                    <span>💡 Funnel health: <strong class="text-emerald-400" id="funnel-health-msg">Optimized matching parameters loaded.</strong></span>
-                    <span id="funnel-match-rate" class="font-semibold text-slate-400">Match Rate: 0.11%</span>
-                </div>
-            </div>
-
-            <!-- Score Distribution Chart -->
+        <!-- Score Distribution — hidden until there is matching data -->
+        <section id="analytics-section" class="mb-8" style="display:none;">
             <div class="glass rounded-3xl p-6 flex flex-col justify-between">
                 <div>
                     <h2 class="text-sm font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-2">
@@ -833,46 +771,15 @@
         </div>
 
         <!-- Onboarding checklist — shown only to new users with no jobs in pool -->
-        <div id="onboarding-banner" class="hidden glass rounded-[24px] p-5 mb-8 border border-indigo-500/30 bg-indigo-500/5">
-            <div class="flex items-start justify-between gap-4">
-                <div class="flex-1">
-                    <div class="flex items-center gap-2 mb-3">
-                        <span class="text-lg">👋</span>
-                        <h3 class="font-bold text-white text-sm">Welcome to HirePath — here's how to get started</h3>
-                    </div>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
-                            <div class="w-6 h-6 rounded-full bg-indigo-500/30 flex items-center justify-center text-xs font-black text-indigo-300 shrink-0 mt-0.5">1</div>
-                            <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Upload Resume</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">📄 Resume</strong> in the sidebar. Upload your PDF — the AI reads your skills, experience and location to match jobs.</p>
-                            </div>
-                        </div>
-                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
-                            <div class="w-6 h-6 rounded-full bg-violet-500/30 flex items-center justify-center text-xs font-black text-violet-300 shrink-0 mt-0.5">2</div>
-                            <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Paste a Job Link</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Use <strong class="text-slate-300">🔗 Add Job from Link</strong> below. Paste any job URL — LinkedIn, Greenhouse, Indeed, Workday. We fetch the JD and calculate your match % + hire probability instantly.</p>
-                            </div>
-                        </div>
-                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
-                            <div class="w-6 h-6 rounded-full bg-sky-500/30 flex items-center justify-center text-xs font-black text-sky-300 shrink-0 mt-0.5">3</div>
-                            <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Tailored Docs</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">In <strong class="text-slate-300">📋 Pipeline</strong>, click <strong class="text-slate-300">✨ Tailor</strong> on any shortlisted job. AI rewrites your resume bullets and writes a cover letter matched to that exact job description.</p>
-                            </div>
-                        </div>
-                        <div class="flex items-start gap-2.5 bg-white/[0.03] rounded-xl p-3">
-                            <div class="w-6 h-6 rounded-full bg-emerald-500/30 flex items-center justify-center text-xs font-black text-emerald-300 shrink-0 mt-0.5">4</div>
-                            <div>
-                                <p class="text-xs font-bold text-white mb-0.5">Apply</p>
-                                <p class="text-[10px] text-slate-400 leading-relaxed">Click <strong class="text-slate-300">📋 View Tailored Docs</strong> to read your resume & cover letter, then <strong class="text-slate-300">🖥️ Open Form</strong> + <strong class="text-slate-300">📝 Answer Pack</strong> to apply. Greenhouse/Lever/Ashby jobs get ⚡ Auto-fill (Pro).</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <button onclick="document.getElementById('onboarding-banner').remove(); localStorage.setItem('hp_onboarding_dismissed','1')" class="text-slate-500 hover:text-white transition-colors shrink-0 mt-1 text-lg">✕</button>
+        <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->
+        <div id="tour-launcher" class="glass rounded-2xl px-5 py-3.5 mb-8 flex items-center gap-4">
+            <span class="text-xl shrink-0">👋</span>
+            <div class="flex-1 min-w-0">
+                <p class="text-sm font-bold" style="color:var(--ink);">New to HirePath? Take the quick tour</p>
+                <p class="text-[11px]" style="color:var(--muted);">We'll point out the dashboard, shortlist, pipeline and how to apply.</p>
             </div>
+            <button onclick="startTour()" class="btn-primary shrink-0 text-xs font-black py-2.5 px-5 rounded-full text-white">Start tour ›</button>
+            <button onclick="document.getElementById('tour-launcher').remove(); localStorage.setItem('hp_tour_v1_done','1')" title="Dismiss" class="shrink-0 text-lg" style="color:var(--muted);">✕</button>
         </div>
 
         <!-- Source Breakdown Bar -->
@@ -1022,7 +929,7 @@
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
             <!-- Column 1: Shortlisted -->
-            <div class="glass rounded-[32px] p-5 border border-indigo-500/25 shadow-[0_0_15px_rgba(99,102,241,0.05)] flex flex-col gap-4 min-h-[300px]">
+            <div data-tour="shortlist" class="glass rounded-[32px] p-5 border border-indigo-500/25 shadow-[0_0_15px_rgba(99,102,241,0.05)] flex flex-col gap-4 min-h-[300px]">
                 <div class="flex items-center justify-between border-b border-slate-800/40 pb-2">
                     <div class="flex items-center gap-2">
                         <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
@@ -1705,21 +1612,11 @@
                 
                 // Update metrics
                 document.getElementById('stat-pool').textContent = stats.total_jobs.toLocaleString();
-                document.getElementById('funnel-pool').textContent = (stats.total_jobs / 1000).toFixed(1) + 'k';
-                document.getElementById('funnel-cross').textContent = stats.funnel.cross_encoder_passed;
-                document.getElementById('funnel-llm').textContent = stats.funnel.reranker_scored;
-                document.getElementById('funnel-short').textContent = stats.funnel.shortlisted;
                 document.getElementById('stat-shortlist').textContent = stats.funnel.shortlisted;
-                
-                // Percentages
-                const crossPct = stats.total_jobs ? ((stats.funnel.cross_encoder_passed / stats.total_jobs) * 100).toFixed(1) : 0;
-                const llmPct = stats.total_jobs ? ((stats.funnel.reranker_scored / stats.total_jobs) * 100).toFixed(1) : 0;
-                const shortPct = stats.total_jobs ? ((stats.funnel.shortlisted / stats.total_jobs) * 100).toFixed(2) : 0;
-                
-                document.getElementById('funnel-cross-pct').textContent = `Top ${crossPct}%`;
-                document.getElementById('funnel-llm-pct').textContent = `Top ${llmPct}%`;
-                document.getElementById('funnel-short-pct').textContent = `Top ${shortPct}%`;
-                document.getElementById('funnel-match-rate').textContent = `Match Rate: ${shortPct}%`;
+
+                // Reveal the fit-score analytics only once there's matching data
+                const _analytics = document.getElementById('analytics-section');
+                if (_analytics) _analytics.style.display = (stats.total_jobs > 0) ? '' : 'none';
                 
                 // Registry Stats
                 document.getElementById('reg-stat-total').textContent = stats.registry.total_boards;
@@ -1732,13 +1629,6 @@
                 document.getElementById('band-weak').textContent = stats.scores.band_40_59;
                 document.getElementById('band-wrong').textContent = stats.scores.band_0_39;
                 
-                // Reranker prompt explanation based on pipeline state
-                const funnelHealth = document.getElementById('funnel-health-msg');
-                if (stats.funnel.shortlisted > 13) {
-                    funnelHealth.innerHTML = `<span class="text-emerald-400 font-bold">Funnel expanding!</span> Matcher relaxation added candidate variety.`;
-                } else {
-                    funnelHealth.innerHTML = `Running relaxed rules. Next matching cycle will process expanded list.`;
-                }
 
                 // Source breakdown bar — show ALL sources with jobs, sorted by count,
                 // in a horizontally scrollable row.
@@ -4005,6 +3895,121 @@
   });
   // Ping the extension every 20s; content.js replies HIREPATH_EXT_PING_OK if alive
   setInterval(() => window.postMessage({ type: 'HIREPATH_EXT_PING' }, '*'), 20000);
+})();
+</script>
+
+<!-- ── Guided product tour ─────────────────────────────────────────────── -->
+<style>
+  #tour-dim { position:fixed; inset:0; z-index:99998; pointer-events:none; opacity:0; transition:opacity .25s ease; }
+  #tour-ring { position:absolute; border-radius:16px; box-shadow:0 0 0 9999px rgba(28,24,18,0.58), 0 0 0 3px var(--sage,#7E9B6C);
+               transition:all .32s cubic-bezier(.34,1.2,.64,1); pointer-events:none; }
+  #tour-tip { position:fixed; z-index:99999; width:300px; max-width:calc(100vw - 32px);
+              background:var(--surface,#FCFAF5); color:var(--ink,#2E2A24); border:1px solid var(--border,#E6E0D3);
+              border-radius:18px; padding:18px; box-shadow:0 16px 50px rgba(28,24,18,0.28);
+              font-family:'Outfit',sans-serif; opacity:0; transform:translateY(6px); transition:opacity .25s, transform .25s; }
+  #tour-tip.show { opacity:1; transform:translateY(0); }
+  #tour-tip h4 { font-size:15px; font-weight:800; margin:0 0 6px; color:var(--ink,#2E2A24); }
+  #tour-tip p { font-size:12.5px; line-height:1.55; margin:0 0 14px; color:var(--muted,#8C857A); }
+  #tour-tip .tour-actions { display:flex; align-items:center; gap:8px; }
+  #tour-tip .tour-count { font-size:11px; font-weight:700; color:var(--muted-2,#A8A092); margin-right:auto; }
+  #tour-tip button { font-size:12px; font-weight:800; border-radius:9999px; padding:7px 14px; cursor:pointer; border:none; transition:.15s; }
+  #tour-tip .tour-next { background:linear-gradient(135deg,var(--sage,#7E9B6C),var(--sage-600,#688A55)); color:#fff; }
+  #tour-tip .tour-back { background:var(--surface-2,#EFEADF); color:var(--ink-soft,#4A453C); }
+  #tour-tip .tour-skip { background:none; color:var(--muted-2,#A8A092); padding:7px 4px; font-weight:700; }
+  #tour-tip .tour-skip:hover { color:var(--sage-600,#688A55); }
+</style>
+<script>
+(function () {
+  const STEPS = [
+    { sel: '#discover-hero-banner', title: '1 · Discover jobs',
+      text: "Start here. HirePath scans 1000+ job boards and ranks the best matches for your résumé. Click “Discover Jobs” anytime." },
+    { sel: '[data-tour="profile"]', title: '2 · Your profile',
+      text: "Open your profile and upload your résumé. We read your skills, experience and location so applications autofill correctly." },
+    { sel: '#tab-nav-bar', title: '3 · Switch views',
+      text: "Toggle between your application Pipeline, every discovered job (All Jobs), and the boards we scan (Boards)." },
+    { sel: '[data-tour="shortlist"]', title: '4 · Shortlisted fits',
+      text: "Your strongest matches land here, ranked by fit + hiring intent. Tailor a résumé & cover letter, then apply." },
+    { sel: '#ext-install-banner', title: '5 · Browser extension',
+      text: "Install the extension to autofill any job form — on LinkedIn, Workday, Greenhouse and more. You always control Submit." },
+  ];
+
+  let idx = 0, dim, ring, tip;
+
+  function ensureEls() {
+    if (dim) return;
+    dim = document.createElement('div'); dim.id = 'tour-dim';
+    ring = document.createElement('div'); ring.id = 'tour-ring';
+    dim.appendChild(ring);
+    tip = document.createElement('div'); tip.id = 'tour-tip';
+    document.body.appendChild(dim); document.body.appendChild(tip);
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+  }
+
+  function targetEl() {
+    for (let i = idx; i < STEPS.length; i++) {
+      const el = document.querySelector(STEPS[i].sel);
+      if (el && el.offsetParent !== null) { idx = i; return el; }
+    }
+    return null;
+  }
+
+  function position() {
+    if (!tip) return;
+    const el = document.querySelector(STEPS[idx].sel);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    // #tour-dim is position:fixed, so the ring uses viewport-relative coords.
+    ring.style.top = (r.top - pad) + 'px';
+    ring.style.left = (r.left - pad) + 'px';
+    ring.style.width = (r.width + pad * 2) + 'px';
+    ring.style.height = (r.height + pad * 2) + 'px';
+    // Tip below the target if room, else above
+    const below = r.bottom + 14;
+    const tipH = tip.offsetHeight || 160;
+    let top = (below + tipH < window.innerHeight) ? below : Math.max(12, r.top - tipH - 14);
+    let left = Math.min(Math.max(12, r.left), window.innerWidth - 312);
+    tip.style.top = top + 'px';
+    tip.style.left = left + 'px';
+  }
+
+  function render() {
+    const el = targetEl();
+    if (!el) return end();
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const s = STEPS[idx];
+    const last = idx === STEPS.length - 1;
+    tip.innerHTML =
+      '<h4>' + s.title + '</h4><p>' + s.text + '</p>' +
+      '<div class="tour-actions">' +
+        '<span class="tour-count">' + (idx + 1) + ' of ' + STEPS.length + '</span>' +
+        (idx > 0 ? '<button class="tour-back" onclick="window.__tourBack()">Back</button>' : '') +
+        '<button class="tour-skip" onclick="window.__tourEnd()">Skip</button>' +
+        '<button class="tour-next" onclick="window.__tourNext()">' + (last ? 'Done' : 'Next') + '</button>' +
+      '</div>';
+    requestAnimationFrame(() => { dim.style.opacity = '1'; tip.classList.add('show'); position(); });
+    setTimeout(position, 320);
+  }
+
+  function end() {
+    if (dim) dim.style.opacity = '0';
+    if (tip) tip.classList.remove('show');
+    setTimeout(() => { if (dim) dim.remove(); if (tip) tip.remove(); dim = ring = tip = null; }, 250);
+    localStorage.setItem('hp_tour_v1_done', '1');
+  }
+
+  window.startTour = function () { idx = 0; ensureEls(); render(); };
+  window.__tourNext = function () { if (idx >= STEPS.length - 1) return end(); idx++; render(); };
+  window.__tourBack = function () { if (idx > 0) { idx--; render(); } };
+  window.__tourEnd = end;
+
+  // Auto-start once, on first visit, after the page settles.
+  if (!localStorage.getItem('hp_tour_v1_done')) {
+    window.addEventListener('load', () => setTimeout(() => {
+      if (document.querySelector('#discover-hero-banner')) window.startTour();
+    }, 1400));
+  }
 })();
 </script>
 
