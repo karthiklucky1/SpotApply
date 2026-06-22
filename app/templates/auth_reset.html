@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HirePath — Reset Password</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%232FB4A6'/><stop offset='100%25' stop-color='%2316847A'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --canvas: #F4F1EA; --surface: #FCFAF5; --surface-2: #EFEaDf;
+            --ink: #2E2A24; --ink-soft: #4A453C; --muted: #8C857A; --border: #E6E0D3;
+            --sage: #2FB4A6; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E7F5F2;
+        }
+        * { box-sizing: border-box; }
+        body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; }
+        body::before {
+            content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+            background:
+                radial-gradient(ellipse 80% 60% at 15% -5%, rgba(47,180,166,0.13) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 50% at 88% 8%, rgba(120,210,200,0.09) 0%, transparent 55%);
+        }
+        .hp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 28px; box-shadow: 0 1px 3px rgba(46,42,36,0.04), 0 10px 40px rgba(46,42,36,0.09); }
+        .hp-input { width: 100%; background: var(--surface-2); border: 1.5px solid var(--border); border-radius: 12px; padding: 12px 16px; font-size: 14px; color: var(--ink); font-family: 'Outfit', sans-serif; outline: none; transition: border-color 0.15s; }
+        .hp-input:focus { border-color: var(--sage); }
+        .hp-btn-primary { width: 100%; background: var(--sage); color: white; font-weight: 700; font-size: 14px; padding: 13px; border-radius: 12px; border: none; cursor: pointer; transition: background 0.15s; font-family: 'Outfit', sans-serif; }
+        .hp-btn-primary:hover { background: var(--sage-600); }
+        .hp-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+        label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+        #msg { display: none; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+<div style="width:100%;max-width:420px;position:relative;z-index:1;">
+    <div style="text-align:center;margin-bottom:28px;">
+        <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,var(--sage),var(--sage-700));margin:0 auto 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(47,180,166,0.3);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h1 style="font-size:24px;font-weight:800;color:var(--ink);margin:0;">Choose a new password</h1>
+        <p style="font-size:13px;color:var(--muted);margin:4px 0 0;">Enter a new password for your account.</p>
+    </div>
+
+    <div class="hp-card" style="padding:28px;">
+        <div id="msg"></div>
+
+        <!-- Shown only once we have a valid recovery session -->
+        <form id="reset-form" onsubmit="handleReset(event)" style="display:none;flex-direction:column;gap:14px;">
+            <div>
+                <label>New password</label>
+                <input type="password" id="new-password" required placeholder="Min 8 characters" class="hp-input" minlength="8" />
+            </div>
+            <div>
+                <label>Confirm password</label>
+                <input type="password" id="confirm-password" required placeholder="Re-enter password" class="hp-input" minlength="8" />
+            </div>
+            <button type="submit" id="btn-reset" class="hp-btn-primary" style="margin-top:4px;">Update password</button>
+        </form>
+
+        <!-- Shown while we wait for / fail to get a recovery session -->
+        <div id="reset-pending" style="text-align:center;color:var(--muted);font-size:14px;">
+            Verifying your reset link…
+        </div>
+    </div>
+
+    <p style="text-align:center;font-size:12px;color:var(--muted);margin-top:18px;">
+        <a href="/login" style="color:var(--sage-700);text-decoration:none;font-weight:700;">← Back to sign in</a>
+    </p>
+</div>
+
+<script type="module">
+    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+    const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
+
+    function showMsg(text, type = 'error') {
+        const el = document.getElementById('msg')
+        el.textContent = text
+        el.style.display = 'block'
+        if (type === 'error') {
+            el.style.cssText = 'display:block;background:#FEE2E2;color:#991B1B;border:1px solid #FECACA;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;'
+        } else {
+            el.style.cssText = 'display:block;background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(47,180,166,0.3);padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;'
+        }
+    }
+
+    // Supabase fires a PASSWORD_RECOVERY event once it parses the recovery
+    // token from the URL hash and establishes a temporary session.
+    let recoveryReady = false
+    sb.auth.onAuthStateChange((event, session) => {
+        if (event === 'PASSWORD_RECOVERY' || (session && !recoveryReady)) {
+            recoveryReady = true
+            document.getElementById('reset-pending').style.display = 'none'
+            document.getElementById('reset-form').style.display = 'flex'
+        }
+    })
+
+    // Fallback: if no recovery session shows up shortly, the link is invalid/expired.
+    setTimeout(async () => {
+        if (recoveryReady) return
+        const { data: { session } } = await sb.auth.getSession()
+        if (session) {
+            recoveryReady = true
+            document.getElementById('reset-pending').style.display = 'none'
+            document.getElementById('reset-form').style.display = 'flex'
+        } else {
+            document.getElementById('reset-pending').innerHTML =
+                'This reset link is invalid or has expired.<br><a href="/login" style="color:var(--sage-700);font-weight:700;">Request a new one</a>'
+        }
+    }, 2500)
+
+    window.handleReset = async (e) => {
+        e.preventDefault()
+        const pw = document.getElementById('new-password').value
+        const confirm = document.getElementById('confirm-password').value
+        if (pw !== confirm) { showMsg('Passwords do not match.'); return }
+        if (pw.length < 8) { showMsg('Password must be at least 8 characters.'); return }
+        const btn = document.getElementById('btn-reset')
+        btn.textContent = 'Updating…'; btn.disabled = true
+        const { error } = await sb.auth.updateUser({ password: pw })
+        if (error) { showMsg(error.message); btn.textContent = 'Update password'; btn.disabled = false; return }
+        // Invalidate every other session after a password change, then send the
+        // user back to a clean sign-in so they re-authenticate with the new password.
+        try { await sb.auth.signOut({ scope: 'global' }) } catch (e) {}
+        showMsg('Password updated. Redirecting to sign in…', 'success')
+        setTimeout(() => { window.location.href = '/login' }, 1500)
+    }
+</script>
+</body>
+</html>

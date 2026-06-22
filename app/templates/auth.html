@@ -150,8 +150,11 @@
                 <input type="email" id="signin-email" required placeholder="you@example.com" class="hp-input" />
             </div>
             <div>
-                <label>Password</label>
-                <input type="password" id="signin-password" required placeholder="••••••••" class="hp-input" />
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <label style="margin-bottom:0;">Password</label>
+                    <button type="button" onclick="handleForgot()" style="background:none;border:none;cursor:pointer;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;color:var(--sage-700);padding:0;">Forgot?</button>
+                </div>
+                <input type="password" id="signin-password" required placeholder="••••••••" class="hp-input" style="margin-top:6px;" />
             </div>
             <button type="submit" id="btn-signin" class="hp-btn-primary" style="margin-top:4px;">Sign In</button>
         </form>
@@ -279,7 +282,17 @@
                 emailRedirectTo: window.location.origin + '/auth/callback'
             }
         })
-        if (error) { showMsg(error.message); btn.textContent = 'Create Account'; btn.disabled = false; return }
+        if (error) {
+            // Don't reveal whether the email is already registered — show the
+            // same neutral message we'd show on success for an existing account.
+            const m = (error.message || '').toLowerCase()
+            if (m.includes('already') || m.includes('exists') || m.includes('registered')) {
+                showMsg('If this email is new, check your inbox to confirm your account.', 'success')
+            } else {
+                showMsg(error.message)  // genuine validation errors (e.g. weak password) stay visible
+            }
+            btn.textContent = 'Create Account'; btn.disabled = false; return
+        }
         if (data.session) {
             localStorage.setItem('sb_token', data.session.access_token)
             setTokenCookie(data.session.access_token)
@@ -293,6 +306,23 @@
             showMsg('Check your email to confirm your account, then sign in.', 'success')
             btn.textContent = 'Create Account'; btn.disabled = false
         }
+    }
+
+    window.handleForgot = async () => {
+        const email = document.getElementById('signin-email').value.trim()
+        if (!email) {
+            showMsg('Enter your email above, then tap Forgot to get a reset link.')
+            document.getElementById('signin-email').focus()
+            return
+        }
+        try {
+            await sb.auth.resetPasswordForEmail(email, {
+                redirectTo: window.location.origin + '/auth/reset'
+            })
+        } catch (e) { /* swallow — never reveal whether the email exists */ }
+        // Always show the same generic message regardless of whether the
+        // account exists (prevents account-enumeration via the reset form).
+        showMsg('If an account exists for that email, a password reset link is on its way.', 'success')
     }
 
     window.handleGoogle = async () => {

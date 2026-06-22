@@ -229,6 +229,17 @@ def auth_callback(request: Request):
     })
 
 
+@app.get("/auth/reset", response_class=HTMLResponse)
+def auth_reset_page(request: Request):
+    """Password-reset landing page. Supabase sends the recovery link here with
+    a token in the URL hash; this page lets the user set a new password."""
+    from app.config import settings
+    return templates.TemplateResponse(request=request, name="auth_reset.html", context={
+        "supabase_url": settings.supabase_url,
+        "supabase_anon_key": settings.supabase_anon_key,
+    })
+
+
 @app.post("/auth/logout")
 def logout():
     return {"success": True}
@@ -1625,8 +1636,14 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     """Update user profile fields."""
     from app.autofill.answer_pack import _get_or_create_profile
     from app.db.models import UserProfile
+    from app.config import settings
 
     uid = _get_user_id(request)
+    # Fail closed: an unauthenticated/expired token in multi-tenant mode would
+    # otherwise resolve to user_id=None, and the query below (no WHERE clause)
+    # would update the FIRST profile in the table — i.e. some other user's data.
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     user_id_arg = uid if uid != "local" else None
     # Get-or-create inside the same session to avoid detached-instance issues
     with get_session() as session:
