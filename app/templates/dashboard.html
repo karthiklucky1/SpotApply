@@ -2807,7 +2807,33 @@
                     autofillEl.textContent = aLimit === null ? `${aUsed} / ∞ this week` : aLimit === 0 ? `0 (upgrade to unlock)` : `${aUsed}/${aLimit} this week`;
                     if (autofillBar) autofillBar.style.width = aLimit ? `${Math.min(100, aUsed / aLimit * 100)}%` : '0%';
                 }
+                renderTrialBanner(d.trial);
             } catch(e) { /* non-fatal */ }
+        }
+
+        function renderTrialBanner(trial) {
+            let el = document.getElementById('trial-banner');
+            if (!trial) { if (el) el.remove(); return; }
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'trial-banner';
+                el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:60;'
+                    + 'padding:10px 18px;border-radius:9999px;font-size:12px;font-weight:700;'
+                    + 'box-shadow:0 8px 28px rgba(46,42,36,.18);display:flex;align-items:center;gap:10px;';
+                document.body.appendChild(el);
+            }
+            const pct = Math.round((trial.jobs_used / trial.jobs_quota) * 100);
+            if (trial.active) {
+                el.style.background = 'linear-gradient(135deg,var(--sage),var(--sage-600))';
+                el.style.color = '#fff';
+                el.innerHTML = `🚀 Founding trial — <b>${trial.remaining}/${trial.jobs_quota}</b> free job applications left`
+                    + `<span style="display:inline-block;width:80px;height:6px;border-radius:9999px;background:rgba(255,255,255,.3)">`
+                    + `<span style="display:block;height:6px;border-radius:9999px;background:#fff;width:${100-pct}%"></span></span>`;
+            } else {
+                el.style.background = '#fff'; el.style.color = '#92400e'; el.style.border = '1px solid #e3c48f';
+                el.innerHTML = `✅ Your ${trial.jobs_quota}-job founding trial is complete · `
+                    + `<a onclick="openSettings('pricing')" style="color:var(--sage-700);text-decoration:underline;cursor:pointer">Upgrade to keep going →</a>`;
+            }
         }
 
         async function tailorJob(appId, btn) {

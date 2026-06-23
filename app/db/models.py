@@ -338,6 +338,20 @@ class UserPersonalMemory(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class TrialGrant(SQLModel, table=True):
+    """Founding-user trial: the first N users get a budget of fully processed
+    jobs (discover → match → tailor → apply) with all Pro features unlocked.
+    One grant per user_id."""
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_trial_user"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    jobs_quota: int = 100
+    jobs_used: int = 0
+    granted_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class H1BSponsor(SQLModel, table=True):
     """Global reference data from the public USCIS H-1B Employer Data Hub /
     DOL LCA disclosure files. NOT tenant-scoped — it's public record shared by

@@ -1727,8 +1727,67 @@ def trigger_matching(request: Request, bg: BackgroundTasks) -> dict:
 
 # ── Usage / Plan helpers ─────────────────────────────────────────────────────
 
+# ── Founding-user trial ──────────────────────────────────────────────────────
+def _get_trial(uid):
+    """Return this user's TrialGrant row, or None."""
+    if not uid or uid == "local":
+        return None
+    from app.db.models import TrialGrant
+    with get_session() as session:
+        return session.exec(select(TrialGrant).where(TrialGrant.user_id == uid)).first()
+
+
+def _grant_trial_if_eligible(uid):
+    """Grant a trial to the first N users (idempotent). Returns the grant or None."""
+    if not uid or uid == "local":
+        return None
+    from app.db.models import TrialGrant
+    from app.config import settings
+    try:
+        with get_session() as session:
+            existing = session.exec(select(TrialGrant).where(TrialGrant.user_id == uid)).first()
+            if existing:
+                return existing
+            cnt = session.exec(select(func.count(TrialGrant.id))).one()
+            cnt = int(cnt if not isinstance(cnt, (list, tuple)) else cnt[0])
+            if cnt >= settings.trial_max_users:
+                return None
+            g = TrialGrant(user_id=uid, jobs_quota=settings.trial_job_quota, jobs_used=0)
+            session.add(g)
+            session.commit()
+            session.refresh(g)
+            log.info("Granted founding-user trial #%d to %s", cnt + 1, uid)
+            return g
+    except Exception as e:
+        log.debug("trial grant skipped: %s", e)
+        return None
+
+
+def _trial_active(uid) -> bool:
+    g = _get_trial(uid)
+    return bool(g and g.jobs_used < g.jobs_quota)
+
+
+def _increment_trial(uid, n: int = 1):
+    if not uid or uid == "local":
+        return
+    from app.db.models import TrialGrant
+    try:
+        with get_session() as session:
+            g = session.exec(select(TrialGrant).where(TrialGrant.user_id == uid)).first()
+            if g:
+                g.jobs_used += n
+                session.add(g)
+                session.commit()
+    except Exception as e:
+        log.debug("trial increment skipped: %s", e)
+
+
 def _get_user_plan(uid: str) -> PlanTier:
-    """Return the user's current plan tier. Defaults to FREE."""
+    """Return the user's current plan tier. Defaults to FREE.
+    Active founding-user trials are treated as PRO (all features unlocked)."""
+    if _trial_active(uid):
+        return PlanTier.PRO
     with get_session() as session:
         sub = session.exec(
             select(UserSubscription).where(UserSubscription.user_id == uid)
@@ -1773,6 +1832,16 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
     """Returns (allowed, detail_msg, usage_info)."""
     if uid == "local":
         return True, "", {}
+    # Founding-user trial: a hard budget of N fully processed jobs, but no
+    # daily/weekly caps until it's used up.
+    _trial = _get_trial(uid)
+    if _trial is not None:
+        if _trial.jobs_used >= _trial.jobs_quota:
+            return False, (
+                f"Your {_trial.jobs_quota}-job founding trial is complete "
+                f"({_trial.jobs_used}/{_trial.jobs_quota}). Upgrade to keep applying."
+            ), {"trial": True, "used": _trial.jobs_used, "quota": _trial.jobs_quota}
+        return True, "", {"trial": True, "used": _trial.jobs_used, "quota": _trial.jobs_quota}
     plan = _get_user_plan(uid)
     limits = PLAN_LIMITS[plan]
     daily_limit = limits["tailor_daily"]
@@ -1793,6 +1862,10 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
 
 def _increment_tailor(uid: str):
     if uid == "local":
+        return
+    # Trial users spend a job from their founding-trial budget (1 tailor = 1 job).
+    if _get_trial(uid) is not None:
+        _increment_trial(uid, 1)
         return
     with get_session() as session:
         row = _get_or_create_usage(session, uid)
@@ -1847,7 +1920,9 @@ def get_usage(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if uid == "local":
         return {"plan": "local", "tailor_used": 0, "tailor_daily_limit": None,
-                "autofill_used_week": 0, "autofill_weekly_limit": None}
+                "autofill_used_week": 0, "autofill_weekly_limit": None, "trial": None}
+    # Founding-user trial: grant on first sight (first N users), then report it.
+    trial_grant = _grant_trial_if_eligible(uid)
     plan = _get_user_plan(uid)
     limits = PLAN_LIMITS[plan]
     today = date.today()
@@ -1857,6 +1932,14 @@ def get_usage(request: Request) -> dict:
         tailor_used = row.tailor_count
         autofill_used = _get_week_autofill_count(session, uid)
         session.commit()
+    trial = None
+    if trial_grant is not None:
+        trial = {
+            "jobs_used": trial_grant.jobs_used,
+            "jobs_quota": trial_grant.jobs_quota,
+            "remaining": max(0, trial_grant.jobs_quota - trial_grant.jobs_used),
+            "active": trial_grant.jobs_used < trial_grant.jobs_quota,
+        }
     return {
         "plan": plan,
         "tailor_used": tailor_used,
@@ -1864,6 +1947,7 @@ def get_usage(request: Request) -> dict:
         "autofill_used_week": autofill_used,
         "autofill_weekly_limit": limits["autofill_weekly"],
         "week_start": week_start.isoformat(),
+        "trial": trial,
     }
 
 

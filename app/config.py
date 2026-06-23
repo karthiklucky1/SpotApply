@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # Admin token gating the one-off H-1B CSV upload page (empty = page disabled)
     admin_token: str = ""
 
+    # Founding-user trial: first N users get a budget of fully processed jobs
+    # with all Pro features unlocked.
+    trial_max_users: int = 10
+    trial_job_quota: int = 100
+
     # Local personal dashboard
     api_host: str = "127.0.0.1"
     api_port: int = 8000
