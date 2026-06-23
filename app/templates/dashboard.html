@@ -4159,8 +4159,14 @@
             const input = document.getElementById('coupon-code-input');
             const msg = document.getElementById('coupon-result-msg');
             const code = (input.value || '').trim().toUpperCase();
-            if (!code) { msg.className = 'text-[11px] mt-1'; msg.style.color = '#b91c1c'; msg.textContent = 'Enter a code first.'; return; }
-            msg.className = 'text-[11px] mt-1'; msg.style.color = '#8C857A'; msg.textContent = 'Applying…';
+            let autoClear;
+            function showMsg(text, color, delay) {
+                if (autoClear) clearTimeout(autoClear);
+                msg.className = 'text-[11px] mt-1'; msg.style.color = color; msg.textContent = text;
+                if (delay) autoClear = setTimeout(() => { msg.textContent = ''; }, delay);
+            }
+            if (!code) { showMsg('Enter a code first.', '#b91c1c', 3000); return; }
+            showMsg('Applying…', '#8C857A', 0);
             try {
                 const token = localStorage.getItem('sb_token');
                 const res = await fetch('/api/coupon/redeem', {
@@ -4170,13 +4176,13 @@
                 });
                 const d = await res.json();
                 if (d.ok) {
-                    msg.style.color = '#059669'; msg.textContent = d.message || '🎉 Code applied!';
                     input.value = '';
+                    showMsg(d.message || '🎉 Code applied!', '#059669', 6000);
                 } else {
                     const errors = { invalid_code: 'Code not found or inactive.', expired: 'This code has expired.', used_up: 'This code has reached its limit.', already_redeemed: "You've already used this code." };
-                    msg.style.color = '#b91c1c'; msg.textContent = '❌ ' + (errors[d.reason] || d.message || 'Invalid code.');
+                    showMsg('❌ ' + (errors[d.reason] || d.message || 'Invalid code.'), '#b91c1c', 4000);
                 }
-            } catch (e) { msg.style.color = '#b91c1c'; msg.textContent = 'Network error — try again.'; }
+            } catch (e) { showMsg('Network error — try again.', '#b91c1c', 4000); }
         }
 
         function renderAnswerPack(data) {
