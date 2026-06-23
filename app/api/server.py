@@ -317,6 +317,22 @@ templates.env.globals["urgency_of"] = _urgency_of
 
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
+@app.get("/robots.txt")
+def serve_robots():
+    import os
+    from fastapi.responses import FileResponse
+    file_path = os.path.join(os.path.dirname(__file__), "..", "static", "robots.txt")
+    return FileResponse(file_path)
+
+
+@app.get("/sitemap.xml")
+def serve_sitemap():
+    import os
+    from fastapi.responses import FileResponse
+    file_path = os.path.join(os.path.dirname(__file__), "..", "static", "sitemap.xml")
+    return FileResponse(file_path, media_type="application/xml")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(request=request, name="landing.html", context={})

@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Allow: /static/
+Allow: /extension
+Disallow: /dashboard
+Disallow: /auth
+Disallow: /api/
+Disallow: /run/
+
+Sitemap: https://hirepath.dev/sitemap.xml
