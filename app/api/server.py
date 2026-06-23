@@ -2354,7 +2354,19 @@ approval data so JobAgent can show real sponsorship numbers. One-time (re-run ye
 <label>Admin token</label><input id=token type=password placeholder="ADMIN_TOKEN value">
 <label>CSV file</label><input id=file type=file accept=".csv">
 <button id=go onclick=up()>Upload &amp; ingest</button>
-<div id=msg></div></div><script>
+<div id=msg></div>
+<hr style="border:0;border-top:1px solid #E6E0D3;margin:22px 0 4px">
+<label>Verify a company</label>
+<input id=lkco placeholder="e.g. Google, Stripe, Deloitte…" onkeydown="if(event.key==='Enter')lk()">
+<button onclick=lk() style="background:#EFEADF;color:#2E2A24;margin-top:10px">Look up H-1B record</button>
+<div id=lkmsg style="margin-top:10px;font-size:13px"></div></div><script>
+async function lk(){const t=document.getElementById('token').value;const c=document.getElementById('lkco').value.trim();
+const m=document.getElementById('lkmsg');if(!t||!c){m.textContent='Enter token + company.';return;}m.textContent='…';
+try{const r=await fetch('/api/admin/h1b-lookup?token='+encodeURIComponent(t)+'&company='+encodeURIComponent(c));
+const d=await r.json();if(!r.ok){m.textContent='❌ '+(d.detail||'error');return;}
+if(d.record){m.innerHTML='✅ <b>'+(d.record.name||c)+'</b><br>'+d.record.approvals+' approvals · '+d.record.denials+' denials · '+Math.round((d.record.rate||0)*100)+'% rate (FY'+d.record.year+')';}
+else{m.innerHTML='⚠️ No H-1B record for "'+c+'" (normalized: <code>'+d.normalized+'</code>). Not all employers sponsor.';}}
+catch(e){m.textContent='❌ '+e;}}
 async function poll(t){try{const r=await fetch('/api/admin/h1b-status?token='+encodeURIComponent(t));
 if(r.ok){const d=await r.json();const m=document.getElementById('msg');
 if(d.last_error){m.innerHTML='<b style=color:#b91c1c>❌ Ingest error:</b> '+d.last_error+
@@ -2598,6 +2610,40 @@ def get_referral_drafts(application_id: int, request: Request) -> dict:
     except Exception as e:
         log.exception("Referral draft generation failed for app %d: %s", application_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/application/{application_id}/connections")
+@_rate_limit("10/minute")
+def get_job_connections(application_id: int, request: Request) -> dict:
+    """Find public LinkedIn referrers/champions for this job via Google X-Ray
+    (SerpAPI — no LinkedIn login or scraping). Owner-scoped + plan-gated."""
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    from app.config import settings
+    # Plan gate: Pro feature. Free users get an upsell; local/dev is unlimited.
+    if settings.use_supabase and uid and uid != "local":
+        if _get_user_plan(uid) == PlanTier.FREE:
+            raise HTTPException(
+                status_code=402,
+                detail="Finding LinkedIn referrers is a Pro feature — upgrade to unlock champion search.",
+            )
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id)
+    needs = _user_needs_sponsorship(uid if uid and uid != "local" else None)
+    from app.intelligence.linkedin_xray import find_champions
+    return find_champions(job.company or "", job.title or "", visa=needs)
+
+
+@app.get("/api/admin/h1b-lookup")
+def admin_h1b_lookup(company: str = "", token: str = "") -> dict:
+    """Verify the ingested H-1B data for a company (admin only)."""
+    _require_admin(token)
+    from app.intelligence.h1b_data import lookup, normalize
+    rec = lookup(company)
+    return {"company": company, "normalized": normalize(company), "record": rec}
 
 
 @app.get("/application/{application_id}/answer-pack")

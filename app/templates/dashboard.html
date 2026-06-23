@@ -549,25 +549,25 @@
     .jbtn-done:hover { background: var(--sage); border-color: var(--sage); }
     .jbtn-done:hover, .jbtn-done:hover * { color: #fff !important; }
 
-    /* ── Job detail centered popup (+ referral modal share these styles) ───── */
-    #jobModalOverlay, #referralOverlay { position: fixed; inset: 0; z-index: 90; display: flex;
+    /* ── Job detail centered popup (referral + connections modals share these) ── */
+    #jobModalOverlay, #referralOverlay, #connOverlay { position: fixed; inset: 0; z-index: 90; display: flex;
         align-items: center; justify-content: center; padding: 20px;
         background: rgba(46,42,36,.45); opacity: 0; visibility: hidden;
         transition: opacity .2s ease; }
-    #jobModalOverlay.open, #referralOverlay.open { opacity: 1; visibility: visible; }
-    #jobModal, #referralModal { width: min(660px, 96vw); max-height: 88vh; background: var(--surface);
+    #jobModalOverlay.open, #referralOverlay.open, #connOverlay.open { opacity: 1; visibility: visible; }
+    #jobModal, #referralModal, #connModal { width: min(660px, 96vw); max-height: 88vh; background: var(--surface);
         border: 1px solid var(--border); border-radius: 24px;
         box-shadow: 0 24px 70px rgba(46,42,36,.30); display: flex; flex-direction: column;
         transform: translateY(12px) scale(.985); opacity: 0;
         transition: transform .22s cubic-bezier(.4,0,.2,1), opacity .22s ease; }
-    #jobModalOverlay.open #jobModal, #referralOverlay.open #referralModal { transform: translateY(0) scale(1); opacity: 1; }
-    #jobModal .jd-head, #referralModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+    #jobModalOverlay.open #jobModal, #referralOverlay.open #referralModal, #connOverlay.open #connModal { transform: translateY(0) scale(1); opacity: 1; }
+    #jobModal .jd-head, #referralModal .jd-head, #connModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
         display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0; }
-    #jobModal .jd-body, #referralModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
-    #jobModalClose, #referralClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
+    #jobModal .jd-body, #referralModal .jd-body, #connModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
+    #jobModalClose, #referralClose, #connClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; font-size: 18px;
         color: var(--muted); background: var(--surface-2); transition: all .15s ease; }
-    #jobModalClose:hover, #referralClose:hover { background: var(--sage-tint); color: var(--sage-700); }
+    #jobModalClose:hover, #referralClose:hover, #connClose:hover { background: var(--sage-tint); color: var(--sage-700); }
 
     /* Gradient text → ink→sage */
     .gradient-text,.stat-shimmer {
@@ -1073,10 +1073,11 @@
 
                     {# Primary actions up top so they're reachable without scrolling #}
                     <div class="mb-2">{{ caller() }}</div>
-                    <div class="grid grid-cols-2 gap-2 mb-4">
+                    <div class="grid grid-cols-2 gap-2 mb-2">
                         <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[11px] py-2.5">↗ Open posting</a>
                         <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11px] py-2.5" title="Draft a referral / hiring-manager / visa-alumni message you can send yourself">🤝 Referral drafts</button>
                     </div>
+                    <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-ghost text-[11px] py-2.5 w-full mb-4" title="Find people at this company (via Google) who could refer you — no LinkedIn login needed">🔍 Find people who can refer you</button>
 
                     <div class="border-t border-slate-800/40 mb-4"></div>
 
@@ -4637,6 +4638,58 @@
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && document.getElementById('referralOverlay').classList.contains('open')) closeReferral();
     });
+
+    // ── Find referrers via Google X-Ray (no LinkedIn login) ──────────────────
+    function closeConnections() {
+        document.getElementById('connOverlay').classList.remove('open');
+        document.body.style.overflow = '';
+    }
+    async function openConnections(appId, company) {
+        if (typeof closeJobDrawer === 'function') closeJobDrawer();
+        const ov = document.getElementById('connOverlay');
+        const body = document.getElementById('connBody');
+        ov.classList.add('open'); document.body.style.overflow = 'hidden';
+        body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Searching Google for people at ' + (company || 'this company') + '…</p>';
+        try {
+            const tok = localStorage.getItem('sb_token');
+            const res = await fetch(`/application/${appId}/connections`, { headers: tok ? { 'Authorization': `Bearer ${tok}` } : {} });
+            if (res.status === 402) {
+                body.innerHTML = `<div class="text-center py-8">
+                    <div class="text-3xl mb-2">🔒</div>
+                    <p class="text-sm font-bold" style="color:var(--ink);">Finding referrers is a Pro feature</p>
+                    <p class="text-[12px] mt-1 mb-4" style="color:var(--muted);">Upgrade to surface people at each company who can refer you.</p>
+                    <button onclick="openSettings('pricing')" class="text-xs font-bold px-5 py-2 rounded-full text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">View plans →</button>
+                </div>`;
+                return;
+            }
+            if (!res.ok) { body.innerHTML = `<p class="text-rose-500 text-sm py-6 text-center">Search failed (${res.status}).</p>`; return; }
+            const data = await res.json();
+            if (!data.ok || !data.people || !data.people.length) {
+                const why = data.reason === 'serpapi_key_not_set' ? 'Search isn\'t configured yet (SERPAPI_KEY).'
+                    : data.reason === 'serpapi_quota' ? 'Monthly search quota reached — try later.'
+                    : 'No public profiles matched. Try the referral drafts instead.';
+                body.innerHTML = `<p class="text-[13px] py-6 text-center" style="color:var(--muted);">${why}</p>`;
+                return;
+            }
+            let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:var(--sage-tint);color:var(--sage-700);">${data.visa_biased ? '🎓 Biased toward people who went through the visa process. ' : ''}Found ${data.people.length} public profile(s). Connect from your own account.</p>`;
+            data.people.forEach(p => {
+                html += `<div class="rounded-xl p-4 mb-2" style="background:var(--surface-2);border:1px solid var(--border);">
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                            <p class="text-sm font-bold" style="color:var(--ink);">${p.name}</p>
+                            <p class="text-[11px] mt-0.5 leading-snug" style="color:var(--muted);">${p.headline || ''}</p>
+                        </div>
+                        <a href="${p.url}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10px] px-3 py-1.5 shrink-0">View ↗</a>
+                    </div>
+                </div>`;
+            });
+            html += `<button onclick="openReferral(${appId})" class="jbtn jbtn-apply text-[11px] py-2.5 w-full mt-2">✍️ Draft a note to send them</button>`;
+            body.innerHTML = html;
+        } catch (e) { body.innerHTML = '<p class="text-rose-500 text-sm py-6 text-center">Network error.</p>'; }
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.getElementById('connOverlay').classList.contains('open')) closeConnections();
+    });
 </script>
 
 <div id="referralOverlay" onclick="if(event.target===this) closeReferral()">
@@ -4649,6 +4702,19 @@
             <button type="button" id="referralClose" onclick="closeReferral()" title="Close (Esc)">&times;</button>
         </div>
         <div id="referralBody" class="jd-body"></div>
+    </div>
+</div>
+
+<div id="connOverlay" onclick="if(event.target===this) closeConnections()">
+    <div id="connModal" role="dialog" aria-modal="true" aria-label="Find referrers">
+        <div class="jd-head">
+            <div class="min-w-0 flex-1">
+                <h2 class="text-sm font-bold" style="color:var(--ink);">🔍 People who can refer you</h2>
+                <p class="text-[11px] mt-1" style="color:var(--muted);">Public LinkedIn profiles found via Google — no login or scraping. Connect &amp; ask from your own account.</p>
+            </div>
+            <button type="button" id="connClose" onclick="closeConnections()" title="Close (Esc)">&times;</button>
+        </div>
+        <div id="connBody" class="jd-body"></div>
     </div>
 </div>
 
