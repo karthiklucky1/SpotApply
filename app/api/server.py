@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Optional, Optional as _Opt
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 
 log = logging.getLogger(__name__)
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -2331,6 +2331,98 @@ def refresh_profile_memory(request: Request) -> dict:
     except Exception as e:
         log.exception("Profile memory refresh failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Admin: one-off H-1B CSV upload (browser-based; gated by ADMIN_TOKEN) ──────
+_H1B_UPLOAD_HTML = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>H-1B Data Upload</title><style>
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#F4F1EA;color:#2E2A24;
+display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+.card{background:#FCFAF5;border:1px solid #E6E0D3;border-radius:20px;padding:28px;max-width:460px;width:92%;
+box-shadow:0 12px 40px rgba(46,42,36,.10)}
+h1{font-size:18px;margin:0 0 6px}p{font-size:13px;color:#8C857A;line-height:1.5}
+label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#8C857A;display:block;margin:14px 0 4px}
+input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #E6E0D3;border-radius:10px;font-size:14px;background:#fff}
+button{margin-top:18px;width:100%;padding:12px;border:0;border-radius:9999px;font-weight:700;color:#fff;
+background:linear-gradient(135deg,#2FB4A6,#1F9C8F);cursor:pointer;font-size:14px}
+button:disabled{opacity:.6}#msg{margin-top:14px;font-size:13px}
+</style></head><body><div class=card>
+<h1>🛂 H-1B Employer Data Upload</h1>
+<p>Pick the USCIS H-1B Employer Data Hub CSV from your computer. It loads the public
+approval data so JobAgent can show real sponsorship numbers. One-time (re-run yearly).</p>
+<label>Admin token</label><input id=token type=password placeholder="ADMIN_TOKEN value">
+<label>CSV file</label><input id=file type=file accept=".csv">
+<button id=go onclick=up()>Upload &amp; ingest</button>
+<div id=msg></div></div><script>
+async function poll(t){try{const r=await fetch('/api/admin/h1b-status?token='+encodeURIComponent(t));
+if(r.ok){const d=await r.json();document.getElementById('msg').textContent='✅ Employers in database: '+d.employers;}}catch(e){}}
+async function up(){const t=document.getElementById('token').value;const f=document.getElementById('file').files[0];
+const m=document.getElementById('msg');const b=document.getElementById('go');
+if(!t||!f){m.textContent='Enter the token and choose a CSV.';return;}
+b.disabled=true;b.textContent='Uploading…';m.textContent='';
+const fd=new FormData();fd.append('token',t);fd.append('file',f);
+try{const r=await fetch('/api/admin/h1b-upload',{method:'POST',body:fd});
+const d=await r.json();
+if(r.ok){m.textContent='⏳ '+(d.note||'Ingesting…')+' ('+Math.round((d.size_bytes||0)/1048576)+' MB)';
+let n=0;const iv=setInterval(()=>{poll(t);if(++n>20)clearInterval(iv);},5000);}
+else{m.textContent='❌ '+(d.detail||'Failed');}}
+catch(e){m.textContent='❌ '+e;}b.disabled=false;b.textContent='Upload & ingest';}
+</script></body></html>"""
+
+
+@app.get("/admin/h1b", response_class=HTMLResponse)
+def admin_h1b_page(request: Request):
+    """Browser upload page for the USCIS H-1B CSV (gated by ADMIN_TOKEN env)."""
+    from app.config import settings
+    if not settings.admin_token:
+        return HTMLResponse(
+            "<h2>H-1B upload is disabled.</h2><p>Set the <code>ADMIN_TOKEN</code> "
+            "environment variable on the server, redeploy, then reload this page.</p>",
+            status_code=403,
+        )
+    return HTMLResponse(_H1B_UPLOAD_HTML)
+
+
+@app.get("/api/admin/h1b-status")
+def admin_h1b_status(token: str = "") -> dict:
+    from app.config import settings
+    from app.db.models import H1BSponsor
+    if not settings.admin_token or token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    with get_session() as session:
+        count = session.exec(select(func.count(H1BSponsor.id))).one()
+    return {"employers": int(count if not isinstance(count, (list, tuple)) else count[0])}
+
+
+@app.post("/api/admin/h1b-upload")
+async def admin_h1b_upload(bg: BackgroundTasks, token: str = Form(""), file: UploadFile = File(...)) -> dict:
+    """Accept the USCIS CSV from the browser and ingest it in the background."""
+    from app.config import settings
+    if not settings.admin_token or token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    import tempfile, os as _os
+    data = await file.read()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+    tmp.write(data)
+    tmp.close()
+
+    def _do():
+        try:
+            from app.intelligence.h1b_data import ingest_csv
+            n = ingest_csv(tmp.name)
+            log.info("H-1B upload ingested %d employer-year rows", n)
+        except Exception as e:
+            log.exception("H-1B ingest failed: %s", e)
+        finally:
+            try:
+                _os.unlink(tmp.name)
+            except Exception:
+                pass
+
+    bg.add_task(_do)
+    return {"started": True, "size_bytes": len(data),
+            "note": "Ingesting in the background — employer count will update below shortly."}
 
 
 class LinkedInPasteBody(BaseModel):

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # GitHub harvester (optional token lifts the public API rate limit)
     github_token: str = ""
 
+    # Admin token gating the one-off H-1B CSV upload page (empty = page disabled)
+    admin_token: str = ""
+
     # Local personal dashboard
     api_host: str = "127.0.0.1"
     api_port: int = 8000
