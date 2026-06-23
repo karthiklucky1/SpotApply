@@ -60,6 +60,10 @@
         }
         .hp-input::placeholder { color: var(--muted); }
         .hp-input:focus { border-color: var(--sage); }
+        .hp-input.error {
+            border-color: #EF4444 !important;
+            background-color: #FFF5F5 !important;
+        }
         .hp-input:-webkit-autofill {
             -webkit-box-shadow: 0 0 0 30px #EFEaDf inset !important;
             -webkit-text-fill-color: #2E2A24 !important;
@@ -144,7 +148,7 @@
         <div id="msg"></div>
 
         <!-- Sign In form -->
-        <form id="form-signin" onsubmit="handleSignIn(event)" style="display:flex;flex-direction:column;gap:14px;">
+        <form id="form-signin" onsubmit="handleSignIn(event)" novalidate style="display:flex;flex-direction:column;gap:14px;">
             <div>
                 <label>Email</label>
                 <input type="email" id="signin-email" required placeholder="you@example.com" class="hp-input" />
@@ -160,7 +164,7 @@
         </form>
 
         <!-- Sign Up form -->
-        <form id="form-signup" onsubmit="handleSignUp(event)" style="display:none;flex-direction:column;gap:14px;">
+        <form id="form-signup" onsubmit="handleSignUp(event)" novalidate style="display:none;flex-direction:column;gap:14px;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                 <div>
                     <label>First Name</label>
@@ -249,18 +253,40 @@
         document.getElementById('msg').style.display = 'none'
     }
 
+    // Clear error styling on input
+    document.querySelectorAll('.hp-input').forEach(inp => {
+        inp.addEventListener('input', () => {
+            inp.classList.remove('error');
+        });
+    });
+
     window.handleSignIn = async (e) => {
         e.preventDefault()
+        
+        document.querySelectorAll('.hp-input').forEach(inp => inp.classList.remove('error'));
+        
+        const emailEl = document.getElementById('signin-email');
+        const passEl = document.getElementById('signin-password');
+        
+        let hasError = false;
+        if (!emailEl.value.trim()) { emailEl.classList.add('error'); hasError = true; }
+        if (!passEl.value.trim()) { passEl.classList.add('error'); hasError = true; }
+        
+        if (hasError) {
+            showMsg('Please fill out all fields.');
+            return;
+        }
+        
         const btn = document.getElementById('btn-signin')
         btn.textContent = 'Signing in…'; btn.disabled = true
         const { data, error } = await sb.auth.signInWithPassword({
-            email: document.getElementById('signin-email').value,
-            password: document.getElementById('signin-password').value,
+            email: emailEl.value.trim(),
+            password: passEl.value,
         })
         if (error) {
             showMsg(error.message)
             btn.textContent = 'Sign In'; btn.disabled = false
-            const pw = document.getElementById('signin-password'); pw.value = ''; pw.focus()
+            passEl.value = ''; passEl.focus()
             return
         }
         localStorage.setItem('sb_token', data.session.access_token)
@@ -270,13 +296,47 @@
 
     window.handleSignUp = async (e) => {
         e.preventDefault()
+        
+        document.querySelectorAll('.hp-input').forEach(inp => inp.classList.remove('error'));
+        
+        const fnEl = document.getElementById('signup-firstname');
+        const lnEl = document.getElementById('signup-lastname');
+        const emailEl = document.getElementById('signup-email');
+        const passEl = document.getElementById('signup-password');
+        
+        let emptyFields = false;
+        if (!fnEl.value.trim()) { fnEl.classList.add('error'); emptyFields = true; }
+        if (!lnEl.value.trim()) { lnEl.classList.add('error'); emptyFields = true; }
+        if (!emailEl.value.trim()) { emailEl.classList.add('error'); emptyFields = true; }
+        if (!passEl.value.trim()) { passEl.classList.add('error'); emptyFields = true; }
+        
+        if (emptyFields) {
+            showMsg('Please fill out all fields.');
+            return;
+        }
+        
+        const emailVal = emailEl.value.trim();
+        const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRe.test(emailVal)) {
+            emailEl.classList.add('error');
+            showMsg('Please enter a valid email address.');
+            return;
+        }
+        
+        const passVal = passEl.value;
+        if (passVal.length < 8) {
+            passEl.classList.add('error');
+            showMsg('Password must be at least 8 characters.');
+            return;
+        }
+        
         const btn = document.getElementById('btn-signup')
         btn.textContent = 'Creating account…'; btn.disabled = true
-        const firstName = document.getElementById('signup-firstname').value
-        const lastName  = document.getElementById('signup-lastname').value
+        const firstName = fnEl.value.trim()
+        const lastName  = lnEl.value.trim()
         const { data, error } = await sb.auth.signUp({
-            email: document.getElementById('signup-email').value,
-            password: document.getElementById('signup-password').value,
+            email: emailVal,
+            password: passVal,
             options: {
                 data: { first_name: firstName, last_name: lastName },
                 emailRedirectTo: window.location.origin + '/auth/callback'
@@ -299,7 +359,7 @@
             await fetch('/api/profile', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${data.session.access_token}` },
-                body: JSON.stringify({ first_name: firstName, last_name: lastName, email: document.getElementById('signup-email').value })
+                body: JSON.stringify({ first_name: firstName, last_name: lastName, email: emailVal })
             })
             window.location.href = '/dashboard'
         } else {
@@ -309,10 +369,20 @@
     }
 
     window.handleForgot = async () => {
-        const email = document.getElementById('signin-email').value.trim()
+        document.querySelectorAll('.hp-input').forEach(inp => inp.classList.remove('error'));
+        const emailEl = document.getElementById('signin-email');
+        const email = emailEl.value.trim()
         if (!email) {
+            emailEl.classList.add('error');
             showMsg('Enter your email above, then tap Forgot to get a reset link.')
-            document.getElementById('signin-email').focus()
+            emailEl.focus()
+            return
+        }
+        const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRe.test(email)) {
+            emailEl.classList.add('error');
+            showMsg('Please enter a valid email address.')
+            emailEl.focus()
             return
         }
         try {
