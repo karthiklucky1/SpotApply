@@ -979,12 +979,19 @@
                     <div class="min-w-0 flex-1">
                         <h3 class="text-xs font-bold text-white tracking-tight leading-snug line-clamp-2">{{ job.title }}</h3>
                         <p class="text-[10px] font-semibold text-slate-400 mt-1 truncate">🏢 {{ job.company }} <span class="text-slate-600">·</span> <span class="uppercase tracking-wide text-slate-500">{{ job.source.value }}</span></p>
+                        <span class="flex flex-wrap gap-1 mt-1">
+                        {% set _urg = urgency_of(job) %}
+                        {% if _urg and _urg.label %}
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+                              style="{% if _urg.tone == 'hot' %}background:rgba(244,63,94,.12);color:#e11d48;{% else %}background:rgba(245,158,11,.14);color:#b45309;{% endif %}" title="{{ _urg.reason }}">{{ _urg.label }}</span>
+                        {% endif %}
                         {% set _cap = sponsorship_of(job) %}
                         {% if _cap and _cap.cap_exempt %}
-                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full mt-1" style="background:var(--sage-tint);color:var(--sage-700);" title="Cap-exempt employer — can sponsor H-1B year-round with no lottery">🎓 No-lottery sponsor</span>
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);" title="Cap-exempt employer — can sponsor H-1B year-round with no lottery">🎓 No-lottery sponsor</span>
                         {% elif _cap and _cap.tone == 'good' and visa and visa.needs_future_sponsorship %}
-                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full mt-1" style="background:var(--sage-tint);color:var(--sage-700);" title="{{ _cap.reason }}">✅ Sponsors visas</span>
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);" title="{{ _cap.reason }}">✅ Sponsors visas</span>
                         {% endif %}
+                        </span>
                     </div>
                     <div class="flex flex-col items-end gap-1 shrink-0">
                         {% if job.rerank_score %}
@@ -1006,6 +1013,13 @@
                         <span style="opacity:.5;">·</span><span class="uppercase tracking-wide">{{ job.source.value }}</span>
                         {% if job.is_closed %}<span style="opacity:.5;">·</span><span class="text-rose-400 font-bold">⚠ May be closed</span>{% endif %}
                     </div>
+                    {% set _urgd = urgency_of(job) %}
+                    {% if _urgd and _urgd.label %}
+                    <div class="rounded-2xl px-3.5 py-2.5 mb-4 text-[11.5px] leading-snug"
+                         style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}">
+                        <b>{{ _urgd.label }}</b> — {{ _urgd.reason }}
+                    </div>
+                    {% endif %}
 
                     {# Score dashboard #}
                     {% set hp = (job.hire_probability_score * 100)|int if job.hire_probability_score is not none else None %}

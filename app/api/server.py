@@ -302,6 +302,18 @@ def _sponsorship_of(job):
 templates.env.globals["sponsorship_of"] = _sponsorship_of
 
 
+def _urgency_of(job):
+    """Jinja global: timing/urgency assessment for a job (fresh / hard-to-fill)."""
+    try:
+        from app.intelligence.urgency import assess
+        return assess(job)
+    except Exception:
+        return None
+
+
+templates.env.globals["urgency_of"] = _urgency_of
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -1153,9 +1165,17 @@ def dashboard(request: Request):
     _boost_sponsorship = bool(visa_framing and getattr(visa_framing, "needs_future_sponsorship", False))
 
     def _priority(job) -> float:
-        """Rank by blended score (fit + hiring intent), with a sponsorship-aware
-        boost for visa users so cap-exempt / sponsor-friendly roles surface first."""
+        """Rank by blended score (fit + hiring intent), plus an urgency/timing
+        tiebreak, plus a sponsorship-aware boost for visa users."""
         base = job.blended_score if job.blended_score is not None else (job.rerank_score or 0)
+        # Urgency is a strong tiebreak (fresh / hard-to-fill float up) but stays
+        # secondary to fit: up to ~+14 on a 0-100 scale.
+        try:
+            urg = _urgency_of(job)
+            if urg:
+                base += urg.score * 0.15
+        except Exception:
+            pass
         if _boost_sponsorship:
             try:
                 spons = _sponsorship_of(job)
