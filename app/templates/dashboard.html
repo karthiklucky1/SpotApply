@@ -1671,6 +1671,8 @@
             loadSidebarAvatar();
             loadNotifications();
             setInterval(loadNotifications, 60000);
+            claimReferralIfPending();
+            revealAdminIfOwner();
             // After a discovery run, land on the "All Jobs" tab so the newly
             // discovered jobs are visible (the Pipeline only shows shortlisted).
             if (localStorage.getItem('jb_post_discover')) {
@@ -2823,6 +2825,49 @@
             }
         }
 
+        // ── Referral program ─────────────────────────────────────────────────
+        async function claimReferralIfPending() {
+            const code = localStorage.getItem('ja_ref');
+            if (!code) return;
+            try {
+                const res = await fetch('/api/referral/claim', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ code }) });
+                // Clear regardless of outcome so we don't retry forever (one-time).
+                localStorage.removeItem('ja_ref');
+                if (res.ok) { const d = await res.json(); if (d.ok) showToast('Referral applied — welcome! 🎉', 'success'); }
+            } catch (e) { /* non-fatal */ }
+        }
+
+        async function loadReferral() {
+            const card = document.getElementById('referral-card');
+            if (!card) return;
+            try {
+                const res = await fetch('/api/referral', { headers: authHeaders() });
+                if (!res.ok) return;
+                const d = await res.json();
+                if (!d.code) return;
+                document.getElementById('ref-link').value = d.link || '';
+                document.getElementById('ref-threshold').textContent = d.threshold;
+                document.getElementById('ref-reward-days').textContent = d.reward_days ?? 30;
+                const pct = Math.min(100, Math.round((d.count / d.threshold) * 100));
+                document.getElementById('ref-bar').style.width = pct + '%';
+                document.getElementById('ref-progress').textContent = `${d.count} / ${d.threshold}`;
+                document.getElementById('ref-unlocked').classList.toggle('hidden', !d.reward_unlocked);
+                card.classList.remove('hidden');
+            } catch (e) { /* non-fatal */ }
+        }
+
+        async function revealAdminIfOwner() {
+            try {
+                const res = await fetch('/api/admin/whoami', { headers: authHeaders() });
+                if (!res.ok) return;
+                const d = await res.json();
+                if (d.is_admin) {
+                    const el = document.getElementById('admin-settings-row');
+                    if (el) { el.classList.remove('hidden'); el.style.display = 'flex'; }
+                }
+            } catch (e) { /* non-fatal */ }
+        }
+
         async function loadUsage() {
             try {
                 const _tok = localStorage.getItem('sb_token');
@@ -3771,6 +3816,7 @@
             document.getElementById('profile-modal').classList.remove('hidden');
             document.getElementById('profile-loading').classList.remove('hidden');
             document.getElementById('profile-form').classList.add('hidden');
+            loadReferral();
             try {
                 const res = await fetch('/api/profile', { headers: authHeaders() });
                 const data = await res.json();
@@ -4356,6 +4402,7 @@
                         <button onclick="closeSettings(); openProfileModal()" class="settings-row">👤 <span>Edit profile</span><span class="ml-auto text-slate-500">›</span></button>
                         <button onclick="closeSettings(); openResumeUpload()" class="settings-row">📄 <span>My resume</span><span class="ml-auto text-slate-500">›</span></button>
                         <button onclick="closeSettings(); openMemoryModal()" class="settings-row">🧠 <span>Recruiter memory</span><span class="ml-auto text-[10px] text-emerald-400 font-bold">weekly brief</span></button>
+                        <a id="admin-settings-row" href="/admin" target="_blank" class="settings-row hidden" style="display:none;text-decoration:none;">📊 <span class="ml-2">Owner dashboard</span><span class="ml-auto text-[10px] text-indigo-400 font-bold">admin</span></a>
                         <a href="/api/export/applications.csv" class="settings-row" style="display:flex;text-decoration:none;">📥 <span class="ml-2">Export applications (CSV)</span><span class="ml-auto text-slate-500">↓</span></a>
                     </div>
                 </div>
@@ -4460,6 +4507,20 @@
             </div>
 
             <p id="profile-loading" class="text-slate-400 text-sm text-center py-4">Loading...</p>
+            <!-- Refer a friend -->
+            <div id="referral-card" class="rounded-2xl p-4 mb-4 hidden" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.3);">
+                <p class="text-[11px] font-extrabold uppercase tracking-widest mb-1" style="color:var(--sage-700);">🎁 Refer a friend — unlock Premium</p>
+                <p class="text-[11px] mb-2" style="color:var(--muted);">Refer <b id="ref-threshold">10</b> friends and get <b id="ref-reward-days">30</b> days of Premium free.</p>
+                <div class="flex gap-2 mb-2">
+                    <input id="ref-link" readonly class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-[11px] text-white" />
+                    <button type="button" onclick="copyText(document.getElementById('ref-link').value, this)" class="text-xs font-bold px-3 py-2 rounded-xl text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">Copy</button>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 h-2 rounded-full" style="background:var(--surface-2);"><div id="ref-bar" class="h-2 rounded-full" style="width:0%;background:var(--sage);"></div></div>
+                    <span id="ref-progress" class="text-[11px] font-bold" style="color:var(--sage-700);">0 / 10</span>
+                </div>
+                <p id="ref-unlocked" class="text-[11px] font-bold mt-2 hidden" style="color:#059669;">✅ Premium unlocked — thank you!</p>
+            </div>
             <form id="profile-form" class="hidden space-y-4" onsubmit="saveProfile(event)">
                 <div class="grid grid-cols-2 gap-3">
                     <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">First Name</label><input name="first_name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>

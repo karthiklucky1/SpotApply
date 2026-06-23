@@ -210,6 +210,10 @@
     </p>
 </div>
 
+<script>
+    // Capture a referral code (?ref=CODE) so it can be claimed after signup.
+    (function(){ try { var r = new URLSearchParams(location.search).get('ref'); if (r) localStorage.setItem('ja_ref', r.trim()); } catch(e){} })();
+</script>
 <script type="module">
     import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
 

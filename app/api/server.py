@@ -2209,6 +2209,16 @@ def admin_referrals(request: Request) -> dict:
     return {"top_referrers": top}
 
 
+@app.get("/api/admin/whoami")
+def admin_whoami(request: Request) -> dict:
+    """Cheap check so the dashboard can reveal the Admin button only to admins."""
+    from app.config import settings
+    if not settings.use_supabase:
+        return {"is_admin": True}
+    email = (_get_user_email(request) or "").lower()
+    return {"is_admin": bool(email and email in settings.admin_emails_list)}
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request):
     """Owner dashboard shell — data is fetched client-side from the gated APIs."""
