@@ -4155,6 +4155,30 @@
             });
         }
 
+        async function redeemCoupon() {
+            const input = document.getElementById('coupon-code-input');
+            const msg = document.getElementById('coupon-result-msg');
+            const code = (input.value || '').trim().toUpperCase();
+            if (!code) { msg.className = 'text-[11px] mt-1'; msg.style.color = '#b91c1c'; msg.textContent = 'Enter a code first.'; return; }
+            msg.className = 'text-[11px] mt-1'; msg.style.color = '#8C857A'; msg.textContent = 'Applying…';
+            try {
+                const token = localStorage.getItem('sb_token');
+                const res = await fetch('/api/coupon/redeem', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': 'Bearer ' + token } : {}) },
+                    body: JSON.stringify({ code }),
+                });
+                const d = await res.json();
+                if (d.ok) {
+                    msg.style.color = '#059669'; msg.textContent = d.message || '🎉 Code applied!';
+                    input.value = '';
+                } else {
+                    const errors = { invalid_code: 'Code not found or inactive.', expired: 'This code has expired.', used_up: 'This code has reached its limit.', already_redeemed: "You've already used this code." };
+                    msg.style.color = '#b91c1c'; msg.textContent = '❌ ' + (errors[d.reason] || d.message || 'Invalid code.');
+                }
+            } catch (e) { msg.style.color = '#b91c1c'; msg.textContent = 'Network error — try again.'; }
+        }
+
         function renderAnswerPack(data) {
             let html = `<div class="mb-4 flex items-center justify-between">
                 <div>
@@ -4394,6 +4418,21 @@
                     <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Plan</p>
                     <div class="space-y-2">
                         <button onclick="showSettingsDoc('pricing')" class="settings-row">💎 <span>Plans &amp; Pricing</span><span class="ml-auto text-[10px] text-indigo-400 font-bold">Free</span></button>
+                        <!-- Promo code redemption -->
+                        <div class="settings-row flex-col gap-2" style="cursor:default;height:auto;padding:12px 16px;">
+                            <p class="text-[10px] font-bold uppercase tracking-widest mb-2" style="color:var(--muted,#8C857A);">🎟️ Promo Code</p>
+                            <div class="flex gap-2">
+                                <input id="coupon-code-input" type="text" placeholder="e.g. LAUNCH50"
+                                    style="flex:1;font-size:13px;padding:7px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;background:rgba(255,255,255,0.06);color:inherit;outline:none;text-transform:uppercase;"
+                                    oninput="this.value=this.value.toUpperCase()"
+                                    onkeydown="if(event.key==='Enter')redeemCoupon()">
+                                <button onclick="redeemCoupon()"
+                                    style="font-size:12px;font-weight:700;padding:7px 14px;border:none;border-radius:8px;cursor:pointer;background:#2FB4A6;color:#fff;white-space:nowrap;">
+                                    Apply
+                                </button>
+                            </div>
+                            <p id="coupon-result-msg" class="text-[11px] mt-1 hidden"></p>
+                        </div>
                     </div>
                 </div>
                 <div>

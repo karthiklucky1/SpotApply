@@ -390,7 +390,7 @@ class UserReferralReward(SQLModel, table=True):
 class UserNotification(SQLModel, table=True):
     """Real-time in-app notifications for users (e.g. discovery runs finished, perfect jobs matched)."""
     __tablename__ = "user_notifications"
-    
+
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[str] = Field(default=None, index=True)
     title: str
@@ -399,4 +399,29 @@ class UserNotification(SQLModel, table=True):
     read: bool = Field(default=False, index=True)
     link: Optional[str] = None                # clickable link in the UI
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Coupon(SQLModel, table=True):
+    """Admin-created promo codes that grant free plan days (e.g. LAUNCH50 → 30 days PRO)."""
+    __tablename__ = "coupon"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, unique=True)       # e.g. "LAUNCH50" — case-insensitive stored UPPER
+    description: str = ""                             # shown to user on redemption
+    reward_plan: str = "pro"                          # plan tier to grant
+    reward_days: int = 30                             # days of the plan to grant
+    max_uses: Optional[int] = None                    # None = unlimited
+    uses_count: int = 0
+    is_active: bool = True
+    expires_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_by: Optional[str] = None                 # admin user_id
+
+
+class CouponRedemption(SQLModel, table=True):
+    """One row per (coupon, user) pair — prevents double-dipping."""
+    __tablename__ = "coupon_redemption"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    coupon_id: int = Field(index=True)
+    user_id: str = Field(index=True)
+    redeemed_at: datetime = Field(default_factory=datetime.utcnow)
 

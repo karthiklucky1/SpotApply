@@ -2087,6 +2087,185 @@ def claim_referral(request: Request, body: ReferralClaimBody) -> dict:
     return {"ok": True, "referrer_reached": count}
 
 
+# ── Promo / coupon codes ───────────────────────────────────────────────────────
+
+class CouponRedeemBody(BaseModel):
+    code: str
+
+
+@app.post("/api/coupon/redeem")
+@_rate_limit("10/minute")
+def redeem_coupon(request: Request, body: CouponRedeemBody) -> dict:
+    """Redeem a promo code. One redemption per user per code."""
+    from datetime import timedelta
+    from app.db.models import (Coupon, CouponRedemption, UserSubscription,
+                                UserNotification, PlanTier)
+    uid = _get_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    code = body.code.strip().upper()
+    with get_session() as session:
+        coupon = session.exec(select(Coupon).where(Coupon.code == code)).first()
+        if not coupon or not coupon.is_active:
+            return {"ok": False, "reason": "invalid_code", "message": "Code not found or inactive."}
+        if coupon.expires_at and coupon.expires_at < _dt.utcnow():
+            return {"ok": False, "reason": "expired", "message": "This code has expired."}
+        if coupon.max_uses is not None and coupon.uses_count >= coupon.max_uses:
+            return {"ok": False, "reason": "used_up", "message": "This code has reached its usage limit."}
+        already = session.exec(
+            select(CouponRedemption)
+            .where(CouponRedemption.coupon_id == coupon.id)
+            .where(CouponRedemption.user_id == uid)
+        ).first()
+        if already:
+            return {"ok": False, "reason": "already_redeemed", "message": "You've already used this code."}
+        # Grant plan upgrade
+        try:
+            plan = PlanTier(coupon.reward_plan)
+        except ValueError:
+            plan = PlanTier.PRO
+        expires = _dt.utcnow() + timedelta(days=coupon.reward_days)
+        sub = session.exec(select(UserSubscription).where(UserSubscription.user_id == uid)).first()
+        if sub:
+            sub.plan = plan
+            sub.current_period_end = expires
+            session.add(sub)
+        else:
+            session.add(UserSubscription(user_id=uid, plan=plan, current_period_end=expires))
+        coupon.uses_count += 1
+        session.add(coupon)
+        session.add(CouponRedemption(coupon_id=coupon.id, user_id=uid))
+        session.add(UserNotification(
+            user_id=uid, title=f"Promo code applied! 🎉", type="coupon_reward",
+            message=(f"Code {code} unlocked {coupon.reward_days} days of "
+                     f"{plan.value.upper()}. {coupon.description}"),
+            read=False,
+        ))
+        session.commit()
+        log.info("Coupon %s redeemed by %s → %s for %dd", code, uid, plan.value, coupon.reward_days)
+    return {
+        "ok": True,
+        "plan": plan.value,
+        "days": coupon.reward_days,
+        "message": f"🎉 {coupon.reward_days} days of {plan.value.upper()} unlocked! {coupon.description}".strip(),
+    }
+
+
+# ── Coupon admin CRUD ──────────────────────────────────────────────────────────
+
+class CouponCreateBody(BaseModel):
+    code: str
+    description: str = ""
+    reward_plan: str = "pro"
+    reward_days: int = 30
+    max_uses: Optional[int] = None
+    expires_at: Optional[str] = None   # ISO date string or None
+
+
+class CouponUpdateBody(BaseModel):
+    is_active: Optional[bool] = None
+    description: Optional[str] = None
+    max_uses: Optional[int] = None
+    expires_at: Optional[str] = None
+
+
+@app.get("/api/admin/coupons")
+def admin_list_coupons(request: Request) -> dict:
+    """List all promo codes with usage stats. Admin-only."""
+    _require_admin_user(request)
+    from app.db.models import Coupon
+    with get_session() as session:
+        coupons = session.exec(select(Coupon).order_by(Coupon.created_at.desc())).all()
+    return {"coupons": [
+        {
+            "id": c.id, "code": c.code, "description": c.description,
+            "reward_plan": c.reward_plan, "reward_days": c.reward_days,
+            "max_uses": c.max_uses, "uses_count": c.uses_count,
+            "is_active": c.is_active,
+            "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+            "created_at": c.created_at.isoformat(),
+        }
+        for c in coupons
+    ]}
+
+
+@app.post("/api/admin/coupons")
+def admin_create_coupon(request: Request, body: CouponCreateBody) -> dict:
+    """Create a new promo code. Admin-only."""
+    _require_admin_user(request)
+    from app.db.models import Coupon
+    from datetime import datetime as _dtp
+    admin_uid = _get_user_id(request)
+    code = body.code.strip().upper()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code cannot be empty.")
+    expires = None
+    if body.expires_at:
+        try:
+            expires = _dtp.fromisoformat(body.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid expires_at format.")
+    with get_session() as session:
+        existing = session.exec(select(Coupon).where(Coupon.code == code)).first()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Code '{code}' already exists.")
+        coupon = Coupon(
+            code=code, description=body.description,
+            reward_plan=body.reward_plan, reward_days=body.reward_days,
+            max_uses=body.max_uses, expires_at=expires,
+            created_by=admin_uid if admin_uid != "local" else None,
+        )
+        session.add(coupon)
+        session.commit()
+        session.refresh(coupon)
+    return {"ok": True, "id": coupon.id, "code": coupon.code}
+
+
+@app.patch("/api/admin/coupons/{coupon_id}")
+def admin_update_coupon(coupon_id: int, request: Request, body: CouponUpdateBody) -> dict:
+    """Toggle active/inactive or update a coupon. Admin-only."""
+    _require_admin_user(request)
+    from app.db.models import Coupon
+    from datetime import datetime as _dtp
+    with get_session() as session:
+        coupon = session.get(Coupon, coupon_id)
+        if not coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found.")
+        if body.is_active is not None:
+            coupon.is_active = body.is_active
+        if body.description is not None:
+            coupon.description = body.description
+        if body.max_uses is not None:
+            coupon.max_uses = body.max_uses
+        if body.expires_at is not None:
+            try:
+                coupon.expires_at = _dtp.fromisoformat(body.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid expires_at format.")
+        session.add(coupon)
+        session.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/admin/coupons/{coupon_id}")
+def admin_delete_coupon(coupon_id: int, request: Request) -> dict:
+    """Delete a coupon (also removes redemptions). Admin-only."""
+    _require_admin_user(request)
+    from app.db.models import Coupon, CouponRedemption
+    with get_session() as session:
+        coupon = session.get(Coupon, coupon_id)
+        if not coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found.")
+        session.exec(  # type: ignore[call-overload]
+            select(CouponRedemption).where(CouponRedemption.coupon_id == coupon_id)
+        )
+        for r in session.exec(select(CouponRedemption).where(CouponRedemption.coupon_id == coupon_id)).all():
+            session.delete(r)
+        session.delete(coupon)
+        session.commit()
+    return {"ok": True}
+
+
 # ── Owner-only admin dashboard ────────────────────────────────────────────────
 _ADMIN_HTML = """<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>JobAgent · Admin</title><style>
@@ -2096,18 +2275,43 @@ h1{font-size:20px;margin:0 0 2px}.sub{color:var(--muted);font-size:13px;margin:0
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:26px}
 .kpi{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}
 .kpi .n{font-size:26px;font-weight:800;color:var(--sage-700)}.kpi .l{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-top:4px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:18px;margin-bottom:20px}
 h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border)}
 th{font-size:10px;text-transform:uppercase;color:var(--muted)}.pill{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--sage-700)}
-#err{color:#b91c1c;font-size:14px}
+.pill-off{background:#fee2e2;color:#b91c1c}.pill-on{background:#d1fae5;color:#065f46}
+#err{color:#b91c1c;font-size:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+input,select{font-size:13px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--ink);outline:none}
+input:focus,select:focus{border-color:var(--sage)}
+button.btn{font-size:13px;font-weight:700;padding:7px 16px;border:none;border-radius:8px;cursor:pointer;background:var(--sage);color:#fff}
+button.btn:hover{background:var(--sage-700)}
+button.btn-red{background:#ef4444}button.btn-red:hover{background:#b91c1c}
+button.btn-sm{font-size:11px;padding:4px 10px}
+#coupon-msg{font-size:13px;margin-top:6px}
 </style></head><body>
 <h1>📊 JobAgent — Owner Dashboard</h1><p class=sub>Live metrics. Owner-only.</p>
 <div id=err></div>
 <div class=grid id=kpis></div>
-<div class=card><h2>Top referrers</h2><table id=reftbl><thead><tr><th>User</th><th>Email</th><th>Code</th><th>Referrals</th><th>Reward</th></tr></thead><tbody></tbody></table></div>
+
+<div class=card><h2>🎟️ Promo codes</h2>
+<div class=row>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">CODE</label><input id=c-code placeholder="LAUNCH50" style="text-transform:uppercase;width:130px"></div>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">PLAN</label>
+    <select id=c-plan><option value=pro>PRO (30d)</option><option value=basic>BASIC</option></select></div>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">DAYS</label><input id=c-days type=number value=30 style="width:70px"></div>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">MAX USES</label><input id=c-uses placeholder="∞" style="width:80px"></div>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">EXPIRES</label><input id=c-exp type=date style="width:140px"></div>
+  <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">NOTE</label><input id=c-desc placeholder="Optional description" style="width:200px"></div>
+  <button class=btn onclick=createCoupon()>+ Create</button>
+</div>
+<p id=coupon-msg></p>
+<table id=coupons-tbl><thead><tr><th>Code</th><th>Plan</th><th>Days</th><th>Uses</th><th>Max</th><th>Expires</th><th>Note</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+
+<div class=card><h2>👥 Top referrers</h2><table id=reftbl><thead><tr><th>User</th><th>Email</th><th>Code</th><th>Referrals</th><th>Reward</th></tr></thead><tbody></tbody></table></div>
 <script>
-function H(){const t=localStorage.getItem('sb_token');return t?{'Authorization':'Bearer '+t}:{}}
+function H(){const t=localStorage.getItem('sb_token');return t?{'Authorization':'Bearer '+t,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
 async function load(){
   try{
     const m=await fetch('/api/admin/metrics',{headers:H()});
@@ -2123,7 +2327,56 @@ async function load(){
       `<tr><td>${x.name}</td><td>${x.email}</td><td><code>${x.code||''}</code></td><td><b>${x.count}</b></td>
       <td>${x.rewarded?'<span class=pill>🎁 Rewarded</span>':''}</td></tr>`).join('')
       || '<tr><td colspan=5 style="color:#8C857A">No referrals yet.</td></tr>';
+    await loadCoupons();
   }catch(e){document.getElementById('err').textContent=''+e;}
+}
+async function loadCoupons(){
+  const res=await fetch('/api/admin/coupons',{headers:H()});
+  if(!res.ok)return;
+  const {coupons}=await res.json();
+  document.querySelector('#coupons-tbl tbody').innerHTML=coupons.length
+    ? coupons.map(c=>`<tr>
+        <td><code style="font-weight:700">${c.code}</code></td>
+        <td>${c.reward_plan.toUpperCase()}</td>
+        <td>${c.reward_days}d</td>
+        <td>${c.uses_count}</td>
+        <td>${c.max_uses??'∞'}</td>
+        <td style="font-size:11px">${c.expires_at?c.expires_at.slice(0,10):'—'}</td>
+        <td style="font-size:11px;color:#8C857A">${c.description||''}</td>
+        <td>${c.is_active?'<span class="pill pill-on">Active</span>':'<span class="pill pill-off">Off</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-sm" onclick="toggleCoupon(${c.id},${!c.is_active})">${c.is_active?'Disable':'Enable'}</button>
+          <button class="btn btn-sm btn-red" style="margin-left:4px" onclick="deleteCoupon(${c.id},'${c.code}')">Del</button>
+        </td></tr>`).join('')
+    : '<tr><td colspan=9 style="color:#8C857A;padding:16px 0">No coupons yet — create one above.</td></tr>';
+}
+async function createCoupon(){
+  const code=document.getElementById('c-code').value.trim().toUpperCase();
+  if(!code){alert('Enter a code.');return;}
+  const body={
+    code,
+    reward_plan:document.getElementById('c-plan').value,
+    reward_days:parseInt(document.getElementById('c-days').value)||30,
+    max_uses:document.getElementById('c-uses').value?parseInt(document.getElementById('c-uses').value):null,
+    expires_at:document.getElementById('c-exp').value||null,
+    description:document.getElementById('c-desc').value.trim(),
+  };
+  const res=await fetch('/api/admin/coupons',{method:'POST',headers:H(),body:JSON.stringify(body)});
+  const d=await res.json();
+  const msg=document.getElementById('coupon-msg');
+  if(res.ok){msg.style.color='#065f46';msg.textContent='✅ Code '+d.code+' created!';
+    document.getElementById('c-code').value='';document.getElementById('c-desc').value='';
+    await loadCoupons();}
+  else{msg.style.color='#b91c1c';msg.textContent='❌ '+(d.detail||'Error');}
+}
+async function toggleCoupon(id,active){
+  await fetch('/api/admin/coupons/'+id,{method:'PATCH',headers:H(),body:JSON.stringify({is_active:active})});
+  await loadCoupons();
+}
+async function deleteCoupon(id,code){
+  if(!confirm('Delete coupon '+code+'? This cannot be undone.'))return;
+  await fetch('/api/admin/coupons/'+id,{method:'DELETE',headers:H()});
+  await loadCoupons();
 }
 load();
 </script></body></html>"""
