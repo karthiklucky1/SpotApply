@@ -1926,7 +1926,7 @@ async def _autofill_one(application_id: int) -> List[UnknownField]:
         if "---COVER---" in cover_text:
             cover_text = cover_text.split("---COVER---", 1)[-1].strip()
 
-    resume_text = _load_resume()
+    resume_text = _load_resume(user_id=app.user_id)
     from urllib.parse import parse_qs
     parsed_url   = urlparse(apply_url)
     host         = parsed_url.netloc
@@ -2174,7 +2174,7 @@ async def _preview_one(application_id: int) -> None:
         if "---COVER---" in cover_text:
             cover_text = cover_text.split("---COVER---", 1)[-1].strip()
 
-    resume_text = _load_resume()
+    resume_text = _load_resume(user_id=app.user_id)
     from urllib.parse import parse_qs as _parse_qs
     _parsed   = urlparse(apply_url)
     host      = _parsed.netloc

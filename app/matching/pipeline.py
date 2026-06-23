@@ -132,6 +132,8 @@ def _load_resume(user_id: str | None = None) -> str:
                         return "\n".join((page.extract_text() or "") for page in reader.pages)
             except Exception:
                 continue
+        raise ValueError("No resume found. Please upload your resume in the Profile page first.")
+    
     p: Path = settings.resume_path
     if not p.exists():
         raise FileNotFoundError(

@@ -59,8 +59,10 @@ async def scrape_linkedin_job(url: str) -> str:
     import re
     import httpx
 
-    # Extract job ID from URL like /jobs/view/1234567890/
+    # Extract job ID from URL like /jobs/view/1234567890/ or currentJobId=1234567890
     m = re.search(r"/jobs/view/(\d+)", url)
+    if not m:
+        m = re.search(r"currentJobId=(\d+)", url)
     job_id = m.group(1) if m else None
 
     headers = {
@@ -73,21 +75,24 @@ async def scrape_linkedin_job(url: str) -> str:
         "Sec-Fetch-Mode": "navigate",
     }
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
-        # Try the public guest jobs page first (no auth needed)
-        if job_id:
-            guest_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-            resp = await client.get(guest_url, headers=headers)
-        else:
-            resp = await client.get(url, headers=headers)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+            # Try the public guest jobs page first (no auth needed)
+            if job_id:
+                guest_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+                resp = await client.get(guest_url, headers=headers)
+            else:
+                resp = await client.get(url, headers=headers)
 
-        if resp.status_code == 200:
-            # Strip HTML tags to get plain text
-            text = re.sub(r"<[^>]+>", " ", resp.text)
-            text = re.sub(r"\s{3,}", "\n\n", text)
-            if len(text.strip()) > 200:
-                log.info("LinkedIn page fetched via HTTP (%d chars)", len(text))
-                return text[:15000]
+            if resp.status_code == 200:
+                # Strip HTML tags to get plain text
+                text = re.sub(r"<[^>]+>", " ", resp.text)
+                text = re.sub(r"\s{3,}", "\n\n", text)
+                if len(text.strip()) > 200:
+                    log.info("LinkedIn page fetched via HTTP (%d chars)", len(text))
+                    return text[:15000]
+    except Exception as e:
+        log.warning("LinkedIn scraper HTTP request failed: %s", e)
 
     raise ValueError(
         "Could not fetch the LinkedIn job page. The posting may be private or expired. "
@@ -178,18 +183,30 @@ async def extract_and_rank_job(url: str, user_id: str | None = None) -> int:
     parsed = parse_job_text_with_llm(raw_text)
 
     # Format company name nicely if extracted
-    company_name = parsed.get("company", "Unknown Company").strip()
+    company_name = (parsed.get("company") or "Unknown Company").strip()
     company_name = company_name.replace("-", " ").replace("_", " ").title()
+    title = (parsed.get("title") or "Unknown Title").strip()
+    description = (parsed.get("description") or "").strip()
+
+    # Fail fast if we scraped a login wall, captcha, or corrupted page
+    is_placeholder_desc = any(sig in description.lower() for sig in [
+        "could not be parsed", "binary or corrupted", "login wall", "captcha", "security check"
+    ])
+    if company_name == "Unknown Company" or title == "Unknown Title" or len(description) < 150 or is_placeholder_desc:
+        raise ValueError(
+            "Could not extract valid job details. The page may be behind a login wall, CAPTCHA, "
+            "or contains unreadable text. Try pasting the direct Greenhouse/Lever/Ashby ATS URL."
+        )
 
     # 3. Create Job model
     job = Job(
         source=source,
         external_id=external_id,
         company=company_name,
-        title=parsed.get("title", "Unknown Title").strip(),
-        location=parsed.get("location", "Remote").strip(),
+        title=title,
+        location=(parsed.get("location") or "Remote").strip(),
         url=url,
-        description=parsed.get("description", "").strip(),
+        description=description,
         remote="remote" in parsed.get("location", "").lower(),
         user_id=user_id,
     )

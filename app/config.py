@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
     shortlist_score_threshold: int = 40  # min LLM rerank score (0-100) to shortlist a job
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
-    discovery_cooldown_hours: int = 6    # min hours between manual discovery runs (saves API calls + tokens)
+    discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
 
     # Models
     scoring_model: str = "claude-haiku-4-5-20251001"
@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     greenhouse_boards: str = ""
     lever_boards: str = ""
     ashby_boards: str = ""
-    jobs_keywords: str = "Machine Learning Engineer,AI Engineer,Python Developer,LLM Engineer,AI/ML Engineer,Backend Python Engineer,ML Engineer,Applied Scientist,NLP Engineer,GenAI Engineer,MLOps Engineer,Data Scientist,Deep Learning Engineer,Computer Vision Engineer,AI Research Engineer"
+    jobs_keywords: str = "Machine Learning Engineer,AI Engineer,Python Developer,LLM Engineer,AI/ML Engineer,Backend Python Engineer,ML Engineer,Applied Scientist,NLP Engineer,GenAI Engineer"
 
     @property
     def jobs_keywords_list(self) -> List[str]:

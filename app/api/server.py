@@ -208,11 +208,12 @@ async def startup_event():
 
 
 async def _scheduler():
-    """Run discovery → matching every 6 hours for each user who has a resume."""
+    """Run discovery → matching every N hours for each user who has a resume."""
     import asyncio
     import logging
+    from app.config import settings
     _log = logging.getLogger("scheduler")
-    INTERVAL = 6 * 60 * 60
+    INTERVAL = max(1, settings.discovery_cooldown_hours) * 60 * 60
     await asyncio.sleep(120)  # let server fully boot first
     while True:
         try:
@@ -2754,7 +2755,7 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
     from app.discovery.extractor import extract_and_rank_job
     from app.tailoring.tailor import tailor_for_application
 
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     log.info("Extracting manual link: %s", req.url)
     try:
         app_id = await extract_and_rank_job(req.url, user_id=uid if uid != "local" else None)
