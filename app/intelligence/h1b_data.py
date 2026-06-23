@@ -22,6 +22,8 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 _CACHE: Optional[dict] = None   # {employer_key: {"approvals","denials","rate","year","name"}}
+_CACHE_AT: float = 0.0          # when the cache was last built (epoch seconds)
+_CACHE_TTL: float = 600.0       # reload at most every 10 min so uploads propagate
 
 # Last ingest result, surfaced to the admin upload page so background errors
 # (bad columns, wrong file) are visible instead of silently writing 0 rows.
@@ -178,14 +180,18 @@ def _to_int(x) -> int:
 
 
 def refresh_cache() -> None:
-    global _CACHE
+    global _CACHE, _CACHE_AT
     _CACHE = None
+    _CACHE_AT = 0.0
 
 
 def _load_cache() -> dict:
-    """Build {employer_key: best-record} once from the DB (latest year wins)."""
-    global _CACHE
-    if _CACHE is not None:
+    """Build {employer_key: best-record} from the DB (latest year wins). Cached
+    in-process with a short TTL so a fresh upload propagates to every worker
+    within minutes — no restart needed."""
+    global _CACHE, _CACHE_AT
+    import time as _time
+    if _CACHE is not None and (_time.time() - _CACHE_AT) < _CACHE_TTL:
         return _CACHE
     cache: dict = {}
     try:
@@ -203,7 +209,10 @@ def _load_cache() -> dict:
                     }
     except Exception as e:
         log.debug("H-1B cache load skipped: %s", e)
+    global _CACHE_AT
+    import time as _time
     _CACHE = cache
+    _CACHE_AT = _time.time()
     return cache
 
 
