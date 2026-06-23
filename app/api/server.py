@@ -2395,6 +2395,23 @@ async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
 
 # ── Answer Pack endpoint ────────────────────────────────────────────────────
 
+@app.get("/application/{application_id}/referral")
+@_rate_limit("20/minute")
+def get_referral_drafts(application_id: int, request: Request) -> dict:
+    """Draft referral / hiring-manager / visa-alumni outreach for one application.
+    Drafts only — the user sends them. Strictly scoped to the owning user."""
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    from app.intelligence.referral import generate_referral_drafts
+    try:
+        return generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        log.exception("Referral draft generation failed for app %d: %s", application_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/application/{application_id}/answer-pack")
 def get_answer_pack(application_id: int, request: Request) -> dict:
     """Generate (or return cached) answer pack for one application."""

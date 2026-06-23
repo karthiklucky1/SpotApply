@@ -549,25 +549,25 @@
     .jbtn-done:hover { background: var(--sage); border-color: var(--sage); }
     .jbtn-done:hover, .jbtn-done:hover * { color: #fff !important; }
 
-    /* ── Job detail centered popup ────────────────────────────────────────── */
-    #jobModalOverlay { position: fixed; inset: 0; z-index: 90; display: flex;
+    /* ── Job detail centered popup (+ referral modal share these styles) ───── */
+    #jobModalOverlay, #referralOverlay { position: fixed; inset: 0; z-index: 90; display: flex;
         align-items: center; justify-content: center; padding: 20px;
         background: rgba(46,42,36,.45); opacity: 0; visibility: hidden;
         transition: opacity .2s ease; }
-    #jobModalOverlay.open { opacity: 1; visibility: visible; }
-    #jobModal { width: min(660px, 96vw); max-height: 88vh; background: var(--surface);
+    #jobModalOverlay.open, #referralOverlay.open { opacity: 1; visibility: visible; }
+    #jobModal, #referralModal { width: min(660px, 96vw); max-height: 88vh; background: var(--surface);
         border: 1px solid var(--border); border-radius: 24px;
         box-shadow: 0 24px 70px rgba(46,42,36,.30); display: flex; flex-direction: column;
         transform: translateY(12px) scale(.985); opacity: 0;
         transition: transform .22s cubic-bezier(.4,0,.2,1), opacity .22s ease; }
-    #jobModalOverlay.open #jobModal { transform: translateY(0) scale(1); opacity: 1; }
-    #jobModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+    #jobModalOverlay.open #jobModal, #referralOverlay.open #referralModal { transform: translateY(0) scale(1); opacity: 1; }
+    #jobModal .jd-head, #referralModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
         display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0; }
-    #jobModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
-    #jobModalClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
+    #jobModal .jd-body, #referralModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
+    #jobModalClose, #referralClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; font-size: 18px;
         color: var(--muted); background: var(--surface-2); transition: all .15s ease; }
-    #jobModalClose:hover { background: var(--sage-tint); color: var(--sage-700); }
+    #jobModalClose:hover, #referralClose:hover { background: var(--sage-tint); color: var(--sage-700); }
 
     /* Gradient text → ink→sage */
     .gradient-text,.stat-shimmer {
@@ -1073,7 +1073,10 @@
 
                     {# Primary actions up top so they're reachable without scrolling #}
                     <div class="mb-2">{{ caller() }}</div>
-                    <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[11px] py-2.5 w-full mb-4">↗ Open original posting</a>
+                    <div class="grid grid-cols-2 gap-2 mb-4">
+                        <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[11px] py-2.5">↗ Open posting</a>
+                        <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11px] py-2.5" title="Draft a referral / hiring-manager / visa-alumni message you can send yourself">🤝 Referral drafts</button>
+                    </div>
 
                     <div class="border-t border-slate-800/40 mb-4"></div>
 
@@ -4471,7 +4474,54 @@
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && document.getElementById('jobModalOverlay').classList.contains('open')) closeJobDrawer();
     });
+
+    // ── Referral / outreach drafts (draft-only; user sends them) ─────────────
+    async function openReferral(appId) {
+        if (typeof closeJobDrawer === 'function') closeJobDrawer();
+        const ov = document.getElementById('referralOverlay');
+        const body = document.getElementById('referralBody');
+        ov.classList.add('open'); document.body.style.overflow = 'hidden';
+        body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Drafting your outreach…</p>';
+        try {
+            const tok = localStorage.getItem('sb_token');
+            const res = await fetch(`/application/${appId}/referral`, { headers: tok ? { 'Authorization': `Bearer ${tok}` } : {} });
+            if (!res.ok) { body.innerHTML = `<p class="text-rose-500 text-sm py-6 text-center">Couldn't draft outreach (${res.status}).</p>`; return; }
+            const data = await res.json();
+            let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:rgba(245,158,11,.10);color:#92400e;">⚖️ ${data.note}</p>`;
+            (data.drafts || []).forEach(d => {
+                html += `<div class="rounded-xl p-4 mb-3" style="background:var(--surface-2);border:1px solid var(--border);">
+                    <div class="flex items-center justify-between mb-1">
+                        <p class="text-[11px] font-extrabold" style="color:var(--sage-700);">${d.label}</p>
+                        <button onclick='copyText(${JSON.stringify(d.body)}, this)' class="text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button>
+                    </div>
+                    <p class="text-[10px] mb-2" style="color:var(--muted-2);">${d.channel || ''}</p>
+                    <p class="text-sm whitespace-pre-wrap leading-relaxed" style="color:var(--ink);">${d.body}</p>
+                </div>`;
+            });
+            body.innerHTML = html;
+        } catch (e) { body.innerHTML = '<p class="text-rose-500 text-sm py-6 text-center">Network error.</p>'; }
+    }
+    function closeReferral() {
+        document.getElementById('referralOverlay').classList.remove('open');
+        document.body.style.overflow = '';
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.getElementById('referralOverlay').classList.contains('open')) closeReferral();
+    });
 </script>
+
+<div id="referralOverlay" onclick="if(event.target===this) closeReferral()">
+    <div id="referralModal" role="dialog" aria-modal="true" aria-label="Referral drafts">
+        <div class="jd-head">
+            <div class="min-w-0 flex-1">
+                <h2 class="text-sm font-bold" style="color:var(--ink);">🤝 Referral &amp; outreach drafts</h2>
+                <p class="text-[11px] mt-1" style="color:var(--muted);">Personalize the recipient, then send from your own account.</p>
+            </div>
+            <button type="button" id="referralClose" onclick="closeReferral()" title="Close (Esc)">&times;</button>
+        </div>
+        <div id="referralBody" class="jd-body"></div>
+    </div>
+</div>
 
 </body>
 
