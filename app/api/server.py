@@ -333,6 +333,81 @@ def serve_sitemap():
     return FileResponse(file_path, media_type="application/xml")
 
 
+@app.get("/api/notifications")
+def get_notifications(request: Request) -> dict:
+    """Fetch notifications for the current authenticated user."""
+    uid = _require_user(request)
+    from app.db.models import UserNotification
+    with get_session() as session:
+        notifs = session.exec(
+            select(UserNotification)
+            .where(UserNotification.user_id == uid)
+            .order_by(desc(UserNotification.created_at))
+            .limit(50)
+        ).all()
+        return {
+            "notifications": [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "message": n.message,
+                    "type": n.type,
+                    "read": n.read,
+                    "link": n.link,
+                    "created_at": n.created_at.isoformat() if n.created_at else None,
+                }
+                for n in notifs
+            ]
+        }
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(request: Request, notification_id: int) -> dict:
+    """Mark a specific notification as read."""
+    uid = _require_user(request)
+    from app.db.models import UserNotification
+    with get_session() as session:
+        notif = session.get(UserNotification, notification_id)
+        if not notif or notif.user_id != uid:
+            raise HTTPException(status_code=404, detail="Notification not found")
+        notif.read = True
+        session.add(notif)
+        session.commit()
+        return {"ok": True}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(request: Request) -> dict:
+    """Mark all unread notifications for the user as read."""
+    uid = _require_user(request)
+    from app.db.models import UserNotification
+    with get_session() as session:
+        unread = session.exec(
+            select(UserNotification)
+            .where(UserNotification.user_id == uid, UserNotification.read == False)
+        ).all()
+        for notif in unread:
+            notif.read = True
+            session.add(notif)
+        session.commit()
+        return {"ok": True}
+
+
+@app.post("/api/notifications/clear")
+def clear_all_notifications(request: Request) -> dict:
+    """Delete all notifications for the current user."""
+    uid = _require_user(request)
+    from app.db.models import UserNotification
+    with get_session() as session:
+        notifs = session.exec(
+            select(UserNotification).where(UserNotification.user_id == uid)
+        ).all()
+        for notif in notifs:
+            session.delete(notif)
+        session.commit()
+        return {"ok": True}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(request=request, name="landing.html", context={})
@@ -443,7 +518,7 @@ async def upload_resume(request: Request):
 
 @app.post("/api/resume/extract-profile")
 @_rate_limit("5/minute")
-async def extract_profile_from_resume(request: Request) -> dict:
+async def extract_profile_from_resume(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Parse the user's uploaded resume and auto-fill their profile fields using Claude."""
     import re as _re
     uid = _require_user(request)
@@ -564,6 +639,50 @@ Return only valid JSON, no markdown, no explanation."""
                 session.add(p)
                 session.commit()
 
+        # Trigger background memory harvesting if GitHub/LinkedIn urls are present
+        if db_profile.github_url or db_profile.linkedin_url:
+            from app.intelligence.harvester import run_harvest
+            background_tasks.add_task(
+                run_harvest,
+                user_id=(uid if uid != "local" else None),
+                notify=False
+            )
+
+        # Trigger background LinkedIn/Resume alignment review
+        from app.intelligence.harvester import check_cross_profile_alignment
+        background_tasks.add_task(
+            check_cross_profile_alignment,
+            user_id=(uid if uid != "local" else None)
+        )
+
+        # Run resume analysis and create notifications for "Needs work" suggestions
+        try:
+            analysis = analyze_resume_text(resume_text, uid)
+            from app.db.models import UserNotification
+            with get_session() as session:
+                for f in analysis.get("findings", []):
+                    if not f.get("ok"):
+                        existing_notif = session.exec(
+                            select(UserNotification)
+                            .where(
+                                UserNotification.user_id == uid,
+                                UserNotification.title == f"Résumé Suggestion: {f['label']} 📄",
+                                UserNotification.read == False
+                            )
+                        ).first()
+                        if not existing_notif:
+                            notif = UserNotification(
+                                user_id=uid,
+                                title=f"Résumé Suggestion: {f['label']} 📄",
+                                message=f.get("detail") or "Consider improving this section of your resume.",
+                                type="resume_suggestions",
+                                link="/dashboard",
+                            )
+                            session.add(notif)
+                session.commit()
+        except Exception as ae:
+            log.warning("Failed to run resume suggestions: %s", ae)
+
     return {"success": True, "extracted": {k: extracted.get(k) for k in field_map},
             "seeded_roles": seeded_roles}
 
@@ -575,29 +694,8 @@ def resume_status(request: Request) -> dict:
     return {"has_resume": _user_has_resume(uid)}
 
 
-@app.get("/api/resume/analysis")
-def resume_analysis(request: Request) -> dict:
-    """General ATS-readiness analysis of the user's résumé — no specific job needed.
-
-    Scores deterministic parse-ability signals (contact info, sections, quantified
-    impact, action verbs, length) plus how well the résumé reflects the user's
-    saved target roles. Fully local: no LLM / network calls, so it's instant + free.
-    """
+def analyze_resume_text(text: str, uid: str) -> dict:
     import re as _re
-    uid = _get_user_id(request)
-    from app.config import settings
-    if settings.use_supabase and not uid:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    if not _user_has_resume(uid):
-        return {"has_resume": False}
-    try:
-        from app.matching.pipeline import _load_resume
-        text = _load_resume(user_id=uid)
-    except Exception as e:
-        return {"has_resume": True, "error": f"Could not read résumé: {e}"}
-    if not text or len(text.strip()) < 30:
-        return {"has_resume": True, "error": "Résumé appears empty or unreadable."}
-
     low = text.lower()
     words = _re.findall(r"\b\w+\b", text)
     wc = len(words)
@@ -606,7 +704,7 @@ def resume_analysis(request: Request) -> dict:
     def _add(label, ok, detail):
         findings.append({"label": label, "ok": bool(ok), "detail": detail})
 
-    # 1. Contact info — ATS parsers key on a findable email + phone.
+    # 1. Contact info
     has_email = bool(_re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text))
     has_phone = bool(_re.search(r"(\+?\d[\d\s().-]{7,}\d)", text))
     _add("Contact details", has_email and has_phone,
@@ -623,7 +721,7 @@ def resume_analysis(request: Request) -> dict:
          "Experience, education & skills present" if not missing_sec
          else f"Missing section(s): {', '.join(missing_sec)}")
 
-    # 3. Quantified achievements — numbers/%/$ signal impact.
+    # 3. Quantified achievements
     metric_hits = len(_re.findall(r"\b\d+%|\$\s?\d|\b\d{2,}\b", text))
     _add("Quantified impact", metric_hits >= 3,
          f"{metric_hits} measurable results" if metric_hits >= 3
@@ -644,7 +742,7 @@ def resume_analysis(request: Request) -> dict:
          f"{wc} words — good" if good_len
          else (f"{wc} words — too short, add detail" if wc < 350 else f"{wc} words — consider trimming"))
 
-    # 6. Target-role alignment — ties roles + résumé together.
+    # 6. Target-role alignment
     roles = _get_target_roles(uid)
     if not roles:
         _add("Target-role match", False, "Add target roles to check résumé alignment")
@@ -664,6 +762,31 @@ def resume_analysis(request: Request) -> dict:
     grade = "Strong" if score >= 80 else "Good" if score >= 60 else "Needs work"
     return {"has_resume": True, "score": score, "grade": grade,
             "word_count": wc, "findings": findings}
+
+
+@app.get("/api/resume/analysis")
+def resume_analysis(request: Request) -> dict:
+    """General ATS-readiness analysis of the user's résumé — no specific job needed.
+
+    Scores deterministic parse-ability signals (contact info, sections, quantified
+    impact, action verbs, length) plus how well the résumé reflects the user's
+    saved target roles. Fully local: no LLM / network calls, so it's instant + free.
+    """
+    uid = _get_user_id(request)
+    from app.config import settings
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not _user_has_resume(uid):
+        return {"has_resume": False}
+    try:
+        from app.matching.pipeline import _load_resume
+        text = _load_resume(user_id=uid)
+    except Exception as e:
+        return {"has_resume": True, "error": f"Could not read résumé: {e}"}
+    if not text or len(text.strip()) < 30:
+        return {"has_resume": True, "error": "Résumé appears empty or unreadable."}
+
+    return analyze_resume_text(text, uid)
 
 
 @app.get("/api/discovery/last-run")

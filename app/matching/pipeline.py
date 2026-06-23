@@ -351,6 +351,21 @@ def run_matching(user_id: str | None = None) -> List[int]:
                         new_app_id = new_app.id
                         shortlisted.append(job.id)
                         today_count += 1
+
+                        # Create notification for high-fit matched jobs
+                        if score >= 75:
+                            try:
+                                from app.db.models import UserNotification
+                                notif = UserNotification(
+                                    user_id=user_id,
+                                    title="Perfect Job Match! 🎯",
+                                    message=f"{job.title} at {job.company} matches your profile with a score of {int(score)}%.",
+                                    type="high_match",
+                                    link=f"/dashboard",
+                                )
+                                session.add(notif)
+                            except Exception as ne:
+                                log.warning("Failed to create high match notification: %s", ne)
                     else:
                         log.info("Daily shortlist limit (%d) reached — skipping application creation for job %s.", settings.daily_shortlist_limit, job.title)
 

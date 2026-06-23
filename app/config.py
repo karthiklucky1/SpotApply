@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     max_jobs_per_source: int = 200   # Cap per source per discovery run (was 50)
 
     # Telegram
+    telegram_enabled: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
@@ -148,3 +149,8 @@ class Settings(BaseSettings):
         return [b.strip() for b in self.ashby_boards.split(",") if b.strip()]
 
 settings = Settings()
+
+if not settings.telegram_enabled:
+    settings.telegram_bot_token = ""
+    settings.telegram_chat_id = ""
+

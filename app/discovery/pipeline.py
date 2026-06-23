@@ -623,7 +623,7 @@ def finish_discovery_run(run_id: int | None, status: str,
                          total_shortlisted: int = 0, error: str | None = None) -> None:
     """Mark a run row as done/error with the final shortlist count."""
     from datetime import datetime
-    from app.db.models import DiscoveryRun
+    from app.db.models import DiscoveryRun, UserNotification
     if not run_id:
         return
     try:
@@ -637,6 +637,27 @@ def finish_discovery_run(run_id: int | None, status: str,
                 row.error = error[:300]
             row.finished_at = datetime.utcnow()
             session.add(row)
+            
+            # Create in-app notification for the user
+            try:
+                if status == "done":
+                    title = "Job Discovery Completed 🔍"
+                    message = f"Found {row.total_fetched} new postings. Shortlisted {total_shortlisted} high-fit matches."
+                else:
+                    title = "Job Discovery Failed ⚠️"
+                    message = f"Discovery run encountered an error: {error or 'Unknown error'}"
+                
+                notif = UserNotification(
+                    user_id=row.user_id,
+                    title=title,
+                    message=message,
+                    type="discovery_completed",
+                    link="/dashboard",
+                )
+                session.add(notif)
+            except Exception as ne:
+                log.warning("Failed to create discovery run notification: %s", ne)
+                
             session.commit()
     except Exception as e:
         log.warning("Could not finish discovery run: %s", e)

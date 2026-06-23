@@ -370,3 +370,18 @@ class H1BSponsor(SQLModel, table=True):
     typical_wage_level: str = ""                 # e.g. "Level II"
     is_cap_exempt: bool = False
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserNotification(SQLModel, table=True):
+    """Real-time in-app notifications for users (e.g. discovery runs finished, perfect jobs matched)."""
+    __tablename__ = "user_notifications"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    title: str
+    message: str
+    type: str = "general"                     # e.g., "discovery_completed", "high_match", "general"
+    read: bool = Field(default=False, index=True)
+    link: Optional[str] = None                # clickable link in the UI
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+

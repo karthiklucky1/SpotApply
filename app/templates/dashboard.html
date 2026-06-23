@@ -589,6 +589,39 @@
         background: var(--surface-2) !important; color: var(--ink) !important;
         border-color: var(--border) !important; }
     input::placeholder, textarea::placeholder { color: var(--muted-2) !important; }
+
+    /* Notification Drawer Styles */
+    .notif-card {
+        position: relative;
+        padding: 14px 16px;
+        border-radius: 16px;
+        border: 1px solid var(--border);
+        background: var(--surface) !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        display: flex;
+        gap: 12px;
+        align-items: start;
+        box-shadow: 0 2px 8px rgba(46, 42, 36, 0.03);
+    }
+    .notif-card.unread {
+        background: var(--sage-tint) !important;
+        border-color: rgba(47, 180, 166, 0.25) !important;
+        border-left: 4px solid var(--sage) !important;
+        box-shadow: 0 4px 14px rgba(47, 180, 166, 0.08) !important;
+    }
+    .notif-card.unread:hover {
+        border-color: var(--sage) !important;
+        background: var(--sage-tint) !important;
+        opacity: 0.95;
+    }
+    .notif-card.read {
+        opacity: 0.7;
+        background: var(--surface) !important;
+        border-color: var(--border) !important;
+    }
+    .notif-card.read:hover {
+        opacity: 0.95;
+    }
 </style>
 </head>
 
@@ -686,14 +719,18 @@
 
         <!-- Nav Actions -->
         <div class="flex items-center gap-2">
-            <button onclick="openResumeViewer()" class="flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-bold text-slate-300 hover:text-white border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
+            <button onclick="openNotifications()" title="Notifications" class="flex items-center gap-2 px-4 rounded-full text-[11px] font-bold text-slate-300 hover:text-white border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200 relative" style="background: rgba(255,255,255,0.03); height: 38px;">
+                🔔 Notifications
+                <span id="header-notif-badge" class="notif-badge hidden absolute -top-1 -right-1 text-[9px] font-black rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center border shadow-sm" style="background: var(--sage, #10b981); color: #fff !important; border-color: var(--canvas, #070b14); z-index: 10;"></span>
+            </button>
+            <button onclick="openResumeViewer()" class="flex items-center gap-2 px-4 rounded-full text-[11px] font-bold text-slate-300 hover:text-white border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03); height: 38px;">
                 <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Resume
             </button>
-            <button data-tour="profile" onclick="openProfileModal()" title="My Profile" class="flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-full border border-white/[0.08] hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03);">
-                <span style="width:28px;height:28px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(99,102,241,0.45);flex-shrink:0;">
+            <button data-tour="profile" onclick="openProfileModal()" title="My Profile" class="flex items-center gap-2 pl-1.5 pr-4 rounded-full border border-white/[0.08] hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-200" style="background: rgba(255,255,255,0.03); height: 38px;">
+                <span style="width:28px;height:28px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(16,185,129,0.45);flex-shrink:0;">
                     <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" />
-                    <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px;background:linear-gradient(135deg,rgba(99,102,241,0.25),rgba(124,58,237,0.12));">👤</span>
+                    <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:14px;background:linear-gradient(135deg,rgba(16,185,129,0.25),rgba(16,185,129,0.12));">👤</span>
                 </span>
                 <span class="text-[11px] font-bold text-slate-300">Profile</span>
             </button>
@@ -1632,6 +1669,8 @@
             searchJobs(); // Load first page of explorer database
             _initAnimations();
             loadSidebarAvatar();
+            loadNotifications();
+            setInterval(loadNotifications, 60000);
             // After a discovery run, land on the "All Jobs" tab so the newly
             // discovered jobs are visible (the Pipeline only shows shortlisted).
             if (localStorage.getItem('jb_post_discover')) {
@@ -3427,6 +3466,170 @@
             _refreshThemeButtons(localStorage.getItem('hp_theme') || 'sage');
         }
         function closeSettings() { document.getElementById('settings-modal').classList.add('hidden') }
+
+        function openNotifications() {
+            document.getElementById('notifications-modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+            loadNotifications();
+        }
+        function closeNotifications() {
+            document.getElementById('notifications-modal').classList.add('hidden');
+            document.body.style.overflow = '';
+        }
+        let _customConfirmCallback = null;
+        function showCustomConfirm(options) {
+            const modal = document.getElementById('confirm-modal');
+            const titleEl = document.getElementById('confirm-title');
+            const msgEl = document.getElementById('confirm-message');
+            const okBtn = document.getElementById('confirm-ok-btn');
+            const iconEl = document.getElementById('confirm-icon');
+            
+            titleEl.textContent = options.title || 'Are you sure?';
+            msgEl.textContent = options.message || '';
+            okBtn.textContent = options.okText || 'Confirm';
+            
+            if (options.isDanger) {
+                okBtn.style.cssText = 'background: linear-gradient(135deg, #f43f5e, #e11d48) !important; color: #fff !important; box-shadow: 0 4px 12px rgba(244,63,94,0.2);';
+                iconEl.textContent = '⚠️';
+                iconEl.className = 'w-12 h-12 rounded-full bg-rose-500/10 flex items-center justify-center text-xl mb-4 text-rose-500';
+            } else {
+                okBtn.style.cssText = 'background: linear-gradient(135deg, var(--sage), var(--sage-600)) !important; color: #fff !important; box-shadow: 0 4px 12px rgba(47,180,166,0.2);';
+                iconEl.textContent = '💡';
+                iconEl.className = 'w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-xl mb-4 text-emerald-500';
+            }
+            
+            _customConfirmCallback = options.onConfirm;
+            modal.classList.remove('hidden');
+        }
+        function closeCustomConfirm(confirmed) {
+            document.getElementById('confirm-modal').classList.add('hidden');
+            if (confirmed && _customConfirmCallback) {
+                _customConfirmCallback();
+            }
+            _customConfirmCallback = null;
+        }
+        async function loadNotifications() {
+            const listEl = document.getElementById('notifications-list');
+            const badges = document.querySelectorAll('.notif-badge');
+            if (!listEl) return;
+            
+            try {
+                const token = localStorage.getItem('sb_token');
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                const resp = await fetch('/api/notifications', { headers });
+                if (!resp.ok) throw new Error('Failed to fetch');
+                const data = await resp.json();
+                
+                listEl.innerHTML = '';
+                if (!data.notifications || data.notifications.length === 0) {
+                    listEl.innerHTML = '<div class="text-slate-500 text-center py-12 text-sm">No notifications yet.</div>';
+                    badges.forEach(b => b.classList.add('hidden'));
+                    return;
+                }
+                
+                let unreadCount = 0;
+                data.notifications.forEach(n => {
+                    if (!n.read) unreadCount++;
+                    
+                    const div = document.createElement('div');
+                    div.className = `notif-card ${n.read ? 'read' : 'unread'}`;
+                    
+                    // Format relative time
+                    const timeStr = new Date(n.created_at).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                    const typeIcon = n.type === 'high_match' ? '🎯' : (n.type === 'discovery_completed' ? '🔍' : (n.type === 'profile_suggestions' ? '🧠' : (n.type === 'resume_suggestions' ? '📄' : '🔔')));
+                    
+                    div.innerHTML = `
+                        <span class="text-lg flex-shrink-0 mt-0.5">${typeIcon}</span>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-xs flex items-center gap-1.5" style="color: var(--ink); font-weight: 800;">
+                                    ${!n.read ? `<span class="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block shrink-0 animate-pulse"></span>` : ''}
+                                    ${n.title}
+                                </span>
+                                <span class="shrink-0" style="color: var(--muted); font-size: 9px; font-weight: 600;">${timeStr}</span>
+                            </div>
+                            <p class="mt-1 leading-relaxed" style="color: var(--ink-soft); font-size: 11px;">${n.message}</p>
+                            ${
+                                n.type === 'profile_suggestions' 
+                                    ? `<button onclick="closeNotifications(); openMemoryModal(); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 text-left bg-transparent border-0 p-0 cursor-pointer hover:underline" style="color: var(--sage-600);">View details &rarr;</button>`
+                                    : (n.type === 'resume_suggestions'
+                                        ? `<button onclick="closeNotifications(); openRolesModal(); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 text-left bg-transparent border-0 p-0 cursor-pointer hover:underline" style="color: var(--sage-600);">View details &rarr;</button>`
+                                        : (n.type === 'discovery_completed'
+                                            ? `<button onclick="closeNotifications(); sbSwitchTab('explorer'); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 text-left bg-transparent border-0 p-0 cursor-pointer hover:underline" style="color: var(--sage-600);">View details &rarr;</button>`
+                                            : (n.type === 'high_match'
+                                                ? `<button onclick="closeNotifications(); sbSwitchTab('kanban'); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 text-left bg-transparent border-0 p-0 cursor-pointer hover:underline" style="color: var(--sage-600);">View details &rarr;</button>`
+                                                : (n.link 
+                                                    ? (n.link === '/dashboard' 
+                                                        ? `<button onclick="closeNotifications(); sbSwitchTab('kanban'); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 text-left bg-transparent border-0 p-0 cursor-pointer hover:underline" style="color: var(--sage-600);">View details &rarr;</button>`
+                                                        : `<a href="${n.link}" onclick="closeNotifications(); markNotificationAsRead(${n.id})" class="inline-block text-[10px] font-black mt-2.5 hover:underline" style="color: var(--sage-600);">View details &rarr;</a>`)
+                                                    : ''))))
+                            }
+                        </div>
+                        ${!n.read ? `
+                            <button onclick="markNotificationAsRead(${n.id}, event)" class="absolute top-4 right-4 text-[12px] font-extrabold bg-transparent border-0 cursor-pointer hover:scale-110 transition-transform" style="color: var(--sage-600);" title="Mark read">
+                                ✓
+                            </button>
+                        ` : ''}
+                    `;
+                    listEl.appendChild(div);
+                });
+                
+                if (unreadCount > 0) {
+                    badges.forEach(b => {
+                        b.classList.remove('hidden');
+                        b.textContent = unreadCount;
+                    });
+                } else {
+                    badges.forEach(b => b.classList.add('hidden'));
+                }
+            } catch (err) {
+                console.error(err);
+                listEl.innerHTML = '<div class="text-rose-400 text-center py-8 text-sm">Failed to load notifications.</div>';
+            }
+        }
+        async function markNotificationAsRead(id, e) {
+            if (e) e.stopPropagation();
+            try {
+                const token = localStorage.getItem('sb_token');
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                await fetch(`/api/notifications/${id}/read`, { method: 'POST', headers });
+                loadNotifications();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+        async function markAllNotificationsAsRead() {
+            try {
+                const token = localStorage.getItem('sb_token');
+                const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                await fetch('/api/notifications/read-all', { method: 'POST', headers });
+                loadNotifications();
+                showToast('All notifications marked as read.', 'success');
+            } catch (err) {
+                console.error(err);
+                showToast('Failed to mark all as read.', 'error');
+            }
+        }
+        async function clearNotifications() {
+            showCustomConfirm({
+                title: 'Clear Notifications',
+                message: 'Are you sure you want to permanently clear all notifications? This cannot be undone.',
+                okText: 'Clear All',
+                isDanger: true,
+                onConfirm: async () => {
+                    try {
+                        const token = localStorage.getItem('sb_token');
+                        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+                        await fetch('/api/notifications/clear', { method: 'POST', headers });
+                        loadNotifications();
+                        showToast('Notifications cleared.', 'success');
+                    } catch (err) {
+                        console.error(err);
+                        showToast('Failed to clear notifications.', 'error');
+                    }
+                }
+            });
+        }
         function backToSettings() {
             document.getElementById('settings-doc').classList.add('hidden')
             document.getElementById('settings-menu').classList.remove('hidden')
@@ -3484,7 +3687,7 @@
             btn.textContent = 'Upload'; btn.disabled = false
         }
 
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); closeSettings(); closeResumeViewer(); } });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeProfileModal(); closeAnswerPackModal(); closeResumeUpload(); closeOnboarding(); closeSettings(); closeResumeViewer(); closeNotifications(); } });
 
         // Accent-colour themes — each variant overrides the CSS custom properties defined in :root
         const HP_THEMES = {
@@ -4195,6 +4398,40 @@
         </div>
     </div>
 
+    <!-- Notifications Modal -->
+    <div id="notifications-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeNotifications()"></div>
+        <div class="relative glass-dark rounded-[28px] p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto border border-slate-700/50 shadow-2xl flex flex-col">
+            <div class="flex items-center justify-between mb-5 shrink-0">
+                <h2 class="text-lg font-bold" style="color: var(--ink);">🔔 Notifications</h2>
+                <div class="flex items-center gap-3">
+                    <button onclick="markAllNotificationsAsRead()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--sage-600);">Mark all read</button>
+                    <span style="color: var(--muted);">|</span>
+                    <button onclick="clearNotifications()" class="text-xs font-bold hover:underline bg-transparent border-0 p-0 cursor-pointer" style="color: var(--rose);">Clear all</button>
+                    <button onclick="closeNotifications()" class="text-2xl leading-none ml-2 bg-transparent border-0 cursor-pointer hover:scale-110 transition-transform" style="color: var(--muted);">&times;</button>
+                </div>
+            </div>
+
+            <div id="notifications-list" class="space-y-3 overflow-y-auto flex-1 pr-1 max-h-[60vh]">
+                <div class="text-slate-400 text-center py-8 text-sm">Loading notifications...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div id="confirm-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/75 backdrop-blur-sm" onclick="closeCustomConfirm(false)"></div>
+        <div class="relative glass rounded-[24px] p-6 w-full max-w-sm border border-slate-700/50 shadow-2xl flex flex-col items-center text-center">
+            <div class="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-xl mb-4" id="confirm-icon">⚠️</div>
+            <h3 class="text-base font-bold mb-2" id="confirm-title" style="color: var(--ink);">Confirm Action</h3>
+            <p class="text-xs mb-6 leading-relaxed" id="confirm-message" style="color: var(--ink-soft);"></p>
+            <div class="flex items-center gap-3 w-full">
+                <button onclick="closeCustomConfirm(false)" class="flex-1 jbtn jbtn-ghost py-2.5 text-xs transition">Cancel</button>
+                <button onclick="closeCustomConfirm(true)" class="flex-1 jbtn jbtn-primary py-2.5 text-xs transition" id="confirm-ok-btn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Profile Modal -->
     <div id="profile-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
         <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeProfileModal()"></div>
@@ -4327,7 +4564,7 @@
                 <p class="text-[10px] font-extrabold uppercase tracking-widest mb-1" style="color:var(--sage-700);">🔗 Add LinkedIn details</p>
                 <p class="text-[10.5px] mb-2" style="color:var(--muted);">We don't crawl LinkedIn (it's against their rules and risks your account). Paste your <b>headline / about / recent experience</b> and we'll fold it into your tailoring.</p>
                 <textarea id="linkedin-paste" rows="4" placeholder="Paste your LinkedIn About / headline / recent roles here…" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white resize-none"></textarea>
-                <button onclick="saveLinkedIn(this)" class="mt-2 text-xs font-bold px-4 py-2 rounded-full bg-slate-700 hover:bg-slate-600 text-white transition">Save LinkedIn details</button>
+                <button onclick="saveLinkedIn(this)" class="jbtn jbtn-primary mt-2 text-xs px-4 py-2 transition">Save LinkedIn details</button>
             </div>
         </div>
     </div>

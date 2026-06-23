@@ -196,6 +196,28 @@ def run_harvest(user_id: str | None = None, notify: bool = False) -> dict:
                "recommendations": recommendations, "parsed_updates": parsed,
                "github_ok": gh.get("ok", False)}
 
+        # Create a notification for new profile suggestions
+        try:
+            from app.db.models import UserNotification
+            
+            clean_message = recommendations
+            if "### Weekly recruiter brief" in clean_message:
+                clean_message = clean_message.replace("### Weekly recruiter brief", "").strip()
+            # Clean up bullet/dash formatting
+            clean_message = "\n".join([line.lstrip("-* ").strip() for line in clean_message.split("\n") if line.strip()])
+            
+            notif = UserNotification(
+                user_id=user_id or "local",
+                title="Profile & Repo Suggestions 🧠",
+                message=clean_message[:1000],
+                type="profile_suggestions",
+                link="/dashboard",
+            )
+            session.add(notif)
+            session.commit()
+        except Exception as ne:
+            log.warning("Failed to create profile suggestion notification: %s", ne)
+
     if notify and recommendations:
         _notify_telegram("🧠 JobAgent weekly profile brief:\n\n" + recommendations)
     return out
@@ -239,6 +261,35 @@ def ingest_linkedin_text(user_id: str | None, text: str) -> dict:
         session.add(row)
         session.commit()
         session.refresh(row)
+        
+        # Create a notification for LinkedIn suggestions
+        try:
+            from app.db.models import UserNotification
+            
+            clean_message = recommendations
+            if "### From your LinkedIn paste" in clean_message:
+                clean_message = clean_message.replace("### From your LinkedIn paste", "").strip()
+            # Clean up bullet/dash formatting
+            clean_message = "\n".join([line.lstrip("-* ").strip() for line in clean_message.split("\n") if line.strip()])
+            
+            notif = UserNotification(
+                user_id=user_id or "local",
+                title="LinkedIn Profile Suggestions 🧠",
+                message=clean_message[:1000],
+                type="profile_suggestions",
+                link="/dashboard",
+            )
+            session.add(notif)
+            session.commit()
+        except Exception as ne:
+            log.warning("Failed to create LinkedIn notification: %s", ne)
+            
+        # Trigger cross-profile alignment checks
+        try:
+            check_cross_profile_alignment(user_id)
+        except Exception as ae:
+            log.warning("Cross profile alignment checks failed during paste: %s", ae)
+
         return {"id": row.id, "created_at": row.created_at.isoformat(),
                 "recommendations": recommendations}
 
@@ -261,3 +312,126 @@ def run_harvest_all_users() -> int:
             log.warning("harvest failed for user %s: %s", p.user_id, e)
     log.info("Weekly harvest complete for %d users", n)
     return n
+
+
+def check_cross_profile_alignment(user_id: str | None = None) -> None:
+    """Compare user's resume and LinkedIn profile (from recruiter memory) to generate notifications."""
+    from app.db.init_db import get_session
+    from app.db.models import UserPersonalMemory, UserNotification
+    from app.matching.pipeline import _load_resume
+    from sqlmodel import select
+    import json
+    import anthropic
+    from app.config import settings
+
+    user_id_db = user_id if user_id and user_id != "local" else None
+    
+    # 1. Load Resume text
+    try:
+        resume_text = _load_resume(user_id=user_id_db)
+    except Exception:
+        resume_text = None
+
+    if not resume_text or len(resume_text.strip()) < 30:
+        return
+
+    # 2. Load latest LinkedIn paste
+    with get_session() as session:
+        q = select(UserPersonalMemory).where(
+            UserPersonalMemory.user_id == user_id_db,
+            UserPersonalMemory.source == "linkedin"
+        ).order_by(UserPersonalMemory.created_at.desc())
+        latest_li = session.exec(q).first()
+
+    if not latest_li or not (latest_li.raw_content or "").strip():
+        # If no LinkedIn paste is on file, notify them once
+        with get_session() as session:
+            existing = session.exec(
+                select(UserNotification).where(
+                    UserNotification.user_id == (user_id or "local"),
+                    UserNotification.title == "Enhance suggestions: Link LinkedIn 🔗",
+                    UserNotification.read == False
+                )
+            ).first()
+            if not existing:
+                notif = UserNotification(
+                    user_id=user_id or "local",
+                    title="Enhance suggestions: Link LinkedIn 🔗",
+                    message="Paste your LinkedIn profile text in Settings -> Recruiter memory so we can review your online brand alignment!",
+                    type="profile_suggestions",
+                    link="/dashboard"
+                )
+                session.add(notif)
+                session.commit()
+        return
+
+    linkedin_text = latest_li.raw_content
+
+    # 3. Call Claude to compare
+    if not settings.anthropic_api_key:
+        return
+
+    prompt = f"""You are a senior recruiter auditing a candidate's online brand alignment. 
+Compare their Resume and their LinkedIn profile text to find inconsistencies, missing experience, or missing skills.
+
+Resume:
+{resume_text[:6000]}
+
+LinkedIn Profile Text:
+{linkedin_text[:6000]}
+
+Identify:
+1. Experience discrepancies (e.g., if the resume shows 2 years of experience at a company or overall, but LinkedIn has no experience, different dates, or is missing that job completely).
+2. Key skills present on the resume but missing from the LinkedIn profile.
+3. Concrete profile alignment suggestions.
+
+Return ONLY a JSON list of objects, where each object has:
+- "label": a short, punchy alert title (e.g. "Missing LinkedIn Experience", "Missing LinkedIn Skills")
+- "ok": a boolean (use false if there is a discrepancy/action item for the user)
+- "detail": a specific, actionable recruiter recommendation (e.g. "Your resume lists 2 years of experience as a Software Engineer at Stripe, but this role is completely missing from your LinkedIn profile. Add this Stripe experience to your profile to align your brand.", "Add 'React' and 'Python' skills to your LinkedIn skills section as they are prominent in your resume but missing on LinkedIn.")
+
+If everything is perfectly aligned, return an empty list [].
+Return only valid JSON, no markdown, no explanation."""
+
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = msg.content[0].text.strip()
+        
+        # Strip markdown fences if present
+        import re
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        
+        findings = json.loads(raw)
+        if not isinstance(findings, list):
+            return
+
+        with get_session() as session:
+            for f in findings:
+                if not f.get("ok"):
+                    title = f"LinkedIn Suggestion: {f['label']} 🔗"
+                    # Check if unread notification with same title already exists
+                    existing = session.exec(
+                        select(UserNotification).where(
+                            UserNotification.user_id == (user_id or "local"),
+                            UserNotification.title == title,
+                            UserNotification.read == False
+                        )
+                    ).first()
+                    if not existing:
+                        notif = UserNotification(
+                            user_id=user_id or "local",
+                            title=title,
+                            message=f.get("detail") or "Consider updating your LinkedIn profile.",
+                            type="profile_suggestions",
+                            link="/dashboard"
+                        )
+                        session.add(notif)
+            session.commit()
+    except Exception as e:
+        log.warning("Failed to run cross-profile alignment checks: %s", e)
