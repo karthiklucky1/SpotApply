@@ -49,19 +49,43 @@ def _find_col(headers: list[str], *needles: str) -> Optional[str]:
     return None
 
 
+def _read_text(path: str) -> str:
+    """Read the CSV as text, auto-detecting encoding (USCIS ships UTF-16!)."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    elif raw[:3] == b"\xef\xbb\xbf":
+        text = raw.decode("utf-8-sig", errors="replace")
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="replace")
+    # Strip stray BOM / null bytes that survive a mis-encoded export.
+    return text.replace("\x00", "").replace("﻿", "")
+
+
+def _clean_header(h: str) -> str:
+    return (h or "").lstrip("﻿").replace("\x00", "").strip()
+
+
 def _open_reader(path: str):
-    """Open the CSV, sniffing the delimiter (comma/tab/semicolon/pipe)."""
-    fh = open(path, newline="", encoding="utf-8-sig", errors="replace")
-    sample = fh.read(8192)
-    fh.seek(0)
-    delim = ","
+    """Return a DictReader over the decoded text, delimiter auto-sniffed,
+    with cleaned header names. (USCIS files are UTF-16 + have a junk leading
+    'Line by line' column and trailing spaces in some headers.)"""
+    import io
+    text = _read_text(path)
+    sample = text[:8192]
     try:
         delim = csv.Sniffer().sniff(sample, delimiters=",\t;|").delimiter
     except Exception:
-        # Fall back: pick whichever common delimiter appears most in the header.
         first = sample.splitlines()[0] if sample else ""
         delim = max(",\t;|", key=lambda d: first.count(d)) if first else ","
-    return fh, csv.DictReader(fh, delimiter=delim)
+    reader = csv.DictReader(io.StringIO(text), delimiter=delim)
+    orig = reader.fieldnames or []
+    reader.fieldnames = [_clean_header(h) for h in orig]
+    return reader
 
 
 def ingest_csv(path: str) -> int:
@@ -74,49 +98,44 @@ def ingest_csv(path: str) -> int:
     init_db()
     LAST_INGEST.update(rows=0, error="", headers=[], at=_dt.datetime.utcnow().isoformat())
 
-    fh, reader = _open_reader(path)
-    try:
-        headers = reader.fieldnames or []
-        LAST_INGEST["headers"] = headers
-        emp_col = _find_col(headers, "employer") or _find_col(headers, "petitioner")
-        if not emp_col:
-            # Last resort: a column literally named like a company field.
-            emp_col = _find_col(headers, "company") or _find_col(headers, "name")
-        if not emp_col:
-            raise ValueError("Couldn't find an employer/company column. "
-                             f"Columns seen: {headers}")
-        year_col = _find_col(headers, "fiscal") or _find_col(headers, "year")
-        appr_cols = [h for h in headers if "approval" in h.lower()]
-        deny_cols = [h for h in headers if "denial" in h.lower()]
-        if not appr_cols:
-            appr_cols = [h for h in headers if h.lower().strip() in ("approved", "approvals", "certified")]
-        if not deny_cols:
-            deny_cols = [h for h in headers if h.lower().strip() in ("denied", "denials")]
-        wage_col = _find_col(headers, "wage", "level")
+    reader = _open_reader(path)
+    headers = reader.fieldnames or []
+    LAST_INGEST["headers"] = headers
+    emp_col = (_find_col(headers, "employer") or _find_col(headers, "petitioner")
+               or _find_col(headers, "company") or _find_col(headers, "name"))
+    if not emp_col:
+        raise ValueError("Couldn't find an employer/company column. "
+                         f"Columns seen: {headers}")
+    year_col = _find_col(headers, "fiscal") or _find_col(headers, "year")
+    appr_cols = [h for h in headers if "approval" in h.lower()]
+    deny_cols = [h for h in headers if "denial" in h.lower()]
+    if not appr_cols:
+        appr_cols = [h for h in headers if h.lower().strip() in ("approved", "approvals", "certified")]
+    if not deny_cols:
+        deny_cols = [h for h in headers if h.lower().strip() in ("denied", "denials")]
+    wage_col = _find_col(headers, "wage", "level")
 
-        agg: dict = {}
-        for row in reader:
-            name = (row.get(emp_col) or "").strip()
-            if not name:
-                continue
-            key = normalize(name)
-            if not key:
-                continue
-            year = None
-            if year_col:
-                try:
-                    year = int(re.sub(r"\D", "", row.get(year_col) or "") or 0) or None
-                except ValueError:
-                    year = None
-            ap = sum(_to_int(row.get(c)) for c in appr_cols)
-            dn = sum(_to_int(row.get(c)) for c in deny_cols)
-            cur = agg.setdefault((key, year), {"name": name, "ap": 0, "dn": 0, "wage": ""})
-            cur["ap"] += ap
-            cur["dn"] += dn
-            if wage_col and not cur["wage"]:
-                cur["wage"] = (row.get(wage_col) or "").strip()
-    finally:
-        fh.close()
+    agg: dict = {}
+    for row in reader:
+        name = (row.get(emp_col) or "").strip()
+        if not name:
+            continue
+        key = normalize(name)
+        if not key:
+            continue
+        year = None
+        if year_col:
+            try:
+                year = int(re.sub(r"\D", "", row.get(year_col) or "") or 0) or None
+            except ValueError:
+                year = None
+        ap = sum(_to_int(row.get(c)) for c in appr_cols)
+        dn = sum(_to_int(row.get(c)) for c in deny_cols)
+        cur = agg.setdefault((key, year), {"name": name, "ap": 0, "dn": 0, "wage": ""})
+        cur["ap"] += ap
+        cur["dn"] += dn
+        if wage_col and not cur["wage"]:
+            cur["wage"] = (row.get(wage_col) or "").strip()
 
     if not agg:
         raise ValueError(f"Parsed 0 rows. Detected employer column '{emp_col}'. "
