@@ -2371,14 +2371,35 @@ catch(e){m.textContent='❌ '+e;}b.disabled=false;b.textContent='Upload & ingest
 </script></body></html>"""
 
 
+def _require_admin(token: str) -> None:
+    """Gate admin actions. Distinct messages so the user knows which is wrong."""
+    from app.config import settings
+    if not (settings.admin_token or "").strip():
+        raise HTTPException(
+            status_code=403,
+            detail="H-1B upload is disabled: ADMIN_TOKEN is not set on the server. "
+                   "Add it as an environment variable and redeploy, then reload.",
+        )
+    if (token or "").strip() != settings.admin_token.strip():
+        raise HTTPException(
+            status_code=403,
+            detail="Wrong admin token — it must exactly match the ADMIN_TOKEN "
+                   "environment variable on the server (watch for extra spaces/quotes).",
+        )
+
+
 @app.get("/admin/h1b", response_class=HTMLResponse)
 def admin_h1b_page(request: Request):
     """Browser upload page for the USCIS H-1B CSV (gated by ADMIN_TOKEN env)."""
     from app.config import settings
-    if not settings.admin_token:
+    if not (settings.admin_token or "").strip():
         return HTMLResponse(
-            "<h2>H-1B upload is disabled.</h2><p>Set the <code>ADMIN_TOKEN</code> "
-            "environment variable on the server, redeploy, then reload this page.</p>",
+            "<body style='font-family:sans-serif;max-width:520px;margin:60px auto;color:#2E2A24'>"
+            "<h2>H-1B upload is disabled</h2>"
+            "<p>The <code>ADMIN_TOKEN</code> environment variable is not set on the server "
+            "(or the server hasn't redeployed since you set it).</p>"
+            "<p><b>Fix:</b> add an <code>ADMIN_TOKEN</code> variable on your host → redeploy → reload this page.</p>"
+            "</body>",
             status_code=403,
         )
     return HTMLResponse(_H1B_UPLOAD_HTML)
@@ -2386,10 +2407,8 @@ def admin_h1b_page(request: Request):
 
 @app.get("/api/admin/h1b-status")
 def admin_h1b_status(token: str = "") -> dict:
-    from app.config import settings
     from app.db.models import H1BSponsor
-    if not settings.admin_token or token != settings.admin_token:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_admin(token)
     with get_session() as session:
         count = session.exec(select(func.count(H1BSponsor.id))).one()
     return {"employers": int(count if not isinstance(count, (list, tuple)) else count[0])}
@@ -2398,9 +2417,7 @@ def admin_h1b_status(token: str = "") -> dict:
 @app.post("/api/admin/h1b-upload")
 async def admin_h1b_upload(bg: BackgroundTasks, token: str = Form(""), file: UploadFile = File(...)) -> dict:
     """Accept the USCIS CSV from the browser and ingest it in the background."""
-    from app.config import settings
-    if not settings.admin_token or token != settings.admin_token:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_admin(token)
     import tempfile, os as _os
     data = await file.read()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
