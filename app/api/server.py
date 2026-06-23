@@ -288,6 +288,20 @@ templates.env.filters["fromjson"] = _fromjson_filter
 templates.env.filters["cleantext"] = _cleantext_filter
 
 
+def _sponsorship_of(job):
+    """Jinja global: legal sponsorship assessment for a job (cap-exempt aware)."""
+    try:
+        from app.intelligence.sponsorship import assess
+        return assess(company=getattr(job, "company", "") or "",
+                      description=getattr(job, "description", "") or "",
+                      url=getattr(job, "url", "") or "")
+    except Exception:
+        return None
+
+
+templates.env.globals["sponsorship_of"] = _sponsorship_of
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
@@ -1159,6 +1173,16 @@ def dashboard(request: Request):
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
+    # Legal work-authorization framing for this user (drives the visa-fit panel).
+    visa_framing = None
+    try:
+        from app.intelligence.work_auth import assess_profile
+        from app.autofill.answer_pack import _get_or_create_profile
+        _prof = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
+        visa_framing = assess_profile(_prof)
+    except Exception as _e:
+        log.debug("visa framing unavailable: %s", _e)
+
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -1170,6 +1194,7 @@ def dashboard(request: Request):
             "skipped": skipped,
             "rejected": rejected,
             "ssr_authed": ssr_authed,
+            "visa_framing": visa_framing,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
         }

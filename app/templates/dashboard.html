@@ -968,7 +968,7 @@
                 inert <template> that the slide-in drawer clones on click, so the
                 list stays short and easy to scroll. Per-column buttons are passed
                 in via {% call %} and rendered through caller(). -#}
-            {% macro jobcard(app, job, accent='indigo', removable=true, status_chip='') %}
+            {% macro jobcard(app, job, accent='indigo', removable=true, status_chip='', visa=none) %}
             <div class="kanban-card glass rounded-[20px] px-4 py-3.5 border-slate-800 hover:border-{{ accent }}-500/40 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}"
                  data-app-id="{{ app.id }}" data-job-url="{{ (app.apply_url or job.url)|e }}"
                  data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" onclick="openJobDrawer(this)">
@@ -1020,6 +1020,36 @@
                     <p class="text-[10px] leading-relaxed mb-4" style="color:var(--muted);">
                         <b>Match</b> = how closely your résumé fits this role · <b>Hiring intent</b> = how actively the company appears to be hiring · <b>Priority</b> = 65% match + 35% hiring intent.
                     </p>
+
+                    {# ── Your Edge: visa fit + sponsorship intelligence ──────────── #}
+                    {% set spons = sponsorship_of(job) %}
+                    {% if spons or visa %}
+                    <div class="rounded-2xl border px-3.5 py-3 mb-4"
+                         style="border-color:{% if spons and spons.tone=='good' %}rgba(var(--sage-rgb),.35){% elif spons and spons.tone=='bad' %}rgba(244,63,94,.30){% else %}var(--border){% endif %};
+                                background:{% if spons and spons.tone=='good' %}var(--sage-tint){% elif spons and spons.tone=='bad' %}rgba(244,63,94,.06){% else %}var(--surface-2){% endif %};">
+                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-2" style="color:var(--sage-700);">🎯 Your edge on this application</span>
+                        {% if spons %}
+                        <div class="flex items-start gap-2 mb-2">
+                            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0"
+                                  style="{% if spons.tone=='good' %}background:var(--sage);color:#fff;{% elif spons.tone=='bad' %}background:rgba(244,63,94,.15);color:#e11d48;{% else %}background:var(--surface);color:var(--muted);border:1px solid var(--border);{% endif %}">
+                                {% if spons.cap_exempt %}🎓 {% elif spons.tone=='good' %}✅ {% elif spons.tone=='bad' %}⚠ {% else %}❔ {% endif %}{{ spons.badge }}
+                            </span>
+                            <p class="text-[11px] leading-snug" style="color:var(--ink-soft);">{{ spons.reason }}</p>
+                        </div>
+                        {% endif %}
+                        {% if visa and visa.basis %}
+                        <p class="text-[11px] leading-snug mb-1" style="color:var(--ink-soft);"><b>You:</b> {{ visa.headline }}</p>
+                        {% if visa.selling_point %}
+                        <p class="text-[10.5px] leading-snug" style="color:var(--muted);">💬 What to tell them: "{{ visa.selling_point }}"</p>
+                        {% endif %}
+                        {% if visa.review_flag %}
+                        <p class="text-[10px] leading-snug mt-1.5 pt-1.5 border-t border-slate-800/30" style="color:var(--muted);">
+                            ⚖️ If asked <i>"will you need sponsorship in the future?"</i> — answer truthfully: <b>{{ visa.future_sponsorship_answer }}</b>. We never auto-answer this for you.
+                        </p>
+                        {% endif %}
+                        {% endif %}
+                    </div>
+                    {% endif %}
 
                     {# Primary actions up top so they're reachable without scrolling #}
                     <div class="mb-2">{{ caller() }}</div>
@@ -1099,7 +1129,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in shortlisted %}
-                    {% call jobcard(app, job, 'indigo', true) %}
+                    {% call jobcard(app, job, 'indigo', true, '', visa_framing) %}
                         <div class="flex flex-col gap-2">
                             {% set has_docs = app.tailored_resume_path or app.cover_letter_path %}
                             {% if not has_docs %}
@@ -1177,7 +1207,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in bot_filled %}
-                    {% call jobcard(app, job, 'amber', true, 'Filled') %}
+                    {% call jobcard(app, job, 'amber', true, 'Filled', visa_framing) %}
                         <div class="flex flex-col gap-2">
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); fillWithExtension(+this.dataset.appId, this)" class="jbtn jbtn-apply text-[11px] py-2.5 w-full"
                                 title="Opens form in your browser and fills every field — you review then submit">
@@ -1217,7 +1247,7 @@
                 
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                     {% for app, job in submitted %}
-                    {% call jobcard(app, job, 'emerald', false, app.status.value) %}
+                    {% call jobcard(app, job, 'emerald', false, app.status.value, visa_framing) %}
                         <div class="grid grid-cols-2 gap-2">
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2">
                                 📄 Documents
