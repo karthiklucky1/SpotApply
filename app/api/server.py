@@ -1137,11 +1137,37 @@ def dashboard(request: Request):
 
     from datetime import datetime as _dt
 
+    # Legal work-authorization framing for this user (drives the visa-fit panel
+    # and the sponsorship-aware ranking boost below).
+    visa_framing = None
+    try:
+        from app.intelligence.work_auth import assess_profile
+        from app.autofill.answer_pack import _get_or_create_profile
+        _prof = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
+        visa_framing = assess_profile(_prof)
+    except Exception as _e:
+        log.debug("visa framing unavailable: %s", _e)
+
+    # For users who need sponsorship, float no-lottery (cap-exempt) and known
+    # sponsors to the top — those are the jobs that can actually hire them.
+    _boost_sponsorship = bool(visa_framing and getattr(visa_framing, "needs_future_sponsorship", False))
+
     def _priority(job) -> float:
-        """Rank by blended score (fit + hiring intent) when available, else fall back to rerank."""
-        if job.blended_score is not None:
-            return job.blended_score
-        return job.rerank_score or 0
+        """Rank by blended score (fit + hiring intent), with a sponsorship-aware
+        boost for visa users so cap-exempt / sponsor-friendly roles surface first."""
+        base = job.blended_score if job.blended_score is not None else (job.rerank_score or 0)
+        if _boost_sponsorship:
+            try:
+                spons = _sponsorship_of(job)
+                if spons and spons.cap_exempt:
+                    base += 1000          # no-lottery → absolute top
+                elif spons and spons.tone == "good":
+                    base += 200           # established sponsor → boosted
+                elif spons and spons.explicitly_refuses:
+                    base -= 500           # explicitly won't sponsor → sink
+            except Exception:
+                pass
+        return base
 
     # Highest-priority roles first; recency breaks ties so fresh postings float up.
     shortlisted.sort(
@@ -1172,16 +1198,6 @@ def dashboard(request: Request):
 
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
-
-    # Legal work-authorization framing for this user (drives the visa-fit panel).
-    visa_framing = None
-    try:
-        from app.intelligence.work_auth import assess_profile
-        from app.autofill.answer_pack import _get_or_create_profile
-        _prof = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
-        visa_framing = assess_profile(_prof)
-    except Exception as _e:
-        log.debug("visa framing unavailable: %s", _e)
 
     return templates.TemplateResponse(
         request=request,
@@ -1559,6 +1575,17 @@ def _discover_then_match(user_id) -> None:
     run_id = create_discovery_run(user_id)
     # Tailor the keyword search to the user's saved Target Roles when set.
     roles = _get_target_roles(user_id) or None
+    # Sponsorship-needing users: nudge discovery toward cap-exempt (no-lottery)
+    # university / research roles with a couple of targeted keyword variants.
+    # Bounded to +2 terms so it never balloons discovery cost.
+    try:
+        if roles and _user_needs_sponsorship(user_id):
+            primary = roles[0]
+            for extra in (f"research {primary}", f"{primary} university"):
+                if extra.lower() not in [r.lower() for r in roles]:
+                    roles.append(extra)
+    except Exception as _se:
+        log.debug("cap-exempt keyword augmentation skipped: %s", _se)
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles)   # marks the row 'ranking' + per-source counts
     except Exception as e:
@@ -2139,6 +2166,17 @@ def update_target_roles(request: Request, body: TargetRolesUpdate) -> dict:
         session.add(db_profile)
         session.commit()
     return {"success": True, "roles": cleaned}
+
+
+def _user_needs_sponsorship(uid) -> bool:
+    """True when this user will need visa sponsorship (drives cap-exempt boost)."""
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        from app.intelligence.work_auth import assess_profile
+        p = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
+        return bool(assess_profile(p).needs_future_sponsorship)
+    except Exception:
+        return False
 
 
 def _get_target_roles(uid) -> list[str]:

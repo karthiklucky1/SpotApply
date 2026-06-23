@@ -979,6 +979,12 @@
                     <div class="min-w-0 flex-1">
                         <h3 class="text-xs font-bold text-white tracking-tight leading-snug line-clamp-2">{{ job.title }}</h3>
                         <p class="text-[10px] font-semibold text-slate-400 mt-1 truncate">🏢 {{ job.company }} <span class="text-slate-600">·</span> <span class="uppercase tracking-wide text-slate-500">{{ job.source.value }}</span></p>
+                        {% set _cap = sponsorship_of(job) %}
+                        {% if _cap and _cap.cap_exempt %}
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full mt-1" style="background:var(--sage-tint);color:var(--sage-700);" title="Cap-exempt employer — can sponsor H-1B year-round with no lottery">🎓 No-lottery sponsor</span>
+                        {% elif _cap and _cap.tone == 'good' and visa and visa.needs_future_sponsorship %}
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full mt-1" style="background:var(--sage-tint);color:var(--sage-700);" title="{{ _cap.reason }}">✅ Sponsors visas</span>
+                        {% endif %}
                     </div>
                     <div class="flex flex-col items-end gap-1 shrink-0">
                         {% if job.rerank_score %}
