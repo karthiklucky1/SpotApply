@@ -172,10 +172,20 @@ def lookup(company: str) -> Optional[dict]:
 
 
 if __name__ == "__main__":
-    import sys
+    import sys, os
     logging.basicConfig(level=logging.INFO)
     if len(sys.argv) < 2:
         print("usage: python -m app.intelligence.h1b_data <csv_path>")
         raise SystemExit(1)
-    n = ingest_csv(sys.argv[1])
+    path = sys.argv[1]
+    if not os.path.exists(path):
+        print(f"\n❌ File not found: {path}")
+        print(f"   Current directory: {os.getcwd()}")
+        print("   This shell is the SERVER — it can't see files on your laptop.")
+        print("   Either download the CSV onto this box first, e.g.:")
+        print('     curl -L -o h1b.csv "<direct USCIS CSV link>"')
+        print("   then re-run. Or run this command on your laptop with")
+        print("   DATABASE_URL set to your Supabase connection string.\n")
+        raise SystemExit(2)
+    n = ingest_csv(path)
     print(f"Ingested {n} employer-year rows.")
