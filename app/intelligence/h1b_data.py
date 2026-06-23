@@ -209,7 +209,6 @@ def _load_cache() -> dict:
                     }
     except Exception as e:
         log.debug("H-1B cache load skipped: %s", e)
-    global _CACHE_AT
     import time as _time
     _CACHE = cache
     _CACHE_AT = _time.time()
