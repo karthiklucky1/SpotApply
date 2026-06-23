@@ -254,7 +254,38 @@ def _fromjson_filter(value):
         return []
 
 
+def _cleantext_filter(value):
+    """Turn scraped HTML / entity-laden text into clean, readable plain text:
+    block tags → newlines, <li> → bullets, strip remaining tags, unescape
+    entities, normalize whitespace. Job descriptions often arrive as raw HTML."""
+    if not value:
+        return ""
+    import re as _re, html as _html
+    text = str(value)
+    # Preserve structure: turn list / line-break / block-close tags into newlines
+    text = _re.sub(r'(?i)<\s*li[^>]*>', '\n• ', text)
+    text = _re.sub(r'(?i)<\s*(br|/p|/div|/li|/ul|/h[1-6]|/tr)\s*/?>', '\n', text)
+    # Drop everything else that looks like a tag
+    text = _re.sub(r'<[^>]+>', '', text)
+    # Decode entities (run twice to catch double-escaped &amp;nbsp;)
+    text = _html.unescape(_html.unescape(text)).replace('\xa0', ' ')
+    # Tidy each line; common scraper bullets (~, -, *, •) → "• "
+    out, blank = [], 0
+    for ln in text.splitlines():
+        ln = _re.sub(r'[ \t]+', ' ', ln).strip()
+        ln = _re.sub(r'^[~\-\*•]\s+', '• ', ln)
+        if ln == '':
+            blank += 1
+            if blank > 1:
+                continue
+        else:
+            blank = 0
+        out.append(ln)
+    return '\n'.join(out).strip()
+
+
 templates.env.filters["fromjson"] = _fromjson_filter
+templates.env.filters["cleantext"] = _cleantext_filter
 
 
 # ── Public / marketing pages ─────────────────────────────────────────────────

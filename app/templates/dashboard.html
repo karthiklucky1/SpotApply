@@ -1071,7 +1071,7 @@
                     {% if app.custom_highlight_block %}
                     <div class="mb-4">
                         <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">How to position yourself</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ app.custom_highlight_block }}</div>
+                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ app.custom_highlight_block|cleantext }}</div>
                     </div>
                     {% endif %}
 
@@ -1079,7 +1079,7 @@
                     {% if job.description %}
                     <div class="mb-2">
                         <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Full job description</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.description }}</div>
+                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.description|cleantext }}</div>
                     </div>
                     {% endif %}
                 </template>
