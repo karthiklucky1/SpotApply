@@ -68,6 +68,27 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+_INTERNSHIP_SIGNALS = (
+    "intern", "internship", "co-op", "co op", "coop", "summer analyst",
+    "industrial placement", "working student", "praktikum",
+)
+
+
+def classify_job_type(title: str, description: str = "") -> str:
+    """Return 'internship' or 'full_time' from the title/description text.
+    Title is weighted strongly; description only confirms when the title is
+    ambiguous (so a full-time JD that merely mentions an internship program
+    isn't misclassified)."""
+    t = (title or "").lower()
+    if any(s in t for s in _INTERNSHIP_SIGNALS):
+        return "internship"
+    d = (description or "").lower()[:600]   # only the opening lines
+    if any(s in d for s in ("intern position", "internship position", "this internship",
+                            "summer intern", "co-op position", "is an internship")):
+        return "internship"
+    return "full_time"
+
+
 class RuleFilter:
     """Rule-based pre-filter.
 
@@ -101,6 +122,10 @@ class RuleFilter:
         self.user_skills = (getattr(profile, "key_skills", "") or "").lower()
         self.user_degree = (getattr(profile, "degree", "") or "").lower()
 
+        # Job-type preference: "full_time" | "internship" | "both". Only enforced
+        # when a profile is present (legacy single-user runs are unfiltered).
+        self.job_type_pref = None if legacy else (getattr(profile, "job_type_preference", "full_time") or "full_time")
+
     def _has_skill(self, *needles: str) -> bool:
         return any(n in self.user_skills for n in needles)
 
@@ -108,6 +133,18 @@ class RuleFilter:
         desc_low = job.description.lower()
         title_low = job.title.lower()
         loc_low = (job.location or "").lower()
+
+        # 0. Job-type preference (students: internship vs full-time). Only when
+        #    the user set a specific preference (not "both").
+        if self.job_type_pref in ("full_time", "internship"):
+            jtype = classify_job_type(job.title, job.description)
+            if jtype != self.job_type_pref:
+                want = "internships" if self.job_type_pref == "internship" else "full-time roles"
+                return FilterResult(
+                    passed=False,
+                    reason=f"Job-type pre-filtered: '{jtype}' but user wants {want}",
+                    score_override=10,
+                )
 
         # 1. Non-US Location Filter — use word-boundary regex to avoid
         #    "india" matching "indiana" or "uk" matching "duke"

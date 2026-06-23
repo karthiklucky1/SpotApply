@@ -1595,17 +1595,36 @@ def _discover_then_match(user_id) -> None:
     run_id = create_discovery_run(user_id)
     # Tailor the keyword search to the user's saved Target Roles when set.
     roles = _get_target_roles(user_id) or None
-    # Sponsorship-needing users: nudge discovery toward cap-exempt (no-lottery)
-    # university / research roles with a couple of targeted keyword variants.
-    # Bounded to +2 terms so it never balloons discovery cost.
+    # Load the profile once for keyword augmentation (cap-exempt + internships +
+    # department fallback). Bounded so discovery cost never balloons.
+    _prof = None
     try:
-        if roles and _user_needs_sponsorship(user_id):
-            primary = roles[0]
-            for extra in (f"research {primary}", f"{primary} university"):
-                if extra.lower() not in [r.lower() for r in roles]:
-                    roles.append(extra)
+        from app.autofill.answer_pack import _get_or_create_profile
+        _prof = _get_or_create_profile(user_id=user_id if user_id and user_id != "local" else None)
+    except Exception:
+        _prof = None
+
+    def _add_kw(lst, term):
+        if term and term.lower() not in [r.lower() for r in lst]:
+            lst.append(term)
+
+    try:
+        # If the user has no explicit roles, fall back to department-aware keywords.
+        if not roles:
+            roles = _department_keywords(_prof) or None
+        if roles:
+            # Sponsorship-needing users: nudge toward cap-exempt (no-lottery) roles.
+            if _user_needs_sponsorship(user_id):
+                primary = roles[0]
+                _add_kw(roles, f"research {primary}")
+                _add_kw(roles, f"{primary} university")
+            # Internship toggle: append internship variants of the primary roles.
+            if _prof is not None and getattr(_prof, "include_internships_in_discovery", False):
+                for base in roles[:3]:
+                    _add_kw(roles, f"{base} intern")
+                _add_kw(roles, "internship")
     except Exception as _se:
-        log.debug("cap-exempt keyword augmentation skipped: %s", _se)
+        log.debug("discovery keyword augmentation skipped: %s", _se)
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles)   # marks the row 'ranking' + per-source counts
     except Exception as e:
@@ -2115,10 +2134,79 @@ _ROLE_SUGGESTION_POOL = [
     "Mobile Engineer", "QA Engineer", "Site Reliability Engineer",
 ]
 
+# Department / industry → role pool, so suggestions + discovery work for
+# non-CS fields. Keyed by lowercase signals found in degree/industry/title.
+_DEPARTMENT_ROLES = {
+    "civil": ["Civil Engineer", "Structural Engineer", "Project Engineer",
+              "Transportation Engineer", "Geotechnical Engineer", "Construction Engineer"],
+    "mechanical": ["Mechanical Engineer", "Design Engineer", "Manufacturing Engineer",
+                   "HVAC Engineer", "Mechanical Design Engineer", "Product Engineer"],
+    "aerospace": ["Aerospace Engineer", "Mechanical Engineer", "Systems Engineer",
+                  "Propulsion Engineer", "Flight Test Engineer"],
+    "electrical": ["Electrical Engineer", "Power Systems Engineer", "Controls Engineer",
+                   "Hardware Engineer", "Electronics Engineer", "Embedded Engineer"],
+    "chemical": ["Chemical Engineer", "Process Engineer", "Process Safety Engineer",
+                 "Manufacturing Engineer", "Production Engineer"],
+    "biomedical": ["Biomedical Engineer", "R&D Engineer", "Clinical Engineer",
+                   "Quality Engineer", "Validation Engineer"],
+    "industrial": ["Industrial Engineer", "Process Engineer", "Operations Engineer",
+                   "Supply Chain Analyst", "Manufacturing Engineer"],
+    "environmental": ["Environmental Engineer", "Civil Engineer", "Sustainability Analyst",
+                      "Water Resources Engineer"],
+    "finance": ["Financial Analyst", "Investment Analyst", "Financial Planning Analyst",
+                "Corporate Finance Analyst"],
+    "accounting": ["Accountant", "Staff Accountant", "Financial Analyst", "Auditor"],
+    "marketing": ["Marketing Analyst", "Digital Marketing Specialist", "Brand Manager",
+                  "Marketing Coordinator"],
+    "data": ["Data Analyst", "Data Scientist", "Business Analyst", "Data Engineer"],
+    "biology": ["Research Associate", "Lab Technician", "Scientist", "Research Scientist"],
+    "chemistry": ["Chemist", "Research Associate", "Analytical Chemist", "QC Chemist"],
+}
+
+_DEPARTMENT_SIGNALS = {
+    "civil": ("civil",),
+    "mechanical": ("mechanical", "mech eng"),
+    "aerospace": ("aerospace", "aeronautic", "aero eng"),
+    "electrical": ("electrical", "electronic", "power systems", "ece"),
+    "chemical": ("chemical eng", "chem eng", "chemical engineering"),
+    "biomedical": ("biomedical", "bioengineer", "bme"),
+    "industrial": ("industrial eng", "industrial engineering", "operations research"),
+    "environmental": ("environmental eng", "environmental engineering"),
+    "finance": ("finance", "financial"),
+    "accounting": ("accounting", "accountant"),
+    "marketing": ("marketing",),
+    "data": ("data science", "statistics", "analytics"),
+    "biology": ("biology", "biological", "biotech"),
+    "chemistry": ("chemistry", "chemist"),
+}
+
+
+def _detect_department(profile) -> str | None:
+    """Detect the user's department/field from industry + degree + current title."""
+    if not profile:
+        return None
+    blob = " ".join([
+        (getattr(profile, "industry", "") or ""),
+        (getattr(profile, "degree", "") or ""),
+        (getattr(profile, "current_title", "") or ""),
+    ]).lower()
+    if not blob.strip():
+        return None
+    for dept, signals in _DEPARTMENT_SIGNALS.items():
+        if any(s in blob for s in signals):
+            return dept
+    return None
+
+
+def _department_keywords(profile) -> list[str]:
+    """Discovery keyword fallback adapted to the user's department (empty if CS/unknown)."""
+    dept = _detect_department(profile)
+    return list(_DEPARTMENT_ROLES.get(dept, [])) if dept else []
+
 
 def _suggest_roles(profile, limit: int = 6) -> list[str]:
-    """Suggest target roles from the user's current title + skills, padded with
-    sensible defaults. Pure string work — no LLM call, so it's instant + free."""
+    """Suggest target roles from the user's department + current title + skills,
+    padded with sensible defaults. Pure string work — no LLM, instant + free."""
     out: list[str] = []
     seen: set[str] = set()
 
@@ -2136,7 +2224,10 @@ def _suggest_roles(profile, limit: int = 6) -> list[str]:
             s = s.strip()
             if s and any(w in s.lower() for w in role_words):
                 _add(s)
-    for r in _ROLE_SUGGESTION_POOL:
+
+    # Department-specific pool first (non-CS fields), then the generic pool.
+    pool = _department_keywords(profile) + _ROLE_SUGGESTION_POOL
+    for r in pool:
         if len(out) >= limit:
             break
         _add(r)
