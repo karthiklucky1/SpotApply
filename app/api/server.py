@@ -2036,7 +2036,7 @@ def get_referral(request: Request) -> dict:
     base = str(request.base_url).rstrip("/")
     return {
         "code": code,
-        "link": f"{base}/auth?ref={code}" if code else "",
+        "link": f"{base}/login?ref={code}" if code else "",
         "count": count,
         "threshold": settings.referral_threshold,
         "reward_unlocked": bool(reward),
