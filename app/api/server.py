@@ -240,6 +240,23 @@ except Exception:
     templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "..", "templates"))
 
 
+def _fromjson_filter(value):
+    """Parse a JSON string into a Python object for templates; tolerant of
+    None / already-parsed lists / malformed strings (returns [] on failure)."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        import json as _json
+        return _json.loads(value)
+    except Exception:
+        return []
+
+
+templates.env.filters["fromjson"] = _fromjson_filter
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
