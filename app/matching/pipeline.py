@@ -177,9 +177,19 @@ def run_matching(user_id: str | None = None) -> List[int]:
     candidates = [(jid, score) for jid, score in candidates if score >= settings.min_match_score]
     log.info("%d candidates above cross-encoder threshold %.2f", len(candidates), settings.min_match_score)
 
-    rule_filter = RuleFilter()
+    # Per-user filtering: load this tenant's profile so the rule filter targets
+    # their experience / salary band / skills / sponsorship need (not a baked-in
+    # single candidate). Falls back to legacy defaults if unavailable.
+    _user_profile = None
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        _user_profile = _get_or_create_profile(user_id=user_id)
+    except Exception as _pe:
+        log.debug("RuleFilter profile unavailable (using legacy defaults): %s", _pe)
+
+    rule_filter = RuleFilter(profile=_user_profile)
     embedding_filter = EmbeddingFilter(matcher=matcher)
-    reranker = Reranker()
+    reranker = Reranker(profile=_user_profile)
     senior_reviewer = SeniorReviewer()
     shortlisted: List[int] = []
 

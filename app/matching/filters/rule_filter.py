@@ -60,9 +60,49 @@ class FilterResult:
     reason: str
     score_override: Optional[int] = None
 
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class RuleFilter:
-    def __init__(self):
-        pass
+    """Rule-based pre-filter.
+
+    Per-user when given a ``profile`` (years of experience, salary band, skills,
+    sponsorship need drive the thresholds); falls back to the original
+    single-user defaults when no profile is supplied, so existing callers and
+    local/dev runs behave exactly as before.
+    """
+
+    def __init__(self, profile=None):
+        self.profile = profile
+        legacy = profile is None
+
+        # Candidate experience → drives the "requires N+ years" gap filter and
+        # whether senior/staff titles are filtered out.
+        self.cand_years = _safe_int(getattr(profile, "years_experience", None), 3)
+        self.block_senior_titles = legacy or self.cand_years < 6
+
+        # Salary band: only filter on a bound the user actually expressed. With
+        # no profile we keep the original $80k–$150k targeting band.
+        smin = _safe_int(getattr(profile, "salary_min", None), 0)
+        smax = _safe_int(getattr(profile, "salary_max", None), 0)
+        self.salary_floor = smin if smin > 0 else (_SALARY_TOO_LOW_MAX if legacy else None)
+        self.salary_ceiling = smax if smax > 0 else (_SALARY_TOO_HIGH_MIN if legacy else None)
+
+        # Only block jobs that refuse sponsorship when the user needs it. A
+        # citizen / green-card holder should NOT lose "must be US citizen" roles.
+        self.requires_sponsorship = True if legacy else bool(getattr(profile, "requires_sponsorship", False))
+
+        # Skills the user actually has → don't reject roles that need them.
+        self.user_skills = (getattr(profile, "key_skills", "") or "").lower()
+        self.user_degree = (getattr(profile, "degree", "") or "").lower()
+
+    def _has_skill(self, *needles: str) -> bool:
+        return any(n in self.user_skills for n in needles)
 
     def filter(self, job: Job) -> FilterResult:
         desc_low = job.description.lower()
@@ -91,91 +131,99 @@ class RuleFilter:
                         score_override=10
                     )
 
-        # 2. Work Authorization / Sponsorship Blocker
-        for pattern in NO_SPONSORSHIP_PATTERNS:
-            if pattern in desc_low:
-                return FilterResult(
-                    passed=False,
-                    reason=f"Sponsorship pre-filtered: matches '{pattern}'",
-                    score_override=10
-                )
+        # 2. Work Authorization / Sponsorship Blocker — only relevant when the
+        #    user actually needs sponsorship. Citizens / GC holders keep these jobs.
+        if self.requires_sponsorship:
+            for pattern in NO_SPONSORSHIP_PATTERNS:
+                if pattern in desc_low:
+                    return FilterResult(
+                        passed=False,
+                        reason=f"Sponsorship pre-filtered: matches '{pattern}'",
+                        score_override=10
+                    )
 
-        # 3. Experience Gap Filter — match "N years" then confirm "experience"
-        #    within the next 60 chars to catch all common JD phrasings
+        # 3. Experience Gap Filter — reject roles asking for well beyond the
+        #    candidate's experience (their years + 2). Default candidate = 3 → 5+.
+        _exp_cutoff = self.cand_years + 2
         for m in re.finditer(r'(\d+)\+?\s*years?', desc_low):
             years = int(m.group(1))
             context = desc_low[m.start(): m.start() + 60]
-            if 'experience' in context and years >= 5:
+            if 'experience' in context and years >= _exp_cutoff:
                 return FilterResult(
                     passed=False,
-                    reason=f"Experience pre-filtered: requires {years}+ years (candidate has 3)",
+                    reason=f"Experience pre-filtered: requires {years}+ years (candidate has {self.cand_years})",
                     score_override=15
                 )
 
-        # 4. Hard titles block — filter every entry in STAFF_TITLES unconditionally
-        for t in STAFF_TITLES:
-            if title_low.startswith(t) or f" {t}" in title_low:
-                return FilterResult(
-                    passed=False,
-                    reason=f"Title pre-filtered: '{job.title}' is a senior/staff-level role",
-                    score_override=15
-                )
+        # 4. Senior/staff titles — only filtered for non-senior candidates.
+        if self.block_senior_titles:
+            for t in STAFF_TITLES:
+                if title_low.startswith(t) or f" {t}" in title_low:
+                    return FilterResult(
+                        passed=False,
+                        reason=f"Title pre-filtered: '{job.title}' is a senior/staff-level role",
+                        score_override=15
+                    )
 
-        # 5. Salary Range Filter — only use real salary ranges, not isolated bonus figures
+        # 5. Salary Range Filter — only enforce a bound the user expressed.
         sal_range = _extract_salary_range(desc_low)
         if sal_range:
             min_sal, max_sal = sal_range
-            if min_sal >= _SALARY_TOO_HIGH_MIN:
+            if self.salary_ceiling is not None and min_sal >= self.salary_ceiling:
                 return FilterResult(
                     passed=False,
-                    reason=f"Salary too high: starts at ${min_sal:,.0f} (targeting $80k–$150k)",
+                    reason=f"Salary too high: starts at ${min_sal:,.0f} (target ceiling ${self.salary_ceiling:,.0f})",
                     score_override=20
                 )
-            if max_sal <= _SALARY_TOO_LOW_MAX:
+            if self.salary_floor is not None and max_sal <= self.salary_floor:
                 return FilterResult(
                     passed=False,
-                    reason=f"Salary too low: up to ${max_sal:,.0f} (targeting $80k–$150k)",
+                    reason=f"Salary too low: up to ${max_sal:,.0f} (target floor ${self.salary_floor:,.0f})",
                     score_override=20
                 )
 
-        # 6. Hire-probability filter — block roles the candidate cannot credibly fill
+        # 6. Hire-probability filter — block roles the candidate can't credibly
+        #    fill, but ONLY when the required skill isn't in their stack.
         #    a) Low-level systems / GPU kernel engineering
         systems_signals = [
             "cuda kernel", "gpu kernel", "write cuda", "triton kernel",
             "systems programming", "kernel developer", "kernel engineer",
             "bare metal", "memory allocator", "compiler engineer", "llvm", "mlir",
         ]
-        if any(s in desc_low for s in systems_signals):
-            return FilterResult(
-                passed=False,
-                reason="Hire-probability: GPU/kernel/compiler systems role — not in candidate stack",
-                score_override=12
-            )
+        if not self._has_skill("cuda", "gpu", "kernel", "compiler", "llvm", "systems programming"):
+            if any(s in desc_low for s in systems_signals):
+                return FilterResult(
+                    passed=False,
+                    reason="Hire-probability: GPU/kernel/compiler systems role — not in candidate stack",
+                    score_override=12
+                )
 
         #    b) C++ or Rust listed as a hard requirement (not nice-to-have)
-        cpp_rust_required = [
-            "c++ required", "proficiency in c++", "strong c++", "expert in c++",
-            "rust required", "proficiency in rust", "strong rust", "expert in rust",
-            "primary language is c++", "primary language is rust",
-        ]
-        if any(pat in desc_low for pat in cpp_rust_required):
-            return FilterResult(
-                passed=False,
-                reason="Hire-probability: C++/Rust listed as required — not in candidate stack",
-                score_override=12
-            )
+        if not self._has_skill("c++", "cpp", "rust"):
+            cpp_rust_required = [
+                "c++ required", "proficiency in c++", "strong c++", "expert in c++",
+                "rust required", "proficiency in rust", "strong rust", "expert in rust",
+                "primary language is c++", "primary language is rust",
+            ]
+            if any(pat in desc_low for pat in cpp_rust_required):
+                return FilterResult(
+                    passed=False,
+                    reason="Hire-probability: C++/Rust listed as required — not in candidate stack",
+                    score_override=12
+                )
 
-        #    c) Pure research / PhD roles
-        research_signals = [
-            "phd required", "phd preferred", "doctoral degree required",
-            "publishing research", "publish original research",
-            "first-author publication", "neurips", "icml", "iclr publication",
-        ]
-        if sum(1 for s in research_signals if s in desc_low) >= 2:
-            return FilterResult(
-                passed=False,
-                reason="Hire-probability: pure research role requiring publications/PhD",
-                score_override=12
-            )
+        #    c) Pure research / PhD roles — skip the block for users who hold a PhD.
+        if "phd" not in self.user_degree and "doctor" not in self.user_degree:
+            research_signals = [
+                "phd required", "phd preferred", "doctoral degree required",
+                "publishing research", "publish original research",
+                "first-author publication", "neurips", "icml", "iclr publication",
+            ]
+            if sum(1 for s in research_signals if s in desc_low) >= 2:
+                return FilterResult(
+                    passed=False,
+                    reason="Hire-probability: pure research role requiring publications/PhD",
+                    score_override=12
+                )
 
         return FilterResult(passed=True, reason="Passed all rule filters")

@@ -108,7 +108,8 @@ def _parse_response(text: str) -> Tuple[float, str, List[str]]:
 
 
 class Reranker:
-    def __init__(self):
+    def __init__(self, profile=None):
+        self._profile = profile
         self._anthropic_client = None
         self._openai_client = None
         self._active_backend: Optional[str] = None  # "anthropic" or "openai"
@@ -166,7 +167,7 @@ class Reranker:
 
     def _pre_filter_job(self, job: Job) -> Optional[Tuple[float, str, List[str]]]:
         """Apply rule-based pre-filters to catch obvious misfits without calling the LLM."""
-        res = RuleFilter().filter(job)
+        res = RuleFilter(profile=self._profile).filter(job)
         if not res.passed:
             return float(res.score_override or 10.0), res.reason, [res.reason]
         return None
