@@ -5142,7 +5142,7 @@
 </div>
 
 <!-- Add Job from Link modal (moved out of the main board into the sidebar) -->
-<div id="add-job-modal" class="hidden" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeAddJobModal()">
+<div id="add-job-modal" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeAddJobModal()">
     <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:20px;max-width:560px;width:100%;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.45);">
         <div class="flex items-start justify-between gap-4 mb-3">
             <div>
@@ -5175,15 +5175,15 @@
 <script>
     function openAddJobModal() {
         const m = document.getElementById('add-job-modal');
-        if (m) { m.classList.remove('hidden'); const i = document.getElementById('jobUrlInput'); if (i) setTimeout(() => i.focus(), 50); }
+        if (m) { m.style.display = 'flex'; const i = document.getElementById('jobUrlInput'); if (i) setTimeout(() => i.focus(), 50); }
         if (window.innerWidth <= 768 && typeof toggleSidebar === 'function' && document.getElementById('app-sidebar').classList.contains('open')) toggleSidebar();
     }
     function closeAddJobModal() {
         const m = document.getElementById('add-job-modal');
-        if (m) m.classList.add('hidden');
+        if (m) m.style.display = 'none';
     }
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { const m = document.getElementById('add-job-modal'); if (m && !m.classList.contains('hidden')) closeAddJobModal(); }
+        if (e.key === 'Escape') { const m = document.getElementById('add-job-modal'); if (m && m.style.display !== 'none') closeAddJobModal(); }
     });
 </script>
 
