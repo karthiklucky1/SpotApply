@@ -91,6 +91,7 @@ def init_db() -> None:
         ("job_type", "VARCHAR DEFAULT 'full_time'"),
         ("is_cap_exempt", "BOOLEAN DEFAULT 0"),
         ("urgency_score", "FLOAT DEFAULT 0.0"),
+        ("rerank_breakdown", "TEXT"),
     ]:
         add_column_if_missing("job", col, col_type)
         
@@ -136,6 +137,8 @@ def init_db() -> None:
         ("work_auth_status", "VARCHAR DEFAULT ''"),
         ("include_internships_in_discovery", "BOOLEAN DEFAULT 0"),
         ("industry", "VARCHAR DEFAULT ''"),
+        ("preferred_country", "VARCHAR DEFAULT 'United States'"),
+        ("remote_ok", "BOOLEAN DEFAULT 1"),
         ("referral_code", "VARCHAR"),
         ("referred_by_id", "VARCHAR"),
         ("updated_at", "DATETIME"),

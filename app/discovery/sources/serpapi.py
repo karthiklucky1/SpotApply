@@ -52,11 +52,24 @@ def _make_id(title: str, company: str, location: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+# Map a free-text country to Google's `gl` (country) code for SerpAPI.
+_COUNTRY_GL = {
+    "united states": "us", "usa": "us", "us": "us",
+    "united kingdom": "gb", "uk": "gb", "england": "gb",
+    "canada": "ca", "india": "in", "germany": "de", "france": "fr",
+    "spain": "es", "netherlands": "nl", "ireland": "ie", "australia": "au",
+    "poland": "pl", "portugal": "pt", "brazil": "br", "mexico": "mx",
+    "singapore": "sg", "japan": "jp", "philippines": "ph",
+}
+
+
 class SerpAPISource:
     """Fetches jobs via SerpAPI's Google Jobs engine for each configured keyword."""
 
-    def __init__(self, keywords: List[str] | None = None):
+    def __init__(self, keywords: List[str] | None = None, country: str | None = None):
         self.keywords = keywords or settings.jobs_keywords_list
+        self.country = (country or "United States").strip()
+        self._gl = _COUNTRY_GL.get(self.country.lower(), "us")
 
     async def fetch_jobs(self) -> List[RawJob]:
         if not settings.serpapi_key:
@@ -74,9 +87,9 @@ class SerpAPISource:
                 try:
                     params = {
                         "engine": "google_jobs",
-                        "q": f"{kw} United States",
+                        "q": f"{kw} {self.country}",
                         "hl": "en",
-                        "gl": "us",
+                        "gl": self._gl,
                         "chips": "date_posted:week",  # last 7 days
                         "api_key": settings.serpapi_key,
                     }
@@ -99,7 +112,7 @@ class SerpAPISource:
                         try:
                             title = (item.get("title") or "").strip()
                             company = (item.get("company_name") or "Unknown").strip()
-                            location = (item.get("location") or "United States").strip()
+                            location = (item.get("location") or self.country).strip()
 
                             job_id = item.get("job_id") or _make_id(title, company, location)
                             if job_id in seen_ids:

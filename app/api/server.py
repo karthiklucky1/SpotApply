@@ -1377,6 +1377,68 @@ def dashboard(request: Request):
     )
 
 
+@app.get("/api/pipeline/live")
+def pipeline_live(request: Request) -> dict:
+    """Lightweight JSON snapshot of the pipeline for live (poll-driven) updates —
+    lets the dashboard surface freshly-ranked jobs without a full page reload."""
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    _uid_filter = uid and uid != "local"
+
+    _SHORTLIST = {ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED}
+    _INPROGRESS = {ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
+                   ApplicationStatus.READY_TO_SUBMIT}
+    _SUBMITTED = {ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING}
+
+    counts = {"pool": 0, "shortlisted": 0, "in_progress": 0, "submitted": 0}
+    shortlist: list[dict] = []
+    with get_session() as session:
+        pq = select(func.count(Job.id))
+        if _uid_filter:
+            pq = pq.where(Job.user_id == uid)
+        counts["pool"] = _scalar(session.exec(pq).one())
+
+        q = select(Application, Job).join(Job).order_by(Job.rerank_score.desc())
+        if _uid_filter:
+            q = q.where(Application.user_id == uid)
+        for app_model, job_model in session.exec(q).all():
+            st = app_model.status
+            if st in _SHORTLIST:
+                counts["shortlisted"] += 1
+                shortlist.append({
+                    "app_id": app_model.id,
+                    "title": job_model.title,
+                    "company": job_model.company,
+                    "location": job_model.location,
+                    "remote": bool(job_model.remote),
+                    "score": round(job_model.rerank_score) if job_model.rerank_score is not None else None,
+                    "track": app_model.apply_track,
+                    "url": app_model.apply_url or job_model.url,
+                    "status": st.value,
+                })
+            elif st in _INPROGRESS:
+                counts["in_progress"] += 1
+            elif st in _SUBMITTED:
+                counts["submitted"] += 1
+
+    # Is a discovery/ranking run still in flight? (drives client polling cadence)
+    running = False
+    try:
+        from app.db.models import DiscoveryRun
+        with get_session() as session:
+            rq = select(DiscoveryRun).order_by(DiscoveryRun.id.desc())
+            if _uid_filter:
+                rq = rq.where(DiscoveryRun.user_id == uid)
+            last = session.exec(rq).first()
+            if last and (last.status or "") in ("discovering", "ranking", "running", "pending"):
+                running = True
+    except Exception:
+        running = False
+
+    return {"counts": counts, "shortlist": shortlist, "running": running}
+
+
 @app.get("/application/{application_id}/details")
 def application_details(application_id: int, request: Request) -> dict:
     """Return tailored resume + cover letter text for modal preview."""
@@ -1414,6 +1476,35 @@ def application_details(application_id: int, request: Request) -> dict:
         "source": job.source.value,
         "resume": resume_text,
         "cover_letter": cover_text,
+    }
+
+
+@app.get("/application/{application_id}/match")
+def application_match(application_id: int, request: Request) -> dict:
+    """Why this job matched: overall score, plain-English reason, and the
+    per-factor breakdown (skills / experience / location / work_auth)."""
+    import json as _json
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id)
+    breakdown = {}
+    if job and job.rerank_breakdown:
+        try:
+            breakdown = _json.loads(job.rerank_breakdown)
+        except (ValueError, TypeError):
+            breakdown = {}
+    return {
+        "id": application_id,
+        "company": job.company if job else "",
+        "title": job.title if job else "",
+        "location": job.location if job else "",
+        "remote": bool(job.remote) if job else False,
+        "score": round(job.rerank_score) if (job and job.rerank_score is not None) else None,
+        "reason": (job.rerank_reasoning if job else "") or "",
+        "breakdown": breakdown,
     }
 
 
@@ -2725,6 +2816,8 @@ _USERPROFILE_COLUMNS = [
     ("work_auth_status", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("include_internships_in_discovery", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("industry", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("preferred_country", "VARCHAR DEFAULT 'United States'", "VARCHAR DEFAULT 'United States'"),
+    ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
     ("created_at", "DATETIME", "TIMESTAMP"),
@@ -2813,6 +2906,8 @@ def get_profile(request: Request) -> dict:
         "work_auth_status": getattr(profile, "work_auth_status", ""),
         "include_internships_in_discovery": getattr(profile, "include_internships_in_discovery", False),
         "industry": getattr(profile, "industry", ""),
+        "preferred_country": getattr(profile, "preferred_country", "United States"),
+        "remote_ok": getattr(profile, "remote_ok", True),
     }
 
 
@@ -2847,6 +2942,8 @@ class ProfileUpdate(BaseModel):
     work_auth_status: Optional[str] = None
     include_internships_in_discovery: Optional[bool] = None
     industry: Optional[str] = None
+    preferred_country: Optional[str] = None
+    remote_ok: Optional[bool] = None
 
 
 from datetime import datetime as _dt

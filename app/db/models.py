@@ -88,6 +88,8 @@ class Job(SQLModel, table=True):
     similarity_score: Optional[float] = None
     rerank_score: Optional[float] = None
     rerank_reasoning: Optional[str] = None
+    # JSON: per-factor breakdown {skills,experience,location,work_auth:{score,note}}
+    rerank_breakdown: Optional[str] = Field(default=None)
     cross_source_slug: Optional[str] = Field(default=None, index=True)
 
     # Ghost job detection score (0.0 = definitely real, 1.0 = likely ghost)
@@ -241,6 +243,12 @@ class UserProfile(SQLModel, table=True):
     # Department / industry for non-CS fields (e.g. "Civil Engineering").
     # Drives role suggestions and the discovery keyword fallback.
     industry: str = ""
+    # ── Location preferences (drive discovery + scoring) ──────────────────────
+    # Country the user wants jobs in. Discovery + reranker filter to this country
+    # (plus remote when remote_ok). Defaults to US to preserve legacy behavior.
+    preferred_country: str = "United States"
+    # When true, fully-remote roles are kept even if located in another country.
+    remote_ok: bool = True
     # ── Referral program ─────────────────────────────────────────────────────
     referral_code: Optional[str] = Field(default=None, index=True)   # this user's own code
     referred_by_id: Optional[str] = Field(default=None, index=True)  # user_id who referred them

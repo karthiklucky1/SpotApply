@@ -136,12 +136,103 @@ def _cross_source_slug(company: str, title: str, location: str) -> str:
     return hashlib.sha256(f"{c}|{t}|{l}".encode("utf-8")).hexdigest()
 
 
-def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
+# ── Country detection for location filtering ────────────────────────────────
+# Many aggregator feeds (Remotive, RemoteOK, Jobicy, WeWorkRemotely…) are global,
+# so a US-based user sees jobs from every country. We drop postings whose location
+# clearly names a DIFFERENT country than the user wants (remote roles are kept when
+# the user is remote-friendly). Detection is intentionally conservative: when a
+# location is ambiguous/unknown we KEEP it rather than risk dropping good jobs.
+
+_US_STATE_CODES = {
+    "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in","ia",
+    "ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nj",
+    "nm","ny","nc","nd","oh","ok","or","pa","ri","sc","sd","tn","tx","ut","vt",
+    "va","wa","wv","wi","wy","dc",
+}
+
+# country -> signal tokens (lowercase). US handled separately via state codes too.
+_COUNTRY_SIGNALS = {
+    "united states": ["united states", "usa", "u.s.a", "u.s.", " us ", "america", "remote us", "us remote"],
+    "united kingdom": ["united kingdom", " uk", "u.k", "england", "scotland", "wales",
+                        "london", "manchester", "birmingham", "edinburgh", "glasgow", "bristol", "leeds"],
+    "canada": ["canada", "ontario", "toronto", "vancouver", "montreal", "québec", "quebec",
+               "ottawa", "calgary", "alberta", "british columbia", "winnipeg", "edmonton"],
+    "india": ["india", "bangalore", "bengaluru", "hyderabad", "mumbai", "new delhi", "delhi",
+              "pune", "chennai", "gurgaon", "gurugram", "noida", "kolkata", "ahmedabad"],
+    "germany": ["germany", "deutschland", "berlin", "munich", "münchen", "frankfurt", "hamburg", "cologne"],
+    "france": ["france", "paris", "lyon", "marseille", "toulouse", "bordeaux"],
+    "spain": ["spain", "madrid", "barcelona", "valencia", "seville"],
+    "netherlands": ["netherlands", "amsterdam", "rotterdam", "the hague", "utrecht"],
+    "ireland": ["ireland", "dublin", "cork", "galway"],
+    "australia": ["australia", "sydney", "melbourne", "brisbane", "perth", "canberra"],
+    "poland": ["poland", "warsaw", "krakow", "kraków", "wroclaw", "gdansk"],
+    "portugal": ["portugal", "lisbon", "porto"],
+    "brazil": ["brazil", "brasil", "são paulo", "sao paulo", "rio de janeiro"],
+    "mexico": ["mexico", "méxico", "mexico city", "guadalajara", "monterrey"],
+    "singapore": ["singapore"],
+    "japan": ["japan", "tokyo", "osaka"],
+    "philippines": ["philippines", "manila", "cebu", "makati"],
+    "ukraine": ["ukraine", "kyiv", "kiev", "lviv"],
+    "nigeria": ["nigeria", "lagos", "abuja"],
+    "pakistan": ["pakistan", "karachi", "lahore", "islamabad"],
+    "argentina": ["argentina", "buenos aires"],
+}
+
+
+def _norm_country(name: str) -> str:
+    n = (name or "").strip().lower()
+    aliases = {
+        "us": "united states", "u.s.": "united states", "usa": "united states",
+        "u.s.a": "united states", "america": "united states", "united states of america": "united states",
+        "uk": "united kingdom", "u.k.": "united kingdom", "england": "united kingdom",
+    }
+    return aliases.get(n, n)
+
+
+def _detect_country(location: str) -> str:
+    """Best-effort country guess from a free-text location. '' when unknown."""
+    loc = " " + (location or "").lower().strip() + " "
+    if not loc.strip():
+        return ""
+    # US: explicit signals or a trailing 2-letter state code (e.g. "Austin, TX").
+    us_signals = _COUNTRY_SIGNALS["united states"]
+    if any(sig in loc for sig in us_signals):
+        return "united states"
+    tokens = re.findall(r"[a-z]{2}", loc)
+    # only treat a 2-letter token as a state if it looks like "city, XX"
+    if re.search(r",\s*[a-z]{2}\b", loc) and any(t in _US_STATE_CODES for t in re.findall(r",\s*([a-z]{2})\b", loc)):
+        return "united states"
+    # Foreign countries.
+    for country, signals in _COUNTRY_SIGNALS.items():
+        if country == "united states":
+            continue
+        if any(sig in loc for sig in signals):
+            return country
+    return ""
+
+
+def _location_allowed(location: str, remote: bool, preferred_country: str, remote_ok: bool) -> bool:
+    """True if a posting should be kept for a user targeting `preferred_country`."""
+    loc = (location or "").lower()
+    # Remote-friendly users keep any remote/anywhere posting regardless of country.
+    if remote_ok and (remote or "remote" in loc or "anywhere" in loc or "worldwide" in loc):
+        return True
+    detected = _detect_country(loc)
+    if not detected:
+        return True  # ambiguous/unknown — keep rather than over-filter
+    return detected == _norm_country(preferred_country)
+
+
+def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
+            preferred_country: str | None = None, remote_ok: bool = True) -> int:
     """Insert new jobs; skip duplicates by (source, external_id) and cross-source slug.
 
     Each job is committed individually so a race-condition IntegrityError from
     concurrent scrapers only drops that one duplicate rather than rolling back
     the entire batch.
+
+    When ``preferred_country`` is set, postings located in a different country are
+    dropped (remote roles are kept when ``remote_ok``).
     """
     from app.analytics.funnel import FunnelTracker
     from datetime import datetime
@@ -150,6 +241,12 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None) -> int:
     for r in raw_jobs:
         # Permissive gate: only skip obvious non-tech titles before any DB work
         if is_obvious_non_tech(r.title or ""):
+            continue
+
+        # Per-user country gate: drop jobs clearly located in another country.
+        if preferred_country and not _location_allowed(
+            r.location or "", bool(getattr(r, "remote", False)), preferred_country, remote_ok
+        ):
             continue
             
         content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
@@ -342,6 +439,18 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # Per-user target roles drive the keyword sources; fall back to the global list.
     _keywords = keywords if keywords else settings.jobs_keywords_list
 
+    # Per-user location preference — drives the country gate in _upsert + SerpAPI query.
+    _country = "United States"
+    _remote_ok = True
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        _p = _get_or_create_profile(user_id=user_id if user_id and user_id != "local" else None)
+        if _p:
+            _country = (getattr(_p, "preferred_country", "") or "United States").strip() or "United States"
+            _remote_ok = bool(getattr(_p, "remote_ok", True))
+    except Exception as _ce:
+        log.debug("discovery country preference unavailable (default US): %s", _ce)
+
     # Run async parts of the pipeline: discovery, registration, validation
     async def run_discovery_async():
         # A. Seed registry
@@ -425,7 +534,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         try:
             raw = scraper.fetch()
             if raw is not None:
-                new = _upsert(raw, user_id=user_id)
+                new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
                 total_new += new
                 _boards_fetched += len(raw)
                 
@@ -454,7 +563,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             hn_raw = asyncio.run(src.fetch_jobs())
             source_stats["HN Who-is-hiring"] = {"fetched": len(hn_raw or [])}
             if hn_raw:
-                hn_new = _upsert(hn_raw, user_id=user_id)
+                hn_new = _upsert(hn_raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
                 total_new += hn_new
                 log.info("HN Who-is-hiring: %d postings fetched, %d new inserted", len(hn_raw), hn_new)
         except Exception as e:
@@ -507,7 +616,11 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         # UI spinning with no summary).
         async def _fetch_one(name, src_cls):
             try:
-                src = src_cls(keywords=_keywords)
+                # SerpAPI's Google-Jobs query is country-aware; others take keywords only.
+                if name == "SerpAPI Google Jobs":
+                    src = src_cls(keywords=_keywords, country=_country)
+                else:
+                    src = src_cls(keywords=_keywords)
                 raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)
                 source_stats[name] = {"fetched": len(raw_jobs)}
                 log.info("%s: fetched %d jobs", name, len(raw_jobs))
@@ -528,7 +641,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         inserted = 0
         if all_raw_jobs:
             # JOB-FIRST: insert the postings directly into the DB.
-            inserted = _upsert(all_raw_jobs, user_id=user_id)
+            inserted = _upsert(all_raw_jobs, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
             log.info("Aggregator job-first upsert: %d new jobs from %d fetched", inserted, len(all_raw_jobs))
             # Stash the raw jobs so company-registration can run AFTER the run
             # summary is written (it's slow and must not delay the UI breakdown).

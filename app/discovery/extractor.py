@@ -228,12 +228,20 @@ async def extract_and_rank_job(url: str, user_id: str | None = None) -> int:
 
     # Calculate rerank score
     try:
-        reranker = Reranker()
-        score, reason, concerns = reranker.score(resume, job)
+        import json as _json
+        _prof = None
+        try:
+            from app.autofill.answer_pack import _get_or_create_profile
+            _prof = _get_or_create_profile(user_id=user_id if user_id and user_id != "local" else None)
+        except Exception:
+            _prof = None
+        reranker = Reranker(profile=_prof)
+        score, reason, concerns, breakdown = reranker.score(resume, job)
         job.rerank_score = score
         job.rerank_reasoning = reason + (
             ("\nConcerns: " + "; ".join(concerns)) if concerns else ""
         )
+        job.rerank_breakdown = _json.dumps(breakdown) if breakdown else None
     except Exception as e:
         log.warning("Could not calculate rerank score: %s", e)
         job.rerank_score = 70.0

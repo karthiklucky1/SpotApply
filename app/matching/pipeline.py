@@ -203,17 +203,23 @@ def run_matching(user_id: str | None = None) -> List[int]:
             q = q.where(Application.user_id == user_id)
         today_count = len(session.exec(q).all())
 
+    import json as _json
+    from concurrent.futures import ThreadPoolExecutor
+
+    # ── Phase 1: cheap serial pre-filtering ──────────────────────────────────
+    # Run the non-LLM gates (already-scored / rule / ghost / embedding). Jobs that
+    # survive all gates are collected for parallel LLM scoring in Phase 2. The
+    # already-scored shortlist path still runs here so behavior is unchanged.
+    to_rerank: list[tuple[int, float]] = []
     for jid, sim in candidates:
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
                 continue
-
-            # Skip closed/purged jobs — they must never be (re-)shortlisted.
             if job.is_closed:
                 continue
 
-            # Check if job is already scored to avoid wasting LLM tokens and time
+            # Already scored — (re)shortlist without spending another LLM call.
             if job.rerank_score is not None:
                 if job.rerank_score >= settings.shortlist_score_threshold:
                     existing = session.exec(
@@ -221,9 +227,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     ).first()
                     if not existing:
                         if today_count < settings.daily_shortlist_limit:
-                            # Company cap + 40-day cooldown applies here too —
-                            # previously this already-scored path skipped the cap,
-                            # which let a single company flood the shortlist.
                             if not _check_and_enforce_company_cap(session, job, job.rerank_score):
                                 session.commit()
                                 continue
@@ -272,7 +275,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
             except Exception as _ie:
                 log.debug("intelligence flag tagging skipped: %s", _ie)
 
-            # 2. Ghost Job Detection — cheap DB+text check, runs before LLM/embedding to save cost
+            # 2. Ghost Job Detection — cheap DB+text check, runs before LLM to save cost
             ghost_res = score_ghost(job, session)
             job.ghost_score = ghost_res.ghost_score
             job.ghost_flags = ghost_res.flags_json
@@ -292,7 +295,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     "Job '%s' @ '%s' is suspicious (ghost_score=%.2f flags=%s) — proceeding with caution",
                     job.title, job.company, ghost_res.ghost_score, ghost_res.flags,
                 )
-            session.add(job)  # persist ghost_score even for passing jobs
 
             # 3. Embedding Filter
             emb_passed, emb_score, emb_reason = embedding_filter.filter(job, resume)
@@ -305,28 +307,60 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 session.commit()
                 continue
 
-            # 3. LLM Reranking
-            score, reason, concerns = reranker.score(resume, job)
+            # Survived all cheap gates — persist similarity + ghost score, queue for LLM.
             job.similarity_score = sim
+            session.add(job)
+            session.commit()
+            to_rerank.append((jid, sim))
+
+    # ── Phase 2: parallel LLM scoring (I/O-bound on the model API) ────────────
+    # Each worker uses its own DB session + the shared (thread-safe) reranker
+    # client, so the slow network calls overlap instead of running one-by-one.
+    rerank_results: dict[int, tuple] = {}
+
+    def _rerank_one(item):
+        jid, _sim = item
+        try:
+            with get_session() as s:
+                job = s.get(Job, jid)
+                if not job:
+                    return jid, None
+                return jid, reranker.score(resume, job)
+        except Exception as e:
+            log.warning("Parallel rerank failed for job %s: %s", jid, e)
+            return jid, None
+
+    if to_rerank:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            for jid, res in ex.map(_rerank_one, to_rerank):
+                if res is not None:
+                    rerank_results[jid] = res
+
+    # ── Phase 3: serial store + shortlist creation (caps/cooldown/limits) ─────
+    for jid, sim in to_rerank:
+        res = rerank_results.get(jid)
+        if res is None:
+            continue
+        score, reason, concerns, breakdown = res
+        new_app_id: int | None = None
+        with get_session() as session:
+            job = session.get(Job, jid)
+            if not job:
+                continue
             job.rerank_score = score
             job.rerank_reasoning = reason + (
                 ("\nConcerns: " + "; ".join(concerns)) if concerns else ""
             )
+            job.rerank_breakdown = _json.dumps(breakdown) if breakdown else None
 
-            # 5. Hire Probability Scoring — no LLM, uses DB + description signals
-            import json as _json
+            # Hire Probability Scoring — no LLM, uses DB + description signals
             hp_result = score_hire_probability(job, session)
             job.hire_probability_score = hp_result.score
             job.hire_probability_signals = _json.dumps(hp_result.signals)
             job.blended_score = compute_blended(score, hp_result.score)
-            log.info(
-                "HireProb job '%s' @ '%s': hp=%.2f signals=%s blended=%.1f",
-                job.title, job.company, hp_result.score, hp_result.signals[:3], job.blended_score,
-            )
             session.add(job)
 
             # If rerank ≥ threshold, create an Application row in SHORTLISTED state
-            new_app_id: int | None = None
             if score >= settings.shortlist_score_threshold:
                 existing = session.exec(
                     select(Application).where(Application.job_id == job.id)
