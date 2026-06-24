@@ -1333,7 +1333,9 @@ def dashboard(request: Request):
         results = []
     else:
         with get_session() as session:
-            q = select(Application, Job).join(Job).order_by(Application.updated_at.desc())
+            q = select(Application, Job).join(Job).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            ).order_by(Application.updated_at.desc())
             if _uid_filter:
                 q = q.where(Application.user_id == uid)
             results = session.exec(q).all()
