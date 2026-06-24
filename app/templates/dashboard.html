@@ -160,11 +160,11 @@
     .match-pill-weak   { color:#94a3b8; background:rgba(148,163,184,0.10); border-color:rgba(148,163,184,0.25); }
 
     /* Compact stat boxes in the slim header (uniform, one after another) */
-    .stat-chip { display:flex; flex-direction:column; align-items:center; gap:5px; }
-    .stat-chip-disc { width:60px; height:60px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-        background:rgba(255,255,255,0.035); border:2px solid rgba(255,255,255,0.10); box-shadow:inset 0 0 14px rgba(255,255,255,0.03); }
-    .stat-chip-n { font-size:19px; font-weight:900; line-height:1; }
-    .stat-chip-l { font-size:8.5px; font-weight:800; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8; }
+    .stat-chip { display:flex; flex-direction:column; align-items:center; gap:7px; }
+    .stat-chip-disc { width:78px; height:78px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+        background:rgba(255,255,255,0.04); border:2.5px solid rgba(255,255,255,0.12); box-shadow:inset 0 0 18px rgba(255,255,255,0.04); }
+    .stat-chip-n { font-size:26px; font-weight:900; line-height:1; }
+    .stat-chip-l { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:0.07em; color:#94a3b8; }
 
     /* Slim, subtle horizontal scrollbar for the sources row */
     #source-breakdown::-webkit-scrollbar { height: 5px; }
@@ -604,6 +604,7 @@
         box-shadow: 0 24px 70px rgba(46,42,36,.30); display: flex; flex-direction: column;
         transform: translateY(12px) scale(.985); opacity: 0;
         transition: transform .22s cubic-bezier(.4,0,.2,1), opacity .22s ease; }
+    #jobModal { width: min(820px, 96vw); }
     #jobModalOverlay.open #jobModal, #referralOverlay.open #referralModal, #connOverlay.open #connModal { transform: translateY(0) scale(1); opacity: 1; }
     #jobModal .jd-head, #referralModal .jd-head, #connModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
         display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0; }
@@ -996,28 +997,31 @@
 
                     {# Why this matches #}
                     {% if job.rerank_reasoning %}
-                    <div class="mb-4">
-                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Why this matches you</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.rerank_reasoning }}</div>
+                    <div class="mb-5">
+                        <span class="font-extrabold text-[11px] uppercase tracking-wider block mb-1" style="color:var(--sage-700);">Why this matches you</span>
+                        <p class="text-[11px] mb-2" style="color:var(--muted);">How your résumé lines up with this role — and what to watch out for.</p>
+                        <div class="px-4 py-3.5 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[13.5px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.rerank_reasoning }}</div>
                     </div>
                     {% endif %}
 
                     {# Senior reviewer verdict #}
                     {% if app.senior_verdict %}
-                    <div class="mb-4">
-                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Senior reviewer{% if app.senior_fit_score is not none %} · {{ app.senior_fit_score|int }}/100{% endif %}</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[12px] leading-relaxed italic" style="color:var(--ink-soft);">"{{ app.senior_verdict }}"</div>
+                    <div class="mb-5">
+                        <span class="font-extrabold text-[11px] uppercase tracking-wider block mb-1" style="color:var(--sage-700);">Senior reviewer{% if app.senior_fit_score is not none %} · {{ app.senior_fit_score|int }}/100{% endif %}</span>
+                        <p class="text-[11px] mb-2" style="color:var(--muted);">An AI senior engineer's independent take on your fit, scored out of 100. Higher = stronger hire case.</p>
+                        <div class="px-4 py-3.5 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[13.5px] leading-relaxed italic" style="color:var(--ink-soft);">"{{ app.senior_verdict }}"</div>
                     </div>
                     {% endif %}
 
                     {# Hiring signals #}
                     {% set hsignals = job.hire_probability_signals|fromjson %}
                     {% if hsignals %}
-                    <div class="mb-4">
-                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Hiring signals</span>
-                        <div class="flex flex-wrap gap-1.5">
+                    <div class="mb-5">
+                        <span class="font-extrabold text-[11px] uppercase tracking-wider block mb-1" style="color:var(--sage-700);">Hiring signals</span>
+                        <p class="text-[11px] mb-2.5" style="color:var(--muted);">Live cues this company is hiring now — fresh postings, funding and growth all improve your odds of a reply.</p>
+                        <div class="flex flex-wrap gap-2">
                             {% for s in hsignals %}
-                            <span class="text-[10.5px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">✓ {{ s }}</span>
+                            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">✓ {{ s|humanize_signal }}</span>
                             {% endfor %}
                         </div>
                     </div>
@@ -1025,17 +1029,18 @@
 
                     {# How to position #}
                     {% if app.custom_highlight_block %}
-                    <div class="mb-4">
-                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">How to position yourself</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ app.custom_highlight_block|cleantext }}</div>
+                    <div class="mb-5">
+                        <span class="font-extrabold text-[11px] uppercase tracking-wider block mb-1" style="color:var(--sage-700);">How to position yourself</span>
+                        <p class="text-[11px] mb-2" style="color:var(--muted);">Angles and talking points to lead with in your résumé and application.</p>
+                        <div class="px-4 py-3.5 rounded-2xl bg-slate-950/30 border border-slate-800/40 text-[13.5px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ app.custom_highlight_block|cleantext }}</div>
                     </div>
                     {% endif %}
 
                     {# Full job description #}
                     {% if job.description %}
                     <div class="mb-2">
-                        <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Full job description</span>
-                        <div class="px-3.5 py-3 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[12px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.description|cleantext }}</div>
+                        <span class="font-extrabold text-[11px] uppercase tracking-wider block mb-1.5" style="color:var(--sage-700);">Full job description</span>
+                        <div class="px-4 py-3.5 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed" style="color:var(--ink-soft); white-space:pre-line;">{{ job.description|cleantext }}</div>
                     </div>
                     {% endif %}
                 </template>
@@ -4864,8 +4869,8 @@
     <div id="jobModal" role="dialog" aria-label="Job details" aria-modal="true">
         <div class="jd-head">
             <div class="min-w-0 flex-1">
-                <h2 id="jobModalTitle" class="text-sm font-bold leading-snug" style="color:var(--ink);"></h2>
-                <p id="jobModalCompany" class="text-[11px] font-semibold mt-1" style="color:var(--muted);"></p>
+                <h2 id="jobModalTitle" class="text-lg font-extrabold leading-snug" style="color:var(--ink);"></h2>
+                <p id="jobModalCompany" class="text-[12.5px] font-semibold mt-1" style="color:var(--muted);"></p>
             </div>
             <button type="button" id="jobModalClose" onclick="closeJobDrawer()" title="Close (Esc)">&times;</button>
         </div>
@@ -5111,29 +5116,29 @@
 </div>
 
 <div id="add-job-modal" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeAddJobModal()">
-    <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:20px;max-width:560px;width:100%;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.45);">
-        <div class="flex items-start justify-between gap-4 mb-3">
+    <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:24px;max-width:720px;width:100%;padding:34px;box-shadow:0 24px 70px rgba(0,0,0,.45);">
+        <div class="flex items-start justify-between gap-4 mb-4">
             <div>
-                <h2 class="text-base font-black flex items-center gap-2" style="color:var(--ink);">🔗 Add Job from Link</h2>
-                <p class="text-[11px] mt-1" style="color:var(--muted);">Found a role we didn't surface? Paste its link — we'll fetch it, match it to your résumé, and tailor your application.</p>
+                <h2 class="text-2xl font-black flex items-center gap-2.5" style="color:var(--ink);">🔗 Add Job from Link</h2>
+                <p class="text-[14px] mt-2 leading-relaxed" style="color:var(--muted);">Found a role we didn't surface? Paste its link — we'll fetch it, match it to your résumé, and tailor your application.</p>
             </div>
-            <button onclick="closeAddJobModal()" title="Close (Esc)" style="font-size:22px;line-height:1;color:var(--muted);background:none;border:none;cursor:pointer;">&times;</button>
+            <button onclick="closeAddJobModal()" title="Close (Esc)" style="font-size:26px;line-height:1;color:var(--muted);background:none;border:none;cursor:pointer;">&times;</button>
         </div>
-        <div class="flex flex-wrap gap-1.5 mb-3">
-            <span class="text-[9px] font-bold uppercase tracking-wider mr-1 self-center" style="color:var(--muted-2);">Works with</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">LinkedIn</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Greenhouse</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Lever</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Ashby</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Workday</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Indeed</span>
-            <span class="text-[10px] font-semibold px-2.5 py-1 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">+ any URL</span>
+        <div class="flex flex-wrap gap-2 mb-5">
+            <span class="text-[11px] font-bold uppercase tracking-wider mr-1 self-center" style="color:var(--muted-2);">Works with</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">LinkedIn</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Greenhouse</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Lever</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Ashby</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Workday</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">Indeed</span>
+            <span class="text-[12px] font-semibold px-3 py-1.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">+ any URL</span>
         </div>
         <form id="extractLinkForm" onsubmit="extractLink(event)" class="flex flex-col sm:flex-row gap-3">
             <input type="url" id="jobUrlInput" required
                 placeholder="Paste job URL — LinkedIn, Greenhouse, Lever, Ashby, Indeed, Workday..."
-                class="flex-1 text-xs bg-slate-950/65 border border-slate-800/80 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 rounded-full px-5 py-3 text-white placeholder-slate-500 outline-none transition duration-200" />
-            <button type="submit" id="extractBtn" class="btn-primary text-white text-xs font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 shrink-0">
+                class="flex-1 text-sm bg-slate-950/65 border border-slate-800/80 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 rounded-full px-6 py-4 text-white placeholder-slate-500 outline-none transition duration-200" />
+            <button type="submit" id="extractBtn" class="btn-primary text-white text-sm font-bold py-4 px-8 rounded-2xl flex items-center justify-center gap-2 shrink-0">
                 ⚡ Match &amp; Tailor
             </button>
         </form>

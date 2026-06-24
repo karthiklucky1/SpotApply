@@ -289,6 +289,58 @@ templates.env.filters["fromjson"] = _fromjson_filter
 templates.env.filters["cleantext"] = _cleantext_filter
 
 
+def _humanize_signal_filter(value):
+    """Turn raw hire-probability signal tokens into short, human-readable
+    phrases for the UI. e.g. 'fresh_posting_4d' -> 'Posted 4 days ago',
+    'funding_language:series a' -> 'Series A funded',
+    'low_velocity_2_openings' -> 'Only 2 openings (selective)'."""
+    if not value:
+        return ""
+    import re as _re
+    s = str(value).strip()
+    low = s.lower()
+
+    # key:value style → "Series A funded", "Fast-growing team", ...
+    if ":" in s:
+        key, _, val = s.partition(":")
+        key = key.strip().lower()
+        val = val.strip()
+        val_t = val.title()
+        if "funding" in key:
+            return f"{val_t} funded"
+        if "growth" in key:
+            return f"{val_t} team"
+        return val_t or key.replace("_", " ").title()
+
+    # fresh_posting_4d → "Posted 4 days ago"
+    m = _re.match(r"fresh_posting_(\d+)\s*d", low)
+    if m:
+        n = int(m.group(1))
+        return f"Posted {n} day{'s' if n != 1 else ''} ago"
+
+    # low/high/med _velocity_N_openings → "Only N openings (selective)"
+    m = _re.match(r"(low|high|med|medium)_velocity_(\d+)_opening", low)
+    if m:
+        n = int(m.group(2))
+        bucket = m.group(1)
+        lead = {"low": "Only", "high": "Many", "med": "A few", "medium": "A few"}.get(bucket, "")
+        tail = {"low": " (selective)", "high": " (actively hiring)"}.get(bucket, "")
+        return f"{lead} {n} opening{'s' if n != 1 else ''}{tail}".strip()
+
+    # generic *_N_openings → "N open roles"
+    m = _re.match(r".*?(\d+)_opening", low)
+    if m:
+        n = int(m.group(1))
+        return f"{n} open role{'s' if n != 1 else ''}"
+
+    # fallback: snake_case → readable sentence case
+    out = _re.sub(r"\s+", " ", s.replace("_", " ").replace(":", " ")).strip()
+    return (out[:1].upper() + out[1:]) if out else out
+
+
+templates.env.filters["humanize_signal"] = _humanize_signal_filter
+
+
 def _sponsorship_of(job):
     """Jinja global: legal sponsorship assessment for a job (cap-exempt aware)."""
     try:
