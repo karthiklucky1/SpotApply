@@ -160,11 +160,11 @@
     .match-pill-weak   { color:#94a3b8; background:rgba(148,163,184,0.10); border-color:rgba(148,163,184,0.25); }
 
     /* Compact stat boxes in the slim header (uniform, one after another) */
-    .stat-chip { display:flex; flex-direction:column; align-items:center; justify-content:center;
-        gap:1px; padding:7px 14px; border-radius:12px; min-width:74px;
-        background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); }
-    .stat-chip-n { font-size:17px; font-weight:900; line-height:1.1; }
-    .stat-chip-l { font-size:8.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#94a3b8; }
+    .stat-chip { display:flex; flex-direction:column; align-items:center; gap:5px; }
+    .stat-chip-disc { width:60px; height:60px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+        background:rgba(255,255,255,0.035); border:2px solid rgba(255,255,255,0.10); box-shadow:inset 0 0 14px rgba(255,255,255,0.03); }
+    .stat-chip-n { font-size:19px; font-weight:900; line-height:1; }
+    .stat-chip-l { font-size:8.5px; font-weight:800; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8; }
 
     /* Slim, subtle horizontal scrollbar for the sources row */
     #source-breakdown::-webkit-scrollbar { height: 5px; }
@@ -715,6 +715,10 @@
             </button>
 
             <div class="sb-section-label">Tools</div>
+            <button class="sb-btn" onclick="openInsightsModal()" data-tip="Insights">
+                <span class="sb-icon">📊</span>
+                <span class="sb-label">Insights</span>
+            </button>
             <button class="sb-btn" onclick="openRolesModal()" data-tip="Target Roles">
                 <span class="sb-icon">🎯</span>
                 <span class="sb-label">Target Roles</span>
@@ -797,10 +801,10 @@
     <div class="flex flex-wrap items-center justify-between gap-4">
         <h1 class="text-2xl sm:text-3xl font-black tracking-tight gradient-text leading-none">Your Job Board</h1>
         <div class="flex items-center gap-2 flex-wrap">
-            <div class="stat-chip"><span id="stat-pool" class="stat-chip-n" style="color:#a5b4fc;">0</span><span class="stat-chip-l">Pool</span></div>
-            <div class="stat-chip"><span id="stat-shortlist" class="stat-chip-n" style="color:#34d399;">{{ shortlisted|length }}</span><span class="stat-chip-l">Shortlisted</span></div>
-            <div class="stat-chip"><span id="stat-review" class="stat-chip-n" style="color:#fbbf24;">{{ bot_filled|length }}</span><span class="stat-chip-l">In Review</span></div>
-            <div class="stat-chip"><span id="stat-submitted" class="stat-chip-n" style="color:#67e8f9;">{{ submitted|length }}</span><span class="stat-chip-l">Submitted</span></div>
+            <div class="stat-chip"><span class="stat-chip-disc" style="color:#a5b4fc;border-color:rgba(165,180,252,0.40);"><span id="stat-pool" class="stat-chip-n">0</span></span><span class="stat-chip-l">Pool</span></div>
+            <div class="stat-chip"><span class="stat-chip-disc" style="color:#34d399;border-color:rgba(52,211,153,0.40);"><span id="stat-shortlist" class="stat-chip-n">{{ shortlisted|length }}</span></span><span class="stat-chip-l">Shortlisted</span></div>
+            <div class="stat-chip"><span class="stat-chip-disc" style="color:#fbbf24;border-color:rgba(251,191,36,0.40);"><span id="stat-review" class="stat-chip-n">{{ bot_filled|length }}</span></span><span class="stat-chip-l">In Review</span></div>
+            <div class="stat-chip"><span class="stat-chip-disc" style="color:#67e8f9;border-color:rgba(103,232,249,0.40);"><span id="stat-submitted" class="stat-chip-n">{{ submitted|length }}</span></span><span class="stat-chip-l">Submitted</span></div>
             <button id="discover-hero-banner" onclick="startDiscovery()" class="ml-1 text-xs font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;border:1px solid var(--sage-600);box-shadow:0 4px 16px rgba(31,156,143,0.30);">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 Discover Jobs
@@ -823,38 +827,6 @@
                 ⚙️ Boards
             </button>
         </div>
-
-        <!-- Score Distribution — hidden until there is matching data -->
-        <section id="analytics-section" class="mb-8" style="display:none;">
-            <div class="glass rounded-3xl p-6 flex flex-col justify-between">
-                <div>
-                    <h2 class="text-sm font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-2">
-                        <span>📈</span> LLM Fit-Score Distribution
-                    </h2>
-                    <div class="h-32 flex items-center justify-center relative">
-                        <canvas id="scoreDistChart"></canvas>
-                    </div>
-                </div>
-                <div class="grid grid-cols-4 text-center text-[10px] font-semibold text-slate-400 pt-3 border-t border-slate-800/40">
-                    <div>
-                        <span class="block text-emerald-400" id="band-strong">0</span>
-                        <span>85-100</span>
-                    </div>
-                    <div>
-                        <span class="block text-blue-400" id="band-good">0</span>
-                        <span>60-84</span>
-                    </div>
-                    <div>
-                        <span class="block text-amber-400" id="band-weak">0</span>
-                        <span>40-59</span>
-                    </div>
-                    <div>
-                        <span class="block text-rose-500" id="band-wrong">0</span>
-                        <span>0-39</span>
-                    </div>
-                </div>
-            </div>
-        </section>
 
         <!-- Extension install banner -->
         <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(79,70,229,0.07),rgba(124,58,237,0.03))">
@@ -879,58 +851,8 @@
             <button onclick="document.getElementById('tour-launcher').remove(); localStorage.setItem('hp_tour_v1_done','1')" title="Dismiss" class="shrink-0 text-lg" style="color:var(--muted);">✕</button>
         </div>
 
-        <!-- Source Breakdown Bar -->
-        <section class="glass rounded-[28px] p-5 mb-8 border border-slate-800/60">
-            <div class="flex flex-wrap items-center justify-between gap-4">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 shrink-0">
-                    <span>🌐</span> Discovery Sources
-                    <button onclick="clearPool()" class="ml-2 text-[9px] font-bold text-slate-500 hover:text-rose-400 border border-white/[0.06] hover:border-rose-500/30 rounded-full px-2.5 py-1 transition-all normal-case tracking-normal" title="Delete all jobs in your pool">🗑 Reset Pool</button>
-                </h3>
-                <div class="flex flex-nowrap gap-3 overflow-x-auto flex-1 min-w-0 pb-1" id="source-breakdown" style="scrollbar-width:thin;" title="Scroll sideways to see all sources">
-                    <!-- Populated by JS from /api/stats -->
-                    <span class="text-[11px] text-slate-500 italic">Loading source stats...</span>
-                </div>
-                <div class="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider shrink-0">
-                    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> <span class="text-emerald-400">Direct ATS</span></span>
-                    <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-violet-500 inline-block"></span> <span class="text-violet-400">Aggregator</span></span>
-                </div>
-            </div>
-        </section>
-
         <!-- TAB 1: Kanban Board View -->
         <div id="view-content-kanban" class="flex flex-col gap-6">
-          <!-- Application flow guide -->
-          <div class="glass rounded-[20px] px-5 py-3 border border-slate-800/60 flex items-center gap-0 overflow-x-auto">
-            <div class="flex items-center gap-1.5 shrink-0">
-                <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
-                <span class="text-[10px] font-bold text-indigo-300">Shortlisted</span>
-                <span class="text-[9px] text-slate-500 ml-0.5">AI matched roles</span>
-            </div>
-            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
-            <div class="flex items-center gap-1.5 shrink-0">
-                <span class="text-[10px]">✨</span>
-                <span class="text-[10px] font-bold text-violet-300">Tailor</span>
-                <span class="text-[9px] text-slate-500 ml-0.5">AI resume &amp; cover letter</span>
-            </div>
-            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
-            <div class="flex items-center gap-1.5 shrink-0">
-                <span class="text-[10px]">⚡</span>
-                <span class="text-[10px] font-bold text-sky-300">Auto-fill</span>
-                <span class="text-[9px] text-slate-500 ml-0.5">Bot fills the form</span>
-            </div>
-            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
-            <div class="flex items-center gap-1.5 shrink-0">
-                <span class="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span class="text-[10px] font-bold text-amber-300">Awaiting Review</span>
-                <span class="text-[9px] text-slate-500 ml-0.5">You approve via Telegram</span>
-            </div>
-            <span class="text-slate-700 mx-3 text-lg shrink-0">→</span>
-            <div class="flex items-center gap-1.5 shrink-0">
-                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                <span class="text-[10px] font-bold text-emerald-300">Submitted</span>
-                <span class="text-[9px] text-slate-500 ml-0.5">Application sent</span>
-            </div>
-          </div>
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
             {#- Compact, scannable job row. Full detail + actions live inside an
@@ -5142,6 +5064,52 @@
 </div>
 
 <!-- Add Job from Link modal (moved out of the main board into the sidebar) -->
+<!-- Insights modal — Fit-Score Distribution + Discovery Sources (moved out of the main board) -->
+<div id="insights-modal" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeInsightsModal()">
+    <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:20px;max-width:640px;width:100%;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.45);max-height:90vh;overflow-y:auto;">
+        <div class="flex items-start justify-between gap-4 mb-4">
+            <div>
+                <h2 class="text-base font-black flex items-center gap-2" style="color:var(--ink);">📊 Insights</h2>
+                <p class="text-[11px] mt-1" style="color:var(--muted);">How your pool scores against your résumé, and where the jobs come from.</p>
+            </div>
+            <button onclick="closeInsightsModal()" title="Close (Esc)" style="font-size:22px;line-height:1;color:var(--muted);background:none;border:none;cursor:pointer;">&times;</button>
+        </div>
+
+        <!-- Fit-Score Distribution -->
+        <div class="glass rounded-2xl p-5 mb-4">
+            <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-3 flex items-center gap-2">
+                <span>📈</span> LLM Fit-Score Distribution
+            </h3>
+            <div class="h-32 flex items-center justify-center relative">
+                <canvas id="scoreDistChart"></canvas>
+            </div>
+            <div class="grid grid-cols-4 text-center text-[10px] font-semibold text-slate-400 pt-3 mt-2 border-t border-slate-800/40">
+                <div><span class="block text-emerald-400 text-sm font-black" id="band-strong">0</span><span>85-100</span></div>
+                <div><span class="block text-blue-400 text-sm font-black" id="band-good">0</span><span>60-84</span></div>
+                <div><span class="block text-amber-400 text-sm font-black" id="band-weak">0</span><span>40-59</span></div>
+                <div><span class="block text-rose-500 text-sm font-black" id="band-wrong">0</span><span>0-39</span></div>
+            </div>
+        </div>
+
+        <!-- Discovery Sources -->
+        <div class="glass rounded-2xl p-5">
+            <div class="flex items-center justify-between gap-3 mb-3">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <span>🌐</span> Discovery Sources
+                </h3>
+                <button onclick="clearPool()" class="text-[9px] font-bold text-slate-500 hover:text-rose-400 border border-white/[0.06] hover:border-rose-500/30 rounded-full px-2.5 py-1 transition-all" title="Delete all jobs in your pool">🗑 Reset Pool</button>
+            </div>
+            <div class="flex flex-wrap gap-2.5 mb-3" id="source-breakdown">
+                <span class="text-[11px] text-slate-500 italic">Loading source stats...</span>
+            </div>
+            <div class="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider pt-3 border-t border-slate-800/40">
+                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> <span class="text-emerald-400">Direct ATS</span></span>
+                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-violet-500 inline-block"></span> <span class="text-violet-400">Aggregator</span></span>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="add-job-modal" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeAddJobModal()">
     <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:20px;max-width:560px;width:100%;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.45);">
         <div class="flex items-start justify-between gap-4 mb-3">
@@ -5182,8 +5150,19 @@
         const m = document.getElementById('add-job-modal');
         if (m) m.style.display = 'none';
     }
+    function openInsightsModal() {
+        const m = document.getElementById('insights-modal');
+        if (m) { m.style.display = 'flex'; if (typeof loadStats === 'function') loadStats(); }
+        if (window.innerWidth <= 768 && typeof toggleSidebar === 'function' && document.getElementById('app-sidebar').classList.contains('open')) toggleSidebar();
+    }
+    function closeInsightsModal() {
+        const m = document.getElementById('insights-modal');
+        if (m) m.style.display = 'none';
+    }
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { const m = document.getElementById('add-job-modal'); if (m && m.style.display !== 'none') closeAddJobModal(); }
+        if (e.key !== 'Escape') return;
+        const aj = document.getElementById('add-job-modal'); if (aj && aj.style.display !== 'none') closeAddJobModal();
+        const ins = document.getElementById('insights-modal'); if (ins && ins.style.display !== 'none') closeInsightsModal();
     });
 </script>
 
