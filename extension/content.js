@@ -2047,10 +2047,24 @@ function isLoginWall() {
 }
 
 function isCaptcha() {
-  return !!(
-    document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile, #challenge-stage') ||
-    document.body.innerText.toLowerCase().includes('prove you are human')
-  );
+  // Only treat as CAPTCHA if the challenge element is actually visible.
+  // Ashby embeds hCaptcha iframes in the DOM even when not triggered — checking
+  // visibility prevents false positives that block autofill unnecessarily.
+  const selectors = [
+    'iframe[src*="recaptcha"]',
+    'iframe[src*="hcaptcha"]',
+    '.cf-turnstile',
+    '#challenge-stage',
+  ];
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 10 && rect.top >= 0;
+      if (visible) return true;
+    }
+  }
+  return document.body.innerText.toLowerCase().includes('prove you are human');
 }
 
 // ── Watch for page advance (user clicked Next) ────────────────────────────────
