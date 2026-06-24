@@ -3019,6 +3019,10 @@
                     btn.innerHTML = orig; btn.disabled = false; return;
                 }
                 const pack = await res.json();
+                if (appId) {
+                    trackPendingApply(appId, pack.company);
+                    setTimeout(maybeAskSubmit, 15000);
+                }
                 // Attach refresh credentials so the extension's background worker
                 // can renew the access token mid-autofill (kept out of page scripts).
                 pack.refresh_token = localStorage.getItem('sb_refresh') || null;
@@ -5400,7 +5404,13 @@
         let p;
         try { p = JSON.parse(localStorage.getItem('hp_pending_apply') || 'null'); } catch (e) { p = null; }
         if (!p || p.asked) return;
-        if (Date.now() - p.ts < 8000) return; // too quick — they probably bounced
+        const elapsed = Date.now() - p.ts;
+        if (elapsed < 8000) {
+            // Schedule a re-check when the 8 seconds are up to handle quick tab switches
+            const remaining = 8000 - elapsed;
+            setTimeout(maybeAskSubmit, remaining + 100);
+            return;
+        }
         p.asked = true;
         try { localStorage.setItem('hp_pending_apply', JSON.stringify(p)); } catch (e) {}
         showSubmitConfirm(p.appId, p.company);
@@ -5412,7 +5422,7 @@
         if (document.getElementById('hp-submit-confirm')) return;
         const box = document.createElement('div');
         box.id = 'hp-submit-confirm';
-        box.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:80;background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:16px;padding:16px 18px;box-shadow:0 16px 50px rgba(0,0,0,.4);max-width:420px;width:calc(100% - 32px);';
+        box.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:9999;background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:16px;padding:16px 18px;box-shadow:0 16px 50px rgba(0,0,0,.4);max-width:420px;width:calc(100% - 32px);';
         const who = company ? (' to <b>' + (company + '').replace(/</g, '&lt;') + '</b>') : '';
         box.innerHTML = `
             <div style="font-size:13.5px;font-weight:700;margin-bottom:4px;">Did you submit your application${who}?</div>

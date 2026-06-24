@@ -2073,6 +2073,8 @@ function isLoginWall() {
 }
 
 function isCaptcha() {
+  if (hasApplicationForm()) return false;
+
   // Only treat as CAPTCHA if the challenge element is actually visible.
   // Ashby embeds hCaptcha iframes in the DOM even when not triggered — checking
   // visibility prevents false positives that block autofill unnecessarily.
@@ -2226,15 +2228,20 @@ function findAndClickApply(pack) {
     return true;
   }
 
-  // Match buttons/links whose visible text, aria-label, or href signals "apply".
-  // Lenient (contains "apply") but guarded so we don't match legal text like
-  // "By applying you agree…".
   const isApply = (el) => {
     const href = (el.getAttribute('href') || '');
     const label = labelOf(el);
     // Avoid LinkedIn/social apply shortcuts — we want the native form
     if (/with\s+linkedin|with\s+indeed/i.test(label)) return false;
-    if (label.length > 0 && label.length <= 30 && /\bapply\b/i.test(label)) return true;
+    
+    if (label.length > 0 && label.length <= 150) {
+      const cleanLabel = label.toLowerCase();
+      // Exclude legal / terms of service / cookie consent text
+      if (/terms|conditions|privacy|policy|cookie|consent|agree|by\s+applying|learn\s+more/i.test(cleanLabel)) return false;
+      // Look for action verbs / apply signals
+      if (/\b(apply|submit\s+application|start\s+application|apply\s+manually|apply\s+now|apply\s+online)\b/i.test(cleanLabel)) return true;
+    }
+
     if (/\/apply\b|applynow|apply-now/i.test(href)) return true;
     return false;
   };
