@@ -1203,6 +1203,7 @@ def api_jobs(
     max_score: int = None,
     remote: str = None,
     track: str = None,   # "autofill" | "manual"
+    hide_aggregators: str = None,  # "1" = exclude aggregator-redirect jobs
 ) -> dict:
     uid = _get_user_id(request)
     _uid_filter = uid and uid != "local"
@@ -1242,7 +1243,12 @@ def api_jobs(
         if remote is not None:
             is_remote = remote.lower() == "true"
             query = query.where(Job.remote == is_remote)
-            
+
+        if hide_aggregators == "1":
+            query = query.where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            )
+
         # Get total count (for pagination) — also exclude closed jobs.
         count_query = select(func.count(Job.id)).where(Job.is_closed == False)
         if _uid_filter:
@@ -1264,7 +1270,12 @@ def api_jobs(
         if remote is not None:
             is_remote = remote.lower() == "true"
             count_query = count_query.where(Job.remote == is_remote)
-            
+
+        if hide_aggregators == "1":
+            count_query = count_query.where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            )
+
         total = session.exec(count_query).first() or 0
         
         # Apply pagination and sorting

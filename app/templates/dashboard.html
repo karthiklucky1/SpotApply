@@ -1376,6 +1376,11 @@
                     <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" />
                 </div>
                 
+                <div class="flex items-center gap-2 whitespace-nowrap">
+                    <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" />
+                    <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label>
+                </div>
+
                 <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200">
                     Reset
                 </button>
@@ -1567,6 +1572,7 @@
         let explorerStatusVal = '';
         let explorerScoreVal = 0;
         let explorerTrackVal = '';
+        let explorerHideAggregators = false;
 
         // Startup list matching
         const STARTUP_COMPANIES = new Set([
@@ -2478,6 +2484,8 @@
             document.getElementById('filter-status').value = '';
             document.getElementById('filter-score').value = 0;
             document.getElementById('filter-track').value = '';
+            document.getElementById('filter-hide-aggregators').checked = false;
+            explorerHideAggregators = false;
             document.getElementById('score-val').textContent = 0;
 
             explorerSearchVal = '';
@@ -2497,6 +2505,7 @@
                 explorerRemoteVal = document.getElementById('filter-remote').value;
                 explorerStatusVal = document.getElementById('filter-status').value;
                 explorerTrackVal = document.getElementById('filter-track').value;
+                explorerHideAggregators = document.getElementById('filter-hide-aggregators').checked;
                 loadJobsPage(1);
             }, 300);
         }
@@ -2553,6 +2562,7 @@
             if (explorerStatusVal) url += `&status=${explorerStatusVal}`;
             if (explorerTrackVal) url += `&track=${explorerTrackVal}`;
             if (explorerScoreVal > 0) url += `&min_score=${explorerScoreVal}`;
+            if (explorerHideAggregators) url += `&hide_aggregators=1`;
 
             try {
                 const res = await fetch(url);
