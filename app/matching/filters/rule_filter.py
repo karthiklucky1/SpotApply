@@ -104,7 +104,7 @@ class RuleFilter:
 
         # Candidate experience → drives the "requires N+ years" gap filter and
         # whether senior/staff titles are filtered out.
-        self.cand_years = _safe_int(getattr(profile, "years_experience", None), 5)
+        self.cand_years = _safe_int(getattr(profile, "years_experience", None), 0)
         self.block_senior_titles = legacy or self.cand_years < 6
 
         # Salary band: only filter on a bound the user actually expressed. With
@@ -194,23 +194,23 @@ class RuleFilter:
                         score_override=10
                     )
 
-        # 3. Experience Gap Filter — only reject when the JD *requires* (not merely
-        #    prefers) well beyond the candidate's experience (their years + 4).
-        #    Gap is +4 (not +2) to avoid blocking stretch roles.
-        _exp_cutoff = self.cand_years + 4
-        _preferred_words = ("preferred", "nice to have", "plus", "ideally", "bonus")
-        for m in re.finditer(r'(\d+)\+?\s*years?', desc_low):
-            years = int(m.group(1))
-            context = desc_low[max(0, m.start() - 20): m.start() + 80]
-            if 'experience' in context and years >= _exp_cutoff:
-                # Don't reject if this is a "preferred" mention, not a requirement
-                if any(w in context for w in _preferred_words):
-                    continue
-                return FilterResult(
-                    passed=False,
-                    reason=f"Experience pre-filtered: requires {years}+ years (candidate has {self.cand_years})",
-                    score_override=15
-                )
+        # 3. Experience Gap Filter — only active when resume-extracted years are
+        #    known (>0). Skipped for new users/students until resume is parsed.
+        #    Gap is +4 to allow stretch roles; skips "preferred" mentions.
+        if self.cand_years > 0:
+            _exp_cutoff = self.cand_years + 4
+            _preferred_words = ("preferred", "nice to have", "plus", "ideally", "bonus")
+            for m in re.finditer(r'(\d+)\+?\s*years?', desc_low):
+                years = int(m.group(1))
+                context = desc_low[max(0, m.start() - 20): m.start() + 80]
+                if 'experience' in context and years >= _exp_cutoff:
+                    if any(w in context for w in _preferred_words):
+                        continue
+                    return FilterResult(
+                        passed=False,
+                        reason=f"Experience pre-filtered: requires {years}+ years (candidate has {self.cand_years})",
+                        score_override=15
+                    )
 
         # 4. Senior/staff titles — only filtered for non-senior candidates.
         if self.block_senior_titles:
