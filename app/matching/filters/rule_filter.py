@@ -104,7 +104,7 @@ class RuleFilter:
 
         # Candidate experience → drives the "requires N+ years" gap filter and
         # whether senior/staff titles are filtered out.
-        self.cand_years = _safe_int(getattr(profile, "years_experience", None), 0)
+        self.cand_years = _safe_int(getattr(profile, "years_experience", None), 3 if legacy else 0)
         self.block_senior_titles = legacy or self.cand_years < 6
 
         # Salary band: only filter on a bound the user actually expressed. With
@@ -198,7 +198,7 @@ class RuleFilter:
         #    known (>0). Skipped for new users/students until resume is parsed.
         #    Gap is +4 to allow stretch roles; skips "preferred" mentions.
         if self.cand_years > 0:
-            _exp_cutoff = self.cand_years + 4
+            _exp_cutoff = self.cand_years + (2 if self.profile is None else 4)
             _preferred_words = ("preferred", "nice to have", "plus", "ideally", "bonus")
             for m in re.finditer(r'(\d+)\+?\s*years?', desc_low):
                 years = int(m.group(1))

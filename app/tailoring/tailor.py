@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 
 from anthropic import Anthropic
 from docx import Document
@@ -103,7 +103,7 @@ class Tailor:
             except Exception:
                 pass
 
-    def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a") -> str:
+    def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a", custom_highlight_block: Optional[str] = None) -> str:
         # ── ATS exact-phrase targeting ──────────────────────────────────────
         # Find the JD phrases an ATS will scan for that are NOT already verbatim
         # in the master resume, so the tailor can incorporate them honestly.
@@ -123,14 +123,23 @@ class Tailor:
         except Exception as e:
             log.warning("ATS keyword analysis failed (continuing without it): %s", e)
 
+        highlights_block = ""
+        if custom_highlight_block:
+            highlights_block = (
+                "\n\nCRITICAL FRAMING INSTRUCTIONS — prioritize and integrate these points "
+                "honestly into the resume's summary, skills, or experience bullet points:\n"
+                + custom_highlight_block.strip()
+            )
+
         prompt = f"""Job description:
 ---
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----{ats_block}
+---{ats_block}{highlights_block}
 
-Return the tailored resume in markdown. No commentary."""
+Return the tailored resume in markdown. No commentary.
+Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a separate section in the tailored resume."""
 
         # A/B Testing routing
         use_openai = False
@@ -168,11 +177,15 @@ Return the tailored resume in markdown. No commentary."""
 
         raise RuntimeError("No LLM backend available for tailoring resume")
 
-    def write_cover_letter(self, master_resume_md: str, job: Job) -> str:
+    def write_cover_letter(self, master_resume_md: str, job: Job, custom_highlight_block: Optional[str] = None) -> str:
+        highlights_block = ""
+        if custom_highlight_block:
+            highlights_block = f"\n\nFocus areas to prioritize/highlight:\n{custom_highlight_block.strip()}"
         prompt = f"""Job:
 Title: {job.title}
 Company: {job.company}
 {job.description[:4000]}
+{highlights_block}
 
 Write the cover letter using the Problem→Solution→Proof structure:
 1. Open by naming the specific problem {job.company} is hiring to solve (infer it from the responsibilities above).
@@ -356,10 +369,6 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
         master = _load_resume(user_id=app_user_id)
         profile_source = "user resume" if app_user_id else settings.resume_path.name
 
-    # Append the custom highlight block so the tailor LLM sees the senior reviewer's framing
-    if custom_highlight_block:
-        master = master + f"\n\n## CUSTOM HIGHLIGHTS (Senior Reviewer — prioritize these)\n{custom_highlight_block}"
-
     log.info(
         "Tailoring app %d using profile=%s source=%s",
         application_id, profile_variant or "master", profile_source,
@@ -373,8 +382,8 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
         description = job_description
 
     job_snap = _JobSnapshot()
-    resume_md = tailor.tailor_resume(master, job_snap, variant=variant)
-    cover = tailor.write_cover_letter(master, job_snap)
+    resume_md = tailor.tailor_resume(master, job_snap, variant=variant, custom_highlight_block=custom_highlight_block)
+    cover = tailor.write_cover_letter(master, job_snap, custom_highlight_block=custom_highlight_block)
 
     # ── Quality checks ────────────────────────────────────────────────────────
 
