@@ -10,11 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 
 from sqlmodel import Session, select
 
-from app.db.init_db import get_engine
+from app.db.init_db import engine
 from app.db.models import Job
 from app.matching.filters.ghost_detector import _AGGREGATOR_REDIRECT_RE, score_ghost
 
@@ -23,7 +22,6 @@ log = logging.getLogger(__name__)
 
 
 def main(apply: bool) -> None:
-    engine = get_engine()
     with Session(engine) as session:
         jobs = session.exec(
             select(Job).where(Job.is_closed == False)
