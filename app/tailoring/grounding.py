@@ -17,7 +17,9 @@ class GroundingResult:
 
 class GroundingChecker:
     def __init__(self):
-        self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
+        import torch
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
 
     def _extract_bullets(self, resume_md: str) -> List[str]:
         """Extract markdown bullets from EXPERIENCE and PROJECTS sections only."""

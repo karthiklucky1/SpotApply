@@ -72,10 +72,12 @@ def _chunk_resume(resume_text: str) -> List[str]:
 
 class Matcher:
     def __init__(self):
-        log.info("Loading embedding model %s …", MODEL_NAME)
-        self.model = SentenceTransformer(MODEL_NAME, device="cpu")
-        log.info("Loading cross-encoder model mixedbread-ai/mxbai-rerank-xsmall-v1 …")
-        self.cross_encoder = CrossEncoder("mixedbread-ai/mxbai-rerank-xsmall-v1", device="cpu")
+        import torch
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        log.info("Loading embedding model %s on device: %s …", MODEL_NAME, device)
+        self.model = SentenceTransformer(MODEL_NAME, device=device)
+        log.info("Loading cross-encoder model mixedbread-ai/mxbai-rerank-xsmall-v1 on device: %s …", device)
+        self.cross_encoder = CrossEncoder("mixedbread-ai/mxbai-rerank-xsmall-v1", device=device)
         self.index_path: Path = settings.faiss_index_path
         self.id_map_path: Path = self.index_path.with_suffix(".ids.npy")
         self.index: "faiss.Index" | None = None
