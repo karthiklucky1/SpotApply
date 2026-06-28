@@ -2025,7 +2025,7 @@
                 // sees progress without refreshing the page.
                 if (run.status === 'ranking' || run.status === 'discovering') refreshStatsLive();
                 if (_trackRun(run)) clearInterval(_discoverPoll);
-            }, 2500);
+            }, 5000);
         }
         // Entry point for the "Discover Jobs" button. Gate on résumé first —
         // without one there is nothing to match against, so guide the user to
