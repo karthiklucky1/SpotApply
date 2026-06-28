@@ -21,24 +21,63 @@ class GroundingChecker:
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
 
+    _SECTION_KEYS = ("EXPERIENCE", "PROJECT", "WORK", "EMPLOYMENT")
+    _BULLET_PREFIXES = ("- ", "* ", "• ", "·", "– ", "— ", "‣ ", "▪ ", "◦ ", "● ", "» ")
+
     def _extract_bullets(self, resume_md: str) -> List[str]:
-        """Extract markdown bullets from EXPERIENCE and PROJECTS sections only."""
-        bullets = []
+        """Extract experience/project bullets.
+
+        Handles both markdown résumés (## EXPERIENCE + "- " bullets) and the
+        plain text produced by PDF/DOCX extraction (ALL-CAPS or title-case
+        section headers, varied bullet glyphs, or no bullet glyph at all).
+        Falls back to substantive content lines so the grounding check never
+        silently no-ops on a real résumé.
+        """
+        bullets: List[str] = []
         current_section = ""
+
+        _other_sections = ("EDUCATION", "SKILLS", "SUMMARY", "PROJECTS", "CERTIFICATION",
+                           "AWARDS", "PUBLICATION", "CONTACT", "OBJECTIVE", "INTERESTS")
+
+        def _is_header(s: str) -> bool:
+            if s.startswith("#"):
+                return True
+            if len(s) > 40 or s.endswith((".", ",", ";")):
+                return False
+            up = s.upper()
+            # All-caps short line, or a short line naming a known résumé section.
+            # (Avoids misreading a Title-Case content line like "Managed Backend
+            # Systems" as a header.)
+            return up == s or any(k in up for k in self._SECTION_KEYS) or any(k in up for k in _other_sections)
+
         for line in resume_md.splitlines():
             stripped = line.strip()
             if not stripped:
                 continue
-            # Track current section header
-            if stripped.startswith("# ") or stripped.startswith("## ") or stripped.startswith("### "):
+            if _is_header(stripped):
                 current_section = stripped.upper()
                 continue
-            # Only extract bullets from Experience and Projects sections
-            is_target_section = any(k in current_section for k in ["EXPERIENCE", "PROJECT", "WORK", "EMPLOYMENT"])
-            if is_target_section and (stripped.startswith("- ") or stripped.startswith("* ")):
-                cleaned = stripped[2:].replace("**", "").replace("*", "").strip()
-                if cleaned:
-                    bullets.append(cleaned)
+            in_target = any(k in current_section for k in self._SECTION_KEYS)
+            if not in_target:
+                continue
+            cleaned = stripped
+            for pre in self._BULLET_PREFIXES:
+                if cleaned.startswith(pre):
+                    cleaned = cleaned[len(pre):]
+                    break
+            cleaned = cleaned.replace("**", "").replace("*", "").strip()
+            # Keep substantive lines (skips dates/company headers/one-word lines).
+            if len(cleaned) >= 12 and " " in cleaned:
+                bullets.append(cleaned)
+
+        # Safety fallback: if section detection found nothing (e.g. messy PDF
+        # extraction with no recognizable headers), compare against ALL
+        # substantive lines so grounding still runs instead of passing blindly.
+        if not bullets:
+            for line in resume_md.splitlines():
+                s = line.strip().lstrip("-*•·–—‣▪◦●» ").replace("**", "").strip()
+                if len(s) >= 25 and " " in s:
+                    bullets.append(s)
         return bullets
 
     def verify_with_llm(self, bullet: str, source_resume_md: str) -> bool:
