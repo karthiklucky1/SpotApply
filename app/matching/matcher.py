@@ -335,17 +335,25 @@ class Matcher:
         top_candidates = rrf_ranking[:ce_cap]
         log.info("Sending %d candidates to cross-encoder (from %d total)", len(top_candidates), len(jobs))
 
-        # 4. Cross-Encoder Reranking — use SHORT profile+job text so each pair stays
-        # well under the model's max_length. CPU cost grows fast with sequence
-        # length, so we truncate aggressively here (title + opening of the JD
-        # carries the key signal); the LLM reranker sees the full text later.
+        # 4. Reranking — use SHORT profile+job text so each pair stays well under
+        # the model's max_length. CPU cost grows fast with sequence length, so we
+        # truncate aggressively (title + opening of the JD carries the key signal);
+        # the LLM reranker sees the full text later.
         _n = settings.cross_encoder_text_chars
         prof_short = profile_chunk[:_n]
-        pairs = [(prof_short, self._job_text_ce(j, _n)) for j, _ in top_candidates]
-        logits = self.cross_encoder.predict(pairs, show_progress_bar=True, batch_size=64)
+        ce_docs = [self._job_text_ce(j, _n) for j, _ in top_candidates]
 
-        # Sigmoid function to normalize logits to a 0-1 probability score
-        scores_norm = 1.0 / (1.0 + np.exp(-logits))
+        # Try a hosted rerank backend (Jina) first — ~300-800ms vs ~2min on the
+        # Railway CPU. Falls back to the local cross-encoder on any failure.
+        from app.matching.rerank_backend import rerank_scores
+        backend_scores = rerank_scores(prof_short, ce_docs)
+        if backend_scores is not None:
+            scores_norm = np.asarray(backend_scores, dtype="float32")
+        else:
+            pairs = [(prof_short, d) for d in ce_docs]
+            logits = self.cross_encoder.predict(pairs, show_progress_bar=True, batch_size=64)
+            # Sigmoid to normalize logits to a 0-1 probability score
+            scores_norm = 1.0 / (1.0 + np.exp(-logits))
 
         final_scores = []
         for (job, _), score in zip(top_candidates, scores_norm):

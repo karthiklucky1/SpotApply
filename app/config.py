@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     cross_encoder_cap: int = 120          # max pairs scored by the local CPU cross-encoder (the real CPU bottleneck)
     cross_encoder_max_length: int = 256   # token cap per cross-encoder pair (shorter = far faster on CPU)
     cross_encoder_text_chars: int = 700   # chars of profile/job text fed to each cross-encoder pair
+    # Reranker backend for the retrieval rerank stage. "local" = the on-CPU
+    # cross-encoder (slow on Railway). "jina" = Jina Reranker API (fast, cheap).
+    # Any API failure or missing key falls back to local, then to FAISS order.
+    rerank_provider: str = "local"        # "local" | "jina"
+    jina_api_key: str = ""                # api.jina.ai — rerank API key
+    jina_rerank_model: str = "jina-reranker-v2-base-multilingual"
     llm_rerank_cap: int = 60              # max jobs sent to the LLM reranker per run (top-N by cross-encoder)
     llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
     llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
