@@ -165,15 +165,16 @@ class Matcher:
             self.index = index
             self.job_ids = ids
             
-            # Save embedding_ids back to DB
+            # Save embedding_ids back to DB in ONE bulk UPDATE (was a per-row
+            # get+update loop that ran ~2N queries and tripped Supabase's
+            # statement timeout on large indexes).
             with get_session() as session:
-                for idx, j in enumerate(all_jobs):
-                    db_job = session.get(Job, j.id)
-                    if db_job:
-                        db_job.embedding_id = idx
-                        session.add(db_job)
+                session.bulk_update_mappings(
+                    Job,
+                    [{"id": int(j.id), "embedding_id": idx} for idx, j in enumerate(all_jobs)],
+                )
                 session.commit()
-                
+
             log.info("FAISS index built from scratch: %d vectors", len(all_jobs))
         else:
             # Incremental append
@@ -188,15 +189,14 @@ class Matcher:
             faiss.write_index(existing_index, str(self.index_path))
             np.save(self.id_map_path, self.job_ids)
             
-            # Save embedding_ids back to DB
+            # Save embedding_ids back to DB in ONE bulk UPDATE.
             with get_session() as session:
-                for idx, j in enumerate(new_jobs):
-                    db_job = session.get(Job, j.id)
-                    if db_job:
-                        db_job.embedding_id = start_idx + idx
-                        session.add(db_job)
+                session.bulk_update_mappings(
+                    Job,
+                    [{"id": int(j.id), "embedding_id": start_idx + idx} for idx, j in enumerate(new_jobs)],
+                )
                 session.commit()
-                
+
             log.info("FAISS index updated. Total vectors: %d", len(self.job_ids))
             
         return len(self.job_ids)
