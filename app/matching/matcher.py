@@ -70,18 +70,32 @@ def _chunk_resume(resume_text: str) -> List[str]:
     return chunks
 
 
-class Matcher:
-    def __init__(self):
+# Module-level model cache — the SentenceTransformer + CrossEncoder are heavy
+# (hundreds of MB, seconds to load) and stateless once loaded, so we load them
+# ONCE per process and share across every Matcher instance. Previously each
+# Matcher() reloaded both models — extractor.py builds one per job, so discovery
+# was reloading them dozens of times.
+_MODEL_CACHE: dict = {}
+
+
+def _get_models():
+    if "embed" not in _MODEL_CACHE:
         import torch
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         log.info("Loading embedding model %s on device: %s …", MODEL_NAME, device)
-        self.model = SentenceTransformer(MODEL_NAME, device=device)
+        _MODEL_CACHE["embed"] = SentenceTransformer(MODEL_NAME, device=device)
         log.info("Loading cross-encoder model mixedbread-ai/mxbai-rerank-xsmall-v1 on device: %s …", device)
-        self.cross_encoder = CrossEncoder(
+        _MODEL_CACHE["cross"] = CrossEncoder(
             "mixedbread-ai/mxbai-rerank-xsmall-v1",
             device=device,
             max_length=settings.cross_encoder_max_length,  # bound sequence length — CPU cost scales with it
         )
+    return _MODEL_CACHE["embed"], _MODEL_CACHE["cross"]
+
+
+class Matcher:
+    def __init__(self):
+        self.model, self.cross_encoder = _get_models()
         self.index_path: Path = settings.faiss_index_path
         self.id_map_path: Path = self.index_path.with_suffix(".ids.npy")
         self.index: "faiss.Index" | None = None
