@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import time
 from typing import List, Optional, Tuple
 
 from app.config import settings
@@ -292,27 +294,41 @@ class Reranker:
 
         prompt = _build_prompt(resume_text, job)
 
-        # Try primary backend
+        # Try each backend; retry rate-limit/overloaded errors with exponential
+        # backoff + jitter before falling through. CRITICAL: on total failure we
+        # RAISE (not return 0.0) so the caller leaves the job unscored and retries
+        # it on a later run — a 429 must never become a silent score-0 drop that
+        # biases the shortlist.
+        max_retries = max(1, settings.llm_rerank_max_retries)
         for backend_name, call_fn in self._backends():
-            try:
-                text = call_fn(prompt)
-                return _parse_response(text)
-            except Exception as e:
-                error_str = str(e).lower()
-                is_credit_error = any(kw in error_str for kw in [
-                    "credit", "insufficient", "rate_limit", "billing",
-                    "quota", "payment", "overloaded"
-                ])
-                if is_credit_error:
-                    log.warning("Reranker: %s failed (credits/rate-limit), trying fallback: %s",
-                                backend_name, e)
-                    continue  # try next backend
-                else:
+            for attempt in range(max_retries):
+                try:
+                    text = call_fn(prompt)
+                    return _parse_response(text)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    is_rate_limit = any(kw in error_str for kw in [
+                        "rate_limit", "overloaded", "429", "529", "timeout",
+                    ])
+                    is_credit_error = any(kw in error_str for kw in [
+                        "credit", "insufficient", "billing", "quota", "payment",
+                    ])
+                    if is_rate_limit and attempt < max_retries - 1:
+                        # Exponential backoff: 1s, 2s, 4s, 8s (±20% jitter)
+                        delay = (2 ** attempt) * (0.8 + 0.4 * random.random())
+                        log.warning("Reranker: %s rate-limited (attempt %d/%d), retrying in %.1fs: %s",
+                                    backend_name, attempt + 1, max_retries, delay, e)
+                        time.sleep(delay)
+                        continue
+                    if is_credit_error:
+                        log.warning("Reranker: %s out of credits/quota — trying fallback backend: %s",
+                                    backend_name, e)
+                        break  # don't burn retries; move to next backend
                     log.warning("Reranker: %s failed for job %s: %s", backend_name, job.id, e)
-                    continue  # try next backend anyway
+                    break  # try next backend
 
-        log.error("Reranker: All backends failed for job %s", job.id)
-        return 0.0, "rerank error: all backends failed", [], _clean_breakdown(None, 0.0)
+        log.error("Reranker: All backends/retries exhausted for job %s — leaving unscored", job.id)
+        raise RuntimeError(f"rerank failed for job {job.id}: all backends exhausted")
 
     def _backends(self):
         """Yield (name, callable) pairs in priority order."""

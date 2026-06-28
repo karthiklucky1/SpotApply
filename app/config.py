@@ -118,7 +118,10 @@ class Settings(BaseSettings):
 
     # Matching
     min_match_score: float = 0.15          # lowered from 0.20 — cross-encoder floor
-    top_k_rerank: int = 1000              # raised from 500 — send more to LLM
+    top_k_rerank: int = 600               # cross-encoder candidate pool (CPU cost scales with this)
+    llm_rerank_cap: int = 60              # max jobs sent to the LLM reranker per run (top-N by cross-encoder)
+    llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
+    llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
     daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)
     daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
     shortlist_score_threshold: int = 35  # lowered from 40 — min LLM rerank score (0-100) to shortlist

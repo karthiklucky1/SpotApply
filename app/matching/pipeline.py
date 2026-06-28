@@ -330,8 +330,19 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)
             return jid, None
 
+    # Cross-encoder gate: only the top-N candidates (already sorted by
+    # cross-encoder score) reach the expensive LLM. The rest keep their
+    # cheap-filter scores and can be promoted on a later run. This is the
+    # single biggest speedup — the LLM scores ~60 jobs, not ~300.
+    if len(to_rerank) > settings.llm_rerank_cap:
+        log.info(
+            "LLM gate: %d candidates survived cheap filters — capping to top %d by cross-encoder score",
+            len(to_rerank), settings.llm_rerank_cap,
+        )
+        to_rerank = to_rerank[: settings.llm_rerank_cap]
+
     if to_rerank:
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=settings.llm_rerank_workers) as ex:
             for jid, res in ex.map(_rerank_one, to_rerank):
                 if res is not None:
                     rerank_results[jid] = res

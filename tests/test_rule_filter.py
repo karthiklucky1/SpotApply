@@ -65,19 +65,29 @@ def test_rule_filter_experience_gap():
     assert res.passed is False
     assert "Experience pre-filtered" in res.reason
 
-    # 5+ years and Senior title (block)
-    job_sr_5yoe = Job(
+    # 9+ years, plain title — isolates the experience gate (legacy cutoff = 3+4 = 7)
+    job_9yoe = Job(
         source=JobSource.GREENHOUSE,
         external_id="127",
         company="TestCo",
-        title="Senior Software Engineer",
+        title="Software Engineer",
         location="Remote",
         url="http://test.com",
-        description="Requires 5+ years of experience."
+        description="Requires 9+ years of experience."
     )
-    res = filter_engine.filter(job_sr_5yoe)
+    res = filter_engine.filter(job_9yoe)
     assert res.passed is False
     assert "Experience pre-filtered" in res.reason
+
+    # A profile reporting 0 years (student / new grad) means "unknown" —
+    # the experience gate is skipped so junior/intern roles still surface.
+    class _Prof:
+        years_experience = 0
+        key_skills = ""
+        degree = ""
+    student_filter = RuleFilter(profile=_Prof())
+    res_student = student_filter.filter(job_9yoe)
+    assert "Experience pre-filtered" not in res_student.reason
 
 def test_rule_filter_staff_titles():
     filter_engine = RuleFilter()

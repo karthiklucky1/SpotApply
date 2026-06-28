@@ -104,6 +104,9 @@ class RuleFilter:
 
         # Candidate experience → drives the "requires N+ years" gap filter and
         # whether senior/staff titles are filtered out.
+        # Legacy (no profile) keeps the original 3-year default so the experience
+        # gate still runs. A real profile reporting 0 years (student / new grad)
+        # means "unknown" → the experience gate is skipped (see filter()).
         self.cand_years = _safe_int(getattr(profile, "years_experience", None), 3 if legacy else 0)
         self.block_senior_titles = legacy or self.cand_years < 6
 
