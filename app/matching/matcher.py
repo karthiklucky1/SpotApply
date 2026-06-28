@@ -264,23 +264,20 @@ class Matcher:
         for j in jobs:
             loc_low = (j.location or "").lower()
             title_low = j.title.lower()
-            
+
             is_outside = False
-            # Check location field
-            if loc_low:
+            # Remote roles can advertise a foreign HQ but still hire US-based /
+            # remote candidates — never location-filter them (matches rule_filter).
+            if not j.remote:
+                # Use word-boundary regex on BOTH location and title so "india"
+                # doesn't match "Indiana" and "uk" doesn't match "Brooklyn".
+                haystack = loc_low if loc_low else title_low
                 for loc in non_us_locations:
-                    if loc in loc_low:
+                    pattern = rf"\b{re.escape(loc)}\b"
+                    if re.search(pattern, haystack) or (f"({loc})" in haystack):
                         is_outside = True
                         break
-            else:
-                # Check title context
-                for loc in non_us_locations:
-                    # Look for word boundaries e.g. "Korea" or "(Korea)" or "Seoul"
-                    pattern = rf"\b{loc}\b"
-                    if re.search(pattern, title_low) or (f"({loc})" in title_low):
-                        is_outside = True
-                        break
-            
+
             if not is_outside:
                 filtered_jobs.append(j)
                 
