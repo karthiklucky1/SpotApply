@@ -77,7 +77,11 @@ class Matcher:
         log.info("Loading embedding model %s on device: %s …", MODEL_NAME, device)
         self.model = SentenceTransformer(MODEL_NAME, device=device)
         log.info("Loading cross-encoder model mixedbread-ai/mxbai-rerank-xsmall-v1 on device: %s …", device)
-        self.cross_encoder = CrossEncoder("mixedbread-ai/mxbai-rerank-xsmall-v1", device=device)
+        self.cross_encoder = CrossEncoder(
+            "mixedbread-ai/mxbai-rerank-xsmall-v1",
+            device=device,
+            max_length=settings.cross_encoder_max_length,  # bound sequence length — CPU cost scales with it
+        )
         self.index_path: Path = settings.faiss_index_path
         self.id_map_path: Path = self.index_path.with_suffix(".ids.npy")
         self.index: "faiss.Index" | None = None
@@ -96,6 +100,13 @@ class Matcher:
     def _job_text(job: Job) -> str:
         """Document text we embed for each job. Title weighted heavily."""
         return f"{job.title}\n{job.title}\n{job.company} | {job.location}\n\n{job.description[:4000]}"
+
+    @staticmethod
+    def _job_text_ce(job: Job, max_chars: int) -> str:
+        """Short job text for the cross-encoder — title + opening of the JD only.
+        Keeps each pair short so CPU scoring stays fast (cost scales with length)."""
+        head = (job.description or "")[: max(0, max_chars - len(job.title) - 4)]
+        return f"{job.title}\n\n{head}"
 
     # ---------- index lifecycle ----------
 
@@ -302,15 +313,22 @@ class Matcher:
             rrf_score = 1.0 / (60.0 + b_rank) + 1.0 / (60.0 + f_rank)
             rrf_scores.append((j, rrf_score))
 
-        # Send top max(k, 200) candidates through Cross-Encoder (was hardcoded to 50)
-        ce_batch_size = max(k, 200)
+        # Cross-encoder is the expensive CPU stage — cap how many pairs it scores.
+        # BM25+FAISS+RRF already rank well; the cross-encoder only refines the top
+        # slice. Capping candidates here (not at k) is the main CPU-cost lever.
+        ce_cap = min(len(rrf_scores), settings.cross_encoder_cap)
         rrf_ranking = sorted(rrf_scores, key=lambda x: x[1], reverse=True)
-        top_candidates = rrf_ranking[:ce_batch_size]
+        top_candidates = rrf_ranking[:ce_cap]
         log.info("Sending %d candidates to cross-encoder (from %d total)", len(top_candidates), len(jobs))
 
-        # 4. Cross-Encoder Reranking — use profile chunk for sharper signal
-        pairs = [(profile_chunk, self._job_text(j)) for j, _ in top_candidates]
-        logits = self.cross_encoder.predict(pairs, show_progress_bar=True)
+        # 4. Cross-Encoder Reranking — use SHORT profile+job text so each pair stays
+        # well under the model's max_length. CPU cost grows fast with sequence
+        # length, so we truncate aggressively here (title + opening of the JD
+        # carries the key signal); the LLM reranker sees the full text later.
+        _n = settings.cross_encoder_text_chars
+        prof_short = profile_chunk[:_n]
+        pairs = [(prof_short, self._job_text_ce(j, _n)) for j, _ in top_candidates]
+        logits = self.cross_encoder.predict(pairs, show_progress_bar=True, batch_size=64)
 
         # Sigmoid function to normalize logits to a 0-1 probability score
         scores_norm = 1.0 / (1.0 + np.exp(-logits))

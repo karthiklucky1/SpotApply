@@ -120,7 +120,10 @@ class Settings(BaseSettings):
 
     # Matching
     min_match_score: float = 0.15          # lowered from 0.20 — cross-encoder floor
-    top_k_rerank: int = 600               # cross-encoder candidate pool (CPU cost scales with this)
+    top_k_rerank: int = 600               # final candidate pool size returned by retrieval
+    cross_encoder_cap: int = 120          # max pairs scored by the local CPU cross-encoder (the real CPU bottleneck)
+    cross_encoder_max_length: int = 256   # token cap per cross-encoder pair (shorter = far faster on CPU)
+    cross_encoder_text_chars: int = 700   # chars of profile/job text fed to each cross-encoder pair
     llm_rerank_cap: int = 60              # max jobs sent to the LLM reranker per run (top-N by cross-encoder)
     llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
     llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
