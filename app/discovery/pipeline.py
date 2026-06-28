@@ -353,6 +353,11 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
     never close another tenant's jobs.
     """
     from datetime import datetime
+    # Safety: an empty active list means we have nothing to compare against —
+    # never close every job for the company on an empty/failed fetch.
+    if not active_external_ids:
+        log.debug("mark_ghost_jobs: empty active_external_ids for %s (%s) — skipping", company, source)
+        return
     with get_session() as session:
         # Find all open jobs for this source and company (this user only)
         q = select(Job).where(
@@ -538,15 +543,15 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 total_new += new
                 _boards_fetched += len(raw)
                 
-                # Close ghost jobs: any job in our DB for this source/company that was not fetched
-                active_ids = [r.external_id for r in raw]
-                company_name = getattr(scraper, "company_slug", None) or getattr(scraper, "board_slug", None) or getattr(scraper, "org_slug", None)
-                if company_name:
-                    company_name = company_name.replace("-", " ").replace("_", " ").title()
+                # Close ghost jobs ONLY on a successful, non-empty fetch. An empty
+                # result is indistinguishable from a soft failure (rate-limit /
+                # transient empty response), and ghost-closing on it would wrongly
+                # close every job for the company and SKIP their applications.
                 if raw and len(raw) > 0:
+                    active_ids = [r.external_id for r in raw]
                     company_name = raw[0].company
-                if company_name:
-                    mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
+                    if company_name:
+                        mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
             else:
                 log.warning("%s scraper fetch returned None (failed)", scraper.name)
         except Exception as e:
