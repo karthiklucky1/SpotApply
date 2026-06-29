@@ -252,6 +252,20 @@ class UserProfile(SQLModel, table=True):
     # ── Referral program ─────────────────────────────────────────────────────
     referral_code: Optional[str] = Field(default=None, index=True)   # this user's own code
     referred_by_id: Optional[str] = Field(default=None, index=True)  # user_id who referred them
+    # ── Trust Profile (Phase 0) — evidence-based professional identity ─────────
+    # Five 0-100 dimensions (shown as star levels, not one magic number) plus an
+    # overall tier label and a JSON evidence graph ("why we believe this").
+    email_verified: bool = False
+    phone_verified: bool = False
+    public_handle: Optional[str] = Field(default=None, index=True)   # hirepath.dev/u/<handle>
+    trust_identity_score: int = 0          # email/phone/edu verification
+    trust_technical_score: int = 0         # GitHub repos/commits/PRs (harvester)
+    trust_consistency_score: int = 0       # resume <-> reality (grounding)
+    trust_activity_score: int = 0          # open-source recency/volume
+    trust_completeness_score: int = 0      # profile fields filled
+    trust_tier: str = ""                   # "" | Starter | Verified | Verified Pro | Elite
+    trust_evidence: Optional[str] = None   # JSON: per-dimension evidence items
+    trust_computed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -143,6 +143,17 @@ def init_db() -> None:
         ("remote_ok", "BOOLEAN DEFAULT TRUE"),
         ("referral_code", "VARCHAR"),
         ("referred_by_id", "VARCHAR"),
+        ("email_verified", "BOOLEAN DEFAULT FALSE"),
+        ("phone_verified", "BOOLEAN DEFAULT FALSE"),
+        ("public_handle", "VARCHAR"),
+        ("trust_identity_score", "INTEGER DEFAULT 0"),
+        ("trust_technical_score", "INTEGER DEFAULT 0"),
+        ("trust_consistency_score", "INTEGER DEFAULT 0"),
+        ("trust_activity_score", "INTEGER DEFAULT 0"),
+        ("trust_completeness_score", "INTEGER DEFAULT 0"),
+        ("trust_tier", "VARCHAR DEFAULT ''"),
+        ("trust_evidence", "TEXT"),
+        ("trust_computed_at", "DATETIME"),
         ("updated_at", "DATETIME"),
     ]:
         add_column_if_missing("userprofile", col, col_type)

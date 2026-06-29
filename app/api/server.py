@@ -2939,6 +2939,18 @@ _USERPROFILE_COLUMNS = [
     ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
+    # Trust Profile (Phase 0)
+    ("email_verified", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("phone_verified", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("public_handle", "VARCHAR", "VARCHAR"),
+    ("trust_identity_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("trust_technical_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("trust_consistency_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("trust_activity_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("trust_completeness_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("trust_tier", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("trust_evidence", "TEXT", "TEXT"),
+    ("trust_computed_at", "DATETIME", "TIMESTAMP"),
     ("created_at", "DATETIME", "TIMESTAMP"),
     ("updated_at", "DATETIME", "TIMESTAMP"),
 ]
