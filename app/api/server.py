@@ -15,6 +15,11 @@ from typing import Optional, Optional as _Opt
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 
+# Module-level settings so every route can read it. Individual functions also
+# import it locally in places; this makes the bare `settings.` references in the
+# trust/recruiter/intro endpoints resolve too.
+from app.config import settings
+
 log = logging.getLogger(__name__)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -3514,7 +3519,7 @@ def list_conversations(request: Request) -> dict:
 @app.get("/messages", response_class=HTMLResponse)
 def messages_page(request: Request):
     """Role-agnostic chat inbox for accepted intros (candidate & recruiter)."""
-    return templates.TemplateResponse("messages.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="messages.html", context={})
 
 
 @app.get("/api/intros/{intro_id}/messages")
@@ -3694,6 +3699,7 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
 
 def _ensure_public_handle(profile, session) -> Optional[str]:
     """Mint a stable, unique public handle (hirepath.dev/u/<handle>) once."""
+    from app.db.models import UserProfile
     if profile.public_handle:
         return profile.public_handle
     import re as _re, secrets
@@ -3755,7 +3761,7 @@ def application_sponsorship(application_id: int, request: Request) -> dict:
 @app.get("/recruiter", response_class=HTMLResponse)
 def recruiter_portal(request: Request):
     """Demand-side portal — register/verify + reverse-search the verified pool."""
-    return templates.TemplateResponse("recruiter.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="recruiter.html", context={})
 
 
 @app.get("/u/{handle}", response_class=HTMLResponse)
@@ -3810,7 +3816,8 @@ def public_trust_profile(handle: str, request: Request):
             "articulation_video_url": profile.articulation_video_url or "",
             "risk_flags": _trust_risk_flags(profile, evidence),
         }
-    return templates.TemplateResponse("public_profile.html", ctx)
+    ctx.pop("request", None)
+    return templates.TemplateResponse(request=request, name="public_profile.html", context=ctx)
 
 
 def _trust_risk_flags(profile, evidence: dict) -> list:
