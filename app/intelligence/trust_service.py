@@ -86,6 +86,21 @@ def compute_and_store(user_id: Optional[str],
             profile.trust_evidence = tp.evidence_json()
             profile.trust_computed_at = datetime.utcnow()
             session.add(profile)
+
+            # Append a history snapshot when the overall score changes, so we can
+            # show Momentum later without spamming the table on every recompute.
+            from app.db.models import TrustHistory
+            last = session.exec(
+                select(TrustHistory).where(TrustHistory.user_id == user_id)
+                .order_by(TrustHistory.created_at.desc())
+            ).first()
+            if last is None or last.overall != tp.overall:
+                session.add(TrustHistory(
+                    user_id=user_id, overall=tp.overall, tier=tp.tier,
+                    identity=tp.identity.score, technical=tp.technical.score,
+                    consistency=tp.consistency.score, activity=tp.activity.score,
+                    completeness=tp.completeness.score,
+                ))
             session.commit()
 
             log.info("trust: %s -> %s (%d)", user_id, tp.tier or "—", tp.overall)

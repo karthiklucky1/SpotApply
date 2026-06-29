@@ -3177,6 +3177,17 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
             except (ValueError, TypeError):
                 evidence = {}
         base = str(request.base_url).rstrip("/")
+        # Momentum — first vs latest snapshot, so candidates see growth.
+        from app.db.models import TrustHistory
+        hist = session.exec(
+            select(TrustHistory).where(TrustHistory.user_id == user_id_arg)
+            .order_by(TrustHistory.created_at)
+        ).all()
+        momentum = None
+        if len(hist) >= 2 and hist[-1].overall != hist[0].overall:
+            momentum = {"from": hist[0].overall, "to": hist[-1].overall,
+                        "delta": hist[-1].overall - hist[0].overall,
+                        "since": hist[0].created_at.isoformat()}
         return {
             "tier": profile.trust_tier or "",
             "computed_at": profile.trust_computed_at.isoformat() if profile.trust_computed_at else None,
@@ -3185,6 +3196,8 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
                            if k in evidence],
             "public_handle": handle,
             "share_url": f"{base}/u/{handle}" if handle else None,
+            "momentum": momentum,
+            "risk_flags": _trust_risk_flags(profile, evidence),
         }
 
 

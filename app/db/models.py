@@ -403,6 +403,24 @@ class H1BSponsor(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class TrustHistory(SQLModel, table=True):
+    """Append-only snapshot of a user's Trust Profile over time.
+
+    Written on every recompute so we can show Momentum ("Trust 61 -> 84, +220
+    commits in 6 months") later — a signal almost nobody tracks. Tenant-scoped.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    overall: int = 0
+    tier: str = ""
+    identity: int = 0
+    technical: int = 0
+    consistency: int = 0
+    activity: int = 0
+    completeness: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class UserReferralReward(SQLModel, table=True):
     """A reward unlocked when a referrer reaches the referral threshold."""
     __tablename__ = "user_referral_reward"
