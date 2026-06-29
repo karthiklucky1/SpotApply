@@ -405,6 +405,45 @@ class H1BSponsor(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class RecruiterProfile(SQLModel, table=True):
+    """A demand-side account — recruiter / staffing vendor / client.
+
+    Verified by corporate-domain match + (optional) public H-1B filing history,
+    with a hard "never charge candidates" rule. This is the side that *pulls*
+    from the verified candidate pool (the moat).
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True, unique=True)  # Supabase auth user
+    full_name: str = ""
+    work_email: str = ""                  # must match company_domain to verify
+    company_name: str = ""
+    company_domain: str = ""              # e.g. "acme.com"
+    title: str = ""                       # e.g. "Senior Technical Recruiter"
+    specialties: str = ""                 # comma-separated roles they place
+    # Verification
+    verified: bool = False
+    verification_notes: str = ""
+    h1b_filings: int = 0                  # cached from public data (sponsorship cred)
+    # Trust / safety
+    charges_candidates: bool = False      # if ever true -> banned (illegal)
+    banned: bool = False
+    placements: int = 0                   # self-reported / platform-tracked
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CandidateIntro(SQLModel, table=True):
+    """A recruiter's request to connect with a candidate. Candidate-controlled:
+    the recruiter requests, the candidate accepts before contact opens (no
+    resume dump). Phase 3 adds messaging on top of this."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    recruiter_user_id: Optional[str] = Field(default=None, index=True)
+    candidate_user_id: Optional[str] = Field(default=None, index=True)
+    job_context: str = ""                 # role the recruiter is hiring for
+    status: str = "requested"             # requested | accepted | declined
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TrustHistory(SQLModel, table=True):
     """Append-only snapshot of a user's Trust Profile over time.
 

@@ -3207,6 +3207,221 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     return {"success": True}
 
 
+class RecruiterRegister(BaseModel):
+    full_name: Optional[str] = None
+    work_email: Optional[str] = None
+    company_name: Optional[str] = None
+    company_domain: Optional[str] = None
+    title: Optional[str] = None
+    specialties: Optional[str] = None
+
+
+def _verify_recruiter(rp) -> None:
+    """Auto-verify on corporate-domain match; attach public H-1B filing cred.
+    Sets banned if they ever indicate charging candidates (illegal)."""
+    import re as _re
+    notes = []
+    domain = (rp.company_domain or "").lower().strip().lstrip("@")
+    email_domain = (rp.work_email or "").split("@")[-1].lower().strip()
+    # Strip common free-mail — corporate domain required to verify.
+    _free = {"gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", "proton.me"}
+    if rp.charges_candidates:
+        rp.banned = True
+        rp.verified = False
+        rp.verification_notes = "Banned: indicated charging candidates (prohibited)."
+        return
+    if domain and email_domain and email_domain == domain and domain not in _free:
+        rp.verified = True
+        notes.append(f"Corporate email matches {domain}")
+    elif email_domain in _free:
+        notes.append("Free email — corporate domain required to verify")
+    else:
+        notes.append("Email domain does not match company domain")
+    # Public H-1B filing history (sponsorship credibility).
+    try:
+        from app.intelligence.h1b_data import lookup
+        rec = lookup(rp.company_name or "")
+        if rec:
+            rp.h1b_filings = (rec.get("approvals", 0) or 0) + (rec.get("denials", 0) or 0)
+            notes.append(f"{rp.h1b_filings} public H-1B filings on record")
+    except Exception:
+        pass
+    rp.verification_notes = " · ".join(notes)
+
+
+@app.post("/api/recruiter/register")
+def recruiter_register(request: Request, body: RecruiterRegister) -> dict:
+    """Create/update a demand-side (recruiter/vendor/client) account and verify it."""
+    from app.db.models import RecruiterProfile
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    with get_session() as session:
+        rp = session.exec(
+            select(RecruiterProfile).where(RecruiterProfile.user_id == user_id_arg)
+        ).first()
+        if not rp:
+            rp = RecruiterProfile(user_id=user_id_arg)
+        for f, v in body.model_dump(exclude_none=True).items():
+            setattr(rp, f, v)
+        rp.updated_at = _dt.utcnow()
+        _verify_recruiter(rp)
+        session.add(rp)
+        session.commit()
+        return {"verified": rp.verified, "banned": rp.banned,
+                "h1b_filings": rp.h1b_filings, "notes": rp.verification_notes}
+
+
+@app.post("/api/recruiter/search")
+def recruiter_search(request: Request, body: dict) -> dict:
+    """Reverse search — a verified recruiter pastes a job description and gets an
+    AI-ranked list of VERIFIED candidates from the pool. The pull model: demand
+    finds supply. Candidate contact details are NOT exposed (intro-gated)."""
+    from app.db.models import RecruiterProfile, UserProfile
+    import json as _json
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    jd = (body.get("job_description") or "").strip()
+    if not jd:
+        raise HTTPException(status_code=400, detail="job_description required")
+
+    with get_session() as session:
+        rp = session.exec(
+            select(RecruiterProfile).where(RecruiterProfile.user_id == user_id_arg)
+        ).first()
+        if settings.use_supabase and (not rp or not rp.verified):
+            raise HTTPException(status_code=403, detail="Verified recruiter account required.")
+        # Verified candidate pool only (the bait): tier set + not empty.
+        candidates = session.exec(
+            select(UserProfile).where(UserProfile.trust_tier != "")
+        ).all()
+
+    if not candidates:
+        return {"results": []}
+
+    # Rank by embedding similarity of the JD vs each candidate's profile text.
+    try:
+        from app.matching.matcher import _get_embed_model
+        import numpy as np
+        model = _get_embed_model()
+        def _ctext(p):
+            return f"{p.current_title}\n{p.key_skills}\n{p.professional_summary}"[:1500]
+        texts = [_ctext(p) for p in candidates]
+        jd_emb = model.encode([jd], normalize_embeddings=True)[0]
+        c_embs = model.encode(texts, normalize_embeddings=True)
+        sims = (c_embs @ jd_emb).tolist()
+    except Exception as e:
+        log.warning("recruiter_search embedding failed: %s", e)
+        sims = [0.0] * len(candidates)
+
+    ranked = sorted(zip(candidates, sims), key=lambda x: x[1], reverse=True)[:25]
+    results = []
+    for p, sim in ranked:
+        evidence = {}
+        if p.trust_evidence:
+            try:
+                evidence = _json.loads(p.trust_evidence)
+            except (ValueError, TypeError):
+                evidence = {}
+        results.append({
+            "candidate_user_id": p.user_id,
+            "handle": p.public_handle,
+            "name": f"{p.first_name} {p.last_name}".strip() or "Candidate",
+            "title": p.current_title or "",
+            "match": round(max(0.0, min(1.0, sim)) * 100),
+            "tier": p.trust_tier or "",
+            "skills": [s.strip() for s in (p.key_skills or "").split(",") if s.strip()][:8],
+            "availability": p.availability or "",
+            "work_auth": p.work_authorization or "",
+            "needs_sponsorship": bool(p.requires_sponsorship),
+            "share_url": f"/u/{p.public_handle}" if p.public_handle else None,
+        })
+    return {"results": results}
+
+
+@app.post("/api/recruiter/intro")
+def recruiter_request_intro(request: Request, body: dict) -> dict:
+    """Verified recruiter requests an intro to a candidate (candidate must accept
+    before contact opens — no resume dump)."""
+    from app.db.models import RecruiterProfile, CandidateIntro
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    candidate_id = body.get("candidate_user_id")
+    if not candidate_id:
+        raise HTTPException(status_code=400, detail="candidate_user_id required")
+    with get_session() as session:
+        rp = session.exec(
+            select(RecruiterProfile).where(RecruiterProfile.user_id == user_id_arg)
+        ).first()
+        if settings.use_supabase and (not rp or not rp.verified):
+            raise HTTPException(status_code=403, detail="Verified recruiter account required.")
+        existing = session.exec(
+            select(CandidateIntro).where(
+                CandidateIntro.recruiter_user_id == user_id_arg,
+                CandidateIntro.candidate_user_id == candidate_id,
+            )
+        ).first()
+        if existing:
+            return {"status": existing.status, "duplicate": True}
+        intro = CandidateIntro(
+            recruiter_user_id=user_id_arg, candidate_user_id=candidate_id,
+            job_context=(body.get("job_context") or "")[:300],
+        )
+        session.add(intro)
+        session.commit()
+        return {"status": "requested"}
+
+
+@app.get("/api/intros")
+def list_intros(request: Request) -> dict:
+    """Candidate's incoming intro requests from verified recruiters."""
+    from app.db.models import CandidateIntro, RecruiterProfile
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    out = []
+    with get_session() as session:
+        intros = session.exec(
+            select(CandidateIntro).where(CandidateIntro.candidate_user_id == user_id_arg)
+            .order_by(CandidateIntro.created_at.desc())
+        ).all()
+        for i in intros:
+            rp = session.exec(
+                select(RecruiterProfile).where(RecruiterProfile.user_id == i.recruiter_user_id)
+            ).first()
+            out.append({
+                "id": i.id, "status": i.status, "job_context": i.job_context,
+                "recruiter": (rp.full_name if rp else "") or "Recruiter",
+                "company": (rp.company_name if rp else "") or "",
+                "verified": bool(rp and rp.verified),
+            })
+    return {"intros": out}
+
+
+@app.post("/api/intros/{intro_id}/respond")
+def respond_intro(intro_id: int, request: Request, accept: bool) -> dict:
+    """Candidate accepts/declines an intro request."""
+    from app.db.models import CandidateIntro
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    with get_session() as session:
+        intro = session.get(CandidateIntro, intro_id)
+        if not intro or intro.candidate_user_id != user_id_arg:
+            raise HTTPException(status_code=404, detail="Intro not found")
+        intro.status = "accepted" if accept else "declined"
+        session.add(intro)
+        session.commit()
+    return {"status": intro.status}
+
+
 @app.post("/api/verify/identity")
 def verify_identity(request: Request) -> dict:
     """Sync email/phone verification status from Supabase Auth (email is
