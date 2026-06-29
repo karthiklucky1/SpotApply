@@ -67,10 +67,15 @@ def compute_and_store(user_id: Optional[str],
 
             has_resume = _has_resume(user_id)
 
-            # Preserve a known-good consistency score when no fresh grounding ratio
-            # is supplied (don't downgrade a verified resume to "pending").
-            if grounding_score is None and has_resume and profile.trust_consistency_score:
-                grounding_score = profile.trust_consistency_score / 100.0
+            # A real grounding ratio (from a tailoring run) is stored in its own
+            # column. When tailoring supplies a fresh one, persist it. When this is
+            # a plain recompute (arg is None), fall back to the stored REAL ratio —
+            # never to the pending placeholder, so "pending" can't masquerade as a
+            # real "X% grounded" measurement.
+            if grounding_score is not None:
+                profile.resume_grounded_ratio = grounding_score
+            else:
+                grounding_score = profile.resume_grounded_ratio
 
             tp = compute_trust_profile(
                 profile, github=github,

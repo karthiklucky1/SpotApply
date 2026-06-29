@@ -317,20 +317,25 @@ def _humanize_signal_filter(value):
             return f"{val_t} team"
         return val_t or key.replace("_", " ").title()
 
-    # fresh_posting_4d → "Posted 4 days ago"
+    # fresh_posting_4d → "Posted 4 days ago" (0 → "Posted today", 1 → "yesterday")
     m = _re.match(r"fresh_posting_(\d+)\s*d", low)
     if m:
         n = int(m.group(1))
-        return f"Posted {n} day{'s' if n != 1 else ''} ago"
+        if n == 0:
+            return "Posted today"
+        if n == 1:
+            return "Posted yesterday"
+        return f"Posted {n} days ago"
 
-    # low/high/med _velocity_N_openings → "Only N openings (selective)"
+    # low/high/med _velocity_N_openings → "6 openings (actively hiring)".
+    # The bucket goes in the parenthetical — never a lead word + a number
+    # ("A few 6 openings" reads wrong).
     m = _re.match(r"(low|high|med|medium)_velocity_(\d+)_opening", low)
     if m:
         n = int(m.group(2))
         bucket = m.group(1)
-        lead = {"low": "Only", "high": "Many", "med": "A few", "medium": "A few"}.get(bucket, "")
         tail = {"low": " (selective)", "high": " (actively hiring)"}.get(bucket, "")
-        return f"{lead} {n} opening{'s' if n != 1 else ''}{tail}".strip()
+        return f"{n} opening{'s' if n != 1 else ''}{tail}".strip()
 
     # generic *_N_openings → "N open roles"
     m = _re.match(r".*?(\d+)_opening", low)
@@ -1581,6 +1586,37 @@ def application_match(application_id: int, request: Request) -> dict:
             breakdown = _json.loads(job.rerank_breakdown)
         except (ValueError, TypeError):
             breakdown = {}
+
+    reason = (job.rerank_reasoning if job else "") or ""
+    # Reconcile work-auth with Sponsorship Reality: if the employer is a verified
+    # H-1B sponsor (strong public filing record), a "needs sponsorship" penalty
+    # contradicts the data — lift the work_auth factor and drop the concern so the
+    # panel doesn't flag a concern the H-1B record already answers.
+    if job:
+        try:
+            from app.intelligence.h1b_data import lookup as _h1b_lookup
+            from app.intelligence.sponsorship import assess as _spons_assess
+            rec = _h1b_lookup(job.company or "")
+            spons = _spons_assess(company=job.company or "", description=job.description or "", url=job.url or "")
+            strong_sponsor = bool((rec and (rec.get("approvals", 0) or 0) >= 50)
+                                  or (spons and (spons.cap_exempt or spons.tone == "good")))
+            if strong_sponsor and not (spons and spons.explicitly_refuses):
+                wa = breakdown.get("work_auth")
+                if isinstance(wa, dict) and (wa.get("score", 0) or 0) < 70:
+                    wa["score"] = 80
+                    note = "Employer is a verified H-1B sponsor"
+                    if rec and rec.get("approvals"):
+                        note += f" ({rec['approvals']} approvals on record)"
+                    wa["note"] = note
+                # Drop the sponsorship line from the concerns text.
+                if reason and "\nConcerns:" in reason:
+                    head, _, tail = reason.partition("\nConcerns:")
+                    kept = [c.strip() for c in tail.split(";")
+                            if c.strip() and "sponsor" not in c.lower()]
+                    reason = head + (("\nConcerns: " + "; ".join(kept)) if kept else "")
+        except Exception as _e:
+            log.debug("work-auth sponsorship reconcile skipped: %s", _e)
+
     return {
         "id": application_id,
         "company": job.company if job else "",
@@ -1588,7 +1624,7 @@ def application_match(application_id: int, request: Request) -> dict:
         "location": job.location if job else "",
         "remote": bool(job.remote) if job else False,
         "score": round(job.rerank_score) if (job and job.rerank_score is not None) else None,
-        "reason": (job.rerank_reasoning if job else "") or "",
+        "reason": reason,
         "breakdown": breakdown,
     }
 
@@ -3022,6 +3058,7 @@ _USERPROFILE_COLUMNS = [
     ("trust_completeness_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
     ("trust_tier", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("trust_evidence", "TEXT", "TEXT"),
+    ("resume_grounded_ratio", "FLOAT", "DOUBLE PRECISION"),
     ("trust_computed_at", "DATETIME", "TIMESTAMP"),
     ("created_at", "DATETIME", "TIMESTAMP"),
     ("updated_at", "DATETIME", "TIMESTAMP"),

@@ -158,6 +158,7 @@ def init_db() -> None:
         ("trust_completeness_score", "INTEGER DEFAULT 0"),
         ("trust_tier", "VARCHAR DEFAULT ''"),
         ("trust_evidence", "TEXT"),
+        ("resume_grounded_ratio", "FLOAT"),
         ("trust_computed_at", "DATETIME"),
         ("updated_at", "DATETIME"),
     ]:

@@ -274,6 +274,7 @@ class UserProfile(SQLModel, table=True):
     trust_completeness_score: int = 0      # profile fields filled
     trust_tier: str = ""                   # "" | Starter | Verified | Verified Pro | Elite
     trust_evidence: Optional[str] = None   # JSON: per-dimension evidence items
+    resume_grounded_ratio: Optional[float] = None  # real grounding ratio (set by tailoring); None = not yet checked
     trust_computed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

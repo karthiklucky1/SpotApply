@@ -5215,8 +5215,12 @@
             if (!h && !a) { slot.remove(); return; }
             const toneColor = a && a.tone === 'good' ? '#10b981' : (a && a.tone === 'bad' ? '#ef4444' : '#f59e0b');
             let rows = '';
-            if (a) rows += `<div style="font-size:11px;color:${toneColor};font-weight:700;margin-bottom:4px;">${(a.badge||'').replace(/</g,'&lt;')}${a.cap_exempt ? ' · cap-exempt (no lottery)' : ''}</div>
-                <div style="font-size:10.5px;color:var(--muted);margin-bottom:6px;">${(a.reason||'').replace(/</g,'&lt;')}</div>`;
+            if (a) {
+                rows += `<div style="font-size:11px;color:${toneColor};font-weight:700;margin-bottom:4px;">${(a.badge||'').replace(/</g,'&lt;')}${a.cap_exempt ? ' · cap-exempt (no lottery)' : ''}</div>`;
+                // Only show the assessment's prose reason when we DON'T have the
+                // authoritative H-1B numbers below (avoids two different counts).
+                if (!h) rows += `<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px;">${(a.reason||'').replace(/</g,'&lt;')}</div>`;
+            }
             if (h) rows += `<div style="font-size:10.5px;color:var(--ink-soft,#cbd5e1);line-height:1.6;">
                 🏛️ <b>${h.total_filings.toLocaleString()}</b> H-1B filings${h.year ? ' (FY'+h.year+')' : ''} · <b>${h.approval_rate}%</b> approved${h.wage_level ? ' · wage '+h.wage_level.replace(/</g,'&lt;') : ''}</div>`;
             slot.innerHTML = `<div style="padding-top:12px;border-top:1px solid rgba(255,255,255,.08);">
