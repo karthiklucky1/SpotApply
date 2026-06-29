@@ -63,7 +63,9 @@ def verify_jwt(token: str) -> Optional[dict]:
         result = sb.auth.get_user(token)
         if result and result.user:
             u = result.user
-            return {"sub": u.id, "email": getattr(u, "email", None)}
+            return {"sub": u.id, "email": getattr(u, "email", None),
+                    "email_confirmed": bool(getattr(u, "email_confirmed_at", None)),
+                    "phone_confirmed": bool(getattr(u, "phone_confirmed_at", None))}
     except Exception as e:
         log.debug("JWT verification failed: %s", e)
     return None

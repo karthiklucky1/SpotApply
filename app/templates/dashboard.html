@@ -3815,10 +3815,17 @@
         }
 
         // ── Trust Profile (Phase 0) ──────────────────────────────────────────
+        let _identitySynced = false;
         async function loadTrustProfile(recompute) {
             const panel = document.getElementById('trust-panel');
             try {
                 const token = localStorage.getItem('sb_token');
+                const hdrs = token ? { 'Authorization': 'Bearer ' + token } : {};
+                // Sync email/phone verification from Supabase once per session.
+                if (!_identitySynced) {
+                    _identitySynced = true;
+                    try { await fetch('/api/verify/identity', { method: 'POST', headers: hdrs }); } catch (_) {}
+                }
                 const url = '/api/trust' + (recompute ? '?recompute=1' : '');
                 const r = await fetch(url, { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
                 if (!r.ok) { panel.classList.add('hidden'); return; }

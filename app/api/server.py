@@ -3145,6 +3145,50 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
     return {"success": True}
 
 
+@app.post("/api/verify/identity")
+def verify_identity(request: Request) -> dict:
+    """Sync email/phone verification status from Supabase Auth (email is
+    confirmed at signup via the magic link). Sets the flags that feed the
+    Identity trust dimension, then recomputes the Trust Profile."""
+    from app.db.models import UserProfile
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+
+    email_ok, phone_ok = False, False
+    if settings.use_supabase:
+        auth = request.headers.get("Authorization", "")
+        token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else request.cookies.get("sb_token")
+        if token:
+            try:
+                from app.db.supabase_client import verify_jwt
+                payload = verify_jwt(token) or {}
+                email_ok = bool(payload.get("email_confirmed"))
+                phone_ok = bool(payload.get("phone_confirmed"))
+            except Exception as e:
+                log.debug("identity verify: %s", e)
+    else:
+        email_ok = True  # local/dev
+
+    with get_session() as session:
+        profile = session.exec(
+            select(UserProfile).where(UserProfile.user_id == user_id_arg)
+        ).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        if email_ok:
+            profile.email_verified = True
+        if phone_ok:
+            profile.phone_verified = True
+        session.add(profile)
+        session.commit()
+
+    from app.intelligence.trust_service import compute_and_store
+    compute_and_store(user_id_arg)
+    return {"email_verified": email_ok, "phone_verified": phone_ok}
+
+
 @app.get("/api/trust")
 def get_trust_profile(request: Request, recompute: bool = False) -> dict:
     """The signed-in user's Trust Profile — five evidence-backed dimensions.
