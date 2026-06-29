@@ -3453,6 +3453,92 @@ def respond_intro(intro_id: int, request: Request, accept: bool) -> dict:
     return {"status": intro.status}
 
 
+def _intro_participant(session, intro_id: int, user_id):
+    """Return the intro if user_id is a participant (recruiter or candidate)."""
+    from app.db.models import CandidateIntro
+    intro = session.get(CandidateIntro, intro_id)
+    if not intro:
+        return None
+    if user_id not in (intro.recruiter_user_id, intro.candidate_user_id):
+        return None
+    return intro
+
+
+@app.get("/api/intros/{intro_id}/messages")
+def list_messages(intro_id: int, request: Request) -> dict:
+    """Messages on an accepted intro (participants only)."""
+    from app.db.models import IntroMessage
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    with get_session() as session:
+        intro = _intro_participant(session, intro_id, user_id_arg)
+        if not intro:
+            raise HTTPException(status_code=404, detail="Intro not found")
+        msgs = session.exec(
+            select(IntroMessage).where(IntroMessage.intro_id == intro_id)
+            .order_by(IntroMessage.created_at)
+        ).all()
+        return {"status": intro.status, "messages": [
+            {"mine": m.sender_user_id == user_id_arg, "body": m.body,
+             "at": m.created_at.isoformat()} for m in msgs]}
+
+
+@app.post("/api/intros/{intro_id}/messages")
+def send_message(intro_id: int, request: Request, body: dict) -> dict:
+    """Send a message on an accepted intro (participants only, must be accepted)."""
+    from app.db.models import IntroMessage
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    text = (body.get("body") or "").strip()[:2000]
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+    with get_session() as session:
+        intro = _intro_participant(session, intro_id, user_id_arg)
+        if not intro:
+            raise HTTPException(status_code=404, detail="Intro not found")
+        if intro.status != "accepted":
+            raise HTTPException(status_code=403, detail="Intro must be accepted before messaging")
+        session.add(IntroMessage(intro_id=intro_id, sender_user_id=user_id_arg, body=text))
+        session.commit()
+    return {"ok": True}
+
+
+@app.post("/api/intros/{intro_id}/rate")
+def rate_intro(intro_id: int, request: Request, body: dict) -> dict:
+    """Two-way rating after an interaction (1-5 stars). Participants only."""
+    from app.db.models import IntroRating
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    stars = int(body.get("stars") or 0)
+    if not (1 <= stars <= 5):
+        raise HTTPException(status_code=400, detail="stars must be 1-5")
+    with get_session() as session:
+        intro = _intro_participant(session, intro_id, user_id_arg)
+        if not intro:
+            raise HTTPException(status_code=404, detail="Intro not found")
+        ratee = intro.candidate_user_id if user_id_arg == intro.recruiter_user_id else intro.recruiter_user_id
+        existing = session.exec(
+            select(IntroRating).where(IntroRating.intro_id == intro_id,
+                                      IntroRating.rater_user_id == user_id_arg)
+        ).first()
+        if existing:
+            existing.stars = stars
+            existing.note = (body.get("note") or "")[:500]
+            session.add(existing)
+        else:
+            session.add(IntroRating(intro_id=intro_id, rater_user_id=user_id_arg,
+                                    ratee_user_id=ratee, stars=stars,
+                                    note=(body.get("note") or "")[:500]))
+        session.commit()
+    return {"ok": True}
+
+
 @app.post("/api/verify/identity")
 def verify_identity(request: Request) -> dict:
     """Sync email/phone verification status from Supabase Auth (email is

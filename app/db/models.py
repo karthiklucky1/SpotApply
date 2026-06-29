@@ -445,6 +445,29 @@ class CandidateIntro(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class IntroMessage(SQLModel, table=True):
+    """A message exchanged after an intro is accepted. Keeps contact on-platform
+    (no email/phone leak) until both sides choose to take it off-platform."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    intro_id: int = Field(index=True)
+    sender_user_id: Optional[str] = Field(default=None, index=True)
+    body: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class IntroRating(SQLModel, table=True):
+    """Two-way rating after an interaction. Candidates rate recruiters (real job?
+    responsive? honest pay?), recruiters rate candidates (skills real? showed up?).
+    Reputation that's earned, not self-reported."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    intro_id: int = Field(index=True)
+    rater_user_id: Optional[str] = Field(default=None, index=True)
+    ratee_user_id: Optional[str] = Field(default=None, index=True)
+    stars: int = 0                        # 1-5
+    note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TrustHistory(SQLModel, table=True):
     """Append-only snapshot of a user's Trust Profile over time.
 
