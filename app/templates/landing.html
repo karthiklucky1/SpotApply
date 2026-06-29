@@ -296,6 +296,165 @@
     </div>
 </section>
 
+<!-- What's New Section -->
+<style>
+@keyframes pulse-slow {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+@keyframes slide-in-1 {
+    0% { transform: translateY(10px); opacity: 0; }
+    100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes slide-in-2 {
+    0% { transform: translateY(10px); opacity: 0; }
+    50% { transform: translateY(10px); opacity: 0; }
+    100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes bubble-1 {
+    0% { transform: scale(0.9) translateY(4px); opacity: 0; }
+    20% { transform: scale(1) translateY(0); opacity: 1; }
+    100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+@keyframes bubble-2 {
+    0% { transform: scale(0.9) translateY(4px); opacity: 0; }
+    40% { transform: scale(0.9) translateY(4px); opacity: 0; }
+    60% { transform: scale(1) translateY(0); opacity: 1; }
+    100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+@keyframes bounce-soft {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+.animate-pulse-slow { animation: pulse-slow 2s infinite ease-in-out; }
+.animate-slide-in-1 { animation: slide-in-1 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-in-2 { animation: slide-in-2 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-bubble-1 { animation: bubble-1 5s infinite cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-bubble-2 { animation: bubble-2 5s infinite cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-bounce-soft { animation: bounce-soft 2.5s infinite ease-in-out; }
+
+.carousel-slide {
+    transition: all 0.5s ease-in-out;
+}
+.carousel-slide.active {
+    opacity: 1;
+    transform: translateX(0);
+    z-index: 10;
+}
+.carousel-slide:not(.active) {
+    opacity: 0;
+    transform: translateX(20px);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.slide-visual {
+    transition: all 0.5s ease-in-out;
+}
+.slide-visual.active {
+    opacity: 1;
+    transform: scale(1);
+    z-index: 10;
+}
+.slide-visual:not(.active) {
+    opacity: 0;
+    transform: scale(0.9);
+    pointer-events: none;
+    z-index: 0;
+}
+</style>
+
+<section class="py-16 px-4 bg-[var(--surface-2)]" style="border-top:1px solid var(--border);">
+    <div class="max-w-4xl mx-auto">
+        <div data-aos="fade-up" class="text-center mb-10">
+            <span class="kicker" style="color:var(--sage-700);">Vision &amp; Updates</span>
+            <h2 class="text-4xl font-black mb-3" style="color:var(--ink);">What's New in HirePath</h2>
+            <p class="text-sm max-w-xl mx-auto font-medium" style="color:var(--muted);">Explore the latest premium features and core capabilities we've added to supercharge your job search.</p>
+        </div>
+
+        <!-- Carousel container -->
+        <div class="relative glass rounded-2xl border border-indigo-500/20 overflow-hidden p-6 shadow-2xl transition-all duration-300" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);">
+            <div class="flex flex-col md:flex-row items-center gap-6">
+                <!-- Text details -->
+                <div class="flex-1 min-w-0 z-10">
+                    <span class="text-[9px] font-black text-indigo-400 uppercase tracking-widest bg-indigo-500/10 px-2.5 py-1 rounded-full border border-indigo-500/20">New Capabilities</span>
+                    
+                    <!-- Slide contents -->
+                    <div class="relative mt-4 h-[120px] md:h-[100px] overflow-hidden">
+                        <!-- Slide 1 -->
+                        <div class="carousel-slide active transition-all duration-500 absolute inset-0 opacity-1 transform translate-x-0" id="slide-1">
+                            <h3 class="text-base font-black text-white flex items-center gap-2">⚡ Supercharged Discovery</h3>
+                            <p class="text-xs text-slate-300 mt-2 leading-relaxed">Greenhouse and Lever career boards are now scraped concurrently. Watch a live, real-time checklist update as jobs are matching your profile.</p>
+                        </div>
+                        <!-- Slide 2 -->
+                        <div class="carousel-slide transition-all duration-500 absolute inset-0 opacity-0 transform translate-x-8" id="slide-2">
+                            <h3 class="text-base font-black text-white flex items-center gap-2">💬 Recruiter Messaging Portal</h3>
+                            <p class="text-xs text-slate-300 mt-2 leading-relaxed">Connect directly with interested recruiters. Exchange secure, real-time messages and track candidate introductions on your timeline.</p>
+                        </div>
+                        <!-- Slide 3 -->
+                        <div class="carousel-slide transition-all duration-500 absolute inset-0 opacity-0 transform translate-x-8" id="slide-3">
+                            <h3 class="text-base font-black text-white flex items-center gap-2">🛡️ Supabase Verified Trust</h3>
+                            <p class="text-xs text-slate-300 mt-2 leading-relaxed">Your profile is fully verified using our secure database rules. Your "Verified" badge shows recruiters you are a top-tier candidate.</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Pagination indicators -->
+                    <div class="flex items-center gap-2 mt-4">
+                        <span onclick="_featuresSet(0)" class="carousel-dot active w-2.5 h-2.5 rounded-full bg-indigo-50 cursor-pointer transition-all duration-300"></span>
+                        <span onclick="_featuresSet(1)" class="carousel-dot w-2 h-2 rounded-full bg-slate-600 cursor-pointer hover:bg-indigo-400 transition-all duration-300"></span>
+                        <span onclick="_featuresSet(2)" class="carousel-dot w-2 h-2 rounded-full bg-slate-600 cursor-pointer hover:bg-indigo-400 transition-all duration-300"></span>
+                    </div>
+                </div>
+                
+                <!-- Live Animated Visual / Representation -->
+                <div class="w-full md:w-[220px] h-[120px] bg-slate-950/40 rounded-xl border border-slate-800/80 flex items-center justify-center overflow-hidden relative" style="backdrop-filter: blur(8px);">
+                    <!-- Visual 1: discovery list -->
+                    <div class="slide-visual active absolute inset-0 flex flex-col justify-center px-4 space-y-1.5 transition-all duration-500 opacity-1 transform scale-100" id="visual-1">
+                        <div class="flex items-center justify-between text-[9px] font-bold text-slate-400 animate-pulse-slow">
+                            <span>Searching boards...</span>
+                            <span>35%</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[10px] px-2.5 py-1 rounded bg-slate-900/50 border border-emerald-500/20 text-emerald-400 animate-slide-in-1">
+                            <span>✓ Greenhouse</span>
+                            <span>14 found</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[10px] px-2.5 py-1 rounded bg-slate-900/50 border border-indigo-500/20 text-indigo-400 animate-slide-in-2">
+                            <span>✓ Lever</span>
+                            <span>8 found</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Visual 2: chat bubble exchange -->
+                    <div class="slide-visual absolute inset-0 flex flex-col justify-center px-4 space-y-2 transition-all duration-500 opacity-0 transform scale-90" id="visual-2">
+                        <div class="text-[9px] px-2.5 py-1.5 rounded-lg rounded-tl-none bg-indigo-600/20 border border-indigo-500/30 text-indigo-200 self-start max-w-[85%] animate-bubble-1">
+                            Hi Karthik! Let's schedule a call this week.
+                        </div>
+                        <div class="text-[9px] px-2.5 py-1.5 rounded-lg rounded-tr-none bg-emerald-600/20 border border-emerald-500/30 text-emerald-200 self-end max-w-[80%] animate-bubble-2">
+                            Hi! I'm free Thursday afternoon.
+                        </div>
+                    </div>
+                    
+                    <!-- Visual 3: badge validation animation -->
+                    <div class="slide-visual absolute inset-0 flex items-center justify-center transition-all duration-500 opacity-0 transform scale-90" id="visual-3">
+                        <div class="relative flex flex-col items-center">
+                            <div class="w-12 h-12 rounded-full flex items-center justify-center bg-emerald-500/10 border border-emerald-500/40 text-2xl animate-bounce-soft shadow-[0_0_15px_rgba(16,185,129,0.3)]">
+                                🛡️
+                            </div>
+                            <div class="mt-2 text-[9px] font-black text-emerald-400 tracking-wider uppercase bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full animate-pulse-slow">
+                                ✓ Verified Candidate
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Animated progress line for autoplay -->
+            <div class="absolute bottom-0 left-0 h-[2px] bg-indigo-500 transition-all duration-100 ease-linear" id="carousel-progress" style="width: 0%;"></div>
+        </div>
+    </div>
+</section>
+
 <!-- Interactive Pipeline Showcase -->
 <section id="how-it-works-showcase" class="relative py-20 px-4" style="background: var(--surface); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
     <div class="max-w-6xl mx-auto">
@@ -1063,6 +1222,80 @@
         }
     };
 
+    // --- Features Carousel Logic ---
+    let _featuresCurrent = 0;
+    const _featuresTotal = 3;
+    let _featuresTimer = null;
+    let _featuresProgTimer = null;
+    const _featuresDuration = 6000;
+    let _featuresStartTime = 0;
+    let _featuresRemaining = _featuresDuration;
+
+    window._featuresStart = function() {
+        _featuresStartTime = Date.now();
+        _featuresTimer = setTimeout(_featuresNext, _featuresRemaining);
+        _featuresUpdateProgress();
+    };
+
+    window._featuresStop = function() {
+        clearTimeout(_featuresTimer);
+        cancelAnimationFrame(_featuresProgTimer);
+    };
+
+    function _featuresUpdateProgress() {
+        const elapsed = Date.now() - _featuresStartTime;
+        const pct = Math.min((elapsed / _featuresDuration) * 100, 100);
+        const bar = document.getElementById('carousel-progress');
+        if (bar) bar.style.width = `${pct}%`;
+        
+        if (elapsed < _featuresDuration) {
+            _featuresProgTimer = requestAnimationFrame(_featuresUpdateProgress);
+        }
+    }
+
+    function _featuresNext() {
+        window._featuresSet((_featuresCurrent + 1) % _featuresTotal);
+    }
+
+    window._featuresSet = function(index) {
+        window._featuresStop();
+        
+        _featuresCurrent = index;
+        
+        // Update slides
+        document.querySelectorAll('.carousel-slide').forEach((slide, idx) => {
+            if (idx === index) {
+                slide.classList.add('active');
+            } else {
+                slide.classList.remove('active');
+            }
+        });
+        
+        // Update visuals
+        document.querySelectorAll('.slide-visual').forEach((vis, idx) => {
+            if (idx === index) {
+                vis.classList.add('active');
+            } else {
+                vis.classList.remove('active');
+            }
+        });
+        
+        // Update dots
+        document.querySelectorAll('.carousel-dot').forEach((dot, idx) => {
+            if (idx === index) {
+                dot.classList.add('active', 'bg-indigo-500');
+                dot.classList.remove('bg-slate-600', 'w-2', 'h-2');
+                dot.classList.add('w-2.5', 'h-2.5');
+            } else {
+                dot.classList.remove('active', 'bg-indigo-500', 'w-2.5', 'h-2.5');
+                dot.classList.add('bg-slate-600', 'w-2', 'h-2');
+            }
+        });
+        
+        _featuresRemaining = _featuresDuration;
+        window._featuresStart();
+    };
+
     function updateAutoplayUI(isPlaying) {
         const icon = document.getElementById('autoplay-icon');
         const text = document.getElementById('autoplay-text');
@@ -1081,6 +1314,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         // Initial setup
         showShowcaseTab(0);
+        window._featuresStart();
 
         // Setup IntersectionObserver for the showcase section to pause/resume autoCycle
         const section = document.getElementById('how-it-works-showcase');
