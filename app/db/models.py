@@ -51,6 +51,8 @@ class ApplicationStatus(str, Enum):
     SUBMITTED = "submitted"              # applicant clicked submit
     REJECTED = "rejected"                # heard back: no
     INTERVIEWING = "interviewing"
+    OFFER = "offer"                      # received an offer
+    ACCEPTED = "accepted"               # accepted an offer (hired)
     SKIPPED = "skipped"                  # user declined
     ERROR = "error"
 

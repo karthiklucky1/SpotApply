@@ -1938,6 +1938,68 @@ def mark_as_rejected(application_id: int, request: Request) -> dict:
     return {"success": True, "application_id": application_id}
 
 
+# Phase 1.5 — outcome tracking. Candidates mark real outcomes so HirePath
+# learns which profiles actually get interviews/offers (not just matches).
+_OUTCOME_STATUSES = {
+    "interviewing": ApplicationStatus.INTERVIEWING,
+    "offer": ApplicationStatus.OFFER,
+    "accepted": ApplicationStatus.ACCEPTED,
+    "rejected": ApplicationStatus.REJECTED,
+}
+
+
+@app.post("/application/{application_id}/outcome")
+def mark_outcome(application_id: int, request: Request, outcome: str) -> dict:
+    """Record a real hiring outcome (interviewing | offer | accepted | rejected)."""
+    from datetime import datetime
+    _require_owned_application(request, application_id)
+    status = _OUTCOME_STATUSES.get((outcome or "").lower())
+    if not status:
+        raise HTTPException(status_code=400, detail=f"Invalid outcome: {outcome}")
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        application.status = status
+        application.updated_at = datetime.utcnow()
+        application.notes = (application.notes or "") + f"\nOutcome '{outcome}' on {datetime.utcnow():%Y-%m-%d}."
+        session.add(application)
+        session.commit()
+    return {"success": True, "application_id": application_id, "status": status.value}
+
+
+@app.get("/api/funnel")
+def application_funnel(request: Request) -> dict:
+    """Outcome funnel for the signed-in user: applied -> interview -> offer ->
+    accepted, with conversion rates. The data that lets HirePath eventually
+    optimize for real hiring outcomes, not just match similarity."""
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    _submitted_like = [ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING,
+                       ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED, ApplicationStatus.REJECTED]
+    _interview_like = [ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED]
+    _offer_like = [ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED]
+    with get_session() as session:
+        def _count(statuses):
+            q = select(func.count(Application.id)).where(Application.status.in_(statuses))
+            if user_id_arg:
+                q = q.where(Application.user_id == user_id_arg)
+            return int(session.exec(q).first() or 0)
+        applied = _count(_submitted_like)
+        interviewing = _count(_interview_like)
+        offers = _count(_offer_like)
+        accepted = _count([ApplicationStatus.ACCEPTED])
+    rate = lambda a, b: round(a / b * 100) if b else 0
+    return {
+        "applied": applied, "interviewing": interviewing, "offers": offers, "accepted": accepted,
+        "applied_to_interview": rate(interviewing, applied),
+        "interview_to_offer": rate(offers, interviewing),
+        "offer_to_accepted": rate(accepted, offers),
+    }
+
+
 def _discover_then_match(user_id) -> None:
     """Discover → rank, tracking staged status (discovering → ranking → done)
     in a DiscoveryRun row so the UI can show live progress + a final summary."""
