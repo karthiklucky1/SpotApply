@@ -404,6 +404,16 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
                         application_id, len(g_result.flagged_bullets))
         else:
             log.info("Grounding PASSED for app %d", application_id)
+        # Feed the grounded ratio into the candidate's Trust Profile consistency
+        # dimension (share of resume bullets supported by the master résumé).
+        try:
+            total = len(g_result.confidence_map) or 0
+            if total:
+                ratio = max(0.0, (total - len(g_result.flagged_bullets)) / total)
+                from app.intelligence.trust_service import compute_and_store
+                compute_and_store(app_user_id, grounding_score=ratio)
+        except Exception as _te:
+            log.debug("trust consistency update skipped: %s", _te)
     except Exception as e:
         log.warning("Failed to run grounding check: %s", e)
 

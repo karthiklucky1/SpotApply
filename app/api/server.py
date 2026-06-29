@@ -3125,7 +3125,55 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
         except Exception as e2:
             log.exception("Profile update failed after schema repair: %s", e2)
             raise HTTPException(status_code=500, detail=f"Could not save profile: {e2}")
+
+    # Recompute the Trust Profile in the background (GitHub harvest can be slow).
+    try:
+        from app.intelligence.trust_service import compute_and_store
+        import threading
+        threading.Thread(target=compute_and_store, args=(user_id_arg,), daemon=True).start()
+    except Exception as _te:
+        log.debug("trust recompute spawn failed: %s", _te)
+
     return {"success": True}
+
+
+@app.get("/api/trust")
+def get_trust_profile(request: Request, recompute: bool = False) -> dict:
+    """The signed-in user's Trust Profile — five evidence-backed dimensions.
+
+    Pass ?recompute=1 to refresh now (re-harvests GitHub); otherwise returns the
+    last stored result. Returns empty dimensions for a brand-new profile.
+    """
+    import json as _json
+    from app.db.models import UserProfile
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+
+    if recompute:
+        from app.intelligence.trust_service import compute_and_store
+        compute_and_store(user_id_arg)
+
+    with get_session() as session:
+        profile = session.exec(
+            select(UserProfile).where(UserProfile.user_id == user_id_arg)
+        ).first()
+        if not profile:
+            return {"tier": "", "dimensions": [], "computed_at": None}
+        evidence = {}
+        if profile.trust_evidence:
+            try:
+                evidence = _json.loads(profile.trust_evidence)
+            except (ValueError, TypeError):
+                evidence = {}
+        return {
+            "tier": profile.trust_tier or "",
+            "computed_at": profile.trust_computed_at.isoformat() if profile.trust_computed_at else None,
+            "dimensions": [evidence[k] for k in
+                           ("identity", "technical", "consistency", "activity", "completeness")
+                           if k in evidence],
+        }
 
 
 # ── Target Roles endpoints ──────────────────────────────────────────────────
