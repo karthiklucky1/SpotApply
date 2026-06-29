@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Messages · HirePath</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background:#0b0f1a; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+    .card { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:14px; }
+    .inp { width:100%; background:#0f1626; border:1px solid #1e293b; border-radius:10px; padding:8px 12px; color:#fff; font-size:13px; }
+    .bubble-me { background:#4f46e5; color:#fff; align-self:flex-end; }
+    .bubble-them { background:#1e293b; color:#e2e8f0; align-self:flex-start; }
+    .bubble { padding:7px 12px; border-radius:14px; max-width:75%; font-size:13px; margin-bottom:6px; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div class="max-w-5xl mx-auto px-5 py-8">
+    <h1 class="text-2xl font-black text-white mb-5">Messages</h1>
+    <div id="need-login" class="hidden card p-6 text-center"><a href="/login" class="text-emerald-400 hover:underline">Log in</a> to view messages.</div>
+    <div id="wrap" class="hidden grid grid-cols-3 gap-4">
+      <div id="convo-list" class="col-span-1 space-y-2"></div>
+      <div id="thread-wrap" class="col-span-2 card p-4 flex flex-col" style="min-height:480px;">
+        <div id="thread-empty" class="text-slate-500 text-sm m-auto">Select a conversation</div>
+        <div id="thread" class="hidden flex-1 flex flex-col overflow-y-auto" style="max-height:420px;"></div>
+        <div id="composer" class="hidden flex gap-2 mt-3">
+          <input id="msg-input" class="inp" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMsg()" />
+          <button onclick="sendMsg()" class="text-sm font-bold text-white rounded-lg px-4" style="background:#10b981;">Send</button>
+        </div>
+        <div id="rate-row" class="hidden mt-2 text-[11px] text-slate-500">
+          Rate this contact:
+          <span id="stars"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+<script>
+  const token = localStorage.getItem('sb_token');
+  const hdrs = token ? { 'Authorization': 'Bearer ' + token, 'Content-Type':'application/json' } : { 'Content-Type':'application/json' };
+  let currentIntro = null;
+  if (!token) document.getElementById('need-login').classList.remove('hidden');
+  else { document.getElementById('wrap').classList.remove('hidden'); loadConvos(); }
+
+  async function loadConvos() {
+    const r = await fetch('/api/conversations', { headers: hdrs });
+    if (!r.ok) return;
+    const d = await r.json();
+    const list = document.getElementById('convo-list');
+    if (!d.conversations.length) { list.innerHTML = '<div class="card p-4 text-slate-500 text-sm">No accepted intros yet.</div>'; return; }
+    list.innerHTML = d.conversations.map(c => `
+      <div class="card p-3 cursor-pointer hover:border-emerald-500/40" onclick="openThread(${c.intro_id}, this)">
+        <div class="font-bold text-white text-sm">${c.with}</div>
+        <div class="text-[11px] text-slate-500 truncate">${(c.job_context||'').replace(/</g,'&lt;')}</div>
+      </div>`).join('');
+  }
+
+  async function openThread(introId) {
+    currentIntro = introId;
+    document.getElementById('thread-empty').classList.add('hidden');
+    document.getElementById('thread').classList.remove('hidden');
+    document.getElementById('composer').classList.remove('hidden');
+    document.getElementById('rate-row').classList.remove('hidden');
+    renderStars();
+    await refreshThread();
+  }
+  async function refreshThread() {
+    if (!currentIntro) return;
+    const r = await fetch(`/api/intros/${currentIntro}/messages`, { headers: hdrs });
+    if (!r.ok) return;
+    const d = await r.json();
+    const t = document.getElementById('thread');
+    t.innerHTML = d.messages.map(m => `<div class="bubble ${m.mine?'bubble-me':'bubble-them'}">${m.body.replace(/</g,'&lt;')}</div>`).join('') || '<div class="text-slate-500 text-sm m-auto">Say hello 👋</div>';
+    t.scrollTop = t.scrollHeight;
+  }
+  async function sendMsg() {
+    const inp = document.getElementById('msg-input');
+    const body = inp.value.trim(); if (!body || !currentIntro) return;
+    inp.value = '';
+    await fetch(`/api/intros/${currentIntro}/messages`, { method:'POST', headers:hdrs, body: JSON.stringify({ body }) });
+    refreshThread();
+  }
+  function renderStars() {
+    document.getElementById('stars').innerHTML = [1,2,3,4,5].map(n =>
+      `<span style="cursor:pointer;color:#f59e0b;" onclick="rate(${n})">★</span>`).join('');
+  }
+  async function rate(stars) {
+    await fetch(`/api/intros/${currentIntro}/rate`, { method:'POST', headers:hdrs, body: JSON.stringify({ stars }) });
+    document.getElementById('rate-row').innerHTML = `Thanks — rated ${stars}★`;
+  }
+  setInterval(() => { if (currentIntro) refreshThread(); }, 8000);
+</script>
+</body>
+</html>

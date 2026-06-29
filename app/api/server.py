@@ -3481,6 +3481,42 @@ def _intro_participant(session, intro_id: int, user_id):
     return intro
 
 
+@app.get("/api/conversations")
+def list_conversations(request: Request) -> dict:
+    """Accepted intros the user is part of (either role) — the inbox for chat."""
+    from app.db.models import CandidateIntro, RecruiterProfile, UserProfile
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid != "local" else None
+    out = []
+    with get_session() as session:
+        intros = session.exec(
+            select(CandidateIntro).where(
+                CandidateIntro.status == "accepted",
+                (CandidateIntro.recruiter_user_id == user_id_arg)
+                | (CandidateIntro.candidate_user_id == user_id_arg),
+            ).order_by(CandidateIntro.created_at.desc())
+        ).all()
+        for i in intros:
+            am_recruiter = i.recruiter_user_id == user_id_arg
+            other_id = i.candidate_user_id if am_recruiter else i.recruiter_user_id
+            if am_recruiter:
+                up = session.exec(select(UserProfile).where(UserProfile.user_id == other_id)).first()
+                other = f"{up.first_name} {up.last_name}".strip() if up else "Candidate"
+            else:
+                rp = session.exec(select(RecruiterProfile).where(RecruiterProfile.user_id == other_id)).first()
+                other = (rp.full_name or rp.company_name) if rp else "Recruiter"
+            out.append({"intro_id": i.id, "with": other or "Contact", "job_context": i.job_context})
+    return {"conversations": out}
+
+
+@app.get("/messages", response_class=HTMLResponse)
+def messages_page(request: Request):
+    """Role-agnostic chat inbox for accepted intros (candidate & recruiter)."""
+    return templates.TemplateResponse("messages.html", {"request": request})
+
+
 @app.get("/api/intros/{intro_id}/messages")
 def list_messages(intro_id: int, request: Request) -> dict:
     """Messages on an accepted intro (participants only)."""

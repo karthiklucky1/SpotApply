@@ -3229,7 +3229,7 @@
             try {
                 const token = localStorage.getItem('sb_token');
                 const r = await fetch(`/api/intros/${id}/respond?accept=${accept}`, { method: 'POST', headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
-                if (r.ok) { showToast(accept ? '🤝 Intro accepted!' : 'Declined', accept ? 'success' : 'info'); loadIntros(); }
+                if (r.ok) { showToast(accept ? '🤝 Accepted! Chat in Messages →' : 'Declined', accept ? 'success' : 'info'); if (accept) setTimeout(() => window.open('/messages','_blank'), 600); loadIntros(); }
             } catch (e) {}
         }
 
