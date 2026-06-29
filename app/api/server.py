@@ -3350,7 +3350,8 @@ def recruiter_search(request: Request, body: dict) -> dict:
 
     ranked = sorted(zip(candidates, sims), key=lambda x: x[1], reverse=True)[:25]
     results = []
-    for p, sim in ranked:
+    with get_session() as rsession:
+      for p, sim in ranked:
         evidence = {}
         if p.trust_evidence:
             try:
@@ -3369,6 +3370,7 @@ def recruiter_search(request: Request, body: dict) -> dict:
             "work_auth": p.work_authorization or "",
             "needs_sponsorship": bool(p.requires_sponsorship),
             "share_url": f"/u/{p.public_handle}" if p.public_handle else None,
+            "rating": _avg_rating(rsession, p.user_id)["avg"],
         })
     return {"results": results}
 
@@ -3426,11 +3428,13 @@ def list_intros(request: Request) -> dict:
             rp = session.exec(
                 select(RecruiterProfile).where(RecruiterProfile.user_id == i.recruiter_user_id)
             ).first()
+            rating = _avg_rating(session, i.recruiter_user_id)
             out.append({
                 "id": i.id, "status": i.status, "job_context": i.job_context,
                 "recruiter": (rp.full_name if rp else "") or "Recruiter",
                 "company": (rp.company_name if rp else "") or "",
                 "verified": bool(rp and rp.verified),
+                "rating": rating["avg"], "rating_count": rating["count"],
             })
     return {"intros": out}
 
@@ -3451,6 +3455,19 @@ def respond_intro(intro_id: int, request: Request, accept: bool) -> dict:
         session.add(intro)
         session.commit()
     return {"status": intro.status}
+
+
+def _avg_rating(session, user_id) -> dict:
+    """Average earned rating for a user (None if no ratings yet)."""
+    from app.db.models import IntroRating
+    if not user_id:
+        return {"avg": None, "count": 0}
+    rows = session.exec(
+        select(IntroRating.stars).where(IntroRating.ratee_user_id == user_id)
+    ).all()
+    if not rows:
+        return {"avg": None, "count": 0}
+    return {"avg": round(sum(rows) / len(rows), 1), "count": len(rows)}
 
 
 def _intro_participant(session, intro_id: int, user_id):

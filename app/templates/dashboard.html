@@ -3214,7 +3214,7 @@
                     <div class="glass rounded-2xl px-5 py-3.5 border border-emerald-500/30 flex items-center gap-4 mb-2" style="background:linear-gradient(135deg,rgba(16,185,129,0.08),rgba(16,185,129,0.02))">
                         <span class="text-2xl shrink-0">🤝</span>
                         <div class="flex-1 min-w-0">
-                            <p class="text-xs font-bold text-white">${i.recruiter}${i.company ? ' · ' + i.company : ''} ${i.verified ? '<span style="color:#10b981">✓</span>' : ''} wants to connect</p>
+                            <p class="text-xs font-bold text-white">${i.recruiter}${i.company ? ' · ' + i.company : ''} ${i.verified ? '<span style="color:#10b981">✓</span>' : ''} ${i.rating ? '<span style="color:#f59e0b">★'+i.rating+'</span>' : ''} wants to connect</p>
                             <p class="text-[11px] text-slate-400">${(i.job_context||'').replace(/</g,'&lt;') || 'Interested in your verified profile'}</p>
                         </div>
                         <div class="flex gap-2 shrink-0">

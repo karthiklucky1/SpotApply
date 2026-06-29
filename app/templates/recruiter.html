@@ -86,6 +86,7 @@
             <span class="font-bold text-white">${c.name}</span>
             ${c.tier ? `<span class="text-[10px] font-black px-2 py-0.5 rounded-full" style="background:rgba(16,185,129,0.12);color:#10b981;">✓ ${c.tier}</span>` : ''}
             <span class="text-[11px] text-indigo-300 font-bold">${c.match}% match</span>
+            ${c.rating ? `<span class="text-[11px]" style="color:#f59e0b">★${c.rating}</span>` : ''}
           </div>
           <div class="text-[12px] text-slate-400 mt-0.5">${c.title || ''} ${c.availability ? '· '+c.availability : ''} ${c.work_auth ? '· '+c.work_auth : ''}${c.needs_sponsorship ? ' · needs sponsorship' : ''}</div>
           <div class="text-[11px] text-slate-500 mt-1">${(c.skills||[]).join(' · ')}</div>
