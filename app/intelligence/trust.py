@@ -102,6 +102,11 @@ def _score_identity(profile) -> Dimension:
     if (getattr(profile, "linkedin_url", "") or "").strip():
         score += 10
         ev.append("LinkedIn linked")
+    # Articulation proof (optional booster) — a video explaining one's own code
+    # is strong anti-proxy / anti-synthetic evidence of a real, fluent human.
+    if (getattr(profile, "articulation_video_url", "") or "").strip():
+        score += 25
+        ev.append("Articulation video verified (explains own code)")
     score = min(score, 100)
     return Dimension("identity", "Identity", score, _stars(score), ev, _confidence(score))
 

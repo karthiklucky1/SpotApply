@@ -3895,6 +3895,8 @@
             if (_internCb) data.include_internships_in_discovery = _internCb.checked;
             const _remoteCb = form.querySelector('[name="remote_ok"]');
             if (_remoteCb) data.remote_ok = _remoteCb.checked;
+            const _relocCb = form.querySelector('[name="open_to_relocation"]');
+            if (_relocCb) data.open_to_relocation = _relocCb.checked;
             // Integers — send null (not "") when blank so Pydantic Optional[int] validates
             data.years_experience   = parseInt(data.years_experience)  || 0;
             data.salary_min         = parseInt(data.salary_min)        || 0;
@@ -4630,6 +4632,18 @@
                     <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Grad Year</label><input name="graduation_year" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
                 </div>
                 <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work Authorization</label><input name="work_authorization" placeholder="US Citizen / OPT / H1B / Green Card..." class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
+                <!-- Work Readiness Passport -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Availability</label>
+                        <select name="availability" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
+                            <option value="">—</option><option>Immediately</option><option>2 weeks</option><option>Interviewing</option><option>Not looking</option>
+                        </select></div>
+                    <div class="flex items-end gap-2 pb-2">
+                        <input name="open_to_relocation" type="checkbox" id="reloc-cb" class="w-4 h-4 rounded accent-emerald-500" />
+                        <label for="reloc-cb" class="text-sm text-slate-300">Open to relocation</label>
+                    </div>
+                </div>
+                <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">🎥 Articulation video URL <span class="text-slate-600">(optional · boosts trust)</span></label><input name="articulation_video_url" placeholder="Loom/YouTube link explaining one of your projects" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
                 <div class="flex items-center gap-3">
                     <input name="requires_sponsorship" type="checkbox" id="sponsorship-cb" class="rounded" />
                     <label for="sponsorship-cb" class="text-sm text-slate-300">Requires visa sponsorship</label>
