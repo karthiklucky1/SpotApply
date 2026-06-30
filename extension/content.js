@@ -2593,7 +2593,7 @@ function hasApplyButton() {
     || _host === 'outlook.office365.com';
   if (!_isGmail && !_isOutlook) return;
 
-  console.log('[HirePath] Email scanner activated on', _host, '· extension v1.1.0 (paginated scan)');
+  console.log('[HirePath] Email scanner activated on', _host, '· extension v1.1.1 (paginated scan)');
 
   // ── Job-related keyword filter ────────────────────────────────────────────
   const _JOB_KEYWORDS = /application|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent/i;
@@ -2939,24 +2939,36 @@ function hasApplyButton() {
     // Find Gmail's "Older" (next page) button if it's enabled.
     function getOlderButton() {
       const candidates = document.querySelectorAll(
-        'div[role="button"][aria-label="Older"], div[aria-label="Older"][role="button"], div[data-tooltip="Older"]'
+        'div[role="button"][aria-label="Older"], [aria-label="Older"][role="button"],'
+        + ' div[data-tooltip="Older"], [data-tooltip="Older"], [aria-label="Older"]'
       );
       for (const el of candidates) {
-        const disabled = el.getAttribute('aria-disabled') === 'true'
-          || el.getAttribute('aria-disabled') === '';
-        if (!disabled) return el;
+        if (el.getAttribute('aria-disabled') === 'true') continue;
+        // Gmail greys out the arrow with class 'aZo' (disabled) — skip those.
+        if (el.className && /\baZo\b/.test(el.className)) continue;
+        return el;
       }
       return null;
     }
 
-    // Signature of the first visible row — used to detect when the next
-    // page has actually rendered after clicking "Older".
-    function firstRowSig() {
-      const r = document.querySelector('div[role="main"] tr.zA');
-      if (!r) return '';
-      const s = r.querySelector('.y6 span, .bog span');
-      const d = r.querySelector('.xW span[title]');
-      return (s?.textContent || '') + '|' + (d?.getAttribute('title') || '');
+    // Gmail's pagination toolbar shows the current range, e.g. "1–50 of 195".
+    // When it changes (to "51–100 of 195") we know the next page loaded.
+    function getRangeText() {
+      const els = document.querySelectorAll('div[role="main"] span, .Dj, .ts, .amH');
+      for (const el of els) {
+        const t = (el.textContent || '').trim();
+        if (/^\d[\d,]*\s*[–-]\s*\d[\d,]*\s+of\s+[\d,]+$/.test(t)) return t;
+      }
+      return '';
+    }
+
+    // Click a Gmail control with a full mouse-event sequence — a synthetic
+    // .click() alone often doesn't trigger Gmail's handlers.
+    function realClick(el) {
+      const opts = { bubbles: true, cancelable: true, view: window };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
     }
 
     for (let page = 0; page < MAX_PAGES; page++) {
@@ -2968,25 +2980,26 @@ function hasApplyButton() {
 
       const older = getOlderButton();
       if (!older) {
-        console.log('[HirePath] Gmail scraper: no more pages');
+        console.log('[HirePath] Gmail scraper: no Older button — last page reached');
         break;
       }
 
-      const sigBefore = firstRowSig();
-      older.click();
+      const rangeBefore = getRangeText();
+      realClick(older);
 
-      // Wait for the next page to render (first row changes), max ~3s.
-      let changed = false;
-      for (let i = 0; i < 30; i++) {
+      // Wait for the page range to advance (e.g. "1–50" -> "51–100"), max ~5s.
+      let advanced = false;
+      for (let i = 0; i < 50; i++) {
         await new Promise(r => setTimeout(r, 100));
-        if (firstRowSig() !== sigBefore) { changed = true; break; }
+        const now = getRangeText();
+        if (now && now !== rangeBefore) { advanced = true; break; }
       }
-      if (!changed) {
-        console.log('[HirePath] Gmail scraper: page did not advance — stopping');
+      if (!advanced) {
+        console.log(`[HirePath] Gmail scraper: page did not advance (range "${rangeBefore}") — stopping`);
         break;
       }
-      // Small settle delay so rows fully paint before scraping.
-      await new Promise(r => setTimeout(r, 250));
+      // Settle delay so the new rows fully paint before scraping.
+      await new Promise(r => setTimeout(r, 400));
     }
 
     console.log(`[HirePath] Gmail scraper: collected ${results.length} job emails across pages`);
