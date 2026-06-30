@@ -1528,7 +1528,7 @@
                     {% for app, job in interviewing %}
                     {% call jobcard(app, job, 'blue', false, app.status.value, visa_framing) %}
                         <div class="grid grid-cols-3 gap-1 mb-1.5">
-                            <button type="button" id="review-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.25);" title="Move back to Submitted (Under Review) Pipeline">⏳ Under Review</button>
+                            <button type="button" id="review-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(245,158,11,0.10);color:#fbbf24;border:1px solid rgba(245,158,11,0.30);" title="Move back to Submitted (Under Review) Pipeline">⌛ Under Review</button>
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);">🎉 Offer</button>
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✅ Accepted</button>
                         </div>
@@ -6010,7 +6010,12 @@
                 if (hiddenActions) {
                     const buttons = Array.from(hiddenActions.querySelectorAll('button'));
                     buttons.forEach(btn => {
-                        btn.classList.remove('w-full', 'py-2.5', 'py-2', 'px-1', 'text-[11.5px]', 'text-[9.5px]');
+                        // Dynamically strip any layout, text size, padding or width classes
+                        btn.className.split(' ').forEach(cls => {
+                            if (cls.startsWith('w-') || cls.startsWith('py-') || cls.startsWith('px-') || cls.startsWith('text-')) {
+                                btn.classList.remove(cls);
+                            }
+                        });
                         btn.classList.add('px-3.5', 'py-1.5', 'text-[10.5px]', 'rounded-full', 'font-bold', 'shrink-0', 'bg-white/5', 'border', 'border-white/10', 'hover:bg-white/10', 'text-slate-300', 'hover:text-white', 'transition', 'duration-150');
                         topActionsContainer.insertBefore(btn, topActionsContainer.firstChild);
                     });
