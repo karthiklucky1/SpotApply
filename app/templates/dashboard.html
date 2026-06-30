@@ -1441,7 +1441,7 @@
                         </span>
                         <h2 class="font-bold text-white text-sm">Submitted Pipeline</h2>
                     </div>
-                    <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ submitted|length }}</span>
+                    <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ total_submitted_count }}</span>
                 </div>
                 
                 <!-- Column Search -->
@@ -1489,6 +1489,19 @@
                         <p class="text-slate-600 text-[10px] mt-1">Complete reviews to submit.</p>
                     </div>
                     {% endfor %}
+                    {% if total_submitted_count > 20 %}
+                    <div class="pt-3 text-center border-t border-slate-850/60 mt-3 flex justify-center">
+                        {% if all_submitted %}
+                        <a href="/dashboard" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full border border-slate-700 bg-slate-900 text-slate-350 hover:text-white transition duration-150">
+                            Show Less
+                        </a>
+                        {% else %}
+                        <a href="/dashboard?all_submitted=true" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full text-white transition duration-150" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">
+                            Show All (+{{ total_submitted_count - 20 }} more)
+                        </a>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 

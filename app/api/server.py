@@ -1345,7 +1345,7 @@ def api_jobs(
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request):
+def dashboard(request: Request, all_submitted: bool = False):
     """Kanban board UI for tracking application progress."""
     from app.config import settings
     uid = _get_user_id(request)
@@ -1354,42 +1354,86 @@ def dashboard(request: Request):
     # cookie). If not, fail closed and render no pipeline data — never leak other
     # tenants' applications. The client auth-guard sets the cookie and reloads.
     ssr_authed = bool(uid) or not settings.use_supabase
-    if settings.use_supabase and not uid:
-        results = []
-    else:
+    
+    shortlisted = []
+    submitted = []
+    interviewing = []
+    rejected = []
+    skipped = []
+    bot_filled = []
+    manual_queue = []
+    total_submitted_count = 0
+
+    if not (settings.use_supabase and not uid):
+        _AUTOFILL_REVIEW_STATUSES = [
+            ApplicationStatus.AUTOFILLED,
+            ApplicationStatus.AWAITING_USER,
+            ApplicationStatus.READY_TO_SUBMIT,
+        ]
+        
         with get_session() as session:
-            q = select(Application, Job).join(Job).where(
+            # 1. Fetch Shortlisted (limit to 100 to keep cache and parsing fast)
+            q_short = select(Application, Job).join(Job).where(
+                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            ).order_by(Application.updated_at.desc()).limit(100)
+            if _uid_filter:
+                q_short = q_short.where(Application.user_id == uid)
+            shortlisted = list(session.exec(q_short).all())
+
+            # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
+            q_sub = select(Application, Job).join(Job).where(
+                Application.status == ApplicationStatus.SUBMITTED
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            ).order_by(Application.submitted_at.desc())
+            if _uid_filter:
+                q_sub = q_sub.where(Application.user_id == uid)
+
+            # Get total count of submitted for the UI toggle button
+            q_sub_count = select(func.count(Application.id)).join(Job).where(
+                Application.status == ApplicationStatus.SUBMITTED
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            )
+            if _uid_filter:
+                q_sub_count = q_sub_count.where(Application.user_id == uid)
+            total_submitted_count = session.exec(q_sub_count).first() or 0
+
+            if not all_submitted:
+                q_sub = q_sub.limit(20)
+            submitted = list(session.exec(q_sub).all())
+
+            # 3. Fetch Interviewing (uncapped since active interviews are few)
+            q_int = select(Application, Job).join(Job).where(
+                Application.status.in_([ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED])
+            ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             ).order_by(Application.updated_at.desc())
             if _uid_filter:
-                q = q.where(Application.user_id == uid)
-            results = session.exec(q).all()
-        
-    shortlisted = []
-    bot_filled = []    # autofill-track: form filled, pending review
-    manual_queue = []  # manual-track: materials ready, waiting for human to apply
-    submitted = []
-    skipped = []
-    rejected = []      # heard back: no — collected separately
-    interviewing = []
+                q_int = q_int.where(Application.user_id == uid)
+            interviewing = list(session.exec(q_int).all())
 
-    _AUTOFILL_REVIEW_STATUSES = {
-        ApplicationStatus.AUTOFILLED,
-        ApplicationStatus.AWAITING_USER,
-        ApplicationStatus.READY_TO_SUBMIT,
-    }
+            # 4. Fetch Rejected (limit to 20 by default)
+            q_rej = select(Application, Job).join(Job).where(
+                Application.status == ApplicationStatus.REJECTED
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            ).order_by(Application.updated_at.desc()).limit(20)
+            if _uid_filter:
+                q_rej = q_rej.where(Application.user_id == uid)
+            rejected = list(session.exec(q_rej).all())
 
-    for app_model, job_model in results:
-        if app_model.status in [ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] or app_model.status in _AUTOFILL_REVIEW_STATUSES:
-            shortlisted.append((app_model, job_model))
-        elif app_model.status == ApplicationStatus.SUBMITTED:
-            submitted.append((app_model, job_model))
-        elif app_model.status in [ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED]:
-            interviewing.append((app_model, job_model))
-        elif app_model.status == ApplicationStatus.REJECTED:
-            rejected.append((app_model, job_model))
-        elif app_model.status == ApplicationStatus.SKIPPED:
-            skipped.append((app_model, job_model))
+            # 5. Fetch Skipped (limit to 20)
+            q_skip = select(Application, Job).join(Job).where(
+                Application.status == ApplicationStatus.SKIPPED
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            ).order_by(Application.updated_at.desc()).limit(20)
+            if _uid_filter:
+                q_skip = q_skip.where(Application.user_id == uid)
+            skipped = list(session.exec(q_skip).all())
 
     from datetime import datetime as _dt
 
@@ -1482,10 +1526,12 @@ def dashboard(request: Request):
             "rejected": rejected,
             "ssr_authed": ssr_authed,
             "visa_framing": visa_framing,
+            "total_submitted_count": total_submitted_count,
+            "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
         }
-    )
+     )
 
 
 @app.get("/api/pipeline/live")
