@@ -1887,6 +1887,20 @@
 
         // Initialize UI Elements
         document.addEventListener('DOMContentLoaded', () => {
+            // Restore any toast message queued from a previous reload
+            try {
+                const storedToast = sessionStorage.getItem('pending_toast');
+                if (storedToast) {
+                    const parsed = JSON.parse(storedToast);
+                    sessionStorage.removeItem('pending_toast');
+                    if (parsed && parsed.message) {
+                        showToast(parsed.message, parsed.type || 'info');
+                    }
+                }
+            } catch (e) {
+                console.error('Error restoring toast:', e);
+            }
+
             // Hide extension install banner if already dismissed
             if (localStorage.getItem('hp_ext_dismissed')) {
                 const b = document.getElementById('ext-install-banner');
@@ -1968,6 +1982,14 @@
                 toast.classList.add('opacity-0', 'translate-y-2');
                 setTimeout(() => toast.remove(), 3000);
             }, 5000);
+        }
+
+        function showToastNextPage(message, type = 'info') {
+            try {
+                sessionStorage.setItem('pending_toast', JSON.stringify({ message, type }));
+            } catch (e) {
+                console.error('Error saving toast:', e);
+            }
         }
 
         // ── Rejection Analysis Renderer ────────────────────────────────────────
@@ -3638,8 +3660,8 @@
                 const res = await fetch(`/application/${appId}/outcome?outcome=${outcome}`, {
                     method: 'POST', headers: _tok ? { 'Authorization': `Bearer ${_tok}` } : {} });
                 if (res.ok) {
-                    showToast(`✓ Marked ${outcome}`, 'success');
-                    setTimeout(() => location.reload(), 700);
+                    showToastNextPage(`✓ Marked ${outcome}`, 'success');
+                    location.reload();
                 } else {
                     showToast('Could not update outcome', 'error');
                 }
@@ -3702,8 +3724,8 @@
                     setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
                     return;
                 }
-                showToast('Application marked as submitted successfully!', 'success');
-                setTimeout(() => { window.location.reload(); }, 1000);
+                showToastNextPage('Application marked as submitted successfully!', 'success');
+                window.location.reload();
             } catch (e) {
                 btn.textContent = '❌';
                 showToast('Error updating application status.', 'error');
@@ -3724,8 +3746,8 @@
                             showToast('Failed to mark as rejected.', 'error');
                             return;
                         }
-                        showToast('Marked as rejected.', 'success');
-                        setTimeout(() => { window.location.reload(); }, 800);
+                        showToastNextPage('Marked as rejected.', 'success');
+                        window.location.reload();
                     } catch (e) {
                         showToast('Error updating application status.', 'error');
                     }
@@ -3746,8 +3768,8 @@
                             showToast('Failed to remove application.', 'error');
                             return;
                         }
-                        showToast('Application removed successfully!', 'success');
-                        setTimeout(() => { window.location.reload(); }, 800);
+                        showToastNextPage('Application removed successfully!', 'success');
+                        window.location.reload();
                     } catch (e) {
                         showToast('Error updating application status.', 'error');
                     }
@@ -3769,9 +3791,9 @@
                     setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
                     return;
                 }
-                showToast('Application marked as submitted successfully!', 'success');
+                showToastNextPage('Application marked as submitted successfully!', 'success');
                 closeModal();
-                setTimeout(() => { window.location.reload(); }, 1000);
+                window.location.reload();
             } catch (e) {
                 btn.textContent = '❌ Error';
                 showToast('Error updating application status.', 'error');
@@ -6648,8 +6670,8 @@
                 await fetch('/application/' + appId + '/submit', { method: 'POST', headers: _hpHeaders() });
                 _clearPendingApply();
                 box.remove();
-                if (typeof showToast === 'function') showToast('✅ Moved to Submitted', 'success');
-                setTimeout(() => window.location.reload(), 700);
+                if (typeof showToastNextPage === 'function') showToastNextPage('✅ Moved to Submitted', 'success');
+                window.location.reload();
             } catch (e) {
                 box.querySelector('#hp-sc-yes').textContent = 'Try again';
             }
