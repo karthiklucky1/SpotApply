@@ -4358,6 +4358,47 @@
                 showToast('Please type a question first', 'error');
                 return;
             }
+
+            // Check if question matches an already generated standard essay question
+            const cleanQ = question.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const matchedIndex = (window.__currentEssayAnswers || []).findIndex(ea => {
+                const cleanEa = ea.question.toLowerCase().replace(/[^a-z0-9]/g, '');
+                return cleanEa.includes(cleanQ) || cleanQ.includes(cleanEa);
+            });
+
+            if (matchedIndex !== -1) {
+                const el = document.getElementById(`essay-type-${matchedIndex}`);
+                if (el) {
+                    const card = el.closest('.relative');
+                    if (card) {
+                        // Clear any previous highlights
+                        document.querySelectorAll('.essay-highlight').forEach(c => {
+                            c.classList.remove('essay-highlight');
+                            c.style.boxShadow = '';
+                            c.style.borderColor = '';
+                        });
+
+                        // Scroll the matching essay card into view inside the modal
+                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        
+                        // Highlight it
+                        card.classList.add('essay-highlight');
+                        card.style.transition = 'all 0.4s ease';
+                        card.style.borderColor = '#818cf8';
+                        card.style.boxShadow = '0 0 15px rgba(129, 140, 248, 0.4)';
+                        
+                        showToast('Found in pre-written essays!', 'success');
+                        
+                        // Fade out highlight
+                        setTimeout(() => {
+                            card.style.borderColor = '';
+                            card.style.boxShadow = '';
+                            card.classList.remove('essay-highlight');
+                        }, 3000);
+                        return;
+                    }
+                }
+            }
             
             btn.disabled = true;
             const origText = btn.innerHTML;
@@ -4386,7 +4427,7 @@
                 const data = await res.json();
                 resBox.classList.remove('hidden');
                 
-                // Real-time typewriter typing effect
+                // Real-time typewriter typing effect (no autoscrolling to modal bottom)
                 const answerText = data.answer || '';
                 let index = 0;
                 resText.textContent = '';
@@ -4395,11 +4436,6 @@
                     if (index < answerText.length) {
                         resText.textContent += answerText.charAt(index);
                         index++;
-                        // Fast autoscroll to follow the text stream
-                        const modal = document.getElementById('answer-pack-modal').querySelector('.relative');
-                        if (modal) {
-                            modal.scrollTo({ top: modal.scrollHeight, behavior: 'auto' });
-                        }
                         setTimeout(typeChar, 8); // Fast 8ms character delay
                     }
                 }
@@ -4461,6 +4497,7 @@
         }
 
         function renderAnswerPack(data) {
+            window.__currentEssayAnswers = data.essay_answers || [];
             const container = document.getElementById('answer-pack-content');
             container.innerHTML = ''; // Clear loading indicator
 
