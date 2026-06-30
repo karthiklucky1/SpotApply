@@ -1146,7 +1146,13 @@
                         <h3 class="text-xs font-bold text-white tracking-tight leading-snug line-clamp-2">{{ job.title }}</h3>
                         <p class="text-[10px] font-semibold text-slate-400 mt-1 truncate">🏢 {{ job.company }} <span class="text-slate-600">·</span> <span class="uppercase tracking-wide text-slate-500">{{ job.source.value }}</span></p>
                         <span class="flex flex-wrap gap-1 mt-1">
-                        {% set _urg = urgency_of(job) %}
+                        {% set _is_email = (app.apply_track == 'email_import') %}
+                        {% if _is_email %}
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:rgba(245,158,11,.14);color:#b45309;" title="Detected from your inbox — a job you applied to outside HirePath">📧 From email</span>
+                        {% elif not removable %}
+                        <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);" title="Applied through HirePath">✓ Via HirePath</span>
+                        {% endif %}
+                        {% set _urg = urgency_of(job) if not _is_email else none %}
                         {% if _urg and _urg.label %}
                         <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full"
                               style="{% if _urg.tone == 'hot' %}background:rgba(244,63,94,.12);color:#e11d48;{% else %}background:rgba(245,158,11,.14);color:#b45309;{% endif %}" title="{{ _urg.reason }}">{{ _urg.label }}</span>
@@ -1209,7 +1215,7 @@
                                         </a>
                                     </div>
                                 </div>
-                                {% set _urgd = urgency_of(job) %}
+                                {% set _urgd = urgency_of(job) if app.apply_track != 'email_import' else none %}
                                 {% if _urgd and _urgd.label %}
                                 <div class="rounded-xl px-3.5 py-2 text-[11.5px] leading-snug mt-3"
                                      style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}">

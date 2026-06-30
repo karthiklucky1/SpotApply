@@ -4792,13 +4792,27 @@ class SyncEmailPayload(BaseModel):
 
 _REJECTION_KEYWORDS = [
     'unfortunately', 'not moving forward', 'other candidates',
-    'not selected', 'regret to inform', 'decided not to',
-    'will not be proceeding', 'position has been filled',
+    'other applicants', 'not selected', 'regret to inform',
+    'we regret', 'decided not to', 'will not be proceeding',
+    'not be proceeding', 'position has been filled', 'role has been filled',
+    'no longer under consideration', 'not be moving forward',
+    "won't be moving forward", 'will not be moving forward',
+    'decided to move forward with other', 'decided to proceed with other',
+    'pursue other candidates', 'not to move forward',
+    'after careful consideration', 'we have chosen', 'were not selected',
+    'wish you the best', 'wish you success', 'wish you well',
+    'not a match at this time', 'not be advancing', 'will not be advancing',
+    'unable to offer', 'not be extending', 'application was unsuccessful',
+    'were unsuccessful', 'thank you for your interest, however',
+    'not progressing', 'will not progress',
 ]
 
 _POSITIVE_KEYWORDS = [
-    'interview', 'next steps', 'schedule a call',
-    'pleased to invite', 'move forward',
+    'interview', 'next steps', 'schedule a call', 'schedule a time',
+    'pleased to invite', 'move forward with your', 'phone screen',
+    'like to speak with you', 'set up a call', 'video call',
+    'recruiter screen', 'next round', 'meet the team', 'hiring manager',
+    'love to chat', 'invitation to interview', 'assessment',
 ]
 
 
@@ -4846,7 +4860,10 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
             t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
         t = _re.sub(r"[\-–—|@:]+", " ", t)
         t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
-        return t[:120] or "Application (from email)"
+        # If nothing meaningful survived, fall back to the company name.
+        if len(t) < 3:
+            return f"Application — {company}" if company else "Application (from email)"
+        return t[:120]
 
     for email in payload.emails:
         company_guess = (email.get("company_guess") or "").strip().lower()
