@@ -2519,6 +2519,10 @@ chromeCall(() => chrome.storage.local.get(
 
 function injectFillButton() {
   if (document.getElementById('hp-fill-btn')) return;
+  // Never show the form-fill button on email clients — those hosts use the
+  // dedicated "Sync Job Emails" button instead, not the autofill flow.
+  const _h = window.location.hostname;
+  if (_h === 'mail.google.com' || _h === 'outlook.live.com' || _h === 'outlook.office.com') return;
   const btn = document.createElement('button');
   btn.id = 'hp-fill-btn';
   btn.innerHTML = '⚡ Fill with HirePath';
@@ -3054,14 +3058,22 @@ function hasApplyButton() {
               console.log('[HirePath] executeScan: apiFetch response:', res);
 
               const stats = classifyResults(emails);
+              const d = (res && res.data) || {};
+              const matched = d.matched || 0;
+              const importedN = d.imported || 0;
+              const tracked = matched + importedN;
+              const rej = (d.rejections != null) ? d.rejections : stats.rejections;
+              const intv = (d.interviews != null) ? d.interviews : stats.interviews;
 
               if (res && res.ok) {
                 showScannerToast(
-                  `<span style="font-size:16px">✅</span> <b>Found ${emails.length} job email${emails.length !== 1 ? 's' : ''}</b>` +
+                  `<span style="font-size:16px">✅</span> <b>Synced ${emails.length} job email${emails.length !== 1 ? 's' : ''}</b>` +
                   `<br><span style="color:#94a3b8;font-size:11px">` +
-                  `${stats.rejections} rejection${stats.rejections !== 1 ? 's' : ''} detected, ` +
-                  `${stats.interviews} interview signal${stats.interviews !== 1 ? 's' : ''}.</span>`,
-                  8000
+                  `${tracked} now tracked in your dashboard · ` +
+                  `${rej} rejection${rej !== 1 ? 's' : ''}, ` +
+                  `${intv} interview signal${intv !== 1 ? 's' : ''}.</span>` +
+                  `<br><span style="color:#a5b4fc;font-size:11px">Open your HirePath dashboard to review them.</span>`,
+                  9000
                 );
               } else {
                 showScannerToast(

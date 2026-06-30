@@ -125,7 +125,17 @@ def test_sync_emails_interview_detection():
         _cleanup()
 
 
-def test_sync_emails_unmatched():
+def _cleanup_email_imports():
+    with get_session() as s:
+        for j in s.exec(select(Job).where(Job.external_id.like("email:%"))).all():
+            for a in s.exec(select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+
+
+def test_sync_emails_no_company_guess_is_unmatched():
+    """Emails with no company guess can't be tracked, so they stay unmatched."""
     _seed()
     try:
         payload = {
@@ -135,7 +145,7 @@ def test_sync_emails_unmatched():
                     "sender": "newsletter@gmail.com",
                     "body": "Check out these top links from the community.",
                     "date": "2026-06-30",
-                    "company_guess": "UnknownCompany"
+                    "company_guess": ""
                 }
             ]
         }
@@ -145,8 +155,52 @@ def test_sync_emails_unmatched():
         assert res["success"] is True
         assert res["processed"] == 1
         assert res["matched"] == 0
-        assert res["rejections"] == 0
-        assert res["interviews"] == 0
+        assert res["imported"] == 0
         assert res["unmatched"] == 1
     finally:
+        _cleanup()
+
+
+def test_sync_emails_imports_unmatched_as_tracked():
+    """A job email for a company with no existing application is imported
+    as a tracked application so it surfaces in the dashboard."""
+    _seed()
+    try:
+        payload = {
+            "emails": [
+                {
+                    "subject": "Thank you for applying to NimbusAI - Backend Engineer",
+                    "sender": "no-reply@nimbusai.com",
+                    "body": "We received your application and will review it shortly.",
+                    "date": "2026-06-30",
+                    "company_guess": "NimbusAI"
+                }
+            ]
+        }
+        r = _client().post("/api/sync-emails", json=payload)
+        assert r.status_code == 200
+        res = r.json()
+        assert res["success"] is True
+        assert res["matched"] == 0
+        assert res["imported"] == 1
+        assert res["unmatched"] == 0
+
+        # Verify a tracked application now exists
+        with get_session() as s:
+            j = s.exec(select(Job).where(Job.company == "NimbusAI")).first()
+            assert j is not None
+            assert j.source == JobSource.MANUAL
+            a = s.exec(select(Application).where(Application.job_id == j.id)).first()
+            assert a is not None
+            assert a.apply_track == "email_import"
+            assert a.status == ApplicationStatus.SUBMITTED
+
+        # Re-syncing the same email must NOT create a duplicate
+        r2 = _client().post("/api/sync-emails", json=payload)
+        assert r2.json()["imported"] == 0
+        with get_session() as s:
+            jobs = s.exec(select(Job).where(Job.company == "NimbusAI")).all()
+            assert len(jobs) == 1
+    finally:
+        _cleanup_email_imports()
         _cleanup()

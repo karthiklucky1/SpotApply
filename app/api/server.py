@@ -30,7 +30,7 @@ from sqlalchemy import func, desc
 from app.autofill.agent import autofill, preview
 from app.db.init_db import get_session
 from app.db.models import (
-    Application, ApplicationStatus, Job,
+    Application, ApplicationStatus, Job, JobSource,
     UserSubscription, UserUsage, PlanTier, PLAN_LIMITS,
 )
 from app.discovery.pipeline import run_discovery
@@ -4786,6 +4786,8 @@ def delete_account(request: Request) -> dict:
 
 class SyncEmailPayload(BaseModel):
     emails: list  # List of dicts with keys: subject, sender, body, date, company_guess
+    source: str = "inbox"  # "gmail" | "outlook"
+    day_range: Optional[int] = None
 
 
 _REJECTION_KEYWORDS = [
@@ -4821,7 +4823,30 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
     matched = 0
     rejections = 0
     interviews = 0
+    imported = 0
     unmatched_list: list[dict] = []
+
+    def _email_status(is_rej: bool, is_int: bool) -> "ApplicationStatus":
+        if is_rej:
+            return ApplicationStatus.REJECTED
+        if is_int:
+            return ApplicationStatus.INTERVIEWING
+        return ApplicationStatus.SUBMITTED
+
+    def _clean_email_title(subj: str, company: str) -> str:
+        """Best-effort job title from an email subject line."""
+        import re as _re
+        t = subj or ""
+        # Strip common boilerplate prefixes/suffixes
+        t = _re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", t)
+        t = _re.sub(r"(?i)\b(thank you for (applying|your application|your interest)( (to|in))?|"
+                    r"your application( (for|to))?|application (received|update|status|next steps)|"
+                    r"we received your application|application to|application for)\b", "", t)
+        if company:
+            t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"[\-–—|@:]+", " ", t)
+        t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
+        return t[:120] or "Application (from email)"
 
     for email in payload.emails:
         company_guess = (email.get("company_guess") or "").strip().lower()
@@ -4906,16 +4931,89 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
                         session.add(app_obj)
                         session.commit()
         else:
-            unmatched_list.append({
-                "subject": email.get("subject"),
-                "sender": email.get("sender"),
-                "company_guess": email.get("company_guess"),
-            })
+            # ── No existing application matched — import as a tracked one ────
+            # These are real job-related emails (rejections, acknowledgements,
+            # interview invites) for jobs the user applied to OUTSIDE HirePath.
+            # We surface them in the dashboard tracker so nothing is lost.
+            raw_company = (email.get("company_guess") or "").strip()
+            if not raw_company:
+                unmatched_list.append({
+                    "subject": email.get("subject"),
+                    "sender": email.get("sender"),
+                    "company_guess": email.get("company_guess"),
+                })
+                continue
+
+            import hashlib as _hashlib
+            title = _clean_email_title(email.get("subject") or "", raw_company)
+            ext_id = "email:" + _hashlib.sha1(
+                f"{(uid or 'local')}|{raw_company.lower()}|{title.lower()}".encode()
+            ).hexdigest()[:20]
+
+            try:
+                with get_session() as session:
+                    existing = session.exec(
+                        select(Job).where(
+                            Job.source == JobSource.MANUAL,
+                            Job.external_id == ext_id,
+                        ).where(
+                            (Job.user_id == uid) if _uid_filter else (Job.user_id.is_(None) | (Job.user_id == "local"))
+                        )
+                    ).first()
+
+                    if existing:
+                        # Already imported — only upgrade status on a stronger signal.
+                        app_obj = session.exec(
+                            select(Application).where(Application.job_id == existing.id)
+                        ).first()
+                        if app_obj and is_rejection and app_obj.status != ApplicationStatus.REJECTED:
+                            app_obj.status = ApplicationStatus.REJECTED
+                            app_obj.updated_at = datetime.utcnow()
+                            session.add(app_obj)
+                            session.commit()
+                        continue
+
+                    job = Job(
+                        user_id=uid if _uid_filter else None,
+                        source=JobSource.MANUAL,
+                        external_id=ext_id,
+                        company=raw_company,
+                        title=title,
+                        url="",
+                        description=email.get("body") or "",
+                    )
+                    session.add(job)
+                    session.commit()
+                    session.refresh(job)
+
+                    app_obj = Application(
+                        user_id=uid if _uid_filter else None,
+                        job_id=job.id,
+                        status=_email_status(is_rejection, is_interview),
+                        apply_track="email_import",
+                        submitted_at=datetime.utcnow(),
+                        notes=f"Imported from {payload.source} email on {datetime.utcnow():%Y-%m-%d}.",
+                    )
+                    session.add(app_obj)
+                    session.commit()
+                imported += 1
+                if is_rejection:
+                    rejections += 1
+                elif is_interview:
+                    interviews += 1
+            except Exception as e:
+                print(f"[sync-emails] failed to import email '{title}': {e}")
+                unmatched_list.append({
+                    "subject": email.get("subject"),
+                    "sender": email.get("sender"),
+                    "company_guess": email.get("company_guess"),
+                })
 
     return {
         "success": True,
         "processed": len(payload.emails),
         "matched": matched,
+        "imported": imported,
         "rejections": rejections,
         "interviews": interviews,
         "unmatched": len(unmatched_list),
