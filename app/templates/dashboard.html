@@ -2907,11 +2907,37 @@
         }
 
         function _initAnimations() {
-            // Stagger kanban cards: set delay then start (was paused in CSS)
-            document.querySelectorAll('.kanban-card').forEach((card, i) => {
-                card.style.animationDelay = `${80 + i * 60}ms`;
-                card.style.animationPlayState = 'running';
+            // Stagger kanban cards independently inside each container to prevent
+            // later columns (Submitted, Interview) from waiting on Shortlisted cards.
+            const containers = [
+                'shortlisted-container', 
+                'submitted-container', 
+                'interviewing-container', 
+                'rejected-container', 
+                'skipped-container', 
+                'bot-filled-container', 
+                'manual-queue-container'
+            ];
+            containers.forEach(containerId => {
+                const container = document.getElementById(containerId);
+                if (!container) return;
+                const cards = container.querySelectorAll('.kanban-card');
+                cards.forEach((card, i) => {
+                    // Stagger with 30ms increments, capped at 300ms maximum delay
+                    const delay = Math.min(40 + i * 30, 300);
+                    card.style.animationDelay = `${delay}ms`;
+                    card.style.animationPlayState = 'running';
+                });
             });
+
+            // Fallback for any remaining cards not in standard containers
+            document.querySelectorAll('.kanban-card').forEach(card => {
+                if (card.style.animationPlayState !== 'running') {
+                    card.style.animationDelay = '80ms';
+                    card.style.animationPlayState = 'running';
+                }
+            });
+
             // Position the sliding tab indicator on the default active tab
             requestAnimationFrame(() => _moveTabIndicator('kanban'));
         }
