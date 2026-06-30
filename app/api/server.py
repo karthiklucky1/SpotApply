@@ -4580,6 +4580,31 @@ def get_answer_pack(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/application/{application_id}/download-resume")
+def download_tailored_resume(application_id: int, request: Request):
+    """Serve the tailored DOCX resume file as a direct download."""
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if not application.tailored_resume_path:
+            raise HTTPException(status_code=400, detail="No tailored resume found for this application")
+            
+        import os
+        from fastapi.responses import FileResponse
+        path = application.tailored_resume_path
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="Resume file not found on disk")
+            
+        filename = os.path.basename(path)
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=filename
+        )
+
+
 class AskCopilotRequest(BaseModel):
     question: str
 

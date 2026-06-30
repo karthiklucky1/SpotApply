@@ -4384,16 +4384,26 @@
                 }
                 
                 const data = await res.json();
-                resText.textContent = data.answer || '';
                 resBox.classList.remove('hidden');
                 
-                // Scroll the modal to the bottom so the answer is visible
-                const modal = document.getElementById('answer-pack-modal').querySelector('.relative');
-                if (modal) {
-                    setTimeout(() => {
-                        modal.scrollTo({ top: modal.scrollHeight, behavior: 'smooth' });
-                    }, 50);
+                // Real-time typewriter typing effect
+                const answerText = data.answer || '';
+                let index = 0;
+                resText.textContent = '';
+                
+                function typeChar() {
+                    if (index < answerText.length) {
+                        resText.textContent += answerText.charAt(index);
+                        index++;
+                        // Fast autoscroll to follow the text stream
+                        const modal = document.getElementById('answer-pack-modal').querySelector('.relative');
+                        if (modal) {
+                            modal.scrollTo({ top: modal.scrollHeight, behavior: 'auto' });
+                        }
+                        setTimeout(typeChar, 8); // Fast 8ms character delay
+                    }
                 }
+                typeChar();
                 
             } catch (e) {
                 showToast('Network error — try again.', 'error');
@@ -4460,9 +4470,14 @@
             </div>`;
 
             if (data.resume_path) {
-                html += `<div class="mb-4 p-3 rounded-xl text-xs" style="background:#e6f4ea;border:1px solid #34a853;color:#137333;">
-                    <span class="font-bold">Resume file:</span> <span class="font-semibold" style="color:#0f5132;">${data.resume_path.split('/').pop()}</span>
-                    <span class="ml-2 font-medium" style="color:#3c4043;">(upload this file when prompted)</span>
+                html += `<div class="mb-4 p-3 rounded-xl text-xs flex items-center justify-between gap-3" style="background:#e6f4ea;border:1px solid #34a853;color:#137333;">
+                    <div>
+                        <span class="font-bold">Resume file:</span> <span class="font-semibold" style="color:#0f5132;">${data.resume_path.split('/').pop()}</span>
+                        <span class="ml-2 font-medium" style="color:#3c4043;">(upload this file when prompted)</span>
+                    </div>
+                    <a href="/application/${data.application_id}/download-resume" download class="text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg shadow-sm transition duration-150 shrink-0 select-none">
+                        Download DOCX 📥
+                    </a>
                 </div>`;
             }
 
