@@ -137,6 +137,7 @@ class Application(SQLModel, table=True):
     senior_verdict: Optional[str] = None  # 2-sentence blunt verdict from SeniorReviewer
     custom_highlight_block: Optional[str] = None  # 3-bullet markdown framing missing JD gaps
     response_type: str = Field(default="none")  # none, auto_rejected, screening, phone_screen, interview, offer
+    rejection_analysis: Optional[str] = None  # JSON string containing forensic analysis (reason, gaps, tip)
 
 
 class PendingQuestion(SQLModel, table=True):

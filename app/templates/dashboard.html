@@ -696,6 +696,178 @@
     .notif-card.read:hover {
         opacity: 0.95;
     }
+
+    /* ── Rejection Analysis Card ────────────────────────────── */
+    .rejection-analysis-card {
+        margin-top: 18px;
+        background: linear-gradient(135deg, rgba(239,68,68,0.08) 0%, rgba(249,115,22,0.06) 100%);
+        border: 1px solid rgba(239,68,68,0.2);
+        border-radius: 16px;
+        padding: 20px;
+        animation: raSlideIn 0.5s ease-out;
+    }
+    @keyframes raSlideIn {
+        from { opacity: 0; transform: translateY(12px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    .ra-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+    }
+    .ra-header h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+        color: #ef4444;
+    }
+    .ra-icon { font-size: 20px; }
+    .ra-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .ra-badge-knockout { background: rgba(239,68,68,0.15); color: #dc2626; }
+    .ra-badge-gap { background: rgba(249,115,22,0.15); color: #ea580c; }
+    .ra-badge-closed { background: rgba(107,114,128,0.15); color: #6b7280; }
+    .ra-badge-template { background: rgba(59,130,246,0.15); color: #3b82f6; }
+    .ra-body { display: flex; flex-direction: column; gap: 14px; }
+    .ra-explanation {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text-secondary, #94a3b8);
+        margin: 0;
+    }
+    .ra-gaps h4, .ra-tip h4 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary, #e2e8f0);
+    }
+    .ra-gap-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    .ra-gap-tag {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        background: rgba(239,68,68,0.12);
+        color: #f87171;
+        border: 1px solid rgba(239,68,68,0.2);
+    }
+    .ra-tip {
+        background: rgba(16,185,129,0.08);
+        border: 1px solid rgba(16,185,129,0.2);
+        border-radius: 12px;
+        padding: 14px;
+    }
+    .ra-tip p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #34d399;
+    }
+
+    /* ── Email Sync Button ──────────────────────────────────── */
+    .btn-sync-emails {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 800;
+        padding: 0 16px;
+        height: 50px;
+        border-radius: 12px;
+        border: 1px solid rgba(99,102,241,0.3);
+        background: rgba(99,102,241,0.08);
+        color: #a5b4fc;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 0.3s ease;
+    }
+    .btn-sync-emails:hover {
+        background: rgba(99,102,241,0.15);
+        border-color: rgba(99,102,241,0.5);
+        transform: scale(1.02);
+        box-shadow: 0 4px 16px rgba(99,102,241,0.15);
+    }
+
+    /* ── Email Sync Info Modal ──────────────────────────────── */
+    .email-sync-modal-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0,0,0,0.6);
+        backdrop-filter: blur(8px);
+        animation: raSlideIn 0.3s ease-out;
+    }
+    .email-sync-modal {
+        background: linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.95));
+        border: 1px solid rgba(99,102,241,0.2);
+        border-radius: 20px;
+        padding: 28px;
+        max-width: 420px;
+        width: 90vw;
+        box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+    }
+    .email-sync-modal h3 {
+        margin: 0 0 16px;
+        font-size: 18px;
+        font-weight: 800;
+        color: #e2e8f0;
+    }
+    .email-sync-modal .es-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 10px 0;
+    }
+    .email-sync-modal .es-step-num {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: rgba(99,102,241,0.15);
+        color: #818cf8;
+        font-size: 12px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    .email-sync-modal .es-step p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #94a3b8;
+    }
+    .email-sync-modal .es-close {
+        margin-top: 18px;
+        width: 100%;
+        padding: 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(255,255,255,0.05);
+        color: #e2e8f0;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .email-sync-modal .es-close:hover {
+        background: rgba(255,255,255,0.1);
+    }
 </style>
 </head>
 
@@ -891,6 +1063,9 @@
             <button id="discover-hero-banner" onclick="startDiscovery()" class="ml-1 text-xs font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap transition-all duration-300 hover:scale-[1.02] hover:shadow-emerald-500/20 hover:shadow-lg" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;border:1px solid var(--sage-600);box-shadow:0 4px 16px rgba(31,156,143,0.30); height: 50px;">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 Discover Jobs
+            </button>
+            <button class="btn-sync-emails" onclick="openEmailSyncInfo()" title="Sync job emails from Gmail/Outlook">
+                📬 Email Sync
             </button>
         </div>
     </div>
@@ -1536,6 +1711,7 @@
                 <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div>
                 <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre>
                 <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre>
+                <div id="rejection-analysis-container"></div>
             </div>
         </div>
     </div>
@@ -1662,6 +1838,85 @@
                 toast.classList.add('opacity-0', 'translate-y-2');
                 setTimeout(() => toast.remove(), 3000);
             }, 5000);
+        }
+
+        // ── Rejection Analysis Renderer ────────────────────────────────────────
+        function renderRejectionAnalysis(appId, analysis) {
+            const container = document.getElementById('rejection-analysis-container');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!analysis) return;
+
+            const rootCause = analysis.root_cause || 'Unknown';
+            const causeMap = {
+                'Knockout Filter': 'knockout',
+                'Experience/Skill Gap': 'gap',
+                'Role Closed': 'closed',
+                'General ATS Template': 'template'
+            };
+            const rootCauseClass = causeMap[rootCause] || 'template';
+            const explanation = analysis.reason_explanation || '';
+            const gaps = analysis.gaps_identified || [];
+            const tip = analysis.actionable_tip || '';
+
+            const esc = (s) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            const gapTags = gaps.map(g => `<span class="ra-gap-tag">${esc(g)}</span>`).join('');
+
+            container.innerHTML = `
+                <div class="rejection-analysis-card" id="rejectionAnalysis_${appId}">
+                    <div class="ra-header">
+                        <span class="ra-icon">🔍</span>
+                        <h3>Rejection Forensics</h3>
+                        <span class="ra-badge ra-badge-${rootCauseClass}">${esc(rootCause)}</span>
+                    </div>
+                    <div class="ra-body">
+                        <p class="ra-explanation">${esc(explanation)}</p>
+                        ${gaps.length ? `
+                        <div class="ra-gaps">
+                            <h4>⚠️ Missing Skills / Keywords</h4>
+                            <div class="ra-gap-tags">${gapTags}</div>
+                        </div>` : ''}
+                        ${tip ? `
+                        <div class="ra-tip">
+                            <h4>💡 Resume Optimization Tip</h4>
+                            <p>${esc(tip)}</p>
+                        </div>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // ── Email Sync Info Modal ──────────────────────────────────────────────
+        function openEmailSyncInfo() {
+            // Remove any existing modal
+            const existing = document.getElementById('email-sync-info-modal');
+            if (existing) { existing.remove(); return; }
+
+            const overlay = document.createElement('div');
+            overlay.id = 'email-sync-info-modal';
+            overlay.className = 'email-sync-modal-overlay';
+            overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+            overlay.innerHTML = `
+                <div class="email-sync-modal">
+                    <h3>📬 Sync Job Emails</h3>
+                    <div class="es-step">
+                        <span class="es-step-num">1</span>
+                        <p>Open <strong style="color:#e2e8f0;">Gmail</strong> or <strong style="color:#e2e8f0;">Outlook</strong> in your browser.</p>
+                    </div>
+                    <div class="es-step">
+                        <span class="es-step-num">2</span>
+                        <p>The <strong style="color:#e2e8f0;">HirePath extension</strong> will show a <strong style="color:#a5b4fc;">Sync</strong> button in the toolbar.</p>
+                    </div>
+                    <div class="es-step">
+                        <span class="es-step-num">3</span>
+                        <p>Synced emails will <strong style="color:#34d399;">automatically update</strong> your application statuses — rejections, interviews, and offers.</p>
+                    </div>
+                    <button class="es-close" onclick="document.getElementById('email-sync-info-modal').remove()">Got it</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
         }
 
         // Load stats from API
@@ -2763,6 +3018,8 @@
             document.getElementById('tab-content-cover').classList.add('hidden');
             document.getElementById('tab-content-resume').textContent = '';
             document.getElementById('tab-content-cover').textContent = '';
+            const _raContainer = document.getElementById('rejection-analysis-container');
+            if (_raContainer) _raContainer.innerHTML = '';
             document.getElementById('loading').classList.remove('hidden');
             document.getElementById('loading').textContent = 'Loading documents…';
             document.getElementById('modal').classList.remove('hidden');
@@ -2802,6 +3059,7 @@
                 }
 
                 document.getElementById('loading').classList.add('hidden');
+                renderRejectionAnalysis(appId, data.rejection_analysis);
                 switchTab('resume');
             } catch (e) {
                 document.getElementById('loading').textContent = 'Error loading documents.';

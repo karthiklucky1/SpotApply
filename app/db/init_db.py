@@ -95,6 +95,7 @@ def init_db() -> None:
         ("senior_fit_score", "FLOAT"),
         ("senior_verdict", "TEXT"),
         ("custom_highlight_block", "TEXT"),
+        ("rejection_analysis", "TEXT"),
     ]:
         add_column_if_missing("application", col, col_type)
 

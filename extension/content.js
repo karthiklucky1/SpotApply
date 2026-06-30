@@ -2501,3 +2501,585 @@ function hasApplyButton() {
   };
   return Array.from(document.querySelectorAll("a, button, [role='button']")).some(isApply);
 }
+
+// ── Email Scanning Module (Gmail & Outlook) ───────────────────────────────────
+// Self-contained IIFE: only activates on mail.google.com, outlook.live.com, or
+// outlook.office.com. Inert on every other hostname.
+
+(function hirepathEmailScanner() {
+  const _host = window.location.hostname;
+  const _isGmail = _host === 'mail.google.com';
+  const _isOutlook = _host === 'outlook.live.com' || _host === 'outlook.office.com'
+    || _host === 'outlook.office365.com';
+  if (!_isGmail && !_isOutlook) return;
+
+  console.log('[HirePath] Email scanner activated on', _host);
+
+  // ── Job-related keyword filter ────────────────────────────────────────────
+  const _JOB_KEYWORDS = /application|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent/i;
+
+  function isJobRelated(subject, snippet) {
+    return _JOB_KEYWORDS.test(subject || '') || _JOB_KEYWORDS.test(snippet || '');
+  }
+
+  // ── Company name guessing ─────────────────────────────────────────────────
+  function guessCompany(senderEmail, senderName) {
+    // Try domain first: "alice@greenhouse.stripe.com" → "stripe"
+    if (senderEmail) {
+      const atIdx = senderEmail.indexOf('@');
+      if (atIdx !== -1) {
+        const domain = senderEmail.slice(atIdx + 1).toLowerCase();
+        // Strip common email provider domains
+        if (!/gmail|yahoo|hotmail|outlook|protonmail|icloud|aol|mail\.com/i.test(domain)) {
+          const parts = domain.split('.');
+          // Remove TLD suffixes (.com, .io, .co, .org, .net, .co.uk, etc.)
+          while (parts.length > 1 && /^(com|io|co|org|net|uk|us|dev|ai|app|xyz|jobs|careers)$/.test(parts[parts.length - 1])) {
+            parts.pop();
+          }
+          if (parts.length > 0) {
+            const name = parts[parts.length - 1];
+            if (name.length >= 2) return name.charAt(0).toUpperCase() + name.slice(1);
+          }
+        }
+      }
+    }
+    // Fall back to display name: "Alice from Stripe" → "Stripe"
+    if (senderName) {
+      const fromMatch = senderName.match(/from\s+(.+)/i);
+      if (fromMatch) return fromMatch[1].trim();
+      const atMatch = senderName.match(/at\s+(.+)/i);
+      if (atMatch) return atMatch[1].trim();
+      // If display name looks like a company (no spaces, or Title Case)
+      if (!/\s/.test(senderName.trim()) && senderName.length >= 2) return senderName.trim();
+    }
+    return null;
+  }
+
+  // ── Inject styles (once) ──────────────────────────────────────────────────
+  function injectScannerStyles() {
+    if (document.getElementById('hp-email-scanner-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'hp-email-scanner-styles';
+    style.textContent = `
+      /* ── CSS custom properties for glassmorphism theme ── */
+      :root {
+        --hp-glass-bg: rgba(15, 23, 42, 0.85);
+        --hp-glass-border: rgba(99, 102, 241, 0.4);
+        --hp-glass-blur: 16px;
+        --hp-accent: #6366f1;
+        --hp-accent-hover: #818cf8;
+        --hp-text: #e2e8f0;
+        --hp-text-muted: #94a3b8;
+        --hp-success: #10b981;
+        --hp-error: #ef4444;
+        --hp-warning: #f59e0b;
+      }
+
+      /* ── Entry animation ── */
+      @keyframes hp-slide-up-fade {
+        from { opacity: 0; transform: translateY(20px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes hp-pulse-ring {
+        0%   { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.5); }
+        70%  { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+      }
+      @keyframes hp-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* ── Floating sync button ── */
+      #hp-email-sync-btn {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 20px;
+        border: 1px solid var(--hp-glass-border);
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.92));
+        backdrop-filter: blur(var(--hp-glass-blur));
+        -webkit-backdrop-filter: blur(var(--hp-glass-blur));
+        color: var(--hp-text);
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+                    0 0 0 1px rgba(99, 102, 241, 0.15),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        animation: hp-slide-up-fade 0.4s ease-out, hp-pulse-ring 2.5s ease-out 1s 3;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        user-select: none;
+      }
+      #hp-email-sync-btn:hover {
+        transform: translateY(-2px);
+        border-color: var(--hp-accent-hover);
+        box-shadow: 0 12px 40px rgba(99, 102, 241, 0.3),
+                    0 0 0 1px rgba(99, 102, 241, 0.3);
+      }
+      #hp-email-sync-btn:active {
+        transform: translateY(0);
+      }
+      #hp-email-sync-btn .hp-icon {
+        font-size: 18px;
+        line-height: 1;
+      }
+
+      /* ── Modal overlay ── */
+      #hp-email-scanner-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        animation: hp-slide-up-fade 0.25s ease-out;
+      }
+      #hp-email-scanner-modal .hp-modal-card {
+        position: relative;
+        width: 360px;
+        max-width: calc(100vw - 40px);
+        padding: 28px 24px 24px;
+        border-radius: 20px;
+        border: 1px solid var(--hp-glass-border);
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.97));
+        backdrop-filter: blur(var(--hp-glass-blur));
+        -webkit-backdrop-filter: blur(var(--hp-glass-blur));
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6),
+                    0 0 0 1px rgba(99, 102, 241, 0.15),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        font-family: system-ui, -apple-system, sans-serif;
+        color: var(--hp-text);
+        animation: hp-slide-up-fade 0.35s ease-out;
+      }
+      #hp-email-scanner-modal .hp-modal-close {
+        position: absolute;
+        top: 12px;
+        right: 14px;
+        background: none;
+        border: none;
+        color: var(--hp-text-muted);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px 6px;
+        line-height: 1;
+        border-radius: 6px;
+        transition: color 0.15s, background 0.15s;
+      }
+      #hp-email-scanner-modal .hp-modal-close:hover {
+        color: var(--hp-text);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      #hp-email-scanner-modal h3 {
+        margin: 0 0 6px;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      #hp-email-scanner-modal .hp-desc {
+        color: var(--hp-text-muted);
+        font-size: 12.5px;
+        margin-bottom: 18px;
+        line-height: 1.4;
+      }
+      #hp-email-scanner-modal .hp-range-group {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+      #hp-email-scanner-modal .hp-range-opt {
+        flex: 1;
+        padding: 10px 6px;
+        border-radius: 10px;
+        border: 1px solid rgba(99, 102, 241, 0.25);
+        background: rgba(99, 102, 241, 0.06);
+        color: var(--hp-text-muted);
+        font-size: 12px;
+        font-weight: 600;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      #hp-email-scanner-modal .hp-range-opt:hover {
+        border-color: var(--hp-accent);
+        color: var(--hp-text);
+        background: rgba(99, 102, 241, 0.12);
+      }
+      #hp-email-scanner-modal .hp-range-opt.hp-selected {
+        border-color: var(--hp-accent);
+        background: rgba(99, 102, 241, 0.2);
+        color: #fff;
+        box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+      }
+      #hp-email-scanner-modal .hp-scan-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        padding: 12px;
+        border-radius: 12px;
+        border: none;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: opacity 0.15s, transform 0.1s;
+      }
+      #hp-email-scanner-modal .hp-scan-btn:hover:not(:disabled) {
+        opacity: 0.9;
+        transform: translateY(-1px);
+      }
+      #hp-email-scanner-modal .hp-scan-btn:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      #hp-email-scanner-modal .hp-scan-btn .hp-spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255,255,255,0.3);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: hp-spin 0.6s linear infinite;
+      }
+
+      /* ── Toast notification ── */
+      .hp-email-toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 999999;
+        padding: 14px 18px;
+        border-radius: 14px;
+        border: 1px solid var(--hp-glass-border);
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.97), rgba(30, 41, 59, 0.97));
+        backdrop-filter: blur(var(--hp-glass-blur));
+        -webkit-backdrop-filter: blur(var(--hp-glass-blur));
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 13px;
+        color: var(--hp-text);
+        max-width: 340px;
+        line-height: 1.5;
+        animation: hp-slide-up-fade 0.3s ease-out;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ── Toast helper ──────────────────────────────────────────────────────────
+  function showScannerToast(html, durationMs) {
+    document.querySelectorAll('.hp-email-toast').forEach(t => t.remove());
+    const toast = document.createElement('div');
+    toast.className = 'hp-email-toast';
+    toast.innerHTML = html;
+    document.body.appendChild(toast);
+    setTimeout(() => toast?.remove(), durationMs || 8000);
+  }
+
+  // ── Gmail DOM scraper ─────────────────────────────────────────────────────
+  async function scrapeGmailEmails(dayRange) {
+    const results = [];
+    const cutoff = Date.now() - (dayRange * 24 * 60 * 60 * 1000);
+
+    // Gmail renders email rows as <tr class="zA"> inside the main view
+    const rows = document.querySelectorAll('div[role="main"] tr.zA, table.F tr');
+    console.log(`[HirePath] Gmail scraper: found ${rows.length} email rows`);
+
+    rows.forEach(row => {
+      try {
+        // Subject: try multiple selectors used across Gmail DOM versions
+        const subjectEl = row.querySelector('.y6 span[data-thread-id]')
+          || row.querySelector('.y6 span')
+          || row.querySelector('.bog span');
+        const subject = subjectEl?.textContent?.trim() || '';
+
+        // Sender: the <span email="..."> attribute or .zF[email]
+        const senderSpan = row.querySelector('.yW span[email]')
+          || row.querySelector('.zF');
+        const senderEmail = senderSpan?.getAttribute('email') || '';
+        const senderName = senderSpan?.getAttribute('name')
+          || senderSpan?.textContent?.trim() || '';
+
+        // Snippet / preview text
+        const snippetEl = row.querySelector('.y2')
+          || row.querySelector('.xW span.y2');
+        const snippet = snippetEl?.textContent?.replace(/^\s*[-–—]\s*/, '').trim() || '';
+
+        // Date: from the <span title="..."> in the date column
+        const dateEl = row.querySelector('.xW span[title]')
+          || row.querySelector('td.xW span');
+        const dateStr = dateEl?.getAttribute('title')
+          || dateEl?.textContent?.trim() || '';
+
+        // Basic date filtering — Gmail's title attr is like "Tue, Jun 24, 2025, 3:42 PM"
+        if (dateStr) {
+          const parsed = Date.parse(dateStr);
+          if (!isNaN(parsed) && parsed < cutoff) return; // older than range
+        }
+
+        // Job relevance filter
+        if (!isJobRelated(subject, snippet)) return;
+
+        results.push({
+          subject,
+          sender: senderEmail || senderName,
+          body: snippet,
+          date: dateStr,
+          company_guess: guessCompany(senderEmail, senderName),
+        });
+      } catch (e) {
+        console.warn('[HirePath] Gmail row parse error:', e);
+      }
+    });
+
+    return results;
+  }
+
+  // ── Outlook DOM scraper ───────────────────────────────────────────────────
+  async function scrapeOutlookEmails(dayRange) {
+    const results = [];
+    const cutoff = Date.now() - (dayRange * 24 * 60 * 60 * 1000);
+
+    // Outlook Web uses role="option" items inside a role="listbox",
+    // or div[data-convid] inside scrollable containers
+    const items = document.querySelectorAll(
+      'div[role="listbox"] div[role="option"], div.customScrollBar div[data-convid]'
+    );
+    console.log(`[HirePath] Outlook scraper: found ${items.length} email items`);
+
+    items.forEach(item => {
+      try {
+        // Subject: aria-label often contains the full preview,
+        // or dedicated subject element classes
+        const subjectEl = item.querySelector('.hcptT')
+          || item.querySelector('.lvHighlightSubjectClass')
+          || item.querySelector('[class*="SubjectLine"]');
+        let subject = subjectEl?.textContent?.trim() || '';
+        if (!subject) {
+          // Fall back to aria-label
+          const ariaLabel = item.getAttribute('aria-label') || '';
+          // aria-label is usually "Sender, Subject, Preview, Date"
+          const parts = ariaLabel.split(',');
+          if (parts.length >= 2) subject = parts[1].trim();
+        }
+
+        // Sender
+        const senderEl = item.querySelector('.lPC')
+          || item.querySelector('.OZZZK')
+          || item.querySelector('[class*="SenderName"]');
+        const senderName = senderEl?.textContent?.trim() || '';
+        const senderEmail = senderEl?.getAttribute('title') || '';
+
+        // Snippet / preview
+        const snippetEl = item.querySelector('.n_a')
+          || item.querySelector('.IjQyBf')
+          || item.querySelector('[class*="PreviewText"]');
+        const snippet = snippetEl?.textContent?.trim() || '';
+
+        // Date — Outlook sometimes puts date in a <span> with timestamp attr
+        const dateEl = item.querySelector('span[aria-label*="/"]')
+          || item.querySelector('[class*="DateTimeText"]')
+          || item.querySelector('time');
+        const dateStr = dateEl?.getAttribute('aria-label')
+          || dateEl?.getAttribute('datetime')
+          || dateEl?.textContent?.trim() || '';
+
+        if (dateStr) {
+          const parsed = Date.parse(dateStr);
+          if (!isNaN(parsed) && parsed < cutoff) return;
+        }
+
+        if (!isJobRelated(subject, snippet)) return;
+
+        results.push({
+          subject,
+          sender: senderEmail || senderName,
+          body: snippet,
+          date: dateStr,
+          company_guess: guessCompany(senderEmail, senderName),
+        });
+      } catch (e) {
+        console.warn('[HirePath] Outlook item parse error:', e);
+      }
+    });
+
+    return results;
+  }
+
+  // ── Classify results for stats ────────────────────────────────────────────
+  function classifyResults(emails) {
+    let rejections = 0;
+    let interviews = 0;
+    const rejectionRe = /unfortunately|regret|not.*selected|rejected|not.*moving|decided.*not|other.*candidates/i;
+    const interviewRe = /interview|schedule.*call|next.*round|meet.*team|phone.*screen|on-?site/i;
+
+    for (const e of emails) {
+      const text = (e.subject || '') + ' ' + (e.body || '');
+      if (rejectionRe.test(text)) rejections++;
+      if (interviewRe.test(text)) interviews++;
+    }
+    return { rejections, interviews };
+  }
+
+  // ── Scan execution & POST to backend ──────────────────────────────────────
+  async function executeScan(dayRange) {
+    const scraper = _isGmail ? scrapeGmailEmails : scrapeOutlookEmails;
+    const emails = await scraper(dayRange);
+    console.log(`[HirePath] Scan complete: ${emails.length} job emails found`);
+
+    if (emails.length === 0) {
+      showScannerToast(
+        '<span style="font-size:16px">📭</span> <b>No job-related emails found</b>' +
+        '<br><span style="color:#94a3b8;font-size:11px">Try a wider date range or scroll down in your inbox to load more emails.</span>',
+        6000
+      );
+      return;
+    }
+
+    // POST to backend
+    return new Promise((resolve) => {
+      chromeCall(() => chrome.storage.local.get(
+        ['hirepath_copilot_pack', 'hirepath_fill_pack'],
+        async (data) => {
+          const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
+          if (!pack || !pack.hirepath_url) {
+            showScannerToast(
+              '<span style="color:#ef4444;font-weight:700">⚠️ Not connected</span>' +
+              '<br><span style="color:#94a3b8;font-size:11px">Open your HirePath dashboard first to connect.</span>',
+              6000
+            );
+            resolve(false);
+            return;
+          }
+
+          try {
+            const res = await apiFetch(
+              `${pack.hirepath_url}/api/sync-emails`,
+              'POST',
+              pack.auth_token,
+              { emails, source: _isGmail ? 'gmail' : 'outlook', day_range: dayRange }
+            );
+
+            const stats = classifyResults(emails);
+
+            if (res.ok) {
+              showScannerToast(
+                `<span style="font-size:16px">✅</span> <b>Found ${emails.length} job email${emails.length !== 1 ? 's' : ''}</b>` +
+                `<br><span style="color:#94a3b8;font-size:11px">` +
+                `${stats.rejections} rejection${stats.rejections !== 1 ? 's' : ''} detected, ` +
+                `${stats.interviews} interview signal${stats.interviews !== 1 ? 's' : ''}.</span>`,
+                8000
+              );
+            } else {
+              showScannerToast(
+                `<span style="color:#ef4444;font-weight:700">❌ Sync failed</span>` +
+                `<br><span style="color:#94a3b8;font-size:11px">${res.error || 'Server error. Please try again.'}</span>`,
+                6000
+              );
+            }
+            resolve(res.ok);
+          } catch (err) {
+            console.error('[HirePath] Email sync error:', err);
+            showScannerToast(
+              '<span style="color:#ef4444;font-weight:700">❌ Sync error</span>' +
+              `<br><span style="color:#94a3b8;font-size:11px">${err.message || 'Network error'}</span>`,
+              6000
+            );
+            resolve(false);
+          }
+        }
+      ));
+    });
+  }
+
+  // ── Range picker modal ────────────────────────────────────────────────────
+  function showScannerModal() {
+    // Remove existing modal if open
+    document.getElementById('hp-email-scanner-modal')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'hp-email-scanner-modal';
+    overlay.innerHTML = `
+      <div class="hp-modal-card">
+        <button class="hp-modal-close" title="Close">&times;</button>
+        <h3>📬 Scan Job Emails</h3>
+        <div class="hp-desc">Scan your inbox for job application updates — rejections, interviews, offers, and more.</div>
+        <div class="hp-range-group">
+          <button class="hp-range-opt hp-selected" data-days="7">Last 7 days</button>
+          <button class="hp-range-opt" data-days="30">Last 30 days</button>
+          <button class="hp-range-opt" data-days="90">Last 90 days</button>
+        </div>
+        <button class="hp-scan-btn">🔍 Scan Now</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    let selectedDays = 7;
+
+    // Close button
+    overlay.querySelector('.hp-modal-close').addEventListener('click', () => overlay.remove());
+
+    // Click outside card to close
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    // Escape key to close
+    const escHandler = (e) => {
+      if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+    };
+    document.addEventListener('keydown', escHandler);
+
+    // Range selection
+    overlay.querySelectorAll('.hp-range-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        overlay.querySelectorAll('.hp-range-opt').forEach(b => b.classList.remove('hp-selected'));
+        btn.classList.add('hp-selected');
+        selectedDays = parseInt(btn.dataset.days, 10);
+      });
+    });
+
+    // Scan Now button
+    const scanBtn = overlay.querySelector('.hp-scan-btn');
+    scanBtn.addEventListener('click', async () => {
+      scanBtn.disabled = true;
+      scanBtn.innerHTML = '<div class="hp-spinner"></div> Scanning…';
+
+      await executeScan(selectedDays);
+
+      overlay.remove();
+      document.removeEventListener('keydown', escHandler);
+    });
+  }
+
+  // ── Inject floating sync button ───────────────────────────────────────────
+  function injectSyncButton() {
+    if (document.getElementById('hp-email-sync-btn')) return;
+
+    injectScannerStyles();
+
+    const btn = document.createElement('button');
+    btn.id = 'hp-email-sync-btn';
+    btn.innerHTML = '<span class="hp-icon">✉️</span> Sync Job Emails';
+    btn.addEventListener('click', showScannerModal);
+    document.body.appendChild(btn);
+    console.log('[HirePath] Email sync button injected');
+  }
+
+  // ── Init: wait for DOM to be ready, then inject ───────────────────────────
+  // Gmail and Outlook are SPAs — wait a moment for the inbox to render
+  if (document.readyState === 'complete') {
+    setTimeout(injectSyncButton, 2500);
+  } else {
+    window.addEventListener('load', () => setTimeout(injectSyncButton, 2500));
+  }
+})();

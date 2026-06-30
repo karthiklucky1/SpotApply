@@ -1557,6 +1557,14 @@ def application_details(application_id: int, request: Request) -> dict:
         except Exception as e:
             cover_text = f"(Could not read cover letter: {e})"
 
+    rejection_data = None
+    if application.rejection_analysis:
+        try:
+            import json
+            rejection_data = json.loads(application.rejection_analysis)
+        except Exception:
+            rejection_data = None
+
     return {
         "id": application_id,
         "company": job.company,
@@ -1566,6 +1574,7 @@ def application_details(application_id: int, request: Request) -> dict:
         "source": job.source.value,
         "resume": resume_text,
         "cover_letter": cover_text,
+        "rejection_analysis": rejection_data,
     }
 
 
@@ -4771,6 +4780,146 @@ def delete_account(request: Request) -> dict:
             pass
 
     return {"success": True, "message": "All account data deleted."}
+
+
+# ── Email sync (browser extension) ───────────────────────────────────────────
+
+class SyncEmailPayload(BaseModel):
+    emails: list  # List of dicts with keys: subject, sender, body, date, company_guess
+
+
+_REJECTION_KEYWORDS = [
+    'unfortunately', 'not moving forward', 'other candidates',
+    'not selected', 'regret to inform', 'decided not to',
+    'will not be proceeding', 'position has been filled',
+]
+
+_POSITIVE_KEYWORDS = [
+    'interview', 'next steps', 'schedule a call',
+    'pleased to invite', 'move forward',
+]
+
+
+@app.post("/api/sync-emails")
+@_rate_limit("10/minute")
+async def sync_emails(payload: SyncEmailPayload, request: Request, bg: BackgroundTasks) -> dict:
+    """Ingest emails from the browser extension, match to applications,
+    and auto-detect rejections / interview invitations."""
+    from datetime import datetime
+    import json as _json
+
+    uid = _require_user(request)
+    _uid_filter = uid and uid != "local"
+
+    # Load all user applications joined with their jobs
+    with get_session() as session:
+        q = select(Application, Job).join(Job)
+        if _uid_filter:
+            q = q.where(Application.user_id == uid)
+        rows = session.exec(q).all()
+
+    matched = 0
+    rejections = 0
+    interviews = 0
+    unmatched_list: list[dict] = []
+
+    for email in payload.emails:
+        company_guess = (email.get("company_guess") or "").strip().lower()
+        body_lower = (email.get("body") or "").lower()
+        subject_lower = (email.get("subject") or "").lower()
+        combined_text = subject_lower + " " + body_lower
+
+        # ── Fuzzy match to an existing application ──────────────────────
+        matched_app = None
+        matched_job = None
+        if company_guess:
+            for app_row, job_row in rows:
+                if company_guess in (job_row.company or "").lower():
+                    matched_app = app_row
+                    matched_job = job_row
+                    break
+
+        # ── Detect rejection / positive signal ──────────────────────────
+        is_rejection = any(kw in combined_text for kw in _REJECTION_KEYWORDS)
+        is_interview = any(kw in combined_text for kw in _POSITIVE_KEYWORDS)
+
+        if matched_app and matched_job:
+            matched += 1
+
+            if is_rejection:
+                rejections += 1
+                with get_session() as session:
+                    app_obj = session.get(Application, matched_app.id)
+                    if app_obj:
+                        app_obj.status = ApplicationStatus.REJECTED
+                        app_obj.updated_at = datetime.utcnow()
+                        app_obj.notes = (
+                            (app_obj.notes or "")
+                            + f"\nAuto-detected rejection from email on {datetime.utcnow():%Y-%m-%d}."
+                        )
+                        session.add(app_obj)
+                        session.commit()
+
+                # Build resume text for background analysis
+                try:
+                    from app.autofill.answer_pack import _load_resume_text_from_path
+                    resume_text = _load_resume_text_from_path(matched_app.tailored_resume_path)
+                except Exception:
+                    resume_text = ""
+                if not resume_text:
+                    try:
+                        from app.matching.pipeline import _load_resume
+                        resume_text = _load_resume(user_id=uid)
+                    except Exception:
+                        resume_text = ""
+
+                def _run_analysis(app_id: int, jd: str, resume_md: str, email_body: str):
+                    from app.tailoring.analyzer import RejectionAnalyzer
+                    import json
+                    result = RejectionAnalyzer().analyze(jd, resume_md, email_body)
+                    with get_session() as s:
+                        a = s.get(Application, app_id)
+                        if a:
+                            a.rejection_analysis = json.dumps(result)
+                            s.add(a)
+                            s.commit()
+
+                bg.add_task(
+                    _run_analysis,
+                    matched_app.id,
+                    matched_job.description or "",
+                    resume_text,
+                    email.get("body") or "",
+                )
+
+            elif is_interview:
+                interviews += 1
+                with get_session() as session:
+                    app_obj = session.get(Application, matched_app.id)
+                    if app_obj and app_obj.status == ApplicationStatus.SUBMITTED:
+                        app_obj.status = ApplicationStatus.INTERVIEWING
+                        app_obj.updated_at = datetime.utcnow()
+                        app_obj.notes = (
+                            (app_obj.notes or "")
+                            + f"\nAuto-detected interview signal from email on {datetime.utcnow():%Y-%m-%d}."
+                        )
+                        session.add(app_obj)
+                        session.commit()
+        else:
+            unmatched_list.append({
+                "subject": email.get("subject"),
+                "sender": email.get("sender"),
+                "company_guess": email.get("company_guess"),
+            })
+
+    return {
+        "success": True,
+        "processed": len(payload.emails),
+        "matched": matched,
+        "rejections": rejections,
+        "interviews": interviews,
+        "unmatched": len(unmatched_list),
+    }
 
 
 # ── CSV export ───────────────────────────────────────────────────────────────
