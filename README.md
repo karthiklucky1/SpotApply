@@ -39,6 +39,20 @@ Discover ─▶ Match cascade ─▶ Score & enrich ─▶ Tailor (grounding che
 
 ---
 
+## Recent feature additions
+
+We recently shipped a set of optimization and quality-of-life updates to enhance user experience and cut LLM API costs:
+
+* **In-Drawer Tailored Documents Viewer:** Replaced file downloads and modal overlays with a clean, two-column detail drawer layout. When reviewing a HirePath submission, the right pane displays tabbed, scrollable, and selectable views of the tailored **Resume** and **Cover Letter** text instantly.
+* **Instant Status Updates:** Replaced artificial `setTimeout` delays during status transitions ("Under Review", "Accepted", "Rejected", "Remove") with instant page refreshes. Utilizes a `sessionStorage`-persisted toast system to render confirmation alerts immediately on page load, making the board feel incredibly fast.
+* **Independent Per-Column Stagger Animations:** Fixed a bug where late columns (Submitted and Interview pipelines) stayed blank for 6-9 seconds by refactoring CSS staggers to run independently inside each column container with a 300ms delay cap.
+* **LLM Cost Prevention for Submitted Applications:** Bypassed expensive AI Match & Resume Fit calls (`/senior-review`) for job cards that have already been submitted, saving token fees once the application is finalized.
+* **Column-Level Real-Time Search:** Added real-time client-side filter bars above each column to search cards instantly by company name or job title.
+* **Automatic Extension Submission Tracking:** The browser extension now captures external form submissions in real-time, automatically registers the application as submitted in the backend, and broadcasts a silent reload to the dashboard.
+* **Fast-Path Page Loading & Pagination:** Refactored SQL queries for large datasets (1,000+ applications) to query columns individually, default the Submitted pipeline to a paginated view of the most recent 20 cards, and include a "Show More / Show Less" toggle.
+
+---
+
 ## The matching cascade
 
 Stages run cheapest-first; a job only advances if it survives the previous gate, which
