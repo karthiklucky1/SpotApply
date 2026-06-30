@@ -144,6 +144,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "INIT_EXTENSION") {
+    const pack = msg.payload;
+    console.log("[HirePath BG] INIT_EXTENSION received");
+    stashAuth(pack);
+    chrome.storage.local.set({
+      hirepath_copilot_pack: pack,
+      hirepath_copilot_ts: Date.now()
+    }, () => {
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
   if (msg.type === "PING") {
     sendResponse({ ok: true, version: chrome.runtime.getManifest().version });
   }

@@ -6408,6 +6408,25 @@
         loadResumeStatus();
         // If they opened a posting then came back before load finished, ask now.
         setTimeout(maybeAskSubmit, 1200);
+
+        // Broadcast local server credentials to the extension so it connects/syncs automatically
+        try {
+            const tok = localStorage.getItem('sb_token');
+            const refresh = localStorage.getItem('sb_refresh');
+            const url = localStorage.getItem('sb_url');
+            const anon = localStorage.getItem('sb_anon');
+            
+            const initPack = {
+                hirepath_url: window.location.origin,
+                auth_token: tok,
+                refresh_token: refresh,
+                supabase_url: url,
+                supabase_anon_key: anon
+            };
+            window.postMessage({ type: 'HIREPATH_INIT_EXTENSION', pack: initPack }, '*');
+        } catch (e) {
+            console.error('[HirePath] Failed to broadcast extension init pack:', e);
+        }
     });
 </script>
 

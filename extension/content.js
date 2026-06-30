@@ -2406,6 +2406,18 @@ window.addEventListener('message', (e) => {
       window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
     }
   }
+
+  if (e.data?.type === 'HIREPATH_INIT_EXTENSION' && e.data?.pack) {
+    console.log('[HirePath] Received HIREPATH_INIT_EXTENSION from dashboard, initializing background');
+    let ctxOk = false;
+    try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
+    if (!ctxOk) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'INIT_EXTENSION', payload: e.data.pack });
+    } catch (err) {
+      console.warn('[HirePath] Extension init error:', err.message);
+    }
+  }
 });
 
 // ── Auto-fill on page load ────────────────────────────────────────────────────
