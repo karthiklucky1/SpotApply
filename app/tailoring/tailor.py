@@ -319,6 +319,8 @@ def _md_to_docx(md_text: str, out_path: Path) -> None:
         if not stripped:
             # Suppress excessive blank lines — ATS parsers handle spacing via style
             continue
+        if stripped.startswith("```"):
+            continue
         elif stripped.startswith("# "):
             doc.add_heading(stripped[2:], level=1)
         elif stripped.startswith("## "):

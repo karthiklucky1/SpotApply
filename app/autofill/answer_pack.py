@@ -432,6 +432,8 @@ def generate_answer_pack(application_id: int, user_id: str | None = None) -> dic
         if not application:
             raise ValueError(f"Application {application_id} not found")
         job = session.get(Job, application.job_id)
+        if not user_id:
+            user_id = application.user_id
 
     profile = _get_or_create_profile(user_id=user_id)
     profile_dict = _profile_to_dict(profile)

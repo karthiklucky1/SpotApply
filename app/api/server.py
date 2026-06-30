@@ -4580,6 +4580,99 @@ def get_answer_pack(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class AskCopilotRequest(BaseModel):
+    question: str
+
+
+@app.post("/application/{application_id}/ask")
+async def ask_copilot(application_id: int, req: AskCopilotRequest, request: Request) -> dict:
+    """Ask custom question grounded in the JD and resume context."""
+    _require_owned_application(request, application_id)
+    
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+    
+    with get_session() as session:
+        app = session.get(Application, application_id)
+        if not app:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, app.job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+            
+        from app.autofill.answer_pack import _load_resume_text_from_path, _get_or_create_profile
+        resume_text = _load_resume_text_from_path(app.tailored_resume_path)
+        if not resume_text:
+            from app.matching.pipeline import _load_resume
+            resume_text = _load_resume(user_id=app.user_id)
+            
+        profile = _get_or_create_profile(user_id=app.user_id)
+        
+    from app.config import settings
+    
+    prompt = f"""You are a helpful, professional career assistant and recruiter.
+The candidate is applying for the following role:
+Company: {job.company}
+Title: {job.title}
+Job Description:
+{job.description[:4000] if job.description else ""}
+
+Candidate Profile:
+- Name: {profile.first_name} {profile.last_name}
+- Title: {profile.current_title}
+- Experience: {profile.years_experience} years
+- Summary: {profile.professional_summary[:600] if profile.professional_summary else ""}
+
+Candidate Resume Details:
+{resume_text[:6000]}
+
+User Question:
+"{req.question}"
+
+Write a concise, professional response to the user's question. 
+- If this is a job application essay/form question, write the answer in the first-person ("I") as the candidate, ready to be copy-pasted, matching the candidate's actual background honestly (do not fabricate experience). Keep it under 150 words.
+- If this is an interview prep or advice question, give clear, blunt feedback grounded in the candidate's real resume bullets.
+Do NOT use markdown headers or introduction/conversational prefix. Return only the response/answer text."""
+
+    system_prompt = "You write clear, professional, and honest answers grounded strictly in the candidate's resume and job description."
+    
+    answer = ""
+    if settings.anthropic_api_key:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=settings.anthropic_api_key)
+            resp = client.messages.create(
+                model=settings.cover_letter_model,
+                max_tokens=500,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text.strip()
+        except Exception as e:
+            log.warning("Ask copilot Anthropic failed: %s", e)
+            
+    if not answer and settings.openai_api_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.openai_api_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=500,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            answer = resp.choices[0].message.content.strip()
+        except Exception as e:
+            log.warning("Ask copilot OpenAI failed: %s", e)
+            
+    if not answer:
+        raise HTTPException(status_code=500, detail="No LLM backend available to answer the question")
+        
+    return {"answer": answer}
+
+
 class ExtractLinkRequest(BaseModel):
     url: str
 

@@ -4317,6 +4317,16 @@
 
         // ── Answer Pack Modal ────────────────────────────────────────────────────
         async function openAnswerPack(appId) {
+            window.__currentAnswerPackAppId = appId;
+            
+            // Reset Copilot Q&A
+            const qInput = document.getElementById('copilot-question-input');
+            if (qInput) qInput.value = '';
+            const resBox = document.getElementById('copilot-result-box');
+            if (resBox) resBox.classList.add('hidden');
+            const resText = document.getElementById('copilot-result-text');
+            if (resText) resText.textContent = '';
+
             if (typeof closeJobDrawer === 'function') closeJobDrawer();  // step the drawer aside for the modal
             document.getElementById('answer-pack-modal').classList.remove('hidden');
             document.getElementById('answer-pack-content').innerHTML = '<p class="text-slate-400 text-sm text-center py-8">Generating answers with AI...</p>';
@@ -4331,6 +4341,77 @@
         }
 
         function closeAnswerPackModal() { document.getElementById('answer-pack-modal').classList.add('hidden'); }
+
+        async function askCopilotQ() {
+            const appId = window.__currentAnswerPackAppId;
+            if (!appId) {
+                showToast('No active application selected', 'error');
+                return;
+            }
+            const input = document.getElementById('copilot-question-input');
+            const btn = document.getElementById('copilot-ask-btn');
+            const resBox = document.getElementById('copilot-result-box');
+            const resText = document.getElementById('copilot-result-text');
+            
+            const question = (input.value || '').trim();
+            if (!question) {
+                showToast('Please type a question first', 'error');
+                return;
+            }
+            
+            btn.disabled = true;
+            const origText = btn.innerHTML;
+            btn.innerHTML = `<span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-top-color-transparent rounded-full mr-1.5 align-middle"></span> Asking...`;
+            
+            resBox.classList.add('hidden');
+            resText.textContent = '';
+            
+            try {
+                const token = localStorage.getItem('sb_token');
+                const res = await fetch(`/application/${appId}/ask`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+                    },
+                    body: JSON.stringify({ question })
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json();
+                    showToast(err.detail || 'Could not get answer', 'error');
+                    return;
+                }
+                
+                const data = await res.json();
+                resText.textContent = data.answer || '';
+                resBox.classList.remove('hidden');
+                
+                // Scroll the modal to the bottom so the answer is visible
+                const modal = document.getElementById('answer-pack-modal').querySelector('.relative');
+                if (modal) {
+                    setTimeout(() => {
+                        modal.scrollTo({ top: modal.scrollHeight, behavior: 'smooth' });
+                    }, 50);
+                }
+                
+            } catch (e) {
+                showToast('Network error — try again.', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = origText;
+            }
+        }
+
+        function copyCopilotAnswer(btn) {
+            const text = document.getElementById('copilot-result-text').textContent;
+            if (!text) return;
+            navigator.clipboard.writeText(text).then(() => {
+                const orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = orig, 1500);
+            });
+        }
 
         function copyText(text, btn) {
             navigator.clipboard.writeText(text).then(() => {
@@ -4379,9 +4460,9 @@
             </div>`;
 
             if (data.resume_path) {
-                html += `<div class="mb-4 p-3 bg-emerald-900/20 border border-emerald-500/20 rounded-xl text-xs text-emerald-300">
-                    <span class="font-bold">Resume file:</span> ${data.resume_path.split('/').pop()}
-                    <span class="text-slate-400 ml-2">(upload this file when prompted)</span>
+                html += `<div class="mb-4 p-3 rounded-xl text-xs" style="background:#e6f4ea;border:1px solid #34a853;color:#137333;">
+                    <span class="font-bold">Resume file:</span> <span class="font-semibold" style="color:#0f5132;">${data.resume_path.split('/').pop()}</span>
+                    <span class="ml-2 font-medium" style="color:#3c4043;">(upload this file when prompted)</span>
                 </div>`;
             }
 
@@ -5010,6 +5091,40 @@
                 <button onclick="closeAnswerPackModal()" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
             <p class="text-xs text-slate-500 mb-4">Copy each answer into the application form. Fields already filled by autofill are shown for reference.</p>
+            
+            <!-- Q&A Copilot Section -->
+            <div class="mb-6 bg-slate-950/40 border border-slate-800/60 p-4 rounded-xl">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    <span>💡 Ask AI Copilot</span>
+                    <span class="text-[9px] text-indigo-400 normal-case font-medium tracking-normal bg-indigo-950/40 border border-indigo-900/50 px-2 py-0.5 rounded-full">Grounded in JD & Resume</span>
+                </h3>
+                <div class="flex flex-col gap-3">
+                    <div class="flex items-center gap-2">
+                        <textarea id="copilot-question-input" rows="2" 
+                                  class="flex-1 bg-slate-900/60 border border-slate-700/50 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition" 
+                                  placeholder="Type any custom question (e.g. 'Explain my experience in Kubernetes' or a specific form question)"></textarea>
+                    </div>
+                    <div class="flex justify-end items-center">
+                        <button type="button" onclick="askCopilotQ()" id="copilot-ask-btn"
+                                class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition duration-150 flex items-center gap-1.5 shadow-md">
+                            <span>Ask AI Copilot</span>
+                        </button>
+                    </div>
+                    
+                    <!-- Result Box -->
+                    <div id="copilot-result-box" class="hidden mt-3 p-4 bg-slate-900/80 border border-slate-800/80 rounded-xl relative">
+                        <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
+                            <span class="text-[10px] text-indigo-400 font-extrabold uppercase tracking-wide">Copilot Answer</span>
+                            <button onclick="copyCopilotAnswer(this)" class="text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button>
+                        </div>
+                        <p id="copilot-result-text" class="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap"></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Divider -->
+            <div class="border-t border-slate-800/80 my-5"></div>
+
             <div id="answer-pack-content"></div>
         </div>
     </div>
