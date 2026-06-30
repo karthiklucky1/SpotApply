@@ -103,6 +103,43 @@ class Tailor:
             except Exception:
                 pass
 
+    def _clean_tailored_resume(self, text: str) -> str:
+        if not text:
+            return ""
+        # Strip markdown wrapper blocks
+        text = re.sub(r"^```markdown\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text, flags=re.IGNORECASE)
+        
+        # Strip any leading horizontal rules (like prompt template's "---")
+        lines = text.splitlines()
+        while lines:
+            first = lines[0].strip()
+            if not first:
+                lines.pop(0)
+            elif re.match(r"^[-*_ ]+$", first) and len(first) >= 3:
+                lines.pop(0)
+            else:
+                break
+                
+        # Strip any "CUSTOM HIGHLIGHTS" or "CRITICAL HIGHLIGHTS" sections appended at the end
+        cleaned_lines = []
+        skip = False
+        for line in lines:
+            stripped = line.strip().lower()
+            if "custom highlights" in stripped or "critical framing" in stripped or "senior reviewer" in stripped:
+                # Drop preceding horizontal rule if present
+                if cleaned_lines and re.match(r"^[-*_ ]+$", cleaned_lines[-1].strip()) and len(cleaned_lines[-1].strip()) >= 3:
+                    cleaned_lines.pop()
+                skip = True
+                continue
+                
+            if skip:
+                continue
+                
+            cleaned_lines.append(line)
+            
+        return "\n".join(cleaned_lines).strip()
+
     def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a", custom_highlight_block: Optional[str] = None) -> str:
         # ── ATS exact-phrase targeting ──────────────────────────────────────
         # Find the JD phrases an ATS will scan for that are NOT already verbatim
@@ -160,7 +197,7 @@ Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a se
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                return resp.content[0].text
+                return self._clean_tailored_resume(resp.content[0].text)
             except Exception as e:
                 log.warning("Tailor: Anthropic failed, falling back to OpenAI: %s", e)
 
@@ -173,7 +210,7 @@ Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a se
                     {"role": "user", "content": prompt},
                 ]
             )
-            return resp.choices[0].message.content
+            return self._clean_tailored_resume(resp.choices[0].message.content)
 
         raise RuntimeError("No LLM backend available for tailoring resume")
 
