@@ -2768,7 +2768,7 @@
             document.getElementById('modal').classList.remove('hidden');
 
             try {
-                const res = await fetch(`/application/${appId}/details`);
+                const res = await fetch(`/application/${appId}/details?_=${Date.now()}`);
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     document.getElementById('loading').textContent = `Error: ${err.detail || res.statusText}`;
@@ -2941,7 +2941,7 @@
                 // Poll application details to check when status changes
                 const pollInterval = setInterval(async () => {
                     try {
-                        const statusRes = await fetch(`/application/${appId}/details`);
+                        const statusRes = await fetch(`/application/${appId}/details?_=${Date.now()}`);
                         if (statusRes.ok) {
                             const data = await statusRes.json();
                             const filledStatuses = ['autofilled', 'awaiting_user', 'ready_to_submit', 'error'];
@@ -2991,7 +2991,7 @@
                 // Poll application details to check when status changes
                 const pollInterval = setInterval(async () => {
                     try {
-                        const statusRes = await fetch(`/application/${currentAppId}/details`);
+                        const statusRes = await fetch(`/application/${currentAppId}/details?_=${Date.now()}`);
                         if (statusRes.ok) {
                             const data = await statusRes.json();
                             const filledStatuses = ['autofilled', 'awaiting_user', 'ready_to_submit', 'error'];
@@ -4331,7 +4331,7 @@
             document.getElementById('answer-pack-modal').classList.remove('hidden');
             document.getElementById('answer-pack-content').innerHTML = '<p class="text-slate-400 text-sm text-center py-8">Generating answers with AI...</p>';
             try {
-                const res = await fetch(`/application/${appId}/answer-pack`);
+                const res = await fetch(`/application/${appId}/answer-pack?_=${Date.now()}`);
                 if (!res.ok) { document.getElementById('answer-pack-content').innerHTML = `<p class="text-red-400 text-sm">Error: ${res.statusText}</p>`; return; }
                 const data = await res.json();
                 renderAnswerPack(data);
