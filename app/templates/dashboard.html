@@ -1252,11 +1252,13 @@
                             </div>
 
                             <!-- Resume Fit Verdict Card -->
+                            {% if not _is_submitted_state %}
                             <div class="senior-review-placeholder">
                                 <div class="rounded-2xl border border-slate-800/45 bg-slate-950/20 p-5 min-h-[160px] flex items-center justify-center">
                                     <span class="text-xs text-slate-500">Loading resume review…</span>
                                 </div>
                             </div>
+                            {% endif %}
 
                             <!-- Outreach, Referrals & Connections Widget -->
                             <div class="p-5 rounded-2xl border border-indigo-500/20 bg-slate-900/30 flex flex-col gap-4.5 relative overflow-hidden"
