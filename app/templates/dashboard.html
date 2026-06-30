@@ -1527,9 +1527,10 @@
                 <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1" id="interviewing-container">
                     {% for app, job in interviewing %}
                     {% call jobcard(app, job, 'blue', false, app.status.value, visa_framing) %}
-                        <div class="grid grid-cols-2 gap-1.5 mb-1.5">
-                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);">🎉 Offer</button>
-                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✅ Accepted</button>
+                        <div class="grid grid-cols-3 gap-1 mb-1.5">
+                            <button type="button" id="review-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(16,185,129,0.08);color:#10b981;border:1px solid rgba(16,185,129,0.25);" title="Move back to Submitted (Under Review) Pipeline">⏳ Under Review</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);">🎉 Offer</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✅ Accepted</button>
                         </div>
                         <div class="grid grid-cols-2 gap-2">
                             <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2">
