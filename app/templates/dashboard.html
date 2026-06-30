@@ -6409,24 +6409,30 @@
         // If they opened a posting then came back before load finished, ask now.
         setTimeout(maybeAskSubmit, 1200);
 
-        // Broadcast local server credentials to the extension so it connects/syncs automatically
-        try {
-            const tok = localStorage.getItem('sb_token');
-            const refresh = localStorage.getItem('sb_refresh');
-            const url = localStorage.getItem('sb_url');
-            const anon = localStorage.getItem('sb_anon');
-            
-            const initPack = {
-                hirepath_url: window.location.origin,
-                auth_token: tok,
-                refresh_token: refresh,
-                supabase_url: url,
-                supabase_anon_key: anon
-            };
-            window.postMessage({ type: 'HIREPATH_INIT_EXTENSION', pack: initPack }, '*');
-        } catch (e) {
-            console.error('[HirePath] Failed to broadcast extension init pack:', e);
+        // Broadcast local server credentials to the extension so it connects/syncs
+        // automatically. The content script attaches at document_idle, which can be
+        // AFTER a single on-load broadcast — so we re-broadcast on a short schedule
+        // (and keep refreshing the token) until/while the extension is present.
+        function _broadcastInitPack() {
+            try {
+                const tok = localStorage.getItem('sb_token');
+                if (!tok) return;  // not logged in yet — nothing to connect
+                const initPack = {
+                    hirepath_url: window.location.origin,
+                    auth_token: tok,
+                    refresh_token: localStorage.getItem('sb_refresh'),
+                    supabase_url: localStorage.getItem('sb_url'),
+                    supabase_anon_key: localStorage.getItem('sb_anon'),
+                };
+                window.postMessage({ type: 'HIREPATH_INIT_EXTENSION', pack: initPack }, '*');
+            } catch (e) {
+                console.error('[HirePath] Failed to broadcast extension init pack:', e);
+            }
         }
+        // Fire several times early to beat the content-script attach race, then
+        // keep it fresh on an interval so a later extension reload still connects.
+        [0, 500, 1500, 3000, 6000].forEach(ms => setTimeout(_broadcastInitPack, ms));
+        setInterval(_broadcastInitPack, 15000);
     });
 </script>
 
