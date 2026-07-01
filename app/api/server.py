@@ -4317,6 +4317,27 @@ def get_profile_memory(request: Request) -> dict:
     }
 
 
+@app.delete("/api/profile/memory/{entry_id}")
+def delete_profile_memory(entry_id: int, request: Request) -> dict:
+    """Delete one of the current user's OWN recruiter-memory entries."""
+    from app.config import settings
+    from app.db.models import UserPersonalMemory
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid and uid != "local" else None
+    with get_session() as session:
+        row = session.get(UserPersonalMemory, entry_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        # Ownership check — never delete another tenant's memory.
+        if row.user_id != user_id_arg:
+            raise HTTPException(status_code=403, detail="Not allowed")
+        session.delete(row)
+        session.commit()
+    return {"ok": True}
+
+
 @app.post("/api/profile/memory/refresh")
 @_rate_limit("3/minute")
 def refresh_profile_memory(request: Request) -> dict:
