@@ -2024,7 +2024,7 @@ function showOverlay(html, _unused, dismissable) {
     <div style="display:flex;align-items:center;gap:10px">
       <span style="font-size:20px;flex-shrink:0">⚡</span>
       <div style="flex:1;line-height:1.5">${html}</div>
-      ${dismissable ? `<button onclick="document.getElementById('hp-copilot-overlay').remove()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:16px;padding:0 4px;line-height:1" title="Dismiss">✕</button>` : ''}
+      ${dismissable ? `<button data-hp-close style="background:none;border:none;color:#64748b;cursor:pointer;font-size:16px;padding:0 4px;line-height:1" title="Dismiss">✕</button>` : ''}
     </div>`;
   Object.assign(div.style, {
     position: 'fixed', bottom: '20px', right: '20px', zIndex: '2147483647',
@@ -2037,8 +2037,13 @@ function showOverlay(html, _unused, dismissable) {
     transition: 'opacity 0.3s ease',
   });
   document.body.appendChild(div);
-  // Auto-hide after 30s if dismissable
-  if (dismissable) setTimeout(() => div?.remove(), 30000);
+  // Attach the dismiss handler via addEventListener — inline onclick="" is
+  // blocked by strict CSP on sites like LinkedIn, which is why the ✕ used to
+  // do nothing there.
+  if (dismissable) {
+    div.querySelector('[data-hp-close]')?.addEventListener('click', () => div.remove());
+    setTimeout(() => div?.remove(), 30000);  // auto-hide
+  }
 }
 
 function removeOverlay() {
@@ -2321,8 +2326,10 @@ function showBanner(msg) {
     'box-shadow:0 2px 20px rgba(79,70,229,0.4)',
   ].join(';');
   banner.innerHTML = `<span style="font-size:18px">🚀</span><span style="flex:1">${msg}</span>` +
-    `<button onclick="this.parentElement.remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;cursor:pointer;padding:4px 10px;border-radius:8px;font-size:12px">✕</button>`;
+    `<button data-hp-close style="background:rgba(255,255,255,0.2);border:none;color:white;cursor:pointer;padding:4px 10px;border-radius:8px;font-size:12px">✕</button>`;
   document.body.prepend(banner);
+  // addEventListener (not inline onclick) so the ✕ works under strict CSP.
+  banner.querySelector('[data-hp-close]')?.addEventListener('click', () => banner.remove());
   setTimeout(() => banner?.remove(), 12000);
 }
 
@@ -2367,7 +2374,7 @@ function chromeCall(fn) {
             <div style="font-weight: 800; margin-bottom: 2px;">Extension reloaded</div>
             <div style="font-weight: 400; opacity: 0.9; font-size: 11px;">Please refresh this tab to reconnect.</div>
           </div>
-          <button onclick="window.location.reload()" style="
+          <button data-hp-reload style="
             background: #ffffff;
             color: #ef4444;
             border: none;
@@ -2378,7 +2385,7 @@ function chromeCall(fn) {
             cursor: pointer;
             margin-left: 8px;
             transition: all 0.2s;
-          " onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">Refresh</button>
+          ">Refresh</button>
         `;
         
         // Add entry animation if not present
@@ -2394,6 +2401,8 @@ function chromeCall(fn) {
           document.head.appendChild(style);
         }
         document.body.appendChild(banner);
+        // addEventListener (not inline onclick) — CSP-safe.
+        banner.querySelector('[data-hp-reload]')?.addEventListener('click', () => window.location.reload());
       }
     } else {
       console.error('[HirePath]', e);
@@ -2544,10 +2553,11 @@ chromeCall(() => chrome.storage.local.get(
             } else if (isActionablePage()) {
               console.log('[HirePath] Page became actionable — resuming copilot');
               fillForm(pack);
-            } else {
-              console.log('[HirePath] Page not actionable — injecting fill button');
-              injectFillButton();
             }
+            // else: not a job/application page — do nothing. We must NOT pop up
+            // the fill button on non-actionable pages (e.g. a Google/YouTube tab
+            // opened during an active session), which is exactly what used to
+            // make the button appear on unrelated sites.
           }, 3000);
         }
       }, 2000);
@@ -2568,32 +2578,69 @@ chromeCall(() => chrome.storage.local.get(
 
 function injectFillButton() {
   if (document.getElementById('hp-fill-btn')) return;
-  // Never show the form-fill button on email clients — those hosts use the
-  // dedicated "Sync Job Emails" button instead, not the autofill flow.
+  // Never show the form-fill button on blocked/everyday sites or email clients.
+  if (isBlockedHost()) return;
   const _h = window.location.hostname;
   if (_h === 'mail.google.com' || _h === 'outlook.live.com' || _h === 'outlook.office.com') return;
-  const btn = document.createElement('button');
-  btn.id = 'hp-fill-btn';
-  btn.innerHTML = '⚡ Fill with HirePath';
-  Object.assign(btn.style, {
+  // Respect a previous dismissal: once the user closes the button on this host,
+  // don't show it again — persists across page reloads.
+  chromeCall(() => chrome.storage.local.get(['hirepath_dismissed'], (d) => {
+    const dismissed = d.hirepath_dismissed || {};
+    if (dismissed[_h]) {
+      console.log('[HirePath] Fill button dismissed for', _h, '— not showing');
+      return;
+    }
+    _renderFillButton(_h);
+  }));
+}
+
+function _renderFillButton(host) {
+  if (document.getElementById('hp-fill-btn')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'hp-fill-btn';
+  Object.assign(wrap.style, {
     position: 'fixed', bottom: '20px', left: '20px', zIndex: '2147483647',
-    padding: '12px 18px', borderRadius: '14px', border: 'none', cursor: 'pointer',
+    display: 'flex', alignItems: 'stretch',
     background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', color: '#fff',
-    fontFamily: 'system-ui,sans-serif', fontSize: '13px', fontWeight: '700',
-    boxShadow: '0 8px 24px rgba(79,70,229,0.45)',
+    borderRadius: '14px', boxShadow: '0 8px 24px rgba(79,70,229,0.45)',
+    fontFamily: 'system-ui,sans-serif', overflow: 'hidden',
   });
-  btn.addEventListener('click', () => {
-    btn.innerHTML = '⏳ Loading…';
-    btn.disabled = true;
-    // Always read FRESH data from chrome.storage.local on click
-    // This ensures we get the pack even if it was stored after the button was injected
+
+  const fill = document.createElement('button');
+  fill.textContent = '⚡ Fill with HirePath';
+  Object.assign(fill.style, {
+    padding: '12px 14px 12px 18px', border: 'none', cursor: 'pointer',
+    background: 'transparent', color: '#fff', fontSize: '13px', fontWeight: '700',
+  });
+
+  // ✕ — dismiss and remember the dismissal for this host.
+  const close = document.createElement('button');
+  close.textContent = '✕';
+  close.title = 'Hide on this site';
+  Object.assign(close.style, {
+    padding: '0 12px', border: 'none', cursor: 'pointer',
+    background: 'rgba(0,0,0,0.18)', color: '#fff', fontSize: '12px', fontWeight: '700',
+  });
+  close.addEventListener('click', (e) => {
+    e.stopPropagation();
+    wrap.remove();
+    chromeCall(() => chrome.storage.local.get(['hirepath_dismissed'], (d) => {
+      const dismissed = d.hirepath_dismissed || {};
+      dismissed[host] = Date.now();
+      chrome.storage.local.set({ hirepath_dismissed: dismissed });
+    }));
+  });
+
+  fill.addEventListener('click', () => {
+    fill.textContent = '⏳ Loading…';
+    fill.disabled = true;
+    // Always read FRESH data from chrome.storage.local on click.
     chromeCall(() => chrome.storage.local.get(
       ['hirepath_fill_pack', 'hirepath_copilot_pack'],
       (data) => {
-        btn.remove();
+        wrap.remove();
         const freshPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
         if (freshPack) {
-          // Clear user modified flags on manual fill trigger
           document.querySelectorAll('input, textarea, select').forEach(el => {
             delete el.dataset.hirepathUserModified;
           });
@@ -2608,7 +2655,10 @@ function injectFillButton() {
       }
     ));
   });
-  document.body.appendChild(btn);
+
+  wrap.appendChild(fill);
+  wrap.appendChild(close);
+  document.body.appendChild(wrap);
 }
 
 // ── Page classification helpers ───────────────────────────────────────────────
@@ -2619,16 +2669,25 @@ function isKnownATS() {
     || isAvaturePage();
 }
 
-function isActionablePage() {
-  return isKnownATS() || hasApplicationForm() || hasApplyButton();
+// Everyday sites where the fill UI must NEVER appear. Prevents the "Fill with
+// HirePath" button from popping up on Google, YouTube, social media, etc.
+const _BLOCKED_HOST_PARTS = [
+  'google.', 'youtube.', 'gmail.', 'facebook.', 'instagram.', 'twitter.',
+  'x.com', 'reddit.', 'netflix.', 'spotify.', 'tiktok.', 'wikipedia.',
+  'bing.com', 'yahoo.com', 'duckduckgo.', 'amazon.', 'whatsapp.',
+  'chatgpt.com', 'openai.com', 'claude.ai',
+];
+function isBlockedHost() {
+  const h = window.location.hostname.toLowerCase();
+  return _BLOCKED_HOST_PARTS.some(part => h.includes(part));
 }
 
-function hasApplyButton() {
-  const isApply = (el) => {
-    const label = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
-    return label.length > 0 && label.length <= 30 && /\bapply\b/i.test(label) && el.offsetParent !== null;
-  };
-  return Array.from(document.querySelectorAll("a, button, [role='button']")).some(isApply);
+function isActionablePage() {
+  // Never on everyday/blocked sites. Otherwise require a real application form
+  // (or a known ATS). A stray "Apply" link or a lone search box no longer
+  // counts — that used to cause false pop-ups on non-job pages.
+  if (isBlockedHost()) return false;
+  return isKnownATS() || hasApplicationForm();
 }
 
 // ── Email Scanning Module (Gmail & Outlook) ───────────────────────────────────

@@ -4760,13 +4760,24 @@
                     <div class="rounded-2xl p-4" style="background:var(--surface-2);border:1px solid var(--border);">
                         <div class="flex items-center justify-between mb-1.5">
                             <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">${e.source}</span>
-                            <span class="text-[10px]" style="color:var(--muted-2);">${new Date(e.created_at).toLocaleDateString()}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-[10px]" style="color:var(--muted-2);">${new Date(e.created_at).toLocaleDateString()}</span>
+                                <button onclick="deleteMemory(${e.id})" title="Remove this entry" style="background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">&times;</button>
+                            </div>
                         </div>
                         ${_renderMemoryMarkdown(e.recommendations)}
                     </div>`).join('');
             } catch (e) {
                 list.innerHTML = '<p class="text-rose-500 text-sm">Could not load your brief.</p>';
             }
+        }
+
+        async function deleteMemory(id) {
+            try {
+                const res = await fetch(`/api/profile/memory/${id}`, { method: 'DELETE', headers: authHeaders() });
+                if (res.ok) { showToast('Removed.', 'success'); openMemoryModal(); }
+                else { showToast('Could not remove it.', 'error'); }
+            } catch (e) { showToast('Network error.', 'error'); }
         }
 
         async function refreshMemory(btn) {
