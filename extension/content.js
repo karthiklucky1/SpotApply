@@ -95,7 +95,12 @@ function handleFormSubmitted() {
 
 function fillInput(el, value) {
   if (!el || value === undefined || value === null || value === "") return;
-  
+
+  // Never treat a file input as a text field. Browsers forbid setting .value on
+  // <input type="file"> (it throws "accepts a filename"), and the résumé is
+  // handled separately by attachResume.
+  if (el.tagName === 'INPUT' && el.type === 'file') return;
+
   // Respect manual user edits — do not overwrite
   if (el.dataset.hirepathUserModified === 'true') {
     console.log('[HirePath] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
@@ -507,7 +512,7 @@ async function fillAshby(pack) {
     waited += 300;
   }
 
-  const inputs = document.querySelectorAll("input, textarea");
+  const inputs = document.querySelectorAll("input:not([type='file']), textarea");
   for (const inp of inputs) {
     const lbl = labelText(inp);
     if (/first.*(name)?/i.test(lbl)) fillInput(inp, pack.first_name);
@@ -1655,45 +1660,38 @@ function observeAnswer(ta, pack) {
 // ── Resume file attachment ──────────────────────────────────────────────────────
 // Fetches the tailored resume .docx (base64) via the background worker and sets
 // it on any empty file inputs using a synthetic DataTransfer.
+// Returns true when the résumé is handled (attached now, or already present),
+// false when we tried and couldn't — so the caller retries on a later pass
+// instead of wrongly marking it "done".
 async function attachResume(root, pack) {
-  if (!pack.hirepath_url || !pack.auth_token || !pack.app_id) return;
-  const fileInputs = Array.from(root.querySelectorAll('input[type="file"]')).filter(fi => {
-    if (fi.files && fi.files.length) return false; // already has a file
+  if (!pack.hirepath_url || !pack.auth_token || !pack.app_id) return false;
 
-    // Check if there is already an uploaded file in the same container/section
+  const allFileInputs = Array.from(root.querySelectorAll('input[type="file"]'));
+  if (!allFileInputs.length) return false; // form may render the field later
+
+  // Does this input already have a file / show an "uploaded" state?
+  const isUploaded = (fi) => {
+    if (fi.files && fi.files.length) return true;
+    const c = fi.closest('div, section, fieldset');
+    return !!(c && (
+      c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
+      /successfully uploaded/i.test(c.textContent)
+    ));
+  };
+
+  const targets = allFileInputs.filter(fi => {
+    if (isUploaded(fi)) return false;
     const container = fi.closest('div, section, fieldset');
-    if (container) {
-      const hasUploaded = container.querySelector('[data-automation-id*="delete" i]') || 
-                          container.textContent.includes('Successfully Uploaded!') ||
-                          container.textContent.includes('Delete') ||
-                          container.querySelector('button[aria-label*="delete" i]');
-      if (hasUploaded) {
-        return false;
-      }
-    }
-
-    const label = labelText(fi);
-    const name = fi.name || "";
-    const id = fi.id || "";
-    const aid = fi.getAttribute("data-automation-id") || "";
-    const ctx = (label + " " + name + " " + id + " " + aid).toLowerCase();
-
-    // Direct match
+    const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
+                 (fi.getAttribute("data-automation-id") || "")).toLowerCase();
     if (/resume|cv|résumé/.test(ctx)) return true;
-
-    // Check parent/wrapping container text for section heading
-    if (container && /resume|cv|résumé/i.test(container.textContent.slice(0, 800))) {
-      return true;
-    }
-
-    // Fallback: if there's only 1 file input on the page, it's virtually always the resume
-    if (root.querySelectorAll('input[type="file"]').length === 1) {
-      return true;
-    }
-
+    if (container && /resume|cv|résumé/i.test(container.textContent.slice(0, 800))) return true;
+    if (allFileInputs.length === 1) return true; // single file input = the résumé
     return false;
   });
-  if (!fileInputs.length) return;
+
+  // Nothing left to attach → done only if something is genuinely uploaded.
+  if (!targets.length) return allFileInputs.some(isUploaded);
 
   const res = await apiFetch(
     `${pack.hirepath_url}/api/fill-pack/${pack.app_id}/resume`,
@@ -1701,16 +1699,11 @@ async function attachResume(root, pack) {
   );
   if (!res.ok || !res.data || !res.data.base64) {
     console.warn("[HirePath] resume fetch failed:", res.error || res.status);
-    return;
+    return false;
   }
 
   const { filename, mime, base64 } = res.data;
-
-  // Check if this filename is already visible in the document (already uploaded)
-  if (document.body.innerText.includes(filename)) {
-    console.log("[HirePath] Resume filename already found on page, skipping upload:", filename);
-    return;
-  }
+  if (document.body.innerText.includes(filename)) return true; // already on the page
 
   let file;
   try {
@@ -1720,21 +1713,51 @@ async function attachResume(root, pack) {
     file = new File([bytes], filename, { type: mime });
   } catch (e) {
     console.warn("[HirePath] resume decode failed:", e.message);
-    return;
+    return false;
   }
 
-  for (const fi of fileInputs) {
+  let domSet = false;
+  for (const fi of targets) {
     try {
       const dt = new DataTransfer();
       dt.items.add(file);
       fi.files = dt.files;
       fi.dispatchEvent(new Event("input", { bubbles: true }));
       fi.dispatchEvent(new Event("change", { bubbles: true }));
-      console.log("[HirePath] Attached tailored resume:", filename);
+      if (fi.files && fi.files.length) domSet = true;
     } catch (e) {
       console.warn("[HirePath] Could not set file input:", e.message);
     }
   }
+  if (!domSet) {
+    showResumeHint(filename);
+    return false;
+  }
+
+  // Some ATS (e.g. Ashby) use a custom drop-zone that silently ignores a
+  // programmatically-set file. Verify the UI actually registered it; if not,
+  // guide the user to attach manually and report failure so we retry.
+  await delay(800);
+  const registered = document.body.innerText.includes(filename) ||
+    targets.some(fi => {
+      const c = fi.closest('div, section, fieldset');
+      return !!(c && c.querySelector('[aria-label*="remove" i], [aria-label*="delete" i], [data-automation-id*="delete" i]'));
+    });
+  if (registered) {
+    console.log("[HirePath] Attached tailored resume:", filename);
+    return true;
+  }
+  console.warn("[HirePath] Résumé set but the form didn't register it — asking user to attach manually.");
+  showResumeHint(filename);
+  return false;
+}
+
+// Non-blocking nudge when we can't auto-attach the résumé (custom uploaders).
+function showResumeHint(filename) {
+  showOverlay(
+    `📎 Please attach your résumé.<br><small style="color:#c4b5fd;font-weight:400">This site's upload box blocks auto-attach. Click its upload button and pick your file${filename ? `: <b>${filename}</b>` : ''}.</small>`,
+    [], true
+  );
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -1834,12 +1857,14 @@ async function runCopilotStep() {
     const result = await fillCurrentPage(pack);
     showStepOverlay(result, pack);
 
-    // Attach resume ONCE per page (guard against re-runs)
+    // Attach resume once per page — but only mark it done when the attach
+    // ACTUALLY succeeded, so a failed/blocked attach retries on the next pass
+    // instead of falsely logging "already attached".
     const pageKey = location.href;
     if (_resumeAttachedOnPage !== pageKey) {
       try {
-        await attachResume(document, pack);
-        _resumeAttachedOnPage = pageKey;
+        const attached = await attachResume(document, pack);
+        if (attached) _resumeAttachedOnPage = pageKey;
       } catch (e) {
         console.warn('[HirePath] attachResume error:', e.message);
       }
