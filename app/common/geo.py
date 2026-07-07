@@ -45,6 +45,19 @@ _COUNTRY_SIGNALS = {
 }
 
 
+# Signals are matched with letter boundaries so "india" can't match "Indiana",
+# "us" can't match "status", and "uk" can't match inside another word. Built
+# once at import; "u.s." style signals keep working because the boundary is
+# letter-based, not \b-based (a trailing "." has no word boundary before space).
+_SIGNAL_RES = {
+    country: [
+        re.compile(rf"(?<![a-z]){re.escape(sig.strip())}(?![a-z])")
+        for sig in signals
+    ]
+    for country, signals in _COUNTRY_SIGNALS.items()
+}
+
+
 def norm_country(name: str) -> str:
     """Normalize a country name/alias to its canonical lowercase form."""
     n = (name or "").strip().lower()
@@ -62,17 +75,16 @@ def detect_country(location: str) -> str:
     if not loc.strip():
         return ""
     # US: explicit signals or a trailing 2-letter state code (e.g. "Austin, TX").
-    us_signals = _COUNTRY_SIGNALS["united states"]
-    if any(sig in loc for sig in us_signals):
+    if any(r.search(loc) for r in _SIGNAL_RES["united states"]):
         return "united states"
     # only treat a 2-letter token as a state if it looks like "city, XX"
     if re.search(r",\s*[a-z]{2}\b", loc) and any(t in _US_STATE_CODES for t in re.findall(r",\s*([a-z]{2})\b", loc)):
         return "united states"
     # Foreign countries.
-    for country, signals in _COUNTRY_SIGNALS.items():
+    for country, sig_res in _SIGNAL_RES.items():
         if country == "united states":
             continue
-        if any(sig in loc for sig in signals):
+        if any(r.search(loc) for r in sig_res):
             return country
     return ""
 

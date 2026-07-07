@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-import re
 from typing import List, Tuple
 
 import numpy as np
@@ -22,7 +21,7 @@ from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Job
 from app.qa_store.resolver import QAResolver
-from app.matching.filters.constants import NON_US_LOCATIONS
+from app.common.geo import detect_country, norm_country
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +237,8 @@ class Matcher:
 
     # ---------- search ----------
 
-    def search_for_resume(self, resume_text: str, k: int = 30, user_id: str | None = None) -> List[Tuple[int, float]]:
+    def search_for_resume(self, resume_text: str, k: int = 30, user_id: str | None = None,
+                          profile=None) -> List[Tuple[int, float]]:
         """Hybrid search with RRF (Max-Similarity chunked query) + local Cross-Encoder reranking.
         
         Returns [(job_id, cross_encoder_score)] sorted desc.
@@ -257,30 +257,30 @@ class Matcher:
         if not jobs:
             return []
 
-        # Filter out jobs outside the US or with foreign locations (uses shared constants)
-        non_us_locations = NON_US_LOCATIONS
-        
+        # Filter out onsite jobs located in a different country than the user's
+        # preferred one (same geo logic as rule_filter, so the two stages agree).
+        # Legacy (no profile) keeps the original US-targeting default.
+        preferred = norm_country(
+            (getattr(profile, "preferred_country", "") or "United States") if profile else "United States"
+        )
+
         filtered_jobs = []
         for j in jobs:
             loc_low = (j.location or "").lower()
             title_low = j.title.lower()
 
             is_outside = False
-            # Remote roles can advertise a foreign HQ but still hire US-based /
-            # remote candidates — never location-filter them (matches rule_filter).
+            # Remote roles can advertise a foreign HQ but still hire remote
+            # candidates — never location-filter them (matches rule_filter).
             if not j.remote:
-                # Use word-boundary regex on BOTH location and title so "india"
-                # doesn't match "Indiana" and "uk" doesn't match "Brooklyn".
                 haystack = loc_low if loc_low else title_low
-                for loc in non_us_locations:
-                    pattern = rf"\b{re.escape(loc)}\b"
-                    if re.search(pattern, haystack) or (f"({loc})" in haystack):
-                        is_outside = True
-                        break
+                detected = detect_country(haystack)
+                if detected and detected != preferred:
+                    is_outside = True
 
             if not is_outside:
                 filtered_jobs.append(j)
-                
+
         jobs = filtered_jobs
 
         if not jobs:

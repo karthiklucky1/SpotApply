@@ -3,8 +3,9 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from app.common.geo import detect_country, norm_country
 from app.db.models import Job
-from app.matching.filters.constants import NON_US_LOCATIONS, NO_SPONSORSHIP_PATTERNS, STAFF_TITLES
+from app.matching.filters.constants import NO_SPONSORSHIP_PATTERNS, STAFF_TITLES
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +122,12 @@ class RuleFilter:
         # citizen / green-card holder should NOT lose "must be US citizen" roles.
         self.requires_sponsorship = True if legacy else bool(getattr(profile, "requires_sponsorship", False))
 
+        # Country the user wants jobs in — onsite roles in a DIFFERENT country are
+        # filtered out. Legacy (no profile) keeps the original US-targeting default.
+        self.preferred_country = norm_country(
+            (getattr(profile, "preferred_country", "") or "United States") if not legacy else "United States"
+        )
+
         # Skills the user actually has → don't reject roles that need them.
         self.user_skills = (getattr(profile, "key_skills", "") or "").lower()
         self.user_degree = (getattr(profile, "degree", "") or "").lower()
@@ -163,28 +170,23 @@ class RuleFilter:
                     score_override=10,
                 )
 
-        # 1. Non-US Location Filter — skip entirely for remote jobs since
-        #    "US/Canada Remote" or "Remote (EU)" are still valid remote roles.
+        # 1. Country Filter — onsite roles in a different country than the user's
+        #    preferred one are dropped. Skipped entirely for remote jobs since
+        #    "US/Canada Remote" or "Remote (EU)" are still valid remote roles, and
+        #    ambiguous/unknown locations are KEPT rather than over-filtered.
         if not job.remote:
-            if loc_low:
-                for loc in NON_US_LOCATIONS:
-                    pattern = rf"\b{re.escape(loc)}\b"
-                    if re.search(pattern, loc_low):
-                        return FilterResult(
-                            passed=False,
-                            reason=f"Location pre-filtered: job location '{job.location}' matches '{loc}' (outside the US)",
-                            score_override=10
-                        )
-            else:
-                # If location is empty, check title for explicit non-US tags
-                for loc in NON_US_LOCATIONS:
-                    pattern = rf"\b{re.escape(loc)}\b"
-                    if re.search(pattern, title_low):
-                        return FilterResult(
-                            passed=False,
-                            reason=f"Location pre-filtered: title '{job.title}' indicates outside the US ('{loc}')",
-                            score_override=10
-                        )
+            # If location is empty, fall back to the title for explicit country tags.
+            haystack = loc_low if loc_low else title_low
+            detected = detect_country(haystack)
+            if detected and detected != self.preferred_country:
+                return FilterResult(
+                    passed=False,
+                    reason=(
+                        f"Location pre-filtered: '{job.location or job.title}' is in "
+                        f"{detected.title()}, user targets {self.preferred_country.title()}"
+                    ),
+                    score_override=10
+                )
 
         # 2. Work Authorization / Sponsorship Blocker — only relevant when the
         #    user actually needs sponsorship. Citizens / GC holders keep these jobs.

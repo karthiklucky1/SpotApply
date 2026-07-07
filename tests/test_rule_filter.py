@@ -89,6 +89,58 @@ def test_rule_filter_experience_gap():
     res_student = student_filter.filter(job_9yoe)
     assert "Experience pre-filtered" not in res_student.reason
 
+class _IntlProf:
+    """Minimal profile stub for a non-US user."""
+    years_experience = 0
+    key_skills = ""
+    degree = ""
+    preferred_country = "United Kingdom"
+    requires_sponsorship = False
+
+
+def _mk_job(location, remote=False, external_id="200", title="Software Engineer"):
+    return Job(
+        source=JobSource.GREENHOUSE,
+        external_id=external_id,
+        company="TestCo",
+        title=title,
+        location=location,
+        remote=remote,
+        url="http://test.com",
+        description="We are looking for a Software Engineer.",
+    )
+
+
+def test_rule_filter_country_aware_for_uk_user():
+    uk_filter = RuleFilter(profile=_IntlProf())
+
+    # A UK user KEEPS London jobs (previously hard-rejected as "outside the US").
+    res = uk_filter.filter(_mk_job("London, UK", external_id="201"))
+    assert res.passed is True
+
+    # ...and drops onsite US jobs.
+    res = uk_filter.filter(_mk_job("New York, NY", external_id="202"))
+    assert res.passed is False
+    assert "Location pre-filtered" in res.reason
+
+
+def test_rule_filter_country_unknown_location_kept():
+    uk_filter = RuleFilter(profile=_IntlProf())
+    res = uk_filter.filter(_mk_job("Main Office", external_id="203"))
+    assert "Location pre-filtered" not in res.reason
+
+
+def test_rule_filter_country_remote_exempt():
+    # Remote roles are never location-filtered, whatever country they advertise.
+    uk_filter = RuleFilter(profile=_IntlProf())
+    res = uk_filter.filter(_mk_job("San Francisco, CA", remote=True, external_id="204"))
+    assert "Location pre-filtered" not in res.reason
+
+    us_filter = RuleFilter()  # legacy default targets the US
+    res = us_filter.filter(_mk_job("Berlin, Germany", remote=True, external_id="205"))
+    assert "Location pre-filtered" not in res.reason
+
+
 def test_rule_filter_staff_titles():
     filter_engine = RuleFilter()
     

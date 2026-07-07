@@ -1,11 +1,6 @@
 # Shared constants for job matching and pre-filtering stages
-
-NON_US_LOCATIONS = [
-    "korea", "seoul", "singapore", "tokyo", "japan", "london", "uk", "united kingdom", 
-    "germany", "berlin", "munich", "poland", "warsaw", "india", "bangalore", "bengaluru",
-    "hyderabad", "delhi", "mumbai", "pune", "canada", "toronto", "vancouver", "montreal",
-    "europe", "australia", "sydney", "melbourne", "france", "paris"
-]
+# (Country/location detection lives in app.common.geo — used by discovery,
+# the rule filter, and retrieval so all stages agree.)
 
 NO_SPONSORSHIP_PATTERNS = [
     "not offer visa sponsorship",
