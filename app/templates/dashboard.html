@@ -979,18 +979,7 @@
             </button>
         </div>
 
-        <!-- Bottom: Profile avatar with upload -->
-        <div class="sb-bottom">
-            <div class="sb-divider"></div>
-            <button class="sb-btn" onclick="openProfileModal()" data-tip="My Profile" style="min-height:52px;">
-                <div id="sb-avatar-wrap" title="View profile" style="width:34px;height:34px;border-radius:50%;position:relative;border:2px solid rgba(99,102,241,0.4);overflow:hidden;cursor:pointer;flex-shrink:0;">
-                    <img id="sb-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;border-radius:50%;" />
-                    <div id="sb-avatar-placeholder" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:15px;background:linear-gradient(135deg,rgba(99,102,241,0.2),rgba(124,58,237,0.1));">👤</div>
-                </div>
-                <span class="sb-label">My Profile</span>
-            </button>
-            <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)">
-        </div>
+        <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)">
     </nav>
 
     <!-- Main content wrapper -->
