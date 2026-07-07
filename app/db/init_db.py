@@ -35,6 +35,7 @@ def init_db() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     # Importing models registers them with SQLModel.metadata
     from app.db import models  # noqa: F401
+    from sqlalchemy import text, inspect
     SQLModel.metadata.create_all(engine)
 
     # Migrations: Add missing pg enum values if using Supabase
@@ -58,8 +59,6 @@ def init_db() -> None:
             print(f"Failed to migrate applicationstatus enum type: {e}")
 
     # Migrations: Add new columns if they don't exist
-    from sqlalchemy import text, inspect
-    
     # Use inspector to check columns per table
     inspector = inspect(engine)
     
@@ -80,9 +79,23 @@ def init_db() -> None:
                     if "FLOAT" in db_type.upper():
                         db_type = db_type.upper().replace("FLOAT", "DOUBLE PRECISION")
                 
-                with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {db_type}"))
-                print(f"Added column {col} ({db_type}) to {table_name}")
+                import time
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        with engine.begin() as conn:
+                            if settings.use_supabase:
+                                conn.execute(text("SET statement_timeout = 60000"))
+                                conn.execute(text("SET lock_timeout = 30000"))
+                            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {db_type}"))
+                        print(f"Added column {col} ({db_type}) to {table_name}")
+                        break
+                    except Exception as ex:
+                        if attempt < retries - 1:
+                            print(f"Retry {attempt+1}/{retries} adding column {col} to {table_name}: {ex}")
+                            time.sleep(2.0)
+                        else:
+                            raise ex
         except Exception as e:
             print(f"Failed to add column {col} to {table_name}: {e}")
 
