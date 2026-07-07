@@ -25,16 +25,17 @@ def _mock_company_cap():
         yield
 
 
-def _mk_job(session, ext, company="CapCo", score=80):
+def _mk_job(session, ext, company="CapCo", score=80, user_id=None):
     j = Job(source=JobSource.LINKEDIN, external_id=ext, company=company,
             title=f"Role {ext}", url=f"http://x/{ext}", description="d",
-            rerank_score=score)
+            rerank_score=score, user_id=user_id)
     session.add(j); session.commit(); session.refresh(j)
     return j
 
 
 def _mk_app(session, job, status, age_days=0):
-    a = Application(job_id=job.id, status=status, apply_track="manual")
+    a = Application(job_id=job.id, status=status, apply_track="manual",
+                    user_id=job.user_id)
     session.add(a); session.commit(); session.refresh(a)
     if age_days:
         a.created_at = datetime.utcnow() - timedelta(days=age_days)
@@ -102,3 +103,31 @@ def test_at_cap_within_cooldown_blocks(_clean):
         _mk_app(s, j2, ApplicationStatus.SUBMITTED, age_days=20)
         j3 = _mk_job(s, "cap-3")
         assert _check_and_enforce_company_cap(s, j3, j3.rerank_score) is False
+
+
+def test_cap_is_per_user(_clean):
+    """User A maxing out a company must not consume user B's slots."""
+    with get_session() as s:
+        ja1 = _mk_job(s, "cap-a1", user_id="user-a")
+        ja2 = _mk_job(s, "cap-a2", user_id="user-a")
+        _mk_app(s, ja1, ApplicationStatus.SUBMITTED, age_days=5)
+        _mk_app(s, ja2, ApplicationStatus.SUBMITTED, age_days=5)
+
+        # user A is at the cap for CapCo…
+        ja3 = _mk_job(s, "cap-a3", user_id="user-a")
+        assert _check_and_enforce_company_cap(s, ja3, ja3.rerank_score) is False
+
+        # …but user B still has both slots free at the same company.
+        jb1 = _mk_job(s, "cap-b1", user_id="user-b")
+        assert _check_and_enforce_company_cap(s, jb1, jb1.rerank_score) is True
+
+
+def test_cap_legacy_rows_do_not_block_tenants(_clean):
+    """Old single-user rows (user_id NULL) must not count against real tenants."""
+    with get_session() as s:
+        j1 = _mk_job(s, "cap-1"); j2 = _mk_job(s, "cap-2")   # user_id=None
+        _mk_app(s, j1, ApplicationStatus.SUBMITTED, age_days=5)
+        _mk_app(s, j2, ApplicationStatus.SUBMITTED, age_days=5)
+
+        jb = _mk_job(s, "cap-b9", user_id="user-b")
+        assert _check_and_enforce_company_cap(s, jb, jb.rerank_score) is True

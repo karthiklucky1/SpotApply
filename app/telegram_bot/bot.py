@@ -182,11 +182,19 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
         pq.answered_at = datetime.utcnow()
         session.add(pq)
 
-        # Cache in AnswerMemory (upsert with IntegrityError guard for concurrent fills)
+        # Cache in AnswerMemory (upsert with IntegrityError guard for concurrent
+        # fills), scoped to the application's owner so one user's answers never
+        # leak into another user's fills (matches POST /api/save-answer).
+        owner_app = session.get(Application, pq.application_id)
+        owner_id = owner_app.user_id if owner_app else None
         norm = pq.field_label.lower().strip()
-        existing = session.exec(
-            select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
-        ).first()
+
+        def _find_existing():
+            q = select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
+            q = q.where(AnswerMemory.user_id == owner_id) if owner_id else q.where(AnswerMemory.user_id.is_(None))
+            return session.exec(q).first()
+
+        existing = _find_existing()
         if existing:
             existing.answer = answer
             existing.use_count += 1
@@ -195,6 +203,7 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
         else:
             try:
                 session.add(AnswerMemory(
+                    user_id=owner_id,
                     label_normalized=norm,
                     label_original=pq.field_label,
                     answer=answer,
@@ -202,9 +211,7 @@ async def _save_answer(pq_id: int, answer: str) -> tuple[bool, int]:
                 session.flush()
             except IntegrityError:
                 session.rollback()
-                existing = session.exec(
-                    select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
-                ).first()
+                existing = _find_existing()
                 if existing:
                     existing.answer = answer
                     existing.use_count += 1

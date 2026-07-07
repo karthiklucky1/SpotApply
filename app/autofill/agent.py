@@ -2427,9 +2427,23 @@ async def _preview_one(application_id: int) -> None:
         _active_previews.pop(application_id, None)
 
 
+def _todays_submission_count(session, user_id: str | None) -> int:
+    """Today's SUBMITTED applications for ONE user — the daily pace limit is
+    per user, not a platform-wide budget shared across tenants."""
+    from datetime import datetime, time
+    today_start = datetime.combine(datetime.utcnow().date(), time.min)
+    q = (
+        select(Application)
+        .where(Application.status == ApplicationStatus.SUBMITTED)
+        .where(Application.submitted_at >= today_start)
+    )
+    q = q.where(Application.user_id == user_id) if user_id else q.where(Application.user_id.is_(None))
+    return len(session.exec(q).all())
+
+
 def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownField]:
     """Sync wrapper — fills form, saves pending questions, updates status, and notifies via Telegram."""
-    from datetime import datetime, time
+    from datetime import datetime
     import time as time_module
     import random
     import httpx
@@ -2442,14 +2456,8 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         job = session.get(Job, app.job_id)
         job_company = job.company
         job_title = job.title
-        
-        # Count today's submitted applications
-        today_start = datetime.combine(datetime.utcnow().date(), time.min)
-        today_count = len(session.exec(
-            select(Application)
-            .where(Application.status == ApplicationStatus.SUBMITTED)
-            .where(Application.submitted_at >= today_start)
-        ).all())
+
+        today_count = _todays_submission_count(session, app.user_id)
         
         if today_count >= settings.daily_apply_limit:
             msg = (

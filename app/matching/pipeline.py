@@ -59,8 +59,10 @@ def _check_and_enforce_company_cap(session, job: Job, score: float) -> bool:
     """Decide whether a new application may be created for ``job`` under the
     per-company cap + cooldown rule.
 
-    Rules:
-      • At most ``_COMPANY_CAP`` (2) active applications per company at a time.
+    Rules (evaluated per user — one tenant's applications never consume
+    another tenant's slots):
+      • At most ``settings.company_cap`` active applications per company at a
+        time (falls back to ``_COMPANY_CAP`` when unset).
       • Once a company is at the cap, NO new role from that company is shortlisted
         until its existing active applications are ``_COMPANY_COOLDOWN_DAYS`` (40)
         days old. Applications past that age are treated as expired: they are
@@ -72,11 +74,14 @@ def _check_and_enforce_company_cap(session, job: Job, score: float) -> bool:
     from app.config import settings as _cap_settings
     cap = _cap_settings.company_cap or _COMPANY_CAP
 
-    active = session.exec(
+    q = (
         select(Application).join(Job, Application.job_id == Job.id)
         .where(Job.company == job.company)
         .where(Application.status.in_(_CAP_ACTIVE_STATUSES))
-    ).all()
+    )
+    # Scope to this job's owner: NULL/"local" rows are the single-user dev data.
+    q = q.where(Application.user_id == job.user_id) if job.user_id else q.where(Application.user_id.is_(None))
+    active = session.exec(q).all()
 
     if len(active) < cap:
         return True  # room available
