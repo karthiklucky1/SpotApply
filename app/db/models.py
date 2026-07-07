@@ -38,6 +38,7 @@ class JobSource(str, Enum):
     REED = "reed"                     # Reed.co.uk API — free, 5000 calls/day
     JOOBLE = "jooble"                 # Jooble API — free, 500 calls/day
     INDEEDRSS = "indeed_rss"          # Indeed public RSS — no key, ~10/query
+    CROWDSOURCED = "crowdsourced"     # Crowdsourced via browser extension
 
 
 class ApplicationStatus(str, Enum):
@@ -84,6 +85,7 @@ class Job(SQLModel, table=True):
     first_seen: datetime = Field(default_factory=datetime.utcnow)
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     is_closed: bool = Field(default=False)
+    closed_reason: Optional[str] = Field(default=None)
     content_hash: Optional[str] = Field(default=None, index=True)
     # Matching outputs
     embedding_id: Optional[int] = Field(default=None, index=True)  # FAISS index position

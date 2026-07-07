@@ -373,6 +373,8 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         for job in jobs:
             if job.external_id not in active_external_ids:
                 job.is_closed = True
+                source_name = source.value if hasattr(source, "value") else str(source)
+                job.closed_reason = f"Removed from company {source_name} ATS board"
                 session.add(job)
                 closed_count += 1
                 
@@ -382,7 +384,7 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
                 ).first()
                 if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
                     app_model.status = ApplicationStatus.SKIPPED
-                    app_model.notes = (app_model.notes or "") + "\nJob closed/removed from ATS."
+                    app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
                     session.add(app_model)
                     
         session.commit()
@@ -636,10 +638,11 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         # Fetch all aggregator sources concurrently with a per-source timeout so
         # one slow/hanging source can't stall the whole run (which would leave the
         # UI spinning with no summary).
+        # Country-aware sources receive the user's preferred country for global sourcing.
+        _COUNTRY_AWARE_SOURCES = {"SerpAPI Google Jobs", "Adzuna", "Reed.co.uk", "Jooble"}
         async def _fetch_one(name, src_cls):
             try:
-                # SerpAPI's Google-Jobs query is country-aware; others take keywords only.
-                if name == "SerpAPI Google Jobs":
+                if name in _COUNTRY_AWARE_SOURCES:
                     src = src_cls(keywords=_keywords, country=_country)
                 else:
                     src = src_cls(keywords=_keywords)

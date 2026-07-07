@@ -18,15 +18,39 @@ from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
 
-_API_URL = "https://api.adzuna.com/v1/api/jobs/us/search/{page}"
+_API_BASE = "https://api.adzuna.com/v1/api/jobs/{country}/search/{{page}}"
 _RESULTS_PER_PAGE = 50
+
+# Mapping from _norm_country names -> Adzuna 2-letter country codes
+_ADZUNA_COUNTRY_MAP = {
+    "united states": "us",
+    "united kingdom": "gb",
+    "canada": "ca",
+    "india": "in",
+    "germany": "de",
+    "australia": "au",
+    "singapore": "sg",
+    "france": "fr",
+    "netherlands": "nl",
+    "brazil": "br",
+    "poland": "pl",
+    "south africa": "za",
+    "new zealand": "nz",
+    "austria": "at",
+    "italy": "it",
+    "russia": "ru",
+    "mexico": "mx",
+}
 
 
 class AdzunaSource:
-    """Fetches US jobs from the Adzuna API."""
+    """Fetches jobs from the Adzuna API. Supports global markets via country parameter."""
 
-    def __init__(self, keywords: List[str] | None = None):
+    def __init__(self, keywords: List[str] | None = None, country: str = "United States"):
         self.keywords = [k.lower() for k in (keywords or settings.jobs_keywords_list)]
+        normalized = (country or "United States").strip().lower()
+        self.country_code = _ADZUNA_COUNTRY_MAP.get(normalized, "us")
+        self._api_url = _API_BASE.format(country=self.country_code)
 
     async def fetch_jobs(self) -> List[RawJob]:
         if not settings.adzuna_enabled:
@@ -56,7 +80,7 @@ class AdzunaSource:
                         break
                     try:
                         r = await client.get(
-                            _API_URL.format(page=1),
+                            self._api_url.format(page=1),
                             params={
                                 "app_id": app_id,
                                 "app_key": app_key,

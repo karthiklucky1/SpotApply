@@ -110,6 +110,7 @@ def init_db() -> None:
         ("first_seen", "DATETIME"),
         ("last_seen", "DATETIME"),
         ("is_closed", "BOOLEAN DEFAULT FALSE"),
+        ("closed_reason", "TEXT"),
         ("content_hash", "VARCHAR"),
         ("job_type", "VARCHAR DEFAULT 'full_time'"),
         ("is_cap_exempt", "BOOLEAN DEFAULT FALSE"),

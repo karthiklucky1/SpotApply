@@ -32,8 +32,9 @@ _SEARCH_TERMS = [
 class ReedSource:
     """Fetches jobs from the Reed.co.uk API (includes remote/US roles)."""
 
-    def __init__(self, keywords: List[str] | None = None):
+    def __init__(self, keywords: List[str] | None = None, country: str = "United States"):
         self.keywords = [k.lower() for k in (keywords or settings.jobs_keywords_list)]
+        self.country = (country or "United States").strip()
 
     async def fetch_jobs(self) -> List[RawJob]:
         if not settings.reed_enabled:
@@ -60,7 +61,7 @@ class ReedSource:
                             _API_URL,
                             params={
                                 "keywords": term,
-                                "locationName": "Remote",
+                                "locationName": self.country,
                                 "resultsToTake": 100,
                                 "minimumSalary": 0,
                             },

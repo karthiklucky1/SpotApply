@@ -11,6 +11,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import httpx
 from typing import Optional, Optional as _Opt
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1040,6 +1041,102 @@ def clear_jobs(request: Request) -> dict:
     return {"success": True, "deleted_jobs": deleted_jobs, "deleted_applications": deleted_apps}
 
 
+class JobSubmitPayload(BaseModel):
+    company: str
+    title: str
+    url: str
+    description: str
+    location: str = ""
+    remote: bool = False
+
+
+@app.post("/api/jobs/submit")
+def submit_job(payload: JobSubmitPayload, request: Request, bg: BackgroundTasks) -> dict:
+    uid = _get_user_id(request)
+    with get_session() as session:
+        import hashlib
+        ext_id = hashlib.md5(payload.url.encode("utf-8")).hexdigest()
+        job = Job(
+            user_id=uid if uid and uid != "local" else None,
+            source=JobSource.CROWDSOURCED,
+            external_id=ext_id,
+            company=payload.company.strip(),
+            title=payload.title.strip(),
+            location=payload.location.strip(),
+            remote=payload.remote,
+            url=payload.url.strip(),
+            description=payload.description.strip(),
+        )
+        # Check if already exists
+        existing = session.exec(
+            select(Job).where(
+                Job.user_id == job.user_id,
+                Job.source == job.source,
+                Job.external_id == job.external_id
+            )
+        ).first()
+        if existing:
+            return {"success": True, "job_id": existing.id, "already_exists": True}
+        
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        
+        # Trigger matching in the background
+        bg.add_task(run_matching, uid if uid != "local" else None)
+        return {"success": True, "job_id": job.id}
+
+
+@app.post("/api/jobs/{job_id}/verify")
+async def verify_job(job_id: int, request: Request) -> dict:
+    uid = _get_user_id(request)
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if uid and uid != "local" and job.user_id != uid:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        
+        is_dead = False
+        reason = ""
+        try:
+            from urllib.parse import urlparse
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                r = await client.head(job.url)
+                if r.status_code in [404, 410]:
+                    is_dead = True
+                    reason = f"Link returned HTTP {r.status_code}"
+                elif r.status_code == 200:
+                    final_url = str(r.url)
+                    orig_parsed = urlparse(job.url)
+                    final_parsed = urlparse(final_url)
+                    if "/careers" in final_parsed.path and "/careers" not in orig_parsed.path:
+                        is_dead = True
+                        reason = "Redirected to general careers page"
+        except Exception as e:
+            log.debug("verify_job HEAD check failed for %d: %s", job_id, e)
+            
+        if is_dead:
+            job.is_closed = True
+            job.closed_reason = f"Deactivated ({reason})"
+            session.add(job)
+            session.commit()
+            
+            # Deactivate any open application for this job
+            app_model = session.exec(
+                select(Application).where(Application.job_id == job.id)
+            ).first()
+            if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
+                app_model.status = ApplicationStatus.SKIPPED
+                app_model.notes = (app_model.notes or "") + f"\nJob marked closed during click verification: {reason}"
+                session.add(app_model)
+                session.commit()
+                
+            return {"active": False, "closed_reason": job.closed_reason}
+            
+        return {"active": True}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -1255,14 +1352,16 @@ def api_jobs(
     remote: str = None,
     track: str = None,   # "autofill" | "manual"
     hide_aggregators: str = None,  # "1" = exclude aggregator-redirect jobs
+    closed: str = None,            # "true" = retrieve closed/ghost jobs
 ) -> dict:
     uid = _get_user_id(request)
     _uid_filter = uid and uid != "local"
     offset = (page - 1) * limit
+    is_closed_filter = (closed == "true")
 
     with get_session() as session:
-        # Base query — exclude closed/purged jobs from the Jobs table.
-        query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id).where(Job.is_closed == False)
+        # Base query
+        query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id).where(Job.is_closed == is_closed_filter)
         if _uid_filter:
             query = query.where(Job.user_id == uid)
 
@@ -1300,8 +1399,8 @@ def api_jobs(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
 
-        # Get total count (for pagination) — also exclude closed jobs.
-        count_query = select(func.count(Job.id)).where(Job.is_closed == False)
+        # Get total count (for pagination)
+        count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
         if _uid_filter:
             count_query = count_query.where(Job.user_id == uid)
         if search:
@@ -1349,6 +1448,8 @@ def api_jobs(
                 "hire_probability": job.hire_probability_score,
                 "blended": job.blended_score,
                 "reason": job.rerank_reasoning,
+                "is_closed": job.is_closed,
+                "closed_reason": job.closed_reason,
                 "application": {
                     "id": app.id,
                     "status": app.status.value,

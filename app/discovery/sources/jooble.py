@@ -32,8 +32,9 @@ _SEARCH_TERMS = [
 class JoobleSource:
     """Fetches jobs from the Jooble API (global aggregator)."""
 
-    def __init__(self, keywords: List[str] | None = None):
+    def __init__(self, keywords: List[str] | None = None, country: str = "United States"):
         self.keywords = [k.lower() for k in (keywords or settings.jobs_keywords_list)]
+        self.country = (country or "United States").strip()
 
     async def fetch_jobs(self) -> List[RawJob]:
         if not settings.jooble_enabled:
@@ -56,7 +57,7 @@ class JoobleSource:
                     try:
                         r = await client.post(
                             url,
-                            json={"keywords": term, "location": "remote", "page": 1},
+                            json={"keywords": term, "location": self.country, "page": 1},
                             headers={"Content-Type": "application/json"},
                         )
                         if r.status_code == 403:

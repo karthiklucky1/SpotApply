@@ -1090,6 +1090,9 @@
             <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
                 🔍 All Jobs (<span id="explorer-total-count">...</span>)
             </button>
+            <button id="view-tab-ghost" onclick="switchViewTab('ghost')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
+                👻 Ghost Jobs (<span id="ghost-total-count">...</span>)
+            </button>
             <button id="view-tab-registry" onclick="switchViewTab('registry')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0">
                 ⚙️ Boards
             </button>
@@ -1145,7 +1148,7 @@
             {%- endmacro %}
             {% macro jobcard(app, job, accent='indigo', removable=true, status_chip='', visa=none) %}
             <div class="kanban-card glass rounded-[20px] px-4 py-3.5 border-slate-800 hover:border-{{ accent }}-500/40 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}{% if app.apply_track == 'autofill' or (app.status.value in ['submitted', 'interviewing', 'offer', 'accepted'] and app.apply_track != 'email_import') %} hirepath-applied{% endif %}"
-                 data-app-id="{{ app.id }}" data-job-url="{{ (app.apply_url or job.url)|e }}"
+                 data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}"
                  data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" onclick="openJobDrawer(this)">
                 {% if removable %}
                 <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-2.5 right-2.5 text-slate-500 hover:text-rose-400 w-5 h-5 flex items-center justify-center rounded-full text-xs font-bold z-10" title="Remove Job">&times;</button>
@@ -1693,6 +1696,50 @@
                         <button id="explorer-btn-prev" onclick="explorePrevPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button>
                         <button id="explorer-btn-next" onclick="exploreNextPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button>
                         <button id="explorer-btn-last" onclick="exploreLastPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: Ghost Jobs View -->
+        <div id="view-content-ghost" class="hidden flex flex-col gap-6">
+            <div class="glass rounded-[32px] p-5 border-slate-800 flex items-center gap-4">
+                <span class="text-2xl shrink-0">👻</span>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-bold" style="color:var(--ink);">Filtered Ghost Jobs</p>
+                    <p class="text-[11px]" style="color:var(--muted);">Jobs removed from company ATS boards, returned HTTP 404/410, or redirected to generic careers pages.</p>
+                </div>
+                <button onclick="loadGhostJobs(1)" class="text-[10px] font-black bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">↻ Refresh</button>
+            </div>
+
+            <div class="glass rounded-3xl overflow-hidden shadow-2xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                <th class="py-4 px-6">Score</th>
+                                <th class="py-4 px-4">Title / Company</th>
+                                <th class="py-4 px-4">Location</th>
+                                <th class="py-4 px-4">Source</th>
+                                <th class="py-4 px-4">Closed Reason</th>
+                                <th class="py-4 px-6 text-right">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ghost-table-body" class="divide-y divide-slate-800/50 text-xs">
+                            <tr>
+                                <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Click the tab to load ghost jobs…</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400">
+                    <span id="ghost-page-info">Showing page 1 of ...</span>
+                    <div class="flex gap-2">
+                        <button id="ghost-btn-first" onclick="loadGhostJobs(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button>
+                        <button id="ghost-btn-prev" onclick="loadGhostJobs(ghostCurrentPage - 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button>
+                        <button id="ghost-btn-next" onclick="loadGhostJobs(ghostCurrentPage + 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button>
+                        <button id="ghost-btn-last" onclick="loadGhostJobs(ghostTotalPages)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button>
                     </div>
                 </div>
             </div>
@@ -2713,11 +2760,11 @@
         const _TAB_BASE = "relative z-10 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0";
         function switchViewTab(tab) {
             // Sync sidebar active state
-            ['kanban', 'explorer', 'registry'].forEach(t => {
+            ['kanban', 'explorer', 'registry', 'ghost'].forEach(t => {
                 const sb = document.getElementById(`sb-nav-${t}`);
                 if (sb) sb.classList.toggle('active', t === tab);
             });
-            ['kanban', 'manual', 'explorer', 'registry'].forEach(t => {
+            ['kanban', 'manual', 'explorer', 'registry', 'ghost'].forEach(t => {
                 const btn = document.getElementById(`view-tab-${t}`);
                 const content = document.getElementById(`view-content-${t}`);
                 if (!btn || !content) return;
@@ -2731,6 +2778,11 @@
                         void card.offsetWidth; // force reflow to restart animation
                         card.style.animationPlayState = 'running';
                     });
+                    // Auto-load ghost jobs on first visit
+                    if (t === 'ghost' && !window._ghostJobsLoaded) {
+                        window._ghostJobsLoaded = true;
+                        loadGhostJobs(1);
+                    }
                 } else {
                     btn.className = `${_TAB_BASE} text-slate-400 hover:text-slate-200`;
                     content.classList.add('hidden');
@@ -3163,6 +3215,92 @@
         function exploreNextPage() {
             if (explorerCurrentPage < explorerTotalPages) {
                 loadJobsPage(explorerCurrentPage + 1);
+            }
+        }
+
+        // ── Ghost Jobs (closed/deactivated) ─────────────────────────────────
+        let ghostCurrentPage = 1;
+        let ghostTotalPages = 1;
+
+        async function loadGhostJobs(page) {
+            if (page < 1) return;
+            ghostCurrentPage = page;
+            const tBody = document.getElementById('ghost-table-body');
+            tBody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-12 text-slate-500 font-semibold">
+                        <div class="inline-block animate-spin w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full mr-2"></div>
+                        Loading ghost jobs...
+                    </td>
+                </tr>
+            `;
+
+            try {
+                const res = await fetch(`/api/jobs?closed=true&page=${page}&limit=25`);
+                if (!res.ok) {
+                    tBody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-rose-400 font-bold">API responded with error.</td></tr>`;
+                    return;
+                }
+                const data = await res.json();
+
+                ghostTotalPages = data.pages;
+                document.getElementById('ghost-total-count').textContent = data.total.toLocaleString();
+                document.getElementById('ghost-page-info').textContent = `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} ghost jobs)`;
+
+                document.getElementById('ghost-btn-first').disabled = data.page === 1;
+                document.getElementById('ghost-btn-prev').disabled = data.page === 1;
+                document.getElementById('ghost-btn-next').disabled = data.page === data.pages || data.pages === 0;
+                document.getElementById('ghost-btn-last').disabled = data.page === data.pages || data.pages === 0;
+
+                if (!data.jobs || data.jobs.length === 0) {
+                    tBody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center py-16 text-slate-600 font-semibold">
+                                <div class="text-2xl mb-2">✅</div>
+                                No ghost jobs found — all listings look active!
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                let html = '';
+                data.jobs.forEach(j => {
+                    let scoreBadge = `<span class="text-slate-500 font-mono">-</span>`;
+                    if (j.rerank !== null && j.rerank !== undefined) {
+                        const rank = Math.round(j.rerank);
+                        scoreBadge = `<span class="bg-slate-800 text-slate-400 border border-slate-700 px-2 py-0.5 rounded-full font-mono">${rank}%</span>`;
+                    }
+
+                    const reasonBadge = j.closed_reason
+                        ? `<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-500/12 text-amber-400 border border-amber-500/25">⚠️ ${_esc(j.closed_reason)}</span>`
+                        : `<span class="text-slate-600 text-[10px]">Unknown</span>`;
+
+                    const srcBadge = sourceTrackBadge(j.source || 'manual');
+
+                    html += `
+                        <tr class="hover:bg-slate-900/30 transition" style="opacity:0.72;">
+                            <td class="py-3 px-6 font-bold">${scoreBadge}</td>
+                            <td class="py-3 px-4">
+                                <div class="font-bold text-slate-400 leading-tight line-clamp-1 line-through decoration-slate-600">
+                                    ${_esc(j.title)}
+                                </div>
+                                <div class="text-[11px] text-slate-500 flex items-center mt-0.5 font-semibold">
+                                    🏢 ${_esc(j.company)}
+                                </div>
+                            </td>
+                            <td class="py-3 px-4 text-slate-500 font-medium">${_esc(j.location || 'Remote')}</td>
+                            <td class="py-3 px-4">${srcBadge}</td>
+                            <td class="py-3 px-4">${reasonBadge}</td>
+                            <td class="py-3 px-6 text-right">
+                                <a href="${_escUrl(j.url)}" target="_blank" class="text-[10px] bg-slate-800 hover:bg-slate-750 text-slate-400 font-bold py-1.5 px-4 rounded-full border border-slate-700 transition">Open ↗</a>
+                            </td>
+                        </tr>
+                    `;
+                });
+                tBody.innerHTML = html;
+            } catch (e) {
+                tBody.innerHTML = `<tr><td colspan="6" class="text-center py-12 text-rose-400 font-bold">Failed to load ghost jobs: ${e}</td></tr>`;
             }
         }
 
@@ -6178,6 +6316,36 @@
         body.scrollTop = 0;
         document.getElementById('jobModalOverlay').classList.add('open');
         document.body.style.overflow = 'hidden';
+
+        // ── Live verification hook ──────────────────────────────────────
+        // Fire a background POST /api/jobs/{id}/verify when opening a job card.
+        // If the job is deactivated, show a toast and visually grey out the card.
+        const jobId = card.dataset.jobId;
+        if (jobId && !card.dataset.verified) {
+            card.dataset.verified = '1'; // only verify once per session
+            try {
+                const token = localStorage.getItem('sb_token');
+                fetch(`/api/jobs/${jobId}/verify`, {
+                    method: 'POST',
+                    headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+                }).then(async r => {
+                    if (!r.ok) return;
+                    const v = await r.json();
+                    if (!v.active) {
+                        showToast(`⚠️ This job has been deactivated: ${v.closed_reason || 'listing removed'}`, 'error');
+                        card.style.opacity = '0.45';
+                        card.style.filter = 'grayscale(0.6)';
+                        card.style.pointerEvents = 'none';
+                        // Add a deactivated badge to the card
+                        const badge = document.createElement('div');
+                        badge.className = 'absolute inset-x-0 bottom-0 text-center text-[9px] font-extrabold uppercase tracking-wider py-1 rounded-b-[20px]';
+                        badge.style.cssText = 'background:rgba(244,63,94,0.15);color:#e11d48;border-top:1px solid rgba(244,63,94,0.25);';
+                        badge.textContent = '⚠️ Deactivated';
+                        card.appendChild(badge);
+                    }
+                }).catch(() => {}); // silent — non-blocking
+            } catch (_) {}
+        }
     }
 
     // HTML escaping helper to prevent DOM XSS
