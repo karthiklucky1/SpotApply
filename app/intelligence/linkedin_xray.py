@@ -24,8 +24,12 @@ def _parse_name(title: str) -> str:
     return t.split(" - ")[0].strip() or "LinkedIn member"
 
 
-def find_champions(company: str, role: str, visa: bool = False, limit: int = 8) -> dict:
-    """X-Ray Google for public LinkedIn profiles at `company` matching `role`."""
+def find_champions(company: str, role: str, visa: bool = False, limit: int = 8,
+                   school: str | None = None) -> dict:
+    """X-Ray Google for public LinkedIn profiles at `company` matching `role`.
+
+    When `school` is given, search alumni instead: people at the company who
+    list that school — a warmer intro than a cold role-match."""
     from app.config import settings
     if not settings.serpapi_key:
         return {"ok": False, "reason": "serpapi_key_not_set", "people": [],
@@ -34,7 +38,10 @@ def find_champions(company: str, role: str, visa: bool = False, limit: int = 8) 
         return {"ok": False, "reason": "no_company", "people": []}
 
     visa_clause = (" " + _VISA_TERMS) if visa else ""
-    query = f'site:linkedin.com/in/ "{company}" "{role}"{visa_clause}'.strip()
+    if school:
+        query = f'site:linkedin.com/in/ "{company}" "{school}"'.strip()
+    else:
+        query = f'site:linkedin.com/in/ "{company}" "{role}"{visa_clause}'.strip()
 
     try:
         import httpx
@@ -70,4 +77,5 @@ def find_champions(company: str, role: str, visa: bool = False, limit: int = 8) 
             break
 
     return {"ok": True, "query": query, "company": company, "role": role,
-            "visa_biased": visa, "people": people}
+            "visa_biased": visa and not school, "alumni": bool(school),
+            "school": school or "", "people": people}

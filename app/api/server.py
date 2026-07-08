@@ -5200,9 +5200,10 @@ def get_referral_drafts(application_id: int, request: Request) -> dict:
 
 @app.get("/application/{application_id}/connections")
 @_rate_limit("10/minute")
-def get_job_connections(application_id: int, request: Request) -> dict:
+def get_job_connections(application_id: int, request: Request, mode: str = "") -> dict:
     """Find public LinkedIn referrers/champions for this job via Google X-Ray
-    (SerpAPI — no LinkedIn login or scraping). Owner-scoped + plan-gated."""
+    (SerpAPI — no LinkedIn login or scraping). Owner-scoped + plan-gated.
+    mode='alumni' searches people at the company from the user's university."""
     _require_owned_application(request, application_id)
     uid = _get_user_id(request)
     from app.config import settings
@@ -5220,7 +5221,19 @@ def get_job_connections(application_id: int, request: Request) -> dict:
         job = session.get(Job, application.job_id)
     needs = _user_needs_sponsorship(uid if uid and uid != "local" else None)
     from app.intelligence.linkedin_xray import find_champions
-    return find_champions(job.company or "", job.title or "", visa=needs)
+
+    school = None
+    if mode == "alumni":
+        try:
+            from app.autofill.answer_pack import _get_or_create_profile
+            profile = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
+            school = (getattr(profile, "university", "") or "").strip() or None
+        except Exception as _pe:
+            log.debug("alumni connections: profile lookup failed: %s", _pe)
+        if not school:
+            return {"ok": False, "reason": "no_university", "people": [],
+                    "note": "Add your university in Profile → Education to find alumni."}
+    return find_champions(job.company or "", job.title or "", visa=needs, school=school)
 
 
 @app.get("/api/admin/h1b-lookup")

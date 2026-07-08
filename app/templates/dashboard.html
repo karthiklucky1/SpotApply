@@ -1072,8 +1072,10 @@
                         <!-- Company snapshot (funding, who runs it, hiring record) -->
                         <div class="company-profile-placeholder"></div>
                         </div> <aside class="jd-rail">
-                        <!-- Referral Copilot — compact -->
-                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">Internal referrals get fast-tracked. Find someone inside {{ job.company or 'the company' }} and we'll draft the outreach message for you — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> </div> </div>
+                        <!-- Alumni referral (warmest intro) -->
+                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Alumni Referral</span> <span class="ref-pill">Warmest intro</span> </div> <p class="ref-text">People from <b>your university</b> working at {{ job.company or 'this company' }} — shared school is the easiest ice-breaker and the most-answered referral ask.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}', 'alumni')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find alumni from your school at this company">Find Alumni Contacts</button> </div> </div>
+                        <!-- Standard referral -->
+                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">No alumni inside? Find employees in similar roles at {{ job.company or 'the company' }} and we'll draft the outreach message — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> </div> </div>
                         <!-- Right-door check -->
                         <div class="autopsy-placeholder"></div>
                         </aside>
@@ -5147,15 +5149,16 @@
         document.getElementById('connOverlay').classList.remove('open');
         document.body.style.overflow = '';
     }
-    async function openConnections(appId, company) {
+    async function openConnections(appId, company, mode) {
         if (typeof closeJobDrawer === 'function') closeJobDrawer();
         const ov = document.getElementById('connOverlay');
         const body = document.getElementById('connBody');
         ov.classList.add('open'); document.body.style.overflow = 'hidden';
-        body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Searching Google for people at ' + _esc(company || 'this company') + '…</p>';
+        const who = mode === 'alumni' ? 'alumni from your school at ' : 'people at ';
+        body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Searching Google for ' + who + _esc(company || 'this company') + '…</p>';
         try {
             const tok = localStorage.getItem('sb_token');
-            const res = await fetch(`/application/${appId}/connections`, { headers: tok ? { 'Authorization': `Bearer ${tok}` } : {} });
+            const res = await fetch(`/application/${appId}/connections${mode ? '?mode=' + encodeURIComponent(mode) : ''}`, { headers: tok ? { 'Authorization': `Bearer ${tok}` } : {} });
             if (res.status === 402) {
                 body.innerHTML = `<div class="text-center py-8"> <div class="text-3xl mb-2"></div> <p class="text-sm font-bold" style="color:var(--ink);">Finding referrers is a Pro feature</p> <p class="text-[12px] mt-1 mb-4" style="color:var(--muted);">Upgrade to surface people at each company who can refer you.</p> <button onclick="openSettings('pricing')" class="text-xs font-bold px-5 py-2 rounded-full text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">View plans →</button> </div>`;
                 return;
@@ -5165,11 +5168,12 @@
             if (!data.ok || !data.people || !data.people.length) {
                 const why = data.reason === 'serpapi_key_not_set' ? 'Search isn\'t configured yet (SERPAPI_KEY).'
                     : data.reason === 'serpapi_quota' ? 'Monthly search quota reached — try later.'
+                    : data.reason === 'no_university' ? 'Add your university in Profile → Education to find alumni.'
                     : 'No public profiles matched. Try the referral drafts instead.';
                 body.innerHTML = `<p class="text-[13px] py-6 text-center" style="color:var(--muted);">${_esc(why)}</p>`;
                 return;
             }
-            let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:var(--sage-tint);color:var(--sage-700);">${data.visa_biased ? ' Biased toward people who went through the visa process. ' : ''}Found ${data.people.length} public profile(s). Connect from your own account.</p>`;
+            let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:var(--sage-tint);color:var(--sage-700);">${data.alumni ? '🎓 Alumni from ' + _esc(data.school) + '. ' : ''}${data.visa_biased ? ' Biased toward people who went through the visa process. ' : ''}Found ${data.people.length} public profile(s). Connect from your own account.</p>`;
             data.people.forEach(p => {
                 html += `<div class="rounded-xl p-4 mb-2" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-start justify-between gap-2"> <div class="min-w-0"> <p class="text-sm font-bold" style="color:var(--ink);">${_esc(p.name)}</p> <p class="text-[11px] mt-0.5 leading-snug" style="color:var(--muted);">${_esc(p.headline || '')}</p> </div> <a href="${_escUrl(p.url)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10px] px-3 py-1.5 shrink-0">View ↗</a> </div> </div>`;
             });
