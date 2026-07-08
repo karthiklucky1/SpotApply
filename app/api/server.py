@@ -1351,22 +1351,32 @@ def api_stats(request: Request) -> dict:
         top_companies_res = session.exec(top_q).all()
         top_companies = [{"company": company, "count": count} for company, count in top_companies_res]
 
-        # Per-source job counts (for source breakdown bar in UI)
-        from app.db.models import JobSource as JS
+        # Per-source job counts (for source breakdown bar in UI).
+        # ONE GROUP BY instead of a query per enum member — grouping only
+        # touches labels that exist in the data, so a pg enum label that
+        # hasn't been migrated yet can never 500 the whole stats endpoint
+        # (comparing `Job.source == <new member>` did exactly that).
         source_counts: dict[str, int] = {}
-        for src in JS:
-            sq = select(func.count(Job.id)).where(Job.source == src)
+        try:
+            gq = select(Job.source, func.count(Job.id)).group_by(Job.source)
             if _uid_filter:
-                sq = sq.where(Job.user_id == uid)
-            cnt = session.exec(sq).first() or 0
-            if cnt:
-                source_counts[src.value] = cnt
+                gq = gq.where(Job.user_id == uid)
+            for src, cnt in session.exec(gq).all():
+                if cnt:
+                    source_counts[getattr(src, "value", str(src))] = cnt
+        except Exception as se:
+            log.warning("stats: per-source counts unavailable: %s", se)
 
-        # Company registry stats (global — not per-user)
-        from app.db.models import CompanyRegistry
-        total_boards = session.exec(select(func.count(CompanyRegistry.id))).first() or 0
-        active_boards = session.exec(select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)).first() or 0
-        total_validated_jobs = session.exec(select(func.sum(CompanyRegistry.job_count))).first() or 0
+        # Company registry stats (global — not per-user). Best-effort: stats
+        # must degrade, never 500 the dashboard.
+        total_boards = active_boards = total_validated_jobs = 0
+        try:
+            from app.db.models import CompanyRegistry
+            total_boards = session.exec(select(func.count(CompanyRegistry.id))).first() or 0
+            active_boards = session.exec(select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)).first() or 0
+            total_validated_jobs = session.exec(select(func.sum(CompanyRegistry.job_count))).first() or 0
+        except Exception as re_:
+            log.warning("stats: registry counts unavailable: %s", re_)
 
     return {
         "total_jobs": total_jobs,

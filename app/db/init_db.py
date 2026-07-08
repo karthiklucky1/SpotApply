@@ -30,6 +30,16 @@ else:
 )
 
 
+def _missing_enum_labels(existing: set[str], enum_cls) -> list[str]:
+    """Labels to ADD to a pg enum type for members not yet represented.
+
+    SQLAlchemy's Enum column type stores/compares the member NAME, so the
+    NAME must exist as a label — a lowercase VALUE label (added by an older,
+    buggy migration) does NOT make the member usable and must not suppress
+    adding the real one."""
+    return [member.name for member in enum_cls if member.name not in existing]
+
+
 def init_db() -> None:
     """Create tables if they don't exist."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -38,44 +48,28 @@ def init_db() -> None:
     from sqlalchemy import text, inspect
     SQLModel.metadata.create_all(engine)
 
-    # Migrations: Add missing pg enum values if using Supabase
+    # Migrations: Add missing pg enum values if using Supabase.
+    # IMPORTANT: SQLAlchemy persists/compares Enum columns by the member NAME
+    # (e.g. 'RECRUITEE'), not the value ('recruitee') — so the label we add
+    # must be the NAME, or queries against new members keep failing.
     if settings.use_supabase:
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text(
-                    "SELECT enumlabel FROM pg_enum WHERE enumtypid = 'applicationstatus'::regtype"
-                )).all()
-                existing_enums = {r[0] for r in res}
-                
-                from app.db.models import ApplicationStatus
-                for status in ApplicationStatus:
-                    val = status.value
-                    if val not in existing_enums and val.upper() not in existing_enums:
-                        autocommit_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-                        with autocommit_conn:
-                            autocommit_conn.execute(text(f"ALTER TYPE applicationstatus ADD VALUE '{val}'"))
-                        print(f"Added enum value '{val}' to applicationstatus type")
-        except Exception as e:
-            print(f"Failed to migrate applicationstatus enum type: {e}")
-
-        # Same idempotent migration for jobsource (new ATS providers land here)
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text(
-                    "SELECT enumlabel FROM pg_enum WHERE enumtypid = 'jobsource'::regtype"
-                )).all()
-                existing_enums = {r[0] for r in res}
-
-                from app.db.models import JobSource
-                for source in JobSource:
-                    val = source.value
-                    if val not in existing_enums and val.upper() not in existing_enums:
-                        autocommit_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-                        with autocommit_conn:
-                            autocommit_conn.execute(text(f"ALTER TYPE jobsource ADD VALUE '{val}'"))
-                        print(f"Added enum value '{val}' to jobsource type")
-        except Exception as e:
-            print(f"Failed to migrate jobsource enum type: {e}")
+        for enum_type, enum_cls_name in (("applicationstatus", "ApplicationStatus"),
+                                          ("jobsource", "JobSource")):
+            try:
+                import app.db.models as _models
+                enum_cls = getattr(_models, enum_cls_name)
+                with engine.connect() as conn:
+                    res = conn.execute(text(
+                        f"SELECT enumlabel FROM pg_enum WHERE enumtypid = '{enum_type}'::regtype"
+                    )).all()
+                    existing_enums = {r[0] for r in res}
+                for label in _missing_enum_labels(existing_enums, enum_cls):
+                    autocommit_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+                    with autocommit_conn:
+                        autocommit_conn.execute(text(f"ALTER TYPE {enum_type} ADD VALUE '{label}'"))
+                    print(f"Added enum value '{label}' to {enum_type} type")
+            except Exception as e:
+                print(f"Failed to migrate {enum_type} enum type: {e}")
 
     # Migrations: Add new columns if they don't exist
     # Use inspector to check columns per table
