@@ -167,7 +167,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     the entire batch.
 
     When ``preferred_country`` is set, postings located in a different country are
-    dropped (remote roles are kept when ``remote_ok``). ``user_keywords`` (the
+    dropped — including remote roles anchored to another country; remote is
+    kept only when same-country, truly global, or unspecified (``remote_ok``). ``user_keywords`` (the
     user's Target Roles / department roles) override the default non-tech title
     gate — an accountant's or marketer's own roles must never be dropped as
     "non-tech".

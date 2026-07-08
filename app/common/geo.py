@@ -92,12 +92,17 @@ def detect_country(location: str) -> str:
 
 
 def location_allowed(location: str, remote: bool, preferred_country: str, remote_ok: bool) -> bool:
-    """True if a posting should be kept for a user targeting `preferred_country`."""
+    """True if a posting should be kept for a user targeting `preferred_country`.
+
+    Remote is NOT borderless: a remote role anchored to another country
+    ("Remote — Berlin", "Remote, EU only") still requires work authorization
+    there, so it is treated like an on-site role in that country. Remote is
+    kept only when it's the user's own country, truly global, or unspecified.
+    """
     loc = (location or "").lower()
-    # Remote-friendly users keep any remote/anywhere posting regardless of country.
-    if remote_ok and (remote or "remote" in loc or "anywhere" in loc or "worldwide" in loc):
-        return True
     detected = detect_country(loc)
+    if remote_ok and (remote or "remote" in loc or "anywhere" in loc or "worldwide" in loc):
+        return (not detected) or detected == norm_country(preferred_country)
     if not detected:
         return True  # ambiguous/unknown — keep rather than over-filter
     return detected == norm_country(preferred_country)

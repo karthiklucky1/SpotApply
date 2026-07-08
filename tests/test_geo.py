@@ -43,8 +43,10 @@ def test_location_allowed_respects_preferred_country():
 
 
 def test_location_allowed_keeps_remote_and_unknown():
-    # Remote-friendly users keep remote postings from any country.
-    assert location_allowed("Remote (Berlin)", True, "United States", remote_ok=True)
+    # Remote is country-scoped: a remote role anchored to another country still
+    # needs work authorization there, so it is dropped.
+    assert not location_allowed("Remote (Berlin)", True, "United States", remote_ok=True)
+    assert location_allowed("Remote - United States", True, "United States", remote_ok=True)
     assert location_allowed("Anywhere", False, "India", remote_ok=True)
     # Ambiguous locations are kept rather than over-filtered.
     assert location_allowed("Main Office", False, "United States", remote_ok=False)

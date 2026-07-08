@@ -446,7 +446,11 @@ def _company_domain_filter(name):
         if n.endswith(suf):
             n = n[: -len(suf)]
     n = _re.sub(r"[^a-z0-9]", "", n)
-    return (n or "unknown") + ".com"
+    # Junk/anonymous names have no real domain — return '' so the UI skips the
+    # favicon fetch entirely (avoids pointless 404s) and shows the initial.
+    if not n or any(k in n for k in ("stealth", "confidential", "unknown", "unnamed")):
+        return ""
+    return n + ".com"
 
 
 templates.env.filters["company_domain"] = _company_domain_filter

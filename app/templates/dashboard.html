@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>HirePath — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#4f46e5"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="HirePath"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/static/icon-192.svg"> <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%232FB4A6'/><stop offset='100%25' stop-color='%2316847A'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(255,255,255,0.8)'/></svg>"> <script src="https://cdn.tailwindcss.com"></script> <script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css"> <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script> <script type="module"> // Auth guard — redirect to /login if no session or token expired
+<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>HirePath — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#4f46e5"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="HirePath"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/static/icon-192.svg"> <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%232FB4A6'/><stop offset='100%25' stop-color='%2316847A'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(255,255,255,0.8)'/></svg>"> <link rel="stylesheet" href="/static/tailwind.css"> <script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css"> <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script> <script type="module"> // Auth guard — redirect to /login if no session or token expired
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
         const SUPABASE_URL = '{{ supabase_url }}'
         const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
@@ -1089,7 +1089,7 @@
             {% macro jobcard(app, job, accent='indigo', removable=true, status_chip='', visa=none) %}
             <div class="kanban-card glass rounded-[20px] px-4 py-3.5 border-slate-800 hover:border-{{ accent }}-500/40 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}{% if app.apply_track == 'autofill' or (app.status.value in ['submitted', 'interviewing', 'offer', 'accepted'] and app.apply_track != 'email_import') %} hirepath-applied{% endif %}" data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" data-source="{{ job.source.value|e }}"{% if job.rerank_score is not none %} data-score="{{ job.rerank_score|int }}"{% endif %} onclick="openJobDrawer(this)"> {% if removable %}
                 <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="absolute top-2.5 right-2.5 text-slate-500 hover:text-rose-400 w-5 h-5 flex items-center justify-center rounded-full text-xs font-bold z-10" title="Remove Job">&times;</button> {% endif %}
-                <div class="flex justify-between items-start gap-3 {% if removable %}pr-5{% endif %}"> <span class="co-logo co-logo-sm mt-0.5"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span><img src="https://www.google.com/s2/favicons?domain={{ job.company|company_domain }}&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()"></span> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-white tracking-tight leading-snug line-clamp-2">{{ job.title }}</h3> <p class="text-[10px] font-semibold text-slate-400 mt-1 truncate"> {{ job.company }} <span class="text-slate-600">·</span> <span class="uppercase tracking-wide text-slate-500">{{ job.source.value }}</span></p> <span class="flex flex-wrap gap-1 mt-1"> {% set _is_email = (app.apply_track == 'email_import') %}
+                <div class="flex justify-between items-start gap-3 {% if removable %}pr-5{% endif %}"> <span class="co-logo co-logo-sm mt-0.5"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span>{% set _dom = job.company|company_domain %}{% if _dom %}<img src="https://www.google.com/s2/favicons?domain={{ _dom }}&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()">{% endif %}</span> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-white tracking-tight leading-snug line-clamp-2">{{ job.title }}</h3> <p class="text-[10px] font-semibold text-slate-400 mt-1 truncate"> {{ job.company }} <span class="text-slate-600">·</span> <span class="uppercase tracking-wide text-slate-500">{{ job.source.value }}</span></p> <span class="flex flex-wrap gap-1 mt-1"> {% set _is_email = (app.apply_track == 'email_import') %}
                         {% if _is_email %}
                         <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:rgba(245,158,11,.14);color:#b45309;" title="Detected from your inbox — a job you applied to outside HirePath"> From email</span> {% elif not removable %}
                         <span class="inline-block text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);" title="Applied through HirePath">✓ Via HirePath</span> {% endif %}
@@ -1147,7 +1147,7 @@
                             {% elif _cap and _cap.tone == 'good' %}<span class="jr-badge jr-badge-good" title="{{ _cap.reason }}">Likely sponsors visas</span>{% endif %}
                         </div>
                         <div class="jr-title-row">
-                            <span class="co-logo co-logo-lg"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span><img src="https://www.google.com/s2/favicons?domain={{ job.company|company_domain }}&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()"></span>
+                            <span class="co-logo co-logo-lg"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span>{% set _dom = job.company|company_domain %}{% if _dom %}<img src="https://www.google.com/s2/favicons?domain={{ _dom }}&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()">{% endif %}</span>
                             <div class="min-w-0 flex-1">
                                 <h3 class="jr-title">{{ job.title }}</h3>
                                 <p class="jr-company">{{ job.company or 'Unknown company' }} <span class="jr-sep">/</span> <span class="jr-src">found on {{ job.source.value|upper }}</span></p>
@@ -1760,8 +1760,16 @@
             const cancelBtn = document.getElementById('discover-cancel');
             _renderSources(run);
             if (run.status === 'discovering') {
-                bar.style.width = '35%';
-                _setDiscoverStatus(' Scraping career boards and aggregators…');
+                const done = Object.keys(run.sources || {}).length;
+                const total = ALL_SOURCES.length;
+                const found = Object.values(run.sources || {}).reduce((n, s) => n + (s.fetched || 0), 0);
+                if (done > 0) {
+                    clearInterval(_discoverAnim);
+                    bar.style.width = Math.min(58, 8 + Math.round(50 * done / total)) + '%';
+                    _setDiscoverStatus(` Scanned ${done} of ${total} sources — ${found.toLocaleString()} jobs found so far…`);
+                } else {
+                    _setDiscoverStatus(' Scraping career boards and aggregators…');
+                }
                 return;
             }
             if (run.status === 'first_results') {
@@ -4705,8 +4713,10 @@
         ['incorporated','corporation','limited','inc','llc','ltd','corp','gmbh','plc','group'].forEach(s => {
             if (domain.endsWith(' ' + s)) domain = domain.slice(0, -(s.length + 1));
         });
-        domain = domain.replace(/[^a-z0-9]/g, '') || 'unknown';
-        return `<span class="co-logo ${cls || ''}"><span>${initial}</span><img src="https://www.google.com/s2/favicons?domain=${domain}.com&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()"></span>`;
+        domain = domain.replace(/[^a-z0-9]/g, '');
+        const junk = !domain || /stealth|confidential|unknown|unnamed/.test(domain);
+        const img = junk ? '' : `<img src="https://www.google.com/s2/favicons?domain=${domain}.com&sz=128" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()">`;
+        return `<span class="co-logo ${cls || ''}"><span>${initial}</span>${img}</span>`;
     }
 
     // Jobright-style full-screen view: build the left side panel from all job

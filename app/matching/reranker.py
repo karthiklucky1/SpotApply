@@ -94,10 +94,11 @@ def _profile_system_prompt(profile) -> str:
                      f"work_auth should be high unless the role requires a clearance/citizenship the candidate lacks.")
 
     loc_rule = (f"- LOCATION & COUNTRY: the candidate wants jobs in {country}"
-                f"{' plus fully-remote roles' if remote_ok else ''}. "
-                f"If the job is located in a DIFFERENT country than {country}"
-                f"{' and is not remote' if remote_ok else ''}, set location 0-15 (hard blocker). "
-                f"In-country roles score location high; for remote roles location is high.")
+                f"{' plus fully-remote roles open to ' + country + ' (or truly global remote)' if remote_ok else ''}. "
+                f"If the job is located in a DIFFERENT country than {country} — including a REMOTE role "
+                f"anchored to another country or region (e.g. 'Remote, EU only'), which still requires "
+                f"work authorization there — set location 0-15 (hard blocker). "
+                f"In-country roles score location high; same-country or global remote scores location high.")
 
     return f"""You evaluate how well a candidate fits a job. {_JSON_CONTRACT}
 
