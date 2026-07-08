@@ -283,7 +283,8 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 from app.intelligence.sponsorship import assess as _assess_spons
                 from app.intelligence.urgency import assess as _assess_urg
                 job.job_type = classify_job_type(job.title, job.description)
-                _sp = _assess_spons(company=job.company or "", description=job.description or "", url=job.url or "")
+                _sp = _assess_spons(company=job.company or "", description=job.description or "",
+                                    url=job.url or "", location=job.location or "")
                 job.is_cap_exempt = bool(_sp.cap_exempt)
                 job.urgency_score = float(_assess_urg(job).score)
             except Exception as _ie:

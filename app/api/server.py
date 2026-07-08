@@ -371,7 +371,8 @@ def _sponsorship_of(job):
         from app.intelligence.sponsorship import assess
         return assess(company=getattr(job, "company", "") or "",
                       description=getattr(job, "description", "") or "",
-                      url=getattr(job, "url", "") or "")
+                      url=getattr(job, "url", "") or "",
+                      location=getattr(job, "location", "") or "")
     except Exception:
         return None
 
@@ -1801,7 +1802,8 @@ def application_match(application_id: int, request: Request) -> dict:
             from app.intelligence.h1b_data import lookup as _h1b_lookup
             from app.intelligence.sponsorship import assess as _spons_assess
             rec = _h1b_lookup(job.company or "")
-            spons = _spons_assess(company=job.company or "", description=job.description or "", url=job.url or "")
+            spons = _spons_assess(company=job.company or "", description=job.description or "",
+                                  url=job.url or "", location=job.location or "")
             strong_sponsor = bool((rec and (rec.get("approvals", 0) or 0) >= 50)
                                   or (spons and (spons.cap_exempt or spons.tone == "good")))
             if strong_sponsor and not (spons and spons.explicitly_refuses):
@@ -4188,7 +4190,8 @@ def application_sponsorship(application_id: int, request: Request) -> dict:
     try:
         from app.intelligence.sponsorship import assess
         a = assess(company=company, description=(job.description if job else "") or "",
-                   url=(job.url if job else "") or "")
+                   url=(job.url if job else "") or "",
+                   location=(job.location if job else "") or "")
         out["assessment"] = {"badge": a.badge, "reason": a.reason, "tone": a.tone,
                              "cap_exempt": a.cap_exempt}
     except Exception as e:

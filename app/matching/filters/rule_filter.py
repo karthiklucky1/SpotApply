@@ -13,19 +13,21 @@ log = logging.getLogger(__name__)
 _SALARY_TOO_HIGH_MIN = 150_000   # reject if advertised minimum >= this (e.g. "$160k-$200k")
 _SALARY_TOO_LOW_MAX  = 80_000    # reject if advertised maximum <= this (e.g. "$50k-$75k")
 
-# Pre-compile the range pattern once
+# Pre-compile the range pattern once. $, £ and € are all accepted so non-US
+# users get salary filtering too — a user's profile band is in their local
+# currency, and jobs in their country advertise in that same currency.
 _SALARY_RANGE_RE = re.compile(
-    r'\$([\d,]+)\s*(k)?\s*[-–to]+\s*\$([\d,]+)\s*(k)?',
+    r'[$£€]([\d,]+)\s*(k)?\s*[-–to]+\s*[$£€]([\d,]+)\s*(k)?',
     re.IGNORECASE,
 )
-_SALARY_SINGLE_RE = re.compile(r'\$([\d,]+)\s*(k)?')
+_SALARY_SINGLE_RE = re.compile(r'[$£€]([\d,]+)\s*(k)?')
 _SALARY_CONTEXT_RE = re.compile(
     r'(?:salary|base pay|compensation|annual pay|pay range|total pay)'
 )
 
 
 def _extract_salary_range(text: str) -> Optional[Tuple[float, float]]:
-    """Return (min, max) from an explicit salary range like $80k–$120k.
+    """Return (min, max) from an explicit salary range like $80k–$120k or £60k–£80k.
 
     Only uses values that form an actual range to avoid picking up
     bonus, equity, or signing-bonus figures as salary anchors.

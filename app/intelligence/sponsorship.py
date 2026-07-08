@@ -76,6 +76,15 @@ NO_SPONSORSHIP_PATTERNS = [
     "does not sponsor", "must be us citizen", "us citizen or permanent resident",
     "us citizenship required", "active security clearance required",
     "must hold an active secret", "must possess an active ts/sci",
+    # International phrasings — refusals are universal even though the H-1B
+    # intelligence below is US-specific.
+    "must have the right to work", "right to work in the",
+    "must be eligible to work in", "eligible to work without sponsorship",
+    "without the need for sponsorship", "without visa sponsorship",
+    "must be authorised to work", "must be authorized to work in",
+    "work permit required", "valid work permit", "eu work permit",
+    "citizens only", "permanent residents only",
+    "unable to provide visa sponsorship", "not able to sponsor",
 ]
 
 
@@ -113,12 +122,40 @@ def _is_cap_exempt(name: str, desc: str, url: str) -> bool:
     return False
 
 
-def assess(company: str = "", description: str = "", url: str = "") -> SponsorshipAssessment:
-    """Return a legal, explainable sponsorship assessment for a posting."""
+def assess(company: str = "", description: str = "", url: str = "",
+           location: str = "") -> SponsorshipAssessment:
+    """Return a legal, explainable sponsorship assessment for a posting.
+
+    Explicit refusal detection is universal; everything else (cap-exempt,
+    USCIS records, the curated sponsor lists) is US/H-1B-specific and only
+    applies when the posting isn't clearly located in another country.
+    """
     name, desc, u = _norm(company), _norm(description), _norm(url)
 
-    cap_exempt = _is_cap_exempt(name, desc, u)
     explicitly_refuses = any(p in desc for p in NO_SPONSORSHIP_PATTERNS)
+
+    # Non-US posting → skip all H-1B-specific intelligence.
+    try:
+        from app.common.geo import detect_country
+        job_country = detect_country(location or "")
+    except Exception:
+        job_country = ""
+    if job_country and job_country != "united states":
+        if explicitly_refuses:
+            return SponsorshipAssessment(
+                SponsorshipLikelihood.LOW, False,
+                "This posting explicitly states it will not sponsor a work visa / "
+                "requires an existing right to work.",
+                "No sponsorship", explicitly_refuses=True,
+            )
+        return SponsorshipAssessment(
+            SponsorshipLikelihood.UNKNOWN, False,
+            f"Posting is located in {job_country.title()} — work-visa sponsorship "
+            "isn't stated in the posting; check the employer's policy before applying.",
+            "Check visa policy",
+        )
+
+    cap_exempt = _is_cap_exempt(name, desc, u)
 
     # Cap-exempt is the strongest positive — overrides a generic refusal phrase
     # only when the employer truly is an institution of higher ed / non-profit.
