@@ -232,7 +232,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|linkedin\.com|indeed\.com/i;
+// NOTE: linkedin.com is deliberately NOT here — Easy Apply pre-fills natively
+// and automating LinkedIn pages violates their User Agreement (account-ban
+// risk for the user). HirePath opens LinkedIn jobs and tracks them, hands-off.
+const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|indeed\.com/i;
 
 // When a tab finishes loading, check if we should auto-fill it
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -251,11 +254,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       let tabHost;
       try { tabHost = new URL(tab.url).hostname; } catch (_) { return; }
 
-      // LinkedIn is in ATS_HOSTS for Easy-Apply autofill, but that must ONLY
-      // happen on job pages. Never auto-fill on the feed, messaging, or a
-      // profile page — those are where the LinkedIn profile-import card lives.
-      if (tabHost.includes("linkedin.com") && !tab.url.includes("/jobs/")) {
-        console.log("[HirePath BG] LinkedIn non-jobs page — skipping autofill");
+      // LinkedIn: never DO_FILL, on any page. Easy Apply pre-fills from the
+      // user's LinkedIn profile natively, and automating LinkedIn violates
+      // their User Agreement (the USER'S account takes the ban risk). This
+      // also covers the auto_fill same-host path when apply_url is a
+      // linkedin.com link. The profile-import card is separate and unaffected.
+      if (tabHost.includes("linkedin.com")) {
+        console.log("[HirePath BG] LinkedIn page — hands-off (Easy Apply pre-fills natively)");
         return;
       }
 

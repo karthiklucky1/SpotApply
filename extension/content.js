@@ -555,60 +555,8 @@ async function fillAshby(pack) {
   return true;
 }
 
-// ── LinkedIn Easy Apply ────────────────────────────────────────────────────────
-
-async function fillLinkedIn(pack) {
-  // Wait for job detail to render
-  await delay(1500);
-
-  // Click Easy Apply if modal not open yet
-  if (!document.querySelector(".jobs-easy-apply-modal, [data-test-modal], .jobs-easy-apply-content")) {
-    const applyBtn = document.querySelector(
-      "button.jobs-apply-button, .jobs-s-apply button, [data-control-name='jobdetail_topcard_inapply'], button[aria-label*='Easy Apply']"
-    );
-    if (applyBtn) {
-      applyBtn.click();
-      await delay(2500);
-    } else {
-      // No Easy Apply — this is an external application, nothing to fill here
-      showBanner("⚠️ This job uses an external application. Open the external form link to use HirePath autofill.");
-      return false;
-    }
-  }
-
-  const modalRoot = document.querySelector(".jobs-easy-apply-modal, [data-test-modal], .jobs-easy-apply-content") || document;
-  const inputs = modalRoot.querySelectorAll("input, textarea, select");
-
-  for (const inp of inputs) {
-    const lbl = labelText(inp);
-    if (/first.*name|given.*name/i.test(lbl)) fillInput(inp, pack.first_name);
-    else if (/last.*name|family.*name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
-    else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
-    else if (/phone|mobile/i.test(lbl)) fillInput(inp, pack.phone);
-    else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
-    else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
-    else if (/cover.*letter|additional.*info/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
-    else if (/year.*experience|how many year/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
-    else if (/salary|compensation/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
-    else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
-    }
-    else if (/sponsor/i.test(lbl) && pack.requires_sponsorship === false) {
-      const noRadio = inp.closest("fieldset")?.querySelector("input[value*='No' i], input[value*='no' i]");
-      if (noRadio) noRadio.click();
-    }
-  }
-  await delay(300);
-
-  if (pack.ai_answers) {
-    await fillEssayQuestions(root, pack);
-  }
-
-  return true;
-}
+// (LinkedIn Easy Apply filler removed — automating LinkedIn violates their
+//  User Agreement and risks the user's account; Easy Apply pre-fills natively.)
 
 // ── Indeed ────────────────────────────────────────────────────────────────────
 
@@ -1812,6 +1760,24 @@ let _lastFillTimestamp = 0;
 async function fillForm(fillPack) {
   let pack = fillPack;
 
+  // LinkedIn: hands-off, always. Easy Apply already pre-fills from the user's
+  // LinkedIn profile, and automating LinkedIn's pages violates their User
+  // Agreement — risking the USER'S account. We open the job and track the
+  // application; the user picks their resume and clicks through natively.
+  if (/(^|\.)linkedin\.com$/i.test(window.location.hostname)) {
+    console.log('[HirePath] LinkedIn page — staying hands-off (Easy Apply pre-fills natively)');
+    try {
+      showOverlay(
+        '💼 <b>LinkedIn Easy Apply</b><br>' +
+        '<small>LinkedIn fills your details from your LinkedIn profile automatically — ' +
+        'just choose your resume and click through. HirePath stays hands-off here to ' +
+        'keep your LinkedIn account safe, and will still track this application.</small>',
+        [], true
+      );
+    } catch (e) {}
+    return;
+  }
+
   // A fresh token means the user re-triggered "Fill" from the dashboard after a
   // timeout — clear the expired-session guard so authed calls resume.
   if (fillPack?.auth_token && fillPack.auth_token !== _expiredToken) {
@@ -1930,7 +1896,7 @@ async function fillCurrentPage(pack) {
     if (host.includes('greenhouse.io'))       platformFilled = await fillGreenhouse(pack);
     else if (host.includes('lever.co'))       platformFilled = await fillLever(pack);
     else if (host.includes('ashbyhq.com'))    platformFilled = await fillAshby(pack);
-    else if (host.includes('linkedin.com'))   platformFilled = await fillLinkedIn(pack);
+    // linkedin.com intentionally absent — HirePath never automates LinkedIn (see fillForm guard)
     else if (host.includes('indeed.com'))     platformFilled = await fillIndeed(pack);
     else if (host.includes('myworkdayjobs.com') || host.includes('workday.com'))
                                               platformFilled = await fillWorkday(pack);
@@ -2550,11 +2516,12 @@ chromeCall(() => chrome.storage.local.get(
     const onDashboard = /hirepath\.dev$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
     if (onDashboard) { console.log('[HirePath] On dashboard — skipping auto-fill'); return; }
 
-    // LinkedIn is a known ATS for Easy-Apply autofill, but that must ONLY run on
-    // job pages (/jobs/). On the feed, messaging, or a profile page, stay out of
-    // the way — the LinkedIn profile-import card (separate module) handles those.
-    if (host.includes('linkedin.com') && !window.location.pathname.includes('/jobs/')) {
-      console.log('[HirePath] LinkedIn non-jobs page — skipping auto-fill');
+    // LinkedIn: hands-off on EVERY page. Easy Apply pre-fills from the user's
+    // LinkedIn profile natively, and automating LinkedIn pages violates their
+    // User Agreement — the user's account carries the ban risk. The
+    // profile-import card (separate module) is unaffected.
+    if (host.includes('linkedin.com')) {
+      console.log('[HirePath] LinkedIn — staying hands-off (Easy Apply pre-fills natively)');
       return;
     }
 
