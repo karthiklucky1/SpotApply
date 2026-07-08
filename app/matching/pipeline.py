@@ -225,6 +225,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # survive all gates are collected for parallel LLM scoring in Phase 2. The
     # already-scored shortlist path still runs here so behavior is unchanged.
     to_rerank: list[tuple[int, float]] = []
+    _rerank_priority: dict[int, float] = {}  # jid -> source/freshness-weighted CE score
     for jid, sim in candidates:
         with get_session() as session:
             job = session.get(Job, jid)
@@ -345,6 +346,17 @@ def run_matching(user_id: str | None = None) -> List[int]:
             session.add(job)
             session.commit()
             to_rerank.append((jid, sim))
+            # Priority for the LLM budget: CE score weighted by source quality
+            # (direct ATS > boards > remote feeds > redirect aggregators) with a
+            # bonus for postings fresher than 48h.
+            from app.matching.filters.constants import (
+                FRESH_POSTING_BONUS, FRESH_POSTING_HOURS, source_quality,
+            )
+            prio = sim * source_quality(job.source)
+            posted = job.posted_at or job.first_seen
+            if posted and (datetime.utcnow() - posted).total_seconds() < FRESH_POSTING_HOURS * 3600:
+                prio *= FRESH_POSTING_BONUS
+            _rerank_priority[jid] = prio
 
     # ── Phase 2: parallel LLM scoring (I/O-bound on the model API) ────────────
     # Each worker uses its own DB session + the shared (thread-safe) reranker
@@ -363,15 +375,16 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)
             return jid, None
 
-    # Cross-encoder gate: only the top-N candidates (already sorted by
-    # cross-encoder score) reach the expensive LLM. The rest keep their
-    # cheap-filter scores and can be promoted on a later run. This is the
-    # single biggest speedup — the LLM scores ~60 jobs, not ~300.
+    # LLM gate: only the top-N candidates reach the expensive LLM, ranked by
+    # source/freshness-weighted cross-encoder priority — a fresh direct-ATS
+    # posting beats an equal-scoring stale aggregator redirect for the budget.
+    # The rest keep their cheap-filter scores and can be promoted later.
     if len(to_rerank) > settings.llm_rerank_cap:
         log.info(
-            "LLM gate: %d candidates survived cheap filters — capping to top %d by cross-encoder score",
+            "LLM gate: %d candidates survived cheap filters — capping to top %d by weighted priority",
             len(to_rerank), settings.llm_rerank_cap,
         )
+        to_rerank.sort(key=lambda t: _rerank_priority.get(t[0], t[1]), reverse=True)
         to_rerank = to_rerank[: settings.llm_rerank_cap]
 
     if to_rerank:
@@ -411,10 +424,26 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 ).first()
                 if not existing:
                     if today_count < settings.daily_shortlist_limit:
-                        # ── Company cap (max 2 active) + 40-day cooldown ──
+                        # ── Company cap + cooldown ──
                         if not _check_and_enforce_company_cap(session, job, score):
                             session.commit()
                             continue
+
+                        # ── Link liveness — non-ATS links only (direct boards are
+                        # covered by mark_ghost_jobs at scrape time). A dead link
+                        # must not consume a shortlist slot or the user's time.
+                        if (getattr(settings, "verify_links_on_shortlist", True)
+                                and job.source not in _AUTOFILL_SOURCES):
+                            from app.discovery.verify import check_job_alive
+                            alive, dead_reason = check_job_alive(job.url)
+                            if not alive:
+                                job.is_closed = True
+                                job.closed_reason = f"Deactivated ({dead_reason})"
+                                session.add(job)
+                                session.commit()
+                                log.info("Job %s @ %s dead at shortlist time: %s",
+                                         job.title, job.company, dead_reason)
+                                continue
 
                         _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
                         new_app = Application(

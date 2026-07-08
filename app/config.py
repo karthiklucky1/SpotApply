@@ -141,6 +141,7 @@ class Settings(BaseSettings):
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
     max_boards_per_run: int = 300         # cap on registry boards scraped per discovery run
+    verify_links_on_shortlist: bool = True  # HEAD-check non-ATS links before they take a shortlist slot
 
     # Models
     scoring_model: str = "claude-haiku-4-5-20251001"

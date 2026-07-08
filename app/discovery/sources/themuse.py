@@ -41,6 +41,9 @@ class TheMuseSource:
         self.keywords = [k.lower() for k in (keywords or settings.jobs_keywords_list)]
 
     async def fetch_jobs(self) -> List[RawJob]:
+        if not settings.themuse_enabled:
+            return []
+
         jobs: List[RawJob] = []
         seen: set[str] = set()
         limit = settings.max_jobs_per_source

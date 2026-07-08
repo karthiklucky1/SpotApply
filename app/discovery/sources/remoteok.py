@@ -49,6 +49,9 @@ class RemoteOKSource:
         self.keywords = keywords or settings.jobs_keywords_list
 
     async def fetch_jobs(self) -> List[RawJob]:
+        if not settings.remoteok_enabled:
+            return []
+
         jobs: List[RawJob] = []
         seen_ids: set[str] = set()
         limit = settings.max_jobs_per_source

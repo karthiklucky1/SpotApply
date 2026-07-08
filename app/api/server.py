@@ -11,7 +11,6 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-import httpx
 from typing import Optional, Optional as _Opt
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1150,25 +1149,12 @@ async def verify_job(job_id: int, request: Request) -> dict:
         if uid and uid != "local" and job.user_id != uid:
             raise HTTPException(status_code=403, detail="Forbidden")
         
-        is_dead = False
-        reason = ""
-        try:
-            from urllib.parse import urlparse
-            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-                r = await client.head(job.url)
-                if r.status_code in [404, 410]:
-                    is_dead = True
-                    reason = f"Link returned HTTP {r.status_code}"
-                elif r.status_code == 200:
-                    final_url = str(r.url)
-                    orig_parsed = urlparse(job.url)
-                    final_parsed = urlparse(final_url)
-                    if "/careers" in final_parsed.path and "/careers" not in orig_parsed.path:
-                        is_dead = True
-                        reason = "Redirected to general careers page"
-        except Exception as e:
-            log.debug("verify_job HEAD check failed for %d: %s", job_id, e)
-            
+        import asyncio as _aio
+        from app.discovery.verify import check_job_alive
+        alive, reason = await _aio.to_thread(check_job_alive, job.url)
+        is_dead = not alive
+
+
         if is_dead:
             job.is_closed = True
             job.closed_reason = f"Deactivated ({reason})"
