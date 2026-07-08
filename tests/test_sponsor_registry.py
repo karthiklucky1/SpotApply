@@ -132,6 +132,23 @@ def test_us_stats_xlsx(tmp_path):
     assert rec and rec["approvals"] == 10 and rec["year"] == 2024
 
 
+def test_xlsx_content_under_csv_name(tmp_path):
+    """The upload endpoint stores every upload as *.csv — an Excel upload
+    must still ingest (detection is by content, and openpyxl must not get
+    the chance to veto the extension)."""
+    real = _write_xlsx(tmp_path, "us.xlsx", [
+        ["Fiscal Year", "Employer (Petitioner) Name",
+         "Initial Approval", "Initial Denial"],
+        [2024, "Globex Corporation", 10, 1],
+    ])
+    disguised = tmp_path / "upload_tmp.csv"
+    disguised.write_bytes((tmp_path / "us.xlsx").read_bytes())
+    assert real  # built ok
+    ingest_csv(str(disguised))
+    rec = lookup("Globex")
+    assert rec and rec["approvals"] == 10
+
+
 def test_legacy_xls_gives_clear_error(tmp_path):
     p = tmp_path / "old.xls"
     p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)

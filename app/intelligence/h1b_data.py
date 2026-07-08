@@ -117,9 +117,15 @@ def _open_xlsx_reader(path: str) -> _DictRows:
     CSV reader). Official files (e.g. Canada's LMIA workbooks) often put
     title/notes rows above the real header, so the header is located by
     keyword within the first 15 rows rather than assumed to be row 1."""
+    import io
     import itertools
     from openpyxl import load_workbook
-    wb = load_workbook(path, read_only=True, data_only=True)
+    # Pass bytes, not the path: openpyxl rejects mis-matched file EXTENSIONS
+    # (the upload endpoint stores every upload as *.csv) even when the
+    # content is a perfectly valid workbook — and content is what we sniffed.
+    with open(path, "rb") as f:
+        wb_bytes = io.BytesIO(f.read())
+    wb = load_workbook(wb_bytes, read_only=True, data_only=True)
     ws = wb.active
     it = ws.iter_rows(values_only=True)
     head_buf = list(itertools.islice(it, 15))
