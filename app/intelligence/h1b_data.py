@@ -86,11 +86,84 @@ def _clean_header(h: str) -> str:
     return (h or "").lstrip("﻿").replace("\x00", "").strip()
 
 
+def _cell_str(v) -> str:
+    """Excel cell → the string the CSV path would have produced.
+    Whole-number floats (Excel stores 2024 as 2024.0) must not become
+    '2024.0' — _to_int would read the digits as 20240."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+# Something a header row would contain in any of the supported files.
+_HEADER_HINTS = ("employer", "organisation", "organization", "company",
+                 "petitioner", "sponsor", "name")
+
+
+class _DictRows:
+    """Duck-types the parts of csv.DictReader the ingesters use."""
+    def __init__(self, fieldnames: list[str], rows):
+        self.fieldnames = fieldnames
+        self._rows = rows
+
+    def __iter__(self):
+        return self._rows
+
+
+def _open_xlsx_reader(path: str) -> _DictRows:
+    """Read the first worksheet of an .xlsx as dict rows (same shape as the
+    CSV reader). Official files (e.g. Canada's LMIA workbooks) often put
+    title/notes rows above the real header, so the header is located by
+    keyword within the first 15 rows rather than assumed to be row 1."""
+    import itertools
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    it = ws.iter_rows(values_only=True)
+    head_buf = list(itertools.islice(it, 15))
+
+    hdr_i = None
+    for i, raw in enumerate(head_buf):
+        cells = " ".join(_cell_str(c).lower() for c in raw)
+        if any(h in cells for h in _HEADER_HINTS):
+            hdr_i = i
+            break
+    if hdr_i is None:  # no recognisable header — first non-empty row
+        hdr_i = next((i for i, raw in enumerate(head_buf)
+                      if any(_cell_str(c) for c in raw)), 0)
+    fieldnames = [_clean_header(_cell_str(c)) for c in head_buf[hdr_i]]
+    while fieldnames and not fieldnames[-1]:  # trailing padding columns
+        fieldnames.pop()
+
+    def _rows():
+        for raw in itertools.chain(head_buf[hdr_i + 1:], it):
+            row = {fieldnames[j]: (_cell_str(raw[j]) if j < len(raw) else "")
+                   for j in range(len(fieldnames))}
+            if any(row.values()):
+                yield row
+        wb.close()
+
+    return _DictRows(fieldnames, _rows())
+
+
 def _open_reader(path: str):
-    """Return a DictReader over the decoded text, delimiter auto-sniffed,
-    with cleaned header names. (USCIS files are UTF-16 + have a junk leading
-    'Line by line' column and trailing spaces in some headers.)"""
+    """Return dict rows from a CSV/TSV **or Excel** file, detected by content
+    (magic bytes) so it works whatever the upload was named.
+
+    CSV path: delimiter auto-sniffed, cleaned header names. (USCIS files are
+    UTF-16 + have a junk leading 'Line by line' column and trailing spaces in
+    some headers.)"""
     import io
+    with open(path, "rb") as f:
+        magic = f.read(8)
+    if magic[:4] == b"PK\x03\x04":          # .xlsx (zip container)
+        return _open_xlsx_reader(path)
+    if magic[:4] == b"\xd0\xcf\x11\xe0":    # legacy .xls (OLE2)
+        raise ValueError(
+            "This is a legacy .xls file. Open it in Excel and save it as "
+            ".xlsx or CSV, then upload that instead.")
     text = _read_text(path)
     sample = text[:8192]
     try:
@@ -108,8 +181,9 @@ US = "united states"
 
 
 def ingest_csv(path: str) -> int:
-    """Load a USCIS H-1B Employer Data Hub CSV into the H1BSponsor table.
-    Idempotent per fiscal year (replaces that year's US rows). Fast bulk insert."""
+    """Load a USCIS H-1B Employer Data Hub file (CSV or .xlsx) into the
+    H1BSponsor table. Idempotent per fiscal year (replaces that year's US
+    rows). Fast bulk insert."""
     import datetime as _dt
     from app.db.init_db import get_session, init_db
     from app.db.models import H1BSponsor
@@ -200,7 +274,7 @@ def _to_int(x) -> int:
 
 
 def ingest_register(path: str, country: str) -> int:
-    """Load a licensed-sponsor register CSV for a non-US country.
+    """Load a licensed-sponsor register file (CSV or .xlsx) for a non-US country.
 
     Understands the common official formats and falls back to "one employer
     name per row" for anything else:

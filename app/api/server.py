@@ -4650,7 +4650,8 @@ button:disabled{opacity:.6}#msg{margin-top:14px;font-size:13px}
 United States expects the USCIS H-1B Employer Data Hub CSV (approval stats).
 Other countries expect that country's official licensed-sponsor register CSV
 (UK Register of Licensed Sponsors, Canada LMIA employers, NL IND recognised
-sponsors, and similar). Re-uploading a country replaces its data.</p>
+sponsors, and similar). CSV and Excel (.xlsx) both work. Re-uploading a
+country replaces its data.</p>
 <label>Admin token</label><input id=token type=password placeholder="ADMIN_TOKEN value">
 <label>Country</label><select id=country>
 <option value="united states" selected>United States — USCIS H-1B stats</option>
@@ -4667,7 +4668,7 @@ sponsors, and similar). Re-uploading a country replaces its data.</p>
 <option value="singapore">Singapore — employer list</option>
 <option value="japan">Japan — employer list</option>
 </select>
-<label>CSV file</label><input id=file type=file accept=".csv">
+<label>Data file (CSV or Excel)</label><input id=file type=file accept=".csv,.xlsx">
 <button id=go onclick=up()>Upload &amp; ingest</button>
 <div id=msg></div>
 <hr style="border:0;border-top:1px solid #E6E0D3;margin:22px 0 4px">
@@ -4693,7 +4694,7 @@ if(d.last_error){m.innerHTML='<b style=color:#b91c1c>✕ Ingest error:</b> '+_es
 else{m.textContent='✓ Employers in database: '+d.employers+(d.last_rows?(' ('+d.last_rows+' rows loaded)'):'');}}}catch(e){}}
 async function up(){const t=document.getElementById('token').value;const f=document.getElementById('file').files[0];
 const m=document.getElementById('msg');const b=document.getElementById('go');
-if(!t||!f){m.textContent='Enter the token and choose a CSV.';return;}
+if(!t||!f){m.textContent='Enter the token and choose a file.';return;}
 b.disabled=true;b.textContent='Uploading…';m.textContent='';
 const fd=new FormData();fd.append('token',t);fd.append('file',f);
 fd.append('country',document.getElementById('country').value);

@@ -89,6 +89,56 @@ def test_ingest_register_rejects_us():
         ingest_register("/nonexistent.csv", "united states")
 
 
+def _write_xlsx(tmp_path, name, rows, title_rows=0):
+    """Build an .xlsx like the official downloads (Canada's LMIA workbooks
+    put title/notes rows above the real header)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    for i in range(title_rows):
+        ws.append([f"Temporary Foreign Worker Program note {i + 1}"])
+    for row in rows:
+        ws.append(row)
+    p = tmp_path / name
+    wb.save(str(p))
+    return str(p)
+
+
+def test_canada_lmia_xlsx_with_title_rows(tmp_path):
+    path = _write_xlsx(tmp_path, "ca.xlsx", [
+        ["Province/Territory", "Program Stream", "Employer", "Address",
+         "Occupation", "Approved LMIAs", "Approved Positions"],
+        ["Ontario", "High-wage", "Shopify Inc", "Ottawa ON",
+         "Software Developer", 2, 5.0],   # Excel stores numbers as floats
+        ["Ontario", "High-wage", "Shopify Inc", "Ottawa ON",
+         "Data Engineer", 1, 3],
+    ], title_rows=2)
+    n = ingest_register(path, "canada")
+    assert n == 1
+    rec = lookup("Shopify", country="canada")
+    assert rec and rec["record_type"] == "license"
+    assert rec["approvals"] == 8  # 5.0 + 3, not 50 + 3
+    assert "High-wage" in rec["detail"]
+
+
+def test_us_stats_xlsx(tmp_path):
+    path = _write_xlsx(tmp_path, "us.xlsx", [
+        ["Fiscal Year", "Employer (Petitioner) Name",
+         "Initial Approval", "Initial Denial"],
+        [2024.0, "Globex Corporation", 10, 1],
+    ])
+    ingest_csv(path)
+    rec = lookup("Globex")
+    assert rec and rec["approvals"] == 10 and rec["year"] == 2024
+
+
+def test_legacy_xls_gives_clear_error(tmp_path):
+    p = tmp_path / "old.xls"
+    p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    with pytest.raises(ValueError, match="save it as .xlsx or CSV"):
+        ingest_register(str(p), "canada")
+
+
 def test_us_stats_path_unchanged(tmp_path):
     ingest_csv(_write(tmp_path, "us.csv", US_STATS))
     rec = lookup("Globex")  # default country = US
