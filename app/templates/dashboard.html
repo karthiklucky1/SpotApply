@@ -5797,7 +5797,7 @@
                     <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">University</label><input name="university" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
                     <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Grad Year</label><input name="graduation_year" type="number" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
                 </div>
-                <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work Authorization</label><input name="work_authorization" placeholder="US Citizen / OPT / H1B / Green Card..." class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
+                <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work Authorization</label><input name="work_authorization" placeholder="e.g. UK Citizen / EU Blue Card / Work Permit / OPT / H1B..." class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" /></div>
                 <!-- Work Readiness Passport -->
                 <div class="grid grid-cols-2 gap-3">
                     <div><label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Availability</label>
@@ -5831,13 +5831,21 @@
                             <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Work-auth status</label>
                             <select name="work_auth_status" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
                                 <option value="">Select…</option>
-                                <option value="Citizen">U.S. Citizen</option>
-                                <option value="Green Card">Green Card</option>
-                                <option value="STEM OPT">F-1 STEM OPT</option>
-                                <option value="OPT">F-1 OPT</option>
-                                <option value="CPT">F-1 CPT</option>
-                                <option value="H1B">H-1B</option>
-                                <option value="TN">TN</option>
+                                <optgroup label="General (any country)">
+                                    <option value="Citizen">Citizen of the country I'm applying in</option>
+                                    <option value="Permanent Resident">Permanent resident / settled status</option>
+                                    <option value="Work Permit">Work permit / visa holder</option>
+                                    <option value="Student Visa">Student visa (may need sponsorship)</option>
+                                    <option value="Needs Sponsorship">Need visa sponsorship to work there</option>
+                                </optgroup>
+                                <optgroup label="United States specific">
+                                    <option value="Green Card">Green Card</option>
+                                    <option value="STEM OPT">F-1 STEM OPT</option>
+                                    <option value="OPT">F-1 OPT</option>
+                                    <option value="CPT">F-1 CPT</option>
+                                    <option value="H1B">H-1B</option>
+                                    <option value="TN">TN</option>
+                                </optgroup>
                                 <option value="Other">Other</option>
                             </select>
                         </div>
