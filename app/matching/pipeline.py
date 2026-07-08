@@ -311,7 +311,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 )
 
             # 3. Embedding Filter
-            emb_passed, emb_score, emb_reason = embedding_filter.filter(job, resume)
+            emb_passed, emb_score, emb_reason = embedding_filter.filter(job, resume, profile=_user_profile)
             if not emb_passed:
                 log.info("Job '%s' @ '%s' filtered by embedding similarity: %s", job.title, job.company, emb_reason)
                 job.similarity_score = sim

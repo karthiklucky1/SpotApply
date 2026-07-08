@@ -16,15 +16,15 @@ class EmbeddingFilter:
             self._matcher = Matcher()
         return self._matcher
 
-    def filter(self, job: Job, resume_text: str) -> tuple[bool, float, str]:
+    def filter(self, job: Job, resume_text: str, profile=None) -> tuple[bool, float, str]:
         """Compute cosine similarity of job text against resume chunks.
-        
+
         Returns:
             (passed, max_similarity, reason)
         """
-        # Split resume into chunks
+        # Split resume into chunks (profile keeps the summary chunk per-user)
         from app.matching.matcher import _chunk_resume
-        chunks = _chunk_resume(resume_text)
+        chunks = _chunk_resume(resume_text, profile=profile)
         if not chunks:
             return False, 0.0, "Resume has no chunks"
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -42,17 +42,80 @@ _METRIC_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ── Ground truth from master resume — must survive tailoring unchanged ─────────
-_INTEGRITY_ANCHORS = [
-    # (pattern_to_check, description)
-    (r"home depot",                        "Home Depot employer name"),
-    (r"ntt data",                          "NTT DATA employer name"),
-    (r"jun\s*2025\s*[-–]\s*mar\s*2026",   "Home Depot employment dates"),
-    (r"may\s*2022\s*[-–]\s*aug\s*2024",   "NTT DATA employment dates"),
-    (r"university of cincinnati",          "University of Cincinnati"),
-    (r"master of engineering",             "Degree name"),
-    (r"volta",                             "Volta project"),
-]
+# ── Ground truth derived from the master resume — must survive tailoring ──────
+# Anchors are extracted per check from the user's OWN master resume (employers,
+# employment date ranges, degree, institution), never from a hardcoded list, so
+# every tenant is verified against their real history.
+_ANCHOR_DATE_RE = re.compile(
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}"
+    r"\s*[-–—]\s*"
+    r"(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|present|current|now)",
+    re.IGNORECASE,
+)
+_ANCHOR_DEGREE_RE = re.compile(
+    r"\b(?:master|bachelor|doctor)(?:'s)?\s+of\s+[a-z][a-z ]{1,40}[a-z]|\bph\.?d\b|\bm\.?b\.?a\b",
+    re.IGNORECASE,
+)
+_ANCHOR_SCHOOL_RE = re.compile(
+    r"(?:[a-z][a-z&.'-]*\s+){0,4}(?:university|college|institute|polytechnic)"
+    r"(?:\s+of(?:\s+[a-z][a-z&.'-]*){1,3})?",
+    re.IGNORECASE,
+)
+_ANCHOR_LOCATIONISH_RE = re.compile(r"(,\s*[a-z]{2}\s*$)|\bremote\b|\bhybrid\b|\bonsite\b", re.IGNORECASE)
+_MAX_ANCHORS = 14
+
+
+def _anchor_pattern(text: str) -> str:
+    """Turn a literal anchor into a whitespace/dash-tolerant regex."""
+    # Normalize every dash variant BEFORE escaping so the tolerance class is
+    # inserted exactly once per dash.
+    norm = re.sub(r"[-–—]", "-", " ".join(text.split()))
+    pat = re.escape(norm)
+    return pat.replace(r"\ ", r"\s+").replace(r"\-", r"\s*[-–—]\s*")
+
+
+def _derive_anchors(master_md: str) -> List[Tuple[str, str]]:
+    """Extract (pattern, description) integrity anchors from a master resume:
+    employer names + employment date ranges (from '… | Company | Jun 2020 -
+    Mar 2022 | …' style experience lines), degree phrases, and institutions.
+    Returns [] when nothing parseable is found (integrity check is skipped)."""
+    anchors: List[Tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(text: str, desc: str) -> None:
+        key = " ".join(text.lower().split())
+        if key and key not in seen and len(anchors) < _MAX_ANCHORS:
+            seen.add(key)
+            anchors.append((_anchor_pattern(key), desc))
+
+    for line in master_md.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        date_m = _ANCHOR_DATE_RE.search(s)
+        if date_m and ("|" in s):
+            _add(date_m.group(0), "employment dates")
+            # Pipe-separated experience header: drop the (bold) title segment,
+            # the date segment, and location-ish segments — what's left is the
+            # employer name.
+            segments = [seg.strip().strip("*").strip() for seg in s.split("|")]
+            for idx, seg in enumerate(segments):
+                if idx == 0 or not seg:
+                    continue
+                if _ANCHOR_DATE_RE.search(seg) or _ANCHOR_LOCATIONISH_RE.search(seg):
+                    continue
+                if len(seg) > 60:
+                    continue
+                _add(seg, f"employer name '{seg}'")
+
+    for m in _ANCHOR_DEGREE_RE.finditer(master_md):
+        _add(m.group(0), "degree name")
+    for m in _ANCHOR_SCHOOL_RE.finditer(master_md):
+        # Require a real name, not a bare keyword ("university" alone).
+        if len(m.group(0).split()) >= 2:
+            _add(m.group(0), "education institution")
+
+    return anchors
 
 
 @dataclass
@@ -106,9 +169,9 @@ class ResumeDoctor:
         if coverage < 0.5:
             issues.append(f"Low ATS coverage: only {coverage:.0%} of JD keywords in resume")
 
-        # ── 4. Integrity check ────────────────────────────────────────────────
+        # ── 4. Integrity check — anchors come from THIS user's master resume ──
         integrity_issues: List[str] = []
-        for pattern, desc in _INTEGRITY_ANCHORS:
+        for pattern, desc in _derive_anchors(master_md):
             if not re.search(pattern, text_lower, re.IGNORECASE):
                 integrity_issues.append(f"Missing or altered: {desc}")
         if integrity_issues:

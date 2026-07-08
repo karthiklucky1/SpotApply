@@ -32,8 +32,57 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DIM = 384
 
 
-def _chunk_resume(resume_text: str) -> List[str]:
-    """Split markdown resume by headers and append a target skills profile chunk."""
+def _profile_summary_chunk(profile) -> str:
+    """Build the retrieval-steering summary chunk from THIS user's profile.
+    Only includes fields the user actually filled in — never another
+    candidate's roles, stack, or location."""
+    lines: List[str] = []
+    roles = (getattr(profile, "target_roles", "") or "").strip() or \
+            (getattr(profile, "current_title", "") or "").strip()
+    if roles:
+        lines.append(f"Role Target: {roles}.")
+    loc_parts = [
+        (getattr(profile, "location", "") or "").strip(),
+        (getattr(profile, "preferred_country", "") or "").strip(),
+    ]
+    loc = ", ".join(p for p in loc_parts if p)
+    if loc:
+        arrangement = "open to remote" if getattr(profile, "remote_ok", True) else "onsite/hybrid"
+        lines.append(f"Preferred Location: {loc} ({arrangement}).")
+    tech = (getattr(profile, "key_skills", "") or "").strip()
+    if tech:
+        lines.append(f"Key Technologies: {tech}.")
+    summary = (getattr(profile, "professional_summary", "") or "").strip()
+    if summary:
+        lines.append(summary[:500])
+    return "\n".join(lines)
+
+
+def _legacy_summary_chunk() -> str:
+    """Single-user/local fallback: search profile from the bundled Q&A store."""
+    data = qa_resolver.data
+    identity = data.get("identity", {})
+    bg = data.get("background", {})
+    pref = data.get("preferences", {})
+
+    roles = "AI/ML Engineer, NLP Engineer, MLOps/Platform Engineer, or Backend Python Developer"
+    tech = bg.get("tech_stack", "Python, PyTorch, TensorFlow, Scikit-learn, XGBoost, NLP, Generative AI, LLMs, RAG, LangChain, Multi-Agent Systems, Spark, PySpark, MLflow, Kubeflow, Vertex AI, BigQuery, Kafka, Airflow, AWS, GCP, Docker, Kubernetes, FastAPI, FAISS, PostgreSQL, MongoDB")
+    loc = identity.get("location", "Cincinnati, OH")
+    arrangement = pref.get("work_arrangement", "Open to remote, hybrid, or onsite")
+
+    return (
+        f"Role Target: {roles}.\n"
+        f"Preferred Location: {loc} ({arrangement}).\n"
+        f"Key Technologies: {tech}."
+    )
+
+
+def _chunk_resume(resume_text: str, profile=None) -> List[str]:
+    """Split markdown resume by headers and append a target skills profile chunk.
+
+    With a ``profile`` the summary chunk is built from that user's own target
+    roles / skills / location; the bundled Q&A-store persona is ONLY used for
+    legacy single-user (local) runs where no profile exists."""
     raw_chunks = []
     current_chunk = []
     for line in resume_text.split("\n"):
@@ -45,27 +94,13 @@ def _chunk_resume(resume_text: str) -> List[str]:
             current_chunk.append(line)
     if current_chunk:
         raw_chunks.append("\n".join(current_chunk).strip())
-        
+
     # Keep only non-empty, reasonably-sized chunks
     chunks = [c for c in raw_chunks if len(c.strip()) > 50]
-    
-    # Generate search profile dynamically from Q&A store fields
-    data = qa_resolver.data
-    identity = data.get("identity", {})
-    bg = data.get("background", {})
-    pref = data.get("preferences", {})
 
-    roles = "AI/ML Engineer, NLP Engineer, MLOps/Platform Engineer, or Backend Python Developer"
-    tech = bg.get("tech_stack", "Python, PyTorch, TensorFlow, Scikit-learn, XGBoost, NLP, Generative AI, LLMs, RAG, LangChain, Multi-Agent Systems, Spark, PySpark, MLflow, Kubeflow, Vertex AI, BigQuery, Kafka, Airflow, AWS, GCP, Docker, Kubernetes, FastAPI, FAISS, PostgreSQL, MongoDB")
-    loc = identity.get("location", "Cincinnati, OH")
-    arrangement = pref.get("work_arrangement", "Open to remote, hybrid, or onsite")
-
-    summary_chunk = (
-        f"Role Target: {roles}.\n"
-        f"Preferred Location: {loc} ({arrangement}).\n"
-        f"Key Technologies: {tech}."
-    )
-    chunks.append(summary_chunk)
+    summary_chunk = _profile_summary_chunk(profile) if profile is not None else _legacy_summary_chunk()
+    if summary_chunk:
+        chunks.append(summary_chunk)
     return chunks
 
 
@@ -287,7 +322,7 @@ class Matcher:
             return []
 
         # Split resume into chunks to prevent vector dilution / sequence truncation
-        chunks = _chunk_resume(resume_text)
+        chunks = _chunk_resume(resume_text, profile=profile)
         log.info("Resume split into %d query chunks for matching.", len(chunks))
 
         # Build a focused profile string for cross-encoder (last chunk = summary profile)
