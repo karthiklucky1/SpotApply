@@ -452,6 +452,29 @@ def _company_domain_filter(name):
 templates.env.filters["company_domain"] = _company_domain_filter
 
 
+def _days_ago_filter(dt):
+    """Humanize a datetime: 'today', 'yesterday', '5 days ago', '3 weeks ago'."""
+    if not dt:
+        return ""
+    from datetime import datetime as _dtm
+    try:
+        days = (_dtm.utcnow() - dt).days
+    except TypeError:
+        return ""
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        return f"{days // 7} weeks ago"
+    return f"{days // 30} months ago"
+
+
+templates.env.filters["days_ago"] = _days_ago_filter
+
+
 def _sponsorship_of(job):
     """Jinja global: legal sponsorship assessment for a job (cap-exempt aware)."""
     try:
