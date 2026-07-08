@@ -160,13 +160,20 @@ def _get_user_id(request: Request) -> str | None:
     if not settings.use_supabase:
         return "local"   # single-user mode — no auth
     auth = request.headers.get("Authorization", "")
-    token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else None
-    if not token:
-        token = request.cookies.get("sb_token")
-    if not token:
-        return None
+    header_token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else None
+    cookie_token = request.cookies.get("sb_token")
     from app.db.supabase_client import get_user_id_from_token
-    return get_user_id_from_token(token)
+    # Try the header first, but fall back to the cookie when the header token
+    # is stale/invalid — otherwise one expired localStorage token makes some
+    # requests resolve a uid (cookie) and others none (header), so different
+    # views of the same data disagree.
+    for token in (header_token, cookie_token):
+        if not token:
+            continue
+        uid = get_user_id_from_token(token)
+        if uid:
+            return uid
+    return None
 
 
 def _require_user(request: Request) -> str:
@@ -219,8 +226,12 @@ async def startup_event():
     from app.autofill.agent import set_main_loop
     set_main_loop(asyncio.get_running_loop())
     # Create all DB tables at runtime (after env vars are injected by Railway)
-    from app.db.init_db import init_db
+    from app.db.init_db import init_db, reconcile_job_owners
     init_db()
+    # Adopt legacy ownerless jobs into the tenant whose applications reference
+    # them (single-user-era rows) — otherwise their pool counts 0 while their
+    # applications still render. Idempotent.
+    reconcile_job_owners()
     # Start background scheduler — runs discovery + matching every
     # settings.discovery_interval_hours (default 6h) for each user with a resume
     asyncio.create_task(_scheduler())
@@ -1224,6 +1235,9 @@ def debug_tenancy(request: Request) -> dict:
 @app.get("/stats")
 def stats(request: Request) -> dict:
     uid = _get_user_id(request)
+    # Fail closed: never fall through to an unscoped (all-tenants) count.
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     with get_session() as session:
         q = select(Job).where(Job.is_closed == False)
         if uid and uid != "local":
@@ -1274,6 +1288,9 @@ def shortlist(request: Request):
 @app.get("/api/stats")
 def api_stats(request: Request) -> dict:
     uid = _get_user_id(request)
+    # Fail closed: never fall through to an unscoped (all-tenants) count.
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     _uid_filter = (uid and uid != "local")
     with get_session() as session:
         # Total jobs in db
@@ -1396,6 +1413,10 @@ def api_jobs(
     closed: str = None,            # "true" = retrieve closed/ghost jobs
 ) -> dict:
     uid = _get_user_id(request)
+    # Fail closed: an unresolved uid must never return the unscoped
+    # (all-tenants) job list.
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     _uid_filter = uid and uid != "local"
     offset = (page - 1) * limit
     is_closed_filter = (closed == "true")

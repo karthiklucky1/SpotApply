@@ -226,6 +226,38 @@ def init_db() -> None:
         add_column_if_missing("discoveryrun", col, col_type)
 
 
+def reconcile_job_owners() -> int:
+    """Adopt legacy ownerless Job rows into the tenant whose Application
+    references them.
+
+    Jobs created in the single-user era carry ``user_id IS NULL`` while the
+    Applications pointing at them were later written with a real user_id —
+    so the owner's dashboards count 0 jobs even though their applications
+    render. Only NULL-owned rows are touched; rows that belong to another
+    tenant are never reassigned. Idempotent — safe to run on every boot.
+    Returns the number of adopted rows.
+    """
+    from sqlalchemy import text
+    sql = text(
+        "UPDATE job SET user_id = ("
+        "  SELECT a.user_id FROM application a"
+        "  WHERE a.job_id = job.id AND a.user_id IS NOT NULL LIMIT 1"
+        ") WHERE job.user_id IS NULL AND EXISTS ("
+        "  SELECT 1 FROM application a"
+        "  WHERE a.job_id = job.id AND a.user_id IS NOT NULL)"
+    )
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(sql)
+            adopted = result.rowcount or 0
+        if adopted:
+            print(f"Reconciled {adopted} ownerless job(s) to their application owners")
+        return adopted
+    except Exception as e:
+        print(f"Job owner reconciliation failed: {e}")
+        return 0
+
+
 @contextmanager
 def get_session() -> Iterator[Session]:
     with Session(engine) as session:
