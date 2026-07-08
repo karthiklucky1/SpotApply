@@ -244,5 +244,26 @@
     "fullstory",
     "statsig",
     "sanity"
+  ],
+  "workable": [
+    "netdata",
+    "blueground",
+    "kaizengaming",
+    "epignosis",
+    "hackthebox",
+    "workmotion"
+  ],
+  "recruitee": [
+    "recruitee",
+    "sendcloud",
+    "channable",
+    "polarsteps",
+    "withings"
+  ],
+  "personio": [
+    "personio",
+    "enpal",
+    "forto",
+    "raisin"
   ]
 }

@@ -16,6 +16,8 @@ ATS_PATTERNS = [
     ("workday", r"(?:https?:)?(?://)?([^.]+)\.myworkdayjobs\.com"),
     ("smartrecruiters", r"smartrecruiters\.com/([^/?#\s]+)"),
     ("workable", r"apply\.workable\.com/([^/?#\s]+)"),
+    ("recruitee", r"(?:https?:)?(?://)?([^.]+)\.recruitee\.com"),
+    ("personio", r"(?:https?:)?(?://)?([^.]+)\.jobs\.personio\.(?:de|com)"),
     ("bamboohr", r"(?:https?:)?(?://)?([^.]+)\.bamboohr\.com/jobs"),
     ("icims", r"(?:https?:)?(?://)?([^.]+)\.icims\.com"),
     ("jobvite", r"jobvite\.com/([^/?#\s]+)"),

@@ -25,56 +25,33 @@ def seed_registry() -> int:
         except Exception as e:
             log.error("Failed to load bootstrap JSON: %s", e)
             
-    # Collect all sources
-    greenhouse_slugs = set(settings.greenhouse_boards_list + bootstrap.get("greenhouse", []))
-    lever_slugs = set(settings.lever_boards_list + bootstrap.get("lever", []))
-    ashby_slugs = set(settings.ashby_boards_list + bootstrap.get("ashby", []))
+    # Collect all sources — every ATS key in the bootstrap file plus the
+    # .env board lists for the original three.
+    slug_sets: dict[JobSource, set[str]] = {
+        JobSource.GREENHOUSE: set(settings.greenhouse_boards_list + bootstrap.get("greenhouse", [])),
+        JobSource.LEVER: set(settings.lever_boards_list + bootstrap.get("lever", [])),
+        JobSource.ASHBY: set(settings.ashby_boards_list + bootstrap.get("ashby", [])),
+        JobSource.SMARTRECRUITERS: set(bootstrap.get("smartrecruiters", [])),
+        JobSource.WORKABLE: set(bootstrap.get("workable", [])),
+        JobSource.RECRUITEE: set(bootstrap.get("recruitee", [])),
+        JobSource.PERSONIO: set(bootstrap.get("personio", [])),
+    }
 
     with get_session() as session:
-        # Greenhouse
-        for slug in greenhouse_slugs:
-            slug = slug.strip().lower()
-            if not slug:
-                continue
-            existing = session.exec(
-                select(CompanyRegistry).where(
-                    CompanyRegistry.slug == slug,
-                    CompanyRegistry.ats == JobSource.GREENHOUSE
-                )
-            ).first()
-            if not existing:
-                session.add(CompanyRegistry(slug=slug, ats=JobSource.GREENHOUSE, source="seed"))
-                count += 1
-
-        # Lever
-        for slug in lever_slugs:
-            slug = slug.strip().lower()
-            if not slug:
-                continue
-            existing = session.exec(
-                select(CompanyRegistry).where(
-                    CompanyRegistry.slug == slug,
-                    CompanyRegistry.ats == JobSource.LEVER
-                )
-            ).first()
-            if not existing:
-                session.add(CompanyRegistry(slug=slug, ats=JobSource.LEVER, source="seed"))
-                count += 1
-
-        # Ashby
-        for slug in ashby_slugs:
-            slug = slug.strip().lower()
-            if not slug:
-                continue
-            existing = session.exec(
-                select(CompanyRegistry).where(
-                    CompanyRegistry.slug == slug,
-                    CompanyRegistry.ats == JobSource.ASHBY
-                )
-            ).first()
-            if not existing:
-                session.add(CompanyRegistry(slug=slug, ats=JobSource.ASHBY, source="seed"))
-                count += 1
+        for ats, slugs in slug_sets.items():
+            for slug in slugs:
+                slug = slug.strip().lower()
+                if not slug:
+                    continue
+                existing = session.exec(
+                    select(CompanyRegistry).where(
+                        CompanyRegistry.slug == slug,
+                        CompanyRegistry.ats == ats
+                    )
+                ).first()
+                if not existing:
+                    session.add(CompanyRegistry(slug=slug, ats=ats, source="seed"))
+                    count += 1
 
         session.commit()
     log.info("Registry seeded with %d new board entries.", count)
@@ -155,6 +132,42 @@ async def validate_slug(slug: str, ats: JobSource, career_url: Optional[str] = N
                 is_active = len(jobs) > 0
                 job_count = len(jobs)
                 job_titles = [j.get("name", "") for j in jobs]
+            else:
+                error_msg = f"API returned status {r.status_code}"
+        elif ats == JobSource.WORKABLE:
+            url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
+            r = await client.get(url)
+            if r.status_code == 200:
+                jobs = r.json().get("jobs", [])
+                is_active = len(jobs) > 0
+                job_count = len(jobs)
+                job_titles = [j.get("title", "") for j in jobs]
+            else:
+                error_msg = f"API returned status {r.status_code}"
+        elif ats == JobSource.RECRUITEE:
+            url = f"https://{slug}.recruitee.com/api/offers/"
+            r = await client.get(url)
+            if r.status_code == 200:
+                jobs = r.json().get("offers", [])
+                is_active = len(jobs) > 0
+                job_count = len(jobs)
+                job_titles = [j.get("title", "") for j in jobs]
+            else:
+                error_msg = f"API returned status {r.status_code}"
+        elif ats == JobSource.PERSONIO:
+            url = f"https://{slug}.jobs.personio.de/xml"
+            r = await client.get(url)
+            if r.status_code == 200 and "<position" in r.text:
+                import xml.etree.ElementTree as _ET
+                try:
+                    _root = _ET.fromstring(r.text)
+                    _titles = [(p.findtext("name") or "").strip() for p in _root.iter("position")]
+                    _titles = [t for t in _titles if t]
+                    is_active = len(_titles) > 0
+                    job_count = len(_titles)
+                    job_titles = _titles
+                except _ET.ParseError:
+                    error_msg = "XML parse error"
             else:
                 error_msg = f"API returned status {r.status_code}"
         elif ats == JobSource.WORKDAY:

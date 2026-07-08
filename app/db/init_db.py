@@ -58,6 +58,25 @@ def init_db() -> None:
         except Exception as e:
             print(f"Failed to migrate applicationstatus enum type: {e}")
 
+        # Same idempotent migration for jobsource (new ATS providers land here)
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(text(
+                    "SELECT enumlabel FROM pg_enum WHERE enumtypid = 'jobsource'::regtype"
+                )).all()
+                existing_enums = {r[0] for r in res}
+
+                from app.db.models import JobSource
+                for source in JobSource:
+                    val = source.value
+                    if val not in existing_enums and val.upper() not in existing_enums:
+                        autocommit_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+                        with autocommit_conn:
+                            autocommit_conn.execute(text(f"ALTER TYPE jobsource ADD VALUE '{val}'"))
+                        print(f"Added enum value '{val}' to jobsource type")
+        except Exception as e:
+            print(f"Failed to migrate jobsource enum type: {e}")
+
     # Migrations: Add new columns if they don't exist
     # Use inspector to check columns per table
     inspector = inspect(engine)

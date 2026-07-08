@@ -16,6 +16,8 @@ class JobSource(str, Enum):
     WORKDAY = "workday"
     SMARTRECRUITERS = "smartrecruiters"
     WORKABLE = "workable"
+    RECRUITEE = "recruitee"           # Recruitee public offers API — EU-heavy
+    PERSONIO = "personio"             # Personio public XML feed — DACH-heavy
     BAMBOOHR = "bamboohr"
     ICIMS = "icims"
     JOBVITE = "jobvite"

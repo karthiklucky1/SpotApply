@@ -16,7 +16,10 @@ from app.discovery.ashby import AshbyScraper
 from app.discovery.base import RawJob
 from app.discovery.greenhouse import GreenhouseScraper
 from app.discovery.lever import LeverScraper
+from app.discovery.personio import PersonioScraper
+from app.discovery.recruitee import RecruiteeScraper
 from app.discovery.smartrecruiters import SmartRecruitersScraper
+from app.discovery.workable import WorkableScraper
 from app.discovery.workday import WorkdayScraper
 
 log = logging.getLogger(__name__)
@@ -75,6 +78,12 @@ def _all_scrapers():
                     scrapers.append(SmartRecruitersScraper(comp.slug))
                 elif comp.ats == JobSource.WORKDAY:
                     scrapers.append(WorkdayScraper(comp.slug, comp.career_url))
+                elif comp.ats == JobSource.WORKABLE:
+                    scrapers.append(WorkableScraper(comp.slug))
+                elif comp.ats == JobSource.RECRUITEE:
+                    scrapers.append(RecruiteeScraper(comp.slug))
+                elif comp.ats == JobSource.PERSONIO:
+                    scrapers.append(PersonioScraper(comp.slug))
     except Exception as e:
         log.warning("Could not load scrapers from CompanyRegistry database: %s. Falling back to .env", e)
 
