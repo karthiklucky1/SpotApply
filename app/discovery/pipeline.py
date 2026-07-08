@@ -618,7 +618,8 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         # one slow/hanging source can't stall the whole run (which would leave the
         # UI spinning with no summary).
         # Country-aware sources receive the user's preferred country for global sourcing.
-        _COUNTRY_AWARE_SOURCES = {"SerpAPI Google Jobs", "Adzuna", "Reed.co.uk", "Jooble"}
+        _COUNTRY_AWARE_SOURCES = {"SerpAPI Google Jobs", "Adzuna", "Reed.co.uk", "Jooble",
+                                  "LinkedIn (RapidAPI)"}
         async def _fetch_one(name, src_cls):
             try:
                 if name in _COUNTRY_AWARE_SOURCES:

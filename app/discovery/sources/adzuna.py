@@ -85,7 +85,6 @@ class AdzunaSource:
                                 "app_id": app_id,
                                 "app_key": app_key,
                                 "what": term,
-                                "where": "remote",
                                 "results_per_page": _RESULTS_PER_PAGE,
                                 "content-type": "application/json",
                                 "sort_by": "date",

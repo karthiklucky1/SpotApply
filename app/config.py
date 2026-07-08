@@ -28,14 +28,17 @@ class Settings(BaseSettings):
     jobicy_enabled: bool = True      # Jobicy public API — no key needed
     weworkremotely_enabled: bool = True  # WeWorkRemotely RSS feeds — no key needed
     indeed_rss_enabled: bool = False  # Indeed killed public RSS + blocks bots (and ToS forbids it) — off by default
-    adzuna_enabled: bool = False     # Adzuna API — needs app_id + app_key (free tier)
+    # Keyed sources auto-activate: enabled by default, but each source still
+    # skips itself when its key is missing — so "add the key → it works", and
+    # setting the *_ENABLED flag to false force-disables even with a key set.
+    adzuna_enabled: bool = True      # Adzuna API — needs app_id + app_key (free tier)
     adzuna_app_id: str = ""
     adzuna_app_key: str = ""
-    reed_enabled: bool = False       # Reed.co.uk API — needs api_key (free tier)
+    reed_enabled: bool = True        # Reed.co.uk API — needs api_key (free tier)
     reed_api_key: str = ""
-    jooble_enabled: bool = False     # Jooble API — needs api_key (free tier)
+    jooble_enabled: bool = True      # Jooble API — needs api_key (free tier)
     jooble_api_key: str = ""
-    linkedin_rapidapi_enabled: bool = False  # LinkedIn via RapidAPI (~$10/mo)
+    linkedin_rapidapi_enabled: bool = True  # LinkedIn via RapidAPI (~$10/mo) — needs rapidapi_key
     rapidapi_key: str = ""
 
     @property

@@ -33,8 +33,9 @@ _SEARCH_TERMS = [
 class LinkedInRapidAPISource:
     """Fetches LinkedIn jobs via RapidAPI (paid, ~$10/mo)."""
 
-    def __init__(self, keywords: List[str] | None = None):
+    def __init__(self, keywords: List[str] | None = None, country: str = "United States"):
         self.keywords = [k.lower() for k in (keywords or settings.jobs_keywords_list)]
+        self.country = (country or "United States").strip() or "United States"
 
     async def fetch_jobs(self) -> List[RawJob]:
         if not settings.linkedin_rapidapi_active:
@@ -64,7 +65,7 @@ class LinkedInRapidAPISource:
                             _API_URL,
                             json={
                                 "search_terms": term,
-                                "location": "United States",
+                                "location": self.country,
                                 "page": "1",
                             },
                             headers=headers,
