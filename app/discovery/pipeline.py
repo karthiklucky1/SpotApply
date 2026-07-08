@@ -54,11 +54,14 @@ def is_obvious_non_tech(title: str) -> bool:
 def _all_scrapers():
     scrapers = []
     
-    # 1. Query active boards from the DB registry
+    # 1. Query active boards from the DB registry — least-recently-scraped first
+    #    so the max_boards_per_run cap rotates fairly across runs.
     try:
         with get_session() as session:
             db_companies = session.exec(
-                select(CompanyRegistry).where(CompanyRegistry.is_active == True)
+                select(CompanyRegistry)
+                .where(CompanyRegistry.is_active == True)
+                .order_by(CompanyRegistry.last_seen.asc().nulls_first())
             ).all()
             
             for comp in db_companies:
@@ -470,10 +473,52 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 log.debug("Incremental save failed: %s", _db_err)
 
     _boards_fetched = 0
-    scrapers = _all_scrapers() if settings.scrape_company_boards else []
-    if not settings.scrape_company_boards:
-        log.info("scrape_company_boards=False — skipping fixed-company board scraping (job-first mode)")
+    # Direct ATS board scraping runs whenever direct_ats_enabled — this is what
+    # produces live, direct-apply jobs (and drives mark_ghost_jobs open/close
+    # detection). scrape_company_boards only gates the heavyweight company
+    # DISCOVERY block above (YC/search-engine slug hunting).
+    if settings.direct_ats_enabled or settings.scrape_company_boards:
+        if not settings.scrape_company_boards:
+            # Job-first mode never ran seed_registry above — make sure the
+            # bootstrap slugs exist before asking the registry for boards.
+            try:
+                from app.discovery.registry import seed_registry
+                with get_session() as _s:
+                    _has_any = _s.exec(select(CompanyRegistry).limit(1)).first()
+                if not _has_any:
+                    seed_registry()
+            except Exception as _se:
+                log.warning("Registry seed check failed: %s", _se)
+        scrapers = _all_scrapers()
+        if len(scrapers) > settings.max_boards_per_run:
+            # Rotate fairly across runs: least-recently-validated boards first.
+            log.info("Capping board scrape to %d of %d registered boards this run.",
+                     settings.max_boards_per_run, len(scrapers))
+            scrapers = scrapers[: settings.max_boards_per_run]
+    else:
+        scrapers = []
+        log.info("direct_ats_enabled=False — skipping fixed-company board scraping (aggregators only)")
     log.info("Executing job scraping for %d active boards...", len(scrapers))
+    def _touch_registry(source_name: str, slug: str | None, job_count: int) -> None:
+        """Record a successful scrape so board rotation stays fair across runs."""
+        if not slug:
+            return
+        try:
+            from datetime import datetime as _now_dtm
+            with get_session() as session:
+                row = session.exec(
+                    select(CompanyRegistry)
+                    .where(CompanyRegistry.slug == slug)
+                    .where(CompanyRegistry.ats == JobSource(source_name))
+                ).first()
+                if row:
+                    row.last_seen = _now_dtm.utcnow()
+                    row.job_count = job_count
+                    session.add(row)
+                    session.commit()
+        except Exception as _te:
+            log.debug("registry touch failed for %s/%s: %s", source_name, slug, _te)
+
     for scraper in scrapers:
         try:
             raw = scraper.fetch()
@@ -481,7 +526,10 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
                 total_new += new
                 _boards_fetched += len(raw)
-                
+                _slug = (getattr(scraper, "board_slug", None) or getattr(scraper, "company_slug", None)
+                         or getattr(scraper, "org_slug", None))
+                _touch_registry(scraper.name, _slug, len(raw))
+
                 # Close ghost jobs ONLY on a successful, non-empty fetch. An empty
                 # result is indistinguishable from a soft failure (rate-limit /
                 # transient empty response), and ghost-closing on it would wrongly

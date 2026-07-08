@@ -27,6 +27,7 @@ We also accept any slugs registered in CompanyRegistry with ats=greenhouse.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import List
 
 import httpx
@@ -121,6 +122,21 @@ class GreenhouseKeywordSource:
 
                             url = item.get("absolute_url") or f"https://boards.greenhouse.io/{slug}/jobs/{ext_id}"
 
+                            # first_published/updated_at are ISO-8601 with offset;
+                            # normalize to naive UTC so freshness scoring works.
+                            posted_at = None
+                            for ts_field in ("first_published", "updated_at"):
+                                ts = item.get(ts_field)
+                                if ts:
+                                    try:
+                                        dt = datetime.fromisoformat(ts)
+                                        if dt.tzinfo:
+                                            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                                        posted_at = dt
+                                        break
+                                    except ValueError:
+                                        continue
+
                             slug_jobs.append(RawJob(
                                 source="greenhouse",
                                 external_id=ext_id,
@@ -130,7 +146,7 @@ class GreenhouseKeywordSource:
                                 remote=remote,
                                 url=url,
                                 description=_strip_html(item.get("content") or ""),
-                                posted_at=None,
+                                posted_at=posted_at,
                             ))
                         except Exception as e:
                             log.debug("Greenhouse: parse error for %s/%s: %s", slug, item.get("id"), e)

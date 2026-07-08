@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user
+    direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
+    max_boards_per_run: int = 300         # cap on registry boards scraped per discovery run
 
     # Models
     scoring_model: str = "claude-haiku-4-5-20251001"

@@ -225,6 +225,56 @@ async def startup_event():
     # Start background scheduler — runs discovery + matching every
     # settings.discovery_interval_hours (default 6h) for each user with a resume
     asyncio.create_task(_scheduler())
+    # Registry maintenance — keeps the direct-ATS board registry seeded,
+    # validated, and growing (daily validation, weekly YC harvest)
+    asyncio.create_task(_registry_maintenance())
+
+
+async def _registry_maintenance_once(cycle: int) -> None:
+    """One maintenance cycle: seed the registry if empty, re-validate boards
+    (self-healing retry/inactive logic lives in the validation loop), and every
+    7th cycle harvest new YC hiring companies into the registry."""
+    import asyncio
+    import logging
+    _log = logging.getLogger("registry")
+    from app.db.models import CompanyRegistry
+    from app.discovery.registry import seed_registry, run_validation_loop
+    with get_session() as session:
+        has_any = session.exec(select(CompanyRegistry).limit(1)).first()
+    if not has_any:
+        _log.info("Registry empty — seeding from bootstrap list")
+        await asyncio.to_thread(seed_registry)
+    validated = await run_validation_loop(limit=150)
+    _log.info("Registry maintenance: validated %d boards", validated)
+    if cycle % 7 == 0:
+        try:
+            from app.discovery.registry_harvester import run_harvester
+            added = await run_harvester(limit=25)
+            _log.info("Registry maintenance: harvester registered %d new boards", added)
+        except Exception as he:
+            _log.warning("Registry harvester failed: %s", he)
+
+
+async def _registry_maintenance():
+    """Keep the CompanyRegistry healthy in prod: daily validation, weekly YC
+    harvest. Without this, direct-ATS scraping would run forever against a
+    stale seed list (previously these only ran in local dev)."""
+    import asyncio
+    import logging
+    from app.config import settings
+    _log = logging.getLogger("registry")
+    if not settings.direct_ats_enabled:
+        _log.info("Registry maintenance disabled (direct_ats_enabled=False)")
+        return
+    await asyncio.sleep(300)  # let boot + first discovery settle
+    cycle = 0
+    while True:
+        try:
+            await _registry_maintenance_once(cycle)
+        except Exception as e:
+            _log.exception("Registry maintenance error: %s", e)
+        cycle += 1
+        await asyncio.sleep(24 * 60 * 60)
 
 
 async def _scheduler():
