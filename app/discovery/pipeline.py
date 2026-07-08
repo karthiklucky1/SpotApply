@@ -374,7 +374,7 @@ async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):
 
 
 def run_discovery(user_id: str | None = None, run_id: int | None = None,
-                  keywords: list[str] | None = None) -> int:
+                  keywords: list[str] | None = None, phase: str = "all") -> int:
     """Orchestrates the self-growing company graph discovery:
     1. Seed DB from fallback/bootstrap if empty.
     2. Run pluggable sources to discover candidate companies.
@@ -459,13 +459,14 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # In job-first mode (scrape_company_boards=False) we skip ALL company
     # discovery/registration/validation so nothing is anchored to a fixed
     # company list; jobs come purely from the aggregators in Section F.
-    if settings.scrape_company_boards:
+    if settings.scrape_company_boards and phase != "fast":
         try:
             asyncio.run(run_discovery_async())
         except Exception as e:
             log.exception("Async company discovery/validation loop failed: %s", e)
     else:
-        log.info("scrape_company_boards=False — skipping company discovery/registration/validation (job-first mode)")
+        log.info("Skipping company discovery/registration/validation (mode=%s, scrape_company_boards=%s)",
+                 phase, settings.scrape_company_boards)
 
     # E. Run scrapers for all active boards in the registry (Greenhouse, Lever, Ashby, SmartRecruiters, Workday)
     # Gated by settings.scrape_company_boards — disable for pure job-first discovery.
@@ -498,7 +499,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # produces live, direct-apply jobs (and drives mark_ghost_jobs open/close
     # detection). scrape_company_boards only gates the heavyweight company
     # DISCOVERY block above (YC/search-engine slug hunting).
-    if settings.direct_ats_enabled or settings.scrape_company_boards:
+    if (settings.direct_ats_enabled or settings.scrape_company_boards) and phase != "fast":
         if not settings.scrape_company_boards:
             # Job-first mode never ran seed_registry above — make sure the
             # bootstrap slugs exist before asking the registry for boards.
@@ -588,7 +589,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # Postings here often predate the big boards. We upsert them directly
     # (manual-apply track) rather than routing through company discovery,
     # because most HN comments don't map to a scrapeable ATS board.
-    if settings.hn_whoishiring_enabled:
+    if settings.hn_whoishiring_enabled and phase != "boards":
         try:
             from app.discovery.sources.hn_whoishiring import HNWhoIsHiringSource
             src = HNWhoIsHiringSource(keywords=_keywords)
@@ -689,11 +690,12 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         return inserted
 
     _direct_raw_holder = []
-    try:
-        direct_new = asyncio.run(run_direct_sources_async())
-        total_new += direct_new
-    except Exception as e:
-        log.exception("Direct job-board sources failed: %s", e)
+    if phase != "boards":
+        try:
+            direct_new = asyncio.run(run_direct_sources_async())
+            total_new += direct_new
+        except Exception as e:
+            log.exception("Direct job-board sources failed: %s", e)
 
     log.info("Discovery complete. Total new jobs inserted: %d", total_new)
 
@@ -735,9 +737,14 @@ def _write_discovery_run(user_id, source_stats: dict, total_inserted: int, start
         if run_id:
             row = session.get(DiscoveryRun, run_id)
             if row:
-                row.total_fetched = total_fetched
-                row.total_inserted = total_inserted
-                row.source_counts = json.dumps(source_stats)
+                try:
+                    prev = json.loads(row.source_counts or "{}")
+                except (ValueError, TypeError):
+                    prev = {}
+                merged = {**prev, **source_stats}
+                row.total_fetched = sum(int(v.get("fetched", 0)) for v in merged.values())
+                row.total_inserted = (row.total_inserted or 0) + total_inserted
+                row.source_counts = json.dumps(merged)
                 row.status = status
                 session.add(row)
                 session.commit()

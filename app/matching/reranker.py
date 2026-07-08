@@ -146,7 +146,25 @@ def _get_system_prompt(profile=None) -> str:
     return _legacy_system_prompt()
 
 
-def _build_prompt(resume_text: str, job: Job) -> str:
+def _sponsor_note(job: Job, profile) -> str:
+    """When the candidate needs sponsorship AND the employer has a strong public
+    H-1B filing record, tell the scorer explicitly: OPT is not a blocker here."""
+    try:
+        if not bool(getattr(profile, "requires_sponsorship", False)):
+            return ""
+        from app.intelligence.h1b_data import lookup as _h1b_lookup
+        rec = _h1b_lookup(job.company or "")
+        if rec and (rec.get("approvals", 0) or 0) >= 50:
+            return ("\nNOTE: This employer is a VERIFIED visa sponsor with a strong public "
+                    "USCIS H-1B filing record. Do NOT penalize the candidate's sponsorship "
+                    "need for this job — score work_auth high (75+) unless the posting "
+                    "explicitly refuses sponsorship.")
+    except Exception:
+        pass
+    return ""
+
+
+def _build_prompt(resume_text: str, job: Job, profile=None) -> str:
     return f"""<resume>
 {resume_text[:6000]}
 </resume>
@@ -156,7 +174,7 @@ Title: {job.title}
 Company: {job.company}
 Location: {job.location}
 Remote: {job.remote}
-
+{_sponsor_note(job, profile)}
 Description:
 {job.description[:5000]}
 </job>
@@ -271,7 +289,7 @@ class Reranker:
             log.info("Reranker: Pre-filtered job %s - %s", job.title, pre_filtered[1])
             return pre_filtered
 
-        prompt = _build_prompt(resume_text, job)
+        prompt = _build_prompt(resume_text, job, self.profile)
 
         # Try each backend; retry rate-limit/overloaded errors with exponential
         # backoff + jitter before falling through. CRITICAL: on total failure we

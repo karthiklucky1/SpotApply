@@ -480,6 +480,41 @@ def _days_ago_filter(dt):
 templates.env.filters["days_ago"] = _days_ago_filter
 
 
+import re as _sal_re
+
+# Currency-anchored ranges only — conservative so we never show garbage.
+_SALARY_PAT = _sal_re.compile(
+    r"(?:[$€£₹]\s?\d{2,3}(?:[,.]\d{3})*(?:\s?[kK])?|\d{1,2}(?:\.\d)?\s?LPA)"
+    r"(?:\s?(?:-|–|—|to)\s?[$€£₹]?\s?\d{2,3}(?:[,.]\d{3})*(?:\s?[kK])?)?"
+    r"(?:\s?(?:/|per\s)\s?(?:yr|year|annum|hour|hr|month|mo)\b)?", _sal_re.I)
+
+
+def _salary_of(job):
+    """Best-known pay for a job: the Insider Intelligence parse when cached,
+    else a currency-anchored range regexed from the description. None if unknown."""
+    import json as _json
+    try:
+        ins = _json.loads(getattr(job, "corporate_insights", None) or "{}")
+        text = ((ins.get("salary") or {}).get("text") or "").strip()
+        if text:
+            return text[:44]
+    except (ValueError, TypeError):
+        pass
+    desc = (getattr(job, "description", "") or "")[:8000]
+    best = None
+    for m in _SALARY_PAT.finditer(desc):
+        t = m.group(0).strip()
+        # prefer ranges; require a K suffix, a comma-grouped number, or LPA
+        if not _sal_re.search(r"[kK]\b|,\d{3}|LPA", t):
+            continue
+        if best is None or (len(t) > len(best)):
+            best = t
+    return best[:44] if best else None
+
+
+templates.env.globals["salary_of"] = _salary_of
+
+
 def _sponsorship_of(job):
     """Jinja global: legal sponsorship assessment for a job (cap-exempt aware)."""
     try:
@@ -2702,18 +2737,41 @@ def _discover_then_match(user_id) -> None:
                 _add_kw(roles, "internship")
     except Exception as _se:
         log.debug("discovery keyword augmentation skipped: %s", _se)
+    # ── Wave 1 (fast): concurrent aggregator APIs only → match → first results
+    # on the board within ~a minute. Wave 2 (deep): company ATS boards → match
+    # again (already-scored jobs shortlist without a second LLM call).
+    first_ids: list[int] = []
     try:
-        run_discovery(user_id, run_id=run_id, keywords=roles)   # marks the row 'ranking' + per-source counts
+        run_discovery(user_id, run_id=run_id, keywords=roles, phase="fast")
+        first_ids = run_matching(user_id) or []
+        try:
+            from app.db.models import DiscoveryRun
+            with get_session() as session:
+                row = session.get(DiscoveryRun, run_id) if run_id else None
+                if row and row.status not in ("cancelled",):
+                    row.status = "first_results"
+                    row.total_shortlisted = len(first_ids)
+                    session.add(row)
+                    session.commit()
+        except Exception as _fe:
+            log.debug("first_results status write failed: %s", _fe)
     except Exception as e:
-        log.exception("Discovery failed: %s", e)
+        log.exception("Fast discovery wave failed: %s", e)
         finish_discovery_run(run_id, "error", error=str(e))
         return
     try:
-        shortlisted = run_matching(user_id)
-        finish_discovery_run(run_id, "done", total_shortlisted=len(shortlisted or []))
+        run_discovery(user_id, run_id=run_id, keywords=roles, phase="boards")
+        shortlisted = run_matching(user_id) or []
+        total = len(set(first_ids) | set(shortlisted))
+        finish_discovery_run(run_id, "done", total_shortlisted=total)
     except Exception as e:
-        log.exception("Matching failed: %s", e)
-        finish_discovery_run(run_id, "error", error=str(e))
+        log.exception("Deep discovery wave failed: %s", e)
+        # First-wave results are already live — surface them rather than erroring out.
+        if first_ids:
+            finish_discovery_run(run_id, "done", total_shortlisted=len(first_ids),
+                                 error=f"Company-board scan failed: {e}")
+        else:
+            finish_discovery_run(run_id, "error", error=str(e))
 
 
 @app.post("/run/discovery")

@@ -62,9 +62,11 @@ def analyze(title: str, company: str, description: str) -> dict | None:
             messages=[{"role": "user", "content": _PROMPT.replace("{JD}", jd)}],
         )
         text = (resp.content[0].text or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`").lstrip("json").strip()
-        parsed = json.loads(text)
+        # Tolerate fences/prose around the JSON: parse the outermost {...} slice.
+        a, b = text.find("{"), text.rfind("}")
+        if a == -1 or b <= a:
+            return {}
+        parsed = json.loads(text[a:b + 1])
         return parsed if isinstance(parsed, dict) else {}
     except Exception as e:
         log.warning("corporate insights parse failed for %s @ %s: %s", title, company, e)
