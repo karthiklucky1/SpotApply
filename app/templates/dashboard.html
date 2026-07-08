@@ -547,10 +547,13 @@
         --surface:   #FCFAF5;   /* cards */
         --surface-2: #EFEadF;   /* secondary fills / inputs */
         --ink:       #2E2A24;   /* primary text */
-        --ink-soft:  #4A453C;
-        --muted:     #8C857A;   /* secondary text */
-        --muted-2:   #A8A092;   /* faint text */
-        --border:    #E6E0D3;   /* hairlines */
+        --ink-soft:  #443F36;
+        /* Secondary/faint text darkened for readable contrast on the light
+           theme (previous #8C857A/#A8A092 sat below WCAG AA and made the
+           whole dashboard read as washed-out). */
+        --muted:     #6B6456;   /* secondary text — ~5.5:1 on cards */
+        --muted-2:   #837B6C;   /* faint text — ~4.1:1, large/labels only */
+        --border:    #DDD6C5;   /* hairlines — slightly stronger */
         --sage:      #2FB4A6;   /* accent — light seafoam teal */
         --sage-rgb:  47,180,166;/* accent as raw RGB for rgba() tints */
         --sage-600:  #1F9C8F;   /* accent strong / hover */
@@ -5863,7 +5866,7 @@
                         </div>
                     </div>
                     <div class="mt-3">
-                        <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Department / industry <span class="text-slate-600">(drives non-CS suggestions)</span></label>
+                        <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Department / industry <span class="text-slate-600">(we use this to find the right roles for your field)</span></label>
                         <input name="industry" placeholder="e.g. Civil Engineering, Finance, Mechanical…" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" />
                     </div>
                     <div class="flex items-center gap-3 mt-3">
