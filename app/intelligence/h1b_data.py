@@ -185,14 +185,11 @@ def refresh_cache() -> None:
     _CACHE_AT = 0.0
 
 
-def _load_cache() -> dict:
-    """Build {employer_key: best-record} from the DB (latest year wins). Cached
-    in-process with a short TTL so a fresh upload propagates to every worker
-    within minutes — no restart needed."""
-    global _CACHE, _CACHE_AT
-    import time as _time
-    if _CACHE is not None and (_time.time() - _CACHE_AT) < _CACHE_TTL:
-        return _CACHE
+_KEYS_SORTED: list | None = None
+_REFRESH_LOCK = None  # created lazily (threading.Lock)
+
+
+def _build_cache() -> dict:
     cache: dict = {}
     try:
         from app.db.init_db import get_session
@@ -209,14 +206,53 @@ def _load_cache() -> dict:
                     }
     except Exception as e:
         log.debug("H-1B cache load skipped: %s", e)
-    import time as _time
-    _CACHE = cache
-    _CACHE_AT = _time.time()
     return cache
 
 
+def _refresh_cache() -> None:
+    global _CACHE, _CACHE_AT, _KEYS_SORTED
+    import time as _time
+    cache = _build_cache()
+    _CACHE = cache
+    _KEYS_SORTED = sorted(cache.keys())
+    _CACHE_AT = _time.time()
+
+
+def warm_cache_async() -> None:
+    """Warm the cache off the request path (called at server startup)."""
+    import threading
+    threading.Thread(target=_refresh_cache, daemon=True).start()
+
+
+def _load_cache() -> dict:
+    """{employer_key: best-record}, cached in-process.
+
+    Stale-while-revalidate: once loaded, an expired cache is returned
+    IMMEDIATELY and refreshed on a background thread — reloading a
+    50k-row table must never block a dashboard render (it used to add
+    seconds to the first request after every TTL expiry)."""
+    global _REFRESH_LOCK
+    import time as _time
+    if _CACHE is not None:
+        if (_time.time() - _CACHE_AT) >= _CACHE_TTL:
+            import threading
+            if _REFRESH_LOCK is None:
+                _REFRESH_LOCK = threading.Lock()
+            if _REFRESH_LOCK.acquire(blocking=False):
+                def _bg():
+                    try:
+                        _refresh_cache()
+                    finally:
+                        _REFRESH_LOCK.release()
+                threading.Thread(target=_bg, daemon=True).start()
+        return _CACHE
+    # First call in this process (startup warm not done yet) — load once.
+    _refresh_cache()
+    return _CACHE or {}
+
+
 def lookup(company: str) -> Optional[dict]:
-    """O(1) lookup of an employer's public H-1B record (None if absent/empty)."""
+    """O(log n) lookup of an employer's public H-1B record (None if absent)."""
     if not company:
         return None
     cache = _load_cache()
@@ -226,10 +262,13 @@ def lookup(company: str) -> Optional[dict]:
     rec = cache.get(key)
     if rec:
         return rec
-    # Lenient: match when the normalized name is a prefix of a known employer.
-    for k, v in cache.items():
-        if k.startswith(key) and len(key) >= 4:
-            return v
+    # Lenient prefix match via binary search (a linear scan over ~50k keys per
+    # job card made dashboard renders crawl).
+    if len(key) >= 4 and _KEYS_SORTED:
+        import bisect
+        i = bisect.bisect_left(_KEYS_SORTED, key)
+        if i < len(_KEYS_SORTED) and _KEYS_SORTED[i].startswith(key):
+            return cache.get(_KEYS_SORTED[i])
     return None
 
 

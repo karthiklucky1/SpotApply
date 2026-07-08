@@ -212,9 +212,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         session.add(existing)
                         session.commit()
                     else:
-                        existing.last_seen = datetime.utcnow()
-                        session.add(existing)
-                        session.commit()
+                        # Unchanged duplicate: only refresh last_seen when it's
+                        # meaningfully stale (>6h). Touching+committing every dup
+                        # on every run was thousands of round-trips to Postgres
+                        # per discovery pass — the bulk of a re-run's wall time.
+                        _seen = existing.last_seen
+                        if _seen is None or (datetime.utcnow() - _seen).total_seconds() > 6 * 3600:
+                            existing.last_seen = datetime.utcnow()
+                            session.add(existing)
+                            session.commit()
                     continue
 
                 # 2. Check cross-source slug duplicate — also scoped to THIS user.
@@ -534,9 +540,28 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         except Exception as _te:
             log.debug("registry touch failed for %s/%s: %s", source_name, slug, _te)
 
-    for scraper in scrapers:
+    # Fetch boards CONCURRENTLY — sequentially, 250+ boards × 1-2s of network
+    # latency each meant discovery ran for 5-10+ minutes and looked hung. The
+    # fetches are pure I/O; DB writes (upsert/ghost/registry) stay serial below.
+    from concurrent.futures import ThreadPoolExecutor as _BoardPool
+    import time as _bt
+
+    def _fetch_board(scraper):
         try:
-            raw = scraper.fetch()
+            return scraper, scraper.fetch()
+        except Exception as e:
+            log.exception("Scraper %s failed: %s", scraper.name, e)
+            return scraper, None
+
+    _t0 = _bt.time()
+    fetched_boards: list = []
+    if scrapers:
+        with _BoardPool(max_workers=min(12, len(scrapers))) as _pool:
+            fetched_boards = list(_pool.map(_fetch_board, scrapers))
+        log.info("Fetched %d boards in %.1fs", len(fetched_boards), _bt.time() - _t0)
+
+    for scraper, raw in fetched_boards:
+        try:
             if raw is not None:
                 new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords)
                 total_new += new
@@ -557,7 +582,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             else:
                 log.warning("%s scraper fetch returned None (failed)", scraper.name)
         except Exception as e:
-            log.exception("Scraper %s failed: %s", scraper.name, e)
+            log.exception("Scraper %s processing failed: %s", scraper.name, e)
 
     # E.5 HN "Who is hiring?" monthly thread — pre-posting intelligence.
     # Postings here often predate the big boards. We upsert them directly

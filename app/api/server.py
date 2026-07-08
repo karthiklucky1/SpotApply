@@ -232,6 +232,13 @@ async def startup_event():
     # them (single-user-era rows) — otherwise their pool counts 0 while their
     # applications still render. Idempotent.
     reconcile_job_owners()
+    # Warm the H-1B employer cache off the request path so the first dashboard
+    # render never pays the full-table load.
+    try:
+        from app.intelligence.h1b_data import warm_cache_async
+        warm_cache_async()
+    except Exception:
+        pass
     # Start background scheduler — runs discovery + matching every
     # settings.discovery_interval_hours (default 6h) for each user with a resume
     asyncio.create_task(_scheduler())
