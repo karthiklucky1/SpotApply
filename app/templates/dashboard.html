@@ -640,30 +640,7 @@
     #jobModalOverlay { padding: 0; }
     #jobModal { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border: none;
       flex-direction: row; }
-    .jm-list { width: 360px; flex-shrink: 0; border-right: 1px solid var(--border);
-      background: var(--canvas); display: flex; flex-direction: column; min-height: 0; }
-    .jm-list-head { padding: 18px 20px 13px; border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
-    .jm-list-head .jm-lh-title { font-size: 12px; font-weight: 800; text-transform: uppercase;
-      letter-spacing: 0.07em; color: var(--muted-2); }
-    .jm-list-head .jm-lh-count { font-size: 11.5px; font-weight: 800; color: var(--sage-700);
-      background: var(--sage-tint); border: 1px solid rgba(var(--sage-rgb),0.35);
-      padding: 2px 10px; border-radius: 9999px; }
-    .jm-list-items { overflow-y: auto; flex: 1; padding: 10px 12px 20px; }
-    .jm-item { display: flex; gap: 11px; align-items: flex-start; padding: 12px 12px;
-      border-radius: 14px; cursor: pointer; border: 1px solid transparent;
-      transition: background .15s ease, border-color .15s ease; }
-    .jm-item:hover { background: var(--surface); border-color: var(--border); }
-    .jm-item.active { background: var(--surface); border-color: rgba(var(--sage-rgb),0.55);
-      box-shadow: 0 2px 10px rgba(var(--sage-rgb),0.14), inset 3px 0 0 var(--sage); }
-    .jm-item-title { font-size: 12.5px; font-weight: 800; color: var(--ink); line-height: 1.35;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .jm-item-sub { font-size: 11px; font-weight: 600; color: var(--muted); margin-top: 2.5px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .jm-item-score { margin-left: auto; flex-shrink: 0; width: 34px; height: 34px; border-radius: 9999px;
-      display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 800; }
     .jm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-    @media (max-width: 1023px) { .jm-list { display: none !important; } }
     /* ── Company logo avatar (real logo with initials fallback underneath) ── */
     .co-logo { position: relative; display: inline-flex; align-items: center; justify-content: center;
       width: 40px; height: 40px; border-radius: 11px; background: var(--sage-tint); color: var(--sage-700);
@@ -719,15 +696,19 @@
     .jd-meta-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
     .jd-meta-chip svg { width: 14px; height: 14px; color: var(--sage-600); flex-shrink: 0; }
     .jr-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    .jr-score { width: 208px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 9px; padding: 18px 14px; text-align: center;
-      background: linear-gradient(168deg, #14443B 0%, #0B2F29 55%, #071F1B 100%); }
+    .jr-score { width: 210px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; padding: 18px 14px; text-align: center;
+      background: linear-gradient(170deg, var(--sage-tint) 0%, rgba(var(--sage-rgb),0.05) 100%);
+      border-left: 1px dashed rgba(var(--sage-rgb),0.4); }
     .jr-score-dial { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
-    .jr-score-num { position: absolute; font-size: 20px; font-weight: 800; color: #FFFFFF; letter-spacing: -0.02em; }
-    .jr-score-num small { font-size: 11px; font-weight: 700; color: #8FE6D3; }
-    .jr-score-label { font-size: 11px; font-weight: 800; letter-spacing: 0.13em; color: #F0FFFA; text-transform: uppercase; }
+    .jr-score-num { position: absolute; font-size: 20px; font-weight: 800; color: var(--sage-700); letter-spacing: -0.02em; }
+    .jr-score-num small { font-size: 11px; font-weight: 700; color: var(--sage-600); }
+    .jr-score-label { font-size: 11px; font-weight: 800; letter-spacing: 0.13em; color: var(--sage-700); text-transform: uppercase; }
+    .jr-vetted { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: #fff;
+      background: linear-gradient(135deg, var(--sage), var(--sage-600)); padding: 3px 10px; border-radius: 9999px; }
     .jr-sigs { display: flex; flex-direction: column; gap: 2px; }
-    .jr-sig { font-size: 10.5px; font-weight: 600; color: #8FE6D3; line-height: 1.55; }
+    .jr-sig { font-size: 10.5px; font-weight: 600; color: var(--ink-soft); line-height: 1.55; }
+    .jr-sig::first-letter { color: var(--sage-600); }
     .jr-remove { position: absolute; top: 10px; right: 12px; z-index: 10; width: 24px; height: 24px; border-radius: 9999px;
       display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700;
       color: var(--muted-2); transition: all .15s ease; }
@@ -742,6 +723,23 @@
     .hp-diff-text b { color: var(--sage-700); }
     .hp-diff button { flex-shrink: 0; font-size: 15px; color: var(--muted-2); line-height: 1; padding: 2px 4px; }
     .hp-diff button:hover { color: var(--ink); }
+    /* ── Single-column detail flow ──────────────────────────────────────── */
+    .jd-single { max-width: 920px; margin: 0 auto; }
+    /* ── Referral Copilot (compact) ─────────────────────────────────────── */
+    .ref-copilot { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--sage);
+      border-radius: 16px; padding: 15px 18px; }
+    .ref-pill { font-size: 10px; font-weight: 800; color: var(--sage-700); background: var(--sage-tint);
+      border: 1px solid rgba(var(--sage-rgb),0.35); padding: 2px 10px; border-radius: 9999px; }
+    .ref-text { font-size: 12px; line-height: 1.55; color: var(--muted); margin-top: 8px; }
+    /* ── Pipeline stage tabs ────────────────────────────────────────────── */
+    .pipe-tab { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 800;
+      padding: 9px 18px; border-radius: 9999px; color: var(--muted); background: var(--surface);
+      border: 1px solid var(--border); transition: all .15s ease; cursor: pointer; }
+    .pipe-tab:hover { color: var(--sage-700); border-color: rgba(var(--sage-rgb),0.45); }
+    .pipe-tab.active { background: linear-gradient(135deg, var(--sage), var(--sage-600)); color: #fff;
+      border-color: transparent; box-shadow: 0 4px 14px rgba(var(--sage-rgb),0.30); }
+    .pipe-tab .pt-count { font-size: 11px; font-weight: 800; background: rgba(46,42,36,0.08); padding: 1px 8px; border-radius: 9999px; }
+    .pipe-tab.active .pt-count { background: rgba(255,255,255,0.24); }
 
     /* Gradient text → ink→sage */
     .gradient-text,.stat-shimmer {
@@ -1037,39 +1035,44 @@
             {% macro jobdetail(app, job, visa, actions) %}
             <template class="jd-detail"> {% set _is_submitted_state = app.status.value in ['submitted', 'interviewing', 'offer', 'accepted', 'rejected'] %}
                     {% set _is_email = (app.apply_track == 'email_import') %}
-                    {% set _show_right_pane = not _is_submitted_state or (not _is_email and app.status.value in ['submitted', 'interviewing', 'offer', 'accepted']) %}
-                    <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start"> <!-- Left Pane (60% / 3 cols or 100% / 5 cols) --> <div class="{% if _show_right_pane %}lg:col-span-3{% else %}lg:col-span-5{% endif %} space-y-6"> <!-- Job Meta and Urgency Row --> <div> <div class="flex flex-wrap items-center gap-x-5 gap-y-2"> {% set post_date = job.posted_at or job.discovered_at %}
-                                    <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="11" r="3"/></svg>{{ 'Remote' if job.remote else (job.location or 'Location N/A') }}{% if not job.remote and job.location and 'remote' not in job.location|lower %} · On-site{% endif %}</span>
-                                    {% if post_date %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
-                                    <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>Found on {{ job.source.value|upper }}</span> {% if job.is_closed %}<span class="jd-meta-chip" style="color:#C2410C;">⚠ May be closed</span>{% endif %}
-                                </div> {% set hp = (job.hire_probability_score * 100)|int if job.hire_probability_score is not none else None %}
-                                <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3.5 w-full border-b border-slate-800/60 pb-3.5"> <div class="flex flex-wrap gap-2 items-center"> <!-- Blended Priority Star Badge --> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold text-white shadow-sm" style="background: linear-gradient(135deg, var(--sage), var(--sage-600));"> <span>★ Priority:</span> <span>{% if job.blended_score is not none %}{{ job.blended_score|int }}{% else %}—{% endif %}</span> </div> <!-- Hiring Intent Badge --> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold {% if hp is not none and hp >= 60 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% elif hp is not none and hp >= 30 %}bg-amber-500/10 text-amber-400 border border-amber-500/20{% else %}bg-slate-800/40 text-slate-400 border border-slate-700/20{% endif %}"> <span> Hiring Intent:</span> <span>{% if hp is not none %}{{ hp }}%{% else %}N/A{% endif %}</span> </div> </div> <!-- Top Actions Container (JS will move action buttons here dynamically) --> <div class="top-actions-placeholder flex flex-wrap items-center gap-2 lg:ml-auto"> <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[10.5px] font-bold bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white transition duration-150" title="Open original job posting"> ↗ Open Original
-                                        </a> </div> </div> {% set _urgd = urgency_of(job) if app.apply_track != 'email_import' else none %}
-                                {% if _urgd and _urgd.label %}
-                                <div class="rounded-xl px-3.5 py-2 text-[11.5px] leading-snug mt-3" style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}"> <b>{{ _urgd.label }}</b> — {{ _urgd.reason }}
-                                </div> {% endif %}
-                            </div> 
-
-                            <div class="hp-diff"> <span class="hp-diff-badge">Why HirePath is different</span> <span class="hp-diff-text">Job boards match keywords — HirePath's AI reads every posting against your <b>actual resume</b>, runs <b>7 vetting checks</b> (ghost-job filter, hiring intent, senior engineer review), then writes grounded tailored documents. And you always review and click Submit yourself.</span> <button type="button" onclick="event.stopPropagation(); this.parentElement.remove(); localStorage.setItem('hp_diff_seen','1')" title="Got it">&times;</button> </div>
-                            <!-- Full job description (Reading View) --> {% if job.description %}
-                            <div> <h3 class="font-extrabold text-[12px] uppercase tracking-wider block mb-2.5" style="color:var(--sage-700);"> {% if app.apply_track == 'email_import' %}Email content{% else %}Full job description{% endif %}
-                                </h3> <div class="px-5 py-4 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed" style="white-space:pre-line; max-height: 65vh; overflow-y: auto; color:var(--ink-soft);">{{ job.description|cleantext }}</div> </div> {% endif %}
-                            <!-- Outreach, Referrals & Connections Widget --> <div class="p-5 rounded-2xl border border-indigo-500/20 bg-slate-900/30 flex flex-col gap-4.5 relative overflow-hidden" style="background: linear-gradient(135deg, rgba(99,102,241,0.05) 0%, rgba(99,102,241,0.01) 100%);"> <div class="flex items-center justify-between border-b border-indigo-500/10 pb-2.5"> <div class="flex items-center gap-2"> <div class="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></div> <span class="text-[10px] font-extrabold uppercase tracking-widest text-indigo-400">Referral Copilot</span> </div> <span class="bg-indigo-500/10 text-indigo-400 text-[8.5px] font-extrabold px-2.5 py-0.5 rounded-full border border-indigo-500/20">4x reply rate</span> </div> <div class="relative bg-slate-950/45 p-4 rounded-xl border border-slate-800/40 shadow-inner"> <div class="flex items-start gap-3"> <div class="w-8 h-8 rounded-full bg-indigo-500/15 flex items-center justify-center font-bold text-[10.5px] text-indigo-400 shrink-0 border border-indigo-500/25"> </div> <div class="text-[12px] text-slate-300 leading-relaxed font-medium"> "Internal referrals get fast-tracked. Find an employee inside the target org to refer you directly." </div> </div> </div> <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[11px] font-bold text-white shadow-md transition duration-150 hover:opacity-90" style="background: linear-gradient(135deg, #10b981, #059669); border: 1px solid #047857; color: #ffffff;" title="Find key people at this company who can refer you"> Find LinkedIn Contacts
-                                    </button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[11px] font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition duration-150" title="Generate referral and outreach draft messages"> Draft Outreach Message
-                                    </button> </div> </div>
-                            <!-- Rejection Autopsy (door check) --> <div class="autopsy-placeholder mt-3"></div>
-                        </div> {% if _show_right_pane %}
-                        <!-- Right Pane (40% / 2 cols): AI Copilot Insights / Tailored Documents --> <div class="lg:col-span-2 space-y-5"> {% if not _is_submitted_state %}
-                            <!-- Unified AI Match Report: score, skills, company signals, vetting trail,
-                                 senior verdict and sponsorship — one full panel instead of separate boxes --> <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[160px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="senior-review-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading senior engineer verdict…</span> </div> </div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> </div> <!-- Ghost warning & Authenticity --> {% set gflags = job.ghost_flags|fromjson %}
-                            {% if job.ghost_score and job.ghost_score >= 0.5 %}
-                            <div class="rounded-2xl border border-rose-500/30 bg-rose-950/20 px-4 py-3"> <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1 text-rose-400">⚠ Possible ghost posting</span> <p class="text-[11px] leading-relaxed text-rose-200/80">Low activity signals detected{% if gflags %}: {{ gflags|join(', ') }}{% endif %}.</p> </div> {% endif %}
-                            {% else %}
-                            <!-- Tailored Documents Card inside details drawer --> <div class="drawer-documents-placeholder" data-app-id="{{ app.id }}"> <div class="rounded-2xl border border-slate-800/45 bg-slate-950/20 p-5 min-h-[160px] flex flex-col items-center justify-center text-xs text-slate-500"> <span>Loading application documents…</span> </div> </div> {% endif %}
-                        </div> {% endif %}
-
-                        <!-- Hidden helper for original caller rendering (JS will process actions out of here) --> <div class="hidden-caller-actions hidden"> {{ actions }}
-                        </div> </div> </template>
+                    <div class="jd-single space-y-5">
+                        <!-- Meta: humanized, icon chips -->
+                        <div> <div class="flex flex-wrap items-center gap-x-5 gap-y-2"> {% set post_date = job.posted_at or job.discovered_at %}
+                                <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="11" r="3"/></svg>{{ 'Remote' if job.remote else (job.location or 'Location N/A') }}{% if not job.remote and job.location and 'remote' not in job.location|lower %} · On-site{% endif %}</span>
+                                {% if post_date %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
+                                <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>Found on {{ job.source.value|upper }}</span> {% if job.is_closed %}<span class="jd-meta-chip" style="color:#C2410C;">⚠ May be closed</span>{% endif %}
+                            </div> {% set hp = (job.hire_probability_score * 100)|int if job.hire_probability_score is not none else None %}
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3.5 w-full border-b border-slate-800/60 pb-3.5"> <div class="flex flex-wrap gap-2 items-center"> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold text-white shadow-sm" style="background: linear-gradient(135deg, var(--sage), var(--sage-600));" title="Apply priority = 65% resume fit + 35% hiring intent"> <span>★ Priority:</span> <span>{% if job.blended_score is not none %}{{ job.blended_score|int }}{% else %}—{% endif %}</span> </div> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold {% if hp is not none and hp >= 60 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% elif hp is not none and hp >= 30 %}bg-amber-500/10 text-amber-400 border border-amber-500/20{% else %}bg-slate-800/40 text-slate-400 border border-slate-700/20{% endif %}" title="How likely this team is actively filling the role right now"> <span>Hiring Intent:</span> <span>{% if hp is not none %}{{ hp }}%{% else %}N/A{% endif %}</span> </div> </div> <div class="top-actions-placeholder flex flex-wrap items-center gap-2 lg:ml-auto"> <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[10.5px] font-bold bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white transition duration-150" title="Open original job posting"> ↗ Open Original
+                                    </a> </div> </div> {% set _urgd = urgency_of(job) if app.apply_track != 'email_import' else none %}
+                            {% if _urgd and _urgd.label %}
+                            <div class="rounded-xl px-3.5 py-2 text-[11.5px] leading-snug mt-3" style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}"> <b>{{ _urgd.label }}</b> — {{ _urgd.reason }}
+                            </div> {% endif %}
+                        </div>
+                        <!-- Why HirePath is different -->
+                        <div class="hp-diff"> <span class="hp-diff-badge">Why HirePath is different</span> <span class="hp-diff-text">Job boards match keywords — HirePath's AI reads every posting against your <b>actual resume</b>, runs <b>7 vetting checks</b> (ghost-job filter, hiring intent, senior engineer review), then writes grounded tailored documents. And you always review and click Submit yourself.</span> <button type="button" onclick="event.stopPropagation(); this.parentElement.remove(); localStorage.setItem('hp_diff_seen','1')" title="Got it">&times;</button> </div>
+                        {% if not _is_submitted_state %}
+                        <!-- AI Match Report — full width, in the flow -->
+                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="senior-review-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading senior engineer verdict…</span> </div> </div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> </div> {% set gflags = job.ghost_flags|fromjson %}
+                        {% if job.ghost_score and job.ghost_score >= 0.5 %}
+                        <div class="rounded-2xl border border-rose-500/30 bg-rose-950/20 px-4 py-3"> <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1 text-rose-400">⚠ Possible ghost posting</span> <p class="text-[11px] leading-relaxed text-rose-200/80">Low activity signals detected{% if gflags %}: {{ gflags|join(', ') }}{% endif %}.</p> </div> {% endif %}
+                        {% else %}
+                        <!-- Tailored documents (submitted / interviewing / rejected states) -->
+                        <div class="drawer-documents-placeholder" data-app-id="{{ app.id }}"> <div class="rounded-2xl border border-slate-800/45 bg-slate-950/20 p-5 min-h-[160px] flex flex-col items-center justify-center text-xs text-slate-500"> <span>Loading application documents…</span> </div> </div>
+                        {% endif %}
+                        <!-- Full job description -->
+                        {% if job.description %}
+                        <div> <h3 class="font-extrabold text-[12px] uppercase tracking-wider block mb-2.5" style="color:var(--sage-700);"> {% if app.apply_track == 'email_import' %}Email content{% else %}Full job description{% endif %}
+                            </h3> <div class="px-5 py-4 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed" style="white-space:pre-line; max-height: 65vh; overflow-y: auto; color:var(--ink-soft);">{{ job.description|cleantext }}</div> </div> {% endif %}
+                        <!-- Company snapshot (funding, who runs it, hiring record) -->
+                        <div class="company-profile-placeholder"></div>
+                        <!-- Referral Copilot — compact -->
+                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">Internal referrals get fast-tracked. Find someone inside {{ job.company or 'the company' }} and we'll draft the outreach message for you — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> </div> </div>
+                        <!-- Right-door check -->
+                        <div class="autopsy-placeholder"></div>
+                        <!-- Hidden helper for original caller rendering (JS moves these into the header) -->
+                        <div class="hidden-caller-actions hidden"> {{ actions }}
+                        </div>
+                    </div> </template>
             {% endmacro %}
             {% macro jobcard(app, job, accent='indigo', removable=true, status_chip='', visa=none) %}
             <div class="kanban-card glass rounded-[20px] px-4 py-3.5 border-slate-800 hover:border-{{ accent }}-500/40 transition duration-200 ease-out cursor-pointer card-glow-blue relative{% if job.rerank_score and job.rerank_score >= 80 %} high-match{% endif %}{% if app.apply_track == 'autofill' or (app.status.value in ['submitted', 'interviewing', 'offer', 'accepted'] and app.apply_track != 'email_import') %} hirepath-applied{% endif %}" data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" data-source="{{ job.source.value|e }}"{% if job.rerank_score is not none %} data-score="{{ job.rerank_score|int }}"{% endif %} onclick="openJobDrawer(this)"> {% if removable %}
@@ -1147,8 +1150,9 @@
                     </div>
                     <div class="jr-score">
                         {% if score is not none %}
-                        <div class="jr-score-dial"> <svg viewBox="0 0 36 36" style="width:100%;height:100%;"> <path fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="3" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> <path fill="none" stroke="#2FE3C2" stroke-width="3" stroke-linecap="round" stroke-dasharray="{{ score }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> </svg> <span class="jr-score-num">{{ score }}<small>%</small></span> </div>
+                        <div class="jr-score-dial"> <svg viewBox="0 0 36 36" style="width:100%;height:100%;"> <path fill="none" stroke="rgba(var(--sage-rgb),0.18)" stroke-width="3" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> <path fill="none" stroke="var(--sage-600)" stroke-width="3" stroke-linecap="round" stroke-dasharray="{{ score }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> </svg> <span class="jr-score-num">{{ score }}<small>%</small></span> </div>
                         <div class="jr-score-label">{% if score >= 80 %}Strong match{% elif score >= 60 %}Good match{% elif score >= 40 %}Fair match{% else %}Low match{% endif %}</div>
+                        <div class="jr-vetted">✦ AI-vetted · 7 checks</div>
                         {% else %}
                         <div class="jr-score-label" style="opacity:.7;">Not scored yet</div>
                         {% endif %}
@@ -1163,7 +1167,15 @@
             </div>
             {% endmacro %}
 
-            <!-- Shortlisted — full-width Jobright-style rows -->
+            <!-- Pipeline stage tabs — each opens a full-screen list -->
+            <div id="pipe-tabs" class="flex flex-wrap gap-2 items-center">
+                <button type="button" class="pipe-tab active" onclick="switchPipeTab('pipe-shortlist', this)">Shortlisted <span class="pt-count">{{ shortlisted|length }}</span></button>
+                <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-submitted', this)">Submitted <span class="pt-count">{{ total_submitted_count }}</span></button>
+                <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-interviewing', this)">Interviewing <span class="pt-count">{{ interviewing|length }}</span></button>
+                <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-rejected', this)">Rejected <span class="pt-count">{{ rejected|length }}</span></button>
+                <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-skipped', this)">Removed <span class="pt-count">{{ skipped|length }}</span></button>
+            </div>
+            <div id="pipe-shortlist" class="pipe-pane"><!-- Shortlisted — full-width Jobright-style rows -->
             <div data-tour="shortlist" class="flex flex-col gap-4">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div class="flex items-center gap-2.5">
@@ -1174,14 +1186,15 @@
                     </div>
                     <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
                 </div>
-                <div class="flex flex-col gap-4 max-h-[80vh] overflow-y-auto pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
+                <div class="flex flex-col gap-4 pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
                     {{ jobrow(app, job, visa_framing) }}
                     {% else %}
                     <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No shortlisted roles yet.</p> <p class="text-slate-600 text-xs mt-1">Hit “Discover Jobs” and the AI will scan, score and shortlist the best fits for your resume.</p> </div>
                     {% endfor %}
                 </div>
             </div>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"> <!-- Column 2: Submitted --> <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span> </span> <h2 class="font-bold text-white text-sm">Submitted Pipeline</h2> </div> <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ total_submitted_count }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 transition duration-150" /> </div> <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1" id="submitted-container"> {% for app, job in submitted %}
+            </div>
+            <div id="pipe-submitted" class="pipe-pane hidden"><!-- Column 2: Submitted --> <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span> </span> <h2 class="font-bold text-white text-sm">Submitted Pipeline</h2> </div> <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ total_submitted_count }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 transition duration-150" /> </div> <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start pr-1" id="submitted-container"> {% for app, job in submitted %}
                     {% call jobcard(app, job, 'emerald', false, app.status.value, visa_framing) %}
                         {% set _is_hp = (app.apply_track != 'email_import') %}
                         {% set _has_resume = app.tailored_resume_path %}
@@ -1199,14 +1212,16 @@
                         <a href="/dashboard?all_submitted=true" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full text-white transition duration-150" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));"> Show All (+{{ total_submitted_count - 20 }} more)
                         </a> {% endif %}
                     </div> {% endif %}
-                </div> </div> <!-- Column 3: Interviewing --> <div class="glass rounded-[32px] p-5 border border-blue-500/25 shadow-[0_0_15px_rgba(59,130,246,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span> </span> <h2 class="font-bold text-white text-sm">Interview Pipeline</h2> </div> <span class="bg-blue-500/10 text-blue-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-blue-500/20" id="interviewing-count">{{ interviewing|length }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 transition duration-150" /> </div> <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-1" id="interviewing-container"> {% for app, job in interviewing %}
+                </div> </div> </div>
+            <div id="pipe-interviewing" class="pipe-pane hidden"><!-- Column 3: Interviewing --> <div class="glass rounded-[32px] p-5 border border-blue-500/25 shadow-[0_0_15px_rgba(59,130,246,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span> </span> <h2 class="font-bold text-white text-sm">Interview Pipeline</h2> </div> <span class="bg-blue-500/10 text-blue-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-blue-500/20" id="interviewing-count">{{ interviewing|length }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 transition duration-150" /> </div> <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start pr-1" id="interviewing-container"> {% for app, job in interviewing %}
                     {% call jobcard(app, job, 'blue', false, app.status.value, visa_framing) %}
                         <div class="grid grid-cols-3 gap-1 mb-1.5"> <button type="button" id="review-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(245,158,11,0.10);color:#fbbf24;border:1px solid rgba(245,158,11,0.30);" title="Move back to Submitted (Under Review) Pipeline">⌛ Under Review</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);"> Offer</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✓ Accepted</button> </div> <div class="grid grid-cols-2 gap-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents
                             </button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="jbtn text-[10px] py-2" style="background:rgba(244,63,94,0.10);color:#e11d48;border:1px solid rgba(244,63,94,0.30);"> ✕ Rejected
                             </button> </div> {% endcall %}
                     {% else %}
                     <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl"> <div class="text-3xl mb-2 opacity-60"></div> <p class="text-slate-500 text-xs font-semibold">No interviews scheduled yet.</p> <p class="text-slate-600 text-[10px] mt-1">Heard back? Log it here!</p> </div> {% endfor %}
-                </div> </div> </div><!-- /kanban 3-col grid --> <!-- Rejected section --> <div class="mt-6"> <div class="glass rounded-[28px] p-5 border border-rose-500/20 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> <h2 class="font-bold text-white text-sm">Rejected</h2> </div> <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="rejected-count">{{ rejected|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 max-h-[40vh] overflow-y-auto pr-1" id="rejected-container"> {% for app, job in rejected %}
+                </div> </div>
+            <div id="pipe-rejected" class="pipe-pane hidden"><!-- Rejected section --> <div> <div class="glass rounded-[28px] p-5 border border-rose-500/20 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> <h2 class="font-bold text-white text-sm">Rejected</h2> </div> <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="rejected-count">{{ rejected|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pr-1" id="rejected-container"> {% for app, job in rejected %}
                     {% call jobcard(app, job, 'rose', false, 'Rejected', visa_framing) %}
                         <div class="grid grid-cols-2 gap-2 mt-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents
                             </button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); removeApplication(+this.dataset.appId, this)" class="jbtn text-[10px] py-2" style="background:rgba(255,255,255,0.03);color:#94a3b8;border:1px solid rgba(255,255,255,0.08);"> Delete
@@ -1214,11 +1229,12 @@
                     {% else %}
                     <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-rejected-msg"> No rejections logged. Keep pushing!
                     </div> {% endfor %}
-                </div> </div> </div> <!-- Removed / Cancelled archive row --> <div class="mt-6"> <div class="glass rounded-[28px] p-5 border border-slate-700/30 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> <h2 class="font-bold text-white text-sm">Removed / Cancelled</h2> </div> <span class="bg-slate-500/10 text-slate-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-500/20" id="skipped-count">{{ skipped|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 max-h-[40vh] overflow-y-auto pr-1" id="skipped-container"> {% for app, job in skipped %}
+                </div> </div> </div> </div>
+            <div id="pipe-skipped" class="pipe-pane hidden"><!-- Removed / Cancelled archive row --> <div> <div class="glass rounded-[28px] p-5 border border-slate-700/30 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> <h2 class="font-bold text-white text-sm">Removed / Cancelled</h2> </div> <span class="bg-slate-500/10 text-slate-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-500/20" id="skipped-count">{{ skipped|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pr-1" id="skipped-container"> {% for app, job in skipped %}
                     <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}"> <div class="flex justify-between items-start gap-2"> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3> <p class="text-[10px] text-slate-500 font-semibold mt-1"> {{ job.company or 'Unknown' }} |  {{ job.location or 'Remote' }}</p> </div> <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span> </div> </div> {% else %}
                     <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-skipped-msg"> No removed or cancelled applications.
                     </div> {% endfor %}
-                </div> </div> </div><!-- /archive row --> </div><!-- /view-content-kanban --> <!-- TAB 2 removed (manual apply) --> <!-- TAB 3: Jobs Explorer View --> <div id="view-content-explorer" class="hidden flex flex-col gap-6"> <!-- Filter Bar --> <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end"> <div class="flex-1 min-w-[200px]"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label> <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" /> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label> <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Styles</option> <option value="true">Fully Remote</option> <option value="false">On-site / Hybrid</option> </select> </div> <div class="w-44"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label> <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Jobs</option> <option value="unprocessed">Unprocessed Only</option> <option value="shortlisted">Shortlisted (Fit)</option> <option value="submitted">Submitted Only</option> </select> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label> <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Sources</option> <option value="autofill"> Autofill (GH/Lever/Ashby)</option> <option value="manual"> Manual (LinkedIn/Indeed)</option> </select> </div> <div class="w-48"> <div class="flex justify-between items-center mb-1"> <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label> </div> <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" /> </div> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" /> <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label> </div> <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200"> Reset
+                </div> </div> </div><!-- /archive row --></div> </div><!-- /view-content-kanban --> <!-- TAB 2 removed (manual apply) --> <!-- TAB 3: Jobs Explorer View --> <div id="view-content-explorer" class="hidden flex flex-col gap-6"> <!-- Filter Bar --> <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end"> <div class="flex-1 min-w-[200px]"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label> <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" /> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label> <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Styles</option> <option value="true">Fully Remote</option> <option value="false">On-site / Hybrid</option> </select> </div> <div class="w-44"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label> <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Jobs</option> <option value="unprocessed">Unprocessed Only</option> <option value="shortlisted">Shortlisted (Fit)</option> <option value="submitted">Submitted Only</option> </select> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label> <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Sources</option> <option value="autofill"> Autofill (GH/Lever/Ashby)</option> <option value="manual"> Manual (LinkedIn/Indeed)</option> </select> </div> <div class="w-48"> <div class="flex justify-between items-center mb-1"> <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label> </div> <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" /> </div> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" /> <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label> </div> <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200"> Reset
                 </button> </div> <!-- Job Explorer Results Table --> <div class="glass rounded-3xl overflow-hidden shadow-2xl"> <div class="overflow-x-auto"> <table class="w-full text-left border-collapse"> <thead> <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest"> <th class="py-4 px-6">Score</th> <th class="py-4 px-4">Title / Company</th> <th class="py-4 px-4">Location</th> <th class="py-4 px-4">Source / Track</th> <th class="py-4 px-4">Status</th> <th class="py-4 px-6 text-right">Actions</th> </tr> </thead> <tbody id="explorer-table-body" class="divide-y divide-slate-800/50 text-xs"> <tr> <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Loading job database...</td> </tr> </tbody> </table> </div> <!-- Table Pagination --> <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400"> <span id="explorer-page-info">Showing page 1 of ...</span> <div class="flex gap-2"> <button id="explorer-btn-first" onclick="explorePage(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button> <button id="explorer-btn-prev" onclick="explorePrevPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button> <button id="explorer-btn-next" onclick="exploreNextPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button> <button id="explorer-btn-last" onclick="exploreLastPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button> </div> </div> </div> </div> <!-- TAB: Ghost Jobs View --> <div id="view-content-ghost" class="hidden flex flex-col gap-6"> <div class="glass rounded-[32px] p-5 border-slate-800 flex items-center gap-4"> <span class="text-2xl shrink-0"></span> <div class="flex-1 min-w-0"> <p class="text-sm font-bold" style="color:var(--ink);">Filtered Ghost Jobs</p> <p class="text-[11px]" style="color:var(--muted);">Jobs removed from company ATS boards, returned HTTP 404/410, or redirected to generic careers pages.</p> </div> <button onclick="loadGhostJobs(1)" class="text-[10px] font-black bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">↻ Refresh</button> </div> <div class="glass rounded-3xl overflow-hidden shadow-2xl"> <div class="overflow-x-auto"> <table class="w-full text-left border-collapse"> <thead> <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest"> <th class="py-4 px-6">Score</th> <th class="py-4 px-4">Title / Company</th> <th class="py-4 px-4">Location</th> <th class="py-4 px-4">Source</th> <th class="py-4 px-4">Closed Reason</th> <th class="py-4 px-6 text-right">Link</th> </tr> </thead> <tbody id="ghost-table-body" class="divide-y divide-slate-800/50 text-xs"> <tr> <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Click the tab to load ghost jobs…</td> </tr> </tbody> </table> </div> <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400"> <span id="ghost-page-info">Showing page 1 of ...</span> <div class="flex gap-2"> <button id="ghost-btn-first" onclick="loadGhostJobs(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button> <button id="ghost-btn-prev" onclick="loadGhostJobs(ghostCurrentPage - 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button> <button id="ghost-btn-next" onclick="loadGhostJobs(ghostCurrentPage + 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button> <button id="ghost-btn-last" onclick="loadGhostJobs(ghostTotalPages)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button> </div> </div> </div> </div> <!-- TAB 4: Registry View --> <div id="view-content-registry" class="hidden flex flex-col gap-5 w-full"> <!-- 3 stat cards — even columns, no clipping --> <div class="grid grid-cols-3 gap-5 w-full"> <div class="glass rounded-[24px] p-5 border border-slate-700/40 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Boards Seeded</span> <span class="text-3xl font-extrabold text-white mt-1" id="reg-stat-total">...</span> <span class="text-[10px] text-slate-600">Total ATS board configs</span> </div> <div class="glass rounded-[24px] p-5 border border-indigo-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Active Crawlers</span> <span class="text-3xl font-extrabold text-indigo-400 mt-1" id="reg-stat-active">...</span> <span class="text-[10px] text-slate-600">Boards with live API responses</span> </div> <div class="glass rounded-[24px] p-5 border border-emerald-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Jobs Verified</span> <span class="text-3xl font-extrabold text-emerald-400 mt-1" id="reg-stat-jobs">...</span> <span class="text-[10px] text-slate-600">Postings confirmed in ATS APIs</span> </div> </div> <!-- Source breakdown table --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <div class="flex items-center justify-between mb-4"> <h3 class="font-bold text-white text-sm">Job Sources</h3> <button onclick="startDiscovery()" class="text-xs font-bold px-4 py-2 rounded-xl" style="background:rgba(var(--sage-rgb),0.14);border:1px solid rgba(var(--sage-rgb),0.4);color:var(--sage-700);"> Discover
                     </button> </div> <div class="overflow-x-auto"> <table class="w-full text-xs"> <thead> <tr class="text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-800/60"> <th class="text-left py-2 pr-4 font-bold">Source</th> <th class="text-left py-2 pr-4 font-bold">Type</th> <th class="text-right py-2 pr-4 font-bold">Jobs</th> <th class="text-center py-2 font-bold">Status</th> </tr> </thead> <tbody id="boards-source-table" class="divide-y divide-slate-800/30"> <tr class="text-slate-500"><td colspan="4" class="py-4 text-center text-[10px]">Loading sources…</td></tr> </tbody> </table> </div> </div> <!-- How it works --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <h3 class="font-bold text-white text-sm mb-3">How Board Crawling Works</h3> <div class="grid grid-cols-1 md:grid-cols-3 gap-4"> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm shrink-0">1</div> <div> <p class="text-white text-xs font-bold mb-0.5">ATS Direct</p> <p class="text-slate-500 text-[10px] leading-relaxed">Greenhouse, Lever, Ashby & Workday APIs are queried directly for companies in your registry — no middleman, freshest data.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center text-sm shrink-0">2</div> <div> <p class="text-white text-xs font-bold mb-0.5">Aggregators</p> <p class="text-slate-500 text-[10px] leading-relaxed">LinkedIn, Jooble, Reed, RemoteOK & SerpAPI are scraped every 6h and merged with deduplication across all sources.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-sm shrink-0">3</div> <div> <p class="text-white text-xs font-bold mb-0.5">AI Matching</p> <p class="text-slate-500 text-[10px] leading-relaxed">Discovered jobs are scored against your profile via BM25 → FAISS → cross-encoder → Claude LLM, then shortlisted by hire probability.</p> </div> </div> </div> </div> </div> <!-- ── Footer ──────────────────────────────────────────────────── --> <footer class="app-footer"> <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-[11px] text-slate-500"> <div class="flex items-center gap-2"> <span class="font-black text-sm" style="background:linear-gradient(135deg,#a5b4fc,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">HirePath</span> <span class="text-slate-600">· Your AI job-search agent</span> </div> <div class="flex items-center gap-5 font-semibold"> <a onclick="openSettings('about')">About</a> <a onclick="openSettings('contact')">Contact</a> <a onclick="openSettings('privacy')">Privacy</a> <a onclick="openSettings('terms')">Terms</a> </div> <div class="text-slate-600"> <span id="footer-year"></span> HirePath. All rights reserved.</div> </div> </footer> </div> <!-- Document Modal --> <div id="modal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 modal-backdrop" onclick="closeModal(event)"> <div class="glass rounded-[32px] w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl border-white/10" onclick="event.stopPropagation()"> <!-- Modal Header --> <div class="flex items-start justify-between p-6 border-b border-white/5"> <div> <div id="modal-status" class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 inline-block mb-3"></div> <h2 id="modal-title" class="text-lg font-bold text-white tracking-tight leading-snug"></h2> <p id="modal-company" class="text-xs font-semibold text-slate-400 mt-1"></p> </div> <div class="flex items-center gap-3 ml-4 shrink-0"> <button type="button" id="modal-submit-btn" onclick="submitFormFromModal()" class="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> ✓ Mark Applied
                     </button> <button type="button" id="modal-verify-btn" onclick="verifyFormFromModal()" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> Verify Form
@@ -4608,9 +4624,15 @@
   }
 })();
 </script> <!-- Job detail centered popup (shared; populated from the clicked card) -->
-<div id="jobModalOverlay" onclick="if(event.target===this) closeJobDrawer()"> <div id="jobModal" role="dialog" aria-label="Job details" aria-modal="true"> <aside id="jobModalListPane" class="jm-list"></aside> <div class="jm-main"> <div class="jd-head"> <span id="jobModalLogo" class="shrink-0 self-center"></span> <div class="min-w-0 flex-1"> <h2 id="jobModalTitle" class="text-lg font-extrabold leading-snug" style="color:var(--ink);"></h2> <p id="jobModalCompany" class="text-[12.5px] font-semibold mt-1" style="color:var(--muted);"></p> </div> <div id="jobModalHeaderActions" class="flex items-center gap-2 mr-2 shrink-0 self-center"></div> <button type="button" id="jobModalClose" onclick="closeJobDrawer()" title="Close (Esc)">&times;</button> </div> <div id="jobDrawerBody" class="jd-body"></div> </div> </div>
+<div id="jobModalOverlay" onclick="if(event.target===this) closeJobDrawer()"> <div id="jobModal" role="dialog" aria-label="Job details" aria-modal="true"> <div class="jm-main"> <div class="jd-head"> <span id="jobModalLogo" class="shrink-0 self-center"></span> <div class="min-w-0 flex-1"> <h2 id="jobModalTitle" class="text-lg font-extrabold leading-snug" style="color:var(--ink);"></h2> <p id="jobModalCompany" class="text-[12.5px] font-semibold mt-1" style="color:var(--muted);"></p> </div> <div id="jobModalHeaderActions" class="flex items-center gap-2 mr-2 shrink-0 self-center"></div> <button type="button" id="jobModalClose" onclick="closeJobDrawer()" title="Close (Esc)">&times;</button> </div> <div id="jobDrawerBody" class="jd-body"></div> </div> </div>
 </div>
 <script> // Names kept as openJobDrawer/closeJobDrawer so existing callers keep working.
+    // Pipeline stage tabs: one full-screen pane at a time.
+    function switchPipeTab(paneId, btn) {
+        document.querySelectorAll('.pipe-pane').forEach(pn => pn.classList.toggle('hidden', pn.id !== paneId));
+        document.querySelectorAll('.pipe-tab').forEach(t => t.classList.toggle('active', t === btn));
+    }
+
     // Company logo avatar: tries the real logo, falls back to a branded initial.
     function _logoHtml(company, cls) {
         const name = (company || '').trim();
@@ -4631,63 +4653,14 @@
             if (card.dataset.jobUrl) window.open(card.dataset.jobUrl, '_blank', 'noopener');
             return;
         }
-        _buildDrawerList(card);
         renderJobDetail(card);
         document.getElementById('jobModalOverlay').classList.add('open');
         document.body.style.overflow = 'hidden';
     }
 
-    const _DRAWER_LIST_LABELS = {
-        'shortlisted-container': 'Shortlisted fits',
-        'submitted-container': 'Submitted pipeline',
-        'interviewing-container': 'Interview pipeline',
-        'rejected-container': 'Rejected',
-    };
-
-    function _buildDrawerList(card) {
-        const pane = document.getElementById('jobModalListPane');
-        pane.innerHTML = '';
-        const container = card.closest('[id$="-container"]');
-        const cards = container
-            ? Array.from(container.querySelectorAll('.kanban-card, .jobrow'))
-                .filter(c => c.querySelector('template.jd-detail') && c.style.display !== 'none')
-            : [card];
-        if (cards.length < 2) { pane.style.display = 'none'; return; }
-        pane.style.display = '';
-
-        const label = _DRAWER_LIST_LABELS[container ? container.id : ''] || 'Jobs';
-        const head = document.createElement('div');
-        head.className = 'jm-list-head';
-        head.innerHTML = `<span class="jm-lh-title">${_esc(label)}</span><span class="jm-lh-count">${cards.length}</span>`;
-        pane.appendChild(head);
-
-        const items = document.createElement('div');
-        items.className = 'jm-list-items';
-        cards.forEach(c => {
-            const score = parseInt(c.dataset.score || '', 10);
-            const hasScore = !isNaN(score);
-            const col = !hasScore ? 'var(--muted)' : score >= 80 ? '#0E9F6E' : score >= 60 ? 'var(--sage-600)' : score >= 40 ? '#B45309' : 'var(--muted-2)';
-            const scoreHtml = hasScore
-                ? `<span class="jm-item-score" style="color:${col};border:2px solid ${col};" title="AI fit ${score}/100">${score}</span>` : '';
-            const item = document.createElement('div');
-            item.className = 'jm-item';
-            item.dataset.appId = c.dataset.appId || '';
-            item.innerHTML = `${_logoHtml(c.dataset.company, 'co-logo-sm')}
-                <div class="min-w-0 flex-1"> <div class="jm-item-title">${_esc(c.dataset.jobTitle || 'Job')}</div> <div class="jm-item-sub">${_esc(c.dataset.company || '')}${c.dataset.source ? ' · ' + _esc((c.dataset.source + '').toUpperCase()) : ''}</div> </div>
-                ${scoreHtml}`;
-            item.addEventListener('click', () => renderJobDetail(c));
-            items.appendChild(item);
-        });
-        pane.appendChild(items);
-    }
-
     function renderJobDetail(card) {
         const tpl = card.querySelector('template.jd-detail');
         if (!tpl) return;
-        // Highlight the active job in the side panel
-        document.querySelectorAll('#jobModalListPane .jm-item').forEach(it => {
-            it.classList.toggle('active', it.dataset.appId === (card.dataset.appId || ''));
-        });
         document.getElementById('jobModalLogo').innerHTML = _logoHtml(card.dataset.company, 'co-logo-lg');
         document.getElementById('jobModalTitle').textContent = card.dataset.jobTitle || 'Job details';
         document.getElementById('jobModalCompany').textContent = card.dataset.company
@@ -4771,6 +4744,10 @@
             }
             if (sponsorPlaceholder) {
                 loadSponsorship(appId, sponsorPlaceholder);
+            }
+            const companyPlaceholder = body.querySelector('.company-profile-placeholder');
+            if (companyPlaceholder) {
+                loadCompanyProfile(appId, companyPlaceholder);
             }
             if (docsPlaceholder) {
                 loadDrawerDocuments(appId, docsPlaceholder);
@@ -4908,6 +4885,30 @@
 
             panel.innerHTML = headerHtml + reasonHtml + barsHtml + skillsHtml + signalsHtml + pipelineHtml;
         } catch (e) { panel.innerHTML = `<div class="jd-sec min-h-[120px] flex items-center justify-center text-xs text-rose-500">Failed to load match report.</div>`; }
+    }
+
+    // Company Snapshot: what the company does, who runs it, funding & hiring record.
+    async function loadCompanyProfile(appId, slot) {
+        if (!slot) return;
+        try {
+            const token = localStorage.getItem('sb_token');
+            const r = await fetch('/application/' + appId + '/company', { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
+            if (!r.ok) { slot.remove(); return; }
+            const d = await r.json();
+            const hasAny = d.brief || (d.signals && d.signals.length) || d.h1b || (d.open_roles > 1);
+            if (!hasAny) { slot.remove(); return; }
+
+            const chips = [];
+            (d.signals || []).forEach(sg => chips.push(`<span class="jd-chip jd-chip-info">${_esc(sg)}</span>`));
+            if (d.open_roles > 1) chips.push(`<span class="jd-chip jd-chip-info">${d.open_roles} open roles we track</span>`);
+            if (d.h1b) chips.push(`<span class="jd-chip jd-chip-ok">✓ ${Number(d.h1b.approvals).toLocaleString()} H-1B approvals${d.h1b.year ? ' (FY' + _esc(d.h1b.year) + ')' : ''}</span>`);
+
+            slot.innerHTML = `
+                <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">🏢 Company Snapshot</span> <span class="jd-rh-sub">${_esc(d.company || '')}</span> </div>
+                    ${d.brief ? `<div class="jd-sec"> <div class="jd-sec-title">About ${_esc(d.company || 'the company')}</div> <p class="text-[12.5px] leading-relaxed" style="color:var(--ink-soft);">${_esc(d.brief)}</p> <div style="font-size:10px;color:var(--muted-2);margin-top:6px;">AI-written from public knowledge — verify details on the company site.</div> </div>` : ''}
+                    ${chips.length ? `<div class="jd-sec"> <div class="jd-sec-title">Funding &amp; hiring record</div> <div>${chips.join('')}</div> <div style="font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.45;">Signals from public sources — funding language, posting velocity and USCIS/DOL visa filings.</div> </div>` : ''}
+                </div>`;
+        } catch (e) { slot.remove(); }
     }
 
     // Sponsorship Reality — detailed card on the right stack.
@@ -5056,7 +5057,6 @@
     function closeJobDrawer() {
         document.getElementById('jobModalOverlay').classList.remove('open');
         document.getElementById('jobDrawerBody').innerHTML = '';  // clear cloned IDs
-        document.getElementById('jobModalListPane').innerHTML = '';
         document.getElementById('jobModalLogo').innerHTML = '';
         const headerActions = document.getElementById('jobModalHeaderActions');
         if (headerActions) headerActions.innerHTML = '';

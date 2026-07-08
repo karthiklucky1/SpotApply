@@ -453,16 +453,21 @@ templates.env.filters["company_domain"] = _company_domain_filter
 
 
 def _days_ago_filter(dt):
-    """Humanize a datetime: 'today', 'yesterday', '5 days ago', '3 weeks ago'."""
+    """Humanize a datetime: 'just now', '5 hours ago', 'yesterday', '3 weeks ago'."""
     if not dt:
         return ""
     from datetime import datetime as _dtm
     try:
-        days = (_dtm.utcnow() - dt).days
+        delta = _dtm.utcnow() - dt
     except TypeError:
         return ""
-    if days <= 0:
-        return "today"
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 3600:
+        return "just now"
+    if secs < 86400:
+        h = secs // 3600
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    days = delta.days
     if days == 1:
         return "yesterday"
     if days < 14:
@@ -2022,6 +2027,83 @@ def application_match(application_id: int, request: Request) -> dict:
         "hire_probability": hp,
         "blended_score": round(job.blended_score) if (job and job.blended_score is not None) else None,
         "pipeline": pipeline,
+    }
+
+
+# In-process cache for LLM company briefs — one call per company per process.
+_COMPANY_BRIEF_CACHE: dict = {}
+
+
+@app.get("/application/{application_id}/company")
+def application_company(application_id: int, request: Request) -> dict:
+    """Company snapshot for the job detail: what we actually know — open roles
+    we track, funding/growth signals, H-1B record — plus a short AI brief
+    (what the company does, stage, notable founders/CEO) when the LLM knows
+    the company well enough to answer without guessing."""
+    import json as _json
+    uid = _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        job = session.get(Job, application.job_id) if application else None
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        company = (job.company or "").strip()
+        signals_raw = job.hire_probability_signals
+        # Open roles we track for this company (scoped to this user's pool)
+        q = select(func.count(Job.id)).where(Job.company == job.company, Job.is_closed == False)  # noqa: E712
+        if uid and uid != "local":
+            q = q.where(Job.user_id == uid)
+        open_roles = session.exec(q).first() or 0
+
+    funding_signals = []
+    try:
+        for tok in _json.loads(signals_raw or "[]"):
+            low = str(tok).lower()
+            if any(k in low for k in ("funding", "crunchbase", "growth", "velocity", "opening")):
+                label = _humanize_signal_filter(tok)
+                if label:
+                    funding_signals.append(label)
+    except (ValueError, TypeError):
+        pass
+
+    h1b = None
+    try:
+        from app.intelligence.h1b_data import lookup as _h1b_lookup
+        rec = _h1b_lookup(company)
+        if rec and rec.get("approvals"):
+            h1b = {"approvals": rec.get("approvals"), "year": rec.get("year")}
+    except Exception as _he:
+        log.debug("company h1b lookup skipped: %s", _he)
+
+    # AI brief — cached per company; answers UNKNOWN rather than guessing.
+    brief = _COMPANY_BRIEF_CACHE.get(company.lower()) if company else None
+    if company and brief is None and settings.anthropic_api_key:
+        try:
+            from anthropic import Anthropic
+            client = Anthropic(api_key=settings.anthropic_api_key)
+            resp = client.messages.create(
+                model=settings.scoring_model,
+                max_tokens=200,
+                messages=[{"role": "user", "content": (
+                    f"In 2-3 short sentences, describe the company \"{company}\": what it does, "
+                    "approximate size/stage, and notable founders or CEO if widely known. "
+                    "Only state facts you are confident about. If you don't reliably know this "
+                    "company, reply with exactly: UNKNOWN")}],
+            )
+            text = (resp.content[0].text or "").strip()
+            brief = "" if (not text or text.upper().startswith("UNKNOWN")) else text
+            _COMPANY_BRIEF_CACHE[company.lower()] = brief
+        except Exception as _be:
+            log.debug("company brief LLM call failed for %s: %s", company, _be)
+            brief = None
+
+    return {
+        "company": company,
+        "domain": _company_domain_filter(company),
+        "open_roles": int(open_roles),
+        "signals": funding_signals,
+        "h1b": h1b,
+        "brief": brief or None,
     }
 
 
