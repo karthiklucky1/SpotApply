@@ -65,17 +65,11 @@ class AdzunaSource:
         seen: set[str] = set()
         limit = settings.max_jobs_per_source
 
-        # Build one search per keyword group to maximize relevant results
-        search_terms = [
-            "machine learning engineer",
-            "python developer AI",
-            "LLM engineer",
-            "backend python engineer",
-        ]
-
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                for term in search_terms:
+                # One search per user keyword (their Target Roles / department
+                # roles) — capped to protect the free-tier daily quota.
+                for term in self.keywords[:4]:
                     if len(jobs) >= limit:
                         break
                     try:

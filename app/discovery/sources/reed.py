@@ -20,14 +20,6 @@ from app.discovery.title_filter import matches_title
 log = logging.getLogger(__name__)
 
 _API_URL = "https://www.reed.co.uk/api/1.0/search"
-_SEARCH_TERMS = [
-    "machine learning engineer",
-    "python developer",
-    "AI engineer",
-    "LLM engineer",
-    "backend python",
-]
-
 
 class ReedSource:
     """Fetches jobs from the Reed.co.uk API (includes remote/US roles)."""
@@ -53,7 +45,7 @@ class ReedSource:
                 timeout=15.0,
                 auth=(api_key, ""),   # Reed uses Basic auth: key as username, blank password
             ) as client:
-                for term in _SEARCH_TERMS:
+                for term in self.keywords[:5]:
                     if len(jobs) >= limit:
                         break
                     try:

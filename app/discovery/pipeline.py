@@ -158,7 +158,8 @@ from app.common.geo import location_allowed as _location_allowed  # noqa: E402
 
 
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
-            preferred_country: str | None = None, remote_ok: bool = True) -> int:
+            preferred_country: str | None = None, remote_ok: bool = True,
+            user_keywords: List[str] | None = None) -> int:
     """Insert new jobs; skip duplicates by (source, external_id) and cross-source slug.
 
     Each job is committed individually so a race-condition IntegrityError from
@@ -166,15 +167,20 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     the entire batch.
 
     When ``preferred_country`` is set, postings located in a different country are
-    dropped (remote roles are kept when ``remote_ok``).
+    dropped (remote roles are kept when ``remote_ok``). ``user_keywords`` (the
+    user's Target Roles / department roles) override the default non-tech title
+    gate — an accountant's or marketer's own roles must never be dropped as
+    "non-tech".
     """
     from app.analytics.funnel import FunnelTracker
+    from app.discovery.title_filter import keyword_hit
     from datetime import datetime
     inserted = 0
 
     for r in raw_jobs:
         # Permissive gate: only skip obvious non-tech titles before any DB work
-        if is_obvious_non_tech(r.title or ""):
+        # — unless the user's own keywords claim the title (department users).
+        if is_obvious_non_tech(r.title or "") and not keyword_hit(r.title or "", user_keywords):
             continue
 
         # Per-user country gate: drop jobs clearly located in another country.
@@ -532,7 +538,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         try:
             raw = scraper.fetch()
             if raw is not None:
-                new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
+                new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords)
                 total_new += new
                 _boards_fetched += len(raw)
                 _slug = (getattr(scraper, "board_slug", None) or getattr(scraper, "company_slug", None)
@@ -565,7 +571,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             source_stats["HN Who-is-hiring"] = {"fetched": len(hn_raw or [])}
             _save_incremental()
             if hn_raw:
-                hn_new = _upsert(hn_raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
+                hn_new = _upsert(hn_raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords)
                 total_new += hn_new
                 log.info("HN Who-is-hiring: %d postings fetched, %d new inserted", len(hn_raw), hn_new)
         except Exception as e:
@@ -649,7 +655,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         inserted = 0
         if all_raw_jobs:
             # JOB-FIRST: insert the postings directly into the DB.
-            inserted = _upsert(all_raw_jobs, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok)
+            inserted = _upsert(all_raw_jobs, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords)
             log.info("Aggregator job-first upsert: %d new jobs from %d fetched", inserted, len(all_raw_jobs))
             # Stash the raw jobs so company-registration can run AFTER the run
             # summary is written (it's slow and must not delay the UI breakdown).

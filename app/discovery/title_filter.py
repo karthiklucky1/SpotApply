@@ -65,26 +65,32 @@ _INCLUDE_ROOTS = [
     r"rag\b",
 ]
 
-# If any of these are in the title → reject immediately (stage 1 kill list).
-_EXCLUDE_ROOTS = [
+# Absolute kill list — junk for EVERY department (sales, recruiting, support…).
+_EXCLUDE_JUNK_ROOTS = [
     r"sales\s+engin",
     r"solutions?\s+engin",
     r"customer\s+success",
     r"account\s+execut",
     r"recruiter",
-    r"marketing",
     r"\bseo\b",
+    r"support\s+engin",
+    r"\bhr\b",
+    r"human\s+resource",
+]
+
+# Other-department kill list — irrelevant for the DEFAULT (software/AI) rules,
+# but a user whose own keywords claim these titles (civil, mechanical, finance,
+# biomedical QA, aerospace flight test…) gets them via keyword_hit below.
+_EXCLUDE_DEPT_ROOTS = [
+    r"marketing",
     r"qa\s+engin",
     r"quality\s+assur",
     r"test\s+engin",
-    r"support\s+engin",
     r"field\s+engin",
     r"hardware\s+engin",
     r"mechanical\s+engin",
     r"electrical\s+engin",
     r"civil\s+engin",
-    r"\bhr\b",
-    r"human\s+resource",
     r"finance\b",
     r"accountant",
     r"legal\b",
@@ -96,7 +102,8 @@ _EXCLUDE_ROOTS = [
 ]
 
 _include_re = re.compile("|".join(_INCLUDE_ROOTS), re.IGNORECASE)
-_exclude_re = re.compile("|".join(_EXCLUDE_ROOTS), re.IGNORECASE)
+_exclude_junk_re = re.compile("|".join(_EXCLUDE_JUNK_ROOTS), re.IGNORECASE)
+_exclude_dept_re = re.compile("|".join(_EXCLUDE_DEPT_ROOTS), re.IGNORECASE)
 
 # ── Stage 2: semantic anchors ─────────────────────────────────────────────────
 _ANCHORS = [
@@ -158,31 +165,74 @@ _AMBIGUOUS_RE = re.compile(
 )
 
 
+# Tokens too generic to identify a department on their own — a keyword phrase
+# like "Mechanical Engineer" should match via "mechanical", never via
+# "engineer" (which would wave every engineering title through).
+_GENERIC_TOKENS = {
+    "engineer", "engineers", "engineering", "senior", "junior", "staff",
+    "lead", "principal", "graduate", "entry", "level", "manager", "specialist",
+    "associate", "analyst", "developer", "consultant", "intern", "internship",
+    "remote", "machine", "learning", "applied", "the", "and", "of", "for",
+    "with", "ii", "iii",
+}
+
+
+def keyword_hit(title: str, keywords: List[str] | None) -> bool:
+    """True when the title contains a caller keyword phrase verbatim, OR any
+    distinctive (non-generic) word from one — so a civil user's "Civil
+    Engineer" keyword also matches "Graduate Engineer (Civil)"."""
+    if not keywords:
+        return False
+    title_lower = (title or "").lower()
+    for kw in keywords:
+        kl = (kw or "").lower().strip()
+        if not kl:
+            continue
+        if kl in title_lower:
+            return True
+        for tok in re.split(r"[^a-z0-9+#]+", kl):
+            if len(tok) >= 4 and tok not in _GENERIC_TOKENS \
+                    and re.search(rf"\b{re.escape(tok)}\b", title_lower):
+                return True
+    return False
+
+
 def matches_title(title: str, extra_keywords: List[str] | None = None) -> bool:
-    """Return True if this job title is relevant for ML/AI/Python roles.
+    """Return True if this job title is relevant for the caller's keywords
+    (the user's Target Roles / department roles); with no keywords, falls back
+    to the built-in ML/AI/Python relevance rules.
 
     Args:
         title: Raw job title string.
-        extra_keywords: Optional caller-supplied keywords (settings.jobs_keywords_list).
-                        If any match verbatim → fast-pass, skip regex/semantic.
+        extra_keywords: Optional caller-supplied keywords. A verbatim phrase
+                        match fast-passes everything; the exclude list still
+                        applies to token-level matches (a "Sales Engineer -
+                        HVAC" posting stays rejected for a mechanical user).
     """
     if not title:
         return False
 
     title_lower = title.lower()
 
-    # Fast-pass: exact keyword match from caller's configured list
+    # Stage 0: junk roles are junk for every department — even a keyword hit
+    # ("Sales Engineer - HVAC" for a mechanical user) doesn't rescue them.
+    if _exclude_junk_re.search(title):
+        return False
+
+    # Fast-pass: exact keyword phrase match from the caller's list
     if extra_keywords:
-        if any(kw.lower() in title_lower for kw in extra_keywords):
+        if any((kw or "").lower() in title_lower for kw in extra_keywords if kw):
             return True
 
-    # Stage 1a: exclude obvious non-matches
-    if _exclude_re.search(title):
-        return False
+    # Stage 1a: other-department kills — apply only when the user's own
+    # keywords don't claim the title (a civil user keeps civil titles).
+    if _exclude_dept_re.search(title):
+        return keyword_hit(title, extra_keywords)
 
-    # Stage 1b: include root terms
+    # Stage 1b: include root terms — or a distinctive token from the user's
+    # keywords (department users' titles rarely contain the ML root terms).
     if not _include_re.search(title):
-        return False
+        return keyword_hit(title, extra_keywords)
 
     # Stage 2: semantic check only for ambiguous titles
     if _AMBIGUOUS_RE.search(title):

@@ -20,15 +20,6 @@ from app.discovery.title_filter import matches_title
 log = logging.getLogger(__name__)
 
 _API_URL = "https://linkedin-jobs-search.p.rapidapi.com/"
-_SEARCH_TERMS = [
-    "machine learning engineer",
-    "AI engineer",
-    "python developer",
-    "LLM engineer",
-    "MLOps engineer",
-    "GenAI engineer",
-]
-
 
 class LinkedInRapidAPISource:
     """Fetches LinkedIn jobs via RapidAPI (paid, ~$10/mo)."""
@@ -57,7 +48,7 @@ class LinkedInRapidAPISource:
 
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                for term in _SEARCH_TERMS:
+                for term in self.keywords[:5]:
                     if len(jobs) >= limit:
                         break
                     try:

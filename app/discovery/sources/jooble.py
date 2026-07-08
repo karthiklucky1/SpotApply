@@ -20,14 +20,6 @@ from app.discovery.title_filter import matches_title
 log = logging.getLogger(__name__)
 
 _API_URL = "https://jooble.org/api/{key}"
-_SEARCH_TERMS = [
-    "machine learning engineer remote",
-    "python AI engineer remote",
-    "LLM engineer remote",
-    "backend python engineer remote",
-    "MLOps engineer remote",
-]
-
 
 class JoobleSource:
     """Fetches jobs from the Jooble API (global aggregator)."""
@@ -51,7 +43,7 @@ class JoobleSource:
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                for term in _SEARCH_TERMS:
+                for term in self.keywords[:5]:
                     if len(jobs) >= limit:
                         break
                     try:
