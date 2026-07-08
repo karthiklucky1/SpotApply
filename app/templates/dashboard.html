@@ -337,8 +337,8 @@
         50%       { box-shadow: 0 0 36px rgba(139,92,246,0.75), 0 0 60px rgba(99,102,241,0.25); }
     }
     #app-sidebar .sb-logo {
-        width: 40px; height: 40px;
-        border-radius: 14px;
+        width: 30px; height: 30px;
+        border-radius: 10px;
         display: flex; align-items: center; justify-content: center;
         background: linear-gradient(135deg,#4f46e5,#7c3aed);
         box-shadow: 0 0 20px rgba(99,102,241,0.45);
@@ -349,18 +349,18 @@
         transition: transform 0.2s;
     }
     /* Brand wordmark next to the logo (visible now the rail is wide) */
-    #app-sidebar .sb-brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; padding-left: 2px; }
+    #app-sidebar .sb-brand-row { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; padding-left: 2px; }
     #app-sidebar .sb-brand-row .sb-logo { margin: 0; }
-    #app-sidebar .sb-brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.01em;
+    #app-sidebar .sb-brand-name { font-size: 14px; font-weight: 800; letter-spacing: -0.01em;
         background: linear-gradient(135deg,#a5b4fc,#c4b5fd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     #app-sidebar .sb-nav { flex: 1; display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; padding: 0; }
-    #app-sidebar .sb-section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #475569; padding: 10px 12px 4px; }
+    #app-sidebar .sb-section-label { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.11em; color: #475569; padding: 9px 12px 3px; }
     #app-sidebar .sb-btn {
-        width: 100%; min-height: 42px;
-        border-radius: 12px;
+        width: 100%; min-height: 33px;
+        border-radius: 9px;
         display: flex; flex-direction: row; align-items: center; justify-content: flex-start;
-        gap: 12px;
-        padding: 0 14px;
+        gap: 9px;
+        padding: 0 12px;
         cursor: pointer;
         transition: background 0.18s ease, box-shadow 0.18s ease;
         position: relative;
@@ -374,17 +374,18 @@
         color: #c7d2fe;
         box-shadow: inset 2px 0 0 #818cf8;
     }
-    #app-sidebar .sb-btn .sb-icon { font-size: 18px; line-height: 1; width: 22px; text-align: center; flex-shrink: 0; }
-    #app-sidebar .sb-btn .sb-label { font-size: 13.5px; font-weight: 600; letter-spacing: 0; line-height: 1.1; white-space: nowrap; }
+    #app-sidebar .sb-btn .sb-icon { font-size: 14px; line-height: 1; width: 17px; text-align: center; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+    #app-sidebar .sb-btn .sb-icon .ic, #app-sidebar .sb-btn .sb-icon svg { width: 14px; height: 14px; }
+    #app-sidebar .sb-btn .sb-label { font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 1.1; white-space: nowrap; }
     #app-sidebar .sb-divider { width: auto; height: 1px; background: rgba(255,255,255,0.06); margin: 8px 6px; }
     #app-sidebar .sb-bottom { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 0; }
     /* Prominent resume upload action in the sidebar */
     #app-sidebar .sb-resume-btn {
         display: flex; align-items: center; gap: 10px; width: 100%;
-        padding: 11px 14px; margin-bottom: 6px;
-        border-radius: 12px; cursor: pointer; border: 1px solid rgba(16,185,129,0.35);
+        padding: 8px 12px; margin-bottom: 6px;
+        border-radius: 10px; cursor: pointer; border: 1px solid rgba(16,185,129,0.35);
         background: linear-gradient(135deg, rgba(16,185,129,0.18), rgba(5,150,105,0.10));
-        color: #6ee7b7; font-size: 13px; font-weight: 700; text-align: left;
+        color: #6ee7b7; font-size: 11.5px; font-weight: 700; text-align: left;
         transition: border-color 0.2s, background 0.2s;
     }
     #app-sidebar .sb-resume-btn:hover { border-color: rgba(16,185,129,0.7); background: linear-gradient(135deg, rgba(16,185,129,0.26), rgba(5,150,105,0.16)); }
@@ -638,6 +639,7 @@
     #jobModalClose:hover, #referralClose:hover, #connClose:hover { background: var(--sage-tint); color: var(--sage-700); }
     /* ── Full-screen job detail (Jobright-style: list side panel + detail) ── */
     #jobModalOverlay { padding: 0; }
+    @media (min-width: 1024px) { #jobModalOverlay { left: 216px; } }
     #jobModal { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border: none;
       flex-direction: row; }
     .jm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -687,6 +689,7 @@
     .jr-badge-time { background: var(--sage-tint); color: var(--sage-700); }
     .jr-badge-hot  { background: #FCE9E2; color: #C2410C; }
     .jr-badge-good { background: #E8F0FB; color: #1D4ED8; }
+    .jr-badge-status { background: var(--sage-700); color: #fff; }
     .jr-title-row { display: flex; gap: 14px; align-items: center; }
     .jr-title { font-size: 16.5px; font-weight: 800; color: var(--ink); line-height: 1.3; letter-spacing: -0.01em; }
     .jr-company { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-top: 2.5px; }
@@ -724,7 +727,10 @@
     .hp-diff button { flex-shrink: 0; font-size: 15px; color: var(--muted-2); line-height: 1; padding: 2px 4px; }
     .hp-diff button:hover { color: var(--ink); }
     /* ── Single-column detail flow ──────────────────────────────────────── */
-    .jd-single { max-width: 920px; margin: 0 auto; }
+    .jd-shell { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 22px;
+      max-width: 1280px; margin: 0 auto; align-items: start; }
+    .jd-rail { position: sticky; top: 4px; display: flex; flex-direction: column; gap: 14px; }
+    @media (max-width: 1023px) { .jd-shell { grid-template-columns: 1fr; } .jd-rail { position: static; } }
     /* ── Referral Copilot (compact) ─────────────────────────────────────── */
     .ref-copilot { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--sage);
       border-radius: 16px; padding: 15px 18px; }
@@ -1035,7 +1041,7 @@
             {% macro jobdetail(app, job, visa, actions) %}
             <template class="jd-detail"> {% set _is_submitted_state = app.status.value in ['submitted', 'interviewing', 'offer', 'accepted', 'rejected'] %}
                     {% set _is_email = (app.apply_track == 'email_import') %}
-                    <div class="jd-single space-y-5">
+                    <div class="jd-shell"> <div class="jd-main-col space-y-5">
                         <!-- Meta: humanized, icon chips -->
                         <div> <div class="flex flex-wrap items-center gap-x-5 gap-y-2"> {% set post_date = job.posted_at or job.discovered_at %}
                                 <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="11" r="3"/></svg>{{ 'Remote' if job.remote else (job.location or 'Location N/A') }}{% if not job.remote and job.location and 'remote' not in job.location|lower %} · On-site{% endif %}</span>
@@ -1065,10 +1071,12 @@
                             </h3> <div class="px-5 py-4 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed" style="white-space:pre-line; max-height: 65vh; overflow-y: auto; color:var(--ink-soft);">{{ job.description|cleantext }}</div> </div> {% endif %}
                         <!-- Company snapshot (funding, who runs it, hiring record) -->
                         <div class="company-profile-placeholder"></div>
+                        </div> <aside class="jd-rail">
                         <!-- Referral Copilot — compact -->
                         <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">Internal referrals get fast-tracked. Find someone inside {{ job.company or 'the company' }} and we'll draft the outreach message for you — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> </div> </div>
                         <!-- Right-door check -->
                         <div class="autopsy-placeholder"></div>
+                        </aside>
                         <!-- Hidden helper for original caller rendering (JS moves these into the header) -->
                         <div class="hidden-caller-actions hidden"> {{ actions }}
                         </div>
@@ -1109,14 +1117,24 @@
                         </div> {% endmacro %}
             {#- Jobright-style full-width row: logo, badges, humanized meta, action bar,
                 dark score panel. Shares the same jd-detail template as jobcard. -#}
-            {% macro jobrow(app, job, visa=none) %}
+            {% macro submitted_actions(app) %}
+            <div class="grid grid-cols-3 gap-1.5 mb-1.5"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'interviewing')" class="jbtn text-[9.5px] py-2" style="background:rgba(99,102,241,0.10);color:#818cf8;border:1px solid rgba(99,102,241,0.30);"> Interview</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);"> Offer</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✓ Accepted</button> </div> <div class="grid grid-cols-2 gap-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Full Docs</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="jbtn text-[10px] py-2" style="background:rgba(244,63,94,0.10);color:#e11d48;border:1px solid rgba(244,63,94,0.30);"> ✕ Rejected</button> </div>
+            {% endmacro %}
+            {% macro interviewing_actions(app) %}
+            <div class="grid grid-cols-3 gap-1 mb-1.5"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(245,158,11,0.10);color:#fbbf24;border:1px solid rgba(245,158,11,0.30);" title="Move back to Submitted (Under Review)">⌛ Under Review</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);"> Offer</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✓ Accepted</button> </div> <div class="grid grid-cols-2 gap-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="jbtn text-[10px] py-2" style="background:rgba(244,63,94,0.10);color:#e11d48;border:1px solid rgba(244,63,94,0.30);"> ✕ Rejected</button> </div>
+            {% endmacro %}
+            {% macro jobrow(app, job, visa=none, stage='shortlist') %}
             {% set score = job.rerank_score|int if job.rerank_score is not none else None %}
             {% set post_date = job.posted_at or job.discovered_at %}
             <div class="jobrow glass rounded-[22px] relative cursor-pointer overflow-hidden" data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" data-source="{{ job.source.value|e }}"{% if score is not none %} data-score="{{ score }}"{% endif %} onclick="openJobDrawer(this)">
-                <button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="jr-remove" title="Not interested — remove">&times;</button>
+                {% if stage == 'shortlist' %}<button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="jr-remove" title="Not interested — remove">&times;</button>{% endif %}
                 <div class="jr-flex">
                     <div class="jr-info">
                         <div class="jr-badges">
+                            {% if stage != 'shortlist' %}
+                            <span class="jr-badge jr-badge-status">{{ app.status.value|capitalize }}</span>
+                            {% if app.apply_track == 'email_import' %}<span class="jr-badge jr-badge-hot" title="Detected from your inbox — applied outside HirePath">From email</span>{% else %}<span class="jr-badge jr-badge-good" title="Applied through HirePath">✓ Via HirePath</span>{% endif %}
+                            {% endif %}
                             {% set _urg = urgency_of(job) %}
                             {% if post_date and not (_urg and _urg.label) %}<span class="jr-badge jr-badge-time">Posted {{ post_date|days_ago }}</span>{% endif %}
                             {% if _urg and _urg.label %}<span class="jr-badge jr-badge-hot" title="{{ _urg.reason }}">{{ _urg.label }}</span>{% endif %}
@@ -1137,6 +1155,7 @@
                             {% if job.blended_score is not none %}<span class="jd-meta-chip" title="Apply priority = 65% resume fit + 35% hiring intent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11.05 3.6a1 1 0 011.9 0l1.8 4.4 4.7.4a1 1 0 01.6 1.8l-3.6 3.1 1.1 4.6a1 1 0 01-1.5 1.1L12 16.9 7.95 19a1 1 0 01-1.5-1.1l1.1-4.6-3.6-3.1a1 1 0 01.6-1.8l4.7-.4z"/></svg>Priority {{ job.blended_score|int }}</span>{% endif %}
                         </div>
                         <div class="jr-actions" onclick="event.stopPropagation()">
+                            {% if stage == 'shortlist' %}
                             {% set has_docs = app.tailored_resume_path or app.cover_letter_path %}
                             {% if not has_docs %}
                             <button type="button" data-app-id="{{ app.id }}" onclick="tailorJob(+this.dataset.appId, this)" class="jbtn jbtn-primary text-[11.5px] py-2.5 px-5" title="AI rewrites your resume bullets and writes a cover letter for this job">✨ Tailor Resume &amp; Cover Letter</button>
@@ -1146,6 +1165,18 @@
                             {% endif %}
                             <button type="button" data-app-id="{{ app.id }}" onclick="fillWithExtension(+this.dataset.appId, this)" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Opens the job form in your browser and fills every field — you review, then submit">Auto-Fill &amp; Apply</button>
                             <button type="button" data-app-id="{{ app.id }}" onclick="markSubmitted(+this.dataset.appId, this)" class="jbtn jbtn-done text-[11.5px] py-2.5 px-4">✓ Mark Applied</button>
+                            {% elif stage == 'submitted' %}
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markOutcome(+this.dataset.appId,'interviewing')" class="jbtn text-[11px] py-2.5 px-4" style="background:rgba(99,102,241,0.10);color:#5B5BD6;border:1px solid rgba(99,102,241,0.30);">Interview</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markOutcome(+this.dataset.appId,'offer')" class="jbtn jbtn-done text-[11px] py-2.5 px-4">Offer</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4">Full Docs</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markRejected(+this.dataset.appId)" class="jbtn text-[11px] py-2.5 px-4" style="background:rgba(244,63,94,0.08);color:#C2410C;border:1px solid rgba(244,63,94,0.28);">✕ Rejected</button>
+                            {% elif stage == 'interviewing' %}
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markSubmitted(+this.dataset.appId, this)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4" title="Move back to Submitted (Under Review)">⌛ Under Review</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markOutcome(+this.dataset.appId,'offer')" class="jbtn jbtn-done text-[11px] py-2.5 px-4">Offer</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markOutcome(+this.dataset.appId,'accepted')" class="jbtn jbtn-apply text-[11px] py-2.5 px-4">✓ Accepted</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4">Documents</button>
+                            <button type="button" data-app-id="{{ app.id }}" onclick="markRejected(+this.dataset.appId)" class="jbtn text-[11px] py-2.5 px-4" style="background:rgba(244,63,94,0.08);color:#C2410C;border:1px solid rgba(244,63,94,0.28);">✕ Rejected</button>
+                            {% endif %}
                         </div>
                     </div>
                     <div class="jr-score">
@@ -1163,7 +1194,7 @@
                         </div>
                     </div>
                 </div>
-                {{ jobdetail(app, job, visa, shortlist_actions(app)) }}
+                {{ jobdetail(app, job, visa, shortlist_actions(app) if stage == 'shortlist' else (submitted_actions(app) if stage == 'submitted' else interviewing_actions(app))) }}
             </div>
             {% endmacro %}
 
@@ -1194,33 +1225,45 @@
                 </div>
             </div>
             </div>
-            <div id="pipe-submitted" class="pipe-pane hidden"><!-- Column 2: Submitted --> <div class="glass rounded-[32px] p-5 border border-emerald-500/25 shadow-[0_0_15px_rgba(16,185,129,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span> </span> <h2 class="font-bold text-white text-sm">Submitted Pipeline</h2> </div> <span class="bg-emerald-500/10 text-emerald-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-emerald-500/20">{{ total_submitted_count }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50 transition duration-150" /> </div> <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start pr-1" id="submitted-container"> {% for app, job in submitted %}
-                    {% call jobcard(app, job, 'emerald', false, app.status.value, visa_framing) %}
-                        {% set _is_hp = (app.apply_track != 'email_import') %}
-                        {% set _has_resume = app.tailored_resume_path %}
-                        {% if _is_hp and _has_resume %}
-                        <!-- Inline resume preview for HirePath submissions --> <div class="mb-2 rounded-xl border border-emerald-500/25 bg-emerald-950/20 overflow-hidden" style="background:linear-gradient(135deg,rgba(16,185,129,0.07) 0%,rgba(16,185,129,0.01) 100%);"> <button type="button" onclick="event.stopPropagation(); toggleInlineResume(this, {{ app.id }})" class="w-full flex items-center justify-between px-3 py-1.5 text-[9.5px] font-bold text-emerald-400 hover:text-emerald-300 transition duration-150"> <span> Tailored Resume</span> <span class="resume-chevron text-slate-500 transition-transform duration-200">▼</span> </button> <div id="inline-resume-{{ app.id }}" class="hidden px-3 pb-3"> <pre class="text-[9px] text-slate-400 leading-relaxed whitespace-pre-wrap font-sans max-h-[200px] overflow-y-auto select-text resume-preview-text">Loading…</pre> </div> </div> {% endif %}
-                        <div class="grid grid-cols-3 gap-1.5 mb-1.5"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'interviewing')" class="jbtn text-[9.5px] py-2" style="background:rgba(99,102,241,0.10);color:#818cf8;border:1px solid rgba(99,102,241,0.30);"> Interview</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);"> Offer</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9.5px] py-2" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✓ Accepted</button> </div> <div class="grid grid-cols-2 gap-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Full Docs
-                            </button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="jbtn text-[10px] py-2" style="background:rgba(244,63,94,0.10);color:#e11d48;border:1px solid rgba(244,63,94,0.30);"> ✕ Rejected
-                            </button> </div> {% endcall %}
+            <div id="pipe-submitted" class="pipe-pane hidden"><!-- Submitted — full-width rows -->
+            <div class="flex flex-col gap-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2.5">
+                        <span class="relative flex h-2 w-2 shrink-0"> <span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span> </span>
+                        <h2 class="font-bold text-white text-base">Submitted Pipeline</h2>
+                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">{{ total_submitted_count }}</span>
+                    </div>
+                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
+                <div class="flex flex-col gap-4 pr-1" id="submitted-container"> {% for app, job in submitted %}
+                    {{ jobrow(app, job, visa_framing, 'submitted') }}
                     {% else %}
-                    <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl"> <div class="text-3xl mb-2 opacity-60"></div> <p class="text-slate-500 text-xs font-semibold">No submitted roles yet.</p> <p class="text-slate-600 text-[10px] mt-1">Complete reviews to submit.</p> </div> {% endfor %}
+                    <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No submitted roles yet.</p> <p class="text-slate-600 text-xs mt-1">Apply from your shortlist and they will land here.</p> </div>
+                    {% endfor %}
                     {% if total_submitted_count > 20 %}
-                    <div class="pt-3 text-center border-t border-slate-850/60 mt-3 flex justify-center"> {% if all_submitted %}
-                        <a href="/dashboard" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full border border-slate-700 bg-slate-900 text-slate-350 hover:text-white transition duration-150"> Show Less
-                        </a> {% else %}
-                        <a href="/dashboard?all_submitted=true" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full text-white transition duration-150" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));"> Show All (+{{ total_submitted_count - 20 }} more)
-                        </a> {% endif %}
+                    <div class="pt-3 text-center flex justify-center"> {% if all_submitted %}
+                        <a href="/dashboard" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full border border-slate-700 bg-slate-900 text-slate-350 hover:text-white transition duration-150"> Show Less</a> {% else %}
+                        <a href="/dashboard?all_submitted=true" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full text-white transition duration-150" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));"> Show All (+{{ total_submitted_count - 20 }} more)</a> {% endif %}
                     </div> {% endif %}
-                </div> </div> </div>
-            <div id="pipe-interviewing" class="pipe-pane hidden"><!-- Column 3: Interviewing --> <div class="glass rounded-[32px] p-5 border border-blue-500/25 shadow-[0_0_15px_rgba(59,130,246,0.05)] flex flex-col gap-4 min-h-[300px]"> <div class="flex items-center justify-between border-b border-slate-800/40 pb-2"> <div class="flex items-center gap-2"> <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span> <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span> </span> <h2 class="font-bold text-white text-sm">Interview Pipeline</h2> </div> <span class="bg-blue-500/10 text-blue-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-blue-500/20" id="interviewing-count">{{ interviewing|length }}</span> </div> <!-- Column Search --> <div class="relative w-full"> <span class="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500 text-[10.5px]"></span> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-1.5 pl-8 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 transition duration-150" /> </div> <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start pr-1" id="interviewing-container"> {% for app, job in interviewing %}
-                    {% call jobcard(app, job, 'blue', false, app.status.value, visa_framing) %}
-                        <div class="grid grid-cols-3 gap-1 mb-1.5"> <button type="button" id="review-btn-{{ app.id }}" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markSubmitted(+this.dataset.appId, this)" class="jbtn text-[8.5px] py-2 px-0.5" style="background:rgba(245,158,11,0.10);color:#fbbf24;border:1px solid rgba(245,158,11,0.30);" title="Move back to Submitted (Under Review) Pipeline">⌛ Under Review</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'offer')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.10);color:#10b981;border:1px solid rgba(16,185,129,0.30);"> Offer</button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markOutcome(+this.dataset.appId,'accepted')" class="jbtn text-[9px] py-2 px-1" style="background:rgba(16,185,129,0.18);color:#10b981;border:1px solid rgba(16,185,129,0.45);">✓ Accepted</button> </div> <div class="grid grid-cols-2 gap-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents
-                            </button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); markRejected(+this.dataset.appId)" class="jbtn text-[10px] py-2" style="background:rgba(244,63,94,0.10);color:#e11d48;border:1px solid rgba(244,63,94,0.30);"> ✕ Rejected
-                            </button> </div> {% endcall %}
+                </div>
+            </div></div>
+            <div id="pipe-interviewing" class="pipe-pane hidden"><!-- Interviewing — full-width rows -->
+            <div class="flex flex-col gap-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="flex items-center gap-2.5">
+                        <span class="relative flex h-2 w-2 shrink-0"> <span class="relative inline-flex rounded-full h-2 w-2" style="background:#3B82F6;"></span> </span>
+                        <h2 class="font-bold text-white text-base">Interview Pipeline</h2>
+                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20" id="interviewing-count">{{ interviewing|length }}</span>
+                    </div>
+                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
+                <div class="flex flex-col gap-4 pr-1" id="interviewing-container"> {% for app, job in interviewing %}
+                    {{ jobrow(app, job, visa_framing, 'interviewing') }}
                     {% else %}
-                    <div class="text-center py-8 border-2 border-dashed border-slate-800/40 rounded-2xl"> <div class="text-3xl mb-2 opacity-60"></div> <p class="text-slate-500 text-xs font-semibold">No interviews scheduled yet.</p> <p class="text-slate-600 text-[10px] mt-1">Heard back? Log it here!</p> </div> {% endfor %}
-                </div> </div>
+                    <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No interviews scheduled yet.</p> <p class="text-slate-600 text-xs mt-1">Heard back? Mark a submitted job as Interview to track it here.</p> </div>
+                    {% endfor %}
+                </div>
+            </div></div>
             <div id="pipe-rejected" class="pipe-pane hidden"><!-- Rejected section --> <div> <div class="glass rounded-[28px] p-5 border border-rose-500/20 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> <h2 class="font-bold text-white text-sm">Rejected</h2> </div> <span class="bg-rose-500/10 text-rose-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-rose-500/20" id="rejected-count">{{ rejected|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pr-1" id="rejected-container"> {% for app, job in rejected %}
                     {% call jobcard(app, job, 'rose', false, 'Rejected', visa_framing) %}
                         <div class="grid grid-cols-2 gap-2 mt-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents
@@ -4627,6 +4670,12 @@
 <div id="jobModalOverlay" onclick="if(event.target===this) closeJobDrawer()"> <div id="jobModal" role="dialog" aria-label="Job details" aria-modal="true"> <div class="jm-main"> <div class="jd-head"> <span id="jobModalLogo" class="shrink-0 self-center"></span> <div class="min-w-0 flex-1"> <h2 id="jobModalTitle" class="text-lg font-extrabold leading-snug" style="color:var(--ink);"></h2> <p id="jobModalCompany" class="text-[12.5px] font-semibold mt-1" style="color:var(--muted);"></p> </div> <div id="jobModalHeaderActions" class="flex items-center gap-2 mr-2 shrink-0 self-center"></div> <button type="button" id="jobModalClose" onclick="closeJobDrawer()" title="Close (Esc)">&times;</button> </div> <div id="jobDrawerBody" class="jd-body"></div> </div> </div>
 </div>
 <script> // Names kept as openJobDrawer/closeJobDrawer so existing callers keep working.
+    // The app sidebar stays visible while a job is open — clicking it closes the job.
+    document.getElementById('app-sidebar')?.addEventListener('click', () => {
+        const ov = document.getElementById('jobModalOverlay');
+        if (ov && ov.classList.contains('open')) closeJobDrawer();
+    });
+
     // Pipeline stage tabs: one full-screen pane at a time.
     function switchPipeTab(paneId, btn) {
         document.querySelectorAll('.pipe-pane').forEach(pn => pn.classList.toggle('hidden', pn.id !== paneId));
