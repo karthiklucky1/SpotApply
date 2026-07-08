@@ -17,6 +17,8 @@ _US_STATE_CODES = {
 }
 
 # country -> signal tokens (lowercase). US handled separately via state codes too.
+# NOTE: the "Search jobs in country" select in app/templates/dashboard.html
+# mirrors these keys — when adding a country here, add its <option> there too.
 _COUNTRY_SIGNALS = {
     "united states": ["united states", "usa", "u.s.a", "u.s.", " us ", "america", "remote us", "us remote"],
     "united kingdom": ["united kingdom", " uk", "u.k", "england", "scotland", "wales",
