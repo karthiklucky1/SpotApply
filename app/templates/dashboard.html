@@ -543,17 +543,18 @@
        muted sage-green accent. Kept in one block so it's easy to tune/remove.
        ════════════════════════════════════════════════════════════════════ */
     :root {
-        --canvas:    #F4F1EA;   /* warm off-white page */
-        --surface:   #FCFAF5;   /* cards */
+        /* Deeper canvas so white cards visibly separate from the page —
+           testers reported the old near-white-on-white read as "very light". */
+        --canvas:    #ECE7DB;   /* warm parchment page */
+        --surface:   #FDFCF8;   /* cards — brighter than canvas, real contrast */
         --surface-2: #EFEadF;   /* secondary fills / inputs */
-        --ink:       #2E2A24;   /* primary text */
-        --ink-soft:  #443F36;
-        /* Secondary/faint text darkened for readable contrast on the light
-           theme (previous #8C857A/#A8A092 sat below WCAG AA and made the
-           whole dashboard read as washed-out). */
-        --muted:     #6B6456;   /* secondary text — ~5.5:1 on cards */
-        --muted-2:   #837B6C;   /* faint text — ~4.1:1, large/labels only */
-        --border:    #DDD6C5;   /* hairlines — slightly stronger */
+        --ink:       #211D17;   /* primary text — near-black */
+        --ink-soft:  #3B362C;
+        /* Secondary/faint text darkened for readable contrast (the originals
+           sat below WCAG AA and washed the whole dashboard out). */
+        --muted:     #59523F;   /* secondary text — ~7:1 on cards */
+        --muted-2:   #6E6757;   /* faint text — ~5:1 */
+        --border:    #D2C9B4;   /* visible hairlines */
         --sage:      #2FB4A6;   /* accent — light seafoam teal */
         --sage-rgb:  47,180,166;/* accent as raw RGB for rgba() tints */
         --sage-600:  #1F9C8F;   /* accent strong / hover */
@@ -568,10 +569,16 @@
             radial-gradient(ellipse 60% 40% at 85% 6%, rgba(120,205,195,0.08) 0%, transparent 55%) !important;
     }
 
+    /* Legibility: the micro-labels (stat captions, form labels) were 9–10px —
+       physically too small to read comfortably. Bump one size across the app. */
+    [class*="text-[9px]"]  { font-size: 10.5px !important; }
+    [class*="text-[10px]"] { font-size: 11.5px !important; }
+    [class*="text-[11px]"] { font-size: 12px !important; }
+
     /* Surfaces */
     .glass { background: var(--surface) !important; border: 1px solid var(--border) !important;
              backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
-             box-shadow: 0 1px 2px rgba(46,42,36,0.03), 0 8px 24px rgba(46,42,36,0.06) !important; }
+             box-shadow: 0 1px 3px rgba(46,42,36,0.06), 0 10px 28px rgba(46,42,36,0.10) !important; }
     .glass-dark { background: var(--surface) !important; border: 1px solid var(--border) !important;
                   backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
                   box-shadow: 0 8px 30px rgba(46,42,36,0.10) !important; }
