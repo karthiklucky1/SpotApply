@@ -289,7 +289,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         shouldFill = true;
       }
 
-      console.log("[HirePath BG]   shouldFill:", shouldFill, "freshSession:", freshSession, "hasPackOnATS:", hasPackOnATS);
+      console.log("[HirePath BG]   shouldFill:", shouldFill, "freshSession:", freshSession);
 
       if (!shouldFill) return;
 
