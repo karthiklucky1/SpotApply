@@ -142,6 +142,7 @@ def init_db() -> None:
         ("is_cap_exempt", "BOOLEAN DEFAULT FALSE"),
         ("urgency_score", "FLOAT DEFAULT 0.0"),
         ("rerank_breakdown", "TEXT"),
+        ("corporate_insights", "TEXT"),
     ]:
         add_column_if_missing("job", col, col_type)
         

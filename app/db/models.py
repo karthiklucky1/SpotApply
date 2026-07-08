@@ -96,6 +96,7 @@ class Job(SQLModel, table=True):
     rerank_reasoning: Optional[str] = None
     # JSON: per-factor breakdown {skills,experience,location,work_auth:{score,note}}
     rerank_breakdown: Optional[str] = Field(default=None)
+    corporate_insights: Optional[str] = Field(default=None)  # JSON: pain point, reporting line, culture decode, leverage hook, salary/work model
     cross_source_slug: Optional[str] = Field(default=None, index=True)
 
     # Ghost job detection score (0.0 = definitely real, 1.0 = likely ghost)

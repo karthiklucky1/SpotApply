@@ -98,3 +98,46 @@ def test_match_report_flags_ghost_posting():
         assert steps["Ghost-posting check"]["ok"] is False
     finally:
         _cleanup()
+
+
+def test_insights_endpoint_serves_cached_parse():
+    """Insider Intelligence: cached corporate_insights on the Job row is served
+    without an LLM call; posted salary absent → falls back gracefully."""
+    app_id = _seed()
+    with get_session() as s:
+        a = s.get(Application, app_id)
+        j = s.get(Job, a.job_id)
+        j.corporate_insights = json.dumps({
+            "pain_point": "Fraud losses are outpacing their rules engine.",
+            "reporting_to": "Director of Risk ML",
+            "strategic_importance": "High",
+            "migration": {"is_migrating": True, "details": "Rules engine to ML models"},
+            "hidden_strategy": "Building an in-house risk platform.",
+            "culture_decryption": [{"phrase": "fast-paced", "meaning": "understaffed"}],
+            "leverage_hook": "I noticed your rules engine is hitting its limits.",
+            "salary": {"text": None},
+            "work_model": "Fully remote (US)",
+        })
+        s.add(j); s.commit()
+    try:
+        r = _client().get(f"/application/{app_id}/insights")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["available"] is True
+        assert d["reporting_to"] == "Director of Risk ML"
+        assert d["culture"][0]["phrase"] == "fast-paced"
+        assert d["leverage_hook"].startswith("I noticed")
+        assert d["work_model"] == "Fully remote (US)"
+    finally:
+        _cleanup()
+
+
+def test_insights_endpoint_unavailable_without_llm():
+    """No cache + no API key → available: False, no crash."""
+    app_id = _seed()
+    try:
+        r = _client().get(f"/application/{app_id}/insights")
+        assert r.status_code == 200
+        assert r.json()["available"] is False
+    finally:
+        _cleanup()

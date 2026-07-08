@@ -100,6 +100,14 @@ def _phrase_present(phrase: str, normalized_resume: str) -> bool:
     return re.search(rf"(?<!\w){pat}(?!\w)", normalized_resume) is not None
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags/entities so markup ('<ul><li>') never becomes a
+    "missing keyword" chip like 'ul li'."""
+    import html as _html
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    return _html.unescape(text)
+
+
 def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
     """Extract the top N high-signal exact phrases from a job description.
 
@@ -108,7 +116,7 @@ def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
       - frequent 2-3 word n-grams not starting/ending on stop words
       - frequent meaningful single tokens
     """
-    norm = _normalize(jd_text)
+    norm = _normalize(_strip_html(jd_text))
 
     # 1. Curated tech phrases that actually appear in this JD
     tech_hits: List[str] = []

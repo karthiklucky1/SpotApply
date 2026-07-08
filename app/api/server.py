@@ -2125,6 +2125,72 @@ def application_company(application_id: int, request: Request) -> dict:
     }
 
 
+@app.get("/application/{application_id}/insights")
+def application_insights(application_id: int, request: Request) -> dict:
+    """Insider Intelligence: the corporate-intelligence parse of this posting —
+    pain point, reporting line, culture decode, leverage hook, stated salary
+    and exact work model. Computed once on first open, cached on the Job row.
+    When the posting hides pay, falls back to the employer's public H-1B wage
+    level as an estimate."""
+    import json as _json
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        job = session.get(Job, application.job_id) if application else None
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        cached = job.corporate_insights
+        job_id, title, company, description = job.id, job.title or "", job.company or "", job.description or ""
+
+    insights = None
+    if cached:
+        try:
+            insights = _json.loads(cached)
+        except (ValueError, TypeError):
+            insights = None
+    if insights is None:
+        from app.intelligence.corporate_insights import analyze as _ci_analyze
+        insights = _ci_analyze(title, company, description)
+        if insights is not None:
+            with get_session() as session:
+                row = session.get(Job, job_id)
+                if row:
+                    row.corporate_insights = _json.dumps(insights)
+                    session.add(row)
+                    session.commit()
+
+    if insights is None:
+        return {"available": False}
+
+    # Pay transparency: stated range first; H-1B public wage data as fallback.
+    salary_text = ((insights.get("salary") or {}).get("text") or "").strip() or None
+    salary_estimated = False
+    if not salary_text:
+        try:
+            from app.intelligence.h1b_data import lookup as _h1b_lookup
+            rec = _h1b_lookup(company)
+            wage = (rec or {}).get("wage") or ""
+            if wage:
+                salary_text = f"~{wage} (est. from public H-1B filings)"
+                salary_estimated = True
+        except Exception as _we:
+            log.debug("h1b wage fallback skipped: %s", _we)
+
+    return {
+        "available": True,
+        "pain_point": insights.get("pain_point"),
+        "reporting_to": insights.get("reporting_to"),
+        "strategic_importance": insights.get("strategic_importance"),
+        "migration": insights.get("migration"),
+        "hidden_strategy": insights.get("hidden_strategy"),
+        "culture": insights.get("culture_decryption") or [],
+        "leverage_hook": insights.get("leverage_hook"),
+        "salary": salary_text,
+        "salary_estimated": salary_estimated,
+        "work_model": insights.get("work_model"),
+    }
+
+
 @app.get("/application/{application_id}/senior-review")
 def application_senior_review(application_id: int, request: Request) -> dict:
     """A senior-engineer's independent take on this job (fit score + verdict).
@@ -5241,6 +5307,7 @@ def get_job_connections(application_id: int, request: Request, mode: str = "") -
     from app.intelligence.linkedin_xray import find_champions
 
     school = None
+    role = job.title or ""
     if mode == "alumni":
         try:
             from app.autofill.answer_pack import _get_or_create_profile
@@ -5251,7 +5318,17 @@ def get_job_connections(application_id: int, request: Request, mode: str = "") -
         if not school:
             return {"ok": False, "reason": "no_university", "people": [],
                     "note": "Add your university in Profile → Education to find alumni."}
-    return find_champions(job.company or "", job.title or "", visa=needs, school=school)
+    elif mode == "manager":
+        # Target the actual decision-maker: the reporting line extracted by the
+        # Insider Intelligence parse (e.g. "Director of AI"), not a generic role.
+        import json as _json
+        try:
+            ins = _json.loads(job.corporate_insights or "{}")
+            reporting = (ins.get("reporting_to") or "").strip()
+        except (ValueError, TypeError):
+            reporting = ""
+        role = reporting or f"{role} hiring manager"
+    return find_champions(job.company or "", role, visa=needs, school=school)
 
 
 @app.get("/api/admin/h1b-lookup")

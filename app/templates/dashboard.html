@@ -1055,11 +1055,9 @@
                             <div class="rounded-xl px-3.5 py-2 text-[11.5px] leading-snug mt-3" style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}"> <b>{{ _urgd.label }}</b> — {{ _urgd.reason }}
                             </div> {% endif %}
                         </div>
-                        <!-- Why HirePath is different -->
-                        <div class="hp-diff"> <span class="hp-diff-badge">Why HirePath is different</span> <span class="hp-diff-text">Job boards match keywords — HirePath's AI reads every posting against your <b>actual resume</b>, runs <b>7 vetting checks</b> (ghost-job filter, hiring intent, senior engineer review), then writes grounded tailored documents. And you always review and click Submit yourself.</span> <button type="button" onclick="event.stopPropagation(); this.parentElement.remove(); localStorage.setItem('hp_diff_seen','1')" title="Got it">&times;</button> </div>
                         {% if not _is_submitted_state %}
                         <!-- AI Match Report — full width, in the flow -->
-                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="senior-review-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading senior engineer verdict…</span> </div> </div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> <div class="pipeline-trail-placeholder"></div> </div> {% set gflags = job.ghost_flags|fromjson %}
+                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="insider-intel-placeholder"></div> <div class="senior-review-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading senior engineer verdict…</span> </div> </div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> <div class="pipeline-trail-placeholder"></div> </div> {% set gflags = job.ghost_flags|fromjson %}
                         {% if job.ghost_score and job.ghost_score >= 0.5 %}
                         <div class="rounded-2xl border border-rose-500/30 bg-rose-950/20 px-4 py-3"> <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1 text-rose-400">⚠ Possible ghost posting</span> <p class="text-[11px] leading-relaxed text-rose-200/80">Low activity signals detected{% if gflags %}: {{ gflags|join(', ') }}{% endif %}.</p> </div> {% endif %}
                         {% else %}
@@ -1073,12 +1071,13 @@
                         <!-- Company snapshot (funding, who runs it, hiring record) -->
                         <div class="company-profile-placeholder"></div>
                         </div> <aside class="jd-rail">
+                        <!-- Right-door check -->
+                        <div class="autopsy-placeholder"></div>
+                        
                         <!-- Alumni referral (warmest intro) -->
                         <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Alumni Referral</span> <span class="ref-pill">Warmest intro</span> </div> <p class="ref-text">People from <b>your university</b> working at {{ job.company or 'this company' }} — shared school is the easiest ice-breaker and the most-answered referral ask.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}', 'alumni')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find alumni from your school at this company">Find Alumni Contacts</button> </div> </div>
                         <!-- Standard referral -->
-                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">No alumni inside? Find employees in similar roles at {{ job.company or 'the company' }} and we'll draft the outreach message — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> </div> </div>
-                        <!-- Right-door check -->
-                        <div class="autopsy-placeholder"></div>
+                        <div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">Referral Copilot</span> <span class="ref-pill">4× reply rate</span> </div> <p class="ref-text">No alumni inside? Find employees in similar roles at {{ job.company or 'the company' }} and we'll draft the outreach message — you send it from your own account.</p> <div class="flex flex-wrap gap-2 mt-3"> <button type="button" onclick="event.stopPropagation(); openConnections({{ app.id }}, '{{ job.company|e }}')" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="Find key people at this company who can refer you">Find LinkedIn Contacts</button> <button type="button" onclick="event.stopPropagation(); openReferral({{ app.id }})" class="jbtn jbtn-ghost text-[11.5px] py-2.5 px-5" title="Generate referral and outreach draft messages">Draft Outreach Message</button> <span class="ref-manager-slot" data-app-id="{{ app.id }}" data-company="{{ job.company|e }}"></span> </div> </div>
                         </aside>
                         <!-- Hidden helper for original caller rendering (JS moves these into the header) -->
                         <div class="hidden-caller-actions hidden"> {{ actions }}
@@ -4802,6 +4801,10 @@
             if (companyPlaceholder) {
                 loadCompanyProfile(appId, companyPlaceholder);
             }
+            const intelPlaceholder = body.querySelector('.insider-intel-placeholder');
+            if (intelPlaceholder) {
+                loadInsiderIntel(appId, intelPlaceholder);
+            }
             if (docsPlaceholder) {
                 loadDrawerDocuments(appId, docsPlaceholder);
             }
@@ -4944,6 +4947,68 @@
         } catch (e) { panel.innerHTML = `<div class="jd-sec min-h-[120px] flex items-center justify-center text-xs text-rose-500">Failed to load match report.</div>`; }
     }
 
+    // Insider Intelligence: what the posting reveals between the lines —
+    // pain point, reporting line, culture decode, leverage hook, pay & work model.
+    async function loadInsiderIntel(appId, slot) {
+        if (!slot) return;
+        slot.innerHTML = `<div class="jd-sec flex items-center justify-center py-5"><span class="text-xs text-slate-500">Reading between the lines of this posting…</span></div>`;
+        try {
+            const token = localStorage.getItem('sb_token');
+            const r = await fetch('/application/' + appId + '/insights', { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
+            if (!r.ok) { slot.remove(); return; }
+            const d = await r.json();
+            if (!d.available) { slot.remove(); return; }
+            const has = d.pain_point || d.reporting_to || (d.culture && d.culture.length) || d.leverage_hook || d.salary || d.work_model || d.hidden_strategy;
+            if (!has) { slot.remove(); return; }
+
+            // Compensation & work model chips
+            let payHtml = '';
+            const payChips = [];
+            if (d.salary) payChips.push(`<span class="jd-chip ${d.salary_estimated ? 'jd-chip-gap' : 'jd-chip-ok'}" title="${d.salary_estimated ? 'The posting hides pay — this is estimated from the employer\'s public H-1B wage filings' : 'Stated in the job posting'}">💰 ${_esc(d.salary)}</span>`);
+            if (d.work_model) payChips.push(`<span class="jd-chip jd-chip-info" title="The exact location rule extracted from the posting — not a vague Hybrid tag">📍 ${_esc(d.work_model)}</span>`);
+            if (payChips.length) payHtml = `<div style="margin-bottom:12px;">${payChips.join('')}</div>`;
+
+            const rows = [];
+            if (d.pain_point) rows.push(['Their real headache', d.pain_point, 'The problem they are opening their wallet to solve right now']);
+            if (d.reporting_to) {
+                const imp = (d.strategic_importance || '').toLowerCase();
+                const impChip = imp ? ` <span class="jd-chip ${imp === 'high' ? 'jd-chip-ok' : imp === 'low' ? 'jd-chip-gap' : 'jd-chip-info'}" style="margin:0 0 0 6px;">${_esc(d.strategic_importance)} priority team</span>` : '';
+                rows.push(['Reports to', _esc(d.reporting_to) + impChip, 'The reporting line reveals where the budget sits', true]);
+            }
+            if (d.migration && d.migration.is_migrating && d.migration.details) rows.push(['Tech migration underway', d.migration.details, 'They are moving stacks — migration experience is leverage']);
+            if (d.hidden_strategy) rows.push(['What this hire telegraphs', d.hidden_strategy, 'The 6-12 month direction this role hints at']);
+            const rowsHtml = rows.map(([k, v, tip, raw]) => `<div style="padding:8px 0;border-bottom:1px dashed var(--border);"> <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:3px;" title="${_esc(tip)}">${k}</div> <div style="font-size:13px;color:var(--ink-soft);line-height:1.5;font-weight:600;">${raw ? v : _esc(v)}</div> </div>`).join('');
+
+            let cultureHtml = '';
+            if (d.culture && d.culture.length) {
+                const items = d.culture.slice(0, 4).map(c => `<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:12.5px;line-height:1.5;"> <span style="font-weight:700;color:var(--ink);white-space:nowrap;">“${_esc(c.phrase)}”</span> <span style="color:var(--muted-2);">→</span> <span style="color:var(--muted);">${_esc(c.meaning)}</span> </div>`).join('');
+                cultureHtml = `<div style="margin-top:10px;"> <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:4px;">Buzzword decoder</div> ${items} </div>`;
+            }
+
+            let hookHtml = '';
+            if (d.leverage_hook) {
+                hookHtml = `
+                    <div style="margin-top:12px;padding:12px 14px;border-radius:14px;background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),0.4);"> <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--sage-700);margin-bottom:5px;">🎯 Your interview leverage hook</div> <div id="leverage-hook-text" style="font-size:13px;color:var(--ink);line-height:1.55;font-weight:600;font-style:italic;">“${_esc(d.leverage_hook)}”</div> <div style="display:flex;align-items:center;gap:10px;margin-top:8px;"> <button type="button" class="jbtn jbtn-apply text-[10.5px] py-1.5 px-3" onclick="event.stopPropagation(); navigator.clipboard.writeText(document.getElementById('leverage-hook-text').textContent).then(() => showToast('Hook copied — use it in your outreach or cover letter', 'success'))">Copy</button> <span style="font-size:10.5px;color:var(--muted);">Say this in outreach or interviews to prove you get their problem — it's also woven into your hiring-manager draft.</span> </div> </div>`;
+            }
+
+            slot.innerHTML = `
+                <div class="jd-sec"> <div class="jd-sec-title"> <span>🕵️ Insider intelligence</span> <span class="jd-sec-stat" style="color:var(--muted-2);text-transform:none;letter-spacing:0;">AI inference from the posting</span> </div> ${payHtml}${rowsHtml}${cultureHtml}${hookHtml}
+                </div>`;
+
+            // Reporting line known → offer a hiring-manager-targeted search in the rail.
+            const mgrSlot = document.querySelector('.ref-manager-slot');
+            if (mgrSlot && d.reporting_to && !mgrSlot.childElementCount) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'jbtn jbtn-ghost text-[11.5px] py-2.5 px-5';
+                btn.title = 'Target the decision-maker: search for this exact title at the company';
+                btn.textContent = `Find the ${d.reporting_to}`;
+                btn.addEventListener('click', (e) => { e.stopPropagation(); openConnections(parseInt(mgrSlot.dataset.appId, 10), mgrSlot.dataset.company, 'manager'); });
+                mgrSlot.appendChild(btn);
+            }
+        } catch (e) { slot.remove(); }
+    }
+
     // Company Snapshot: what the company does, who runs it, funding & hiring record.
     async function loadCompanyProfile(appId, slot) {
         if (!slot) return;
@@ -5042,7 +5107,7 @@
 
     function renderAutopsyButton(appId, slot) {
         if (!slot) return;
-        slot.innerHTML = `<button type="button" class="jbtn jbtn-ghost text-[12.5px] py-2.5 w-full font-bold">Right-door check — does your profile match who they actually hire?</button><div class="autopsy-result mt-2"></div>`;
+        slot.innerHTML = `<button type="button" class="jbtn text-[12.5px] py-3 w-full font-bold" style="background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.16));border:1.5px solid rgba(var(--sage-rgb),0.5);color:var(--sage-700);border-radius:14px;">🚪 Right-door check — do you match who they actually hire?</button><div class="autopsy-result mt-2"></div>`;
         const btn = slot.querySelector('button');
         btn.addEventListener('click', () => runAutopsy(appId, slot, btn));
     }
@@ -5168,7 +5233,7 @@
         const ov = document.getElementById('connOverlay');
         const body = document.getElementById('connBody');
         ov.classList.add('open'); document.body.style.overflow = 'hidden';
-        const who = mode === 'alumni' ? 'alumni from your school at ' : 'people at ';
+        const who = mode === 'alumni' ? 'alumni from your school at ' : mode === 'manager' ? 'the hiring manager at ' : 'people at ';
         body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Searching Google for ' + who + _esc(company || 'this company') + '…</p>';
         try {
             const tok = localStorage.getItem('sb_token');

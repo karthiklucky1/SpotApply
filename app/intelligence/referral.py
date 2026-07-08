@@ -153,6 +153,20 @@ def generate_referral_drafts(application_id: int, user_id: str | None = None) ->
     # Build fallbacks
     drafts = _fallback_drafts(name, title, company, role, skills, selling, needs_sponsorship)
 
+    # Insider Intelligence leverage hook → strengthens the hiring-manager note.
+    try:
+        import json as _json
+        _ins = _json.loads(getattr(job, "corporate_insights", None) or "{}")
+        _hook = (_ins.get("leverage_hook") or "").strip()
+    except (ValueError, TypeError):
+        _hook = ""
+    if _hook:
+        for d in drafts:
+            if d["type"] == "hiring_manager":
+                d["body"] = d["body"].rstrip() + " " + _hook
+                d["label"] = "Hiring-manager note (with insider hook)"
+                break
+
     # University Alumni check
     uni = getattr(profile, "university", "").strip()
     if uni:
