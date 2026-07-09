@@ -1683,6 +1683,7 @@ def dashboard(request: Request, all_submitted: bool = False):
     bot_filled = []
     manual_queue = []
     total_submitted_count = 0
+    total_shortlisted_count = 0
 
     if not (settings.use_supabase and not uid):
         _AUTOFILL_REVIEW_STATUSES = [
@@ -1701,6 +1702,18 @@ def dashboard(request: Request, all_submitted: bool = False):
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
+
+            # True shortlist size (same filters, no display cap) — shown in the
+            # header tile, tab pill, and section badge so every "Shortlisted"
+            # number on the page agrees. The rendered list stays capped.
+            q_short_total = select(func.count(Application.id)).join(Job).where(
+                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            )
+            if _uid_filter:
+                q_short_total = q_short_total.where(Application.user_id == uid)
+            total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
 
             # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
             q_sub = select(Application, Job).join(Job).where(
@@ -1847,6 +1860,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "ssr_authed": ssr_authed,
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
+            "total_shortlisted_count": total_shortlisted_count,
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
@@ -1879,7 +1893,11 @@ def pipeline_live(request: Request) -> dict:
             pq = pq.where(Job.user_id == uid)
         counts["pool"] = _scalar(session.exec(pq).one())
 
-        q = select(Application, Job).join(Job).order_by(Job.rerank_score.desc())
+        # Same aggregator-redirect ghost exclusion as the dashboard pipeline, so
+        # the live-updated header tiles agree with the board's numbers.
+        q = select(Application, Job).join(Job).where(
+            Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+        ).order_by(Job.rerank_score.desc())
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         for app_model, job_model in session.exec(q).all():
