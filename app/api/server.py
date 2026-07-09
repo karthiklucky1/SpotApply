@@ -3217,6 +3217,19 @@ class CouponCreateBody(BaseModel):
     expires_at: Optional[str] = None   # ISO date string or None
 
 
+def _parse_coupon_expiry(raw: str):
+    """Parse the admin form's expiry. The form uses <input type=date>, which
+    sends a bare date ("2026-07-09"); treat that as valid THROUGH that day
+    (23:59:59) — parsing it as midnight made a code picked "expires today"
+    (or even tomorrow, for admins west of UTC) born-expired."""
+    from datetime import datetime as _dtp, time as _time
+    raw = raw.strip()
+    parsed = _dtp.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    if len(raw) == 10:  # date-only → end of that day
+        parsed = _dtp.combine(parsed.date(), _time(23, 59, 59))
+    return parsed
+
+
 class CouponUpdateBody(BaseModel):
     is_active: Optional[bool] = None
     description: Optional[str] = None
@@ -3249,7 +3262,6 @@ def admin_create_coupon(request: Request, body: CouponCreateBody) -> dict:
     """Create a new promo code. Admin-only."""
     _require_admin_user(request)
     from app.db.models import Coupon
-    from datetime import datetime as _dtp
     admin_uid = _get_user_id(request)
     code = body.code.strip().upper()
     if not code:
@@ -3257,7 +3269,7 @@ def admin_create_coupon(request: Request, body: CouponCreateBody) -> dict:
     expires = None
     if body.expires_at:
         try:
-            expires = _dtp.fromisoformat(body.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+            expires = _parse_coupon_expiry(body.expires_at)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid expires_at format.")
     with get_session() as session:
@@ -3281,7 +3293,6 @@ def admin_update_coupon(coupon_id: int, request: Request, body: CouponUpdateBody
     """Toggle active/inactive or update a coupon. Admin-only."""
     _require_admin_user(request)
     from app.db.models import Coupon
-    from datetime import datetime as _dtp
     with get_session() as session:
         coupon = session.get(Coupon, coupon_id)
         if not coupon:
@@ -3294,7 +3305,7 @@ def admin_update_coupon(coupon_id: int, request: Request, body: CouponUpdateBody
             coupon.max_uses = body.max_uses
         if body.expires_at is not None:
             try:
-                coupon.expires_at = _dtp.fromisoformat(body.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                coupon.expires_at = _parse_coupon_expiry(body.expires_at)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid expires_at format.")
         session.add(coupon)

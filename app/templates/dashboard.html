@@ -1428,7 +1428,7 @@
             loadSidebarAvatar();
             loadTrustProfile(false);
             loadNotifications();
-            setInterval(loadNotifications, 60000);
+            window._notifPoll = setInterval(loadNotifications, 60000);
             loadIntros();
             claimReferralIfPending();
             revealAdminIfOwner();
@@ -3592,6 +3592,13 @@
                 const token = localStorage.getItem('sb_token');
                 const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
                 const resp = await fetch('/api/notifications', { headers });
+                if (resp.status === 401) {
+                    // Session token expired — stop polling instead of spamming
+                    // a 401 into the console every minute. Polling resumes on
+                    // the next page load once the user is signed in again.
+                    if (window._notifPoll) { clearInterval(window._notifPoll); window._notifPoll = null; }
+                    return;
+                }
                 if (!resp.ok) throw new Error('Failed to fetch');
                 const data = await resp.json();
                 
