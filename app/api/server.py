@@ -2826,8 +2826,31 @@ def cancel_discovery(request: Request) -> dict:
     return {"cancelled": False}
 
 
+def _has_active_paid_plan(uid) -> bool:
+    """True when the user holds a live paid subscription row (Stripe, coupon,
+    or referral reward all write UserSubscription). Deliberately reads the real
+    table rather than _get_user_plan(), which is currently hardcoded to PRO for
+    feature un-gating — perks like the discovery-cooldown exemption must only
+    apply to genuinely upgraded accounts."""
+    if not uid or uid == "local":
+        return False
+    from datetime import datetime
+    try:
+        with get_session() as session:
+            s = session.exec(
+                select(UserSubscription).where(UserSubscription.user_id == uid)
+            ).first()
+        return bool(s and s.plan and s.plan != PlanTier.FREE
+                    and (s.current_period_end is None or s.current_period_end > datetime.utcnow()))
+    except Exception as e:
+        log.debug("paid-plan lookup failed (treating as free): %s", e)
+        return False
+
+
 def _discovery_gate(uid) -> tuple[bool, str]:
-    """Block a manual discovery if one is in progress or within the cooldown."""
+    """Block a manual discovery if one is in progress or within the cooldown.
+    Paid plans (coupon/referral/Stripe upgrades) skip the cooldown entirely —
+    they are only blocked while a run is actually in progress."""
     from datetime import datetime
     from app.config import settings
     from app.db.models import DiscoveryRun
@@ -2845,6 +2868,9 @@ def _discovery_gate(uid) -> tuple[bool, str]:
         if age < 1800:  # 30 min
             return False, "A discovery is already running — please wait for it to finish."
         return True, ""  # stale, allow a fresh run
+    # Paid plan → no cooldown (overlap protection above still applies).
+    if _has_active_paid_plan(uid):
+        return True, ""
     # Cooldown since the last completed run. Never longer than the automatic
     # schedule — if the system itself discovers every N hours, blocking a
     # manual run for longer than N makes no sense.
@@ -3875,6 +3901,8 @@ _USERPROFILE_COLUMNS = [
     ("degree", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("university", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("graduation_year", "INTEGER", "INTEGER"),
+    ("education_json", "TEXT", "TEXT"),
+    ("experience_json", "TEXT", "TEXT"),
     ("gender", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("veteran_status", "VARCHAR DEFAULT 'I am not a protected veteran'", "VARCHAR DEFAULT 'I am not a protected veteran'"),
@@ -3947,6 +3975,19 @@ def _repair_userprofile_schema() -> None:
                         f'ALTER TABLE userprofile ADD COLUMN {col} {sq}'))
 
 
+def _profile_history_list(profile, attr: str) -> list:
+    """Parse a JSON-array profile column (education_json / experience_json)."""
+    import json as _json
+    raw = getattr(profile, attr, None)
+    if not raw:
+        return []
+    try:
+        val = _json.loads(raw)
+        return val if isinstance(val, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
 @app.get("/api/profile")
 def get_profile(request: Request) -> dict:
     """Return the current user profile (seeds from .env on first call)."""
@@ -3985,6 +4026,13 @@ def get_profile(request: Request) -> dict:
         "degree": profile.degree,
         "university": profile.university,
         "graduation_year": profile.graduation_year,
+        "education": _profile_history_list(profile, "education_json") or (
+            # Legacy single-entry fallback so existing profiles show their data
+            [{"degree": profile.degree, "field": "", "university": profile.university,
+              "start_year": None, "end_year": profile.graduation_year, "gpa": ""}]
+            if (profile.degree or profile.university) else []
+        ),
+        "experience": _profile_history_list(profile, "experience_json"),
         "gender": profile.gender,
         "ethnicity": profile.ethnicity,
         "veteran_status": profile.veteran_status,
@@ -4021,6 +4069,9 @@ class ProfileUpdate(BaseModel):
     degree: Optional[str] = None
     university: Optional[str] = None
     graduation_year: Optional[int] = None
+    # Structured histories — lists of dicts, stored as JSON text on the model.
+    education: Optional[list] = None
+    experience: Optional[list] = None
     gender: Optional[str] = None
     ethnicity: Optional[str] = None
     veteran_status: Optional[str] = None
@@ -4068,7 +4119,30 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
                 db_profile = UserProfile(user_id=user_id_arg)
                 session.add(db_profile)
                 session.flush()
-            for field, value in update.model_dump(exclude_none=True).items():
+            import json as _json
+            payload = update.model_dump(exclude_none=True)
+            # Structured histories: serialize to the *_json columns, and mirror
+            # the first education entry into the legacy single-entry fields so
+            # autofill / department detection keep working unchanged.
+            edu = payload.pop("education", None)
+            if edu is not None:
+                edu = [e for e in edu if isinstance(e, dict) and any(str(v or "").strip() for v in e.values())]
+                db_profile.education_json = _json.dumps(edu[:10])
+                first = edu[0] if edu else {}
+                db_profile.degree = str(first.get("degree", "") or "")
+                db_profile.university = str(first.get("university", "") or "")
+                try:
+                    db_profile.graduation_year = int(first.get("end_year")) if first.get("end_year") else None
+                except (TypeError, ValueError):
+                    db_profile.graduation_year = None
+                # The mirrored legacy values win over any stale ones in the payload.
+                for legacy in ("degree", "university", "graduation_year"):
+                    payload.pop(legacy, None)
+            exp = payload.pop("experience", None)
+            if exp is not None:
+                exp = [e for e in exp if isinstance(e, dict) and any(str(v or "").strip() for v in e.values())]
+                db_profile.experience_json = _json.dumps(exp[:15])
+            for field, value in payload.items():
                 setattr(db_profile, field, value)
             db_profile.updated_at = _dt.utcnow()
             session.add(db_profile)
@@ -4766,6 +4840,9 @@ _DEPARTMENT_ROLES = {
                    "Supply Chain Analyst", "Manufacturing Engineer"],
     "environmental": ["Environmental Engineer", "Civil Engineer", "Sustainability Analyst",
                       "Water Resources Engineer"],
+    "healthcare": ["Healthcare Data Analyst", "Clinical Research Coordinator",
+                   "Public Health Analyst", "Healthcare Administrator",
+                   "Clinical Data Manager", "Health Informatics Specialist"],
     "finance": ["Financial Analyst", "Investment Analyst", "Financial Planning Analyst",
                 "Corporate Finance Analyst"],
     "accounting": ["Accountant", "Staff Accountant", "Financial Analyst", "Auditor"],
@@ -4784,7 +4861,9 @@ _DEPARTMENT_SIGNALS = {
     "chemical": ("chemical eng", "chem eng", "chemical engineering"),
     "biomedical": ("biomedical", "bioengineer", "bme"),
     "industrial": ("industrial eng", "industrial engineering", "operations research"),
-    "environmental": ("environmental eng", "environmental engineering"),
+    "environmental": ("environmental eng", "environmental engineering", "environmental science", "sustainability"),
+    "healthcare": ("healthcare", "health care", "public health", "clinical", "nursing",
+                   "health informatics", "medical"),
     "finance": ("finance", "financial"),
     "accounting": ("accounting", "accountant"),
     "marketing": ("marketing",),

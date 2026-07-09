@@ -223,10 +223,16 @@ class UserProfile(SQLModel, table=True):
     salary_min: int = 0
     salary_max: int = 0
     salary_currency: str = "USD"
-    # Education
+    # Education (legacy single-entry fields — kept in sync with the FIRST entry
+    # of education_json so autofill/matching keep working unchanged)
     degree: str = ""
     university: str = ""
     graduation_year: Optional[int] = None
+    # Structured multi-entry history (JSON arrays; edited in the profile UI).
+    # education_json:  [{"degree","field","university","start_year","end_year","gpa"}, ...]
+    # experience_json: [{"title","company","location","start","end","current","summary"}, ...]
+    education_json: Optional[str] = None
+    experience_json: Optional[str] = None
     # EEOC (decline to answer by default — safest)
     gender: str = "Decline to self-identify"
     ethnicity: str = "Decline to self-identify"
