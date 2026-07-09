@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 
 from app.common.geo import detect_country, norm_country
 from app.db.models import Job
-from app.matching.filters.constants import NO_SPONSORSHIP_PATTERNS, STAFF_TITLES
+from app.matching.filters.constants import NO_SPONSORSHIP_HARD, STAFF_TITLES
 
 log = logging.getLogger(__name__)
 
@@ -192,8 +192,12 @@ class RuleFilter:
 
         # 2. Work Authorization / Sponsorship Blocker — only relevant when the
         #    user actually needs sponsorship. Citizens / GC holders keep these jobs.
+        #    Only EXPLICIT refusals hard-block; ambiguous right-to-work boilerplate
+        #    ("must be authorized to work in...") appears in postings from employers
+        #    that do sponsor, so those flow through to the LLM reranker, which
+        #    scores them with the posting text + the employer's public H-1B record.
         if self.requires_sponsorship:
-            for pattern in NO_SPONSORSHIP_PATTERNS:
+            for pattern in NO_SPONSORSHIP_HARD:
                 if pattern in desc_low:
                     return FilterResult(
                         passed=False,

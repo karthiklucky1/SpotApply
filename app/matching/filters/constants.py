@@ -28,7 +28,11 @@ def source_quality(source) -> float:
     key = getattr(source, "value", source)
     return SOURCE_QUALITY.get(str(key or "").lower(), DEFAULT_SOURCE_QUALITY)
 
-NO_SPONSORSHIP_PATTERNS = [
+# Explicit, unambiguous refusals — a posting containing one of these will not
+# sponsor THIS role regardless of the employer's overall visa record, so the
+# rule filter may hard-block on them for sponsorship-needing users.
+# (Kept in sync with app/intelligence/sponsorship.py)
+NO_SPONSORSHIP_HARD = [
     "not offer visa sponsorship",
     "unable to sponsor",
     "do not sponsor",
@@ -43,23 +47,32 @@ NO_SPONSORSHIP_PATTERNS = [
     "active security clearance required",
     "must hold an active secret",
     "must possess an active ts/sci",
-    # International phrasings (kept in sync with app/intelligence/sponsorship.py)
-    "must have the right to work",
-    "right to work in the",
-    "must be eligible to work in",
-    "eligible to work without sponsorship",
+    "without sponsorship",  # "...authorized/eligible to work without sponsorship"
     "without the need for sponsorship",
     "without visa sponsorship",
-    "must be authorised to work",
-    "must be authorized to work in",
-    "work permit required",
-    "valid work permit",
-    "eu work permit",
     "citizens only",
     "permanent residents only",
     "unable to provide visa sponsorship",
     "not able to sponsor",
 ]
+
+# Ambiguous right-to-work boilerplate. Employers that DO sponsor put these
+# lines in postings too (and OPT/EAD holders ARE authorized to work), so these
+# must never hard-block — the LLM reranker judges them against the full posting
+# plus the employer's public sponsorship record (_sponsor_note).
+WORK_AUTH_BOILERPLATE = [
+    "must have the right to work",
+    "right to work in the",
+    "must be eligible to work in",
+    "must be authorised to work",
+    "must be authorized to work in",
+    "work permit required",
+    "valid work permit",
+    "eu work permit",
+]
+
+# Combined list for consumers that only need "mentions work authorization".
+NO_SPONSORSHIP_PATTERNS = NO_SPONSORSHIP_HARD + WORK_AUTH_BOILERPLATE
 
 STAFF_TITLES = [
     "staff", "principal", "director", "vp", "head of", "engineering manager", "lead software engineer"

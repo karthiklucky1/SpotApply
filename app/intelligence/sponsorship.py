@@ -68,21 +68,23 @@ CAP_EXEMPT_DESC_SIGNALS = (
     "institution of higher education", "non-profit research", "nonprofit research",
 )
 
-# Kept in sync with app/matching/filters/constants.py (inlined to keep this
-# module import-light — the filters package pulls in numpy via its __init__).
+# Kept in sync with NO_SPONSORSHIP_HARD in app/matching/filters/constants.py
+# (inlined to keep this module import-light — the filters package pulls in
+# numpy via its __init__). Only EXPLICIT refusals belong here: ambiguous
+# right-to-work boilerplate ("must be authorized to work in...") appears in
+# postings from employers that DO sponsor, so it must not flip a posting to
+# "explicitly refuses" — that would both scare the user and suppress the
+# USCIS-record override below.
 NO_SPONSORSHIP_PATTERNS = [
     "not offer visa sponsorship", "unable to sponsor", "do not sponsor",
     "will not sponsor", "cannot sponsor", "no visa sponsorship", "no sponsorship",
     "does not sponsor", "must be us citizen", "us citizen or permanent resident",
     "us citizenship required", "active security clearance required",
     "must hold an active secret", "must possess an active ts/sci",
-    # International phrasings — refusals are universal even though the H-1B
-    # intelligence below is US-specific.
-    "must have the right to work", "right to work in the",
-    "must be eligible to work in", "eligible to work without sponsorship",
+    # International phrasings — explicit refusals are universal even though
+    # the H-1B intelligence below is US-specific.
+    "without sponsorship",  # "...authorized/eligible to work without sponsorship"
     "without the need for sponsorship", "without visa sponsorship",
-    "must be authorised to work", "must be authorized to work in",
-    "work permit required", "valid work permit", "eu work permit",
     "citizens only", "permanent residents only",
     "unable to provide visa sponsorship", "not able to sponsor",
 ]
