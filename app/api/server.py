@@ -812,12 +812,20 @@ key_skills (comma-separated string), professional_summary (2-3 sentence summary 
 suggested_target_roles (an array of 4-6 specific job titles this candidate is genuinely
 well-qualified for and should apply to right now, ordered best-fit first. Use real,
 searchable titles like "Senior Backend Engineer" or "Data Scientist" — base them on the
-candidate's actual experience, seniority and skills, not generic guesses).
+candidate's actual experience, seniority and skills, not generic guesses),
+education (an array — one object per school, most recent first, with keys:
+  degree (e.g. "Master of Engineering"), field (the major/subject, e.g. "Computer Science" —
+  do NOT repeat the degree name here), university, start_year (integer or null),
+  end_year (integer or null), gpa (string or "")),
+experience (an array — one object per job, most recent first, with keys:
+  title, company, location, start (e.g. "Jun 2024"), end (e.g. "Mar 2026" or "Present"),
+  summary (1-2 sentences of what they did, from the resume bullets)).
 
 IMPORTANT: Read the ENTIRE resume, including the Education section (often at the end).
 - "university" = the school/college/institution name from Education (e.g. "University of Cincinnati"). Do not leave it null if any school is listed.
 - "degree" = the highest/most-recent degree (e.g. "Master of Science in Computer Science").
 - "graduation_year" = the most recent graduation year as a 4-digit integer.
+- List EVERY school and EVERY job found in the resume, not just the latest one.
 
 Resume:
 {resume_for_prompt}
@@ -826,7 +834,7 @@ Return only valid JSON, no markdown, no explanation."""
 
     msg = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=800,
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = msg.content[0].text.strip()
@@ -868,6 +876,26 @@ Return only valid JSON, no markdown, no explanation."""
             val = extracted.get(field)
             if val is not None and val != "":
                 setattr(db_profile, field, val)
+        # Structured histories scraped from the resume → JSON columns. The first
+        # education entry also refreshes the legacy single-entry mirror fields.
+        edu = extracted.get("education")
+        if isinstance(edu, list) and edu:
+            edu = [e for e in edu if isinstance(e, dict)][:10]
+            db_profile.education_json = _json.dumps(edu)
+            first = edu[0] if edu else {}
+            if first.get("degree"):
+                db_profile.degree = str(first["degree"])
+            if first.get("university"):
+                db_profile.university = str(first["university"])
+            try:
+                if first.get("end_year"):
+                    db_profile.graduation_year = int(first["end_year"])
+            except (TypeError, ValueError):
+                pass
+        exp = extracted.get("experience")
+        if isinstance(exp, list) and exp:
+            db_profile.experience_json = _json.dumps(
+                [e for e in exp if isinstance(e, dict)][:15])
         db_profile.updated_at = _datetime.datetime.utcnow()
         session.add(db_profile)
         session.commit()
