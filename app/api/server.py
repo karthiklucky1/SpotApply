@@ -2601,6 +2601,28 @@ def extension_telemetry(request: Request, body: ExtensionTelemetryBody) -> dict:
     return {"ok": True}
 
 
+class JobCheckBody(BaseModel):
+    url: str
+
+
+@app.post("/api/public/job-check")
+@_rate_limit("15/minute")
+def public_job_check(request: Request, body: JobCheckBody) -> dict:
+    """Free ghost-check for any job URL — no account required (acquisition
+    wedge). Signed-in callers with a résumé also get a keyword fit-check.
+    Public logged-out endpoints only; LinkedIn/Indeed pages are never fetched."""
+    from app.intelligence.job_check import check_job_url
+    resume_text = None
+    try:
+        uid = _get_user_id(request)
+        if uid:
+            from app.matching.pipeline import _load_resume
+            resume_text = _load_resume(user_id=uid if uid != "local" else None)
+    except Exception:
+        resume_text = None  # anonymous or no résumé — ghost-check only
+    return check_job_url(body.url, resume_text=resume_text)
+
+
 @app.get("/api/skill-gap")
 def skill_gap_api(request: Request, refresh: bool = False) -> dict:
     """Skill-gap analysis across the user's top matches: what the JDs demand,

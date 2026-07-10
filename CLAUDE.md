@@ -35,7 +35,8 @@ app/
   matching/         # matcher, filters/, reranker, hire_probability, pipeline
   tailoring/        # tailor, ats_keywords, grounding (anti-hallucination), doctor
   autofill/         # Playwright filler + answer_pack
-  intelligence/     # sponsorship/H1B, work_auth, senior_reviewer, urgency, referral
+  intelligence/     # sponsorship/H1B, work_auth, senior_reviewer, urgency, referral,
+                    # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
   strategy/         # daily_engine (apply scoring/limits)
   analytics/        # funnel, cost_dashboard, crm, reporter
   qa_store/         # canonical answers (answers.yaml) + memory resolver
@@ -61,8 +62,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`_get_user_id`/`_require_user_id` in server.py). `"local"` = SQLite dev user.
   Never leak data across users; check ownership on per-application routes.
 - **Scheduler:** `server.py`'s asyncio scheduler runs discovery+matching ~every 6h in
-  BOTH local and prod. Do NOT also schedule those in `app/main.py` (it only adds the
-  Telegram bot + harvester/validator/report jobs) — double-runs otherwise.
+  BOTH local and prod, plus a boards-only "fresh lane" every 2h (`_fresh_lane`,
+  env FRESH_LANE_INTERVAL_HOURS, 0 disables). Do NOT also schedule those in
+  `app/main.py` (it only adds the Telegram bot + harvester/validator/report jobs)
+  — double-runs otherwise.
 - **Run modes:** prod = `uvicorn app.api.server:app`; local all-in-one = `python -m app.main`.
 - **Jinja filters** (`server.py`): `fromjson`, `cleantext`, `humanize_signal`
   (turns raw signal tokens like `fresh_posting_4d` → "Posted 4 days ago").

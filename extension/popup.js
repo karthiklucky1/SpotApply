@@ -61,6 +61,83 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
   });
 });
 
+// ── Free ghost-check / fit-check on the current tab ──────────────────────────
+// Works with no account: ghost score + freshness. Signed-in users (auth token
+// stashed by the dashboard) also get a keyword fit-check vs their résumé.
+function showCheckStatus(msg, type) {
+  const el = document.getElementById("check-status");
+  el.textContent = msg;
+  el.className = "status " + type;
+  el.style.display = "block";
+}
+
+document.getElementById("btn-check")?.addEventListener("click", () => {
+  const btn = document.getElementById("btn-check");
+  btn.disabled = true;
+  btn.textContent = "⏳ Checking…";
+  document.getElementById("check-result").style.display = "none";
+  document.getElementById("check-status").style.display = "none";
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tabUrl = tabs && tabs[0] && tabs[0].url;
+    if (!tabUrl || !/^https?:/.test(tabUrl)) {
+      showCheckStatus("Open a job posting tab first.", "err");
+      btn.disabled = false;
+      btn.textContent = "🔍 Is this job real? Check it";
+      return;
+    }
+    chrome.storage.local.get(["hirepath_fill_pack", "hirepath_copilot_pack", "hirepath_auth"], async (data) => {
+      const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack || {};
+      const base = pack.hirepath_url || HIREPATH_URL;
+      const token = pack.auth_token || (data.hirepath_auth && data.hirepath_auth.access_token) || null;
+      try {
+        const res = await fetch(`${base}/api/public/job-check`, {
+          method: "POST",
+          headers: Object.assign({ "Content-Type": "application/json" },
+            token ? { Authorization: `Bearer ${token}` } : {}),
+          body: JSON.stringify({ url: tabUrl }),
+        });
+        const d = await res.json();
+        if (!res.ok || d.ok === false) throw new Error(d.error || `HTTP ${res.status}`);
+
+        const verdictEl = document.getElementById("check-verdict");
+        const detailEl = document.getElementById("check-detail");
+        const fitEl = document.getElementById("check-fit");
+        if (d.live === false) {
+          verdictEl.textContent = "👻 Closed or removed — don't waste an application";
+          verdictEl.style.color = "#f87171";
+        } else if (d.ghost_score >= 0.6) {
+          verdictEl.textContent = `⚠️ Likely ghost job (score ${Math.round(d.ghost_score * 100)}%)`;
+          verdictEl.style.color = "#fbbf24";
+        } else if (d.live === null) {
+          verdictEl.textContent = "ℹ️ Can't verify this site automatically";
+          verdictEl.style.color = "#94a3b8";
+        } else {
+          verdictEl.textContent = `✅ Looks real (ghost score ${Math.round(d.ghost_score * 100)}%)`;
+          verdictEl.style.color = "#34d399";
+        }
+        const bits = [];
+        if (d.title) bits.push(d.title + (d.company ? ` @ ${d.company}` : ""));
+        if (typeof d.posted_days_ago === "number") bits.push(`posted ${d.posted_days_ago}d ago`);
+        if (d.signals && d.signals.length) bits.push(d.signals.join(" · ").replace(/_/g, " "));
+        detailEl.textContent = bits.join(" — ");
+        if (d.fit) {
+          fitEl.innerHTML = `<b style="color:#818cf8">Your keyword fit: ${d.fit.score_pct}%</b>` +
+            (d.fit.missing && d.fit.missing.length
+              ? ` — missing: ${d.fit.missing.slice(0, 6).map(s => String(s).replace(/[<>&]/g, "")).join(", ")}` : "");
+        } else {
+          fitEl.textContent = token ? "" : "Sign in to HirePath to see your keyword fit for this job.";
+        }
+        document.getElementById("check-result").style.display = "block";
+      } catch (e) {
+        showCheckStatus("Check failed: " + e.message, "err");
+      }
+      btn.disabled = false;
+      btn.textContent = "🔍 Is this job real? Check it";
+    });
+  });
+});
+
 // ── LinkedIn profile import ──────────────────────────────────────────────────
 // Show the import card only when the active tab is the user's own LinkedIn
 // profile (linkedin.com/in/...). Clicking it asks the content script to read the
