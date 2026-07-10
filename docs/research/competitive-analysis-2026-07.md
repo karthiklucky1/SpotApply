@@ -258,7 +258,7 @@ Survey of 25 US recruiters ([Enhancv, Sept–Oct 2025](https://enhancv.com/blog/
   visa-sponsorship question alone removes ~30% of technical applicants unread.
 - 44% of ATSes show an AI fit score; most recruiters treat it as a guide only.
   Workday **HiredScore grades A/B/C/D** and sets recruiter review order — the one
-  真正 algorithmic ranking to optimize for (skills, experience, work history vs JD).
+  genuinely algorithmic ranking to optimize for (skills, experience, work history vs JD).
 - Default recruiter view is sorted by **application date** — early = seen.
 
 What measurably moves outcomes:
