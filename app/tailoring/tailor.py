@@ -140,7 +140,9 @@ class Tailor:
             
         return "\n".join(cleaned_lines).strip()
 
-    def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a", custom_highlight_block: Optional[str] = None) -> str:
+    def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a",
+                      custom_highlight_block: Optional[str] = None,
+                      revision_notes: Optional[str] = None) -> str:
         # ── ATS exact-phrase targeting ──────────────────────────────────────
         # Find the JD phrases an ATS will scan for that are NOT already verbatim
         # in the master resume, so the tailor can incorporate them honestly.
@@ -168,12 +170,21 @@ class Tailor:
                 + custom_highlight_block.strip()
             )
 
+        revision_block = ""
+        if revision_notes:
+            revision_block = (
+                "\n\nQUALITY REVIEWER FEEDBACK — a previous draft of this tailored resume "
+                "failed review for the reasons below. Fix every issue WITHOUT inventing "
+                "experience; stay strictly grounded in the master resume:\n"
+                + revision_notes.strip()[:2000]
+            )
+
         prompt = f"""Job description:
 ---
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----{ats_block}{highlights_block}
+---{ats_block}{highlights_block}{revision_block}
 
 Return the tailored resume in markdown. No commentary.
 Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a separate section in the tailored resume."""
@@ -423,55 +434,84 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
         description = job_description
 
     job_snap = _JobSnapshot()
-    resume_md = tailor.tailor_resume(master, job_snap, variant=variant, custom_highlight_block=custom_highlight_block)
     cover = tailor.write_cover_letter(master, job_snap, custom_highlight_block=custom_highlight_block)
 
-    # ── Quality checks ────────────────────────────────────────────────────────
-
-    # 1. Grounding check — no hallucinated bullets
+    # ── Generate → quality-check → rebuild loop ─────────────────────────────
+    # If grounding or the Resume Doctor fails a draft, regenerate ONCE with the
+    # reviewer's issues fed back into the prompt instead of blocking the
+    # application on the first bad draft. Best draft wins.
+    MAX_TAILOR_ATTEMPTS = 2
+    resume_md = ""
     grounding_failed = False
     grounding_notes = None
-    try:
-        from app.tailoring.grounding import GroundingChecker
-        checker = GroundingChecker()
-        log.info("Grounding check: app %d (variant: %s)...", application_id, variant)
-        g_result = checker.check(master, resume_md)
-        if not g_result.passed:
-            grounding_failed = True
-            grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
-                [f"- {fb['bullet']}" for fb in g_result.flagged_bullets]
-            )
-            log.warning("Grounding FAILED for app %d: %d bullets flagged",
-                        application_id, len(g_result.flagged_bullets))
-        else:
-            log.info("Grounding PASSED for app %d", application_id)
-        # Feed the grounded ratio into the candidate's Trust Profile consistency
-        # dimension (share of resume bullets supported by the master résumé).
-        try:
-            total = len(g_result.confidence_map) or 0
-            if total:
-                ratio = max(0.0, (total - len(g_result.flagged_bullets)) / total)
-                from app.intelligence.trust_service import compute_and_store
-                compute_and_store(app_user_id, grounding_score=ratio)
-        except Exception as _te:
-            log.debug("trust consistency update skipped: %s", _te)
-    except Exception as e:
-        log.warning("Failed to run grounding check: %s", e)
-
-    # 2. Resume Doctor — quality, ATS coverage, banned words, integrity
     doctor_failed = False
     doctor_notes = None
-    try:
-        from app.tailoring.doctor import ResumeDoctor
-        doc = ResumeDoctor()
-        d_result = doc.check(resume_md, master, job_description)
-        log.info("Doctor report app %d: %s", application_id, d_result.summary())
-        if not d_result.passed:
-            doctor_failed = True
-            doctor_notes = f"Doctor score={d_result.score}/100.\n" + "\n".join(d_result.issues)
-            log.warning("Doctor FAILED for app %d (score=%d)", application_id, d_result.score)
-    except Exception as e:
-        log.warning("Failed to run resume doctor: %s", e)
+    doctor_score = None
+    attempts_used = 0
+    revision_notes = None
+
+    for attempt in range(1, MAX_TAILOR_ATTEMPTS + 1):
+        attempts_used = attempt
+        resume_md = tailor.tailor_resume(
+            master, job_snap, variant=variant,
+            custom_highlight_block=custom_highlight_block,
+            revision_notes=revision_notes,
+        )
+        grounding_failed = False
+        grounding_notes = None
+        doctor_failed = False
+        doctor_notes = None
+
+        # 1. Grounding check — no hallucinated bullets
+        try:
+            from app.tailoring.grounding import GroundingChecker
+            checker = GroundingChecker()
+            log.info("Grounding check: app %d (variant: %s, attempt %d)...",
+                     application_id, variant, attempt)
+            g_result = checker.check(master, resume_md)
+            if not g_result.passed:
+                grounding_failed = True
+                grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
+                    [f"- {fb['bullet']}" for fb in g_result.flagged_bullets]
+                )
+                log.warning("Grounding FAILED for app %d: %d bullets flagged",
+                            application_id, len(g_result.flagged_bullets))
+            else:
+                log.info("Grounding PASSED for app %d", application_id)
+            # Feed the grounded ratio into the candidate's Trust Profile consistency
+            # dimension (share of resume bullets supported by the master résumé).
+            try:
+                total = len(g_result.confidence_map) or 0
+                if total:
+                    ratio = max(0.0, (total - len(g_result.flagged_bullets)) / total)
+                    from app.intelligence.trust_service import compute_and_store
+                    compute_and_store(app_user_id, grounding_score=ratio)
+            except Exception as _te:
+                log.debug("trust consistency update skipped: %s", _te)
+        except Exception as e:
+            log.warning("Failed to run grounding check: %s", e)
+
+        # 2. Resume Doctor — quality, ATS coverage, banned words, integrity
+        try:
+            from app.tailoring.doctor import ResumeDoctor
+            doc = ResumeDoctor()
+            d_result = doc.check(resume_md, master, job_description)
+            doctor_score = d_result.score
+            log.info("Doctor report app %d: %s", application_id, d_result.summary())
+            if not d_result.passed:
+                doctor_failed = True
+                doctor_notes = f"Doctor score={d_result.score}/100.\n" + "\n".join(d_result.issues)
+                log.warning("Doctor FAILED for app %d (score=%d, attempt %d)",
+                            application_id, d_result.score, attempt)
+        except Exception as e:
+            log.warning("Failed to run resume doctor: %s", e)
+
+        if not grounding_failed and not doctor_failed:
+            break
+        if attempt < MAX_TAILOR_ATTEMPTS:
+            revision_notes = "\n".join(n for n in (grounding_notes, doctor_notes) if n)
+            log.info("Rebuilding tailored resume for app %d (attempt %d failed review)",
+                     application_id, attempt)
 
     # Build output paths — name files after the actual application owner.
     # Prefer the user's saved profile (multi-tenant); fall back to the static
@@ -503,6 +543,21 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
     resume_path = out_dir / resume_filename
     cover_path = out_dir / cover_filename
     _md_to_docx(resume_md, resume_path)
+
+    # Quality report for the Tailoring Studio UI (score dial, rebuilt badge,
+    # keyword highlighting uses ats_keywords at read time).
+    try:
+        import json as _json
+        (out_dir / "report.json").write_text(_json.dumps({
+            "doctor_score": doctor_score,
+            "doctor_passed": not doctor_failed,
+            "grounding_passed": not grounding_failed,
+            "attempts": attempts_used,
+            "variant": variant,
+            "generated_at": datetime.utcnow().isoformat(),
+        }), encoding="utf-8")
+    except Exception as _re:
+        log.debug("report.json write skipped: %s", _re)
 
     posted_str = job_posted_at.strftime("%B %d, %Y") if job_posted_at else "unknown"
     cover_header = (

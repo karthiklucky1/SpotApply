@@ -68,7 +68,13 @@ _OPEN_DATASET_FILES: dict[JobSource, str] = {
     JobSource.WORKABLE: "workable.csv",
     JobSource.RECRUITEE: "recruitee.csv",
     JobSource.PERSONIO: "personio.csv",
+    # Workday rows carry the full tenant URL in the csv's url column — exactly
+    # what WorkdayScraper(slug, career_url) needs.
+    JobSource.WORKDAY: "workday.csv",
 }
+# The dataset covers ~47 ATSes (~86K companies) total; we seed only the ones
+# HirePath has a scraper for (~22K). To grow further, add a scraper for a new
+# ATS and register its csv here — one line each.
 
 
 def seed_registry_from_open_datasets(per_ats_limit: int | None = None) -> int:

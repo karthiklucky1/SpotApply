@@ -1380,7 +1380,43 @@
                     </button> </div> <div class="overflow-x-auto"> <table class="w-full text-xs"> <thead> <tr class="text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-800/60"> <th class="text-left py-2 pr-4 font-bold">Source</th> <th class="text-left py-2 pr-4 font-bold">Type</th> <th class="text-right py-2 pr-4 font-bold">Jobs</th> <th class="text-center py-2 font-bold">Status</th> </tr> </thead> <tbody id="boards-source-table" class="divide-y divide-slate-800/30"> <tr class="text-slate-500"><td colspan="4" class="py-4 text-center text-[10px]">Loading sources…</td></tr> </tbody> </table> </div> </div> <!-- How it works --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <h3 class="font-bold text-white text-sm mb-3">How Board Crawling Works</h3> <div class="grid grid-cols-1 md:grid-cols-3 gap-4"> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm shrink-0">1</div> <div> <p class="text-white text-xs font-bold mb-0.5">ATS Direct</p> <p class="text-slate-500 text-[10px] leading-relaxed">Greenhouse, Lever, Ashby & Workday APIs are queried directly for companies in your registry — no middleman, freshest data.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center text-sm shrink-0">2</div> <div> <p class="text-white text-xs font-bold mb-0.5">Aggregators</p> <p class="text-slate-500 text-[10px] leading-relaxed">LinkedIn, Jooble, Reed, RemoteOK & SerpAPI are scraped every 6h and merged with deduplication across all sources.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-sm shrink-0">3</div> <div> <p class="text-white text-xs font-bold mb-0.5">AI Matching</p> <p class="text-slate-500 text-[10px] leading-relaxed">Discovered jobs are scored against your profile via BM25 → FAISS → cross-encoder → Claude LLM, then shortlisted by hire probability.</p> </div> </div> </div> </div> </div> <!-- ── Footer ──────────────────────────────────────────────────── --> <footer class="app-footer"> <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-[11px] text-slate-500"> <div class="flex items-center gap-2"> <span class="font-black text-sm" style="background:linear-gradient(135deg,#a5b4fc,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">HirePath</span> <span class="text-slate-600">· Your AI job-search agent</span> </div> <div class="flex items-center gap-5 font-semibold"> <a onclick="openSettings('about')">About</a> <a onclick="openSettings('contact')">Contact</a> <a onclick="openSettings('privacy')">Privacy</a> <a onclick="openSettings('terms')">Terms</a> </div> <div class="text-slate-600"> <span id="footer-year"></span> HirePath. All rights reserved.</div> </div> </footer> </div> <!-- Document Modal --> <div id="modal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 modal-backdrop" onclick="closeModal(event)"> <div class="glass rounded-[32px] w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl border-white/10" onclick="event.stopPropagation()"> <!-- Modal Header --> <div class="flex items-start justify-between p-6 border-b border-white/5"> <div> <div id="modal-status" class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 inline-block mb-3"></div> <h2 id="modal-title" class="text-lg font-bold text-white tracking-tight leading-snug"></h2> <p id="modal-company" class="text-xs font-semibold text-slate-400 mt-1"></p> </div> <div class="flex items-center gap-3 ml-4 shrink-0"> <button type="button" id="modal-submit-btn" onclick="submitFormFromModal()" class="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> ✓ Mark Applied
                     </button> <button type="button" id="modal-verify-btn" onclick="verifyFormFromModal()" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> Verify Form
                     </button> <button type="button" id="modal-autofill-btn" onclick="autofillFormFromModal()" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> Auto-fill Form
-                    </button> <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Toast Alerts --> <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div> <script> let currentTab = 'resume';
+                    </button> <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Tailoring Studio: watch the resume being written, ATS keywords highlighted, score-checked -->
+ <div id="tailor-studio" style="display:none; position:fixed; inset:0; z-index:60;">
+   <div onclick="closeTailorStudio()" style="position:absolute; inset:0; background:rgba(2,6,23,0.8); backdrop-filter:blur(6px);"></div>
+   <div class="glass" style="position:relative; max-width:860px; margin:4vh auto; max-height:92vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
+     <div class="flex items-center justify-between gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
+       <div class="min-w-0">
+         <div class="text-sm font-black text-white truncate" id="ts-title">✍️ Tailoring…</div>
+         <div class="text-[10px] text-slate-500 mt-0.5" id="ts-subtitle">Grounded in your real résumé — nothing invented.</div>
+       </div>
+       <div class="flex items-center gap-2 shrink-0">
+         <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
+         <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
+         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span>
+         <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
+       </div>
+     </div>
+     <div id="ts-stages" class="px-6 py-3 text-[11px] font-bold text-indigo-300 flex items-center gap-2"><span class="animate-pulse">●</span><span id="ts-stage-text">Reading the job description…</span></div>
+     <div class="px-6 pb-2 flex gap-1.5">
+       <button type="button" id="ts-tab-resume" onclick="tsSwitchTab('resume')" class="text-[10px] font-black px-4 py-1.5 rounded-full bg-indigo-600 text-white">Resume</button>
+       <button type="button" id="ts-tab-cover" onclick="tsSwitchTab('cover')" class="text-[10px] font-black px-4 py-1.5 rounded-full bg-transparent text-slate-400 hover:text-slate-200">Cover Letter</button>
+       <span class="flex-1"></span>
+       <button type="button" id="ts-rebuild" onclick="tsRebuild()" class="hidden text-[10px] font-black px-4 py-1.5 rounded-full" style="background:rgba(244,63,94,0.12);color:#fb7185;border:1px solid rgba(244,63,94,0.35)">↻ Rebuild for a better score</button>
+     </div>
+     <div class="flex-1 overflow-y-auto px-6 pb-4" id="ts-scroll">
+       <pre id="ts-content" class="text-[11.5px] text-slate-200 leading-relaxed whitespace-pre-wrap bg-slate-950/60 border border-white/5 rounded-2xl p-5 min-h-[300px]" style="font-family:inherit"></pre>
+     </div>
+     <div class="px-6 pb-3 text-[10px] text-slate-500 flex flex-wrap items-center gap-3" id="ts-legend" style="display:none">
+       <span><mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
+       <span id="ts-missing" class="text-amber-300/90"></span>
+     </div>
+     <div class="px-6 pb-5 flex gap-2">
+       <button type="button" id="ts-open-docs" class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl">Open full documents</button>
+       <button type="button" onclick="closeTailorStudio()" class="jbtn jbtn-primary text-[11px] py-2.5 px-5 rounded-xl flex-1">Looks good</button>
+     </div>
+   </div>
+ </div>
+ <!-- Toast Alerts --> <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div> <script> let currentTab = 'resume';
         let currentData = null;
         let currentAppId = null;
 
@@ -2960,15 +2996,180 @@
             } catch(e) { /* non-fatal */ }
         }
 
+        // ── Tailoring Studio ──────────────────────────────────────────────
+        // Live view: staged progress while the LLM writes, then a top-to-bottom
+        // typewriter reveal with exact ATS keywords highlighted, the Doctor
+        // quality score, and a rebuild button when the score is low.
+        let _tsAppId = null, _tsData = null, _tsTab = 'resume';
+        let _tsPollTimer = null, _tsStageTimer = null, _tsTypeTimer = null, _tsBaseline = null;
+        const _TS_STAGES = [
+            'Reading the job description…',
+            'Extracting the exact keywords this ATS scans for…',
+            'Matching them against your real experience…',
+            'Writing your summary…',
+            'Rewriting experience bullets — grounded, nothing invented…',
+            'Writing your cover letter…',
+            'Running the grounding check (no hallucinations allowed)…',
+            'Scoring with the Resume Doctor…',
+        ];
+        const _tsEscape = (s) => (s == null ? '' : String(s))
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        function _tsStop() {
+            [_tsPollTimer, _tsStageTimer, _tsTypeTimer].forEach(t => t && clearInterval(t));
+            _tsPollTimer = _tsStageTimer = _tsTypeTimer = null;
+        }
+        function closeTailorStudio() {
+            _tsStop();
+            document.getElementById('tailor-studio').style.display = 'none';
+        }
+        function _tsHeaders() {
+            const t = localStorage.getItem('sb_token');
+            return t ? { 'Authorization': `Bearer ${t}` } : {};
+        }
+
+        function openTailorStudio(appId, jobTitle, company) {
+            _tsAppId = appId; _tsData = null; _tsTab = 'resume';
+            document.getElementById('tailor-studio').style.display = 'block';
+            document.getElementById('ts-title').textContent = `✍️ Tailoring for ${jobTitle || 'this role'}${company ? ' @ ' + company : ''}`;
+            document.getElementById('ts-content').innerHTML = '';
+            ['ts-score', 'ts-coverage', 'ts-attempts', 'ts-rebuild'].forEach(id => document.getElementById(id).classList.add('hidden'));
+            document.getElementById('ts-legend').style.display = 'none';
+            document.getElementById('ts-stages').style.display = 'flex';
+            document.getElementById('ts-open-docs').onclick = () => { closeTailorStudio(); openModal(appId); };
+            tsSwitchTab('resume', true);
+            let i = 0;
+            document.getElementById('ts-stage-text').textContent = _TS_STAGES[0];
+            _tsStageTimer = setInterval(() => {
+                i = Math.min(i + 1, _TS_STAGES.length - 1);
+                document.getElementById('ts-stage-text').textContent = _TS_STAGES[i];
+            }, 5000);
+        }
+
+        function _tsHighlightHtml(text, keywords) {
+            let html = _tsEscape(text);
+            (keywords || []).slice().sort((a, b) => b.length - a.length).forEach(kw => {
+                if (!kw) return;
+                const pat = _tsEscape(kw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                try {
+                    html = html.replace(new RegExp(`(?<![\\w>])(${pat})(?![\\w])`, 'gi'),
+                        '<mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">$1</mark>');
+                } catch (e) { /* skip pathological keyword */ }
+            });
+            return html;
+        }
+
+        function _tsTypewrite(html) {
+            if (_tsTypeTimer) clearInterval(_tsTypeTimer);
+            const lines = html.split('\n');
+            const el = document.getElementById('ts-content');
+            el.innerHTML = '';
+            let i = 0;
+            _tsTypeTimer = setInterval(() => {
+                if (i >= lines.length) { clearInterval(_tsTypeTimer); _tsTypeTimer = null; return; }
+                el.innerHTML += (i ? '\n' : '') + lines[i++];
+                const sc = document.getElementById('ts-scroll');
+                sc.scrollTop = sc.scrollHeight;
+            }, 55);
+        }
+
+        function tsSwitchTab(tab, skipRender) {
+            _tsTab = tab;
+            document.getElementById('ts-tab-resume').className =
+                `text-[10px] font-black px-4 py-1.5 rounded-full ${tab === 'resume' ? 'bg-indigo-600 text-white' : 'bg-transparent text-slate-400 hover:text-slate-200'}`;
+            document.getElementById('ts-tab-cover').className =
+                `text-[10px] font-black px-4 py-1.5 rounded-full ${tab === 'cover' ? 'bg-indigo-600 text-white' : 'bg-transparent text-slate-400 hover:text-slate-200'}`;
+            if (skipRender || !_tsData) return;
+            const matched = (_tsData.ats && _tsData.ats.matched) || [];
+            _tsTypewrite(tab === 'resume'
+                ? _tsHighlightHtml(_tsData.resume || '(no resume yet)', matched)
+                : _tsHighlightHtml((_tsData.cover_letter || '(no cover letter yet)').split('---COVER---').pop().trim(), matched));
+        }
+
+        function _tsRenderResult(d) {
+            _tsData = d;
+            if (_tsStageTimer) { clearInterval(_tsStageTimer); _tsStageTimer = null; }
+            document.getElementById('ts-stages').style.display = 'none';
+            const q = d.quality || {};
+            const scoreEl = document.getElementById('ts-score');
+            if (typeof q.doctor_score === 'number') {
+                const good = q.doctor_score >= 70 && q.doctor_passed !== false;
+                scoreEl.textContent = `Quality score ${q.doctor_score}/100`;
+                scoreEl.style.cssText = good
+                    ? 'background:rgba(16,185,129,0.12);color:#34d399;border:1px solid rgba(16,185,129,0.35)'
+                    : 'background:rgba(244,63,94,0.12);color:#fb7185;border:1px solid rgba(244,63,94,0.35)';
+                scoreEl.classList.remove('hidden');
+                if (!good || d.status === 'error') document.getElementById('ts-rebuild').classList.remove('hidden');
+            }
+            if (d.ats && typeof d.ats.coverage_pct === 'number') {
+                const cov = document.getElementById('ts-coverage');
+                cov.textContent = `ATS keywords ${d.ats.coverage_pct}%`;
+                cov.classList.remove('hidden');
+            }
+            if ((q.attempts || 1) > 1) {
+                const at = document.getElementById('ts-attempts');
+                at.textContent = `auto-rebuilt ×${q.attempts}`;
+                at.title = 'The first draft failed our quality review, so it was rewritten with the reviewer\'s feedback.';
+                at.classList.remove('hidden');
+            }
+            const legend = document.getElementById('ts-legend');
+            legend.style.display = 'flex';
+            const missing = (d.ats && d.ats.missing) || [];
+            document.getElementById('ts-missing').textContent = missing.length
+                ? `Not covered (be ready to speak to these): ${missing.slice(0, 6).join(', ')}` : '';
+            tsSwitchTab(_tsTab);
+        }
+
+        async function _tsFetchDetails() {
+            const res = await fetch(`/application/${_tsAppId}/details?_=${Date.now()}`, { headers: _tsHeaders() });
+            return res.ok ? res.json() : null;
+        }
+
+        function _tsStartPolling() {
+            const startedAt = Date.now();
+            _tsPollTimer = setInterval(async () => {
+                try {
+                    const d = await _tsFetchDetails();
+                    if (!d) return;
+                    const gen = d.quality && d.quality.generated_at;
+                    const fresh = gen && gen !== _tsBaseline;
+                    if (fresh || (d.status === 'error' && Date.now() - startedAt > 15000)) {
+                        _tsStop();
+                        if (d.status === 'error' && !fresh) {
+                            document.getElementById('ts-stage-text').textContent = 'Quality review blocked this draft — hit Rebuild to try again.';
+                            document.getElementById('ts-rebuild').classList.remove('hidden');
+                            return;
+                        }
+                        _tsRenderResult(d);
+                    } else if (Date.now() - startedAt > 180000) {
+                        _tsStop();
+                        document.getElementById('ts-stage-text').textContent = 'Still working — this one is slow. Check “Open full documents” in a minute.';
+                    }
+                } catch (e) { /* transient poll error — keep trying */ }
+            }, 3500);
+        }
+
+        async function tsRebuild() {
+            document.getElementById('ts-rebuild').classList.add('hidden');
+            document.getElementById('ts-stages').style.display = 'flex';
+            document.getElementById('ts-stage-text').textContent = 'Rebuilding with the reviewer\'s feedback…';
+            const d = await _tsFetchDetails().catch(() => null);
+            _tsBaseline = (d && d.quality && d.quality.generated_at) || _tsBaseline;
+            await fetch(`/run/tailor/${_tsAppId}`, { method: 'POST', headers: _tsHeaders() });
+            _tsStartPolling();
+        }
+
         async function tailorJob(appId, btn) {
             const orig = btn.innerHTML;
             btn.innerHTML = '⏳ Tailoring...';
             btn.disabled = true;
-            showToast('AI is tailoring your resume & cover letter for this role…', 'info');
             try {
-                const _tok = localStorage.getItem('sb_token');
-                const _hdr = _tok ? { 'Authorization': `Bearer ${_tok}` } : {};
-                const r = await fetch(`/run/tailor/${appId}`, { method: 'POST', headers: _hdr });
+                const card = btn.closest('[data-job-title]');
+                const baseline = await fetch(`/application/${appId}/details?_=${Date.now()}`, { headers: _tsHeaders() })
+                    .then(r => r.ok ? r.json() : null).catch(() => null);
+                _tsBaseline = (baseline && baseline.quality && baseline.quality.generated_at) || null;
+
+                const r = await fetch(`/run/tailor/${appId}`, { method: 'POST', headers: _tsHeaders() });
                 if (r.status === 429) {
                     const err = await r.json().catch(() => ({}));
                     btn.innerHTML = orig;
@@ -2979,10 +3180,12 @@
                 }
                 const res = r.ok ? await r.json() : null;
                 if (res && res.started) {
-                    btn.innerHTML = '✓ Tailored!';
-                    showToast('Tailoring started! Check Docs once complete.', 'success');
                     loadUsage();
-                    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 4000);
+                    openTailorStudio(appId,
+                        card ? card.dataset.jobTitle : '', card ? card.dataset.company : '');
+                    _tsStartPolling();
+                    btn.innerHTML = orig;
+                    btn.disabled = false;
                 } else {
                     btn.innerHTML = '✕ Failed';
                     showToast('Tailoring failed — please retry.', 'error');

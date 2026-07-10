@@ -2031,6 +2031,31 @@ def application_details(application_id: int, request: Request) -> dict:
         except Exception:
             rejection_data = None
 
+    # Quality report (doctor score, rebuild attempts) written by the tailor.
+    quality = None
+    if application.tailored_resume_path:
+        try:
+            report_path = Path(application.tailored_resume_path).parent / "report.json"
+            if report_path.exists():
+                quality = _json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            quality = None
+
+    # ATS keyword analysis for the Tailoring Studio highlighter — deterministic
+    # phrase matching, no LLM cost.
+    ats = None
+    if resume_text and (job.description or "").strip():
+        try:
+            from app.tailoring.ats_keywords import analyze as _ats_analyze
+            report = _ats_analyze(job.description, resume_text)
+            ats = {
+                "matched": report.matched,
+                "missing": report.missing,
+                "coverage_pct": round(report.coverage_pct * 100),
+            }
+        except Exception:
+            ats = None
+
     return {
         "id": application_id,
         "company": job.company,
@@ -2041,6 +2066,8 @@ def application_details(application_id: int, request: Request) -> dict:
         "resume": resume_text,
         "cover_letter": cover_text,
         "rejection_analysis": rejection_data,
+        "quality": quality,
+        "ats": ats,
     }
 
 
