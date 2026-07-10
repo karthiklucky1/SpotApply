@@ -1,6 +1,43 @@
 // HirePath Extension — Content Script
 // Fills job application forms in the user's browser tab.
 
+// ── Frame gating ──────────────────────────────────────────────────────────────
+// The manifest injects this script into every frame (all_frames: true) so that
+// career sites embedding their ATS board in an iframe still get filled. But we
+// must stay inert inside ad/analytics/social iframes: only the top frame or a
+// frame whose own host is a known ATS may run the copilot.
+const HP_IS_TOP = (() => { try { return window === window.top; } catch (_) { return false; } })();
+const HP_ATS_FRAME_RE = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|breezy\.hr|applytojob\.com|jazz\.co|personio|paylocity\.com|dayforce\.com|oraclecloud\.com|eightfold\.ai|greenhouse|ashby/i;
+const HP_FRAME_ACTIVE = HP_IS_TOP || HP_ATS_FRAME_RE.test(location.hostname);
+
+// Query matching elements including inside open shadow roots (some ATS widgets
+// hide their <input type="file"> in a shadow DOM where querySelectorAll can't
+// see it). Depth-first, open roots only.
+function queryAllDeep(selector, root = document) {
+  const out = [];
+  const walk = (node) => {
+    if (!node || !node.querySelectorAll) return;
+    node.querySelectorAll(selector).forEach((el) => out.push(el));
+    node.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) walk(el.shadowRoot); });
+  };
+  try { walk(root); } catch (_) {}
+  return out;
+}
+
+// Fire-and-forget event report so autofill failures are visible on the server
+// (FunnelEvent) instead of dying in the browser console.
+function reportTelemetry(pack, event, meta) {
+  try {
+    if (!pack || !pack.hirepath_url || !pack.auth_token) return;
+    apiFetch(`${pack.hirepath_url}/api/extension/telemetry`, 'POST', pack.auth_token, {
+      event,
+      app_id: pack.app_id || null,
+      host: location.hostname,
+      meta: meta || {},
+    }).catch(() => {});
+  } catch (_) {}
+}
+
 // Track user manual changes to prevent autofill overwrites
 document.addEventListener('input', (e) => {
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
@@ -1634,18 +1671,34 @@ function observeAnswer(ta, pack) {
 async function attachResume(root, pack) {
   if (!pack.hirepath_url || !pack.auth_token || !pack.app_id) return false;
 
-  const allFileInputs = Array.from(root.querySelectorAll('input[type="file"]'));
+  // Include shadow-DOM inputs — some ATS widgets bury the real <input> there.
+  const allFileInputs = queryAllDeep('input[type="file"]', root);
   if (!allFileInputs.length) return false; // form may render the field later
 
-  // Does this input already have a file / show an "uploaded" state?
-  const isUploaded = (fi) => {
-    if (fi.files && fi.files.length) return true;
-    const c = fi.closest('div, section, fieldset');
+  // The "field-sized" container around a file input: the nearest ancestor small
+  // enough to plausibly be this one field's wrapper. Checking the old broad
+  // closest('div,section,fieldset') matched page-level wrappers, so a Remove
+  // button on an unrelated field (education entry, cover letter) marked the
+  // résumé as already-uploaded and it was silently skipped forever.
+  const fieldScope = (fi) => {
+    let n = fi.parentElement, best = fi.parentElement, depth = 0;
+    while (n && depth < 6) {
+      const len = (n.textContent || '').length;
+      if (len > 600) break;
+      best = n;
+      n = n.parentElement; depth++;
+    }
+    return best;
+  };
+
+  const hasUploadedMarker = (fi) => {
+    const c = fieldScope(fi);
     return !!(c && (
       c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
-      /successfully uploaded/i.test(c.textContent)
+      /successfully uploaded/i.test(c.textContent || '')
     ));
   };
+  const isUploaded = (fi) => (fi.files && fi.files.length) || hasUploadedMarker(fi);
 
   const targets = allFileInputs.filter(fi => {
     if (isUploaded(fi)) return false;
@@ -1666,7 +1719,26 @@ async function attachResume(root, pack) {
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
-    console.warn("[HirePath] resume fetch failed:", res.error || res.status);
+    // Surface WHY to the user — a silent console.warn here was the main way
+    // "resume is not uploading" reports happened with no visible explanation.
+    const status = res.status || 0;
+    let reason, hint;
+    if (status === 401) {
+      reason = 'auth_expired';
+      hint = "Your HirePath login timed out. Open the dashboard, sign in, then click Fill again.";
+    } else if (status === 503) {
+      reason = 'tailoring_failed';
+      hint = "Your tailored résumé isn't generated yet. Open this application on the HirePath dashboard, generate the résumé, then return here.";
+    } else {
+      reason = 'fetch_failed';
+      hint = "Couldn't download your résumé from HirePath (network/server). I'll keep retrying — you can also attach it manually.";
+    }
+    console.warn("[HirePath] resume fetch failed:", status, res.error || '');
+    showOverlay(
+      `📎 Résumé not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
+      [], true
+    );
+    reportTelemetry(pack, 'resume_attach_failed', { reason, status });
     return false;
   }
 
@@ -1681,6 +1753,7 @@ async function attachResume(root, pack) {
     file = new File([bytes], filename, { type: mime });
   } catch (e) {
     console.warn("[HirePath] resume decode failed:", e.message);
+    reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
     return false;
   }
 
@@ -1699,24 +1772,32 @@ async function attachResume(root, pack) {
   }
   if (!domSet) {
     showResumeHint(filename);
+    reportTelemetry(pack, 'resume_attach_failed', { reason: 'dom_set_failed' });
     return false;
   }
 
-  // Some ATS (e.g. Ashby) use a custom drop-zone that silently ignores a
-  // programmatically-set file. Verify the UI actually registered it; if not,
-  // guide the user to attach manually and report failure so we retry.
-  await delay(800);
-  const registered = document.body.innerText.includes(filename) ||
-    targets.some(fi => {
-      const c = fi.closest('div, section, fieldset');
-      return !!(c && c.querySelector('[aria-label*="remove" i], [aria-label*="delete" i], [data-automation-id*="delete" i]'));
-    });
+  // Some ATS (e.g. Ashby drop-zones) silently ignore a programmatically-set
+  // file, and others (Greenhouse, Workday) upload it over the network before
+  // rendering the file chip — that round-trip regularly takes 1–3s+. Poll up
+  // to 6s for evidence the UI registered it instead of a single 800ms check
+  // that produced false "attach manually" prompts on slow uploads.
+  const registered = await (async () => {
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      if (document.body.innerText.includes(filename)) return true;
+      if (targets.some(hasUploadedMarker)) return true;
+      await delay(500);
+    }
+    return false;
+  })();
   if (registered) {
     console.log("[HirePath] Attached tailored resume:", filename);
+    reportTelemetry(pack, 'resume_attached', {});
     return true;
   }
   console.warn("[HirePath] Résumé set but the form didn't register it — asking user to attach manually.");
   showResumeHint(filename);
+  reportTelemetry(pack, 'resume_attach_failed', { reason: 'not_registered' });
   return false;
 }
 
@@ -1739,6 +1820,7 @@ let _resumeAttachedOnPage = null;
 let _lastFillTimestamp = 0;
 
 async function fillForm(fillPack) {
+  if (!HP_FRAME_ACTIVE) return; // inert in non-ATS iframes (all_frames: true)
   let pack = fillPack;
 
   // LinkedIn + Indeed: hands-off, always. Their native apply flows pre-fill
@@ -1819,6 +1901,7 @@ function hasApplicationForm() {
 // ── Step runner ───────────────────────────────────────────────────────────────
 
 async function runCopilotStep() {
+  if (!HP_FRAME_ACTIVE) return; // inert in non-ATS iframes (all_frames: true)
   if (!_copilotActive || !_copilotPack) return;
   // Prevent re-entrant calls (MutationObserver can fire during fill)
   if (_fillingInProgress) {
@@ -2493,7 +2576,7 @@ window.addEventListener('message', (e) => {
 });
 
 // ── Auto-fill on page load ────────────────────────────────────────────────────
-chromeCall(() => chrome.storage.local.get(
+chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
   ['hirepath_fill_pack', 'hirepath_auto_fill', 'hirepath_copilot_pack', 'hirepath_copilot_ts'],
   (data) => {
     const host = window.location.hostname;

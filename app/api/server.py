@@ -2496,6 +2496,53 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
     }
 
 
+class ExtensionTelemetryBody(BaseModel):
+    event: str
+    app_id: _Opt[int] = None
+    host: _Opt[str] = None
+    meta: _Opt[dict] = None
+
+
+@app.post("/api/extension/telemetry")
+def extension_telemetry(request: Request, body: ExtensionTelemetryBody) -> dict:
+    """Record extension autofill events (resume attach success/failure, etc.) as
+    FunnelEvents, so which ATS hosts break autofill is visible on the server
+    instead of dying in the user's browser console."""
+    import re as _re
+    from app.db.models import FunnelEvent
+    uid = _require_user(request)
+    event = (body.event or "").strip()
+    if not _re.fullmatch(r"[a-z0-9_]{1,64}", event):
+        raise HTTPException(status_code=400, detail="invalid event")
+
+    meta = {str(k)[:64]: str(v)[:200] for k, v in (body.meta or {}).items() if v is not None}
+    meta["host"] = (body.host or "")[:200]
+    meta["user_id"] = uid
+
+    job_id = None
+    if body.app_id:
+        try:
+            _require_owned_application(request, body.app_id)
+            with get_session() as session:
+                application = session.get(Application, body.app_id)
+                if application:
+                    job_id = application.job_id
+                    meta["app_id"] = str(body.app_id)
+        except HTTPException:
+            pass  # not the caller's application — record the event without the link
+
+    with get_session() as session:
+        session.add(FunnelEvent(
+            job_id=job_id,
+            stage=f"extension_{event}",
+            passed=not event.endswith("_failed"),
+            reason=meta.get("reason"),
+            metadata_json=_json.dumps(meta),
+        ))
+        session.commit()
+    return {"ok": True}
+
+
 class SaveAnswerBody(BaseModel):
     question: str
     answer: str
