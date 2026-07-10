@@ -249,6 +249,10 @@ async def startup_event():
     # (default 2h) so new postings reach shortlists inside the first-24h window
     # where most interviews are won. Full discovery stays on the 6h scheduler.
     asyncio.create_task(_fresh_lane())
+    # Hot lane — poll the most productive boards every N minutes and distribute
+    # to matching users, so brand-new postings reach shortlists (and fresh
+    # alerts) within minutes. Fetch-once/match-many keeps cost = O(boards).
+    asyncio.create_task(_hot_lane())
 
 
 async def _registry_maintenance_once(cycle: int) -> None:
@@ -343,6 +347,31 @@ async def _fresh_lane():
         except Exception as e:
             _log.exception("Fresh lane outer error: %s", e)
         await asyncio.sleep(hours * 60 * 60)
+
+
+async def _hot_lane():
+    """Poll the hottest boards every settings.hot_lane_interval_minutes (env
+    HOT_LANE_INTERVAL_MINUTES, default 20; 0 disables) and distribute new
+    postings to matching users. This is the minute-level freshness engine; the
+    fresh lane (2h) and full scheduler (6h) still guarantee whole-registry
+    coverage underneath it."""
+    import asyncio
+    import logging
+    from app.config import settings
+    _log = logging.getLogger("hot_lane")
+    minutes = int(getattr(settings, "hot_lane_interval_minutes", 20) or 0)
+    if minutes <= 0 or not settings.direct_ats_enabled:
+        _log.info("Hot lane disabled (interval=%s, direct_ats=%s)",
+                  minutes, settings.direct_ats_enabled)
+        return
+    await asyncio.sleep(180)  # let boot + first discovery settle
+    while True:
+        try:
+            from app.strategy.hot_lane import run_hot_lane
+            await asyncio.to_thread(run_hot_lane)
+        except Exception as e:
+            _log.exception("Hot lane error: %s", e)
+        await asyncio.sleep(minutes * 60)
 
 
 def _fresh_scan_for_user(user_id) -> None:

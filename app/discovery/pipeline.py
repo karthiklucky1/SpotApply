@@ -14,13 +14,11 @@ from app.db.init_db import get_session
 from app.db.models import Job, JobSource, CompanyRegistry, Application, ApplicationStatus
 from app.discovery.ashby import AshbyScraper
 from app.discovery.base import RawJob
+# Greenhouse/Lever/Ashby are used by the .env fallback in _all_scrapers; the
+# full per-ATS mapping (incl. Workday/Workable/Recruitee/Personio/Rippling/
+# Breezy/Pinpoint/Teamtailor) lives in scraper_for() to keep both paths in sync.
 from app.discovery.greenhouse import GreenhouseScraper
 from app.discovery.lever import LeverScraper
-from app.discovery.personio import PersonioScraper
-from app.discovery.recruitee import RecruiteeScraper
-from app.discovery.smartrecruiters import SmartRecruitersScraper
-from app.discovery.workable import WorkableScraper
-from app.discovery.workday import WorkdayScraper
 
 log = logging.getLogger(__name__)
 
@@ -68,22 +66,9 @@ def _all_scrapers():
             ).all()
             
             for comp in db_companies:
-                if comp.ats == JobSource.GREENHOUSE:
-                    scrapers.append(GreenhouseScraper(comp.slug))
-                elif comp.ats == JobSource.LEVER:
-                    scrapers.append(LeverScraper(comp.slug))
-                elif comp.ats == JobSource.ASHBY:
-                    scrapers.append(AshbyScraper(comp.slug))
-                elif comp.ats == JobSource.SMARTRECRUITERS:
-                    scrapers.append(SmartRecruitersScraper(comp.slug))
-                elif comp.ats == JobSource.WORKDAY:
-                    scrapers.append(WorkdayScraper(comp.slug, comp.career_url))
-                elif comp.ats == JobSource.WORKABLE:
-                    scrapers.append(WorkableScraper(comp.slug))
-                elif comp.ats == JobSource.RECRUITEE:
-                    scrapers.append(RecruiteeScraper(comp.slug))
-                elif comp.ats == JobSource.PERSONIO:
-                    scrapers.append(PersonioScraper(comp.slug))
+                s = scraper_for(comp.ats, comp.slug, comp.career_url)
+                if s is not None:
+                    scrapers.append(s)
     except Exception as e:
         log.warning("Could not load scrapers from CompanyRegistry database: %s. Falling back to .env", e)
 
@@ -161,6 +146,40 @@ _DIRECT_ATS_SOURCES = {
     JobSource.GREENHOUSE, JobSource.LEVER, JobSource.ASHBY,
     JobSource.WORKDAY, JobSource.SMARTRECRUITERS,
 }
+
+
+def scraper_for(ats, slug: str, career_url: str | None = None):
+    """Map a (ats, slug) to a live scraper instance, or None if unsupported.
+    Shared by the full discovery pipeline and the hot lane so both stay in sync
+    as new ATS scrapers are added."""
+    from app.discovery.greenhouse import GreenhouseScraper
+    from app.discovery.lever import LeverScraper
+    from app.discovery.ashby import AshbyScraper
+    from app.discovery.smartrecruiters import SmartRecruitersScraper
+    from app.discovery.workday import WorkdayScraper
+    from app.discovery.workable import WorkableScraper
+    from app.discovery.recruitee import RecruiteeScraper
+    from app.discovery.personio import PersonioScraper
+    from app.discovery.rippling import RipplingScraper
+    from app.discovery.breezy import BreezyScraper
+    from app.discovery.pinpoint import PinpointScraper
+    from app.discovery.teamtailor import TeamtailorScraper
+    mapping = {
+        JobSource.GREENHOUSE: lambda: GreenhouseScraper(slug),
+        JobSource.LEVER: lambda: LeverScraper(slug),
+        JobSource.ASHBY: lambda: AshbyScraper(slug),
+        JobSource.SMARTRECRUITERS: lambda: SmartRecruitersScraper(slug),
+        JobSource.WORKDAY: lambda: WorkdayScraper(slug, career_url),
+        JobSource.WORKABLE: lambda: WorkableScraper(slug),
+        JobSource.RECRUITEE: lambda: RecruiteeScraper(slug),
+        JobSource.PERSONIO: lambda: PersonioScraper(slug),
+        JobSource.RIPPLING: lambda: RipplingScraper(slug),
+        JobSource.BREEZY: lambda: BreezyScraper(slug),
+        JobSource.PINPOINT: lambda: PinpointScraper(slug),
+        JobSource.TEAMTAILOR: lambda: TeamtailorScraper(slug),
+    }
+    factory = mapping.get(ats)
+    return factory() if factory else None
 
 
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,

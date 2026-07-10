@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     # 24-72h of posting measurably lifts response rates, so registry boards are
     # rescanned far more often than full discovery runs.
     fresh_lane_interval_hours: int = 2
+    # Hot lane: poll the most productive boards every N minutes (0 disables) so
+    # brand-new postings reach shortlists within minutes. Fetches each board
+    # once and distributes to matching users (cost = O(boards), not O(boards×
+    # users)). This is what makes "fresh within minutes of posting" real.
+    hot_lane_interval_minutes: int = 20
+    hot_lane_max_boards: int = 400
     # Bulk registry seed from the open ats-scrapers slug dataset (~20K companies
     # across Greenhouse/Lever/Ashby/SmartRecruiters/Workable/Recruitee/Personio).
     open_dataset_seed_enabled: bool = True

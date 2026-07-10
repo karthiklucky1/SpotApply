@@ -71,6 +71,10 @@ _OPEN_DATASET_FILES: dict[JobSource, str] = {
     # Workday rows carry the full tenant URL in the csv's url column — exactly
     # what WorkdayScraper(slug, career_url) needs.
     JobSource.WORKDAY: "workday.csv",
+    JobSource.RIPPLING: "rippling.csv",
+    JobSource.BREEZY: "breezy.csv",
+    JobSource.PINPOINT: "pinpoint.csv",
+    JobSource.TEAMTAILOR: "teamtailor.csv",
 }
 # The dataset covers ~47 ATSes (~86K companies) total; we seed only the ones
 # HirePath has a scraper for (~22K). To grow further, add a scraper for a new
