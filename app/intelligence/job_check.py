@@ -108,12 +108,47 @@ def _check_ats_api(url: str, client: httpx.Client) -> Optional[dict]:
     return None
 
 
+def _is_public_host(host: str) -> bool:
+    """SSRF guard: only fetch hosts that resolve exclusively to public IPs.
+    Without this, /api/public/job-check would fetch attacker-supplied URLs
+    server-side (cloud metadata endpoints, internal services, localhost)."""
+    import ipaddress
+    import socket
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except Exception:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return False
+    return bool(infos)
+
+
 def _check_generic_page(url: str, client: httpx.Client) -> dict:
-    """Fallback: fetch the public page and read status/JSON-LD/closed phrases."""
+    """Fallback: fetch the public page and read status/JSON-LD/closed phrases.
+    Redirects are followed manually so every hop is SSRF-checked."""
     out: dict = {"live": True, "ats": None, "title": None, "company": None,
                  "posted_days_ago": None, "text": ""}
     try:
-        r = client.get(url, headers=_UA, follow_redirects=True)
+        current, r, history = url, None, []
+        for _ in range(4):
+            parsed = urlparse(current)
+            if parsed.scheme not in ("http", "https") or not _is_public_host(parsed.hostname or ""):
+                return {**out, "live": None, "error": "blocked_host"}
+            r = client.get(current, headers=_UA, follow_redirects=False)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                history.append(r)
+                current = str(httpx.URL(current).join(r.headers["location"]))
+                continue
+            break
+        r.history = history
     except Exception as e:
         return {**out, "live": None, "error": f"fetch_failed: {e}"}
     if r.status_code in (404, 410):

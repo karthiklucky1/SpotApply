@@ -346,10 +346,16 @@ async def _fresh_lane():
 
 
 def _fresh_scan_for_user(user_id) -> None:
-    """Synchronous body of one fresh-lane pass: boards-only discovery → match."""
+    """Synchronous body of one fresh-lane pass: boards-only discovery → match →
+    instant alerts for anything shortlisted that was posted in the last day."""
     roles = _get_target_roles(user_id) or None
     run_discovery(user_id, keywords=roles, phase="boards")
-    run_matching(user_id)
+    shortlisted = run_matching(user_id) or []
+    try:
+        from app.strategy.fresh_alerts import dispatch_fresh_alerts
+        dispatch_fresh_alerts(user_id, shortlisted)
+    except Exception as e:
+        log.warning("fresh alert dispatch failed for %s: %s", user_id, e)
 
 
 async def _scheduler():
@@ -2706,6 +2712,61 @@ def public_job_check(request: Request, body: JobCheckBody) -> dict:
     return check_job_url(body.url, resume_text=resume_text)
 
 
+@app.get("/api/freshness-stats")
+def freshness_stats(request: Request) -> dict:
+    """Measured freshness numbers — the honest version of 'fresh jobs':
+    median posting age of the live scored feed, median detection latency
+    (posted → discovered) over the last 7 days, share detected within 24h,
+    and median post-to-alert latency from dispatched fresh alerts."""
+    import statistics
+    from datetime import datetime, timedelta
+    uid = _get_user_id(request)
+    if settings.use_supabase and not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id_arg = uid if uid and uid != "local" else None
+    now = datetime.utcnow()
+    with get_session() as session:
+        q = select(Job).where(Job.is_closed == False)  # noqa: E712
+        q = q.where(Job.user_id == user_id_arg)  # noqa: E711
+        jobs = session.exec(q).all()
+
+        from app.db.models import FunnelEvent
+        alerts = session.exec(
+            select(FunnelEvent).where(FunnelEvent.stage == "fresh_alert")
+            .where(FunnelEvent.created_at > now - timedelta(days=7))
+        ).all()
+
+    def _naive(dt):
+        return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
+
+    scored = [j for j in jobs if (j.rerank_score or 0) >= settings.shortlist_score_threshold]
+    ages = [max(0.0, (now - _naive(j.posted_at or j.first_seen)).total_seconds() / 3600)
+            for j in scored if (j.posted_at or j.first_seen)]
+    recent = [j for j in jobs if j.posted_at and j.discovered_at
+              and j.discovered_at > now - timedelta(days=7)]
+    latencies = [max(0.0, (j.discovered_at - _naive(j.posted_at)).total_seconds() / 3600)
+                 for j in recent]
+    latencies = [x for x in latencies if x < 24 * 30]  # drop garbage timestamps
+    alert_lat = []
+    for e in alerts:
+        try:
+            alert_lat.append(_json.loads(e.metadata_json or "{}").get("latency_min"))
+        except Exception:
+            pass
+    alert_lat = [x for x in alert_lat if isinstance(x, (int, float))]
+
+    med = lambda xs: round(statistics.median(xs), 1) if xs else None
+    return {
+        "scored_feed_jobs": len(scored),
+        "median_feed_age_hours": med(ages),
+        "median_detection_latency_hours": med(latencies),
+        "detected_within_24h_pct": (round(100 * sum(1 for x in latencies if x <= 24) / len(latencies))
+                                    if latencies else None),
+        "fresh_alerts_7d": len(alert_lat),
+        "median_post_to_alert_min": med(alert_lat),
+    }
+
+
 @app.get("/api/skill-gap")
 def skill_gap_api(request: Request, refresh: bool = False) -> dict:
     """Skill-gap analysis across the user's top matches: what the JDs demand,
@@ -3081,6 +3142,11 @@ def _discover_then_match(user_id) -> None:
         shortlisted = run_matching(user_id) or []
         total = len(set(first_ids) | set(shortlisted))
         finish_discovery_run(run_id, "done", total_shortlisted=total)
+        try:
+            from app.strategy.fresh_alerts import dispatch_fresh_alerts
+            dispatch_fresh_alerts(user_id, list(set(first_ids) | set(shortlisted)))
+        except Exception as _ae:
+            log.warning("fresh alert dispatch failed for %s: %s", user_id, _ae)
     except Exception as e:
         log.exception("Deep discovery wave failed: %s", e)
         # First-wave results are already live — surface them rather than erroring out.
