@@ -583,19 +583,36 @@ def favicon_proxy(domain: str = "") -> StarletteResponse:
 
     body, ctype = None, "image/png"
     ttl = _FAVICON_TTL
-    try:
-        import httpx
-        r = httpx.get(
-            "https://www.google.com/s2/favicons",
-            params={"domain": domain, "sz": 128},
-            timeout=4, follow_redirects=True,
-        )
-        if r.status_code == 200 and r.content and len(r.content) > 90 \
-                and r.headers.get("content-type", "").startswith("image/"):
-            body, ctype = r.content, r.headers["content-type"]
-    except Exception:
-        # Transient upstream failure — retry soon, don't black-hole for a week.
-        ttl = 3600
+    upstream_error = False
+    import httpx
+
+    def _try(url, params=None):
+        """Return (bytes, content_type) if the URL serves a real image, else None.
+        Sets upstream_error on network failure so we retry soon rather than
+        caching a week-long miss."""
+        nonlocal upstream_error
+        try:
+            resp = httpx.get(url, params=params, timeout=4, follow_redirects=True)
+        except Exception:
+            upstream_error = True
+            return None
+        ct = resp.headers.get("content-type", "")
+        # >200 bytes filters Clearbit/Google's 1x1 or tiny placeholder responses.
+        if resp.status_code == 200 and resp.content and len(resp.content) > 200 \
+                and ct.startswith("image/"):
+            return resp.content, ct
+        return None
+
+    # 1) Clearbit — real, high-res brand logos (free, no key). 2) Google favicon
+    # fallback for domains Clearbit doesn't have. 3) neither → 204 (letter avatar).
+    got = _try(f"https://logo.clearbit.com/{domain}", params={"size": 128})
+    if got is None:
+        got = _try("https://www.google.com/s2/favicons",
+                   params={"domain": domain, "sz": 128})
+    if got is not None:
+        body, ctype = got
+    elif upstream_error:
+        ttl = 3600  # transient — retry soon, don't black-hole for a week
 
     if len(_FAVICON_CACHE) >= _FAVICON_CACHE_MAX:
         _FAVICON_CACHE.pop(next(iter(_FAVICON_CACHE)), None)

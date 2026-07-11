@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 120  # >90 bytes, image-shaped
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 400  # >200 bytes, real-logo-sized
 
 
 @pytest.fixture()
@@ -36,9 +36,43 @@ def test_favicon_hit_and_cache(client, monkeypatch):
     assert r.status_code == 200
     assert r.content == PNG
     assert r.headers["cache-control"].startswith("public")
-    # Second call served from cache — no new upstream fetch
+    # Clearbit (tried first) served it, so only ONE upstream call, not two.
+    assert calls["n"] == 1
+    # Second request served from cache — no new upstream fetch
     r2 = client.get("/api/favicon", params={"domain": "github.com"})
     assert r2.status_code == 200 and calls["n"] == 1
+
+
+def test_clearbit_first_then_google_fallback(client, monkeypatch):
+    """Clearbit miss (404) → Google favicon succeeds → real image returned."""
+    import app.api.server as srv
+    srv._FAVICON_CACHE.clear()
+    seen = []
+
+    def fake_get(url, **kw):
+        seen.append(url)
+        if "clearbit.com" in url:
+            return FakeResp(404, b"", "text/html")
+        return FakeResp(200, PNG)  # google favicon
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = client.get("/api/favicon", params={"domain": "smallco.com"})
+    assert r.status_code == 200 and r.content == PNG
+    assert any("clearbit.com" in u for u in seen)
+    assert any("google.com/s2/favicons" in u for u in seen)
+
+
+def test_tiny_placeholder_rejected(client, monkeypatch):
+    """A sub-200-byte placeholder (Clearbit/Google default globe) is treated as
+    a miss, so cards fall back to the letter avatar instead of a junk icon."""
+    import app.api.server as srv
+    srv._FAVICON_CACHE.clear()
+    import httpx
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: FakeResp(200, b"\x89PNG" + b"\x00" * 20, "image/png"))
+    r = client.get("/api/favicon", params={"domain": "unknownbrand.com"})
+    assert r.status_code == 204
 
 
 def test_favicon_miss_is_silent_204(client, monkeypatch):
