@@ -104,7 +104,17 @@ def _title_matches(title: str, roles: list[str]) -> bool:
 
 
 def run_hot_lane() -> dict:
-    """One hot-lane cycle. Returns a small stats dict for logging/telemetry."""
+    """One hot-lane cycle. Returns a small stats dict for logging/telemetry.
+    Skips (rather than waits) if a full/fresh discovery pass is already running,
+    so it never stacks a second model + job pool in memory (OOM guard)."""
+    from app.common.discovery_lock import discovery_guard
+    with discovery_guard(blocking=False, label="hot lane") as ran:
+        if not ran:
+            return {"boards": 0, "users": 0, "reason": "another pass running"}
+        return _run_hot_lane_locked()
+
+
+def _run_hot_lane_locked() -> dict:
     from app.discovery.pipeline import scraper_for, _upsert
     from app.matching.pipeline import run_matching
     from app.strategy.fresh_alerts import dispatch_fresh_alerts

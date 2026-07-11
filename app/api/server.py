@@ -220,6 +220,31 @@ def _require_owned_application(request: Request, application_id: int):
     return uid
 
 
+def _clear_orphaned_discovery_runs() -> None:
+    """A crash/restart mid-run (e.g. the OOM) leaves DiscoveryRun rows stuck in
+    'discovering'/'ranking'/'first_results', so the dashboard shows 'Ranking N
+    jobs…' forever. Mark any such rows from before this boot as errored."""
+    try:
+        from datetime import datetime
+        from app.db.models import DiscoveryRun
+        with get_session() as session:
+            stuck = session.exec(
+                select(DiscoveryRun).where(
+                    DiscoveryRun.status.in_(["discovering", "ranking", "first_results"])
+                )
+            ).all()
+            for row in stuck:
+                row.status = "error"
+                row.error = "Interrupted (server restart) — please run Discover again."
+                row.finished_at = datetime.utcnow()
+                session.add(row)
+            if stuck:
+                session.commit()
+                log.info("Cleared %d orphaned discovery run(s) on startup", len(stuck))
+    except Exception as e:
+        log.warning("Could not clear orphaned discovery runs: %s", e)
+
+
 @app.on_event("startup")
 async def startup_event():
     import asyncio
@@ -228,6 +253,9 @@ async def startup_event():
     # Create all DB tables at runtime (after env vars are injected by Railway)
     from app.db.init_db import init_db, reconcile_job_owners
     init_db()
+    # Clear any discovery run left "in progress" by a crash/restart so the UI
+    # stops showing a frozen "Ranking N jobs…" spinner.
+    _clear_orphaned_discovery_runs()
     # Adopt legacy ownerless jobs into the tenant whose applications reference
     # them (single-user-era rows) — otherwise their pool counts 0 while their
     # applications still render. Idempotent.
@@ -416,10 +444,15 @@ async def _hot_lane():
 
 def _fresh_scan_for_user(user_id) -> None:
     """Synchronous body of one fresh-lane pass: boards-only discovery → match →
-    instant alerts for anything shortlisted that was posted in the last day."""
-    roles = _get_target_roles(user_id) or None
-    run_discovery(user_id, keywords=roles, phase="boards")
-    shortlisted = run_matching(user_id) or []
+    instant alerts for anything shortlisted that was posted in the last day.
+    Serialized with all other discovery/matching to bound peak memory."""
+    from app.common.discovery_lock import discovery_guard
+    with discovery_guard(label="fresh lane") as ran:
+        if not ran:
+            return  # another pass is running; the next 2h cycle covers it
+        roles = _get_target_roles(user_id) or None
+        run_discovery(user_id, keywords=roles, phase="boards")
+        shortlisted = run_matching(user_id) or []
     try:
         from app.strategy.fresh_alerts import dispatch_fresh_alerts
         dispatch_fresh_alerts(user_id, shortlisted)
@@ -3234,7 +3267,24 @@ def application_funnel(request: Request) -> dict:
 
 def _discover_then_match(user_id) -> None:
     """Discover → rank, tracking staged status (discovering → ranking → done)
-    in a DiscoveryRun row so the UI can show live progress + a final summary."""
+    in a DiscoveryRun row so the UI can show live progress + a final summary.
+    Serialized with the fresh/hot lanes so only one heavy pass holds the model
+    + job pool in memory at a time (prevents the OOM crash). Both the 6h
+    scheduler and the manual Discover button route through here."""
+    from app.common.discovery_lock import discovery_guard
+    from app.discovery.pipeline import create_discovery_run, finish_discovery_run
+    with discovery_guard(label="full discovery") as ran:
+        if not ran:
+            # Another discovery/matching pass is already running; don't stack a
+            # second model+pool in memory. Surface it rather than silently no-op.
+            rid = create_discovery_run(user_id)
+            finish_discovery_run(rid, "error",
+                                 error="Another discovery run is in progress — please wait for it to finish.")
+            return
+        _discover_then_match_locked(user_id)
+
+
+def _discover_then_match_locked(user_id) -> None:
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
     # Tailor the keyword search to the user's saved Target Roles when set.

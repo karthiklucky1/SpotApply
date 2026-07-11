@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
-    max_boards_per_run: int = 800         # cap on registry boards scraped per discovery run (higher = faster coverage of the ~56K-board registry)
+    max_boards_per_run: int = 400         # cap on registry boards scraped per discovery run. Higher covers the ~56K registry faster but holds more jobs in memory per run; 400 balances coverage vs. the container memory limit (800 contributed to an OOM crash).
     # Fresh lane: boards-only rescan every N hours (0 disables). Applying within
     # 24-72h of posting measurably lifts response rates, so registry boards are
     # rescanned far more often than full discovery runs.
