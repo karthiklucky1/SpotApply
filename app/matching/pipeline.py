@@ -205,6 +205,61 @@ def _reset_stale_sponsorship_scores(user_id: str | None) -> int:
     return cleared
 
 
+def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[List[int], int]:
+    """(Re)shortlist jobs that are ALREADY LLM-scored above the threshold but
+    have no Application yet (e.g. the daily limit was hit when they were scored,
+    or their application was cleaned up). Direct DB query — these jobs used to
+    be re-shortlisted only if they happened to win a retrieval slot, which also
+    let them crowd fresh jobs out of the cross-encoder budget."""
+    shortlisted: List[int] = []
+    with get_session() as session:
+        # Any existing application blocks a re-shortlist, regardless of the
+        # application row's owner (legacy rows can carry a NULL user_id while
+        # the job row was adopted by a tenant) — matches the old behavior of
+        # checking Application.job_id directly.
+        applied_rows = session.exec(
+            select(Application.job_id).join(Job, Application.job_id == Job.id)
+            .where(Job.user_id == user_id)
+        ).all()
+        applied_ids = {r[0] if isinstance(r, tuple) else r for r in applied_rows}
+        applied_ids.discard(None)
+        q = (
+            select(Job)
+            .where(
+                Job.is_closed == False,  # noqa: E712
+                Job.user_id == user_id,
+                Job.rerank_score >= settings.shortlist_score_threshold,
+            )
+            .order_by(Job.rerank_score.desc())
+            .limit(500)
+        )
+        for job in session.exec(q).all():
+            if job.id in applied_ids:
+                continue
+            if today_count >= settings.daily_shortlist_limit:
+                log.info("Daily shortlist limit reached — stopping re-shortlist of already-scored jobs.")
+                break
+            if not _check_and_enforce_company_cap(session, job, job.rerank_score):
+                session.commit()
+                continue
+            _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
+            session.add(
+                Application(
+                    job_id=job.id,
+                    status=ApplicationStatus.SHORTLISTED,
+                    apply_url=job.url,
+                    apply_track=_track,
+                    user_id=user_id,
+                )
+            )
+            session.commit()
+            shortlisted.append(job.id)
+            today_count += 1
+            log.info("Job '%s' @ '%s' already scored (%d) — %s track. Shortlisted.",
+                     job.title, job.company, job.rerank_score, _track)
+    return shortlisted, today_count
+
+
 def run_matching(user_id: str | None = None) -> List[int]:
     resume = _load_resume(user_id=user_id)
     # Give jobs unfairly blocked by the old sponsorship boilerplate rule a
@@ -224,8 +279,11 @@ def run_matching(user_id: str | None = None) -> List[int]:
     except Exception as _pe:
         log.debug("RuleFilter profile unavailable (using legacy defaults): %s", _pe)
 
+    # Retrieval runs over UNSCORED jobs only (newest first): scored jobs never
+    # need another retrieval pass, and letting them compete starved fresh
+    # postings out of the cross-encoder budget — the "no new jobs" bug.
     candidates = matcher.search_for_resume(resume, k=settings.top_k_rerank, user_id=user_id,
-                                           profile=_user_profile)
+                                           profile=_user_profile, only_unscored=True)
     candidates = [(jid, score) for jid, score in candidates if score >= settings.min_match_score]
     log.info("%d candidates above cross-encoder threshold %.2f", len(candidates), settings.min_match_score)
 
@@ -250,6 +308,11 @@ def run_matching(user_id: str | None = None) -> List[int]:
             q = q.where(Application.user_id == user_id)
         today_count = len(session.exec(q).all())
 
+    # (Re)shortlist already-scored jobs via a direct query — they no longer
+    # pass through retrieval at all.
+    _re_ids, today_count = _reshortlist_scored_jobs(user_id, today_count)
+    shortlisted.extend(_re_ids)
+
     import json as _json
     from concurrent.futures import ThreadPoolExecutor
 
@@ -267,37 +330,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
             if job.is_closed:
                 continue
 
-            # Already scored — (re)shortlist without spending another LLM call.
+            # Safety: retrieval is unscored-only, but guard against a job that
+            # got scored between retrieval and now (re-shortlisting of scored
+            # jobs is handled by _reshortlist_scored_jobs above).
             if job.rerank_score is not None:
-                if job.rerank_score >= settings.shortlist_score_threshold:
-                    existing = session.exec(
-                        select(Application).where(Application.job_id == job.id)
-                    ).first()
-                    if not existing:
-                        if today_count < settings.daily_shortlist_limit:
-                            if not _check_and_enforce_company_cap(session, job, job.rerank_score):
-                                session.commit()
-                                continue
-                            _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-                            session.add(
-                                Application(
-                                    job_id=job.id,
-                                    status=ApplicationStatus.SHORTLISTED,
-                                    apply_url=job.url,
-                                    apply_track=_track,
-                                    user_id=user_id,
-                                )
-                            )
-                            shortlisted.append(job.id)
-                            today_count += 1
-                            session.commit()
-                            log.info("Job '%s' @ '%s' already scored (%d) — %s track. Shortlisted.", job.title, job.company, job.rerank_score, _track)
-                        else:
-                            log.info("Daily apply limit reached — skipping application creation for already scored job %s.", job.title)
-                    else:
-                        log.info("Job '%s' @ '%s' already scored (%d) and has application. Skipping.", job.title, job.company, job.rerank_score)
-                else:
-                    log.info("Job '%s' @ '%s' already scored (%d). Skipping.", job.title, job.company, job.rerank_score)
                 continue
 
             # 1. Rule Filter

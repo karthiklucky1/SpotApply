@@ -132,15 +132,29 @@ def _run_hot_lane_locked() -> dict:
     fetched_jobs = 0
     users_touched: set = set()
 
-    for board in boards:
+    # Fetch boards CONCURRENTLY — the fetches are pure I/O, and doing 400 of
+    # them sequentially held the global discovery lock for the whole sweep,
+    # blocking the fresh lane, the 6h scheduler, and the manual Discover
+    # button for many minutes at a time. DB writes stay serial below.
+    from concurrent.futures import ThreadPoolExecutor as _Pool
+
+    def _fetch_board(board):
         scraper = scraper_for(board.ats, board.slug, board.career_url)
         if scraper is None:
-            continue
+            return board, None, "unsupported"
         try:
-            raw = scraper.fetch()  # ONE network call, shared across all users
+            return board, scraper.fetch(), None  # ONE network call, shared across all users
         except Exception as e:
-            log.debug("hot lane fetch failed %s/%s: %s", board.ats, board.slug, e)
-            _mark_polled(board.slug, board.ats, job_count=None, ok=False)
+            return board, None, str(e)
+
+    with _Pool(max_workers=min(12, max(1, len(boards)))) as _pool:
+        fetch_results = list(_pool.map(_fetch_board, boards))
+
+    for board, raw, err in fetch_results:
+        if raw is None:
+            if err != "unsupported":
+                log.debug("hot lane fetch failed %s/%s: %s", board.ats, board.slug, err)
+                _mark_polled(board.slug, board.ats, job_count=None, ok=False)
             continue
         fetched_jobs += len(raw)
         _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True)

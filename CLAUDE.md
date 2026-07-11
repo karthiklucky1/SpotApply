@@ -11,7 +11,9 @@ this file is the working map for editing the code.
 `Discover → Match cascade → Score & enrich → Tailor (grounding check) → Auto-fill → User reviews & Submits`
 
 **Matching cascade** (`app/matching/pipeline.py`, cheapest-first so LLM cost stays low):
-1. Retrieval — BM25 + FAISS (`all-MiniLM-L6-v2`) → top-K candidates (`matcher.py`)
+1. Retrieval — BM25 + FAISS (`all-MiniLM-L6-v2`) over UNSCORED jobs only (newest
+   first) → top-K (`matcher.py`); scored jobs re-shortlist via direct query, not
+   retrieval — letting them compete starved fresh postings of CE slots
 2. Rule filter — title/seniority/location/job-type, per-company cap (`filters/`)
 3. Ghost filter — drops inactive/fake postings
 4. Embedding gate — cosine-similarity floor
@@ -62,8 +64,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`_get_user_id`/`_require_user_id` in server.py). `"local"` = SQLite dev user.
   Never leak data across users; check ownership on per-application routes.
 - **Scheduler:** `server.py`'s asyncio scheduler runs discovery+matching ~every 6h in
-  BOTH local and prod, plus a boards-only "fresh lane" every 2h (`_fresh_lane`,
-  env FRESH_LANE_INTERVAL_HOURS, 0 disables). Do NOT also schedule those in
+  BOTH local and prod, plus a "fresh lane" every 2h (`_fresh_lane`, phase="fresh"
+  = registry boards + free keyless feeds; quota-keyed sources stay on the 6h lane;
+  env FRESH_LANE_INTERVAL_HOURS, 0 disables) and a 20-min "hot lane"
+  (`strategy/hot_lane.py`, concurrent board polls). Do NOT also schedule those in
   `app/main.py` (it only adds the Telegram bot + harvester/validator/report jobs)
   — double-runs otherwise.
 - **Run modes:** prod = `uvicorn app.api.server:app`; local all-in-one = `python -m app.main`.

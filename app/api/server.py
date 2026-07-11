@@ -383,12 +383,13 @@ async def _registry_maintenance():
 
 
 async def _fresh_lane():
-    """Boards-only rescan (phase="boards") every ``fresh_lane_interval_hours``
-    (env FRESH_LANE_INTERVAL_HOURS, default 2; 0 disables) for each user with a
-    resume. Registry boards rotate least-recently-seen first under the
-    max_boards_per_run cap, so frequent runs sweep the whole registry without
-    ballooning any single run. Aggregators, slug hunting, and HN stay on the
-    slower full scheduler — this lane exists purely for posting freshness."""
+    """Freshness rescan (phase="fresh": registry boards + free keyless job
+    feeds) every ``fresh_lane_interval_hours`` (env FRESH_LANE_INTERVAL_HOURS,
+    default 2; 0 disables) for each user with a resume. Registry boards rotate
+    least-recently-seen first under the max_boards_per_run cap, so frequent
+    runs sweep the whole registry without ballooning any single run.
+    Quota-metered aggregators (SerpAPI/Adzuna/…), slug hunting, and HN stay on
+    the slower full scheduler — this lane exists purely for posting freshness."""
     import asyncio
     import logging
     from app.config import settings
@@ -451,7 +452,10 @@ def _fresh_scan_for_user(user_id) -> None:
         if not ran:
             return  # another pass is running; the next 2h cycle covers it
         roles = _get_target_roles(user_id) or None
-        run_discovery(user_id, keywords=roles, phase="boards")
+        # "fresh" = registry boards + the free keyless aggregator feeds
+        # (Remotive/RemoteOK/The Muse/…). Quota-metered sources (SerpAPI etc.)
+        # stay on the 6h full scheduler so keys aren't burned every 2h.
+        run_discovery(user_id, keywords=roles, phase="fresh")
         shortlisted = run_matching(user_id) or []
     try:
         from app.strategy.fresh_alerts import dispatch_fresh_alerts

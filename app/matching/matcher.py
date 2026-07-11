@@ -216,30 +216,41 @@ class Matcher:
                 log.warning("Failed to load existing FAISS index, rebuilding from scratch: %s", e)
                 existing_index = None
 
+        # Cheap pass first: ids + embedding_id only. Loading every full Job row
+        # (multi-KB descriptions) on every rebuild was a large, recurring DB +
+        # memory cost when almost all jobs are usually already indexed.
         with get_session() as session:
-            # Only index open jobs — closed/purged jobs must never re-enter matching.
-            q = select(Job).where(Job.is_closed == False)
+            q = select(Job.id, Job.embedding_id).where(Job.is_closed == False)  # noqa: E712
             if user_id:
                 q = q.where(Job.user_id == user_id)
-            all_jobs = session.exec(q).all()
+            id_rows = session.exec(q).all()
 
-        if not all_jobs:
+        if not id_rows:
             log.warning("No jobs in DB to index.")
             return 0
-            
-        # Find new and updated jobs
-        new_jobs = [j for j in all_jobs if j.id not in existing_ids]
-        updated_jobs = [j for j in all_jobs if j.id in existing_ids and j.embedding_id is None]
-        
+
+        new_ids = [jid for jid, _emb in id_rows if jid not in existing_ids]
+        updated_ids = [jid for jid, emb in id_rows if jid in existing_ids and emb is None]
+
         # If there are updated jobs, we must do a full rebuild to clean up stale vectors
-        force_rebuild = len(updated_jobs) > 0
-        
-        if not new_jobs and not force_rebuild:
-            log.info("All %d jobs are already indexed. No update needed.", len(all_jobs))
-            return len(all_jobs)
-            
+        force_rebuild = len(updated_ids) > 0
+
+        if not new_ids and not force_rebuild:
+            log.info("All %d jobs are already indexed. No update needed.", len(id_rows))
+            return len(id_rows)
+
+        def _load_full(ids: list[int] | None) -> list[Job]:
+            with get_session() as session:
+                q = select(Job).where(Job.is_closed == False)  # noqa: E712
+                if user_id:
+                    q = q.where(Job.user_id == user_id)
+                if ids is not None:
+                    q = q.where(Job.id.in_(ids))
+                return session.exec(q).all()
+
         if force_rebuild or existing_index is None or self.job_ids is None:
             # Build from scratch
+            all_jobs = _load_full(None)
             log.info("Building new FAISS index from scratch with %d vectors (forced rebuild=%s)...", len(all_jobs), force_rebuild)
             texts = [self._job_text(j) for j in all_jobs]
             embs = self.encode(texts)
@@ -262,7 +273,8 @@ class Matcher:
 
             log.info("FAISS index built from scratch: %d vectors", len(all_jobs))
         else:
-            # Incremental append
+            # Incremental append — only the new jobs' full rows are loaded.
+            new_jobs = _load_full(new_ids)
             log.info("Indexing %d new jobs incrementally...", len(new_jobs))
             new_texts = [self._job_text(j) for j in new_jobs]
             new_embs = self.encode(new_texts)
@@ -294,9 +306,18 @@ class Matcher:
     # ---------- search ----------
 
     def search_for_resume(self, resume_text: str, k: int = 30, user_id: str | None = None,
-                          profile=None) -> List[Tuple[int, float]]:
+                          profile=None, only_unscored: bool = False,
+                          corpus_cap: int = 2000) -> List[Tuple[int, float]]:
         """Hybrid search with RRF (Max-Similarity chunked query) + local Cross-Encoder reranking.
-        
+
+        ``only_unscored=True`` restricts the candidate corpus to jobs that have
+        never been LLM-scored (``rerank_score IS NULL``), newest first. This is
+        the freshness fix: ranking against the WHOLE historical pool let old,
+        already-scored jobs win every cross-encoder slot, so brand-new postings
+        were never ranked and the feed went stale. Already-scored jobs don't
+        need retrieval at all — re-shortlisting them is a direct DB query in
+        the pipeline. ``corpus_cap`` bounds BM25/CE cost as the pool grows.
+
         Returns [(job_id, cross_encoder_score)] sorted desc.
         """
         # Load embedding index if needed
@@ -308,6 +329,10 @@ class Matcher:
             q = select(Job).where(Job.is_closed == False)
             if user_id:
                 q = q.where(Job.user_id == user_id)
+            if only_unscored:
+                q = (q.where(Job.rerank_score == None)  # noqa: E711
+                      .order_by(Job.first_seen.desc())
+                      .limit(corpus_cap))
             jobs = session.exec(q).all()
 
         if not jobs:
@@ -369,8 +394,11 @@ class Matcher:
         bm25_ranks = {j.id: rank for rank, j in enumerate(bm25_ranking)}
 
         # 2. Semantic Search (FAISS) with Max-Similarity
+        # Search the FULL index, not just top-len(jobs): the index holds every
+        # open job while the corpus may be a small unscored subset — a shallow
+        # search could rank only old (excluded) jobs and miss the corpus.
         chunk_embs = self.encode(chunks)
-        faiss_scores, faiss_idxs = self.index.search(chunk_embs, len(jobs))
+        faiss_scores, faiss_idxs = self.index.search(chunk_embs, self.index.ntotal)
 
         job_max_faiss = {j.id: -1.0 for j in jobs}
         for chunk_idx in range(len(chunks)):

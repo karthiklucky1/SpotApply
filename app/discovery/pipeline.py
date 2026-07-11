@@ -544,7 +544,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # In job-first mode (scrape_company_boards=False) we skip ALL company
     # discovery/registration/validation so nothing is anchored to a fixed
     # company list; jobs come purely from the aggregators in Section F.
-    if settings.scrape_company_boards and phase != "fast":
+    if settings.scrape_company_boards and phase not in ("fast", "fresh"):
         try:
             asyncio.run(run_discovery_async())
         except Exception as e:
@@ -674,7 +674,8 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # Postings here often predate the big boards. We upsert them directly
     # (manual-apply track) rather than routing through company discovery,
     # because most HN comments don't map to a scrapeable ATS board.
-    if settings.hn_whoishiring_enabled and phase != "boards":
+    # HN who-is-hiring is a monthly thread — no value in the 2h fresh lane.
+    if settings.hn_whoishiring_enabled and phase not in ("boards", "fresh"):
         try:
             from app.discovery.sources.hn_whoishiring import HNWhoIsHiringSource
             src = HNWhoIsHiringSource(keywords=_keywords)
@@ -731,6 +732,28 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             ("Lever (keyword search)", LeverKeywordSource),
         ]
 
+        # Sources that silently no-op without an API key/flag. Reporting them as
+        # "skipped" (instead of "0 fetched") tells the user WHY a source shows
+        # no jobs — add the key and it starts working.
+        _inactive_reason = {
+            "SerpAPI Google Jobs": None if settings.serpapi_key else "skipped — no SERPAPI_KEY configured",
+            "Indeed RSS": None if settings.indeed_rss_enabled else "skipped — disabled (Indeed blocks bots)",
+            "Adzuna": None if (settings.adzuna_app_id and settings.adzuna_app_key) else "skipped — no Adzuna API keys configured",
+            "Reed.co.uk": None if settings.reed_api_key else "skipped — no REED_API_KEY configured",
+            "Jooble": None if settings.jooble_api_key else "skipped — no JOOBLE_API_KEY configured",
+            "LinkedIn (RapidAPI)": None if settings.linkedin_rapidapi_active else "skipped — no RAPIDAPI_KEY configured",
+        }
+
+        # Fresh lane runs only the FREE, keyless feeds every 2h — quota-metered
+        # sources (SerpAPI/Adzuna/Reed/Jooble/LinkedIn) and the heavy keyword
+        # board searches stay on the 6h full scheduler + manual Discover.
+        _FRESH_FEEDS = {
+            "HN Jobs (Hacker News)", "Remotive", "RemoteOK", "The Muse",
+            "Arbeitnow", "Jobicy", "WeWorkRemotely",
+        }
+        if phase == "fresh":
+            direct_sources = [(n, c) for n, c in direct_sources if n in _FRESH_FEEDS]
+
         # Fetch all aggregator sources concurrently with a per-source timeout so
         # one slow/hanging source can't stall the whole run (which would leave the
         # UI spinning with no summary).
@@ -738,6 +761,11 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         _COUNTRY_AWARE_SOURCES = {"SerpAPI Google Jobs", "Adzuna", "Reed.co.uk", "Jooble",
                                   "LinkedIn (RapidAPI)"}
         async def _fetch_one(name, src_cls):
+            reason = _inactive_reason.get(name)
+            if reason:
+                source_stats[name] = {"fetched": 0, "skipped": reason}
+                _save_incremental()
+                return []
             try:
                 if name in _COUNTRY_AWARE_SOURCES:
                     src = src_cls(keywords=_keywords, country=_country)
