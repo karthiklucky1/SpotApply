@@ -31,6 +31,31 @@ qa_resolver = QAResolver()
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DIM = 384
 
+# Supabase enforces a statement_timeout, so a single UPDATE over thousands of
+# rows gets cancelled ("QueryCanceled … N bound parameter sets"). Commit the
+# embedding_id backfill in small batches so every statement stays fast.
+_EMBED_UPDATE_BATCH = 500
+
+
+def _bulk_set_embedding_ids(mappings: list[dict]) -> None:
+    """Write [{id, embedding_id}, …] back to the Job table in committed chunks."""
+    if not mappings:
+        return
+    total = len(mappings)
+    for start in range(0, total, _EMBED_UPDATE_BATCH):
+        batch = mappings[start:start + _EMBED_UPDATE_BATCH]
+        try:
+            with get_session() as session:
+                session.bulk_update_mappings(Job, batch)
+                session.commit()
+        except Exception as e:
+            # One slow/failed batch must not abort the whole backfill — the FAISS
+            # index is already written, so a missed embedding_id just means those
+            # rows get re-indexed next run rather than losing data.
+            log.warning("embedding_id batch %d-%d failed: %s", start, start + len(batch), e)
+    log.info("Backfilled embedding_id for %d jobs in %d batches",
+             total, (total + _EMBED_UPDATE_BATCH - 1) // _EMBED_UPDATE_BATCH)
+
 
 def _profile_summary_chunk(profile) -> str:
     """Build the retrieval-steering summary chunk from THIS user's profile.
@@ -226,15 +251,14 @@ class Matcher:
             self.index = index
             self.job_ids = ids
             
-            # Save embedding_ids back to DB in ONE bulk UPDATE (was a per-row
-            # get+update loop that ran ~2N queries and tripped Supabase's
-            # statement timeout on large indexes).
-            with get_session() as session:
-                session.bulk_update_mappings(
-                    Job,
-                    [{"id": int(j.id), "embedding_id": idx} for idx, j in enumerate(all_jobs)],
-                )
-                session.commit()
+            # Save embedding_ids back to DB in CHUNKED bulk UPDATEs. A single
+            # bulk_update_mappings over thousands of rows is one giant statement
+            # that Supabase cancels via statement_timeout ("QueryCanceled …
+            # 6376 bound parameter sets"); committing ~500 rows at a time keeps
+            # every statement fast and well under the timeout.
+            _bulk_set_embedding_ids(
+                [{"id": int(j.id), "embedding_id": idx} for idx, j in enumerate(all_jobs)]
+            )
 
             log.info("FAISS index built from scratch: %d vectors", len(all_jobs))
         else:
@@ -250,13 +274,10 @@ class Matcher:
             faiss.write_index(existing_index, str(self.index_path))
             np.save(self.id_map_path, self.job_ids)
             
-            # Save embedding_ids back to DB in ONE bulk UPDATE.
-            with get_session() as session:
-                session.bulk_update_mappings(
-                    Job,
-                    [{"id": int(j.id), "embedding_id": start_idx + idx} for idx, j in enumerate(new_jobs)],
-                )
-                session.commit()
+            # Save embedding_ids back to DB in CHUNKED bulk UPDATEs (see above).
+            _bulk_set_embedding_ids(
+                [{"id": int(j.id), "embedding_id": start_idx + idx} for idx, j in enumerate(new_jobs)]
+            )
 
             log.info("FAISS index updated. Total vectors: %d", len(self.job_ids))
             
