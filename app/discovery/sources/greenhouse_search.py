@@ -74,24 +74,31 @@ class GreenhouseKeywordSource:
         seen: set[str] = set()
         limit = settings.max_jobs_per_source
 
-        # Combine seed slugs with any slugs registered in CompanyRegistry
+        # Combine seed slugs with the TOP PRODUCTIVE registry boards, capped.
+        # Fetching all ~5K registry Greenhouse boards here blows the pipeline's
+        # 45s per-source timeout (that's why keyword search started failing after
+        # the registry was seeded to ~56K boards). The direct-ATS board lanes
+        # cover the full registry; keyword search only needs the top boards.
         slugs = list(_SEED_SLUGS)
         try:
             from app.db.init_db import get_session
             from app.db.models import CompanyRegistry, JobSource
             from sqlmodel import select
-            with get_session() as session:
-                regs = session.exec(
-                    select(CompanyRegistry).where(
-                        CompanyRegistry.ats == JobSource.GREENHOUSE,
-                        CompanyRegistry.is_active == True,
-                    )
-                ).all()
-                for r in regs:
-                    if r.slug not in slugs:
-                        slugs.append(r.slug)
+            room = max(0, settings.keyword_search_max_slugs - len(slugs))
+            if room:
+                with get_session() as session:
+                    regs = session.exec(
+                        select(CompanyRegistry).where(
+                            CompanyRegistry.ats == JobSource.GREENHOUSE,
+                            CompanyRegistry.is_active == True,
+                        ).order_by(CompanyRegistry.job_count.desc()).limit(room)
+                    ).all()
+                    for r in regs:
+                        if r.slug not in slugs:
+                            slugs.append(r.slug)
         except Exception as e:
             log.debug("GreenhouseKeyword: could not load registry slugs: %s", e)
+        slugs = slugs[: settings.keyword_search_max_slugs]
 
         import asyncio
 

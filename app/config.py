@@ -54,6 +54,11 @@ class Settings(BaseSettings):
                                          # (Greenhouse/Lever/Ashby) — those add direct-ATS autofill jobs but
                                          # re-introduce company-anchored discovery.
     max_jobs_per_source: int = 200   # Cap per source per discovery run (was 50)
+    # Cap on boards a keyword-search source fetches per run. The registry now
+    # holds ~56K boards; fetching all of them blows the 45s per-source timeout.
+    # The direct-ATS board lanes cover the full registry, so keyword search only
+    # needs the top productive boards.
+    keyword_search_max_slugs: int = 250
 
     # Telegram
     telegram_enabled: bool = False

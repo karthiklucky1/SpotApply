@@ -55,18 +55,24 @@ class LeverKeywordSource:
             from app.db.init_db import get_session
             from app.db.models import CompanyRegistry, JobSource
             from sqlmodel import select
-            with get_session() as session:
-                regs = session.exec(
-                    select(CompanyRegistry).where(
-                        CompanyRegistry.ats == JobSource.LEVER,
-                        CompanyRegistry.is_active == True,
-                    )
-                ).all()
-                for r in regs:
-                    if r.slug not in slugs:
-                        slugs.append(r.slug)
+            # Only the top productive boards, capped — fetching all ~2K+ Lever
+            # boards here blows the pipeline's 45s per-source timeout (the board
+            # lanes already cover the whole registry). Productive boards first.
+            room = max(0, settings.keyword_search_max_slugs - len(slugs))
+            if room:
+                with get_session() as session:
+                    regs = session.exec(
+                        select(CompanyRegistry).where(
+                            CompanyRegistry.ats == JobSource.LEVER,
+                            CompanyRegistry.is_active == True,
+                        ).order_by(CompanyRegistry.job_count.desc()).limit(room)
+                    ).all()
+                    for r in regs:
+                        if r.slug not in slugs:
+                            slugs.append(r.slug)
         except Exception as e:
             log.debug("LeverKeyword: could not load registry slugs: %s", e)
+        slugs = slugs[: settings.keyword_search_max_slugs]
 
         import asyncio
 
