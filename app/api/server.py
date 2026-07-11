@@ -1788,6 +1788,8 @@ def api_jobs(
     track: str = None,   # "autofill" | "manual"
     hide_aggregators: str = None,  # "1" = exclude aggregator-redirect jobs
     closed: str = None,            # "true" = retrieve closed/ghost jobs
+    sort: str = None,              # "fresh" = newest posted first (else priority)
+    max_age_days: int = None,      # only jobs posted within N days
 ) -> dict:
     uid = _get_user_id(request)
     # Fail closed: an unresolved uid must never return the unscoped
@@ -1838,6 +1840,16 @@ def api_jobs(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
 
+        # Freshness age filter: only jobs posted within N days. Uses posted_at
+        # when known, else first_seen (when we first discovered it).
+        _age_cutoff = None
+        if max_age_days is not None and max_age_days > 0:
+            from datetime import datetime as _dtm, timedelta as _td
+            _age_cutoff = _dtm.utcnow() - _td(days=max_age_days)
+            query = query.where(
+                func.coalesce(Job.posted_at, Job.first_seen) >= _age_cutoff
+            )
+
         # Get total count (for pagination)
         count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
         if _uid_filter:
@@ -1864,11 +1876,22 @@ def api_jobs(
             count_query = count_query.where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
+        if _age_cutoff is not None:
+            count_query = count_query.where(
+                func.coalesce(Job.posted_at, Job.first_seen) >= _age_cutoff
+            )
 
         total = session.exec(count_query).first() or 0
-        
-        # Apply pagination and sorting
-        query = query.order_by(desc(Job.blended_score), desc(Job.rerank_score), desc(Job.similarity_score), desc(Job.id)).offset(offset).limit(limit)
+
+        # Apply pagination and sorting. "fresh" = newest posted first (the answer
+        # to "where are the fresh jobs" — surfaces the just-posted roles that the
+        # priority sort otherwise buries under older high-scoring ones).
+        if sort == "fresh":
+            query = query.order_by(
+                desc(func.coalesce(Job.posted_at, Job.first_seen)), desc(Job.id)
+            ).offset(offset).limit(limit)
+        else:
+            query = query.order_by(desc(Job.blended_score), desc(Job.rerank_score), desc(Job.similarity_score), desc(Job.id)).offset(offset).limit(limit)
         
         results = session.exec(query).all()
         
