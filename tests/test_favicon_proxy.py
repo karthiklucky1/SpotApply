@@ -89,3 +89,14 @@ def test_favicon_rejects_garbage_domain(client):
     for bad in ("<script>", "a", "", "foo..bar", "x" * 200):
         r = client.get("/api/favicon", params={"domain": bad})
         assert r.status_code == 204, bad
+
+
+def test_domain_guess_strips_career_suffixes():
+    """ATS slug names like 'Bjakcareer' must resolve to the real company domain
+    (bjak.com) so Clearbit finds a logo instead of the letter fallback."""
+    from app.api.server import _company_domain_filter as f
+    assert f("Bjakcareer") == "bjak.com"
+    assert f("Acme Careers") == "acme.com"
+    assert f("StripeJobs") == "stripe.com"
+    assert f("Netflix") == "netflix.com"          # unchanged when no suffix
+    assert f("Stealth Startup") == ""             # anonymous → no lookup

@@ -269,16 +269,29 @@ async def _registry_maintenance_once(cycle: int) -> None:
     if not has_any:
         _log.info("Registry empty — seeding from bootstrap list")
         await asyncio.to_thread(seed_registry)
-    # One-time bulk expansion: pull the open ats-scrapers slug dataset (~20K
-    # companies on public-API ATSes) when the registry is still small. Board
-    # rotation caps per-run cost, so a big registry only widens coverage.
+    # Bulk expansion: pull the open ats-scrapers slug dataset (~62K companies on
+    # public-API ATSes). Runs when the registry is still small OR when any
+    # configured ATS has zero boards — so newly added scrapers (Rippling, Breezy,
+    # Pinpoint, Teamtailor, BambooHR, join.com, …) get seeded on the next deploy
+    # WITHOUT anyone running a command. Seeding is idempotent (skips existing
+    # slugs) and board rotation caps per-run cost, so re-running is safe.
     if settings.open_dataset_seed_enabled:
         from sqlalchemy import func as _func
+        from app.discovery.registry import _OPEN_DATASET_FILES
         with get_session() as session:
             total = session.exec(select(_func.count(CompanyRegistry.id))).one()
             total = total[0] if isinstance(total, tuple) else total
-        if (total or 0) < 1000:
+            present_ats = {
+                r for (r,) in session.exec(
+                    select(CompanyRegistry.ats).distinct()
+                ).all()
+            } if total else set()
+        missing_ats = [a for a in _OPEN_DATASET_FILES if a not in present_ats]
+        if (total or 0) < 1000 or missing_ats:
             from app.discovery.registry import seed_registry_from_open_datasets
+            if missing_ats:
+                _log.info("Registry maintenance: seeding missing ATSes %s",
+                          [a.value for a in missing_ats])
             added = await asyncio.to_thread(seed_registry_from_open_datasets)
             _log.info("Registry maintenance: open-dataset seed added %d boards", added)
     validated = await run_validation_loop(limit=150)
@@ -539,6 +552,13 @@ def _company_domain_filter(name):
         if n.endswith(suf):
             n = n[: -len(suf)]
     n = _re.sub(r"[^a-z0-9]", "", n)
+    # Many ATS board slugs are "{company}careers"/"{company}jobs"/"{company}hq"
+    # (e.g. Ashby "bjakcareer" for Bjak). The real logo domain is the base
+    # company, so strip these trailing tokens before guessing the domain.
+    for suf in ("careers", "career", "jobs", "job", "hiring", "hq", "hr", "talent"):
+        if n.endswith(suf) and len(n) > len(suf) + 1:
+            n = n[: -len(suf)]
+            break
     # Junk/anonymous names have no real domain — return '' so the UI skips the
     # favicon fetch entirely (avoids pointless 404s) and shows the initial.
     if not n or any(k in n for k in ("stealth", "confidential", "unknown", "unnamed")):
@@ -3949,6 +3969,20 @@ def _require_admin_user(request: Request) -> str:
 
 def _scalar(v) -> int:
     return int(v if not isinstance(v, (list, tuple)) else v[0])
+
+
+@app.post("/api/admin/seed-registry")
+def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
+    """Trigger the open-dataset registry seed on demand (admin-only). Lets the
+    owner expand coverage from any browser — phone included — without a laptop
+    or shell. Idempotent; runs in the background."""
+    _require_admin_user(request)
+    from app.discovery.registry import seed_registry_from_open_datasets
+    bg.add_task(seed_registry_from_open_datasets)
+    return {"started": True,
+            "note": "Seeding ~62K companies across all ATSes in the background. "
+                    "New boards appear in the registry over the next few minutes; "
+                    "jobs follow as the crawlers validate them."}
 
 
 @app.get("/api/admin/metrics")
