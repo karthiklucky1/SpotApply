@@ -198,6 +198,50 @@ def test_select_hot_boards_prefers_yielding_boards():
     assert [b.slug for b in boards] == ["yielder"]
 
 
+def test_hot_lane_inserts_even_when_lock_busy(monkeypatch):
+    """A multi-hour full-discovery run must NOT starve the hot lane: fetching
+    and inserting run without the lock; only matching is deferred."""
+    import app.strategy.hot_lane as hl
+    from app.common.discovery_lock import _LOCK
+
+    with get_session() as session:
+        _clean(session)
+        _mk_board(session, "acme")
+        session.add(UserProfile(user_id="u_ml", target_roles="Machine Learning Engineer"))
+        session.commit()
+
+    monkeypatch.setattr(hl, "_active_users", lambda: [
+        {"user_id": "u_ml", "roles": ["machine learning engineer"]},
+    ])
+
+    class FakeScraper:
+        def fetch(self):
+            return [RawJob(source="greenhouse", external_id="20", company="Acme",
+                           title="ML Engineer", location="Remote", remote=True,
+                           url="https://boards.greenhouse.io/acme/jobs/20",
+                           description="PyTorch", posted_at=datetime.utcnow())]
+
+    monkeypatch.setattr("app.discovery.pipeline.scraper_for",
+                        lambda ats, slug, career_url=None: FakeScraper())
+
+    def _explode(uid):
+        raise AssertionError("matching must not run while the lock is busy")
+    monkeypatch.setattr("app.matching.pipeline.run_matching", _explode)
+
+    assert _LOCK.acquire(blocking=False), "test setup: lock must be free"
+    try:
+        stats = hl.run_hot_lane()
+    finally:
+        _LOCK.release()
+
+    # Jobs were fetched and INSERTED despite the busy lock; matching deferred.
+    assert stats["inserted_jobs"] == 1
+    assert "skipped" in stats["matching"]
+    with get_session() as session:
+        jobs = session.exec(select(Job).where(Job.user_id == "u_ml")).all()
+    assert [j.title for j in jobs] == ["ML Engineer"]
+
+
 def test_hot_lane_no_active_users():
     import app.strategy.hot_lane as hl
     with get_session() as session:

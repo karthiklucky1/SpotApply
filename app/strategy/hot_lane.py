@@ -109,28 +109,32 @@ def _title_matches(title: str, roles: list[str]) -> bool:
 
 def run_hot_lane() -> dict:
     """One hot-lane cycle. Returns a small stats dict for logging/telemetry.
-    Skips (rather than waits) if a full/fresh discovery pass is already running,
-    so it never stacks a second model + job pool in memory (OOM guard)."""
-    from app.common.discovery_lock import discovery_guard
-    with discovery_guard(blocking=False, label="hot lane") as ran:
-        if not ran:
-            return {"boards": 0, "users": 0, "reason": "another pass running"}
-        return _run_hot_lane_locked()
 
+    Phase A — fetch + distribute (NO lock): board polling is lightweight
+    (concurrent HTTP + slim DB upserts; no embedding model, no job-pool load),
+    so it runs even while a full/fresh discovery pass holds the discovery
+    lock. Previously the WHOLE cycle skipped whenever the lock was busy, and
+    multi-hour full runs starved the lane indefinitely — 'Hot Lane: idle',
+    'New Jobs (24h): 0'.
 
-def _run_hot_lane_locked() -> dict:
+    Phase B — match + alert (lock, skip-if-busy): matching loads the model +
+    job pool, so it still serializes (OOM guard). When the lock is busy the
+    freshly inserted jobs simply wait for the next matching pass.
+
+    A heartbeat is recorded for EVERY cycle (including early exits) with a
+    reason, so the dashboard tile shows why instead of a silent 'idle'."""
     from app.discovery.pipeline import scraper_for, _upsert
-    from app.matching.pipeline import run_matching
-    from app.strategy.fresh_alerts import dispatch_fresh_alerts
+    from app.common.discovery_lock import discovery_guard
 
     limit = int(getattr(settings, "hot_lane_max_boards", 400))
     users = _active_users()
     if not users:
-        return {"boards": 0, "users": 0, "reason": "no active users"}
+        return _finish_cycle({"boards": 0, "users": 0, "reason": "no active users"})
 
     boards = select_hot_boards(limit)
     if not boards:
-        return {"boards": 0, "users": len(users), "reason": "no active boards"}
+        return _finish_cycle({"boards": 0, "users": len(users),
+                              "reason": "no active boards"})
 
     now = datetime.utcnow()
     fetched_jobs = 0
@@ -187,14 +191,26 @@ def _run_hot_lane_locked() -> dict:
         _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
                      new_jobs=board_new)
 
-    # Match + alert only for users who actually received new postings.
+    # Phase B: match + alert only for users who actually received new postings.
+    # Needs the discovery lock (embedding model + job pool in memory); skip
+    # rather than wait when busy — the inserted jobs are already in the pool
+    # and the next matching pass (any lane) will score them.
     alerts = 0
-    for uid in users_touched:
-        try:
-            shortlisted = run_matching(uid) or []
-            alerts += dispatch_fresh_alerts(uid, shortlisted)
-        except Exception as e:
-            log.warning("hot lane match/alert failed for %s: %s", uid, e)
+    matching = "no new jobs"
+    if users_touched:
+        with discovery_guard(blocking=False, label="hot lane matching") as ran:
+            if ran:
+                matching = "ran"
+                from app.matching.pipeline import run_matching
+                from app.strategy.fresh_alerts import dispatch_fresh_alerts
+                for uid in users_touched:
+                    try:
+                        shortlisted = run_matching(uid) or []
+                        alerts += dispatch_fresh_alerts(uid, shortlisted)
+                    except Exception as e:
+                        log.warning("hot lane match/alert failed for %s: %s", uid, e)
+            else:
+                matching = "skipped — discovery lock busy (jobs inserted, scoring deferred)"
 
     stats = {
         "boards": len(boards),
@@ -203,19 +219,27 @@ def _run_hot_lane_locked() -> dict:
         "matched_jobs": matched_jobs,
         "inserted_jobs": inserted_jobs,
         "users_with_new_jobs": len(users_touched),
+        "matching": matching,
         "alerts": alerts,
         "at": now.isoformat(),
     }
+    return _finish_cycle(stats)
+
+
+def _finish_cycle(stats: dict) -> dict:
+    """Log + heartbeat for every cycle outcome, so the dashboard can always
+    answer 'is the hot lane running, and if not why?'."""
     log.info("Hot lane: %s", stats)
-    # Heartbeat: record each run so the dashboard can show the hot lane is alive
-    # and producing (answers "is the hot lane even running?").
     try:
         import json as _json
         from app.db.models import FunnelEvent
         with get_session() as session:
             session.add(FunnelEvent(
-                job_id=None, stage="hot_lane_run", passed=fetched_jobs > 0,
-                reason=f"boards={len(boards)} jobs={fetched_jobs} alerts={alerts}",
+                job_id=None, stage="hot_lane_run",
+                passed=(stats.get("fetched_jobs") or 0) > 0,
+                reason=(stats.get("reason")
+                        or f"boards={stats.get('boards')} jobs={stats.get('fetched_jobs')} "
+                           f"inserted={stats.get('inserted_jobs')} alerts={stats.get('alerts')}"),
                 metadata_json=_json.dumps(stats),
             ))
             session.commit()
