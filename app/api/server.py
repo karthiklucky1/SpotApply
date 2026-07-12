@@ -2165,12 +2165,26 @@ def dashboard(request: Request, all_submitted: bool = False):
                 pass
         return base
 
-    # Highest-priority roles first; recency breaks ties so fresh postings float up.
+    # FRESH FIRST by default: the newest posting day leads the shortlist, and
+    # within the same day the highest-priority role (fit + hiring intent +
+    # sponsorship boost) ranks first. A 5-day-old 90-fit role must never bury
+    # today's 70-fit one — applying early is where interviews are won.
+    def _freshness_day(job) -> int:
+        ref = job.posted_at or job.discovered_at
+        if not ref:
+            return -(10 ** 6)   # unknown age sinks to the bottom
+        try:
+            if ref.tzinfo is not None:
+                ref = ref.replace(tzinfo=None)
+            return -int(max(0.0, (_dt.utcnow() - ref).total_seconds()) // 86400)
+        except Exception:
+            return -(10 ** 6)
+
     shortlisted.sort(
-        key=lambda x: (_priority(x[1]), x[1].posted_at or x[1].discovered_at or _dt.min),
+        key=lambda x: (_freshness_day(x[1]), _priority(x[1])),
         reverse=True,
     )
-    manual_queue.sort(key=lambda x: _priority(x[1]), reverse=True)
+    manual_queue.sort(key=lambda x: (_freshness_day(x[1]), _priority(x[1])), reverse=True)
     # Sort submitted by when they were actually submitted (newest first).
     # Use submitted_at which is set once at submission — background pipeline
     # updates to updated_at (score rescoring, etc.) won't reorder the column.

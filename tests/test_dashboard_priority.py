@@ -57,6 +57,45 @@ def test_dashboard_orders_by_blended_priority(_seeded_jobs):
     assert iB < iA
 
 
+def test_dashboard_fresh_jobs_lead_shortlist():
+    """A job posted today must appear ABOVE a higher-scoring week-old job —
+    fresh first is the default; priority only ranks within the same day."""
+    from datetime import timedelta
+    from sqlmodel import select as _select
+    now = datetime.utcnow()
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("freshfirst-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+        old_high = Job(source=JobSource.GREENHOUSE, external_id="freshfirst-old",
+                       company="OldHighCo", title="Staff ML Engineer", url="http://oh",
+                       description="x", rerank_score=95, blended_score=95,
+                       posted_at=now - timedelta(days=6))
+        new_low = Job(source=JobSource.GREENHOUSE, external_id="freshfirst-new",
+                      company="NewLowCo", title="ML Engineer", url="http://nl",
+                      description="x", rerank_score=60, blended_score=60,
+                      posted_at=now - timedelta(hours=2))
+        s.add(old_high); s.add(new_low); s.commit()
+        s.refresh(old_high); s.refresh(new_low)
+        s.add(Application(job_id=old_high.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
+        s.add(Application(job_id=new_low.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
+        s.commit()
+
+    html = _client().get("/dashboard").text
+    i_new, i_old = html.find("NewLowCo"), html.find("OldHighCo")
+    assert i_new != -1 and i_old != -1
+    assert i_new < i_old, "today's posting must render above the week-old high scorer"
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("freshfirst-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+
+
 def test_dashboard_renders_hiring_badges(_seeded_jobs):
     html = _client().get("/dashboard").text
     assert "Hiring" in html       # hiring-intent badge text
