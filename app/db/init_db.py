@@ -157,7 +157,9 @@ def init_db() -> None:
         ("sponsorship_signal", "VARCHAR"),
         ("last_error", "VARCHAR"),
         ("inactive_reason", "VARCHAR"),
-        ("next_retry_at", "DATETIME")
+        ("next_retry_at", "DATETIME"),
+        ("new_jobs_last_poll", "INTEGER DEFAULT 0"),
+        ("last_new_job_at", "DATETIME"),
     ]:
         add_column_if_missing("companyregistry", col, col_type)
 

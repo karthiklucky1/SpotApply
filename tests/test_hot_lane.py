@@ -179,6 +179,25 @@ def test_hot_lane_routes_title_variants(monkeypatch):
     assert [j.title for j in jobs] == ["Senior ML Engineer"]
 
 
+def test_select_hot_boards_prefers_yielding_boards():
+    """Among productive boards, one that recently produced a NEW posting beats
+    a staler board that never yielded — polling concentrates on active boards."""
+    from app.strategy.hot_lane import select_hot_boards
+    now = datetime.utcnow()
+    with get_session() as session:
+        _clean(session)
+        session.add(CompanyRegistry(slug="never_yield", ats=JobSource.GREENHOUSE,
+                                    is_active=True, job_count=10, source="test",
+                                    last_seen=now - timedelta(days=5)))
+        session.add(CompanyRegistry(slug="yielder", ats=JobSource.GREENHOUSE,
+                                    is_active=True, job_count=10, source="test",
+                                    last_seen=now - timedelta(days=3),
+                                    last_new_job_at=now - timedelta(hours=2)))
+        session.commit()
+    boards = select_hot_boards(limit=1)
+    assert [b.slug for b in boards] == ["yielder"]
+
+
 def test_hot_lane_no_active_users():
     import app.strategy.hot_lane as hl
     with get_session() as session:

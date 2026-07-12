@@ -197,6 +197,10 @@ class CompanyRegistry(SQLModel, table=True):
     is_active: bool = Field(default=True, index=True)
     job_count: int = Field(default=0)
     failure_count: int = Field(default=0)
+    # Yield tracking — when this board last produced a NEW posting (not just
+    # re-served old ones). The hot lane prioritizes boards that actually post.
+    new_jobs_last_poll: int = Field(default=0)
+    last_new_job_at: Optional[datetime] = Field(default=None, index=True)
     sponsorship_signal: Optional[str] = Field(default=None)
     last_error: Optional[str] = Field(default=None)
     inactive_reason: Optional[str] = Field(default=None)

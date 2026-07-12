@@ -69,12 +69,16 @@ def select_hot_boards(limit: int) -> list[CompanyRegistry]:
             .limit(half)
         ).all()
         need = limit - len(never)
+        # Yield-aware: boards that have EVER produced a new posting sort ahead
+        # of merely non-empty ones, both rotating stalest-first — so as yield
+        # data accumulates, polling concentrates on boards that actually post.
         productive = session.exec(
             select(CompanyRegistry)
             .where(CompanyRegistry.is_active == True,  # noqa: E712
                    CompanyRegistry.last_seen != None,  # noqa: E711
                    CompanyRegistry.job_count > 0)
-            .order_by(CompanyRegistry.last_seen.asc())
+            .order_by(CompanyRegistry.last_new_job_at.is_(None),
+                      CompanyRegistry.last_seen.asc())
             .limit(need)
         ).all()
         boards = list(never) + list(productive)
@@ -159,12 +163,13 @@ def _run_hot_lane_locked() -> dict:
                 _mark_polled(board.slug, board.ats, job_count=None, ok=False)
             continue
         fetched_jobs += len(raw)
-        _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True)
         if not raw:
+            _mark_polled(board.slug, board.ats, job_count=0, ok=True)
             continue
 
         # Distribute each posting only to users whose target roles it matches.
         routed_ids: set = set()
+        board_new = 0
         for u in users:
             relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
             if not relevant:
@@ -173,11 +178,14 @@ def _run_hot_lane_locked() -> dict:
             try:
                 new = _upsert(relevant, user_id=u["user_id"])
                 inserted_jobs += new
+                board_new += new
                 if new:
                     users_touched.add(u["user_id"])
             except Exception as e:
                 log.debug("hot lane upsert failed for %s: %s", u["user_id"], e)
         matched_jobs += len(routed_ids)
+        _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
+                     new_jobs=board_new)
 
     # Match + alert only for users who actually received new postings.
     alerts = 0
@@ -216,8 +224,10 @@ def _run_hot_lane_locked() -> dict:
     return stats
 
 
-def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool) -> None:
-    """Record a poll so board rotation stays fair and failures decay a board."""
+def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
+                 new_jobs: int = 0) -> None:
+    """Record a poll so board rotation stays fair, failures decay a board, and
+    yield (new postings produced) steers future polling toward active boards."""
     try:
         with get_session() as session:
             row = session.exec(
@@ -231,6 +241,9 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool) -> None:
                 if job_count is not None:
                     row.job_count = job_count
                 row.failure_count = 0
+                row.new_jobs_last_poll = new_jobs
+                if new_jobs > 0:
+                    row.last_new_job_at = datetime.utcnow()
             else:
                 row.failure_count = (row.failure_count or 0) + 1
             session.add(row)
