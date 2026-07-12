@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -48,7 +49,9 @@ def test_greenhouse_live_posting(monkeypatch):
     _patch(monkeypatch, {
         "api.greenhouse.io/v1/boards/acme/jobs/123": FakeResponse(200, {
             "title": "Backend Engineer",
-            "updated_at": "2026-07-08T00:00:00Z",
+            # Relative date — a hardcoded one ages past the 3-day
+            # fresh_posting window and turns this into a calendar flake.
+            "updated_at": (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "content": "<p>Python and Kafka. Salary: $150,000. " + "word " * 200 + "</p>",
         }),
     })
