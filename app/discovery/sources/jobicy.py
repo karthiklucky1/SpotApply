@@ -18,8 +18,10 @@ from app.discovery.title_filter import matches_title
 log = logging.getLogger(__name__)
 
 _API_URL = "https://jobicy.com/api/v2/remote-jobs"
-# Jobicy uses tag-based filtering; these cover AI/ML/Python roles
-_TARGET_TAGS = ["python", "machine-learning", "ai", "data-science", "backend"]
+# Jobicy uses tag-based filtering; these cover AI/ML/Python roles.
+# NOTE: the API 400s on tags shorter than 3 chars ('ai') and 404s when a tag
+# matches nothing ('data-science') — both spammed the logs every cycle.
+_TARGET_TAGS = ["python", "machine-learning", "data", "backend", "artificial-intelligence"]
 
 
 class JobicySource:
@@ -46,6 +48,11 @@ class JobicySource:
                             _API_URL,
                             params={"count": 50, "tag": tag},
                         )
+                        if r.status_code == 404:
+                            # Jobicy answers 404 when a tag matches no jobs —
+                            # an empty result, not an error.
+                            log.debug("Jobicy: no jobs for tag %s", tag)
+                            continue
                         if r.status_code != 200:
                             log.warning("Jobicy: HTTP %d for tag %s", r.status_code, tag)
                             continue
