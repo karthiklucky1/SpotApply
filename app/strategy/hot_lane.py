@@ -130,6 +130,8 @@ def _run_hot_lane_locked() -> dict:
 
     now = datetime.utcnow()
     fetched_jobs = 0
+    matched_jobs = 0    # postings that routed to at least one user's roles
+    inserted_jobs = 0   # NEW rows actually written (post-dedupe), all users
     users_touched: set = set()
 
     # Fetch boards CONCURRENTLY — the fetches are pure I/O, and doing 400 of
@@ -162,16 +164,20 @@ def _run_hot_lane_locked() -> dict:
             continue
 
         # Distribute each posting only to users whose target roles it matches.
+        routed_ids: set = set()
         for u in users:
             relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
             if not relevant:
                 continue
+            routed_ids.update(r.external_id for r in relevant)
             try:
                 new = _upsert(relevant, user_id=u["user_id"])
+                inserted_jobs += new
                 if new:
                     users_touched.add(u["user_id"])
             except Exception as e:
                 log.debug("hot lane upsert failed for %s: %s", u["user_id"], e)
+        matched_jobs += len(routed_ids)
 
     # Match + alert only for users who actually received new postings.
     alerts = 0
@@ -186,6 +192,8 @@ def _run_hot_lane_locked() -> dict:
         "boards": len(boards),
         "users": len(users),
         "fetched_jobs": fetched_jobs,
+        "matched_jobs": matched_jobs,
+        "inserted_jobs": inserted_jobs,
         "users_with_new_jobs": len(users_touched),
         "alerts": alerts,
         "at": now.isoformat(),

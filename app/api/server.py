@@ -2994,13 +2994,35 @@ def freshness_stats(request: Request) -> dict:
             .order_by(_FE.created_at.desc())
         ).all()
     hot_runs_24h = len(runs)
+    hot_inserted_24h = 0
     if runs:
         hot_last_at = runs[0].created_at.isoformat()
         for e in runs:
             try:
-                hot_jobs_24h += int(_json.loads(e.metadata_json or "{}").get("fetched_jobs") or 0)
+                meta = _json.loads(e.metadata_json or "{}")
+                hot_jobs_24h += int(meta.get("fetched_jobs") or 0)
+                hot_inserted_24h += int(meta.get("inserted_jobs") or 0)
             except Exception:
                 pass
+
+    # "New jobs" the user can actually feel: rows discovered in the last 24h
+    # (moves within minutes of a lane finding something, unlike the multi-day
+    # median-age metric), plus when the fresh/full discovery lanes last ran.
+    discovered_24h = sum(
+        1 for j in jobs
+        if (j.first_seen or j.discovered_at)
+        and _naive(j.first_seen or j.discovered_at) > now - timedelta(days=1)
+    )
+    last_discovery_at = None
+    with get_session() as session:
+        from app.db.models import DiscoveryRun as _DR
+        row = session.exec(
+            select(_DR).where(_DR.user_id == user_id_arg,
+                              _DR.finished_at != None)  # noqa: E711
+            .order_by(_DR.finished_at.desc()).limit(1)
+        ).first()
+        if row and row.finished_at:
+            last_discovery_at = row.finished_at.isoformat()
 
     return {
         "scored_feed_jobs": len(scored),
@@ -3013,6 +3035,9 @@ def freshness_stats(request: Request) -> dict:
         "hot_lane_last_run": hot_last_at,
         "hot_lane_runs_24h": hot_runs_24h,
         "hot_lane_jobs_24h": hot_jobs_24h,
+        "hot_lane_inserted_24h": hot_inserted_24h,
+        "jobs_discovered_24h": discovered_24h,
+        "last_discovery_run": last_discovery_at,
     }
 
 
