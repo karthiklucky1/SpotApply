@@ -2186,6 +2186,17 @@ def dashboard(request: Request, all_submitted: bool = False):
     # sponsors to the top — those are the jobs that can actually hire them.
     _boost_sponsorship = bool(visa_framing and getattr(visa_framing, "needs_future_sponsorship", False))
 
+    # Interaction learning: the user's own dismissals/applies tune the ranking
+    # (companies they keep ✕-ing sink; ones they engage with float).
+    _pref = None
+    try:
+        from app.matching.preference_learning import build_preference_profile
+        _pref = build_preference_profile(uid if uid != "local" else None)
+        if not _pref.has_signal:
+            _pref = None
+    except Exception as _pe:
+        log.debug("preference profile unavailable: %s", _pe)
+
     def _priority(job) -> float:
         """Rank by blended score (fit + hiring intent), plus an urgency/timing
         tiebreak, plus a sponsorship-aware boost for visa users."""
@@ -2222,6 +2233,11 @@ def dashboard(request: Request, all_submitted: bool = False):
                     base += 200           # established sponsor → boosted
                 elif spons and spons.explicitly_refuses:
                     base -= 500           # explicitly won't sponsor → sink
+            except Exception:
+                pass
+        if _pref is not None:
+            try:
+                base += _pref.adjustment(job.company, job.title)
             except Exception:
                 pass
         return base
@@ -3370,6 +3386,11 @@ def skip_application(application_id: int, request: Request) -> dict:
             raise HTTPException(status_code=404, detail="Application not found")
         application.status = ApplicationStatus.SKIPPED
         application.updated_at = datetime.utcnow()
+        # Mark this as a REAL user dismissal (vs system skips like cap expiry /
+        # ghost closes) — it's a training signal for preference learning.
+        from app.matching.preference_learning import USER_DISMISS_MARKER
+        if USER_DISMISS_MARKER not in (application.notes or ""):
+            application.notes = ((application.notes or "") + f"\n{USER_DISMISS_MARKER}").strip()
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}

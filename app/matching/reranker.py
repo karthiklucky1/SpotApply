@@ -168,11 +168,12 @@ def _sponsor_note(job: Job, profile) -> str:
     return ""
 
 
-def _build_prompt(resume_text: str, job: Job, profile=None) -> str:
+def _build_prompt(resume_text: str, job: Job, profile=None, feedback: str = "") -> str:
+    _fb = f"\n<user_feedback>\n{feedback}\n</user_feedback>\n" if feedback else ""
     return f"""<resume>
 {resume_text[:6000]}
 </resume>
-
+{_fb}
 <job>
 Title: {job.title}
 Company: {job.company}
@@ -221,8 +222,11 @@ def _parse_response(text: str) -> Tuple[float, str, List[str], dict]:
 
 
 class Reranker:
-    def __init__(self, profile=None):
+    def __init__(self, profile=None, feedback: str = ""):
         self._profile = profile
+        # Revealed-preference note from preference_learning — lets the LLM
+        # calibrate fit to what this user actually dismisses/engages with.
+        self._feedback = feedback or ""
         self._anthropic_client = None
         self._openai_client = None
         self._active_backend: Optional[str] = None  # "anthropic" or "openai"
@@ -293,7 +297,7 @@ class Reranker:
             log.info("Reranker: Pre-filtered job %s - %s", job.title, pre_filtered[1])
             return pre_filtered
 
-        prompt = _build_prompt(resume_text, job, self._profile)
+        prompt = _build_prompt(resume_text, job, self._profile, feedback=self._feedback)
 
         # Try each backend; retry rate-limit/overloaded errors with exponential
         # backoff + jitter before falling through. CRITICAL: on total failure we

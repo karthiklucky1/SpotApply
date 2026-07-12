@@ -297,7 +297,21 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.warning("Could not create CandidateProfile for door filter: %s", _ce)
 
     embedding_filter = EmbeddingFilter(matcher=matcher)
-    reranker = Reranker(profile=_user_profile)
+
+    # Interaction learning: revealed preferences (dismissals/applies) calibrate
+    # the LLM scoring and gate shortlisting of repeatedly-dismissed companies.
+    _pref = None
+    _feedback = ""
+    try:
+        from app.matching.preference_learning import build_preference_profile
+        _pref = build_preference_profile(user_id)
+        _feedback = _pref.feedback_note()
+        if not _pref.has_signal:
+            _pref = None
+    except Exception as _fe:
+        log.debug("preference learning unavailable: %s", _fe)
+
+    reranker = Reranker(profile=_user_profile, feedback=_feedback)
     shortlisted: List[int] = []
 
     # Count applications already created today (scoped to user)
@@ -488,6 +502,13 @@ def run_matching(user_id: str | None = None) -> List[int]:
 
             # If rerank ≥ threshold, create an Application row in SHORTLISTED state
             if score >= settings.shortlist_score_threshold:
+                # Learning gate: the user repeatedly ✕-dismissed this company —
+                # keep the score but don't shortlist another of their roles.
+                if _pref is not None and (job.company or "").strip().lower() in _pref.disliked_companies:
+                    log.info("Preference gate: user keeps dismissing %s — not shortlisting '%s'.",
+                             job.company, job.title)
+                    session.commit()
+                    continue
                 existing = session.exec(
                     select(Application).where(Application.job_id == job.id)
                 ).first()
