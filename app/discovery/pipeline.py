@@ -525,14 +525,19 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # Per-user location preference — drives the country gate in _upsert + SerpAPI query.
     _country = "United States"
     _remote_ok = True
-    try:
-        from app.autofill.answer_pack import _get_or_create_profile
-        _p = _get_or_create_profile(user_id=user_id if user_id and user_id != "local" else None)
-        if _p:
-            _country = (getattr(_p, "preferred_country", "") or "United States").strip() or "United States"
-            _remote_ok = bool(getattr(_p, "remote_ok", True))
-    except Exception as _ce:
-        log.debug("discovery country preference unavailable (default US): %s", _ce)
+    if user_id == SHARED_POOL_USER:
+        # The shared pool serves users in every country: store everything and
+        # let each user's adoption pass apply THEIR country preference.
+        _country = None
+    else:
+        try:
+            from app.autofill.answer_pack import _get_or_create_profile
+            _p = _get_or_create_profile(user_id=user_id if user_id and user_id != "local" else None)
+            if _p:
+                _country = (getattr(_p, "preferred_country", "") or "United States").strip() or "United States"
+                _remote_ok = bool(getattr(_p, "remote_ok", True))
+        except Exception as _ce:
+            log.debug("discovery country preference unavailable (default US): %s", _ce)
 
     # Run async parts of the pipeline: discovery, registration, validation
     async def run_discovery_async():
@@ -832,7 +837,9 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 return []
             try:
                 if name in _COUNTRY_AWARE_SOURCES:
-                    src = src_cls(keywords=_keywords, country=_country)
+                    # Shared-pool runs gate nothing (_country=None) but the
+                    # query APIs still need a concrete country string.
+                    src = src_cls(keywords=_keywords, country=_country or "United States")
                 else:
                     src = src_cls(keywords=_keywords)
                 raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)

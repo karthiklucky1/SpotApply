@@ -351,6 +351,28 @@ async def _registry_maintenance_once(cycle: int) -> None:
     await asyncio.to_thread(_seed_missing_ats_datasets)
     validated = await run_validation_loop(limit=150)
     _log.info("Registry maintenance: validated %d boards", validated)
+    # Shared-pool retention: close shared postings older than 45 days so the
+    # scrape-once pool doesn't grow unbounded (adoption ignores closed rows).
+    try:
+        from datetime import datetime as _rdt, timedelta as _rtd
+        from app.db.models import Job as _Job
+        from app.discovery.pipeline import SHARED_POOL_USER
+        cutoff = _rdt.utcnow() - _rtd(days=45)
+        with get_session() as session:
+            olds = session.exec(
+                select(_Job).where(_Job.user_id == SHARED_POOL_USER,
+                                   _Job.is_closed == False,  # noqa: E712
+                                   _Job.first_seen < cutoff)
+            ).all()
+            for j in olds:
+                j.is_closed = True
+                j.closed_reason = "shared-pool retention (45d)"
+                session.add(j)
+            if olds:
+                session.commit()
+                _log.info("Shared-pool retention: closed %d old postings", len(olds))
+    except Exception as e:
+        _log.warning("Shared-pool retention failed: %s", e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
@@ -407,12 +429,9 @@ async def _fresh_lane():
             with get_session() as session:
                 users = session.exec(select(UserProfile)).all()
             user_ids = [u.user_id for u in users if u.user_id and _user_has_resume(u.user_id)]
-            for uid in user_ids:
-                try:
-                    _log.info("Fresh lane: boards rescan + match for user %s", uid)
-                    await asyncio.to_thread(_fresh_scan_for_user, uid)
-                except Exception as e:
-                    _log.exception("Fresh lane error for user %s: %s", uid, e)
+            if user_ids:
+                _log.info("Fresh lane: ONE shared scan for %d user(s)", len(user_ids))
+                await asyncio.to_thread(_global_fresh_scan, user_ids)
         except Exception as e:
             _log.exception("Fresh lane outer error: %s", e)
         await asyncio.sleep(hours * 60 * 60)
@@ -443,25 +462,60 @@ async def _hot_lane():
         await asyncio.sleep(minutes * 60)
 
 
-def _fresh_scan_for_user(user_id) -> None:
-    """Synchronous body of one fresh-lane pass: boards-only discovery → match →
-    instant alerts for anything shortlisted that was posted in the last day.
-    Serialized with all other discovery/matching to bound peak memory."""
+def _union_roles(user_ids) -> list[str]:
+    """Distinct target roles across all users — one scrape serves everyone."""
+    seen: set = set()
+    out: list[str] = []
+    for uid in user_ids:
+        for r in _get_target_roles(uid) or []:
+            if r.lower() not in seen:
+                seen.add(r.lower())
+                out.append(r)
+    return out
+
+
+def _adopt_match_alert(user_ids) -> None:
+    """Per-user tail of a global scrape: adopt matching shared-pool jobs
+    (cheap DB copy), score them, dispatch fresh alerts. Caller holds the
+    discovery lock (matching loads the model + job pool)."""
+    from app.strategy.adoption import adopt_shared_jobs
+    from app.strategy.fresh_alerts import dispatch_fresh_alerts
+    for uid in user_ids:
+        _uid = uid if uid != "local" else None
+        try:
+            adopt_shared_jobs(_uid)
+            shortlisted = run_matching(_uid) or []
+            dispatch_fresh_alerts(_uid, shortlisted)
+        except Exception as e:
+            log.warning("adopt/match/alert failed for %s: %s", uid, e)
+
+
+def _global_fresh_scan(user_ids) -> None:
+    """One shared fresh-lane pass for ALL users: scrape once into the shared
+    pool (registry boards + free keyless feeds), then adopt + match per user.
+    Replaces the old per-user scans that repeated the same fetches N times."""
     from app.common.discovery_lock import discovery_guard
+    from app.discovery.pipeline import SHARED_POOL_USER
     with discovery_guard(label="fresh lane") as ran:
         if not ran:
             return  # another pass is running; the next 2h cycle covers it
-        roles = _get_target_roles(user_id) or None
-        # "fresh" = registry boards + the free keyless aggregator feeds
-        # (Remotive/RemoteOK/The Muse/…). Quota-metered sources (SerpAPI etc.)
-        # stay on the 6h full scheduler so keys aren't burned every 2h.
-        run_discovery(user_id, keywords=roles, phase="fresh")
-        shortlisted = run_matching(user_id) or []
-    try:
-        from app.strategy.fresh_alerts import dispatch_fresh_alerts
-        dispatch_fresh_alerts(user_id, shortlisted)
-    except Exception as e:
-        log.warning("fresh alert dispatch failed for %s: %s", user_id, e)
+        roles = _union_roles(user_ids) or None
+        run_discovery(SHARED_POOL_USER, keywords=roles, phase="fresh")
+        _adopt_match_alert(user_ids)
+
+
+def _global_discover_then_match(user_ids) -> None:
+    """One shared FULL discovery for ALL users (aggregators incl. quota-keyed
+    sources + boards), then adopt + match per user. With N users this cuts
+    scheduled API spend to 1/N of the old per-user runs."""
+    from app.common.discovery_lock import discovery_guard
+    from app.discovery.pipeline import SHARED_POOL_USER
+    with discovery_guard(label="global discovery") as ran:
+        if not ran:
+            return
+        roles = _union_roles(user_ids) or None
+        run_discovery(SHARED_POOL_USER, keywords=roles, phase="all")
+        _adopt_match_alert(user_ids)
 
 
 async def _scheduler():
@@ -481,12 +535,9 @@ async def _scheduler():
             user_ids = [u.user_id for u in users if u.user_id and _user_has_resume(u.user_id)]
             if not user_ids:
                 _log.info("Scheduler: no users with resumes, skipping run")
-            for uid in user_ids:
-                try:
-                    _log.info("Scheduler: running discovery + matching for user %s", uid)
-                    await asyncio.to_thread(_discover_then_match, uid)
-                except Exception as e:
-                    _log.exception("Scheduler error for user %s: %s", uid, e)
+            else:
+                _log.info("Scheduler: ONE global discovery for %d user(s)", len(user_ids))
+                await asyncio.to_thread(_global_discover_then_match, user_ids)
         except Exception as e:
             _log.exception("Scheduler outer error: %s", e)
         await asyncio.sleep(INTERVAL)
@@ -3051,8 +3102,11 @@ def freshness_stats(request: Request) -> dict:
     last_discovery_at = None
     with get_session() as session:
         from app.db.models import DiscoveryRun as _DR
+        from app.discovery.pipeline import SHARED_POOL_USER
+        # Global (shared-pool) runs count too — they feed this user via adoption.
+        _owner = (_DR.user_id == user_id_arg) | (_DR.user_id == SHARED_POOL_USER)
         row = session.exec(
-            select(_DR).where(_DR.user_id == user_id_arg,
+            select(_DR).where(_owner,
                               _DR.finished_at != None)  # noqa: E711
             .order_by(_DR.finished_at.desc()).limit(1)
         ).first()

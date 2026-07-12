@@ -63,11 +63,17 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Multi-tenancy:** every query is scoped by `user_id` from the Supabase JWT
   (`_get_user_id`/`_require_user_id` in server.py). `"local"` = SQLite dev user.
   Never leak data across users; check ownership on per-application routes.
-- **Scheduler:** `server.py`'s asyncio scheduler runs discovery+matching ~every 6h in
-  BOTH local and prod, plus a "fresh lane" every 2h (`_fresh_lane`, phase="fresh"
-  = registry boards + free keyless feeds; quota-keyed sources stay on the 6h lane;
-  env FRESH_LANE_INTERVAL_HOURS, 0 disables) and a 20-min "hot lane"
-  (`strategy/hot_lane.py`, concurrent board polls). Do NOT also schedule those in
+- **Scrape once, serve many:** all scheduled lanes write postings ONCE to the
+  shared pool (`Job.user_id == SHARED_POOL_USER`, pipeline.py); per-user pools
+  are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also
+  runs on resume upload + role edits = instant feeds). Scheduled discovery is
+  ONE global pass with the union of all users' roles — never per-user.
+- **Scheduler:** `server.py`'s asyncio scheduler runs global discovery→adopt→match
+  ~every `DISCOVERY_INTERVAL_HOURS` in BOTH local and prod, plus a "fresh lane"
+  every 2h (`_global_fresh_scan`, phase="fresh" = registry boards + free keyless
+  feeds; quota-keyed sources stay on the full lane; env FRESH_LANE_INTERVAL_HOURS,
+  0 disables) and a 20-min "hot lane" (`strategy/hot_lane.py`, lock-free concurrent
+  board polls; only its matching phase takes the discovery lock). Do NOT also schedule those in
   `app/main.py` (it only adds the Telegram bot + harvester/validator/report jobs)
   — double-runs otherwise.
 - **Run modes:** prod = `uvicorn app.api.server:app`; local all-in-one = `python -m app.main`.
