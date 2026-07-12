@@ -15,10 +15,14 @@ def client():
 
 
 class FakeResp:
-    def __init__(self, status_code=200, content=b"", ctype="image/png"):
+    def __init__(self, status_code=200, content=b"", ctype="image/png", json_data=None):
         self.status_code = status_code
         self.content = content
         self.headers = {"content-type": ctype}
+        self._json = json_data
+
+    def json(self):
+        return self._json
 
 
 def test_favicon_hit_and_cache(client, monkeypatch):
@@ -89,6 +93,67 @@ def test_favicon_rejects_garbage_domain(client):
     for bad in ("<script>", "a", "", "foo..bar", "x" * 200):
         r = client.get("/api/favicon", params={"domain": bad})
         assert r.status_code == 204, bad
+
+
+def test_name_resolution_rescues_bad_domain_guess(client, monkeypatch):
+    """When the guessed domain has no logo, the company NAME is resolved to its
+    real domain via Clearbit Autocomplete and the logo is fetched from there."""
+    import app.api.server as srv
+    srv._FAVICON_CACHE.clear()
+    seen = []
+
+    def fake_get(url, **kw):
+        seen.append(url)
+        if "autocomplete.clearbit.com" in url:
+            return FakeResp(200, b"[]", "application/json",
+                            json_data=[{"name": "Bjak", "domain": "bjak.com",
+                                        "logo": "https://logo.clearbit.com/bjak.com"}])
+        if "logo.clearbit.com" in url and kw.get("params") is not None \
+                and "bjak.com" in url:
+            return FakeResp(200, PNG)
+        return FakeResp(404, b"", "text/html")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = client.get("/api/favicon", params={"domain": "bjakcareer.com", "name": "Bjakcareer"})
+    assert r.status_code == 200 and r.content == PNG
+    assert any("autocomplete.clearbit.com" in u for u in seen)
+    assert any("logo.clearbit.com/bjak.com" in u for u in seen)
+
+
+def test_name_mismatch_suggestion_rejected(client, monkeypatch):
+    """An autocomplete suggestion whose name doesn't match the query must be
+    ignored — an obscure company must not get a lookalike brand's logo."""
+    import app.api.server as srv
+    srv._FAVICON_CACHE.clear()
+
+    def fake_get(url, **kw):
+        if "autocomplete.clearbit.com" in url:
+            return FakeResp(200, b"[]", "application/json",
+                            json_data=[{"name": "Zillow", "domain": "zillow.com"}])
+        return FakeResp(404, b"", "text/html")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = client.get("/api/favicon", params={"domain": "obscureshop.com", "name": "Obscure Shop"})
+    assert r.status_code == 204
+
+
+def test_duckduckgo_fallback(client, monkeypatch):
+    """Clearbit and Google both miss → DuckDuckGo icon service serves the logo."""
+    import app.api.server as srv
+    srv._FAVICON_CACHE.clear()
+
+    def fake_get(url, **kw):
+        if "icons.duckduckgo.com" in url:
+            return FakeResp(200, PNG, "image/x-icon")
+        return FakeResp(404, b"", "text/html")
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = client.get("/api/favicon", params={"domain": "smallshop.io"})
+    assert r.status_code == 200 and r.content == PNG
+    assert r.headers["content-type"].startswith("image/")
 
 
 def test_domain_guess_strips_career_suffixes():

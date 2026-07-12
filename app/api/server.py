@@ -639,26 +639,65 @@ templates.env.filters["company_domain"] = _company_domain_filter
 # into a red 404 in the user's console (and leaks browsing to a third party).
 # Proxy + cache server-side instead: hits return the icon, misses return an
 # empty 204 — a 2xx, so the browser logs nothing and the initials avatar shows.
-_FAVICON_CACHE: dict = {}   # domain -> (expires_ts, bytes|None, content_type)
+# When the guessed domain misses, the company NAME is resolved to its real
+# domain via Clearbit Autocomplete (free, keyless) — the guess ('acmelabs.com')
+# is the main failure point, not the logo providers.
+_FAVICON_CACHE: dict = {}   # (domain, name) -> (expires_ts, bytes|None, content_type)
 _FAVICON_TTL = 7 * 24 * 3600
 _FAVICON_CACHE_MAX = 5000
 _FAVICON_DOMAIN_RE = None  # compiled lazily
 
 
+def _norm_company_name(name: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", (name or "").strip().lower())
+
+
+def _resolve_logo_domain(name: str) -> str | None:
+    """Company name → real website domain via Clearbit Autocomplete (free, no
+    key). Only accepts a suggestion whose name loosely matches the query, so an
+    obscure company never gets a big-brand lookalike's logo."""
+    import httpx
+    try:
+        resp = httpx.get("https://autocomplete.clearbit.com/v1/companies/suggest",
+                         params={"query": name}, timeout=3)
+        if resp.status_code != 200:
+            return None
+        suggestions = resp.json() or []
+    except Exception:
+        return None
+    want = _norm_company_name(name)
+    if not want:
+        return None
+    for s in suggestions:
+        got = _norm_company_name(s.get("name", ""))
+        dom = (s.get("domain") or "").strip().lower()
+        if not dom or not got:
+            continue
+        if (got == want or got.startswith(want) or want.startswith(got)
+                or (len(want) >= 4 and want in got)
+                or (len(got) >= 4 and got in want)):
+            return dom
+    return None
+
+
 @app.get("/api/favicon")
-def favicon_proxy(domain: str = "") -> StarletteResponse:
+def favicon_proxy(domain: str = "", name: str = "") -> StarletteResponse:
     import re as _re
     import time as _time
     global _FAVICON_DOMAIN_RE
     if _FAVICON_DOMAIN_RE is None:
         _FAVICON_DOMAIN_RE = _re.compile(r"^[a-z0-9][a-z0-9.-]{1,78}[a-z0-9]$")
     domain = (domain or "").strip().lower()
+    name = (name or "").strip()[:80]
     headers = {"Cache-Control": "public, max-age=604800"}
-    if not _FAVICON_DOMAIN_RE.match(domain) or ".." in domain:
+    valid_domain = bool(_FAVICON_DOMAIN_RE.match(domain)) and ".." not in domain
+    if not valid_domain and not name:
         return StarletteResponse(status_code=204, headers=headers)
 
     now = _time.time()
-    hit = _FAVICON_CACHE.get(domain)
+    cache_key = (domain if valid_domain else "", _norm_company_name(name))
+    hit = _FAVICON_CACHE.get(cache_key)
     if hit and hit[0] > now:
         _, body, ctype = hit
         if body is None:
@@ -687,12 +726,29 @@ def favicon_proxy(domain: str = "") -> StarletteResponse:
             return resp.content, ct
         return None
 
-    # 1) Clearbit — real, high-res brand logos (free, no key). 2) Google favicon
-    # fallback for domains Clearbit doesn't have. 3) neither → 204 (letter avatar).
-    got = _try(f"https://logo.clearbit.com/{domain}", params={"size": 128})
-    if got is None:
+    # Cascade: 1) Clearbit logo on the guessed domain. 2) Resolve the real
+    # domain from the company NAME (Clearbit Autocomplete) and retry Clearbit —
+    # this rescues every wrong '.com' guess. 3) Google favicon on the best-known
+    # domain. 4) DuckDuckGo icons (covers domains the others miss).
+    # 5) nothing → 204 (letter avatar).
+    got = _try(f"https://logo.clearbit.com/{domain}", params={"size": 128}) \
+        if valid_domain else None
+
+    resolved = None
+    if got is None and name:
+        resolved = _resolve_logo_domain(name)
+        if resolved and (not _FAVICON_DOMAIN_RE.match(resolved) or ".." in resolved):
+            resolved = None
+        if resolved and resolved != domain:
+            got = _try(f"https://logo.clearbit.com/{resolved}", params={"size": 128})
+
+    best = resolved or (domain if valid_domain else "")
+    if got is None and best:
         got = _try("https://www.google.com/s2/favicons",
-                   params={"domain": domain, "sz": 128})
+                   params={"domain": best, "sz": 128})
+    if got is None and best:
+        got = _try(f"https://icons.duckduckgo.com/ip3/{best}.ico")
+
     if got is not None:
         body, ctype = got
     elif upstream_error:
@@ -700,7 +756,7 @@ def favicon_proxy(domain: str = "") -> StarletteResponse:
 
     if len(_FAVICON_CACHE) >= _FAVICON_CACHE_MAX:
         _FAVICON_CACHE.pop(next(iter(_FAVICON_CACHE)), None)
-    _FAVICON_CACHE[domain] = (now + ttl, body, ctype)
+    _FAVICON_CACHE[cache_key] = (now + ttl, body, ctype)
     if body is None:
         return StarletteResponse(status_code=204, headers=headers)
     return StarletteResponse(content=body, media_type=ctype, headers=headers)
