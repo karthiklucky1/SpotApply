@@ -287,6 +287,50 @@ def test_dead_board_deactivated_on_404():
     assert healthy.is_active is True and healthy.failure_count == 0
 
 
+def test_hot_lane_writes_shared_pool(monkeypatch):
+    """Scrape once, serve many: EVERY fetched posting lands in the shared pool
+    (for future adoption), while each user's pool only gets role matches."""
+    import app.strategy.hot_lane as hl
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    with get_session() as session:
+        _clean(session)
+        _mk_board(session, "acme")
+        session.add(UserProfile(user_id="u_ml", target_roles="Machine Learning Engineer"))
+        session.commit()
+
+    monkeypatch.setattr(hl, "_active_users", lambda: [
+        {"user_id": "u_ml", "roles": ["machine learning engineer"]},
+    ])
+
+    class FakeScraper:
+        def fetch(self):
+            return [
+                RawJob(source="greenhouse", external_id="30", company="Acme",
+                       title="Senior ML Engineer", location="Remote", remote=True,
+                       url="https://boards.greenhouse.io/acme/jobs/30",
+                       description="PyTorch", posted_at=datetime.utcnow()),
+                RawJob(source="greenhouse", external_id="31", company="Acme",
+                       title="Backend Engineer", location="Remote", remote=True,
+                       url="https://boards.greenhouse.io/acme/jobs/31",
+                       description="Go", posted_at=datetime.utcnow()),
+            ]
+
+    monkeypatch.setattr("app.discovery.pipeline.scraper_for",
+                        lambda ats, slug, career_url=None: FakeScraper())
+    monkeypatch.setattr("app.matching.pipeline.run_matching", lambda uid: [])
+    monkeypatch.setattr("app.strategy.fresh_alerts.dispatch_fresh_alerts", lambda uid, ids: 0)
+
+    stats = hl.run_hot_lane()
+    assert stats["shared_inserted"] == 2
+
+    with get_session() as session:
+        shared = session.exec(select(Job).where(Job.user_id == SHARED_POOL_USER)).all()
+        mine = session.exec(select(Job).where(Job.user_id == "u_ml")).all()
+    assert sorted(j.title for j in shared) == ["Backend Engineer", "Senior ML Engineer"]
+    assert [j.title for j in mine] == ["Senior ML Engineer"]  # role-routed only
+
+
 def test_hot_lane_no_active_users():
     import app.strategy.hot_lane as hl
     with get_session() as session:

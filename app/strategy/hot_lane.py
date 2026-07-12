@@ -140,7 +140,11 @@ def run_hot_lane() -> dict:
     fetched_jobs = 0
     matched_jobs = 0    # postings that routed to at least one user's roles
     inserted_jobs = 0   # NEW rows actually written (post-dedupe), all users
+    shared_inserted = 0  # NEW rows written to the shared pool (scrape once)
     users_touched: set = set()
+    # Union of every user's roles: lets department users' titles survive the
+    # non-tech gate when writing to the SHARED pool, which serves everyone.
+    _all_roles: list = sorted({r for u in users for r in (u["roles"] or [])})
 
     # Fetch boards CONCURRENTLY — the fetches are pure I/O, and doing 400 of
     # them sequentially held the global discovery lock for the whole sweep,
@@ -170,6 +174,15 @@ def run_hot_lane() -> dict:
         if not raw:
             _mark_polled(board.slug, board.ats, job_count=0, ok=True)
             continue
+
+        # Scrape once: persist EVERY fetched posting to the shared pool, so
+        # future users (and role edits) can adopt them without re-scraping.
+        try:
+            from app.discovery.pipeline import SHARED_POOL_USER
+            shared_inserted += _upsert(raw, user_id=SHARED_POOL_USER,
+                                       user_keywords=_all_roles)
+        except Exception as e:
+            log.debug("hot lane shared-pool upsert failed: %s", e)
 
         # Distribute each posting only to users whose target roles it matches.
         routed_ids: set = set()
@@ -218,6 +231,7 @@ def run_hot_lane() -> dict:
         "fetched_jobs": fetched_jobs,
         "matched_jobs": matched_jobs,
         "inserted_jobs": inserted_jobs,
+        "shared_inserted": shared_inserted,
         "users_with_new_jobs": len(users_touched),
         "matching": matching,
         "alerts": alerts,

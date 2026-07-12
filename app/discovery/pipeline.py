@@ -147,6 +147,13 @@ _DIRECT_ATS_SOURCES = {
     JobSource.WORKDAY, JobSource.SMARTRECRUITERS,
 }
 
+# Sentinel owner for the SHARED job pool: postings scraped once for everyone.
+# Every lane writes fetched postings here a single time; per-user pools are
+# then populated by cheap DB "adoption" copies (see strategy/adoption.py) —
+# scrape-once/serve-many, like every top job platform. Shared rows never leak
+# into user-facing queries because those are always scoped by user_id.
+SHARED_POOL_USER = "__shared__"
+
 
 def scraper_for(ats, slug: str, career_url: str | None = None):
     """Map a (ats, slug) to a live scraper instance, or None if unsupported.
