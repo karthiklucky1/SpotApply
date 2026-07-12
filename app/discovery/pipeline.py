@@ -377,6 +377,44 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     return inserted
 
 
+# Consecutive failed polls before a non-404 board is retired from rotation.
+BOARD_DEACTIVATE_AFTER_FAILURES = 5
+
+
+def record_board_failure(source_name: str, slug: str | None, error: str) -> None:
+    """Count consecutive fetch failures per registry board and retire dead ones.
+
+    A 404 from a board API means the company moved or renamed its board — it
+    will 404 on every future poll, so deactivate immediately. Other errors
+    (timeouts, 5xx) deactivate after BOARD_DEACTIVATE_AFTER_FAILURES in a row.
+    The registry validation loop's retry logic can revive false positives.
+    Every successful poll resets failure_count, so healthy boards never decay."""
+    if not slug:
+        return
+    try:
+        with get_session() as session:
+            row = session.exec(
+                select(CompanyRegistry)
+                .where(CompanyRegistry.slug == slug)
+                .where(CompanyRegistry.ats == JobSource(source_name))
+            ).first()
+            if not row:
+                return
+            row.failure_count = (row.failure_count or 0) + 1
+            row.last_error = (error or "")[:300]
+            is_404 = "404" in (error or "")
+            if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
+                row.is_active = False
+                row.inactive_reason = (
+                    "board_not_found (404)" if is_404
+                    else f"unreachable x{row.failure_count}"
+                )
+            session.add(row)
+            session.commit()
+    except Exception as e:
+        log.debug("record_board_failure failed for %s/%s: %s", source_name, slug, e)
+
+
 def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], user_id: str | None = None):
     """Mark jobs that disappeared from a direct ATS board as closed.
 
@@ -634,10 +672,15 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
 
     def _fetch_board(scraper):
         try:
-            return scraper, scraper.fetch()
+            return scraper, scraper.fetch(), None
         except Exception as e:
-            log.exception("Scraper %s failed: %s", scraper.name, e)
-            return scraper, None
+            # 404s are expected churn (companies move/rename boards) — one
+            # warning line, not a full traceback per dead board.
+            if "404" in str(e):
+                log.warning("Scraper %s failed: %s", scraper.name, e)
+            else:
+                log.exception("Scraper %s failed: %s", scraper.name, e)
+            return scraper, None, str(e)
 
     _t0 = _bt.time()
     fetched_boards: list = []
@@ -651,7 +694,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # starving every other lane. Deferred boards keep their stale last_seen,
     # so the least-recently-seen rotation picks them up first next run.
     _budget_s = max(0, int(getattr(settings, "board_phase_budget_minutes", 30) or 0)) * 60
-    for _bi, (scraper, raw) in enumerate(fetched_boards):
+    for _bi, (scraper, raw, _err) in enumerate(fetched_boards):
         if _budget_s and (_bt.time() - _t0) > _budget_s:
             log.warning(
                 "Board phase exceeded its %d-minute budget — deferring %d of %d "
@@ -678,7 +721,9 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                     if company_name:
                         mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
             else:
-                log.warning("%s scraper fetch returned None (failed)", scraper.name)
+                _slug = (getattr(scraper, "board_slug", None) or getattr(scraper, "company_slug", None)
+                         or getattr(scraper, "org_slug", None))
+                record_board_failure(scraper.name, _slug, _err or "fetch failed")
         except Exception as e:
             log.exception("Scraper %s processing failed: %s", scraper.name, e)
 

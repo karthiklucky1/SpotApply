@@ -164,7 +164,7 @@ def run_hot_lane() -> dict:
         if raw is None:
             if err != "unsupported":
                 log.debug("hot lane fetch failed %s/%s: %s", board.ats, board.slug, err)
-                _mark_polled(board.slug, board.ats, job_count=None, ok=False)
+                _mark_polled(board.slug, board.ats, job_count=None, ok=False, error=err)
             continue
         fetched_jobs += len(raw)
         if not raw:
@@ -249,9 +249,12 @@ def _finish_cycle(stats: dict) -> dict:
 
 
 def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
-                 new_jobs: int = 0) -> None:
+                 new_jobs: int = 0, error: str = "") -> None:
     """Record a poll so board rotation stays fair, failures decay a board, and
-    yield (new postings produced) steers future polling toward active boards."""
+    yield (new postings produced) steers future polling toward active boards.
+    Dead boards (404 = board gone; or repeated failures) are retired so the
+    per-cycle budget stops burning slots on companies that no longer exist."""
+    from app.discovery.pipeline import BOARD_DEACTIVATE_AFTER_FAILURES
     try:
         with get_session() as session:
             row = session.exec(
@@ -270,6 +273,14 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                     row.last_new_job_at = datetime.utcnow()
             else:
                 row.failure_count = (row.failure_count or 0) + 1
+                row.last_error = (error or "")[:300]
+                is_404 = "404" in (error or "")
+                if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
+                    row.is_active = False
+                    row.inactive_reason = (
+                        "board_not_found (404)" if is_404
+                        else f"unreachable x{row.failure_count}"
+                    )
             session.add(row)
             session.commit()
     except Exception:

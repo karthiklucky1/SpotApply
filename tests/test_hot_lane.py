@@ -242,6 +242,51 @@ def test_hot_lane_inserts_even_when_lock_busy(monkeypatch):
     assert [j.title for j in jobs] == ["ML Engineer"]
 
 
+def test_dead_board_deactivated_on_404():
+    """A 404 means the company's board is gone — it must be retired immediately
+    so future cycles stop burning budget on it. A transient error only counts
+    toward the consecutive-failure threshold."""
+    from app.strategy.hot_lane import _mark_polled
+    with get_session() as session:
+        _clean(session)
+        _mk_board(session, "goneco")
+        _mk_board(session, "flakyco")
+
+    _mark_polled("goneco", JobSource.GREENHOUSE, job_count=None, ok=False,
+                 error="Client error '404 Not Found' for url 'https://x'")
+    _mark_polled("flakyco", JobSource.GREENHOUSE, job_count=None, ok=False,
+                 error="timeout")
+
+    with get_session() as session:
+        gone = session.exec(select(CompanyRegistry)
+                            .where(CompanyRegistry.slug == "goneco")).first()
+        flaky = session.exec(select(CompanyRegistry)
+                             .where(CompanyRegistry.slug == "flakyco")).first()
+    assert gone.is_active is False and "404" in (gone.inactive_reason or "")
+    assert flaky.is_active is True and flaky.failure_count == 1
+
+    # Repeated transient failures eventually retire the board too…
+    from app.discovery.pipeline import BOARD_DEACTIVATE_AFTER_FAILURES
+    for _ in range(BOARD_DEACTIVATE_AFTER_FAILURES - 1):
+        _mark_polled("flakyco", JobSource.GREENHOUSE, job_count=None, ok=False,
+                     error="timeout")
+    with get_session() as session:
+        flaky = session.exec(select(CompanyRegistry)
+                             .where(CompanyRegistry.slug == "flakyco")).first()
+    assert flaky.is_active is False
+
+    # …and a success resets the failure counter for healthy boards.
+    with get_session() as session:
+        _clean(session)
+        _mk_board(session, "healthyco")
+    _mark_polled("healthyco", JobSource.GREENHOUSE, job_count=None, ok=False, error="timeout")
+    _mark_polled("healthyco", JobSource.GREENHOUSE, job_count=3, ok=True)
+    with get_session() as session:
+        healthy = session.exec(select(CompanyRegistry)
+                               .where(CompanyRegistry.slug == "healthyco")).first()
+    assert healthy.is_active is True and healthy.failure_count == 0
+
+
 def test_hot_lane_no_active_users():
     import app.strategy.hot_lane as hl
     with get_session() as session:
