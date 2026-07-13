@@ -45,6 +45,18 @@ def _active_users() -> list[dict]:
         if not uid or not _user_has_resume(uid):
             continue
         roles = [r.lower() for r in (_get_target_roles(uid) or [])]
+        if not roles:
+            # No saved roles → don't route the ENTIRE firehose to this user
+            # (_title_matches accepts everything on empty roles, which bloats
+            # their pool to the whole shared pool). Use profile-derived roles so
+            # routing stays focused; the user can edit their roles anytime.
+            try:
+                from app.api.server import _suggest_roles
+                from app.autofill.answer_pack import _get_or_create_profile
+                roles = [r.lower() for r in _suggest_roles(
+                    _get_or_create_profile(user_id=uid if uid != "local" else None))]
+            except Exception:
+                pass
         out.append({"user_id": uid, "roles": roles})
     return out
 

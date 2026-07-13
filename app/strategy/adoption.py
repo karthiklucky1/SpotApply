@@ -40,10 +40,9 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert
     from app.discovery.title_filter import role_title_match
 
-    roles = [r.lower() for r in (_get_target_roles(user_id or "local") or [])]
-
     # Location preferences — same defaults run_discovery uses.
     country, remote_ok = "United States", True
+    p = None
     try:
         from app.autofill.answer_pack import _get_or_create_profile
         p = _get_or_create_profile(user_id=user_id)
@@ -52,6 +51,22 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
             remote_ok = bool(getattr(p, "remote_ok", True))
     except Exception as e:
         log.debug("adoption: profile unavailable (default US): %s", e)
+
+    roles = [r.lower() for r in (_get_target_roles(user_id or "local") or [])]
+    if not roles:
+        # No saved roles → do NOT adopt the whole shared firehose. role_title_match
+        # accepts EVERY title when roles is empty, so a role-less user copies the
+        # entire shared pool into their own (seen in prod: one user's pool grew to
+        # ~115k jobs, making their FAISS rebuild take ~9 min and starving the board
+        # fetch of CPU). Fall back to roles derived from the profile so the feed
+        # stays focused and the pool stays small; the user can still edit them.
+        try:
+            from app.api.server import _suggest_roles
+            roles = [r.lower() for r in _suggest_roles(p)]
+            log.info("Adoption: user %s had no target roles — using derived roles %s",
+                     user_id or "local", roles)
+        except Exception as _re:
+            log.debug("adoption role fallback failed: %s", _re)
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
     with get_session() as session:
