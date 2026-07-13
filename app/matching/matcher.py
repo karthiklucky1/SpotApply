@@ -32,10 +32,12 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DIM = 384
 
 # Max jobs indexed into FAISS per user. Bounds the from-scratch rebuild so a
-# bloated per-user pool can't turn it into a multi-minute CPU encode that holds
-# the matching lock. Generous — retrieval never looks deeper than the newest
-# ~2k unscored jobs, so this is well above what matching actually needs.
-REBUILD_MAX_JOBS = 25000
+# bloated pool can't turn it into a multi-minute CPU encode that holds the
+# matching lock. Retrieval never looks deeper than the newest ~2k unscored jobs
+# (search_for_resume corpus_cap), so a few thousand is ample. Kept SMALL because
+# the embedding model runs on a shared CPU: encoding 25k long job texts on a
+# contended box took 20+ min (an effective hang); 4k of shortened text is ~1 min.
+REBUILD_MAX_JOBS = 4000
 
 # Supabase enforces a statement_timeout, so a single UPDATE over thousands of
 # rows gets cancelled ("QueryCanceled … N bound parameter sets"). Commit the
@@ -190,8 +192,14 @@ class Matcher:
 
     @staticmethod
     def _job_text(job: Job) -> str:
-        """Document text we embed for each job. Title weighted heavily."""
-        return f"{job.title}\n{job.title}\n{job.company} | {job.location}\n\n{job.description[:4000]}"
+        """Document text we embed for each job. Title weighted heavily.
+
+        Only the first ~800 chars of the JD are embedded: CPU encode time scales
+        with text length, and the role summary (title + opening of the JD) car-
+        ries the semantic signal — the LLM reranker sees the full text later. The
+        old 4000-char slice made a from-scratch rebuild pathologically slow on the
+        shared CPU. ``or ""`` guards a null description (would crash the build)."""
+        return f"{job.title}\n{job.title}\n{job.company} | {job.location}\n\n{(job.description or '')[:800]}"
 
     @staticmethod
     def _job_text_ce(job: Job, max_chars: int) -> str:
