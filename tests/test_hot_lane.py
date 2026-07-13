@@ -95,9 +95,11 @@ def test_select_hot_boards_bootstraps_new_and_keeps_productive():
     assert slugs.index("productive_stale") < slugs.index("productive_fresh")
 
 
-def test_select_hot_boards_new_boards_get_half(monkeypatch):
-    """With many never-scraped boards, ~half the cycle bootstraps them so tens
-    of thousands of new companies aren't starved by productive boards."""
+def test_select_hot_boards_caps_bootstrap_and_prioritizes_productive():
+    """Productive boards get the majority of each cycle; never-polled boards get
+    only the small bootstrap slice (hot_lane_bootstrap_frac, default 20%), so
+    tens of thousands of dead seeded slugs can't 404-storm the budget and starve
+    boards that actually post."""
     from app.strategy.hot_lane import select_hot_boards
     with get_session() as session:
         _clean(session)
@@ -108,7 +110,33 @@ def test_select_hot_boards_new_boards_get_half(monkeypatch):
                       last_seen=datetime.utcnow() - timedelta(days=1))
     boards = select_hot_boards(limit=10)
     new_count = sum(1 for b in boards if b.slug.startswith("new_"))
-    assert new_count == 5, f"expected half the cap bootstrapping new boards, got {new_count}"
+    prod_count = sum(1 for b in boards if b.slug.startswith("prod_"))
+    assert new_count == 2, f"bootstrap slice should be ~20% of 10, got {new_count}"
+    assert prod_count == 8, f"productive boards should get the rest, got {prod_count}"
+
+
+def test_select_hot_boards_yielders_win_main_budget_over_staler_quiet_boards():
+    """Proven yielders (produced a NEW posting before) claim the main
+    (non-bootstrap) budget ahead of productive-but-never-yielded boards, even
+    when those quiet boards are staler — so polling concentrates where fresh
+    jobs actually appear."""
+    from app.strategy.hot_lane import select_hot_boards
+    now = datetime.utcnow()
+    with get_session() as session:
+        _clean(session)
+        for i in range(6):
+            session.add(CompanyRegistry(slug=f"yield_{i}", ats=JobSource.GREENHOUSE,
+                                        is_active=True, job_count=10, source="test",
+                                        last_seen=now - timedelta(days=1),
+                                        last_new_job_at=now - timedelta(hours=3)))
+        for i in range(6):
+            session.add(CompanyRegistry(slug=f"quiet_{i}", ats=JobSource.GREENHOUSE,
+                                        is_active=True, job_count=10, source="test",
+                                        last_seen=now - timedelta(days=5)))  # staler
+        session.commit()
+    boards = select_hot_boards(limit=5)   # bootstrap=1, main=4
+    yield_count = sum(1 for b in boards if b.slug.startswith("yield_"))
+    assert yield_count == 4, f"yielders should claim the main budget, got {[b.slug for b in boards]}"
 
 
 def test_role_title_match_aliases():
@@ -329,6 +357,33 @@ def test_hot_lane_writes_shared_pool(monkeypatch):
         mine = session.exec(select(Job).where(Job.user_id == "u_ml")).all()
     assert sorted(j.title for j in shared) == ["Backend Engineer", "Senior ML Engineer"]
     assert [j.title for j in mine] == ["Senior ML Engineer"]  # role-routed only
+
+
+def test_unsupported_ats_board_is_retired(monkeypatch):
+    """A registered board whose ATS has no scraper (e.g. iCIMS/Jobvite) can never
+    yield jobs. If left active with last_seen=NULL it re-clogs the never-polled
+    bootstrap slice forever, so the hot lane must retire it on contact."""
+    import app.strategy.hot_lane as hl
+
+    with get_session() as session:
+        _clean(session)
+        # ICIMS has no scraper in scraper_for → _fetch_board returns "unsupported".
+        _mk_board(session, "noscraper", ats=JobSource.ICIMS, job_count=0, last_seen=None)
+        session.add(UserProfile(user_id="u_ml", target_roles="Machine Learning Engineer"))
+        session.commit()
+
+    monkeypatch.setattr(hl, "_active_users", lambda: [
+        {"user_id": "u_ml", "roles": ["machine learning engineer"]},
+    ])
+
+    hl.run_hot_lane()
+
+    with get_session() as session:
+        row = session.exec(select(CompanyRegistry)
+                           .where(CompanyRegistry.slug == "noscraper")).first()
+    assert row.is_active is False
+    assert row.last_seen is not None            # no longer "never polled"
+    assert "unsupported" in (row.inactive_reason or "")
 
 
 def test_hot_lane_no_active_users():

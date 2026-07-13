@@ -166,6 +166,11 @@ class Settings(BaseSettings):
     # users)). This is what makes "fresh within minutes of posting" real.
     hot_lane_interval_minutes: int = 20
     hot_lane_max_boards: int = 400
+    # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.
+    # The rest goes to proven yielders + productive boards. Kept low so tens of
+    # thousands of dead seeded slugs can't eat the budget (they 404 and get
+    # retired) and starve boards that actually post — env HOT_LANE_BOOTSTRAP_FRAC.
+    hot_lane_bootstrap_frac: float = 0.2
     # Bulk registry seed from the open ats-scrapers slug dataset (~20K companies
     # across Greenhouse/Lever/Ashby/SmartRecruiters/Workable/Recruitee/Personio).
     open_dataset_seed_enabled: bool = True

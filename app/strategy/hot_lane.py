@@ -50,51 +50,86 @@ def _active_users() -> list[dict]:
 
 
 def select_hot_boards(limit: int) -> list[CompanyRegistry]:
-    """The rotating hot set: active boards known to produce jobs, least-recently
-    polled first so every board is swept over successive cycles."""
-    # Split each cycle so BOTH goals are served without starving either:
-    #  - half to never-polled boards (last_seen IS NULL) → bootstrap the tens of
-    #    thousands of freshly-seeded companies so they start producing jobs fast.
-    #    (The old "productive boards first" order left new boards permanently at
-    #    the back of a 400-cap queue, so they were never scraped at all.)
-    #  - half to productive + stale boards → keep fresh jobs flowing from boards
-    #    already known to post. A board scraped once gets last_seen set, so dead
-    #    boards fall out after a single attempt.
-    half = max(1, limit // 2)
+    """The rotating hot set, prioritized by proven YIELD so each cycle spends its
+    budget on boards that actually post — not on dead never-polled slugs.
+
+    Order of claim on the per-cycle budget:
+      1. Proven yielders — boards that have produced a NEW posting before
+         (``last_new_job_at`` set) — rotated stalest-first so all get swept.
+      2. Other productive boards (``job_count > 0``) — stalest-first.
+      3. A small bootstrap slice of never-polled boards
+         (``hot_lane_bootstrap_frac`` of the budget, default 20%) so freshly
+         seeded companies are still discovered — WITHOUT letting tens of
+         thousands of dead seeded slugs eat half the cycle. The old 50/50 split
+         did exactly that: every cycle burned 200 slots on never-polled slugs
+         that mostly 404'd (the '404 storm'), starving boards that actually post.
+      4. Backfill from any remaining active boards, stalest-first, if thin (few
+         productive boards yet, or a bootstrap-heavy fresh registry).
+
+    Dead boards are retired on the first 404 (see ``_mark_polled``), so the
+    never-polled backlog drains as it is swept."""
+    frac = min(max(float(getattr(settings, "hot_lane_bootstrap_frac", 0.2) or 0.0), 0.0), 1.0)
+    bootstrap = int(limit * frac)
+    main = limit - bootstrap
+
+    boards: list[CompanyRegistry] = []
+    seen: set = set()
+
+    def _take(rows, cap: int) -> None:
+        """Append rows until ``len(boards)`` reaches ``cap`` (skipping dupes)."""
+        for b in rows:
+            if len(boards) >= cap:
+                break
+            if b.id not in seen:
+                boards.append(b)
+                seen.add(b.id)
+
     with get_session() as session:
-        never = session.exec(
+        # 1. Proven yielders first — boards that have ever produced a NEW posting.
+        #    Capped at 'main' so the bootstrap slice is reserved.
+        _take(session.exec(
             select(CompanyRegistry)
             .where(CompanyRegistry.is_active == True,  # noqa: E712
-                   CompanyRegistry.last_seen == None)  # noqa: E711
-            .limit(half)
-        ).all()
-        need = limit - len(never)
-        # Yield-aware: boards that have EVER produced a new posting sort ahead
-        # of merely non-empty ones, both rotating stalest-first — so as yield
-        # data accumulates, polling concentrates on boards that actually post.
-        productive = session.exec(
-            select(CompanyRegistry)
-            .where(CompanyRegistry.is_active == True,  # noqa: E712
-                   CompanyRegistry.last_seen != None,  # noqa: E711
-                   CompanyRegistry.job_count > 0)
-            .order_by(CompanyRegistry.last_new_job_at.is_(None),
-                      CompanyRegistry.last_seen.asc())
-            .limit(need)
-        ).all()
-        boards = list(never) + list(productive)
-        # Backfill if either bucket was thin (e.g. few productive boards yet).
+                   CompanyRegistry.last_new_job_at != None)  # noqa: E711
+            .order_by(CompanyRegistry.last_seen.asc().nulls_first())
+            .limit(main)
+        ).all(), main)
+
+        # 2. Other productive boards (known to hold jobs), stalest-first, filling
+        #    the rest of the 'main' (non-bootstrap) budget.
+        if len(boards) < main:
+            _take(session.exec(
+                select(CompanyRegistry)
+                .where(CompanyRegistry.is_active == True,  # noqa: E712
+                       CompanyRegistry.job_count > 0,
+                       CompanyRegistry.last_seen != None)  # noqa: E711
+                .order_by(CompanyRegistry.last_seen.asc())
+                .limit(main)
+            ).all(), main)
+
+        # 3. Small bootstrap slice: never-polled boards, so new companies are
+        #    still discovered — but capped so they can't dominate the cycle.
+        #    Ordered (oldest-registered first) so drainage is deterministic
+        #    across SQLite/Postgres and the accumulated seed backlog is swept
+        #    methodically instead of in unspecified DB heap order.
+        if bootstrap > 0 and len(boards) < limit:
+            _take(session.exec(
+                select(CompanyRegistry)
+                .where(CompanyRegistry.is_active == True,  # noqa: E712
+                       CompanyRegistry.last_seen == None)  # noqa: E711
+                .order_by(CompanyRegistry.id.asc())
+                .limit(bootstrap)
+            ).all(), min(limit, len(boards) + bootstrap))
+
+        # 4. Backfill if still short (thin productive set / bootstrap-heavy start).
         if len(boards) < limit:
-            seen = {b.id for b in boards}
-            extra = session.exec(
+            _take(session.exec(
                 select(CompanyRegistry)
                 .where(CompanyRegistry.is_active == True)  # noqa: E712
                 .order_by(CompanyRegistry.last_seen.asc().nulls_first())
                 .limit(limit)
-            ).all()
-            for b in extra:
-                if b.id not in seen and len(boards) < limit:
-                    boards.append(b)
-                    seen.add(b.id)
+            ).all(), limit)
+
     return boards[:limit]
 
 
@@ -187,7 +222,13 @@ def _run_hot_lane_cycle() -> dict:
 
     for board, raw, err in fetch_results:
         if raw is None:
-            if err != "unsupported":
+            if err == "unsupported":
+                # No scraper for this ATS (e.g. iCIMS/Jobvite/Comeet/Wellfound) —
+                # it can NEVER produce jobs, yet stays is_active with last_seen
+                # NULL, so it re-clogged the never-polled bootstrap slice every
+                # cycle. Retire it so the slice goes to boards that can post.
+                _retire_unsupported(board.slug, board.ats)
+            else:
                 log.debug("hot lane fetch failed %s/%s: %s", board.ats, board.slug, err)
                 _mark_polled(board.slug, board.ats, job_count=None, ok=False, error=err)
             continue
@@ -281,6 +322,26 @@ def _finish_cycle(stats: dict) -> dict:
     except Exception as e:
         log.debug("hot lane heartbeat write failed: %s", e)
     return stats
+
+
+def _retire_unsupported(slug: str, ats) -> None:
+    """Deactivate a board whose ATS has no scraper. It can never yield jobs, and
+    leaving it active with last_seen=NULL keeps it permanently in the hot-lane
+    bootstrap slice — a small but perpetual re-run of the 404 storm."""
+    try:
+        with get_session() as session:
+            row = session.exec(
+                select(CompanyRegistry).where(
+                    CompanyRegistry.slug == slug, CompanyRegistry.ats == ats)
+            ).first()
+            if row and row.is_active:
+                row.is_active = False
+                row.last_seen = datetime.utcnow()
+                row.inactive_reason = "unsupported ATS (no scraper)"
+                session.add(row)
+                session.commit()
+    except Exception:
+        pass
 
 
 def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
