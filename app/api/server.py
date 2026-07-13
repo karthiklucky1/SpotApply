@@ -3070,9 +3070,15 @@ def freshness_stats(request: Request) -> dict:
     user_id_arg = uid if uid and uid != "local" else None
     now = datetime.utcnow()
     with get_session() as session:
-        q = select(Job).where(Job.is_closed == False)  # noqa: E712
-        q = q.where(Job.user_id == user_id_arg)  # noqa: E711
-        jobs = session.exec(q).all()
+        # Only the four columns this metric reads — never whole Job rows. The
+        # pool per user is thousands of postings with multi-KB descriptions;
+        # SELECT * just to compute ages/counts is a needless heavy load (and the
+        # global variant of this exact pattern was timing out on Supabase).
+        q = select(Job.rerank_score, Job.posted_at, Job.first_seen, Job.discovered_at).where(
+            Job.is_closed == False,  # noqa: E712
+            Job.user_id == user_id_arg,
+        )
+        rows = session.exec(q).all()  # (rerank_score, posted_at, first_seen, discovered_at)
 
         from app.db.models import FunnelEvent
         alerts = session.exec(
@@ -3083,13 +3089,13 @@ def freshness_stats(request: Request) -> dict:
     def _naive(dt):
         return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
-    scored = [j for j in jobs if (j.rerank_score or 0) >= settings.shortlist_score_threshold]
-    ages = [max(0.0, (now - _naive(j.posted_at or j.first_seen)).total_seconds() / 3600)
-            for j in scored if (j.posted_at or j.first_seen)]
-    recent = [j for j in jobs if j.posted_at and j.discovered_at
-              and j.discovered_at > now - timedelta(days=7)]
-    latencies = [max(0.0, (j.discovered_at - _naive(j.posted_at)).total_seconds() / 3600)
-                 for j in recent]
+    scored = [r for r in rows if (r[0] or 0) >= settings.shortlist_score_threshold]
+    ages = [max(0.0, (now - _naive(posted or first)).total_seconds() / 3600)
+            for (_rs, posted, first, _disc) in scored if (posted or first)]
+    recent = [(posted, disc) for (_rs, posted, _first, disc) in rows
+              if posted and disc and disc > now - timedelta(days=7)]
+    latencies = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
+                 for (posted, disc) in recent]
     latencies = [x for x in latencies if x < 24 * 30]  # drop garbage timestamps
     alert_lat = []
     for e in alerts:
@@ -3129,9 +3135,9 @@ def freshness_stats(request: Request) -> dict:
     # (moves within minutes of a lane finding something, unlike the multi-day
     # median-age metric), plus when the fresh/full discovery lanes last ran.
     discovered_24h = sum(
-        1 for j in jobs
-        if (j.first_seen or j.discovered_at)
-        and _naive(j.first_seen or j.discovered_at) > now - timedelta(days=1)
+        1 for (_rs, _posted, first, disc) in rows
+        if (first or disc)
+        and _naive(first or disc) > now - timedelta(days=1)
     )
     last_discovery_at = None
     with get_session() as session:
@@ -3190,17 +3196,33 @@ def public_freshness() -> dict:
             select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)  # noqa: E712
         ).one()
         boards = boards[0] if isinstance(boards, tuple) else boards
+        # Load ONLY the two timestamps this metric needs — never whole Job rows.
+        # The pool is 200k+ postings with multi-KB descriptions each; SELECT *
+        # over the 7-day slice materialized tens of thousands of full rows and
+        # blew Supabase's statement_timeout (the query that was cancelled here).
+        # A bounded, column-only sample keeps the median/percentile stats cheap
+        # and accurate. jobs_tracked_7d is a separate COUNT so the headline
+        # number stays exact even though the latency sample is capped.
+        recent_count = session.exec(
+            select(func.count(Job.id)).where(
+                Job.posted_at != None,  # noqa: E711
+                Job.discovered_at > now - timedelta(days=7),
+            )
+        ).one()
+        recent_count = recent_count[0] if isinstance(recent_count, tuple) else recent_count
         recent = session.exec(
-            select(Job).where(Job.posted_at != None,  # noqa: E711
-                              Job.discovered_at > now - timedelta(days=7))
+            select(Job.posted_at, Job.discovered_at).where(
+                Job.posted_at != None,  # noqa: E711
+                Job.discovered_at > now - timedelta(days=7),
+            ).order_by(Job.discovered_at.desc()).limit(50000)
         ).all()
         alerts = session.exec(
             select(FunnelEvent).where(FunnelEvent.stage == "fresh_alert",
                                       FunnelEvent.created_at > now - timedelta(days=7))
         ).all()
 
-    lat_h = [max(0.0, (j.discovered_at - _naive(j.posted_at)).total_seconds() / 3600)
-             for j in recent]
+    lat_h = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
+             for posted, disc in recent]
     lat_h = [x for x in lat_h if x < 24 * 30]
     alert_min = []
     for e in alerts:
@@ -3214,7 +3236,7 @@ def public_freshness() -> dict:
 
     result = {
         "active_boards": int(boards or 0),
-        "jobs_tracked_7d": len(recent),
+        "jobs_tracked_7d": int(recent_count or 0),
         "median_detection_latency_hours": med(lat_h),
         "detected_within_24h_pct": (round(100 * sum(1 for x in lat_h if x <= 24) / len(lat_h))
                                     if lat_h else None),
