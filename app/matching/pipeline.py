@@ -494,6 +494,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # LLM score just produced. Unscored jobs sort last.)
     _scores = {jid: res[0] for jid, res in rerank_results.items() if res is not None}
     _phase3_order = order_fit_first(to_rerank, _scores)
+    _liveness_checks = 0  # bound the serial link-liveness network calls per pass (lock-held)
     for jid, sim in _phase3_order:
         res = rerank_results.get(jid)
         if res is None:
@@ -539,10 +540,18 @@ def run_matching(user_id: str | None = None) -> List[int]:
                         # ── Link liveness — non-ATS links only (direct boards are
                         # covered by mark_ghost_jobs at scrape time). A dead link
                         # must not consume a shortlist slot or the user's time.
+                        # BOUNDED: each check is a serial ~2.5s network call made
+                        # WHILE this pass holds the matching lock, so an unbounded
+                        # count (up to daily_shortlist_limit) could hold the lock
+                        # ~10+ min and starve every other lane. Cap the checks per
+                        # pass; beyond the cap, shortlist without verifying (the
+                        # link is re-checked when the user opens the job).
                         if (getattr(settings, "verify_links_on_shortlist", True)
-                                and job.source not in _AUTOFILL_SOURCES):
+                                and job.source not in _AUTOFILL_SOURCES
+                                and _liveness_checks < settings.max_liveness_checks_per_run):
                             from app.discovery.verify import check_job_alive
-                            alive, dead_reason = check_job_alive(job.url)
+                            _liveness_checks += 1
+                            alive, dead_reason = check_job_alive(job.url, timeout=2.5)
                             if not alive:
                                 job.is_closed = True
                                 job.closed_reason = f"Deactivated ({dead_reason})"
