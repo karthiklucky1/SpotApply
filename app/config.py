@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     llm_rerank_cap: int = 100             # max jobs sent to the LLM reranker per run (fresh-first order); env LLM_RERANK_CAP
     llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
     llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
+    llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)
     daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
     shortlist_score_threshold: int = 35  # lowered from 40 — min LLM rerank score (0-100) to shortlist

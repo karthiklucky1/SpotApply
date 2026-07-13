@@ -498,14 +498,21 @@ def _adopt_match_alert(user_ids) -> None:
     discovery lock (matching loads the model + job pool)."""
     from app.strategy.adoption import adopt_shared_jobs
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
+    import time as _t
+    log.info("adopt/match: starting for %d user(s)", len(user_ids))
     for uid in user_ids:
         _uid = uid if uid != "local" else None
+        _t0 = _t.monotonic()
         try:
             adopt_shared_jobs(_uid)
             shortlisted = run_matching(_uid) or []
             dispatch_fresh_alerts(_uid, shortlisted)
+            log.info("adopt/match: user %s done in %.1fs — %d shortlisted",
+                     uid, _t.monotonic() - _t0, len(shortlisted))
         except Exception as e:
-            log.warning("adopt/match/alert failed for %s: %s", uid, e)
+            log.warning("adopt/match/alert failed for %s after %.1fs: %s",
+                        uid, _t.monotonic() - _t0, e)
+    log.info("adopt/match: finished all %d user(s)", len(user_ids))
 
 
 def _global_fresh_scan(user_ids) -> None:

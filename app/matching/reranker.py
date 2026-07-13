@@ -238,7 +238,15 @@ class Reranker:
         if settings.anthropic_api_key:
             try:
                 from anthropic import Anthropic
-                self._anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+                # Bound each request: the SDK default is a 10-MINUTE timeout with
+                # internal retries, so one slow/overloaded call could freeze a
+                # matching pass (up to llm_rerank_cap jobs) for many minutes while
+                # it holds the discovery/matching lock — stalling ALL matching.
+                self._anthropic_client = Anthropic(
+                    api_key=settings.anthropic_api_key,
+                    timeout=settings.llm_request_timeout,
+                    max_retries=0,  # we do our own retry/backoff in score()
+                )
                 self._active_backend = "anthropic"
                 log.info("Reranker: Anthropic (Claude) client initialized")
             except Exception as e:
@@ -248,7 +256,11 @@ class Reranker:
         if settings.openai_api_key:
             try:
                 from openai import OpenAI
-                self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                self._openai_client = OpenAI(
+                    api_key=settings.openai_api_key,
+                    timeout=settings.llm_request_timeout,
+                    max_retries=0,  # we do our own retry/backoff in score()
+                )
                 if not self._active_backend:
                     self._active_backend = "openai"
                 log.info("Reranker: OpenAI (gpt-4o-mini) client initialized as %s",
