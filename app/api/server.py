@@ -511,29 +511,47 @@ def _adopt_match_alert(user_ids) -> None:
 def _global_fresh_scan(user_ids) -> None:
     """One shared fresh-lane pass for ALL users: scrape once into the shared
     pool (registry boards + free keyless feeds), then adopt + match per user.
-    Replaces the old per-user scans that repeated the same fetches N times."""
-    from app.common.discovery_lock import discovery_guard
+    Replaces the old per-user scans that repeated the same fetches N times.
+
+    FETCH runs WITHOUT the discovery lock (see _global_discover_then_match) so
+    it can't starve the hot lane's matching; only the matching phase takes the
+    lock."""
     from app.discovery.pipeline import SHARED_POOL_USER
-    with discovery_guard(label="fresh lane") as ran:
-        if not ran:
-            return  # another pass is running; the next 2h cycle covers it
-        roles = _union_roles(user_ids) or None
-        run_discovery(SHARED_POOL_USER, keywords=roles, phase="fresh")
-        _adopt_match_alert(user_ids)
+    roles = _union_roles(user_ids) or None
+    run_discovery(SHARED_POOL_USER, keywords=roles, phase="fresh")  # lock-free
+    _locked_adopt_match_alert(user_ids, label="fresh-lane matching")
 
 
 def _global_discover_then_match(user_ids) -> None:
     """One shared FULL discovery for ALL users (aggregators incl. quota-keyed
     sources + boards), then adopt + match per user. With N users this cuts
-    scheduled API spend to 1/N of the old per-user runs."""
-    from app.common.discovery_lock import discovery_guard
+    scheduled API spend to 1/N of the old per-user runs.
+
+    The board/aggregator FETCH runs WITHOUT the discovery lock — it's network
+    I/O + light DB upserts (run_discovery loads no model and touches no FAISS
+    index), NOT the model-heavy work the lock guards. Previously the fetch ran
+    inside the lock, so a multi-minute pass (~200s for 400 boards) held it the
+    whole time and the hot lane's every-20-min matching kept skipping ('lock
+    busy') — brand-new jobs sat in the pool unscored, never reaching the
+    shortlist. Now only the matching phase (embedding model + FAISS rebuild)
+    takes the lock, so the hot lane can score fresh jobs DURING this fetch while
+    two model passes still never overlap (the OOM guard the lock exists for)."""
     from app.discovery.pipeline import SHARED_POOL_USER
-    with discovery_guard(label="global discovery") as ran:
-        if not ran:
-            return
-        roles = _union_roles(user_ids) or None
-        run_discovery(SHARED_POOL_USER, keywords=roles, phase="all")
-        _adopt_match_alert(user_ids)
+    roles = _union_roles(user_ids) or None
+    run_discovery(SHARED_POOL_USER, keywords=roles, phase="all")  # lock-free
+    _locked_adopt_match_alert(user_ids, label="global matching")
+
+
+def _locked_adopt_match_alert(user_ids, label: str) -> None:
+    """Run the model-heavy adopt+match+alert phase under the discovery lock, so
+    only one matching pass holds the embedding model + job pool at a time. The
+    scheduled lanes WAIT for the lock (blocking) rather than skip — a fetch just
+    completed and its jobs must be scored, even if the hot lane holds the lock
+    for a moment."""
+    from app.common.discovery_lock import discovery_guard
+    with discovery_guard(label=label) as ran:
+        if ran:
+            _adopt_match_alert(user_ids)
 
 
 async def _scheduler():
