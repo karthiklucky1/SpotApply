@@ -44,3 +44,6 @@ slowapi>=0.1.9          # Rate limiting for FastAPI
 pytest>=8.0
 ruff>=0.3
 tiktoken>=0.6.0
+
+# Observability (optional; dormant until SENTRY_DSN set)
+sentry-sdk[fastapi]>=2.0

@@ -45,6 +45,25 @@ from app.matching.pipeline import run_matching
 from app.tailoring.tailor import tailor_all_shortlisted
 from app.api.demo import PublicDemoRequest
 
+# ── Error tracking (Sentry) — dormant until SENTRY_DSN is set ──────────────────
+# Catches uncaught exceptions across the app + background lanes with full stack
+# traces, so silent failures surface immediately instead of being found by
+# reading logs by hand. No-op when the DSN/env is unset or the SDK isn't
+# installed, so it's safe to ship before you've created the account.
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.sentry_environment,
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            send_default_pii=False,
+        )
+        logging.getLogger(__name__).info("Sentry error tracking initialized (env=%s)",
+                                          settings.sentry_environment)
+    except Exception as _se:  # never let telemetry setup break the app
+        logging.getLogger(__name__).warning("Sentry init skipped: %s", _se)
+
 app = FastAPI(title="JobAgent")
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -519,6 +538,21 @@ async def _matching_lane():
         await asyncio.sleep(minutes * 60)
 
 
+def _ping_heartbeat(base_url: str, ok: bool = True, detail: str = "") -> None:
+    """Ping a dead-man's-switch monitor (e.g. healthchecks.io). Ping the base URL
+    on a healthy run; ping <base>/fail when the run did nothing useful (so
+    "ran but produced 0" is distinguishable from "worked"). If no ping arrives
+    within the expected window, the monitor alerts you. No-op if unconfigured."""
+    if not base_url:
+        return
+    try:
+        import httpx
+        url = base_url if ok else base_url.rstrip("/") + "/fail"
+        httpx.get(url, params={"msg": detail[:200]} if detail else None, timeout=8.0)
+    except Exception as _he:
+        log.debug("heartbeat ping failed (non-fatal): %s", _he)
+
+
 def _run_matching_lane(uids) -> None:
     """Score each active user's pool under the matching lock (skip if a discovery
     matching pass already holds it — no double work). Heavily logged so it's
@@ -545,6 +579,10 @@ def _run_matching_lane(uids) -> None:
                 log.warning("Matching lane: user %s failed after %.1fs: %s",
                             uid, _t.monotonic() - _t0, e)
         log.info("Matching lane: finished all %d user(s), %d shortlisted total", len(uids), total)
+        # Heartbeat: healthy ping if the lane actually ran (lock acquired); the
+        # monitor alerts you if these stop arriving (matching silently stopped).
+        _ping_heartbeat(settings.heartbeat_matching_url, ok=True,
+                        detail=f"users={len(uids)} shortlisted={total}")
 
 
 def _union_roles(user_ids) -> list[str]:
