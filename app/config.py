@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     rerank_provider: str = "local"        # "local" | "jina"
     jina_api_key: str = ""                # api.jina.ai — rerank API key
     jina_rerank_model: str = "jina-reranker-v2-base-multilingual"
-    llm_rerank_cap: int = 60              # max jobs sent to the LLM reranker per run (top-N by cross-encoder)
+    llm_rerank_cap: int = 100             # max jobs sent to the LLM reranker per run (fresh-first order); env LLM_RERANK_CAP
     llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
     llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
     daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)

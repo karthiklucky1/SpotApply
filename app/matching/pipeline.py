@@ -21,6 +21,7 @@ from app.matching.matcher import Matcher
 from app.matching.reranker import Reranker
 from app.matching.filters import RuleFilter, EmbeddingFilter, score_ghost
 from app.matching.hire_probability import score_hire_probability, blended_score as compute_blended
+from app.matching.fresh_budget import freshness_tier, order_fresh_first, order_fit_first
 from app.intelligence.senior_reviewer import SeniorReviewer
 
 # Sources where the bot can fill the form automatically
@@ -336,6 +337,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # already-scored shortlist path still runs here so behavior is unchanged.
     to_rerank: list[tuple[int, float]] = []
     _rerank_priority: dict[int, float] = {}  # jid -> source/freshness-weighted CE score
+    _rerank_tier: dict[int, int] = {}        # jid -> freshness tier (0 = freshest)
     for jid, sim in candidates:
         with get_session() as session:
             job = session.get(Job, jid)
@@ -440,6 +442,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
             if posted and (datetime.utcnow() - posted).total_seconds() < FRESH_POSTING_HOURS * 3600:
                 prio *= FRESH_POSTING_BONUS
             _rerank_priority[jid] = prio
+            _rerank_tier[jid] = freshness_tier(job)
 
     # ── Phase 2: parallel LLM scoring (I/O-bound on the model API) ────────────
     # Each worker uses its own DB session + the shared (thread-safe) reranker
@@ -458,16 +461,22 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)
             return jid, None
 
-    # LLM gate: only the top-N candidates reach the expensive LLM, ranked by
-    # source/freshness-weighted cross-encoder priority — a fresh direct-ATS
-    # posting beats an equal-scoring stale aggregator redirect for the budget.
-    # The rest keep their cheap-filter scores and can be promoted later.
+    # LLM gate — SELECTION only: only the top-N candidates reach the expensive
+    # LLM. Choose them FRESH-FIRST (by freshness tier, newest postings first,
+    # breaking ties within a tier by source/freshness-weighted cross-encoder
+    # priority). This is the freshness fix: previously the cap went to the
+    # highest-similarity survivors, so stale-but-similar jobs crowded brand-new
+    # postings out of the reranker budget and the feed went stale. The unscored
+    # remainder keeps its cheap-filter score and can be promoted on a later run.
+    # NOTE: this orders WHICH jobs get scored, not the shortlist-creation order —
+    # Phase 3 re-sorts by resulting fit so freshness never steals a scarce
+    # daily/company-cap slot from a stronger match.
+    to_rerank = order_fresh_first(to_rerank, _rerank_tier, _rerank_priority)
     if len(to_rerank) > settings.llm_rerank_cap:
         log.info(
-            "LLM gate: %d candidates survived cheap filters — capping to top %d by weighted priority",
+            "LLM gate: %d candidates survived cheap filters — capping to top %d (fresh-first)",
             len(to_rerank), settings.llm_rerank_cap,
         )
-        to_rerank.sort(key=lambda t: _rerank_priority.get(t[0], t[1]), reverse=True)
         to_rerank = to_rerank[: settings.llm_rerank_cap]
 
     if to_rerank:
@@ -477,7 +486,15 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     rerank_results[jid] = res
 
     # ── Phase 3: serial store + shortlist creation (caps/cooldown/limits) ─────
-    for jid, sim in to_rerank:
+    # Shortlist-creation order is FIT-FIRST: among the freshly-scored cohort, the
+    # best-fit roles claim the scarce daily-limit + per-company-cap slots first.
+    # (Iterating fresh-first here would let a marginal newer role take a company's
+    # last cap slot and block a stronger same-company role for the cooldown
+    # window, or spend the last daily slots on marginal jobs — so we sort by the
+    # LLM score just produced. Unscored jobs sort last.)
+    _scores = {jid: res[0] for jid, res in rerank_results.items() if res is not None}
+    _phase3_order = order_fit_first(to_rerank, _scores)
+    for jid, sim in _phase3_order:
         res = rerank_results.get(jid)
         if res is None:
             continue
