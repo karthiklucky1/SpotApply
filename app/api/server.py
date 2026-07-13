@@ -21,6 +21,13 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+# Emit the app's INFO logs in prod. Under `uvicorn app.api.server:app` nothing
+# configures the root logger, so lane diagnostics (hot lane, scheduler, fresh
+# lane, matching) were silently dropped — only WARNING+ showed. Run at import so
+# it's active before the background lanes start.
+from app.common.logging_setup import setup_logging
+setup_logging()
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
