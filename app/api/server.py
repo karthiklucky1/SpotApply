@@ -254,12 +254,21 @@ async def startup_event():
     from app.db.init_db import init_db, reconcile_job_owners
     init_db()
     # Clear any discovery run left "in progress" by a crash/restart so the UI
-    # stops showing a frozen "Ranking N jobs…" spinner.
-    _clear_orphaned_discovery_runs()
+    # stops showing a frozen "Ranking N jobs…" spinner. Non-critical maintenance:
+    # a failure here must NOT abort startup, or the background lanes created
+    # below (scheduler, fresh lane, HOT LANE) would never launch — a silent way
+    # for the hot lane to look permanently idle.
+    try:
+        _clear_orphaned_discovery_runs()
+    except Exception:
+        logging.getLogger("startup").exception("orphaned-run cleanup failed (non-fatal)")
     # Adopt legacy ownerless jobs into the tenant whose applications reference
     # them (single-user-era rows) — otherwise their pool counts 0 while their
-    # applications still render. Idempotent.
-    reconcile_job_owners()
+    # applications still render. Idempotent. Non-critical — never abort startup.
+    try:
+        reconcile_job_owners()
+    except Exception:
+        logging.getLogger("startup").exception("job-owner reconcile failed (non-fatal)")
     # Warm the H-1B employer cache off the request path so the first dashboard
     # render never pays the full-table load.
     try:
@@ -452,11 +461,13 @@ async def _hot_lane():
         _log.info("Hot lane disabled (interval=%s, direct_ats=%s)",
                   minutes, settings.direct_ats_enabled)
         return
+    _log.info("Hot lane ENABLED — first run in 180s, then every %d min", minutes)
     await asyncio.sleep(180)  # let boot + first discovery settle
     while True:
         try:
             from app.strategy.hot_lane import run_hot_lane
-            await asyncio.to_thread(run_hot_lane)
+            stats = await asyncio.to_thread(run_hot_lane)
+            _log.info("Hot lane cycle done: %s", stats)
         except Exception as e:
             _log.exception("Hot lane error: %s", e)
         await asyncio.sleep(minutes * 60)

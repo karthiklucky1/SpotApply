@@ -108,6 +108,27 @@ def _title_matches(title: str, roles: list[str]) -> bool:
 
 
 def run_hot_lane() -> dict:
+    """Run one hot-lane cycle with a GUARANTEED heartbeat.
+
+    The dashboard's 'Hot Lane: idle' tile is driven by ``hot_lane_run`` events.
+    The cycle body only reached ``_finish_cycle`` on its success/early-exit
+    paths, so if it raised anywhere in between (a bad board fetch, an upsert, a
+    matching error, or even ``_active_users``/``select_hot_boards``) NO event
+    was written and the lane looked permanently idle even though it was firing
+    every interval and crashing. This wrapper records a heartbeat with the error
+    reason on ANY failure, turning a silent 'idle' into a visible, diagnosable
+    error while keeping the loop alive for the next cycle."""
+    try:
+        return _run_hot_lane_cycle()
+    except Exception as e:  # never let a cycle die without leaving a trace
+        log.exception("Hot lane cycle crashed: %s", e)
+        return _finish_cycle({
+            "boards": 0, "users": 0, "fetched_jobs": 0, "inserted_jobs": 0,
+            "alerts": 0, "reason": f"error: {type(e).__name__}: {e}"[:280],
+        })
+
+
+def _run_hot_lane_cycle() -> dict:
     """One hot-lane cycle. Returns a small stats dict for logging/telemetry.
 
     Phase A — fetch + distribute (NO lock): board polling is lightweight

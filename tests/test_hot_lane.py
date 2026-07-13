@@ -337,3 +337,33 @@ def test_hot_lane_no_active_users():
         _clean(session)
     out = hl.run_hot_lane()
     assert out["boards"] == 0 and "no active users" in out["reason"]
+
+
+def test_hot_lane_records_heartbeat_even_when_cycle_crashes(monkeypatch):
+    """Regression: a cycle that raised mid-run used to write NO hot_lane_run
+    event, so the dashboard showed a permanent 'idle' while the lane was firing
+    and crashing every interval. run_hot_lane() must now always leave a
+    heartbeat carrying the error reason, and must not re-raise."""
+    import app.strategy.hot_lane as hl
+    from app.db.models import FunnelEvent
+
+    with get_session() as session:
+        _clean(session)
+        session.exec(delete(FunnelEvent))
+        session.commit()
+
+    # Force a crash deep in the cycle (after the wrapper, before _finish_cycle).
+    def _boom():
+        raise RuntimeError("boards query exploded")
+    monkeypatch.setattr(hl, "_active_users", lambda: [{"user_id": "u", "roles": ["x"]}])
+    monkeypatch.setattr(hl, "select_hot_boards", lambda limit: _boom())
+
+    stats = hl.run_hot_lane()  # must NOT raise
+
+    assert "error" in stats["reason"] and "boards query exploded" in stats["reason"]
+    with get_session() as session:
+        events = session.exec(
+            select(FunnelEvent).where(FunnelEvent.stage == "hot_lane_run")
+        ).all()
+    assert len(events) == 1, "a heartbeat must be written even on crash"
+    assert "error" in (events[0].reason or "")
