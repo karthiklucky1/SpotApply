@@ -325,7 +325,8 @@ class Reranker:
                 except Exception as e:
                     error_str = str(e).lower()
                     is_rate_limit = any(kw in error_str for kw in [
-                        "rate_limit", "overloaded", "429", "529", "timeout",
+                        "rate_limit", "overloaded", "429", "529",
+                        "timeout", "timed out", "timedout",  # SDK APITimeoutError says "Request timed out"
                     ])
                     is_credit_error = any(kw in error_str for kw in [
                         "credit", "insufficient", "billing", "quota", "payment",
