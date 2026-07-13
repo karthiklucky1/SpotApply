@@ -31,6 +31,12 @@ qa_resolver = QAResolver()
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DIM = 384
 
+# Max jobs indexed into FAISS per user. Bounds the from-scratch rebuild so a
+# bloated per-user pool can't turn it into a multi-minute CPU encode that holds
+# the matching lock. Generous — retrieval never looks deeper than the newest
+# ~2k unscored jobs, so this is well above what matching actually needs.
+REBUILD_MAX_JOBS = 25000
+
 # Supabase enforces a statement_timeout, so a single UPDATE over thousands of
 # rows gets cancelled ("QueryCanceled … N bound parameter sets"). Commit the
 # embedding_id backfill in small batches so every statement stays fast.
@@ -223,6 +229,14 @@ class Matcher:
             q = select(Job.id, Job.embedding_id).where(Job.is_closed == False)  # noqa: E712
             if user_id:
                 q = q.where(Job.user_id == user_id)
+            # Index only the NEWEST REBUILD_MAX_JOBS per user. Retrieval only ever
+            # looks at the newest ~2k unscored jobs (search_for_resume) and
+            # re-shortlists scored jobs via a direct DB query — so indexing every
+            # historical posting is pure cost. A bloated pool (a role-less user
+            # once adopted the whole shared pool → 115k jobs) turned the
+            # from-scratch rebuild into a ~9-min CPU encode that held the matching
+            # lock and stalled ALL matching. Bounding it keeps rebuilds fast.
+            q = q.order_by(Job.first_seen.desc()).limit(REBUILD_MAX_JOBS)
             id_rows = session.exec(q).all()
 
         if not id_rows:
@@ -246,6 +260,10 @@ class Matcher:
                     q = q.where(Job.user_id == user_id)
                 if ids is not None:
                     q = q.where(Job.id.in_(ids))
+                else:
+                    # Full (from-scratch) build — same newest-first cap as the
+                    # cheap pass so a bloated pool can't produce a 100k-vector encode.
+                    q = q.order_by(Job.first_seen.desc()).limit(REBUILD_MAX_JOBS)
                 return session.exec(q).all()
 
         if force_rebuild or existing_index is None or self.job_ids is None:
