@@ -32,6 +32,33 @@
                         }
                         else { localStorage.removeItem('sb_token'); localStorage.removeItem('sb_refresh'); _clearTokenCookie(); window.location.href = '/login'; }
                     })
+                    // Keep the stored token fresh even when the tab was
+                    // backgrounded or the laptop slept — Supabase's auto-refresh
+                    // timer doesn't fire while hidden, so on wake the cached
+                    // token is expired and the next poll 401s. getSession()
+                    // transparently refreshes an expired token; persist the
+                    // result so the synchronous authHeaders() readers (and the
+                    // sb_token cookie used for SSR) always see a valid token.
+                    window._sb = sb;
+                    const _refreshStoredToken = async () => {
+                        try {
+                            const { data } = await sb.auth.getSession();
+                            if (data && data.session) {
+                                localStorage.setItem('sb_token', data.session.access_token);
+                                _setTokenCookie(data.session.access_token);
+                                if (data.session.refresh_token) localStorage.setItem('sb_refresh', data.session.refresh_token);
+                                return data.session.access_token;
+                            }
+                        } catch (e) { /* offline/transient — a later tick retries */ }
+                        return null;
+                    };
+                    window._refreshStoredToken = _refreshStoredToken;
+                    // Belt-and-suspenders periodic persist (well under the 1h
+                    // expiry) + immediate refresh whenever the tab regains focus.
+                    setInterval(_refreshStoredToken, 4 * 60 * 1000);
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible') _refreshStoredToken();
+                    });
                     // If the server rendered this page WITHOUT auth (cookie was
                     // missing/stale) but we now have a valid session + cookie,
                     // reload ONCE so the server-rendered pipeline is scoped to us.
@@ -4004,9 +4031,13 @@
                 const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
                 const resp = await fetch('/api/notifications', { headers });
                 if (resp.status === 401) {
-                    // Session token expired — stop polling instead of spamming
-                    // a 401 into the console every minute. Polling resumes on
-                    // the next page load once the user is signed in again.
+                    // Token likely expired (tab was backgrounded). Try one silent
+                    // refresh and keep polling — the next tick uses the fresh
+                    // token. Only give up (stop polling) if there's genuinely no
+                    // session, so a brief expiry doesn't freeze notifications
+                    // until a manual reload.
+                    const fresh = window._refreshStoredToken ? await window._refreshStoredToken() : null;
+                    if (fresh) return;
                     if (window._notifPoll) { clearInterval(window._notifPoll); window._notifPoll = null; }
                     return;
                 }
