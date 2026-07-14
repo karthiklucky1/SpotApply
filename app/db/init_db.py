@@ -14,13 +14,28 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.config import settings
 
 if settings.use_supabase:
-    # PostgreSQL — no check_same_thread, use connection pooling
+    # PostgreSQL — no check_same_thread, use connection pooling.
+    # Resilience against Supabase/pgbouncer dropping connections ("SSL
+    # connection has been closed unexpectedly"):
+    #   pool_pre_ping   — validate a connection before handing it out
+    #   pool_recycle    — proactively drop connections older than the pooler's
+    #                     idle timeout so a stale one is never used
+    #   TCP keepalives  — detect a dead peer instead of blocking on a zombie
+    #   connect_timeout — fail fast (and retry) instead of hanging on connect
     engine = create_engine(
         settings.sqlite_url,   # returns database_url when use_supabase=True
         echo=False,
         pool_size=5,
         max_overflow=10,
-        pool_pre_ping=True,    # reconnect after Supabase idle timeout
+        pool_pre_ping=True,
+        pool_recycle=280,      # under Supabase's ~5-min pooler idle timeout
+        connect_args={
+            "connect_timeout": 10,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     )
 else:
     engine = create_engine(
@@ -40,13 +55,42 @@ def _missing_enum_labels(existing: set[str], enum_cls) -> list[str]:
     return [member.name for member in enum_cls if member.name not in existing]
 
 
+def _create_all_with_retry(attempts: int = 5) -> None:
+    """create_all(), retried with backoff. Supabase can drop the first SSL
+    connection ("SSL connection has been closed unexpectedly"), especially when
+    the DB is briefly overloaded — a single transient failure must NOT crash the
+    whole boot (which crash-loops the container and hides /health). In prod the
+    schema already exists, so create_all is a cheap idempotent check."""
+    import time as _t
+    from sqlalchemy.exc import OperationalError, DBAPIError
+    for i in range(attempts):
+        try:
+            SQLModel.metadata.create_all(engine)
+            return
+        except (OperationalError, DBAPIError) as e:
+            if i == attempts - 1:
+                # Don't abort startup: log loudly and continue. Tables almost
+                # certainly already exist; pool_pre_ping reconnects per request
+                # once the DB recovers, and /health can serve meanwhile.
+                print(f"create_all failed after {attempts} attempts "
+                      f"(continuing so the app can still serve): {e}")
+                return
+            delay = min(2 ** i, 10)
+            print(f"create_all attempt {i + 1}/{attempts} failed ({e}); retrying in {delay}s")
+            try:
+                engine.dispose()  # drop any poisoned pooled connections
+            except Exception:
+                pass
+            _t.sleep(delay)
+
+
 def init_db() -> None:
     """Create tables if they don't exist."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     # Importing models registers them with SQLModel.metadata
     from app.db import models  # noqa: F401
     from sqlalchemy import text, inspect
-    SQLModel.metadata.create_all(engine)
+    _create_all_with_retry()
 
     # Migrations: Add missing pg enum values if using Supabase.
     # IMPORTANT: SQLAlchemy persists/compares Enum columns by the member NAME

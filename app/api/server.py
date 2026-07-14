@@ -276,9 +276,17 @@ async def startup_event():
     import asyncio
     from app.autofill.agent import set_main_loop
     set_main_loop(asyncio.get_running_loop())
-    # Create all DB tables at runtime (after env vars are injected by Railway)
+    # Create all DB tables at runtime (after env vars are injected by Railway).
+    # A transient DB blip (Supabase dropping the SSL connection under load) must
+    # NOT crash-loop the container — init_db retries create_all internally, and
+    # we guard the whole call so a failed migration step still lets uvicorn serve
+    # /health and the background lanes launch (the schema already exists in prod;
+    # pool_pre_ping reconnects per request once the DB recovers).
     from app.db.init_db import init_db, reconcile_job_owners
-    init_db()
+    try:
+        init_db()
+    except Exception as _db_err:
+        log.error("init_db failed at startup (continuing so /health can serve): %s", _db_err)
     # Clear any discovery run left "in progress" by a crash/restart so the UI
     # stops showing a frozen "Ranking N jobs…" spinner. Non-critical maintenance:
     # a failure here must NOT abort startup, or the background lanes created
