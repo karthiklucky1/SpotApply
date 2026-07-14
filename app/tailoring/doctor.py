@@ -128,9 +128,11 @@ class DoctorReport:
     integrity_issues: List[str] = field(default_factory=list)
     issues: List[str] = field(default_factory=list)         # human-readable summary
     llm_verdict: Optional[str] = None      # Haiku 2-sentence hiring signal
+    fingerprint_flags: List[str] = field(default_factory=list)  # AI-writing 'tells'
+    human_score: int = 100                 # 0–100, higher = reads more human
 
     def summary(self) -> str:
-        lines = [f"Doctor Score: {self.score}/100 | ATS Coverage: {self.ats_coverage_pct:.0%} | {'PASS ✅' if self.passed else 'FAIL ❌'}"]
+        lines = [f"Doctor Score: {self.score}/100 | ATS Coverage: {self.ats_coverage_pct:.0%} | Human: {self.human_score}/100 | {'PASS ✅' if self.passed else 'FAIL ❌'}"]
         for issue in self.issues:
             lines.append(f"  ⚠ {issue}")
         if self.llm_verdict:
@@ -157,10 +159,13 @@ class ResumeDoctor:
             first_word = b.split()[0].lower().rstrip(".,;") if b.split() else ""
             has_verb   = first_word in ACTION_VERBS
             has_metric = bool(_METRIC_RE.search(b))
-            if not has_verb or not has_metric:
+            # A bullet is weak only if it has NEITHER a strong verb NOR a metric.
+            # Requiring both on every bullet manufactures uniformity (an AI tell);
+            # variation is desirable, so a verb-only or metric-only bullet is fine.
+            if not has_verb and not has_metric:
                 weak.append(b[:80])
         if weak:
-            issues.append(f"{len(weak)}/{len(bullets)} bullets missing action verb or metric")
+            issues.append(f"{len(weak)}/{len(bullets)} bullets have neither impact verb nor metric")
 
         # ── 3. ATS keyword coverage ───────────────────────────────────────────
         top_keywords = self._extract_jd_keywords(jd_text)
@@ -177,8 +182,15 @@ class ResumeDoctor:
         if integrity_issues:
             issues.extend(integrity_issues)
 
-        # ── Score ─────────────────────────────────────────────────────────────
-        score = self._compute_score(banned_found, weak, bullets, coverage, integrity_issues)
+        # ── 5. Anti-fingerprint (AI-tell) scan ────────────────────────────────
+        fp_flags, fp_penalty = self._fingerprint_flags(bullets, tailored_md)
+        if fp_flags:
+            issues.extend(fp_flags)
+
+        # ── Score (fingerprint penalty pulls it down so tells trigger a rebuild) ─
+        base = self._compute_score(banned_found, weak, bullets, coverage, integrity_issues)
+        score = max(0, base - fp_penalty)
+        human_score = max(0, 100 - fp_penalty * 4)   # 0 tells → 100, heavy tells → low
         passed = score >= self.PASS_THRESHOLD
 
         # ── Haiku LLM verdict (only on passing resumes — no point verdicting failures) ──
@@ -195,6 +207,8 @@ class ResumeDoctor:
             integrity_issues=integrity_issues,
             issues=issues,
             llm_verdict=verdict,
+            fingerprint_flags=fp_flags,
+            human_score=human_score,
         )
         log.info("ResumeDoctor: %s", report.summary())
         return report
@@ -280,6 +294,51 @@ Be blunt. No fluff."""
             if t not in top:
                 top.append(t)
         return top[:top_n + len(boosted)]
+
+    def _fingerprint_flags(self, bullets: List[str], tailored_md: str) -> Tuple[List[str], int]:
+        """AI-writing 'tells' — uniformity that reads machine-generated and gets
+        flagged by both bot detectors and skeptical reviewers. Returns
+        (flags, penalty 0-25). Penalty is subtracted from the Doctor score, so a
+        fingerprinted resume fails review and is rebuilt more human."""
+        flags: List[str] = []
+        penalty = 0
+        low = tailored_md.lower()
+        n = len(bullets)
+
+        # Formulaic bridging block (the old prompt appended this to every resume).
+        for phrase in ("adjacent tools under study", "transitioning to",
+                       "actively adopting", "familiar / transitioning"):
+            if phrase in low:
+                flags.append(f'Formulaic block present ("{phrase}") — reads templated')
+                penalty += 6
+                break
+
+        if n >= 4:
+            verb_starts = sum(
+                1 for b in bullets
+                if (b.split()[0].lower().rstrip(".,;") if b.split() else "") in ACTION_VERBS)
+            if verb_starts / n >= 0.9:
+                flags.append(f"{verb_starts}/{n} bullets open with an action verb — too uniform")
+                penalty += 8
+            metric_bullets = sum(1 for b in bullets if _METRIC_RE.search(b))
+            if metric_bullets / n >= 0.9:
+                flags.append("Almost every bullet carries a number — reads manufactured")
+                penalty += 5
+            lengths = [len(b.split()) for b in bullets]
+            mean = sum(lengths) / n
+            if mean:
+                cv = (sum((x - mean) ** 2 for x in lengths) / n) ** 0.5 / mean
+                if cv < 0.25:  # bullets nearly identical length = low burstiness
+                    flags.append("Bullets are all ~the same length (low burstiness) — an AI tell")
+                    penalty += 6
+
+        bold_spans = low.count("**") // 2
+        words = max(1, len(tailored_md.split()))
+        if bold_spans and words / bold_spans < 12:  # denser than ~1 bold / 12 words
+            flags.append(f"Over-bolded ({bold_spans} bold spans) — a human bolds sparingly")
+            penalty += 5
+
+        return flags, min(25, penalty)
 
     def _compute_score(
         self,

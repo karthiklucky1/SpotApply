@@ -478,6 +478,8 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
     doctor_weak = []           # weak bullets (missing verb/metric)
     doctor_banned = []         # banned/cliché words found
     doctor_integrity = []      # integrity issues (unbacked claims)
+    doctor_human = None        # 0-100 "reads human" score (anti-fingerprint)
+    doctor_fingerprints = []   # AI-writing tells detected
     attempts_used = 0
     revision_notes = None
 
@@ -533,6 +535,8 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
             doctor_weak = d_result.weak_bullets or []
             doctor_banned = d_result.banned_found or []
             doctor_integrity = d_result.integrity_issues or []
+            doctor_human = d_result.human_score
+            doctor_fingerprints = d_result.fingerprint_flags or []
             log.info("Doctor report app %d: %s", application_id, d_result.summary())
             if not d_result.passed:
                 doctor_failed = True
@@ -597,6 +601,8 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
             "weak_bullets": doctor_weak[:5],
             "banned_words": doctor_banned[:8],
             "integrity_issues": doctor_integrity[:5],
+            "human_score": doctor_human,
+            "fingerprint_flags": doctor_fingerprints[:5],
             "generated_at": datetime.utcnow().isoformat(),
         }), encoding="utf-8")
     except Exception as _re:
