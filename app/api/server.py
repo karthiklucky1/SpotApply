@@ -580,10 +580,34 @@ def _ping_heartbeat(base_url: str, ok: bool = True, detail: str = "") -> None:
         log.debug("heartbeat ping failed (non-fatal): %s", _he)
 
 
+def _unscored_backlog(user_id: str | None) -> int:
+    """Count of a user's open jobs that have never been scored (rerank_score
+    IS NULL) — the catch-up loop uses this to keep draining until caught up."""
+    from app.db.models import Job
+    try:
+        with get_session() as session:
+            return int(session.exec(
+                select(func.count(Job.id)).where(
+                    Job.user_id == user_id,
+                    Job.is_closed == False,  # noqa: E712
+                    Job.rerank_score.is_(None),  # type: ignore[union-attr]
+                )
+            ).one())
+    except Exception:
+        return 0
+
+
 def _run_matching_lane(uids) -> None:
     """Score each active user's pool under the matching lock (skip if a discovery
     matching pass already holds it — no double work). Heavily logged so it's
-    obvious in prod whether matching runs and how long each user takes."""
+    obvious in prod whether matching runs and how long each user takes.
+
+    Catch-up: each run_matching scores ~llm_rerank_cap jobs, so when a user has a
+    large unscored backlog (e.g. after an incident) one pass per 5-min tick
+    barely dents an 8k pool. Run up to matching_catchup_passes passes per user in
+    a single tick while the backlog stays above matching_catchup_backlog, bounded
+    by a per-lane wall-clock budget so we stay under the interval and don't hold
+    the lock too long. In steady state (small backlog) this is exactly one pass."""
     import time as _t
     from app.common.discovery_lock import discovery_guard
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
@@ -591,20 +615,35 @@ def _run_matching_lane(uids) -> None:
         if not ran:
             log.info("Matching lane: skipped — lock busy (another matching pass running)")
             return
+        max_passes = max(1, int(getattr(settings, "matching_catchup_passes", 1) or 1))
+        backlog_floor = int(getattr(settings, "matching_catchup_backlog", 200) or 0)
+        deadline = _t.monotonic() + max(60.0, settings.matching_lane_interval_minutes * 60 * 0.8)
         log.info("Matching lane: scoring %d user(s)", len(uids))
         total = 0
         for uid in uids:
             _uid = uid if uid != "local" else None
             _t0 = _t.monotonic()
+            user_short = 0
+            passes = 0
             try:
-                shortlisted = run_matching(_uid) or []
-                total += len(shortlisted)
-                dispatch_fresh_alerts(_uid, shortlisted)
-                log.info("Matching lane: user %s done in %.1fs — %d shortlisted",
-                         uid, _t.monotonic() - _t0, len(shortlisted))
+                while True:
+                    shortlisted = run_matching(_uid) or []
+                    user_short += len(shortlisted)
+                    passes += 1
+                    dispatch_fresh_alerts(_uid, shortlisted)
+                    if passes >= max_passes or _t.monotonic() > deadline:
+                        break
+                    if _unscored_backlog(_uid) < backlog_floor:
+                        break
+                total += user_short
+                log.info("Matching lane: user %s done in %.1fs — %d shortlisted (%d pass(es))",
+                         uid, _t.monotonic() - _t0, user_short, passes)
             except Exception as e:
                 log.warning("Matching lane: user %s failed after %.1fs: %s",
                             uid, _t.monotonic() - _t0, e)
+            if _t.monotonic() > deadline:
+                log.info("Matching lane: time budget reached — remaining users deferred to next tick")
+                break
         log.info("Matching lane: finished all %d user(s), %d shortlisted total", len(uids), total)
         # Heartbeat: healthy ping if the lane actually ran (lock acquired); the
         # monitor alerts you if these stop arriving (matching silently stopped).

@@ -147,6 +147,8 @@ class Settings(BaseSettings):
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
+    matching_catchup_passes: int = 4     # max scoring passes per user per lane tick when a large backlog exists (env MATCHING_CATCHUP_PASSES; 1 = old behavior). Drains a post-incident unscored backlog faster; bounded by a wall-clock budget.
+    matching_catchup_backlog: int = 200  # only run extra catch-up passes while a user's unscored backlog exceeds this (env MATCHING_CATCHUP_BACKLOG)
 
     # ── Observability (all dormant until set — safe to ship empty) ─────────────
     sentry_dsn: str = ""                   # SENTRY_DSN — enables error tracking when set
