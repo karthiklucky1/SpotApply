@@ -2101,10 +2101,12 @@ def stats(request: Request) -> dict:
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     with get_session() as session:
-        q = select(Job).where(Job.is_closed == False)
+        # COUNT in the DB — loading every full Job row (with descriptions) just to
+        # call len() streamed the whole pool out of Postgres on every /stats hit.
+        q = select(func.count(Job.id)).where(Job.is_closed == False)
         if uid and uid != "local":
             q = q.where(Job.user_id == uid)
-        total_jobs = len(session.exec(q).all())
+        total_jobs = int(session.exec(q).one())
         by_status = {}
         for st in ApplicationStatus:
             # Exclude orphan applications (Job row deleted) by joining Job.
@@ -2129,7 +2131,9 @@ def shortlist(request: Request):
         q = select(Job).where(Job.rerank_score >= 70)
         if uid != "local":
             q = q.where(Job.user_id == uid)
-        jobs = session.exec(q.order_by(Job.rerank_score.desc())).all()
+        # Cap the result — this had no limit, so a large scored pool returned
+        # every full row (descriptions + JSON) in one shot.
+        jobs = session.exec(q.order_by(Job.rerank_score.desc()).limit(200)).all()
     return [
         {
             "id": j.id,
@@ -2737,24 +2741,34 @@ def pipeline_live(request: Request) -> dict:
 
         # Same aggregator-redirect ghost exclusion as the dashboard pipeline, so
         # the live-updated header tiles agree with the board's numbers.
-        q = select(Application, Job).join(Job).where(
+        # Project ONLY the columns used below. This endpoint is polled ~every 2s
+        # during a discovery/ranking run; loading full Application+Job entities
+        # (job descriptions + JSON blobs) for every application streamed megabytes
+        # per poll out of Postgres for data we never read.
+        q = select(
+            Application.id, Application.status, Application.apply_track,
+            Application.apply_url,
+            Job.title, Job.company, Job.location, Job.remote,
+            Job.rerank_score, Job.url,
+        ).join(Job).where(
             Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
         ).order_by(Job.rerank_score.desc())
         if _uid_filter:
             q = q.where(Application.user_id == uid)
-        for app_model, job_model in session.exec(q).all():
-            st = app_model.status
+        for (app_id, st, apply_track, apply_url,
+             j_title, j_company, j_location, j_remote,
+             j_rerank, j_url) in session.exec(q).all():
             if st in _SHORTLIST or st in _INPROGRESS:
                 counts["shortlisted"] += 1
                 shortlist.append({
-                    "app_id": app_model.id,
-                    "title": job_model.title,
-                    "company": job_model.company,
-                    "location": job_model.location,
-                    "remote": bool(job_model.remote),
-                    "score": round(job_model.rerank_score) if job_model.rerank_score is not None else None,
-                    "track": app_model.apply_track,
-                    "url": app_model.apply_url or job_model.url,
+                    "app_id": app_id,
+                    "title": j_title,
+                    "company": j_company,
+                    "location": j_location,
+                    "remote": bool(j_remote),
+                    "score": round(j_rerank) if j_rerank is not None else None,
+                    "track": apply_track,
+                    "url": apply_url or j_url,
                     "status": st.value,
                 })
             elif st in _SUBMITTED:

@@ -17,7 +17,12 @@ this file is the working map for editing the code.
 2. Rule filter — title/seniority/location/job-type, per-company cap (`filters/`)
 3. Ghost filter — drops inactive/fake postings
 4. Embedding gate — cosine-similarity floor
-5. LLM reranker — Claude scores fit 0–100 + reasoning, per-user (`reranker.py`)
+5. LLM reranker — two-tier cascade (`reranker.py`): a cheap Tier-1 model
+   (`prescore()`, GPT-4o-mini or Haiku) bulk-scores up to `prescore_cap` fresh
+   candidates; only those clearing the advance gate reach Tier-2 (Claude, the
+   authoritative 0–100 + reasoning). Clear misfits are stamped with their
+   prescore so they exit the unscored corpus — draining the backlog instead of
+   re-reading it every pass. Toggle with `PRESCORE_ENABLED`.
 6. Hire probability — blends fit + hiring-intent signals (`hire_probability.py`)
 7. Senior review — independent "senior engineer" verdict + score (`intelligence/senior_reviewer.py`)
 

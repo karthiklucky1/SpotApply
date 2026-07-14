@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
+from sqlalchemy.orm import load_only
 from sqlmodel import select
 
 from app.config import settings
@@ -213,12 +214,27 @@ def _reset_stale_sponsorship_scores(user_id: str | None) -> int:
     keep their stale score-10 forever, even though that boilerplate no longer
     blocks. Clear those scores so this run re-ranks them under the fixed logic.
     Idempotent — once re-scored, the old reasoning text is gone. Explicit
-    refusals (NO_SPONSORSHIP_HARD) are left untouched."""
+    refusals (NO_SPONSORSHIP_HARD) are left untouched.
+
+    Guarded by a persisted per-user marker so it runs ONCE, not on every matching
+    pass: the offending rule is already fixed, so no NEW job gets this stamp — but
+    the unguarded full-row LIKE scan re-ran every pass, needless per-pass DB work
+    and egress. Non-fatal."""
+    import json as _json
+    from app.db.models import FunnelEvent
     from app.matching.filters.constants import WORK_AUTH_BOILERPLATE
     cleared = 0
     try:
         with get_session() as session:
-            q = select(Job).where(
+            already = session.exec(
+                select(FunnelEvent.id).where(
+                    FunnelEvent.stage == "stale_sponsorship_reset",
+                    FunnelEvent.reason == f"user={user_id}",
+                ).limit(1)
+            ).first()
+            if already:
+                return 0
+            q = select(Job).options(load_only(Job.id, Job.rerank_reasoning)).where(
                 Job.rerank_reasoning.like("Rule filtered: Sponsorship pre-filtered:%"),  # type: ignore[union-attr]
                 Job.user_id == user_id,
             )
@@ -229,6 +245,13 @@ def _reset_stale_sponsorship_scores(user_id: str | None) -> int:
                     job.rerank_reasoning = None
                     session.add(job)
                     cleared += 1
+            # Persist the marker even when nothing cleared, so a clean pool
+            # doesn't re-scan on every pass.
+            session.add(FunnelEvent(
+                job_id=None, stage="stale_sponsorship_reset", passed=True,
+                reason=f"user={user_id}",
+                metadata_json=_json.dumps({"cleared": cleared}),
+            ))
             session.commit()
     except Exception as e:
         log.warning("Stale sponsorship-score reset failed (non-fatal): %s", e)
@@ -320,6 +343,14 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
         applied_ids.discard(None)
         q = (
             select(Job)
+            # Load only the columns this loop actually uses — deferring the job
+            # description and the big JSON blobs (rerank_reasoning/breakdown/
+            # hire_probability_signals) keeps this per-pass, up-to-500-row query
+            # from streaming megabytes out of Postgres every matching pass.
+            .options(load_only(
+                Job.id, Job.url, Job.source, Job.company, Job.title,
+                Job.rerank_score, Job.user_id,
+            ))
             .where(
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
@@ -353,6 +384,32 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
             log.info("Job '%s' @ '%s' already scored (%d) — %s track. Shortlisted.",
                      job.title, job.company, job.rerank_score, _track)
     return shortlisted, today_count
+
+
+def _persist_prescore_rejects(rejects: list[tuple[int, float, str]]) -> None:
+    """Stamp Tier-1-rejected jobs with their prescore + reason so they leave the
+    unscored corpus (backlog drain). Uses a chunked bulk UPDATE (no per-row read,
+    so this does not add to egress) — Supabase cancels a single UPDATE over
+    thousands of rows via statement_timeout, so commit in small batches. The
+    scores are below the shortlist threshold by construction, so the re-shortlist
+    query never picks these up."""
+    if not rejects:
+        return
+    mappings = [
+        {"id": int(jid),
+         "rerank_score": float(score),
+         "rerank_reasoning": f"Pre-screened (Tier-1 fit {int(score)}): {reason}"[:500]}
+        for jid, score, reason in rejects
+    ]
+    for start in range(0, len(mappings), 500):
+        batch = mappings[start:start + 500]
+        try:
+            with get_session() as session:
+                session.bulk_update_mappings(Job, batch)
+                session.commit()
+        except Exception as e:
+            log.warning("Prescore-reject stamp batch %d failed (non-fatal): %s", start, e)
+    log.info("Cascade Tier-1: stamped %d drained job(s)", len(mappings))
 
 
 def run_matching(user_id: str | None = None) -> List[int]:
@@ -558,20 +615,69 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)
             return jid, None
 
-    # LLM gate — SELECTION only: only the top-N candidates reach the expensive
-    # LLM. Choose them FRESH-FIRST (by freshness tier, newest postings first,
+    # Order candidates FRESH-FIRST (by freshness tier, newest postings first,
     # breaking ties within a tier by source/freshness-weighted cross-encoder
-    # priority). This is the freshness fix: previously the cap went to the
+    # priority) so that when any cap bites, brand-new postings win the scarce
+    # scoring slots. This is the freshness fix: previously the cap went to the
     # highest-similarity survivors, so stale-but-similar jobs crowded brand-new
-    # postings out of the reranker budget and the feed went stale. The unscored
-    # remainder keeps its cheap-filter score and can be promoted on a later run.
+    # postings out and the feed went stale.
     # NOTE: this orders WHICH jobs get scored, not the shortlist-creation order —
     # Phase 3 re-sorts by resulting fit so freshness never steals a scarce
     # daily/company-cap slot from a stronger match.
     to_rerank = order_fresh_first(to_rerank, _rerank_tier, _rerank_priority)
+
+    # ── Cascade Tier-1: cheap bulk prescore ──────────────────────────────────
+    # A cheap/fast model scores up to prescore_cap candidates. Only those whose
+    # rough fit clears the advance gate reach Tier-2 (Claude — the authoritative
+    # score that drives shortlisting); the clear misfits are stamped with their
+    # prescore below, so they LEAVE the unscored corpus instead of being re-read
+    # and re-considered every pass. Net effect: we look at ~prescore_cap jobs per
+    # pass (not just llm_rerank_cap), the backlog actually drains (far less
+    # repeated full-row egress), and fresh on-role jobs reach Claude sooner.
+    # The effective gate is clamped to the shortlist threshold so any job that
+    # could plausibly shortlist always reaches Claude. Fail-open: a None prescore
+    # (cheap-model error) advances the job rather than dropping it.
+    prescore_rejects: list[tuple[int, float, str]] = []  # (jid, score, reason)
+    if (settings.prescore_enabled and to_rerank
+            and reranker.has_prescore_backend()):
+        advance_gate = min(settings.prescore_advance_threshold,
+                           settings.shortlist_score_threshold)
+        prescore_pool = to_rerank[: settings.prescore_cap]
+        log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
+                 len(prescore_pool), advance_gate)
+
+        def _prescore_one(item):
+            jid, _sim = item
+            try:
+                with get_session() as s:
+                    job = s.get(Job, jid)
+                    if not job:
+                        return jid, None
+                    return jid, reranker.prescore(resume, job)
+            except Exception as e:
+                log.debug("Prescore worker failed for job %s: %s", jid, e)
+                return jid, None
+
+        with ThreadPoolExecutor(max_workers=settings.prescore_workers) as ex:
+            _pre_by_jid = dict(ex.map(_prescore_one, prescore_pool))
+
+        advanced: list[tuple[int, float]] = []
+        for jid, sim in prescore_pool:  # preserve fresh-first order
+            pr = _pre_by_jid.get(jid)
+            if pr is None:              # cheap-model failure → fail-open to Claude
+                advanced.append((jid, sim))
+            elif pr[0] >= advance_gate:
+                advanced.append((jid, sim))
+            else:
+                prescore_rejects.append((jid, pr[0], pr[1]))
+        log.info("Cascade Tier-1: %d advanced to Claude, %d drained (below gate)",
+                 len(advanced), len(prescore_rejects))
+        to_rerank = advanced
+
+    # ── Cascade Tier-2: Claude (authoritative) score, capped at llm_rerank_cap ──
     if len(to_rerank) > settings.llm_rerank_cap:
         log.info(
-            "LLM gate: %d candidates survived cheap filters — capping to top %d (fresh-first)",
+            "LLM gate: %d candidates for Claude — capping to top %d (fresh-first)",
             len(to_rerank), settings.llm_rerank_cap,
         )
         to_rerank = to_rerank[: settings.llm_rerank_cap]
@@ -581,6 +687,11 @@ def run_matching(user_id: str | None = None) -> List[int]:
             for jid, res in ex.map(_rerank_one, to_rerank):
                 if res is not None:
                     rerank_results[jid] = res
+
+    # Stamp Tier-1 rejects so they exit the unscored corpus (backlog drain). Their
+    # score is below the shortlist threshold by construction, so the re-shortlist
+    # query will not pick them up.
+    _persist_prescore_rejects(prescore_rejects)
 
     # ── Phase 3: serial store + shortlist creation (caps/cooldown/limits) ─────
     # Shortlist-creation order is FIT-FIRST: among the freshly-scored cohort, the

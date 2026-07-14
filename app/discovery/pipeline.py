@@ -154,6 +154,11 @@ _DIRECT_ATS_SOURCES = {
 # into user-facing queries because those are always scoped by user_id.
 SHARED_POOL_USER = "__shared__"
 
+# Chunk size for the _upsert dedupe prefetch. A single IN(...) over thousands of
+# values is one statement Supabase cancels on statement_timeout, so we split the
+# batch's keys into chunks and union the results.
+_DEDUPE_PREFETCH_CHUNK = 500
+
 
 def scraper_for(ats, slug: str, career_url: str | None = None):
     """Map a (ats, slug) to a live scraper instance, or None if unsupported.
@@ -235,17 +240,41 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     if not candidates:
         return 0
 
-    # Snapshot existing dedupe keys for this user in one query.
+    # Snapshot existing dedupe keys — SCOPED TO THE INCOMING BATCH.
+    #
+    # This query previously snapshotted EVERY row this user owns (no batch
+    # filter, no limit). Because _upsert is called once PER BOARD, and the
+    # scheduled lanes upsert into the shared pool (SHARED_POOL_USER, often 100k+
+    # rows), each board fetch re-streamed the entire pool's dedupe columns out of
+    # Postgres. That single query was the dominant source of Supabase egress
+    # ("always filling") and starved the hot lane (only ~6 cycles/day instead of
+    # 72). We only ever need keys that could collide with THIS batch, so filter
+    # by the batch's external_ids and cross-source slugs — egress becomes
+    # O(batch) instead of O(pool). Chunked so each IN(...) stays well under
+    # Supabase's statement_timeout.
     by_key: dict = {}    # (source, external_id) -> (content_hash, last_seen)
     by_slug: dict = {}   # cross_source_slug -> source value
     prefetched = False
+    batch_ext_ids = list({r.external_id for r in candidates if r.external_id})
+    batch_slugs = list({_cross_source_slug(r.company, r.title, r.location)
+                        for r in candidates})
     try:
         with get_session() as session:
-            rows = session.exec(
-                select(Job.source, Job.external_id, Job.content_hash,
-                       Job.last_seen, Job.cross_source_slug)
-                .where(Job.user_id == user_id)
-            ).all()
+            rows: list = []
+            # Filter by external_id and by slug separately (each chunked); a row
+            # matching either is included. Duplicates across the two filters are
+            # harmless — the dict assignments below are idempotent.
+            for col, values in ((Job.external_id, batch_ext_ids),
+                                (Job.cross_source_slug, batch_slugs)):
+                for start in range(0, len(values), _DEDUPE_PREFETCH_CHUNK):
+                    chunk = values[start:start + _DEDUPE_PREFETCH_CHUNK]
+                    if not chunk:
+                        continue
+                    rows.extend(session.exec(
+                        select(Job.source, Job.external_id, Job.content_hash,
+                               Job.last_seen, Job.cross_source_slug)
+                        .where(Job.user_id == user_id, col.in_(chunk))
+                    ).all())
         for src, ext, chash, lseen, slug in rows:
             src_v = src.value if hasattr(src, "value") else str(src)
             by_key[(src_v, ext)] = (chash, lseen)

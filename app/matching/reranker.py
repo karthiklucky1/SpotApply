@@ -150,6 +150,73 @@ def _get_system_prompt(profile=None) -> str:
     return _legacy_system_prompt()
 
 
+# ── Tier-1 cheap prescore (cascade) ──────────────────────────────────────────
+# A fast, cheap first pass that decides which candidates are worth the
+# authoritative (Claude) score. It only needs a rough number + one-line reason,
+# so the prompt and output are deliberately tiny (cheap + high-throughput). It is
+# ROLE-AWARE: the rubric is built from THIS user's target roles / skills /
+# country, so an off-role posting scores low and drains out of the backlog.
+_PRESCORE_CONTRACT = (
+    'Return ONLY a JSON object, no prose, no markdown: '
+    '{"score": <0-100 integer overall fit>, "reason": "<max 15 words>"}'
+)
+
+
+def _prescore_system_prompt(profile=None) -> str:
+    if _profile_has_signal(profile):
+        yoe = int(getattr(profile, "years_experience", 0) or 0)
+        skills = (getattr(profile, "key_skills", "") or "").strip() or "not specified"
+        roles = (getattr(profile, "target_roles", "") or "").strip() \
+            or (getattr(profile, "current_title", "") or "").strip() or "not specified"
+        country = (getattr(profile, "preferred_country", "") or "United States").strip()
+        needs_sponsor = bool(getattr(profile, "requires_sponsorship", False))
+        sponsor = (" The candidate needs visa sponsorship — score low only if the posting "
+                   "explicitly refuses sponsorship or requires citizenship/clearance."
+                   if needs_sponsor else "")
+        return (
+            f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
+            f"Candidate targets: {roles}. Core skills: {skills}. ~{yoe} years. "
+            f"Wants jobs in {country} (or fully-remote roles open to {country}).{sponsor}\n"
+            "Score 0-100 how well THIS candidate fits the job. A hard blocker (onsite in a "
+            "different country, explicit no-sponsorship when needed, or an unrelated field) "
+            "scores 0-30. Genuine skill/role overlap with no blocker scores 60+. When unsure, "
+            "lean HIGHER — a stronger model re-checks every promising job, so only clear "
+            "misfits should score low."
+        )
+    return (
+        f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
+        "Judge fit purely from the résumé provided (do not assume facts not in it). An "
+        "unrelated field or a hard blocker scores 0-30; genuine skill overlap with no blocker "
+        "scores 60+. When unsure, lean HIGHER — a stronger model re-checks promising jobs."
+    )
+
+
+def _build_prescore_prompt(resume_text: str, job: Job) -> str:
+    """Compact prompt for the cheap tier — short résumé + short JD keep it fast."""
+    return f"""<resume>
+{resume_text[:2500]}
+</resume>
+<job>
+Title: {job.title}
+Company: {job.company}
+Location: {job.location}
+Remote: {job.remote}
+Description:
+{(job.description or '')[:1800]}
+</job>
+
+Return the JSON object."""
+
+
+def _parse_prescore(text: str) -> Tuple[float, str]:
+    """Parse the tiny Tier-1 response into (score 0-100, reason)."""
+    text = text.strip()
+    text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    data = json.loads(text)
+    score = max(0.0, min(100.0, float(data["score"])))
+    return score, str(data.get("reason", "") or "")[:160]
+
+
 def _sponsor_note(job: Job, profile) -> str:
     """When the candidate needs sponsorship AND the employer has a strong public
     H-1B filing record, tell the scorer explicitly: OPT is not a blocker here."""
@@ -300,6 +367,64 @@ class Reranker:
         if not res.passed:
             score = float(res.score_override or 10.0)
             return score, res.reason, [res.reason], _clean_breakdown(None, score)
+        return None
+
+    # ── Tier-1 cheap prescore (cascade) ──────────────────────────────────────
+    def _prescore_openai(self, prompt: str) -> str:
+        model = settings.prescore_model if not settings.prescore_model.startswith("claude") else "gpt-4o-mini"
+        resp = self._openai_client.chat.completions.create(
+            model=model,
+            max_tokens=120,
+            messages=[
+                {"role": "system", "content": _prescore_system_prompt(self._profile)},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content
+
+    def _prescore_anthropic(self, prompt: str) -> str:
+        # If prescore_model is an Anthropic model use it, else the cheap Haiku scorer.
+        model = settings.prescore_model if settings.prescore_model.startswith("claude") else settings.scoring_model
+        resp = self._anthropic_client.messages.create(
+            model=model,
+            max_tokens=120,
+            system=[{"type": "text", "text": _prescore_system_prompt(self._profile),
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text
+
+    def has_prescore_backend(self) -> bool:
+        """True when at least one LLM client exists to run the cheap Tier-1 pass."""
+        return bool(self._openai_client or self._anthropic_client)
+
+    def _prescore_backends(self):
+        """Yield (name, callable) for Tier-1, preferring the configured provider."""
+        prefer_openai = (settings.prescore_provider or "openai").lower() == "openai"
+        openai_pair = ("openai", self._prescore_openai) if self._openai_client else None
+        anthropic_pair = ("anthropic", self._prescore_anthropic) if self._anthropic_client else None
+        order = [openai_pair, anthropic_pair] if prefer_openai else [anthropic_pair, openai_pair]
+        for pair in order:
+            if pair:
+                yield pair
+
+    def prescore(self, resume_text: str, job: Job) -> Optional[Tuple[float, str]]:
+        """Tier-1 cheap bulk score. Returns (score 0-100, reason), or None on
+        failure. IMPORTANT: None means "couldn't decide" — the caller must NOT
+        drop the job on None; it should advance it to Tier-2 (fail-open) so a
+        cheap-model hiccup never silently buries a good match."""
+        # A hard rule rejection is authoritative and saves even the cheap call.
+        pre = self._pre_filter_job(job)
+        if pre is not None:
+            return pre[0], pre[1]
+        prompt = _build_prescore_prompt(resume_text, job)
+        for name, call_fn in self._prescore_backends():
+            try:
+                return _parse_prescore(call_fn(prompt))
+            except Exception as e:
+                log.debug("Prescore: %s failed for job %s: %s", name, job.id, e)
+                continue
         return None
 
     def score(self, resume_text: str, job: Job) -> Tuple[float, str, List[str], dict]:

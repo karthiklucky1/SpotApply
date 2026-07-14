@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy.orm import load_only
 from sqlmodel import select
 
 from app.db.init_db import get_session
@@ -72,11 +73,23 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
     with get_session() as session:
         shared = session.exec(
             select(Job)
+            # Only load the columns adoption uses (RawJob fields + the freshness
+            # timestamps) — the big JSON blobs (rerank_*/hire_probability_signals/
+            # corporate_insights) are dead weight here. Combined with the SQL
+            # freshness cutoff and a tighter cap, this replaces a 5000-full-row
+            # (~16 MB) scan-to-keep-400 with a much smaller read.
+            .options(load_only(
+                Job.source, Job.external_id, Job.company, Job.title, Job.location,
+                Job.remote, Job.url, Job.description, Job.posted_at, Job.first_seen,
+            ))
             .where(Job.user_id == SHARED_POOL_USER,
                    Job.is_closed == False,  # noqa: E712
-                   Job.first_seen != None)  # noqa: E711
+                   Job.first_seen != None,  # noqa: E711
+                   # Freshness cutoff in SQL (mirrors _fresh_enough) so stale rows
+                   # aren't streamed over just to be dropped in Python.
+                   (Job.posted_at >= cutoff) | (Job.first_seen >= cutoff))
             .order_by(Job.first_seen.desc())
-            .limit(5000)
+            .limit(3000)
         ).all()
 
     def _fresh_enough(j: Job) -> bool:

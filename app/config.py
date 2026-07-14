@@ -141,8 +141,21 @@ class Settings(BaseSettings):
     rerank_provider: str = "local"        # "local" | "jina"
     jina_api_key: str = ""                # api.jina.ai — rerank API key
     jina_rerank_model: str = "jina-reranker-v2-base-multilingual"
-    llm_rerank_cap: int = 100             # max jobs sent to the LLM reranker per run (fresh-first order); env LLM_RERANK_CAP
+    llm_rerank_cap: int = 100             # max jobs sent to the FINAL (Claude) reranker per run (fresh-first order); env LLM_RERANK_CAP
     llm_rerank_workers: int = 12          # concurrent LLM scoring workers (tune to Anthropic tier)
+    # ── Two-tier scoring cascade ──────────────────────────────────────────────
+    # Tier 1: a cheap/fast model (default GPT-4o-mini) bulk-scores many candidates
+    # per pass; only those clearing prescore_advance_threshold go to Tier 2
+    # (Claude, the authoritative score that drives shortlisting). Jobs Tier 1
+    # clearly rejects are stamped with their prescore so they leave the unscored
+    # corpus — this drains the backlog (fewer repeated full-row reads = less
+    # egress) and lets far more than llm_rerank_cap jobs be looked at per pass.
+    prescore_enabled: bool = True         # PRESCORE_ENABLED — turn the cascade on/off (off = old single-tier behavior)
+    prescore_provider: str = "openai"     # PRESCORE_PROVIDER — "openai" | "anthropic" (Tier-1 bulk scorer; falls back to whatever key exists)
+    prescore_model: str = "gpt-4o-mini"   # PRESCORE_MODEL — cheap/fast Tier-1 model
+    prescore_cap: int = 600               # PRESCORE_CAP — max candidates Tier-1 scores per pass (fresh-first)
+    prescore_advance_threshold: int = 30  # PRESCORE_ADVANCE_THRESHOLD — Tier-1 fit >= this advances to Claude; below is stamped and drained. Set a few points UNDER shortlist_score_threshold so borderline jobs still get Claude's authoritative look — only clear misfits drain. The pipeline also clamps the effective gate to <= shortlist_score_threshold.
+    prescore_workers: int = 16            # PRESCORE_WORKERS — concurrent Tier-1 workers (cheap model tolerates more)
     llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
