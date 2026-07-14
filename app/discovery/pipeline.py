@@ -915,6 +915,35 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         # Country-aware sources receive the user's preferred country for global sourcing.
         _COUNTRY_AWARE_SOURCES = {"SerpAPI Google Jobs", "Adzuna", "Reed.co.uk", "Jooble",
                                   "LinkedIn (RapidAPI)"}
+        def _query_countries() -> list[str]:
+            """Countries to query the country-aware source APIs for.
+
+            Per-user runs use that user's own country. The SHARED-pool run used
+            to hardcode "United States", so the main firehose that feeds every
+            tenant's adoption pool only ever contained US postings from these
+            sources — a Berlin or Bengaluru user got almost no onsite local jobs
+            from scheduled discovery. Now the global pass fans out across the
+            DISTINCT countries of actual users (capped to protect API quotas).
+            """
+            if _country:
+                return [_country]
+            countries: list[str] = []
+            try:
+                from app.db.models import UserProfile as _UP
+                with get_session() as session:
+                    rows = session.exec(select(_UP.preferred_country)).all()
+                seen: set[str] = set()
+                for c in rows:
+                    c = (c or "").strip()
+                    if c and c.lower() not in seen:
+                        seen.add(c.lower())
+                        countries.append(c)
+            except Exception as _ce:
+                log.debug("query-country fan-out unavailable: %s", _ce)
+            if "united states" not in {c.lower() for c in countries}:
+                countries.insert(0, "United States")
+            return countries[:5]  # bound API spend; extra countries rotate via per-user runs
+
         async def _fetch_one(name, src_cls):
             reason = _inactive_reason.get(name)
             if reason:
@@ -923,12 +952,15 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 return []
             try:
                 if name in _COUNTRY_AWARE_SOURCES:
-                    # Shared-pool runs gate nothing (_country=None) but the
-                    # query APIs still need a concrete country string.
-                    src = src_cls(keywords=_keywords, country=_country or "United States")
+                    # The query APIs need concrete country strings — fan out
+                    # across every country our users actually target.
+                    raw_jobs = []
+                    for _qc in _query_countries():
+                        src = src_cls(keywords=_keywords, country=_qc)
+                        raw_jobs.extend(await asyncio.wait_for(src.fetch_jobs(), timeout=45))
                 else:
                     src = src_cls(keywords=_keywords)
-                raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)
+                    raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)
                 source_stats[name] = {"fetched": len(raw_jobs)}
                 log.info("%s: fetched %d jobs", name, len(raw_jobs))
                 _save_incremental()
