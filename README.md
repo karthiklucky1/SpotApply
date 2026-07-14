@@ -1,91 +1,116 @@
 # HirePath — AI Job-Application Copilot
 
-HirePath discovers real, fresh tech roles from company ATS APIs and job feeds, scores
-each one against **your** résumé with a multi-stage matching cascade, drafts tailored
-résumés and cover letters (fact-checked against your real experience), auto-fills the
-application form in your browser, and keeps you in control of the final **Submit**.
+HirePath discovers real, fresh roles straight from company ATS APIs and job feeds,
+scores each one against **your** résumé with a multi-stage matching cascade, drafts
+tailored résumés and cover letters (fact-checked against your real experience),
+auto-fills application forms in your browser, and keeps you in control of the final
+**Submit**.
 
-It started as a single-user personal job agent and has grown into a multi-tenant web
-app (HirePath) with accounts, per-user matching, a browser extension, and a Telegram
-review loop. The guiding principle is unchanged: **the machine prepares, the human
-decides.**
+> **You always click Submit.** HirePath prepares and fills — it never silently fires
+> off applications on your behalf. *The machine prepares, the human decides.*
 
-> **You always click Submit.** HirePath fills forms and prepares materials — it never
-> silently fires off applications on your behalf.
+It began as a single-user personal job agent and has grown into a multi-tenant web app
+with accounts, per-user matching, a freshness engine, a browser extension, and a
+Telegram review loop.
 
 ---
 
-## What it does
+## Why HirePath
 
-1. **Discovers** jobs from direct ATS boards (Greenhouse, Lever, Ashby, Workday,
-   SmartRecruiters) plus aggregators and feeds (Indeed RSS, RemoteOK, Remotive,
+- **Fresh, not stale.** A per-board polling scheduler (the *pulse lane*) checks the
+  companies you follow every few minutes and sweeps every live board at least hourly —
+  new postings reach your board (and your phone) while you can still be one of the
+  first applicants. Alert timestamps use the posting's true publish time, so
+  "posted 7m ago" is measured, not claimed.
+- **Precision over volume.** A cheapest-first cascade (retrieval → rule/ghost/embedding
+  gates → two-tier LLM scoring) means the expensive model only reads jobs that deserve
+  it — and you only see roles that genuinely fit.
+- **Grounded tailoring.** Every tailored résumé passes a grounding check (nothing
+  invented beyond your real résumé), a résumé "Doctor" (ATS coverage, weak bullets,
+  AI-tell fingerprints, recruiter's-read verdict), and a **lock layer** that pins
+  immutable facts — your degree, school, and dates can never be altered by tailoring.
+- **Ghost-job aware.** Inactive, re-posted, and aggregator-recycled postings are
+  detected and filtered before they waste your time.
+- **Visa-aware.** Sponsorship and work-authorization assessment (including a public
+  H-1B filing record lookup) is built into scoring, not bolted on.
+
+---
+
+## How it works
+
+```
+Discover ─▶ Match cascade ─▶ Score & enrich ─▶ Tailor (grounded) ─▶ Auto-fill ─▶ You review & Submit
+```
+
+1. **Discover** — direct ATS boards (Greenhouse, Lever, Ashby, Workday,
+   SmartRecruiters, and more) plus ~20 aggregators and feeds (RemoteOK, Remotive,
    WeWorkRemotely, The Muse, Adzuna, Jooble, Reed, YC, Hacker News "Who is hiring",
-   and search-engine discovery).
-2. **Matches** every job to your résumé through a cascade — cheap filters first, the
-   expensive LLM last — so only genuinely relevant roles reach you.
-3. **Scores fit & hiring intent** — a 0–100 résumé fit score, a "senior reviewer"
-   second opinion, ghost-posting detection, sponsorship/work-authorization assessment,
-   and live hiring signals (fresh posting, funding/growth language, opening velocity).
-4. **Tailors** an ATS-friendly résumé and cover letter, then runs a **grounding check**
-   so nothing is invented beyond what your real résumé supports.
-5. **Auto-fills** the application form (Greenhouse / Lever / Ashby / Workday) via the
-   browser extension or Playwright, with human-like pacing.
-6. **Hands off** to you for review — in the dashboard or via the Telegram bot — for
-   approval, custom-question answers, or CAPTCHA solving before submission.
+   search-engine discovery). Jobs are scraped once into a shared pool and served to
+   every matching user — cost scales with boards, not users.
+2. **Match** — the cascade below filters cheaply first, so LLM spend stays low.
+3. **Score & enrich** — 0–100 fit with reasoning, hire-probability signals, ghost
+   score, sponsorship assessment, urgency, and an independent "senior reviewer"
+   second opinion.
+4. **Tailor** — ATS-friendly résumé + cover letter, grounded in your real experience,
+   quality-checked, with immutable facts locked.
+5. **Auto-fill** — the browser extension (or Playwright) fills the form with
+   human-like pacing; unanswered questions route to you.
+6. **Review & submit** — in the dashboard or via Telegram. The final click is yours.
 
-```
-Discover ─▶ Match cascade ─▶ Score & enrich ─▶ Tailor (grounding check) ─▶ Auto-fill ─▶ You review & Submit
-```
+### The freshness engine
 
----
+Three scheduled lanes keep the pool current without redundant work:
 
-## Recent feature additions
+| Lane | Cadence | Job |
+|------|---------|-----|
+| **Pulse lane** | every tick (~1 min) | Polls boards on their own `next_poll_at` schedule: **followed companies & recently-posting boards every ~5 min**, **every live board at least hourly**, dead boards daily. Unchanged boards are skipped via a posting-list signature. Brand-new jobs take a per-job fast path: role match → prescore → Claude → shortlist → fresh alert, in minutes. |
+| **Fresh lane** | every ~2 h | Boards-only rescan of the whole registry. |
+| **Full discovery** | every ~6 h | Boards + all aggregators/feeds, one global pass for all users. |
 
-We recently shipped a set of optimization and quality-of-life updates to enhance user experience and cut LLM API costs:
+An independent **matching lane** (every ~5 min) scores each user's unscored pool so a
+stalled discovery can never stall matching.
 
-* **In-Drawer Tailored Documents Viewer:** Replaced file downloads and modal overlays with a clean, two-column detail drawer layout. When reviewing a HirePath submission, the right pane displays tabbed, scrollable, and selectable views of the tailored **Resume** and **Cover Letter** text instantly.
-* **Instant Status Updates:** Replaced artificial `setTimeout` delays during status transitions ("Under Review", "Accepted", "Rejected", "Remove") with instant page refreshes. Utilizes a `sessionStorage`-persisted toast system to render confirmation alerts immediately on page load, making the board feel incredibly fast.
-* **Independent Per-Column Stagger Animations:** Fixed a bug where late columns (Submitted and Interview pipelines) stayed blank for 6-9 seconds by refactoring CSS staggers to run independently inside each column container with a 300ms delay cap.
-* **LLM Cost Prevention for Submitted Applications:** Bypassed expensive AI Match & Resume Fit calls (`/senior-review`) for job cards that have already been submitted, saving token fees once the application is finalized.
-* **Column-Level Real-Time Search:** Added real-time client-side filter bars above each column to search cards instantly by company name or job title.
-* **Automatic Extension Submission Tracking:** The browser extension now captures external form submissions in real-time, automatically registers the application as submitted in the backend, and broadcasts a silent reload to the dashboard.
-* **Fast-Path Page Loading & Pagination:** Refactored SQL queries for large datasets (1,000+ applications) to query columns individually, default the Submitted pipeline to a paginated view of the most recent 20 cards, and include a "Show More / Show Less" toggle.
+### The matching cascade
 
----
-
-## The matching cascade
-
-Stages run cheapest-first; a job only advances if it survives the previous gate, which
-keeps LLM cost down at scale (see `app/matching/pipeline.py`):
+Stages run cheapest-first; a job only advances if it survives the previous gate
+(`app/matching/pipeline.py`):
 
 | Stage | Module | What it does |
 |-------|--------|--------------|
-| 0. Retrieval | `matching/matcher.py` | BM25 + FAISS (`all-MiniLM-L6-v2`) pull the top-K candidate jobs for your résumé. |
-| 1. Rule filter | `matching/filters/` | Hard gates: title/seniority, location, job-type (e.g. drops internships unless opted in), per-company cap & cooldown. |
-| 2. Ghost filter | `discovery` / pipeline | Flags postings that look inactive or fake. |
-| 3. Embedding gate | `matching/filters` | Drops jobs below a cosine-similarity floor. |
-| 4. LLM reranker | `matching/reranker.py` | Claude scores fit 0–100 with reasoning, per-user profile aware. |
+| 0. Retrieval | `matching/matcher.py` | BM25 + FAISS (`all-MiniLM-L6-v2`) over unscored jobs, newest first, with a freshness reserve so new postings always get ranked. |
+| 1. Rule filter | `matching/filters/` | Title/seniority/location/job-type gates, per-company cap & cooldown. |
+| 2. Ghost filter | `matching/filters/` | Drops postings that look inactive or fake. |
+| 3. Embedding gate | `matching/filters/` | Cosine-similarity floor. |
+| 4. LLM cascade | `matching/reranker.py` | **Tier 1:** a cheap model (GPT-4o-mini or Claude Haiku) bulk-prescores candidates and drains clear misfits. **Tier 2:** Claude produces the authoritative 0–100 score with reasoning, tuned to your profile. |
 | 5. Hire probability | `matching/hire_probability.py` | Blends fit with hiring-intent signals into a priority score. |
-| 6. Senior review | `intelligence/senior_reviewer.py` | An independent "senior engineer" verdict + 0–100 score. |
+| 6. Senior review | `intelligence/senior_reviewer.py` | Independent "senior engineer" verdict, on demand. |
 
-Enrichment layers add sponsorship/H-1B assessment (`intelligence/sponsorship.py`,
-`h1b_data.py`, `work_auth.py`), urgency signals (`intelligence/urgency.py`), and
-referral-message drafting (`intelligence/referral.py`).
+### Tailoring integrity
+
+- **Grounding check** (`tailoring/grounding.py`) — every bullet must be supported by
+  your master résumé; flagged drafts are rebuilt with reviewer feedback.
+- **Lock layer** (`tailoring/lock.py`) — Education facts (degree, school, dates) are
+  restored verbatim from your master résumé after every draft. An altered credential
+  is structurally impossible, not merely detected.
+- **Résumé Doctor** (`tailoring/doctor.py`) — ATS keyword coverage, weak-bullet and
+  banned-word scan, integrity anchors, an AI-writing fingerprint check with a
+  "reads human" score, and a recruiter's-read verdict — all surfaced in the review UI.
 
 ---
 
 ## Tech stack
 
 - **Backend:** Python 3.11, FastAPI, Uvicorn
-- **Data:** Supabase Postgres in production (SQLite for local single-user dev), via SQLModel
+- **Data:** Supabase Postgres in production, SQLite for local single-user dev (SQLModel)
 - **Auth:** Supabase Auth (email/OAuth), JWT-verified server-side
 - **Matching/ML:** `sentence-transformers` (all-MiniLM-L6-v2), FAISS, `rank-bm25`
-- **LLM:** Anthropic Claude (primary) with OpenAI as an option — tailoring, reranking, grounding
-- **Automation:** Playwright (Chromium) + a Chrome extension (`extension/`)
+- **LLM:** Anthropic Claude (primary); OpenAI optional (Tier-1 prescoring, fallback)
+- **Automation:** Playwright (Chromium) + a Manifest-V3 Chrome extension
 - **Docs:** `python-docx`, `pypdf` for résumé parsing/generation
-- **Handoff:** `python-telegram-bot` for the review loop
-- **Scheduling:** APScheduler (discovery/matching every ~6h; harvester/validator/reports daily/weekly)
-- **Frontend:** Server-rendered Jinja templates + Tailwind (CDN) + Chart.js
+- **Handoff:** `python-telegram-bot` review loop
+- **Scheduling:** in-process asyncio lanes (pulse/fresh/full/matching) + APScheduler
+  (harvester, validator, reports)
+- **Frontend:** server-rendered Jinja + Tailwind (CDN) + Chart.js
 
 ---
 
@@ -94,33 +119,25 @@ referral-message drafting (`intelligence/referral.py`).
 ```
 app/
   api/            # FastAPI app: all routes, dashboard, auth, admin (server.py)
-  db/             # SQLModel models, init, Supabase client
-  discovery/      # ATS scrapers (greenhouse/lever/ashby/workday/smartrecruiters)
-    sources/      # Aggregators & feeds (indeed_rss, remoteok, hn_whoishiring, yc, ...)
-  matching/       # Cascade: matcher, rule/embedding filters, reranker, hire_probability
-  tailoring/      # Résumé + cover-letter generation, ATS keywords, grounding check
+  db/             # SQLModel models, init/migrations, Supabase client
+  discovery/      # ATS scrapers + title filter + dedupe pipeline
+    sources/      # Aggregators & feeds (~20)
+  matching/       # Cascade: matcher, filters, two-tier reranker, hire_probability
+  tailoring/      # Tailor, ATS keywords, grounding, doctor, lock (immutable facts)
   autofill/       # Playwright form filler + answer pack
-  intelligence/   # Sponsorship/H1B, work auth, senior reviewer, urgency, referral
-  strategy/       # Daily application scoring & limits engine
-  analytics/      # Funnel, cost dashboard, CRM, daily reporter
+  intelligence/   # Sponsorship/H-1B, work auth, senior reviewer, urgency, referral,
+                  # skill gap, job check
+  strategy/       # pulse_lane (freshness), hot_lane (legacy), fresh_alerts,
+                  # adoption, daily engine
+  analytics/      # Funnel, cost dashboard, CRM, reporter
   qa_store/       # Canonical applicant answers + memory resolver
   telegram_bot/   # Async handoff / approval loop
   templates/      # landing, dashboard, pricing, auth, privacy, terms, extension
-  static/         # Assets
-extension/        # Chrome extension (manifest v3): background, content, popup
+extension/        # Chrome extension (MV3): background, content, popup
 scripts/          # CLI entrypoints: run_discovery, run_matching, seed_registry, ...
-tests/            # pytest suite (matching, tailoring, grounding, autofill, funnel, ...)
+tests/            # pytest suite
 data/             # Résumé master, FAISS index, generated docs, local SQLite
 ```
-
----
-
-## Key data models (`app/db/models.py`)
-
-`Job`, `Application`, `UserProfile`, `UserSubscription` / `UserUsage` / `PlanTier`,
-`CompanyRegistry`, `DiscoveryRun`, `FunnelEvent`, `PendingQuestion`, `AnswerMemory`,
-`UserPersonalMemory`, `H1BSponsor`, `UserNotification`, plus referrals/coupons
-(`UserReferralReward`, `TrialGrant`, `Coupon`, `CouponRedemption`).
 
 ---
 
@@ -145,82 +162,82 @@ python -m scripts.run_matching      # score them against your résumé
 Run the app:
 
 ```bash
-# Production-style: API only (the server has its own 6h scheduler)
+# Production-style: API + internal scheduler lanes
 uvicorn app.api.server:app --host 0.0.0.0 --port 8000
 
 # Local all-in-one: API + Telegram bot + harvester/report schedulers
 python -m app.main
 ```
 
-Open **http://127.0.0.1:8000/** (landing) → **/dashboard** (the job board).
+Open **http://127.0.0.1:8000/** (landing) → **/dashboard** (your board).
 
 ### Environment
 
 Configure via `.env` (see `.env.example` for the full list):
 
-- **Database/Auth:** `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
-  `DATABASE_URL`. Leave Supabase blank to fall back to local SQLite single-user mode.
-- **LLM:** `ANTHROPIC_API_KEY` (required for tailoring/reranking).
-- **Telegram (optional):** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — lock the bot to
-  your own chat ID.
-- **Matching knobs:** `MIN_MATCH_SCORE`, `TOP_K_RERANK`, `DAILY_APPLY_LIMIT`.
-- **Discovery targets:** `GREENHOUSE_BOARDS`, `LEVER_BOARDS`, `ASHBY_BOARDS` (comma-separated slugs).
+| Group | Keys | Notes |
+|-------|------|-------|
+| Database / Auth | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL` | Leave blank for local SQLite single-user mode. |
+| LLM | `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional) | OpenAI enables the cheap Tier-1 prescorer (`PRESCORE_*` knobs). |
+| Freshness | `PULSE_LANE_ENABLED`, `PULSE_FAST_INTERVAL_MINUTES`, `PULSE_FLOOR_INTERVAL_MINUTES` | Defaults: on, 5 min fast lane, 60 min floor. |
+| Matching | `MIN_MATCH_SCORE`, `TOP_K_RERANK`, `LLM_RERANK_CAP`, `DAILY_APPLY_LIMIT` | Cascade and volume tuning. |
+| Discovery | `GREENHOUSE_BOARDS`, `LEVER_BOARDS`, `ASHBY_BOARDS` | Comma-separated slugs (registry-seeded boards cover the rest). |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Optional review loop, locked to your chat. |
 
 ---
 
 ## Browser extension
 
 `extension/` is a Manifest-V3 Chrome extension that fills application forms in your own
-browser (so you keep the session and control Submit). Load it unpacked via
-`chrome://extensions` → Developer Mode → "Load unpacked" → select the `extension/`
-folder, or visit **/extension** in the app for install instructions.
+browser — you keep the session, and you control Submit. Load it unpacked via
+`chrome://extensions` → Developer Mode → "Load unpacked" → select `extension/`, or
+visit **/extension** in the app for guided install.
 
 ---
 
 ## Deployment
 
-- **Docker:** `Dockerfile` installs deps + Playwright Chromium and runs Uvicorn.
+- **Docker:** `Dockerfile` installs dependencies + Playwright Chromium and runs Uvicorn.
 - **Railway:** `railway.toml` (Docker builder, health check at `/health`).
-- **Nixpacks / Heroku-style:** `nixpacks.toml` and `Procfile`
-  (`web: uvicorn app.api.server:app`).
+- **Nixpacks / Heroku-style:** `nixpacks.toml` and `Procfile`.
 
-The FastAPI server runs an internal asyncio scheduler that triggers discovery and
-matching roughly every 6 hours in both local and production environments.
+The FastAPI server runs its scheduler lanes in-process — no external cron required.
 
 ---
 
 ## Testing
 
 ```bash
-pytest                       # full suite
-pytest tests/test_grounding.py tests/test_hire_probability.py -q
-ruff check app               # lint
+pytest                        # full suite
+pytest tests/test_pulse_lane.py tests/test_cascade.py -q
+ruff check app                # lint
 ```
 
-The suite covers matching filters, dedup, tailoring/cover-letter quality, the grounding
-check, hire-probability scoring, autofill verification, the reject/approval flow, and
-funnel analytics.
+The suite covers the matching cascade, dedupe, freshness scheduling, fresh alerts,
+tailoring quality (grounding, doctor, lock layer), autofill verification, tenant
+scoping, and funnel analytics.
 
 ---
 
 ## Compliance & ethics
 
-- **Public sources only.** Discovery uses public ATS APIs and job feeds, and respects
+- **Public sources only.** Discovery uses public ATS APIs and job feeds and respects
   `robots.txt`.
-- **No LinkedIn/Indeed automation.** Those platforms' ToS prohibit it; listings from
-  such sources are discovery-only links you open yourself.
-- **Human review gate.** HirePath prepares and fills, but you approve and submit — in
-  the dashboard or via Telegram (`/approve`, `/reject`).
-- **Grounded content.** The tailoring grounding check prevents fabricating experience
-  beyond what your résumé supports.
-- **Your data, your control.** Profiles, résumés, and job pools belong to each user and
-  can be edited, replaced, or cleared at any time.
+- **No LinkedIn/Indeed automation.** Their ToS prohibit it; listings from such sources
+  are discovery-only links you open yourself.
+- **Human review gate.** HirePath prepares and fills; you approve and submit.
+- **Grounded content.** Tailoring cannot fabricate experience or alter your
+  credentials — enforced in code, not just prompts.
+- **Your data, your control.** Profiles, résumés, and job pools belong to each user
+  and can be edited, replaced, or cleared at any time.
 
 ---
 
 ## Status
 
-Actively developed. Discovery, the full matching cascade, résumé/cover-letter tailoring
-with grounding, per-user scoring, the dashboard (Pipeline / All Jobs / Boards views, fit
-distribution, discovery-source insights), accounts, plans, and the Telegram review loop
-are operational. Auto-fill runs under human supervision via the extension and Telegram.
+Actively developed. Operational today: discovery across direct ATS boards + feeds, the
+pulse-lane freshness engine with the "My Companies" watchlist, the full matching
+cascade with two-tier LLM scoring, grounded tailoring with the Doctor and lock layer,
+per-user scoring and fresh alerts, dashboard (Pipeline / All Jobs / Ghost Jobs /
+Skill Gap / Boards), accounts and plans, and the Telegram review loop. Auto-fill runs
+under human supervision via the extension.
