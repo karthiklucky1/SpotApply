@@ -302,6 +302,17 @@ async def startup_event():
         warm_cache_async()
     except Exception:
         pass
+    # Build DB performance indexes in the background (Postgres CONCURRENTLY, so
+    # no table lock). Off the startup path so a slow build on a big table can't
+    # delay the health check. This is the fix for the WHERE user_id=? full-table
+    # scans that were timing out matching/discovery once the pool grew.
+    async def _build_indexes():
+        try:
+            from app.db.init_db import ensure_performance_indexes
+            await asyncio.to_thread(ensure_performance_indexes)
+        except Exception as _ie:
+            log.warning("Performance index build failed (non-fatal): %s", _ie)
+    asyncio.create_task(_build_indexes())
     # Start background scheduler — runs discovery + matching every
     # settings.discovery_interval_hours (default 6h) for each user with a resume
     asyncio.create_task(_scheduler())

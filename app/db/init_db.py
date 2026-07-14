@@ -246,6 +246,57 @@ def init_db() -> None:
         except Exception as e:
             print(f"Failed to migrate h1bsponsor unique key: {e}")
 
+    # Performance indexes are built by ensure_performance_indexes(), scheduled
+    # as a background task at startup so a slow index build on a big table can't
+    # block app startup / the Railway health check. (SQLite/tests build inline.)
+    if not settings.use_supabase:
+        ensure_performance_indexes()
+
+
+# Columns declared index=True only get their index when create_all() builds the
+# table fresh. In prod these were ADDED via bare ALTER TABLE (add_column_if_missing),
+# so NO index existed — every `WHERE user_id = ?` was a full-table scan. Fine
+# while small; once the shared pool grew the job table this caused statement-
+# timeout QueryCanceled errors on matching/discovery. The composite
+# (user_id, is_closed) covers the matcher's main query.
+_PERF_INDEXES = [
+    ("ix_job_user_id", "job", "(user_id)"),
+    ("ix_job_user_closed", "job", "(user_id, is_closed)"),
+    ("ix_job_user_slug", "job", "(user_id, cross_source_slug)"),
+    ("ix_app_user_id", "application", "(user_id)"),
+    ("ix_app_job_id", "application", "(job_id)"),
+    ("ix_funnel_stage_created", "funnel_events", "(stage, created_at)"),
+]
+
+
+def ensure_performance_indexes(indexes: list | None = None) -> None:
+    """Create each (name, table, columns) index if missing. On Postgres uses
+    CONCURRENTLY (no table lock) with autocommit + a long timeout so building
+    an index on a big table can't block writes or get killed by the statement
+    timeout. SQLite (local/tests) uses a plain CREATE INDEX IF NOT EXISTS."""
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    for name, table, cols in (indexes or _PERF_INDEXES):
+        try:
+            if not insp.has_table(table):
+                continue
+            existing = {ix["name"] for ix in insp.get_indexes(table)}
+            if name in existing:
+                continue
+            if settings.use_supabase:
+                conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+                with conn:
+                    conn.execute(text("SET statement_timeout = 600000"))  # 10 min for the build
+                    conn.execute(text(
+                        f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}"
+                    ))
+            else:
+                with engine.begin() as conn:
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} {cols}"))
+            print(f"Ensured index {name} on {table}{cols}")
+        except Exception as e:
+            print(f"Index {name} on {table} not created (non-fatal): {e}")
+
 
 def reconcile_job_owners() -> int:
     """Adopt legacy ownerless Job rows into the tenant whose Application
