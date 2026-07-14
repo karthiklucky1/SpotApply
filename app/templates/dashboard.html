@@ -1037,7 +1037,7 @@
     /* Match-tier colors: ring, number, and label share one color per tier so
        Strong / Good / Fair / Low read differently at a glance. */
     .jr-tier-strong { --tier-c: #10b981; }
-    .jr-tier-good   { --tier-c: #8b5cf6; }   /* purple (was blue #3b82f6) */
+    .jr-tier-good   { --tier-c: #a78bfa; }   /* soft purple (was blue #3b82f6) */
     .jr-tier-fair   { --tier-c: #f59e0b; }
     .jr-tier-low    { --tier-c: #f43f5e; }
     .jr-score .jr-score-num,
@@ -1046,12 +1046,11 @@
     /* Sponsorship chip on the match card — emerald so a sponsoring employer
        reads at a glance; full reason on hover (title attr). */
     .jr-sig-spon { color:#10b981; border-color:rgba(16,185,129,.35); background:rgba(16,185,129,.08); cursor:help; }
+    .jr-sig-nospon { color:#f59e0b; border-color:rgba(245,158,11,.35); background:rgba(245,158,11,.08); cursor:help; }
     /* Skill-gap cards — same elevated glass style as the shortlist "Fits" rows */
     .sg-card { transition: transform .12s ease, border-color .12s ease; }
     .sg-card:hover { transform: translateY(-2px); border-color: rgba(var(--sage-rgb),.4); }
     .sg-demand { font-size:9px; font-weight:800; white-space:nowrap; padding:2px 8px; border-radius:999px; background:rgba(148,163,184,.12); }
-    .sg-bar { height:5px; border-radius:999px; background:rgba(148,163,184,.15); overflow:hidden; margin-top:6px; }
-    .sg-bar > span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#8b5cf6,#6366f1); }
     .sg-jobchip { font-size:9px; color:#94a3b8; background:rgba(148,163,184,.08); border:1px solid rgba(148,163,184,.18); border-radius:999px; padding:2px 8px; }
     /* Direct company-portal link (no job-board middleman) */
     .jr-direct { display:inline-flex; align-items:center; gap:3px; margin-left:6px;
@@ -1294,7 +1293,7 @@
                         <div class="jr-score-label" style="opacity:.7;">Not scored yet</div>
                         {% endif %}
                         <div class="jr-sigs">
-                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jr-sig jr-sig-spon" title="{{ _cap.reason|e }}">✓ {{ _cap.badge or 'Sponsors visas' }}{% if _cap.cap_exempt %} · cap-exempt{% endif %}</span>{% endif %}
+                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jr-sig jr-sig-spon" title="{{ _cap.reason|e }}">✓ {{ _cap.badge or 'Sponsors visas' }}{% if _cap.cap_exempt %} · cap-exempt{% endif %}</span>{% elif _cap and _cap.tone == 'bad' %}<span class="jr-sig jr-sig-nospon" title="{{ _cap.reason|e }}">✕ {{ _cap.badge or 'No visa sponsorship' }}</span>{% endif %}
                             {% set _sigs_all = (job.hire_probability_signals|fromjson) if job.hire_probability_signals else [] %}
                             {% set _sigs = [] %}{% for s_ in _sigs_all %}{% if not (s_ is string and s_.startswith('fresh_posting')) %}{% set _ = _sigs.append(s_) %}{% endif %}{% endfor %}
                             {% for s_ in _sigs[:2] %}<span class="jr-sig">✓ {{ s_|humanize_signal }}</span>{% endfor %}
@@ -1396,16 +1395,16 @@
    </div>
    <div id="skillgap-sources" class="flex flex-wrap gap-2 text-[10px] font-bold"></div>
    <div id="skillgap-loading" class="text-center py-14 text-slate-500 text-sm font-semibold">Click the tab to analyze your matches…</div>
-   <div id="skillgap-body" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
+   <div id="skillgap-body" class="hidden grid grid-cols-1 gap-5 items-start">
      <div class="glass rounded-3xl p-5 border border-rose-500/20">
        <div class="flex items-center justify-between mb-3"><h3 class="font-bold text-white text-sm">🔴 Learn these</h3><span id="skillgap-learn-count" class="text-[10px] font-black text-rose-300"></span></div>
        <p class="text-[10px] text-slate-500 mb-3">No proof on résumé, GitHub, or LinkedIn. Do a small project, push it to GitHub, add the skill to LinkedIn.</p>
-       <div id="skillgap-learn" class="flex flex-col gap-2.5"></div>
+       <div id="skillgap-learn" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
      </div>
      <div class="glass rounded-3xl p-5 border border-amber-500/20">
        <div class="flex items-center justify-between mb-3"><h3 class="font-bold text-white text-sm">🟡 Make visible</h3><span id="skillgap-vis-count" class="text-[10px] font-black text-amber-300"></span></div>
        <p class="text-[10px] text-slate-500 mb-3">You already have proof — it's just not on your résumé. Add it to your résumé and LinkedIn skills yourself.</p>
-       <div id="skillgap-vis" class="flex flex-col gap-2.5"></div>
+       <div id="skillgap-vis" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
      </div>
      <div class="glass rounded-3xl p-5 border border-emerald-500/20">
        <div class="flex items-center justify-between mb-3"><h3 class="font-bold text-white text-sm">✅ Covered</h3><span id="skillgap-match-count" class="text-[10px] font-black text-emerald-300"></span></div>
@@ -2845,7 +2844,6 @@
                   <span class="text-sm font-black text-white">${_sgEsc(item.skill)}</span>
                   <span class="sg-demand ${tone}">${item.demand} of matches · ${pct}%</span>
                 </div>
-                <div class="sg-bar"><span style="width:${pct}%"></span></div>
                 ${evidence}
                 <div class="text-[11px] text-slate-400 mt-1.5 leading-relaxed">${_sgEsc(item.advice || '')}</div>
                 ${chips ? `<div class="flex flex-wrap gap-1.5 mt-2">${chips}</div>` : ''}

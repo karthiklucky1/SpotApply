@@ -1037,8 +1037,11 @@ def _days_ago_filter(dt):
     except TypeError:
         return ""
     secs = max(0, int(delta.total_seconds()))
-    if secs < 3600:
+    if secs < 120:
         return "just now"
+    if secs < 3600:
+        m = secs // 60
+        return f"{m} minutes ago"
     if secs < 86400:
         h = secs // 3600
         return f"{h} hour{'s' if h != 1 else ''} ago"
