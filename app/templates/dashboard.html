@@ -1478,7 +1478,7 @@
 
         function isStartup(companyName) {
             if (!companyName) return false;
-            const normalized = companyName.toLowerCase().replace(/[^a-z5-9]/g, '');
+            const normalized = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
             for (const slug of STARTUP_COMPANIES) {
                 if (normalized.includes(slug) || slug.includes(normalized)) {
                     return true;
@@ -1771,7 +1771,7 @@
                                 if (hotSub) hotSub.textContent = `${f.hot_lane_runs_24h || 0} runs · ${(f.hot_lane_jobs_24h || 0).toLocaleString()} fetched · +${(f.hot_lane_inserted_24h || 0).toLocaleString()} added (24h)`;
                             } else {
                                 hotEl.textContent = pulse.enabled ? 'starting…' : 'idle';
-                                if (hotSub) hotSub.textContent = pulse.enabled ? 'Pulse lane boots ~2 min after deploy' : 'No hot-lane runs recorded in the last 24h';
+                                if (hotSub) hotSub.textContent = pulse.enabled ? 'Pulse lane boots ~2 min after deploy' : 'No board-polling runs recorded in the last 24h';
                             }
                         }
                         if (typeof window.loadWatchlist === 'function') window.loadWatchlist();
@@ -3898,7 +3898,7 @@
             const confirmed = confirm('⚠ This permanently deletes ALL your jobs, applications, profile, and resume. This cannot be undone.\n\nType "delete" to confirm.');
             if (confirmed !== true) return;
             const typed = prompt('Type DELETE to confirm permanent deletion:');
-            if (typed !== 'DELETE') { showToast('Cancelled — nothing deleted.', 'info'); return; }
+            if ((typed || '').trim().toUpperCase() !== 'DELETE') { showToast('Cancelled — nothing deleted.', 'info'); return; }
             try {
                 const res = await fetch('/api/account', { method: 'DELETE', headers: authHeaders() });
                 if (res.ok) {
