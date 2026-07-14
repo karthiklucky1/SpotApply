@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
@@ -272,9 +273,25 @@ def _fast_path_user(uid: str, score_budget: int) -> tuple[int, int, int]:
 
 # ── One scheduler tick ────────────────────────────────────────────────────────
 
+# One tick at a time: the scheduler abandons a tick that overruns its budget,
+# but the abandoned THREAD keeps working — without this guard the next tick
+# re-selects the same due boards and double-fetches them (bootstrap thrash).
+_TICK_LOCK = threading.Lock()
+
+
 def run_pulse_tick() -> dict:
     """Poll every board that's due, route changes, fast-path new jobs to alerts.
     Returns tick stats; records a ``pulse_tick`` FunnelEvent when work was done."""
+    if not _TICK_LOCK.acquire(blocking=False):
+        log.info("Pulse tick skipped — previous tick still running")
+        return {"boards": 0, "skipped": "previous tick still running"}
+    try:
+        return _run_pulse_tick_locked()
+    finally:
+        _TICK_LOCK.release()
+
+
+def _run_pulse_tick_locked() -> dict:
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert, scraper_for
     from app.strategy.hot_lane import (
         _active_users, _mark_polled, _retire_unsupported, _title_matches,

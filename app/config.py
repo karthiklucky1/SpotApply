@@ -205,7 +205,7 @@ class Settings(BaseSettings):
     pulse_dead_interval_hours: int = 24    # 404/empty boards retry cadence
     pulse_active_days: int = 7             # "recently posted" = new job within N days
     pulse_tick_seconds: int = 60           # scheduler tick
-    pulse_max_boards_per_tick: int = 1200  # hard cap per tick (backlog stretches the floor honestly instead of stampeding)
+    pulse_max_boards_per_tick: int = 300   # hard cap per tick. Small enough that a tick ALWAYS finishes inside its budget on Supabase (1200 caused bootstrap ticks to overrun, get abandoned, and re-fetch the same boards); a backlog stretches the floor honestly instead of stampeding. Steady-state demand is ~150 boards/min, so 300 keeps headroom.
     pulse_fetch_workers: int = 24          # concurrent board fetches per tick
     pulse_fast_path_score_cap: int = 25    # max brand-new jobs LLM-scored per tick via the fast path
     # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.

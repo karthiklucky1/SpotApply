@@ -2799,7 +2799,17 @@
                         else scoreBadge = `<span class="bg-rose-500/10 text-rose-500 border border-rose-500/10 px-2 py-0.5 rounded-full font-mono">${rank}%</span>`;
                     }
 
-                    let statusBadge = `<span class="text-slate-600 font-medium">Unprocessed</span>`;
+                    // No application yet — but "unprocessed" hid two different truths:
+                    // no score = still waiting in the queue; a score = the AI already
+                    // reviewed it and it landed below the shortlist bar.
+                    let statusBadge;
+                    if (j.rerank == null) {
+                        statusBadge = `<span class="text-slate-500 font-medium" title="Waiting in the scoring queue — the AI hasn't read this one yet">Queued</span>`;
+                    } else if (Math.round(j.rerank) < 35) {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="Scored below the shortlist bar (35) — the reason is shown under the title. Click Shortlist to override.">Reviewed · below bar</span>`;
+                    } else {
+                        statusBadge = `<span class="text-slate-500 font-medium" title="Scored above the bar — awaiting a shortlist slot (daily/company caps)">Reviewed</span>`;
+                    }
                     if (j.application) {
                         const status = j.application.status;
                         if (status === 'shortlisted' || status === 'tailored') statusBadge = `<span class="bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
