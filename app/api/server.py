@@ -2523,7 +2523,11 @@ def dashboard(request: Request, all_submitted: bool = False):
     # otherwise dozens of distinct aggregator postings (RemoteOK/HN often have a
     # blank company field) all share key "" and get capped to 2 globally, which
     # is why the shortlist count showed 19 but only 2 rendered.
-    def _cap_per_company(items, cap: int = 2):
+    def _cap_per_company(items, cap: int = 0):
+        # Default to the SAME cap the pipeline shortlists at (settings.company_cap)
+        # so display and pipeline can't drift — a 3rd shortlisted role per company
+        # used to be created but never shown.
+        cap = cap or settings.company_cap
         seen: dict[str, int] = {}
         capped = []
         for app_model, job_model in items:
@@ -2551,6 +2555,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "skipped": skipped,
             "rejected": rejected,
             "ssr_authed": ssr_authed,
+            "company_cap": settings.company_cap,
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
