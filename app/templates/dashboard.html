@@ -1037,12 +1037,22 @@
     /* Match-tier colors: ring, number, and label share one color per tier so
        Strong / Good / Fair / Low read differently at a glance. */
     .jr-tier-strong { --tier-c: #10b981; }
-    .jr-tier-good   { --tier-c: #3b82f6; }
+    .jr-tier-good   { --tier-c: #8b5cf6; }   /* purple (was blue #3b82f6) */
     .jr-tier-fair   { --tier-c: #f59e0b; }
     .jr-tier-low    { --tier-c: #f43f5e; }
     .jr-score .jr-score-num,
     .jr-score .jr-score-num small,
     .jr-score .jr-score-label { color: var(--tier-c, var(--sage-700)); }
+    /* Sponsorship chip on the match card — emerald so a sponsoring employer
+       reads at a glance; full reason on hover (title attr). */
+    .jr-sig-spon { color:#10b981; border-color:rgba(16,185,129,.35); background:rgba(16,185,129,.08); cursor:help; }
+    /* Skill-gap cards — same elevated glass style as the shortlist "Fits" rows */
+    .sg-card { transition: transform .12s ease, border-color .12s ease; }
+    .sg-card:hover { transform: translateY(-2px); border-color: rgba(var(--sage-rgb),.4); }
+    .sg-demand { font-size:9px; font-weight:800; white-space:nowrap; padding:2px 8px; border-radius:999px; background:rgba(148,163,184,.12); }
+    .sg-bar { height:5px; border-radius:999px; background:rgba(148,163,184,.15); overflow:hidden; margin-top:6px; }
+    .sg-bar > span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#8b5cf6,#6366f1); }
+    .sg-jobchip { font-size:9px; color:#94a3b8; background:rgba(148,163,184,.08); border:1px solid rgba(148,163,184,.18); border-radius:999px; padding:2px 8px; }
     /* Direct company-portal link (no job-board middleman) */
     .jr-direct { display:inline-flex; align-items:center; gap:3px; margin-left:6px;
         font-size:9.5px; font-weight:900; text-transform:uppercase; letter-spacing:.06em;
@@ -1284,7 +1294,7 @@
                         <div class="jr-score-label" style="opacity:.7;">Not scored yet</div>
                         {% endif %}
                         <div class="jr-sigs">
-                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jr-sig">✓ H1B sponsor likely</span>{% endif %}
+                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jr-sig jr-sig-spon" title="{{ _cap.reason|e }}">✓ {{ _cap.badge or 'Sponsors visas' }}{% if _cap.cap_exempt %} · cap-exempt{% endif %}</span>{% endif %}
                             {% set _sigs_all = (job.hire_probability_signals|fromjson) if job.hire_probability_signals else [] %}
                             {% set _sigs = [] %}{% for s_ in _sigs_all %}{% if not (s_ is string and s_.startswith('fresh_posting')) %}{% set _ = _sigs.append(s_) %}{% endif %}{% endfor %}
                             {% for s_ in _sigs[:2] %}<span class="jr-sig">✓ {{ s_|humanize_signal }}</span>{% endfor %}
@@ -2824,18 +2834,20 @@
             return `<span class="inline-flex items-center gap-1.5 bg-slate-900/70 border border-slate-700/60 rounded-full px-3 py-1.5 text-[11px] font-bold text-slate-200">${_sgEsc(skill)} <span class="text-[9px] font-black text-slate-500">×${demand}</span></span>`;
         }
         function _sgCard(item, tone) {
-            const jobs = (item.example_jobs || []).map(j => _sgEsc(`${j.title} @ ${j.company}`)).join(' · ');
             const evidence = item.evidence && item.evidence.repo
                 ? `<div class="text-[10px] font-bold text-amber-300 mt-1.5">Proof: GitHub repo “${_sgEsc(item.evidence.repo)}”</div>`
                 : (item.evidence && item.evidence.source === 'linkedin' ? `<div class="text-[10px] font-bold text-amber-300 mt-1.5">Proof: your LinkedIn text</div>` : '');
-            return `<div class="bg-slate-950/50 border border-slate-800/70 rounded-2xl p-3.5">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-xs font-black text-white">${_sgEsc(item.skill)}</span>
-                  <span class="text-[9px] font-black ${tone} whitespace-nowrap">${item.demand} of your matches · ${item.pct}%</span>
+            const pct = Math.max(0, Math.min(100, item.pct || 0));
+            const chips = (item.example_jobs || []).map(j => `<span class="sg-jobchip">${_sgEsc(`${j.title} @ ${j.company}`)}</span>`).join('');
+            return `<div class="glass rounded-[22px] p-4 border border-slate-700/40 flex flex-col sg-card">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-black text-white">${_sgEsc(item.skill)}</span>
+                  <span class="sg-demand ${tone}">${item.demand} of matches · ${pct}%</span>
                 </div>
+                <div class="sg-bar"><span style="width:${pct}%"></span></div>
                 ${evidence}
-                <div class="text-[10px] text-slate-400 mt-1.5 leading-relaxed">${_sgEsc(item.advice || '')}</div>
-                ${jobs ? `<div class="text-[9px] text-slate-600 mt-1.5">${jobs}</div>` : ''}
+                <div class="text-[11px] text-slate-400 mt-1.5 leading-relaxed">${_sgEsc(item.advice || '')}</div>
+                ${chips ? `<div class="flex flex-wrap gap-1.5 mt-2">${chips}</div>` : ''}
             </div>`;
         }
         async function loadSkillGap() {
@@ -3295,8 +3307,23 @@
                     openTailorStudio(appId,
                         card ? card.dataset.jobTitle : '', card ? card.dataset.company : '');
                     _tsStartPolling();
-                    btn.innerHTML = orig;
-                    btn.disabled = false;
+                    // The card is server-rendered, so it still shows only the
+                    // "Tailor" button until a page reload. Swap it in place so the
+                    // tailored docs stay reachable after the Studio is closed,
+                    // with no refresh. openModal() fetches fresh details each time,
+                    // so clicking before the run finishes is harmless.
+                    if (btn && btn.classList.contains('jbtn-primary')) {
+                        btn.insertAdjacentHTML('afterend',
+                            `<button type="button" data-app-id="${appId}" onclick="tailorJob(+this.dataset.appId, this)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4" title="Regenerate for this job">↻ Re-tailor</button>`);
+                        btn.className = 'jbtn jbtn-ghost text-[11px] py-2.5 px-4';
+                        btn.innerHTML = '📄 View Docs';
+                        btn.title = 'Read or download your tailored resume and cover letter';
+                        btn.disabled = false;
+                        btn.onclick = function () { openModal(+this.dataset.appId); };
+                    } else {
+                        btn.innerHTML = orig;
+                        btn.disabled = false;
+                    }
                 } else {
                     btn.innerHTML = '✕ Failed';
                     showToast('Tailoring failed — please retry.', 'error');
