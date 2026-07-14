@@ -32,7 +32,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import select
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, nullslast
 
 from app.autofill.agent import autofill, preview
 from app.db.init_db import get_session
@@ -2243,7 +2243,15 @@ def api_jobs(
                 desc(func.coalesce(Job.posted_at, Job.first_seen)), desc(Job.id)
             ).offset(offset).limit(limit)
         else:
-            query = query.order_by(desc(Job.blended_score), desc(Job.rerank_score), desc(Job.similarity_score), desc(Job.id)).offset(offset).limit(limit)
+            # nullslast: Postgres sorts NULLs FIRST under DESC, so without this
+            # every unscored job floats above scored matches (a prod-only bug —
+            # SQLite sorts NULLs last). Keep scored jobs on top.
+            query = query.order_by(
+                nullslast(desc(Job.blended_score)),
+                nullslast(desc(Job.rerank_score)),
+                nullslast(desc(Job.similarity_score)),
+                desc(Job.id),
+            ).offset(offset).limit(limit)
         
         results = session.exec(query).all()
 
@@ -2325,12 +2333,20 @@ def dashboard(request: Request, all_submitted: bool = False):
         ]
         
         with get_session() as session:
-            # 1. Fetch Shortlisted (limit to 100 to keep cache and parsing fast)
+            # 1. Fetch Shortlisted (limit to 100 to keep cache and parsing fast).
+            # Order by FIT (blended_score), not updated_at: with >100 shortlisted
+            # apps, an updated_at window would drop the best-fit ones outside the
+            # 100 most-recently-touched — the Python display sort below then only
+            # ever saw the wrong slice. Recency stays as the tiebreak.
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc()).limit(100)
+            ).order_by(
+                nullslast(desc(Job.blended_score)),
+                nullslast(desc(Job.rerank_score)),
+                Application.updated_at.desc(),
+            ).limit(100)
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
