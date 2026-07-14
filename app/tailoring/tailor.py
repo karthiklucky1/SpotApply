@@ -447,6 +447,11 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
     doctor_failed = False
     doctor_notes = None
     doctor_score = None
+    doctor_ats = None          # ATS keyword coverage %
+    doctor_verdict = None      # Haiku recruiter hiring signal (was log-only)
+    doctor_weak = []           # weak bullets (missing verb/metric)
+    doctor_banned = []         # banned/cliché words found
+    doctor_integrity = []      # integrity issues (unbacked claims)
     attempts_used = 0
     revision_notes = None
 
@@ -497,6 +502,11 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
             doc = ResumeDoctor()
             d_result = doc.check(resume_md, master, job_description)
             doctor_score = d_result.score
+            doctor_ats = d_result.ats_coverage_pct
+            doctor_verdict = d_result.llm_verdict
+            doctor_weak = d_result.weak_bullets or []
+            doctor_banned = d_result.banned_found or []
+            doctor_integrity = d_result.integrity_issues or []
             log.info("Doctor report app %d: %s", application_id, d_result.summary())
             if not d_result.passed:
                 doctor_failed = True
@@ -554,6 +564,13 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
             "grounding_passed": not grounding_failed,
             "attempts": attempts_used,
             "variant": variant,
+            # Rich, previously log-only quality feedback — surfaced in the UI so
+            # the user sees WHY the score is what it is, not just the number.
+            "ats_coverage_pct": round(doctor_ats * 100) if doctor_ats is not None else None,
+            "verdict": doctor_verdict,
+            "weak_bullets": doctor_weak[:5],
+            "banned_words": doctor_banned[:8],
+            "integrity_issues": doctor_integrity[:5],
             "generated_at": datetime.utcnow().isoformat(),
         }), encoding="utf-8")
     except Exception as _re:

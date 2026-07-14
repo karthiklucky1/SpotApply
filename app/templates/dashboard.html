@@ -1447,6 +1447,7 @@
        <span><mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
        <span id="ts-missing" class="text-amber-300/90"></span>
      </div>
+     <div class="px-6 pb-3 hidden" id="ts-feedback"></div>
      <div class="px-6 pb-5 flex gap-2">
        <button type="button" id="ts-open-docs" class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl">Open full documents</button>
        <button type="button" onclick="closeTailorStudio()" class="jbtn jbtn-primary text-[11px] py-2.5 px-5 rounded-xl flex-1">Looks good</button>
@@ -3240,6 +3241,21 @@
             const missing = (d.ats && d.ats.missing) || [];
             document.getElementById('ts-missing').textContent = missing.length
                 ? `Not covered (be ready to speak to these): ${missing.slice(0, 6).join(', ')}` : '';
+            // Rich reviewer feedback (was previously only in server logs).
+            const fb = document.getElementById('ts-feedback');
+            if (fb) {
+                const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                const rows = [];
+                if (q.verdict) rows.push(`<div class="rounded-xl p-3 mb-2" style="background:rgba(139,92,246,0.10);border:1px solid rgba(139,92,246,0.28)"><div class="text-[9px] font-black uppercase tracking-wider text-violet-300 mb-1">Recruiter's read</div><div class="text-[11px] text-slate-200 leading-relaxed">“${esc(q.verdict)}”</div></div>`);
+                const chip = (label, arr, color) => (arr && arr.length)
+                    ? `<div class="mb-1.5"><span class="text-[9px] font-black uppercase tracking-wider" style="color:${color}">${label}:</span> <span class="text-[10px] text-slate-400">${arr.map(esc).join(' · ')}</span></div>` : '';
+                rows.push(chip('Weak bullets', q.weak_bullets, '#fbbf24'));
+                rows.push(chip('Cliché / banned words', q.banned_words, '#fb7185'));
+                rows.push(chip('Integrity checks', q.integrity_issues, '#fb7185'));
+                const html = rows.filter(Boolean).join('');
+                if (html) { fb.innerHTML = html; fb.classList.remove('hidden'); }
+                else fb.classList.add('hidden');
+            }
             tsSwitchTab(_tsTab);
         }
 
