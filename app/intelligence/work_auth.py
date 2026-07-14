@@ -47,6 +47,19 @@ def assess_profile(profile) -> WorkAuthFraming:
     blob = _blob(profile)
     requires = bool(getattr(profile, "requires_sponsorship", False))
 
+    # Country-aware framing: a Berlin or London user must never be told (or have
+    # application answers pre-filled saying) they are "authorized to work in the
+    # U.S." US-visa branches below still fire on explicit US statuses; only the
+    # generic/default wording adapts to the user's own country.
+    _country = ""
+    try:
+        from app.common.geo import norm_country
+        _country = norm_country(getattr(profile, "preferred_country", "") or "")
+    except Exception:
+        pass
+    _non_us = bool(_country) and _country != "united states"
+    _place = _country.title() if _non_us else "the U.S."
+
     def has(*keys) -> bool:
         return any(k in blob for k in keys)
 
@@ -108,6 +121,15 @@ def assess_profile(profile) -> WorkAuthFraming:
 
     # Explicitly requires sponsorship (no current authorization)
     if requires:
+        if _non_us:
+            # H-1B/cap-exempt framing is meaningless outside the US.
+            return WorkAuthFraming(
+                False, "Requires visa sponsorship", True, True,
+                f"Requires visa sponsorship — HirePath prioritizes employers known "
+                f"to sponsor work visas in {_place}.",
+                "Not yet — I would require sponsorship", "Yes", True,
+                f"I'm targeting employers that sponsor work visas in {_place}.",
+            )
         return WorkAuthFraming(
             False, "Requires visa sponsorship", True, True,
             "Requires visa sponsorship — JobAgent prioritizes sponsor-friendly and "
@@ -116,13 +138,13 @@ def assess_profile(profile) -> WorkAuthFraming:
             "I'm targeting employers that sponsor; cap-exempt roles need no lottery.",
         )
 
-    # Default: assume authorized, no sponsorship implied
+    # Default: assume authorized in the USER'S country, no sponsorship implied
     wa = (getattr(profile, "work_authorization", "") or "Authorized to work")
     return WorkAuthFraming(
         True, wa, False, False,
-        "✅ Authorized to work in the U.S.",
+        f"✅ Authorized to work in {_place}.",
         "Yes", "No", False,
-        "Authorized to work in the U.S.",
+        f"Authorized to work in {_place}.",
     )
 
 

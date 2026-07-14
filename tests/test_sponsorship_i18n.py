@@ -47,6 +47,6 @@ def test_rule_filter_blocks_international_refusal_phrasings():
 
 
 def test_salary_range_parses_pounds_and_euros():
-    assert _extract_salary_range("salary £90k–£110k per annum") == (90_000.0, 110_000.0)
-    assert _extract_salary_range("compensation: €70,000 - €90,000") == (70_000.0, 90_000.0)
-    assert _extract_salary_range("base pay $120k-$150k") == (120_000.0, 150_000.0)
+    assert _extract_salary_range("salary £90k–£110k per annum") == (90_000.0, 110_000.0, "GBP")
+    assert _extract_salary_range("compensation: €70,000 - €90,000") == (70_000.0, 90_000.0, "EUR")
+    assert _extract_salary_range("base pay $120k-$150k") == (120_000.0, 150_000.0, "USD")

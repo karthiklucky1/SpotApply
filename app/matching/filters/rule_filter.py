@@ -17,29 +17,36 @@ _SALARY_TOO_LOW_MAX  = 80_000    # reject if advertised maximum <= this (e.g. "$
 # users get salary filtering too — a user's profile band is in their local
 # currency, and jobs in their country advertise in that same currency.
 _SALARY_RANGE_RE = re.compile(
-    r'[$£€]([\d,]+)\s*(k)?\s*[-–to]+\s*[$£€]([\d,]+)\s*(k)?',
+    r'([$£€₹])([\d,]+)\s*(k)?\s*[-–to]+\s*[$£€₹]([\d,]+)\s*(k)?',
     re.IGNORECASE,
 )
-_SALARY_SINGLE_RE = re.compile(r'[$£€]([\d,]+)\s*(k)?')
+_SALARY_SINGLE_RE = re.compile(r'([$£€₹])([\d,]+)\s*(k)?')
+# Currency implied by the salary symbol. The gate below only fires when this
+# matches the USER's salary_currency — comparing an Indian user's ₹15,00,000
+# floor against a "$120k" posting rejected every cross-currency job as
+# "salary too low". Mismatched/unknown currency → skip the gate (keep the job).
+_SYMBOL_CCY = {"$": "USD", "£": "GBP", "€": "EUR", "₹": "INR"}
+_CCY_SYMBOL = {v: k for k, v in _SYMBOL_CCY.items()}
 _SALARY_CONTEXT_RE = re.compile(
     r'(?:salary|base pay|compensation|annual pay|pay range|total pay)'
 )
 
 
-def _extract_salary_range(text: str) -> Optional[Tuple[float, float]]:
-    """Return (min, max) from an explicit salary range like $80k–$120k or £60k–£80k.
+def _extract_salary_range(text: str) -> Optional[Tuple[float, float, str]]:
+    """Return (min, max, currency) from an explicit salary range like
+    $80k–$120k, £60k–£80k, or ₹20,00,000–₹30,00,000.
 
     Only uses values that form an actual range to avoid picking up
     bonus, equity, or signing-bonus figures as salary anchors.
-    Falls back to a single dollar amount near a salary keyword.
+    Falls back to a single amount near a salary keyword.
     """
     # Primary: explicit range pattern $X–$Y
     for m in _SALARY_RANGE_RE.finditer(text):
         try:
-            lo = float(m.group(1).replace(',', '')) * (1000 if m.group(2) else 1)
-            hi = float(m.group(3).replace(',', '')) * (1000 if m.group(4) else 1)
+            lo = float(m.group(2).replace(',', '')) * (1000 if m.group(3) else 1)
+            hi = float(m.group(4).replace(',', '')) * (1000 if m.group(5) else 1)
             if lo >= 30_000 and hi >= 30_000:
-                return lo, hi
+                return lo, hi, _SYMBOL_CCY.get(m.group(1), "USD")
         except ValueError:
             pass
 
@@ -48,9 +55,9 @@ def _extract_salary_range(text: str) -> Optional[Tuple[float, float]]:
         window = text[max(0, kw.start() - 10): kw.start() + 80]
         for m in _SALARY_SINGLE_RE.finditer(window):
             try:
-                raw = float(m.group(1).replace(',', '')) * (1000 if m.group(2) else 1)
+                raw = float(m.group(2).replace(',', '')) * (1000 if m.group(3) else 1)
                 if raw >= 30_000:
-                    return raw, raw
+                    return raw, raw, _SYMBOL_CCY.get(m.group(1), "USD")
             except ValueError:
                 pass
 
@@ -119,6 +126,11 @@ class RuleFilter:
         smax = _safe_int(getattr(profile, "salary_max", None), 0)
         self.salary_floor = smin if smin > 0 else (_SALARY_TOO_LOW_MAX if legacy else None)
         self.salary_ceiling = smax if smax > 0 else (_SALARY_TOO_HIGH_MIN if legacy else None)
+        # The currency the user's band is expressed in — the salary gate only
+        # fires when the posting advertises in the SAME currency.
+        self.salary_currency = (
+            (getattr(profile, "salary_currency", "") or "USD") if not legacy else "USD"
+        ).strip().upper()
 
         # Only block jobs that refuse sponsorship when the user needs it. A
         # citizen / green-card holder should NOT lose "must be US citizen" roles.
@@ -235,20 +247,23 @@ class RuleFilter:
                         score_override=15
                     )
 
-        # 5. Salary Range Filter — only enforce a bound the user expressed.
+        # 5. Salary Range Filter — only enforce a bound the user expressed, and
+        #    ONLY when the posting's currency matches the user's band currency
+        #    (raw cross-currency comparison mis-filtered every foreign posting).
         sal_range = _extract_salary_range(desc_low)
-        if sal_range:
-            min_sal, max_sal = sal_range
+        if sal_range and sal_range[2] == self.salary_currency:
+            min_sal, max_sal, _ccy = sal_range
+            sym = _CCY_SYMBOL.get(_ccy, "$")
             if self.salary_ceiling is not None and min_sal >= self.salary_ceiling:
                 return FilterResult(
                     passed=False,
-                    reason=f"Salary too high: starts at ${min_sal:,.0f} (target ceiling ${self.salary_ceiling:,.0f})",
+                    reason=f"Salary too high: starts at {sym}{min_sal:,.0f} (target ceiling {sym}{self.salary_ceiling:,.0f})",
                     score_override=20
                 )
             if self.salary_floor is not None and max_sal <= self.salary_floor:
                 return FilterResult(
                     passed=False,
-                    reason=f"Salary too low: up to ${max_sal:,.0f} (target floor ${self.salary_floor:,.0f})",
+                    reason=f"Salary too low: up to {sym}{max_sal:,.0f} (target floor {sym}{self.salary_floor:,.0f})",
                     score_override=20
                 )
 
