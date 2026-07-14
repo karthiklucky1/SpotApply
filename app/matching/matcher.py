@@ -44,6 +44,12 @@ REBUILD_MAX_JOBS = 4000
 # embedding_id backfill in small batches so every statement stays fast.
 _EMBED_UPDATE_BATCH = 500
 
+# Same reasoning for reads: a single SELECT ... WHERE id IN (thousands) is one
+# giant statement Supabase cancels via statement_timeout (seen as a 4000-param
+# QueryCanceled that stalled matching for 330s). Fetch in ID chunks instead —
+# the union of the batches is identical to one big query.
+_DB_ID_CHUNK = 500
+
 
 def _bulk_set_embedding_ids(mappings: list[dict]) -> None:
     """Write [{id, embedding_id}, …] back to the Job table in committed chunks."""
@@ -263,15 +269,24 @@ class Matcher:
 
         def _load_full(ids: list[int] | None) -> list[Job]:
             with get_session() as session:
+                if ids is not None:
+                    # Fetch by id in bounded chunks — one IN (...) over thousands
+                    # of ids is a single statement Supabase cancels on timeout.
+                    out: list[Job] = []
+                    for start in range(0, len(ids), _DB_ID_CHUNK):
+                        batch = ids[start:start + _DB_ID_CHUNK]
+                        q = select(Job).where(Job.is_closed == False)  # noqa: E712
+                        if user_id:
+                            q = q.where(Job.user_id == user_id)
+                        q = q.where(Job.id.in_(batch))
+                        out.extend(session.exec(q).all())
+                    return out
+                # Full (from-scratch) build — same newest-first cap as the
+                # cheap pass so a bloated pool can't produce a 100k-vector encode.
                 q = select(Job).where(Job.is_closed == False)  # noqa: E712
                 if user_id:
                     q = q.where(Job.user_id == user_id)
-                if ids is not None:
-                    q = q.where(Job.id.in_(ids))
-                else:
-                    # Full (from-scratch) build — same newest-first cap as the
-                    # cheap pass so a bloated pool can't produce a 100k-vector encode.
-                    q = q.order_by(Job.first_seen.desc()).limit(REBUILD_MAX_JOBS)
+                q = q.order_by(Job.first_seen.desc()).limit(REBUILD_MAX_JOBS)
                 return session.exec(q).all()
 
         if force_rebuild or existing_index is None or self.job_ids is None:
