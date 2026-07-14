@@ -1738,6 +1738,23 @@ def resume_file(request: Request):
     return FileResponse(matches[0])
 
 
+@app.get("/api/resume/text")
+def resume_text_view(request: Request) -> dict:
+    """Extracted plain text of the user's master résumé. Browsers can't render a
+    .docx (the most common resume format) in an iframe — it shows a blank frame —
+    so the viewer falls back to this for any non-PDF file and renders formatted
+    text instead."""
+    uid = _require_user(request)
+    if not _user_has_resume(uid):
+        return {"has_resume": False, "text": ""}
+    try:
+        from app.matching.pipeline import _load_resume
+        text = _load_resume(user_id=uid)
+    except Exception as e:
+        return {"has_resume": True, "text": "", "error": f"Could not read résumé: {e}"}
+    return {"has_resume": True, "text": (text or "").strip()}
+
+
 @app.post("/api/resume/synthesize")
 def synthesize_resume(request: Request) -> dict:
     """Build a minimal markdown resume from the user's profile fields.

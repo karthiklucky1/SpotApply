@@ -3893,6 +3893,26 @@
             document.getElementById('resume-upload-modal').classList.add('hidden')
         }
         // Load and show the user's currently-uploaded resume inside the modal.
+        // Render a resume into an iframe. PDFs display natively; .docx/.md/.txt
+        // can't render in an iframe (blank frame), so fall back to the extracted
+        // text via srcdoc so the user actually sees their resume.
+        async function _renderResumeInto(iframe, data, openLink) {
+            if (openLink && data.url) openLink.href = data.url;
+            const isPdf = /\.pdf($|\?)/i.test(data.filename || data.url || '');
+            if (isPdf) { iframe.removeAttribute('srcdoc'); iframe.src = data.url; return; }
+            let text = '';
+            try {
+                const tr = await fetch('/api/resume/text', { headers: authHeaders() });
+                const td = await tr.json().catch(() => ({}));
+                text = (td && td.text) || '';
+            } catch (e) {}
+            const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            const body = text
+                ? `<pre style="white-space:pre-wrap;word-wrap:break-word;font:13px/1.65 -apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a;margin:0;padding:26px;">${esc(text)}</pre>`
+                : `<div style="padding:26px;font:14px sans-serif;color:#64748b;">Preview isn't available for this file type — use the download link to open it.</div>`;
+            iframe.removeAttribute('src');
+            iframe.srcdoc = `<!doctype html><html><body style="margin:0;background:#fff;">${body}</body></html>`;
+        }
         async function loadResumePreview() {
             const wrap = document.getElementById('resume-preview-wrap')
             const none = document.getElementById('resume-none-msg')
@@ -3902,8 +3922,8 @@
                 const res = await fetch('/api/resume/view', { headers: authHeaders() })
                 const data = await res.json().catch(() => ({}))
                 if (res.ok && data.url) {
-                    document.getElementById('resume-preview-frame').src = data.url
-                    document.getElementById('resume-open-link').href = data.url
+                    await _renderResumeInto(document.getElementById('resume-preview-frame'), data,
+                                            document.getElementById('resume-open-link'))
                     wrap.classList.remove('hidden')
                 } else {
                     none.classList.remove('hidden')
@@ -4316,10 +4336,9 @@
                 const res = await fetch('/api/resume/view', { headers: authHeaders() });
                 const data = await res.json().catch(() => ({}));
                 if (res.ok && data.url) {
-                    iframe.src = data.url;
+                    await _renderResumeInto(iframe, data, downloadLink);
                     iframe.classList.remove('hidden');
-                    filenameEl.textContent = data.filename || 'resume_master.pdf';
-                    downloadLink.href = data.url;
+                    filenameEl.textContent = data.filename || 'resume';
                     downloadLink.classList.remove('hidden');
                 } else {
                     errDiv.classList.remove('hidden');
@@ -4332,7 +4351,8 @@
         }
         function closeResumeViewer() {
             document.getElementById('resume-viewer-modal').classList.add('hidden');
-            document.getElementById('resume-viewer-iframe').src = '';
+            const ifr = document.getElementById('resume-viewer-iframe');
+            ifr.removeAttribute('srcdoc'); ifr.src = '';
         }
 
         // ── Profile Modal ────────────────────────────────────────────────────────
