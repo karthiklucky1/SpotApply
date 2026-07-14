@@ -359,21 +359,32 @@ def _finish_cycle(stats: dict) -> dict:
     """Log + heartbeat for every cycle outcome, so the dashboard can always
     answer 'is the hot lane running, and if not why?'."""
     log.info("Hot lane: %s", stats)
-    try:
-        import json as _json
-        from app.db.models import FunnelEvent
-        with get_session() as session:
-            session.add(FunnelEvent(
-                job_id=None, stage="hot_lane_run",
-                passed=(stats.get("fetched_jobs") or 0) > 0,
-                reason=(stats.get("reason")
-                        or f"boards={stats.get('boards')} jobs={stats.get('fetched_jobs')} "
-                           f"inserted={stats.get('inserted_jobs')} alerts={stats.get('alerts')}"),
-                metadata_json=_json.dumps(stats),
-            ))
-            session.commit()
-    except Exception as e:
-        log.debug("hot lane heartbeat write failed: %s", e)
+    import json as _json
+    import time as _time
+    from app.db.models import FunnelEvent
+    # Retry the heartbeat across a few FRESH connections. During a DB blip this
+    # INSERT is exactly what fails, and a swallowed failure makes a completed
+    # cycle invisible on the dashboard — that's why "N runs" was badly
+    # undercounted after the incident. pool_pre_ping/pool_recycle hand back a
+    # healthy connection on retry, so a transient drop no longer loses the run.
+    for _attempt in range(3):
+        try:
+            with get_session() as session:
+                session.add(FunnelEvent(
+                    job_id=None, stage="hot_lane_run",
+                    passed=(stats.get("fetched_jobs") or 0) > 0,
+                    reason=(stats.get("reason")
+                            or f"boards={stats.get('boards')} jobs={stats.get('fetched_jobs')} "
+                               f"inserted={stats.get('inserted_jobs')} alerts={stats.get('alerts')}"),
+                    metadata_json=_json.dumps(stats),
+                ))
+                session.commit()
+            break
+        except Exception as e:
+            if _attempt == 2:
+                log.warning("hot lane heartbeat write failed after retries: %s", e)
+            else:
+                _time.sleep(0.5 * (_attempt + 1))
     return stats
 
 

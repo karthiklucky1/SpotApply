@@ -515,11 +515,19 @@ async def _hot_lane():
         return
     _log.info("Hot lane ENABLED — first run in 180s, then every %d min", minutes)
     await asyncio.sleep(180)  # let boot + first discovery settle
+    # Bound each cycle so a degraded DB can't stretch one cycle to hours and
+    # freeze this sequential loop (which also freezes the "last run" tile). If a
+    # cycle overruns the budget we stop waiting and start the next one on
+    # schedule; the orphaned thread finishes on its own (its DB calls are
+    # bounded by connect_timeout + server statement_timeout).
+    _budget = max(300, minutes * 60 * 3)
     while True:
         try:
             from app.strategy.hot_lane import run_hot_lane
-            stats = await asyncio.to_thread(run_hot_lane)
+            stats = await asyncio.wait_for(asyncio.to_thread(run_hot_lane), timeout=_budget)
             _log.info("Hot lane cycle done: %s", stats)
+        except asyncio.TimeoutError:
+            _log.warning("Hot lane cycle exceeded %ds budget — continuing to next cycle", _budget)
         except Exception as e:
             _log.exception("Hot lane error: %s", e)
         await asyncio.sleep(minutes * 60)
