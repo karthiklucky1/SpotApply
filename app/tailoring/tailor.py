@@ -385,6 +385,32 @@ def _md_to_docx(md_text: str, out_path: Path) -> None:
     doc.save(out_path)
 
 
+def _persist_tailored_to_storage(uid: str | None, application_id: int, files: list) -> None:
+    """Best-effort copy of the tailored docs to Supabase Storage. The local
+    ``data/tailored/`` dir is on the container's ephemeral disk, so a redeploy
+    wipes it and "View Docs" breaks for older applications. Mirroring to the
+    existing ``resume`` bucket (under a tailored/ prefix) lets the read path
+    re-hydrate them. Fully non-fatal — a failure never blocks tailoring."""
+    from app.config import settings
+    if not (settings.use_supabase and uid and uid != "local"):
+        return
+    try:
+        from app.db.supabase_client import service_client
+        sb = service_client()
+        for fp in files:
+            p = Path(fp)
+            if not p.exists():
+                continue
+            key = f"{uid}/tailored/app_{application_id}/{p.name}"
+            try:
+                sb.storage.from_("resume").upload(
+                    key, p.read_bytes(), {"upsert": "true"})
+            except Exception as _ue:
+                log.debug("tailored upload failed for %s: %s", key, _ue)
+    except Exception as e:
+        log.debug("tailored storage persist skipped: %s", e)
+
+
 def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
     """Generate tailored resume + cover letter for one application."""
     import random
@@ -585,6 +611,12 @@ def tailor_for_application(application_id: int) -> Tuple[Path, Path]:
         f"\n---COVER---\n\n"
     )
     cover_path.write_text(cover_header + cover, encoding="utf-8")
+
+    # Mirror the tailored docs to durable storage (ephemeral local disk is wiped
+    # on redeploy). Best-effort — never blocks the result write below.
+    _persist_tailored_to_storage(
+        app_user_id, application_id,
+        [resume_path, cover_path, out_dir / "report.json"])
 
     # --- Phase 3: write results in a short session ---
     with get_session() as session:

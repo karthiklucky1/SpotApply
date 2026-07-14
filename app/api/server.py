@@ -2630,6 +2630,33 @@ def pipeline_live(request: Request) -> dict:
     return {"counts": counts, "shortlist": shortlist, "running": running}
 
 
+def _rehydrate_tailored_file(local_path: str | None, uid: str | None) -> str | None:
+    """Re-download a tailored doc from Supabase Storage if its local file is gone
+    (the ephemeral disk is wiped on redeploy). Returns a usable local path, or
+    None. Best-effort — falls back to today's "file missing" behavior on any
+    error, so it can only improve on the ephemeral state, never regress it."""
+    from pathlib import Path
+    if not local_path:
+        return None
+    p = Path(local_path)
+    if p.exists():
+        return str(p)
+    from app.config import settings
+    if not (settings.use_supabase and uid and uid != "local"):
+        return None
+    try:
+        from app.db.supabase_client import service_client
+        sb = service_client()
+        key = f"{uid}/tailored/{p.parent.name}/{p.name}"
+        data = sb.storage.from_("resume").download(key)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return str(p)
+    except Exception as e:
+        log.debug("tailored re-hydrate failed for %s: %s", local_path, e)
+        return None
+
+
 @app.get("/application/{application_id}/details")
 def application_details(application_id: int, request: Request) -> dict:
     """Return tailored resume + cover letter text for modal preview."""
@@ -2640,6 +2667,15 @@ def application_details(application_id: int, request: Request) -> dict:
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+
+    # Re-materialize the docs from durable storage if the ephemeral local copies
+    # were wiped by a redeploy, so "View Docs" survives deploys.
+    _uid = application.user_id
+    _rehydrate_tailored_file(application.tailored_resume_path, _uid)
+    _rehydrate_tailored_file(application.cover_letter_path, _uid)
+    if application.tailored_resume_path:
+        _rehydrate_tailored_file(
+            str(Path(application.tailored_resume_path).parent / "report.json"), _uid)
 
     resume_text = ""
     cover_text = ""
@@ -6658,6 +6694,9 @@ def download_tailored_resume(application_id: int, request: Request):
         import os
         from fastapi.responses import FileResponse
         path = application.tailored_resume_path
+        # Re-fetch from durable storage if the ephemeral copy was wiped on deploy.
+        if not os.path.exists(path):
+            _rehydrate_tailored_file(path, application.user_id)
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="Resume file not found on disk")
             
