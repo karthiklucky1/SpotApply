@@ -248,9 +248,15 @@ def _prescore_system_prompt(profile=None) -> str:
 
 
 def _build_prescore_prompt(resume_text: str, job: Job) -> str:
-    """Compact prompt for the cheap tier — short résumé + short JD keep it fast."""
+    """Compact prompt for the cheap tier — short résumé + short JD keep it fast.
+
+    The résumé leads the user message, so system+résumé form a static prefix
+    across every prescore for the same user. The slice is sized to push that
+    prefix past OpenAI's 1,024-token automatic-caching minimum (~200 system +
+    ~1,000 résumé) — the old 2,500-char slice left it at ~825 tokens, so no
+    prescore ever cached and the résumé was re-billed at full price per job."""
     return f"""<resume>
-{resume_text[:2500]}
+{resume_text[:4000]}
 </resume>
 <job>
 Title: {job.title}

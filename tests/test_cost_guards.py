@@ -313,3 +313,102 @@ def test_semantic_extras_zero_budget_means_title_only(monkeypatch):
                         lambda title, roles: False)
     picked = adoption._select_adoptable([_job()], ["ml engineer"], "ua", limit=400)
     assert picked == []
+
+
+# ── Cross-lane in-flight claim ────────────────────────────────────────────────
+def test_inflight_claim_blocks_second_lane():
+    from app.common import inflight
+    inflight._inflight.clear()
+    assert inflight.try_claim(101) is True
+    assert inflight.try_claim(101) is False          # second lane blocked
+    inflight.release(101)
+    assert inflight.try_claim(101) is True           # free again after release
+    inflight.release(101)
+
+
+def test_inflight_context_manager_releases_on_exception():
+    from app.common import inflight
+    inflight._inflight.clear()
+    with pytest.raises(ValueError):
+        with inflight.claim(7) as ok:
+            assert ok is True
+            raise ValueError("boom")
+    assert inflight.try_claim(7) is True             # released despite the error
+    inflight.release(7)
+
+
+def test_score_job_skips_job_claimed_by_another_lane(monkeypatch):
+    from app.common import inflight
+    inflight._inflight.clear()
+
+    class _NeverCalled:
+        def prescore(self, *a, **k):
+            raise AssertionError("must not score a claimed job")
+        def score(self, *a, **k):
+            raise AssertionError("must not score a claimed job")
+        def has_dual(self):
+            return False
+
+    ctx = sl._Ctx("resume", _NeverCalled(), True, 35)
+    inflight.try_claim(999)                          # another lane owns it
+    try:
+        assert sl._score_job(999, ctx) is None       # skipped, zero LLM calls
+    finally:
+        inflight.release(999)
+
+
+# ── Prescore memo (retry pays only for the step that failed) ─────────────────
+def test_failed_final_reuses_memoized_prescore(monkeypatch):
+    from app.common import inflight
+    inflight._inflight.clear()
+    sl._prescore_memo.clear()
+    with get_session() as session:
+        _clean(session)
+        session.add(Job(title="ML Engineer", company="C", location="R", remote=True,
+                        description="d", source=JobSource.GREENHOUSE, external_id="m1",
+                        url="https://x/m1", user_id="ua", first_seen=datetime.utcnow()))
+        session.commit()
+        jid = session.exec(__import__("sqlmodel").select(Job.id)).first()
+        jid = jid[0] if isinstance(jid, tuple) else jid
+
+    calls = {"pre": 0, "final": 0}
+
+    class _RK:
+        def prescore(self, resume, job):
+            calls["pre"] += 1
+            return (60.0, "promising")               # advances past the gate
+        def score(self, resume, job, provider=None):
+            calls["final"] += 1
+            if calls["final"] == 1:
+                raise RuntimeError("overloaded")     # first final fails
+            return 70.0, "fit", [], {}
+        def has_dual(self):
+            return False
+
+    class _G:
+        is_ghost = False
+        ghost_score = 0.0
+        flags_json = None
+        flags = []
+
+    monkeypatch.setattr("app.matching.filters.score_ghost", lambda job, session: _G())
+    ctx = sl._Ctx("resume", _RK(), True, 35)
+
+    assert sl._score_job(jid, ctx) is None           # attempt 1: final fails
+    assert jid in sl._prescore_memo                  # Tier-1 result kept
+    out = sl._score_job(jid, ctx)                    # attempt 2: retry
+    assert out is not None and out[0] == "scored"
+    assert calls["pre"] == 1                         # prescore paid ONCE, not twice
+    assert calls["final"] == 2
+    assert jid not in sl._prescore_memo              # cleaned up after success
+
+
+# ── OpenAI prescore prefix size ───────────────────────────────────────────────
+def test_prescore_prompt_resume_slice_crosses_openai_cache_minimum():
+    resume = "x" * 10000
+    prompt = rr._build_prescore_prompt(resume, _job())
+    # résumé slice must be ≥4000 chars (~1000 tokens): with the ~200-token system
+    # prompt that puts the static prefix past OpenAI's 1,024-token minimum.
+    assert "x" * 4000 in prompt
+    assert "x" * 4001 not in prompt                  # still bounded (cheap tier)
+    assert prompt.index("<resume>") == 0             # résumé leads → static prefix

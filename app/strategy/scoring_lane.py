@@ -167,17 +167,34 @@ def _stamp_job(jid: int, ghost: Optional[Tuple],
     return True
 
 
+# Tier-1 results for jobs whose FINAL score failed: the retry (next cycle, or
+# after a deferral) reuses the prescore instead of paying the cheap model again.
+# Entries are dropped the moment the job is scored/drained; the safety clear
+# only guards against a pathological pile-up.
+_prescore_memo: dict = {}
+
+
 def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float], Optional[str]]]:
     """Score one queued job. Returns ("scored"|"drained", jid, score, provider)
     or None. ``provider`` is which backend produced the final score (for the
     dual-provider split stats); None for drained/ghost/single-provider jobs.
-    Idempotent: a job already scored (by another worker / lane) is skipped.
+    Idempotent: a job already scored (by another worker / lane) is skipped, and
+    the cross-lane in-flight claim stops two lanes paying to score the same job
+    at the same time.
 
     DB DISCIPLINE: a connection is held only for the short read/write phases —
     NEVER across an LLM call. The old shape kept one session open for the whole
     function, so 20 workers × multi-second LLM latency pinned 20 connections and
     starved the pool for everything else (funnel/registry/web all timed out with
     "QueuePool limit reached")."""
+    from app.common.inflight import claim
+    with claim(jid) as ok:
+        if not ok:
+            return None  # another lane is scoring this job right now
+        return _score_job_owned(jid, ctx)
+
+
+def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float], Optional[str]]]:
     from app.matching.filters import score_ghost
     from app.matching.hire_probability import (
         blended_score as compute_blended, score_hire_probability,
@@ -207,13 +224,20 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float],
 
     # Phase 2 — NO session held: the slow LLM calls.
     # Cascade Tier-1: drain clear misfits without touching the final scorer.
+    # A memoized prescore (from an attempt whose FINAL call failed) is reused so
+    # retries only re-pay the step that actually failed.
     if ctx.use_prescore:
-        pre = ctx.reranker.prescore(ctx.resume, job)
+        pre = _prescore_memo.get(jid)
+        if pre is None:
+            pre = ctx.reranker.prescore(ctx.resume, job)
         if pre is not None and pre[0] < ctx.gate:
             reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
             if _stamp_job(jid, ghost, float(pre[0]), reasoning):
+                _prescore_memo.pop(jid, None)
                 return ("drained", jid, None, None)
             return None  # lost the race to another lane
+    else:
+        pre = None
 
     # Tier-2: authoritative score (dual routing when enabled; the rule
     # pre-filter runs inside .score()).
@@ -222,9 +246,14 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float],
         score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
     except Exception as e:
         log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
+        if pre is not None:
+            if len(_prescore_memo) > 10000:  # pathological pile-up guard
+                _prescore_memo.clear()
+            _prescore_memo[jid] = pre  # retry skips Tier-1
         _note_score_failure(jid)  # attempt ceiling: defer after repeated failures
         return None
     _note_score_success(jid)
+    _prescore_memo.pop(jid, None)
 
     # Phase 3 — short session: idempotent write-back + hire-probability blend.
     def _hp(job, session):

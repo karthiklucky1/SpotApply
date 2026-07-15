@@ -647,16 +647,20 @@ def run_matching(user_id: str | None = None) -> List[int]:
 
     def _rerank_one(item):
         jid, _sim = item
+        from app.common.inflight import claim
         try:
-            with get_session() as s:
-                job = s.get(Job, jid)
-                if not job:
-                    return jid, None
-                if job.rerank_score is not None:
-                    # Another lane (90s scoring lane / pulse fast path) scored it
-                    # since this work list was built — don't pay for it twice.
-                    return jid, None
-                return jid, reranker.score(resume, job)
+            with claim(jid) as ok:
+                if not ok:
+                    return jid, None  # another lane is scoring it right now
+                with get_session() as s:
+                    job = s.get(Job, jid)
+                    if not job:
+                        return jid, None
+                    if job.rerank_score is not None:
+                        # Another lane (90s scoring lane / pulse fast path) scored
+                        # it since this work list was built — don't pay twice.
+                        return jid, None
+                    return jid, reranker.score(resume, job)
         except Exception as e:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)
             return jid, None

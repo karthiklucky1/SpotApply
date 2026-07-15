@@ -220,10 +220,13 @@ def _fast_path_user(uid: str, score_budget: int,
     gate = min(settings.prescore_advance_threshold, settings.shortlist_score_threshold)
     scored = 0
     shortlisted: list[int] = []
+    from app.common.inflight import claim
     for jid in fresh_ids:
         if deadline is not None and time.monotonic() >= deadline:
             break  # out of tick budget — the matching lane scores the rest
-        with get_session() as session:
+        with claim(jid) as _owned, get_session() as session:
+            if not _owned:
+                continue  # another lane is scoring this job right now
             job = session.get(Job, jid)
             if not job or job.rerank_score is not None or job.is_closed:
                 continue
