@@ -154,9 +154,13 @@ class Settings(BaseSettings):
     prescore_provider: str = "openai"     # PRESCORE_PROVIDER — "openai" | "anthropic" (Tier-1 bulk scorer; falls back to whatever key exists)
     prescore_model: str = "gpt-4o-mini"   # PRESCORE_MODEL — cheap/fast Tier-1 model
     prescore_cap: int = 600               # PRESCORE_CAP — max candidates Tier-1 scores per pass (fresh-first)
-    prescore_advance_threshold: int = 30  # PRESCORE_ADVANCE_THRESHOLD — Tier-1 fit >= this advances to Claude; below is stamped and drained. Set a few points UNDER shortlist_score_threshold so borderline jobs still get Claude's authoritative look — only clear misfits drain. The pipeline also clamps the effective gate to <= shortlist_score_threshold.
+    prescore_advance_threshold: int = 35  # PRESCORE_ADVANCE_THRESHOLD — Tier-1 fit >= this advances to Claude; below is stamped and drained. The pipeline clamps the effective gate to <= shortlist_score_threshold, so 35 (== the shortlist bar) is the highest quality-safe value: anything that could plausibly shortlist still gets the authoritative look. Was 30 — the wider gap advanced ~90% of jobs, making Tier-1 a cost ADD instead of a filter.
     prescore_workers: int = 16            # PRESCORE_WORKERS — concurrent Tier-1 workers (cheap model tolerates more)
-    llm_rerank_max_retries: int = 4       # retry budget on 429/overloaded before leaving job unscored
+    llm_rerank_max_retries: int = 1       # LLM_RERANK_MAX_RETRIES — in-call attempts per backend on 429/overloaded. 1 = no in-call retry: a failed job stays rerank_score-NULL and the 90s scoring lane re-queues it anyway, so in-call backoff (old default 4) only stacked sleeps and hammered exhausted quotas.
+    llm_provider_cooldown_minutes: int = 30  # LLM_PROVIDER_COOLDOWN_MINUTES — circuit breaker: a provider returning credit/quota errors is skipped for this long instead of being re-hit every cycle (0 disables)
+    llm_daily_final_cap: int = 5000       # LLM_DAILY_FINAL_CAP — max Tier-2 (authoritative) LLM scores per UTC day, all lanes combined. A runaway queue can no longer spend unbounded money overnight; jobs past the cap stay Queued for tomorrow. 0 = unlimited.
+    scoring_fail_max_attempts: int = 3    # SCORING_FAIL_MAX_ATTEMPTS — after this many failed final-score attempts a job is deferred (sits out) instead of re-queued every 90s forever
+    scoring_fail_defer_hours: float = 6.0 # SCORING_FAIL_DEFER_HOURS — how long a repeatedly-failing job sits out before it may be retried
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
@@ -186,7 +190,7 @@ class Settings(BaseSettings):
     # the numbers are comparable; a small calibration offset nudges GPT's scale
     # onto Claude's if it clusters low/high. Only active when BOTH provider keys
     # exist; with one key it's a no-op (the single provider scores everything).
-    dual_score_enabled: bool = True         # DUAL_SCORE_ENABLED — split final scoring across Claude + GPT
+    dual_score_enabled: bool = False        # DUAL_SCORE_ENABLED — split final scoring across Claude + GPT. OFF by default: the GPT final is the full gpt-4o (~2.5x Haiku's price) and in practice OpenAI rate limits spilled most of its share back onto Haiku anyway — so dual mode mostly added cost, not throughput. Enable only with an OpenAI tier that can actually absorb its share.
     dual_score_claude_share: float = 0.6    # DUAL_SCORE_CLAUDE_SHARE — fraction of finals routed to Claude (rest to GPT)
     dual_score_openai_model: str = "gpt-4o" # DUAL_SCORE_OPENAI_MODEL — the GPT FINAL scorer (full model, not mini, so it's comparable to Claude). Set to gpt-4o-mini to cut cost at some accuracy loss.
     dual_score_openai_offset: float = 0.0   # DUAL_SCORE_OPENAI_OFFSET — calibration added to GPT scores to align with Claude's scale (e.g. +5 if GPT clusters ~5 points low). Clamped to 0-100.
@@ -231,6 +235,7 @@ class Settings(BaseSettings):
     adoption_semantic_enabled: bool = True     # ADOPTION_SEMANTIC_ENABLED
     adoption_semantic_threshold: float = 0.30  # ADOPTION_SEMANTIC_THRESHOLD — min résumé↔job cosine for a non-title-match to be adopted
     adoption_semantic_max_candidates: int = 1500  # ADOPTION_SEMANTIC_MAX_CANDIDATES — cap on non-title jobs embedded per pass (CPU bound)
+    adoption_semantic_max_extras: int = 150    # ADOPTION_SEMANTIC_MAX_EXTRAS — cap on off-title neighbours ADOPTED per user per pass. Every adopted row is a new rerank_score-NULL job the LLM scorer must pay for; without this cap the semantic pass could fill all ~400 slots per user per pass and flood the scoring queue (the Jul 15 overnight spend). 0 = title-only.
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
     max_boards_per_run: int = 400         # cap on registry boards scraped per discovery run. Higher covers the ~56K registry faster but holds more jobs in memory per run; 400 balances coverage vs. the container memory limit (800 contributed to an OOM crash).
     # Wall-clock cap on the board phase (fetch + per-board DB work) of a

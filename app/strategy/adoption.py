@@ -90,11 +90,17 @@ def _select_adoptable(fresh_jobs, roles, user_id, limit):
         (title_hits if role_title_match(j.title, roles) else others).append(j)
 
     if settings.adoption_semantic_enabled and others and len(title_hits) < limit:
-        try:
-            extras = _semantic_extras(others, roles, user_id, limit - len(title_hits))
-            return (title_hits + extras)[:limit]
-        except Exception as e:
-            log.warning("Adoption semantic pass failed (%s) — title-only", e)
+        # Every extra is a new unscored row the LLM lanes must pay to score, so
+        # the semantic pass gets a hard per-pass budget of its own instead of
+        # filling every slot the title pass left open.
+        need = min(limit - len(title_hits),
+                   max(0, settings.adoption_semantic_max_extras))
+        if need > 0:
+            try:
+                extras = _semantic_extras(others, roles, user_id, need)
+                return (title_hits + extras)[:limit]
+            except Exception as e:
+                log.warning("Adoption semantic pass failed (%s) — title-only", e)
     return title_hits[:limit]
 
 

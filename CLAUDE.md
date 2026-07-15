@@ -102,6 +102,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
 - **Tuning lives in env/Settings:** `shortlist_score_threshold` (default 35),
   `top_k_rerank`, `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
+  OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);
+  daily Tier-2 cap `LLM_DAILY_FINAL_CAP` (5000); credit/quota circuit breaker
+  `LLM_PROVIDER_COOLDOWN_MINUTES` (30); per-job attempt ceiling defers repeat
+  failures (`SCORING_FAIL_MAX_ATTEMPTS`); résumé block padded past Haiku's
+  4096-token cache minimum so prompt caching actually engages; semantic adoption
+  bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS` (150/user/pass). Scoring-lane work
+  list is round-robin across users (fair + cache-friendly).
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

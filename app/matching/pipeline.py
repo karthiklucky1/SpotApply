@@ -610,6 +610,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 job = s.get(Job, jid)
                 if not job:
                     return jid, None
+                if job.rerank_score is not None:
+                    # Another lane (90s scoring lane / pulse fast path) scored it
+                    # since this work list was built — don't pay for it twice.
+                    return jid, None
                 return jid, reranker.score(resume, job)
         except Exception as e:
             log.warning("Parallel rerank failed for job %s: %s", jid, e)

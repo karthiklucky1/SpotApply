@@ -50,9 +50,51 @@ log = logging.getLogger(__name__)
 
 _LANE_LOCK = threading.Lock()  # one scoring cycle at a time in this process
 
+# ── Per-job attempt ceiling ───────────────────────────────────────────────────
+# A job whose final score keeps failing (provider outage, poison payload) used
+# to be re-selected EVERY 90s cycle forever — re-paying the prescore each time.
+# After scoring_fail_max_attempts failures the job is deferred in memory for
+# scoring_fail_defer_hours instead. Process-local by design: no schema change,
+# and a restart merely retries a few times before deferring again.
+_fail_counts: dict = {}
+_deferred_until: dict = {}
+_fail_lock = threading.Lock()
+
+
+def _note_score_failure(jid: int) -> None:
+    with _fail_lock:
+        n = _fail_counts.get(jid, 0) + 1
+        if n >= max(1, settings.scoring_fail_max_attempts):
+            _fail_counts.pop(jid, None)
+            _deferred_until[jid] = time.time() + settings.scoring_fail_defer_hours * 3600
+            log.warning("Scoring: job %d failed %d attempts — deferred %.1fh",
+                        jid, n, settings.scoring_fail_defer_hours)
+        else:
+            _fail_counts[jid] = n
+
+
+def _note_score_success(jid: int) -> None:
+    with _fail_lock:
+        _fail_counts.pop(jid, None)
+        _deferred_until.pop(jid, None)
+
+
+def _drop_deferred(jids: List[int]) -> List[int]:
+    now = time.time()
+    with _fail_lock:
+        # purge expired deferrals so the dict stays small
+        for j, until in list(_deferred_until.items()):
+            if until <= now:
+                _deferred_until.pop(j, None)
+        return [j for j in jids if j not in _deferred_until]
+
 
 def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
-    """Distinct owners that currently have at least one unscored open job."""
+    """Distinct owners that currently have at least one unscored open job.
+    The shared pool ('__shared__') is a corpus, not a user — its rows are never
+    scored directly (they're adopted into per-user pools first), so it must not
+    consume work slots."""
+    from app.discovery.pipeline import SHARED_POOL_USER
     with get_session() as session:
         rows = session.exec(
             select(Job.user_id).where(
@@ -60,19 +102,22 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
                 Job.is_closed == False,    # noqa: E712
             ).distinct().limit(limit)
         ).all()
-    return [r[0] if isinstance(r, tuple) else r for r in rows]
+    users = [r[0] if isinstance(r, tuple) else r for r in rows]
+    return [u for u in users if u != SHARED_POOL_USER]
 
 
 def _user_queue(user_id: Optional[str], cap: int) -> List[int]:
-    """A user's queued (unscored) job ids, freshest first, capped."""
+    """A user's queued (unscored) job ids, freshest first, capped. Jobs deferred
+    by the attempt ceiling are skipped."""
     with get_session() as session:
-        return [r[0] if isinstance(r, tuple) else r for r in session.exec(
+        jids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
             select(Job.id).where(
                 Job.user_id == user_id,
                 Job.rerank_score == None,  # noqa: E711
                 Job.is_closed == False,    # noqa: E712
             ).order_by(Job.first_seen.desc()).limit(cap)
         ).all()]
+    return _drop_deferred(jids)
 
 
 class _Ctx:
@@ -142,7 +187,9 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float],
         except Exception as e:
             log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
             session.rollback()
+            _note_score_failure(jid)  # attempt ceiling: defer after repeated failures
             return None
+        _note_score_success(jid)
         job.rerank_score = score
         job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
         job.rerank_breakdown = json.dumps(breakdown) if breakdown else None
@@ -215,22 +262,50 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
 
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     from app.matching.pipeline import _load_resume
-    from app.matching.reranker import Reranker
+    from app.matching.reranker import (
+        Reranker, any_provider_available, llm_budget_exhausted,
+    )
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0}
+
+    # Fast-exit guards: when every provider is cooling down (credit/quota) or
+    # the daily spend cap is hit, a cycle would only burn CPU and log noise —
+    # jobs stay Queued and the next eligible cycle picks them up.
+    if not any_provider_available():
+        return {**stats, "skipped": "all LLM providers cooling down"}
+    if llm_budget_exhausted():
+        return {**stats, "skipped": "daily LLM budget reached"}
 
     users = _scorable_user_ids()
     if not users:
         return stats
 
-    # Build the global work list: (uid, jid), freshest-first per user, capped.
-    items: List[Tuple[Optional[str], int]] = []
+    # Build the global work list, freshest-first per user, ROUND-ROBIN across
+    # users. Interleaving (vs. the old user-by-user fill) does two things:
+    # 1. fairness — when the global cap bites, every user gets a share of the
+    #    cycle instead of the first users taking all 600 slots;
+    # 2. cache efficiency — same-user finals share a cached résumé prefix, and a
+    #    cache entry is only readable after the first call finishes. Interleaved
+    #    items keep the 20 workers on DIFFERENT users' prefixes, so job #2 for a
+    #    user usually finds the cache its job #1 just wrote.
+    # Every user's queue is fetched (tiny indexed id-only selects) BEFORE the
+    # cap is applied — stopping the fetch at the cap would hand all slots to
+    # whichever users happened to come first, which is the unfairness this
+    # rewrite removes.
+    queues: List[List[Tuple[Optional[str], int]]] = []
     for uid in users:
-        for jid in _user_queue(uid, settings.scoring_per_user_cap):
-            items.append((uid, jid))
-        if len(items) >= settings.scoring_global_cap:
-            break
-    items = items[: settings.scoring_global_cap]
+        q = [(uid, jid) for jid in _user_queue(uid, settings.scoring_per_user_cap)]
+        if q:
+            queues.append(q)
+    items: List[Tuple[Optional[str], int]] = []
+    depth = 0
+    while len(items) < settings.scoring_global_cap and any(depth < len(q) for q in queues):
+        for q in queues:
+            if depth < len(q):
+                items.append(q[depth])
+                if len(items) >= settings.scoring_global_cap:
+                    break
+        depth += 1
     stats["users"] = len({u for u, _ in items})
     stats["queued"] = len(items)
     if not items:

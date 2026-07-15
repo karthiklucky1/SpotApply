@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 import time
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from app.config import settings
@@ -18,6 +20,60 @@ from app.qa_store.resolver import QAResolver
 from app.matching.filters.rule_filter import RuleFilter
 
 log = logging.getLogger(__name__)
+
+# ── Provider circuit breaker ──────────────────────────────────────────────────
+# When a provider starts returning credit/quota errors, every scoring lane used
+# to keep re-hitting it 4x per job per 90s cycle, forever (the Jul 15 log storm).
+# Instead: mark the provider DOWN for a cooldown and skip it — jobs stay Queued
+# and cost nothing until a provider is back.
+_provider_down_until: dict = {}
+_breaker_lock = threading.Lock()
+
+
+def _mark_provider_down(name: str) -> None:
+    mins = settings.llm_provider_cooldown_minutes
+    if mins <= 0:
+        return
+    with _breaker_lock:
+        _provider_down_until[name] = time.time() + mins * 60
+    log.warning("Reranker: provider %s marked DOWN (credit/quota) — cooling off %d min", name, mins)
+
+
+def provider_available(name: str) -> bool:
+    with _breaker_lock:
+        return time.time() >= _provider_down_until.get(name, 0.0)
+
+
+def any_provider_available() -> bool:
+    """For the lanes: is at least one final-score provider not cooling down?"""
+    return provider_available("anthropic") or provider_available("openai")
+
+
+# ── Daily spend guard ─────────────────────────────────────────────────────────
+# Hard ceiling on Tier-2 (authoritative) LLM scores per UTC day, across every
+# lane. The scoring queue is unbounded (discovery keeps producing); this bounds
+# what a runaway queue can COST. Process-local: resets on restart, which only
+# ever errs toward spending slightly more — acceptable for a safety net.
+_daily_finals = {"day": "", "count": 0}
+_budget_lock = threading.Lock()
+
+
+def _register_final_call() -> None:
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with _budget_lock:
+        if _daily_finals["day"] != today:
+            _daily_finals["day"] = today
+            _daily_finals["count"] = 0
+        _daily_finals["count"] += 1
+
+
+def llm_budget_exhausted() -> bool:
+    cap = settings.llm_daily_final_cap
+    if cap <= 0:
+        return False
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with _budget_lock:
+        return _daily_finals["day"] == today and _daily_finals["count"] >= cap
 
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
@@ -240,11 +296,38 @@ def _sponsor_note(job: Job, profile) -> str:
 # block, so scoring the next job for the same user re-reads it from cache instead
 # of re-billing the full résumé every time. A user's batch of hundreds of jobs
 # shares one résumé — this is the single biggest token/cost lever in scoring.
+#
+# CRITICAL SIZE CONSTRAINT: Anthropic silently ignores cache_control when the
+# cumulative prefix is under the model's minimum — 4,096 tokens on Haiku 4.5.
+# The old resume[:6000] slice put the rubric+résumé prefix at ~2.5K tokens, so
+# NOTHING ever cached and every final re-billed the full résumé at full price.
+# Fix: use more of the résumé (it can only improve grounding) and, when the
+# block is still short, pad it with a labeled VERBATIM repetition of the résumé
+# — no new information enters the prompt; the pad's only job is to push the
+# prefix over the cache minimum so re-reads bill at ~0.1x instead of 1x.
+_RESUME_SLICE_CHARS = 16000       # was 6000
+_CACHE_MIN_BLOCK_CHARS = 15500    # + rubric (~2.5-3.5K chars) ≈ comfortably >4096 tokens
+_CACHE_PAD_MAX_REPEATS = 5        # a tiny résumé isn't worth padding — skip (no cache, status quo)
+
+
 def _resume_context_block(resume_text: str, feedback: str = "") -> str:
     """The user-stable half — identical across every job we score for this user,
-    so it's the cacheable prefix."""
+    so it's the cacheable prefix. Deterministic for a given résumé+feedback."""
     fb = f"\n<user_feedback>\n{feedback}\n</user_feedback>" if feedback else ""
-    return f"<resume>\n{resume_text[:6000]}\n</resume>{fb}"
+    body = resume_text[:_RESUME_SLICE_CHARS]
+    block = f"<resume>\n{body}\n</resume>{fb}"
+    short_by = _CACHE_MIN_BLOCK_CHARS - len(block)
+    if short_by > 0 and body:
+        repeats = -(-short_by // (len(body) + 1))  # ceil
+        if repeats <= _CACHE_PAD_MAX_REPEATS:
+            pad = "\n".join([body] * repeats)
+            block += (
+                "\n<resume_repeat>\nThe following is a verbatim repetition of the résumé "
+                "above, included only for prompt-cache alignment. It contains no new "
+                "information — read the résumé once and ignore the repetition.\n"
+                f"{pad}\n</resume_repeat>"
+            )
+    return block
 
 
 def _job_context_block(job: Job, profile=None) -> str:
@@ -432,13 +515,14 @@ class Reranker:
         return bool(self._openai_client or self._anthropic_client)
 
     def _prescore_backends(self):
-        """Yield (name, callable) for Tier-1, preferring the configured provider."""
+        """Yield (name, callable) for Tier-1, preferring the configured provider.
+        Providers cooling down after credit/quota errors are skipped."""
         prefer_openai = (settings.prescore_provider or "openai").lower() == "openai"
         openai_pair = ("openai", self._prescore_openai) if self._openai_client else None
         anthropic_pair = ("anthropic", self._prescore_anthropic) if self._anthropic_client else None
         order = [openai_pair, anthropic_pair] if prefer_openai else [anthropic_pair, openai_pair]
         for pair in order:
-            if pair:
+            if pair and provider_available(pair[0]):
                 yield pair
 
     def prescore(self, resume_text: str, job: Job) -> Optional[Tuple[float, str]]:
@@ -455,6 +539,9 @@ class Reranker:
             try:
                 return _parse_prescore(call_fn(prompt))
             except Exception as e:
+                if any(kw in str(e).lower() for kw in
+                       ("credit", "insufficient", "billing", "quota", "payment")):
+                    _mark_provider_down(name)
                 log.debug("Prescore: %s failed for job %s: %s", name, job.id, e)
                 continue
         return None
@@ -486,6 +573,13 @@ class Reranker:
             log.info("Reranker: Pre-filtered job %s - %s", job.title, pre_filtered[1])
             return pre_filtered
 
+        # Daily spend guard — past the cap, jobs stay Queued (raise = unscored),
+        # they are NOT silently mis-scored. Checked before any API call.
+        if llm_budget_exhausted():
+            raise RuntimeError(
+                f"daily LLM final-score budget reached ({settings.llm_daily_final_cap}) "
+                f"— job {job.id} left unscored for tomorrow")
+
         resume_block = _resume_context_block(resume_text, self._feedback)
         job_block = _job_context_block(job, self._profile)
 
@@ -493,12 +587,17 @@ class Reranker:
         # backoff + jitter before falling through. CRITICAL: on total failure we
         # RAISE (not return 0.0) so the caller leaves the job unscored and retries
         # it on a later run — a 429 must never become a silent score-0 drop that
-        # biases the shortlist.
+        # biases the shortlist. Providers cooling down after credit/quota errors
+        # (circuit breaker) are skipped entirely — no API call, no retry storm.
         max_retries = max(1, settings.llm_rerank_max_retries)
-        for backend_name, call_fn in self._score_backends(provider):
+        backends = [(n, fn) for n, fn in self._score_backends(provider) if provider_available(n)]
+        if not backends:
+            raise RuntimeError(f"rerank skipped for job {job.id}: all providers cooling down")
+        for backend_name, call_fn in backends:
             for attempt in range(max_retries):
                 try:
                     text = call_fn(resume_block, job_block)
+                    _register_final_call()
                     return self._calibrate(backend_name, _parse_response(text))
                 except Exception as e:
                     error_str = str(e).lower()
@@ -517,6 +616,7 @@ class Reranker:
                         time.sleep(delay)
                         continue
                     if is_credit_error:
+                        _mark_provider_down(backend_name)  # circuit breaker: skip it for a cooldown
                         log.warning("Reranker: %s out of credits/quota — trying fallback backend: %s",
                                     backend_name, e)
                         break  # don't burn retries; move to next backend
