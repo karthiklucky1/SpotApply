@@ -2,8 +2,14 @@
 
 https://www.themuse.com/developers/api/v2
 Endpoint: https://www.themuse.com/api/public/jobs?category=...&page=N
-Returns thousands of curated tech jobs across many companies. An optional
-THEMUSE_API_KEY raises rate limits but is not required.
+Returns thousands of curated jobs across many companies and EVERY sector. An
+optional THEMUSE_API_KEY raises rate limits but is not required.
+
+This is our best keyless ALL-SECTOR source, so it must not be pinned to tech:
+it used to request only Software/Data categories and Remote-only, which meant a
+mechanical, civil, nursing, finance or sales candidate got zero Muse results.
+We now request the full category taxonomy and all locations; the user's own role
+keywords (matches_title) and the country/remote gate in _upsert do the filtering.
 """
 from __future__ import annotations
 
@@ -20,9 +26,18 @@ from app.discovery.title_filter import matches_title
 log = logging.getLogger(__name__)
 
 _API_URL = "https://www.themuse.com/api/public/jobs"
-# The Muse's own category taxonomy — we request the engineering/data ones.
-_CATEGORIES = ["Software Engineering", "Data Science", "Data and Analytics"]
-_MAX_PAGES = 5  # 20 results/page → up to ~100 candidates before keyword filtering
+# The Muse's own category taxonomy — request ALL major sectors, not just tech, so
+# the keyword filter below (the user's real roles) decides what's relevant. This
+# is what makes HirePath work for non-software candidates out of the box.
+_CATEGORIES = [
+    "Software Engineering", "Data Science", "Data and Analytics", "IT",
+    "Engineering", "Science and Engineering", "Design and UX", "Product",
+    "Project Management", "Business Operations", "Operations", "Management",
+    "Sales", "Marketing", "Accounting and Finance", "Finance",
+    "Human Resources and Recruitment", "Customer Service", "Healthcare",
+    "Education", "Legal",
+]
+_MAX_PAGES = 6  # 20 results/page → up to ~120 candidates before keyword filtering
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -54,7 +69,10 @@ class TheMuseSource:
                 for page in range(_MAX_PAGES):
                     if len(jobs) >= limit:
                         break
-                    params = {"page": page, "category": _CATEGORIES, "location": "Remote"}
+                    # No location filter — a mechanical/nursing/finance role is
+                    # usually onsite; the country + remote_ok gate in _upsert
+                    # narrows to what this user actually wants.
+                    params = {"page": page, "category": _CATEGORIES}
                     if api_key:
                         params["api_key"] = api_key
                     r = await client.get(_API_URL, params=params)
@@ -82,7 +100,7 @@ class TheMuseSource:
 
                             company = ((item.get("company") or {}).get("name") or "Unknown").strip()
                             locs = item.get("locations") or []
-                            location = ", ".join(l.get("name", "") for l in locs) or "Remote"
+                            location = ", ".join(loc.get("name", "") for loc in locs) or "Remote"
                             remote = "remote" in location.lower()
                             url = ((item.get("refs") or {}).get("landing_page") or "").strip()
 

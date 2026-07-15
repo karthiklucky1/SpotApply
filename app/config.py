@@ -279,7 +279,21 @@ class Settings(BaseSettings):
     greenhouse_boards: str = ""
     lever_boards: str = ""
     ashby_boards: str = ""
-    jobs_keywords: str = "Machine Learning Engineer,AI Engineer,Python Developer,LLM Engineer,AI/ML Engineer,Backend Python Engineer,ML Engineer,Applied Scientist,NLP Engineer,GenAI Engineer"
+    # FALLBACK-ONLY keyword list. Onboarding and the global scheduled pass always
+    # pass explicit keywords (the user's own roles / the union of all users'
+    # roles), so this list is used only when NO roles exist yet — a fresh deploy
+    # or a role-less cold start. It used to be 100% AI/ML, which meant the shared
+    # pool a brand-new non-tech user adopts from was all AI/ML — a mechanical or
+    # nursing candidate saw almost nothing. Now it spans the major sectors so the
+    # cold-start pool is broad; each user's real feed is still driven by THEIR roles.
+    jobs_keywords: str = (
+        "Software Engineer,Data Analyst,Machine Learning Engineer,Product Manager,"
+        "Mechanical Engineer,Civil Engineer,Electrical Engineer,Manufacturing Engineer,"
+        "Financial Analyst,Accountant,Registered Nurse,Healthcare Administrator,"
+        "Marketing Manager,Sales Representative,Operations Manager,Project Manager,"
+        "UX Designer,Business Analyst,Customer Success Manager,Human Resources Specialist,"
+        "Supply Chain Analyst,Administrative Assistant"
+    )
 
     @property
     def jobs_keywords_list(self) -> List[str]:
