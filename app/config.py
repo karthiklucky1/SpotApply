@@ -213,6 +213,14 @@ class Settings(BaseSettings):
     # next 6h global pass — their domain fills within minutes. 0 disables the scrape.
     onboarding_active_discovery: bool = True  # ONBOARDING_ACTIVE_DISCOVERY
     onboarding_min_jobs: int = 25             # ONBOARDING_MIN_JOBS — adopt-count floor below which onboarding actively scrapes the user's domain
+    # "My roles" relevance filter (All Jobs). Title matching alone misses jobs
+    # whose title is worded differently but is the same work ("Applied Scientist"
+    # ≈ "ML Engineer"). We DON'T need a separate semantic cache for this — the AI
+    # fit score already IS the semantic signal (it scores the job against the
+    # résumé, not the title), so a differently-titled-but-relevant job scores high.
+    # The filter keeps a job when its title matches a role OR it scored at/above
+    # this fit floor. 0 = title-only (no semantic catch).
+    roles_filter_score_floor: int = 50        # ROLES_FILTER_SCORE_FLOOR
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
     max_boards_per_run: int = 400         # cap on registry boards scraped per discovery run. Higher covers the ~56K registry faster but holds more jobs in memory per run; 400 balances coverage vs. the container memory limit (800 contributed to an OOM crash).
     # Wall-clock cap on the board phase (fetch + per-board DB work) of a

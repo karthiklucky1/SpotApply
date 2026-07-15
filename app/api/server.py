@@ -2434,16 +2434,24 @@ def api_jobs(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
 
-        # "My roles" relevance filter: keep only titles that match the user's
-        # target roles (alias/token-aware, ≥4-char terms so a substring match is
-        # safe). Built once here and applied to BOTH the page query and the count.
+        # "My roles" relevance filter — keep a job when EITHER:
+        #   (a) its TITLE matches a target role (alias/token-aware, ≥4-char terms
+        #       so a substring match is safe), OR
+        #   (b) the AI already scored it a genuine fit to the RÉSUMÉ. (b) is the
+        #       semantic catch: it rescues jobs whose title is worded differently
+        #       but is the same work ("Applied Scientist" ≈ "ML Engineer"). No
+        #       separate embedding pass — the fit score we already computed IS the
+        #       semantic signal. Built once, applied to the page query AND count.
         _roles_cond = None
         if roles_only == "1":
             from sqlalchemy import or_ as _or
             from app.discovery.title_filter import role_match_terms
             _terms = role_match_terms(_get_target_roles(uid) or [])
             if _terms:
-                _roles_cond = _or(*[Job.title.ilike(f"%{t}%") for t in _terms])
+                _parts = [_or(*[Job.title.ilike(f"%{t}%") for t in _terms])]
+                if settings.roles_filter_score_floor > 0:
+                    _parts.append(Job.rerank_score >= settings.roles_filter_score_floor)
+                _roles_cond = _or(*_parts)
                 query = query.where(_roles_cond)
 
         # Freshness age filter: only jobs posted within N days. Uses posted_at

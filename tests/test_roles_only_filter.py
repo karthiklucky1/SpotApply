@@ -1,6 +1,11 @@
 """role_match_terms: SQL-safe title terms for the All Jobs "my roles" filter."""
 from __future__ import annotations
 
+import pytest
+from sqlmodel import delete, select
+
+from app.db.init_db import get_session
+from app.db.models import Job, JobSource, UserProfile
 from app.discovery.title_filter import role_match_terms
 
 
@@ -42,3 +47,40 @@ def test_nontech_roles_supported():
     assert "financial analyst" in terms
     t = "ICU Registered Nurse".lower()
     assert any(term in t for term in terms)
+
+
+def test_roles_only_endpoint_semantic_catch():
+    """The endpoint keeps off-title jobs the AI scored a real fit (semantic catch)
+    — so 'same work, different title' isn't missed — while dropping off-title,
+    low-score jobs. Reuses the existing fit score, no separate embedding pass."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+
+    def _job(ext, title, score):
+        return Job(source=JobSource.GREENHOUSE, external_id=ext, company=ext,
+                   title=title, url=f"http://x/{ext}", description="x",
+                   rerank_score=score, blended_score=score)
+
+    with get_session() as s:
+        s.exec(delete(UserProfile))
+        for j in s.exec(select(Job).where(Job.external_id.like("rofilt-%"))).all():
+            s.delete(j)
+        s.commit()
+        s.add(UserProfile(user_id=None, target_roles="Machine Learning Engineer"))
+        s.add(_job("rofilt-title", "Senior Machine Learning Engineer", 20))  # title match
+        s.add(_job("rofilt-sem", "Applied Scientist", 82))    # off-title, high fit → keep
+        s.add(_job("rofilt-off", "Warehouse Associate", 10))  # off-title, low fit → drop
+        s.commit()
+
+    try:
+        data = TestClient(app).get("/api/jobs?roles_only=1&limit=200").json()
+        titles = {j["title"] for j in data["jobs"]}
+        assert "Senior Machine Learning Engineer" in titles   # via title
+        assert "Applied Scientist" in titles                   # via score (semantic)
+        assert "Warehouse Associate" not in titles             # neither → hidden
+    finally:
+        with get_session() as s:
+            s.exec(delete(UserProfile))
+            for j in s.exec(select(Job).where(Job.external_id.like("rofilt-%"))).all():
+                s.delete(j)
+            s.commit()
