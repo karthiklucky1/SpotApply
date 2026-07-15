@@ -87,9 +87,9 @@ def test_score_routes_and_calibrates(monkeypatch):
     rk = _reranker_with(True, True)
     monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)  # skip rule filter
     monkeypatch.setattr(rk, "_score_openai_final",
-                        lambda prompt: '{"score": 80, "reason": "fit", "concerns": [], "breakdown": {}}')
+                        lambda resume_block, job_block: '{"score": 80, "reason": "fit", "concerns": [], "breakdown": {}}')
     monkeypatch.setattr(rk, "_score_anthropic",
-                        lambda prompt: (_ for _ in ()).throw(AssertionError("Claude should not be called")))
+                        lambda resume_block, job_block: (_ for _ in ()).throw(AssertionError("Claude should not be called")))
     score, reason, concerns, bd = rk.score("resume", _job(), provider="openai")
     assert score == 84.0   # 80 + 4 calibration
     assert reason == "fit"
@@ -130,3 +130,35 @@ def test_pick_provider_noop_when_single_provider(monkeypatch):
 def test_pick_provider_noop_when_disabled(monkeypatch):
     monkeypatch.setattr(settings, "dual_score_enabled", False)
     assert sl._pick_provider(3, _DualCtx()) is None
+
+
+# ── résumé prompt caching ───────────────────────────────────────────────────────
+def test_resume_is_a_cached_system_block(monkeypatch):
+    """The résumé must ride in a cached system block (reused across every job we
+    score for this user), and the per-job posting must be the user message."""
+    monkeypatch.setattr(settings, "dual_score_enabled", False)
+    rk = _reranker_with(True, False)  # Claude only
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    captured = {}
+
+    class _Msgs:
+        @staticmethod
+        def create(**kw):
+            captured.update(kw)
+            r = type("R", (), {})()
+            r.content = [type("C", (), {"text": '{"score":70,"reason":"ok","concerns":[],"breakdown":{}}'})()]
+            return r
+
+    class _Fake:
+        messages = _Msgs()
+
+    rk._anthropic_client = _Fake()
+    rk.score("MY_UNIQUE_RESUME_TEXT", _job(title="Backend Engineer"), provider="anthropic")
+
+    sys_blocks = captured["system"]
+    assert len(sys_blocks) == 2  # rubric + résumé, both cached prefixes
+    assert all(b.get("cache_control", {}).get("type") == "ephemeral" for b in sys_blocks)
+    assert "MY_UNIQUE_RESUME_TEXT" in sys_blocks[1]["text"]  # résumé is cached
+    user_msg = captured["messages"][0]["content"]
+    assert "Backend Engineer" in user_msg               # the posting is the user msg
+    assert "MY_UNIQUE_RESUME_TEXT" not in user_msg       # résumé NOT re-sent per job

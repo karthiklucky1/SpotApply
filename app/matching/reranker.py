@@ -235,20 +235,28 @@ def _sponsor_note(job: Job, profile) -> str:
     return ""
 
 
-def _build_prompt(resume_text: str, job: Job, profile=None, feedback: str = "") -> str:
-    _fb = f"\n<user_feedback>\n{feedback}\n</user_feedback>\n" if feedback else ""
-    return f"""<resume>
-{resume_text[:6000]}
-</resume>
-{_fb}
-<job>
+# The scoring prompt is split into a USER-STABLE half (résumé + preference
+# feedback) and a PER-JOB half (the posting). The stable half is sent as a cached
+# block, so scoring the next job for the same user re-reads it from cache instead
+# of re-billing the full résumé every time. A user's batch of hundreds of jobs
+# shares one résumé — this is the single biggest token/cost lever in scoring.
+def _resume_context_block(resume_text: str, feedback: str = "") -> str:
+    """The user-stable half — identical across every job we score for this user,
+    so it's the cacheable prefix."""
+    fb = f"\n<user_feedback>\n{feedback}\n</user_feedback>" if feedback else ""
+    return f"<resume>\n{resume_text[:6000]}\n</resume>{fb}"
+
+
+def _job_context_block(job: Job, profile=None) -> str:
+    """The per-job half — changes every call, so it is NOT cached."""
+    return f"""<job>
 Title: {job.title}
 Company: {job.company}
 Location: {job.location}
 Remote: {job.remote}
 {_sponsor_note(job, profile)}
 Description:
-{job.description[:5000]}
+{(job.description or '')[:5000]}
 </job>
 
 Return the JSON object."""
@@ -338,30 +346,39 @@ class Reranker:
         if not self._active_backend:
             log.error("Reranker: No LLM backend available! Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
 
-    def _score_anthropic(self, prompt: str) -> str:
-        """Call Claude for scoring."""
+    def _score_anthropic(self, resume_block: str, job_block: str) -> str:
+        """Call Claude for scoring. The rubric AND the résumé are cached system
+        blocks, so scoring the next job for this user reads both from cache
+        instead of re-sending the whole résumé each time."""
         resp = self._anthropic_client.messages.create(
             model=settings.scoring_model,
             max_tokens=600,
-            system=[{"type": "text", "text": _get_system_prompt(self._profile), "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": prompt}],
+            system=[
+                {"type": "text", "text": _get_system_prompt(self._profile),
+                 "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": resume_block,
+                 "cache_control": {"type": "ephemeral"}},
+            ],
+            messages=[{"role": "user", "content": job_block}],
         )
         return resp.content[0].text
 
-    def _score_openai(self, prompt: str) -> str:
-        """Call GPT-4o-mini for scoring (single-provider fallback path)."""
+    def _score_openai(self, resume_block: str, job_block: str) -> str:
+        """Call GPT-4o-mini for scoring (single-provider fallback path). The
+        rubric+résumé go in the system message so OpenAI's automatic prefix
+        caching can reuse them across the user's jobs."""
         resp = self._openai_client.chat.completions.create(
             model="gpt-4o-mini",
             max_tokens=600,
             messages=[
-                {"role": "system", "content": _get_system_prompt(self._profile)},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": _get_system_prompt(self._profile) + "\n\n" + resume_block},
+                {"role": "user", "content": job_block},
             ],
             response_format={"type": "json_object"},
         )
         return resp.choices[0].message.content
 
-    def _score_openai_final(self, prompt: str) -> str:
+    def _score_openai_final(self, resume_block: str, job_block: str) -> str:
         """Call the full GPT model (default gpt-4o) for an AUTHORITATIVE final
         score in dual-provider mode — same rubric as Claude, so the two are
         comparable. Used when the 60/40 router sends a job to OpenAI."""
@@ -369,8 +386,8 @@ class Reranker:
             model=settings.dual_score_openai_model,
             max_tokens=600,
             messages=[
-                {"role": "system", "content": _get_system_prompt(self._profile)},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": _get_system_prompt(self._profile) + "\n\n" + resume_block},
+                {"role": "user", "content": job_block},
             ],
             response_format={"type": "json_object"},
         )
@@ -469,7 +486,8 @@ class Reranker:
             log.info("Reranker: Pre-filtered job %s - %s", job.title, pre_filtered[1])
             return pre_filtered
 
-        prompt = _build_prompt(resume_text, job, self._profile, feedback=self._feedback)
+        resume_block = _resume_context_block(resume_text, self._feedback)
+        job_block = _job_context_block(job, self._profile)
 
         # Try each backend; retry rate-limit/overloaded errors with exponential
         # backoff + jitter before falling through. CRITICAL: on total failure we
@@ -480,7 +498,7 @@ class Reranker:
         for backend_name, call_fn in self._score_backends(provider):
             for attempt in range(max_retries):
                 try:
-                    text = call_fn(prompt)
+                    text = call_fn(resume_block, job_block)
                     return self._calibrate(backend_name, _parse_response(text))
                 except Exception as e:
                     error_str = str(e).lower()
