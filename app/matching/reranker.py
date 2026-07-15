@@ -30,6 +30,18 @@ _provider_down_until: dict = {}
 _breaker_lock = threading.Lock()
 
 
+# Errors that mean "this provider has no capacity left for a while" — credit /
+# billing exhaustion, AND daily-quota rate limits ("requests per day (RPD)"),
+# which a retry cannot fix until the quota window resets. Plain per-minute 429s
+# are NOT here — those are transient and handled by retry/fallback.
+_EXHAUSTION_MARKERS = ("credit", "insufficient", "billing", "quota", "payment",
+                       "per day", "rpd", "daily limit")
+
+
+def _is_exhaustion_error(error_str: str) -> bool:
+    return any(kw in error_str for kw in _EXHAUSTION_MARKERS)
+
+
 def _mark_provider_down(name: str) -> None:
     mins = settings.llm_provider_cooldown_minutes
     if mins <= 0:
@@ -49,31 +61,71 @@ def any_provider_available() -> bool:
     return provider_available("anthropic") or provider_available("openai")
 
 
-# ── Daily spend guard ─────────────────────────────────────────────────────────
-# Hard ceiling on Tier-2 (authoritative) LLM scores per UTC day, across every
-# lane. The scoring queue is unbounded (discovery keeps producing); this bounds
-# what a runaway queue can COST. Process-local: resets on restart, which only
+# ── Spend guards (daily ceiling + hourly smoothing) ───────────────────────────
+# Hard ceilings on Tier-2 (authoritative) LLM scores across every lane. The
+# scoring queue is unbounded (discovery keeps producing); the DAILY cap bounds
+# what a runaway queue can COST, and the HOURLY cap bounds how FAST it burns —
+# without it a big backlog drained at ~2K finals/hour and ate a day's budget in
+# under an hour (Jul 15 evening). Process-local: resets on restart, which only
 # ever errs toward spending slightly more — acceptable for a safety net.
 _daily_finals = {"day": "", "count": 0}
+_hourly_finals = {"hour": "", "count": 0}
 _budget_lock = threading.Lock()
 
 
 def _register_final_call() -> None:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = datetime.utcnow()
+    today, hour = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H")
     with _budget_lock:
         if _daily_finals["day"] != today:
             _daily_finals["day"] = today
             _daily_finals["count"] = 0
         _daily_finals["count"] += 1
+        if _hourly_finals["hour"] != hour:
+            _hourly_finals["hour"] = hour
+            _hourly_finals["count"] = 0
+        _hourly_finals["count"] += 1
 
 
 def llm_budget_exhausted() -> bool:
-    cap = settings.llm_daily_final_cap
-    if cap <= 0:
-        return False
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = datetime.utcnow()
+    today, hour = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H")
+    day_cap, hour_cap = settings.llm_daily_final_cap, settings.llm_hourly_final_cap
     with _budget_lock:
-        return _daily_finals["day"] == today and _daily_finals["count"] >= cap
+        if day_cap > 0 and _daily_finals["day"] == today and _daily_finals["count"] >= day_cap:
+            return True
+        if hour_cap > 0 and _hourly_finals["hour"] == hour and _hourly_finals["count"] >= hour_cap:
+            return True
+    return False
+
+
+# ── Cache telemetry ───────────────────────────────────────────────────────────
+# Aggregated Claude usage logged every N finals, so prod logs answer "is prompt
+# caching actually engaging?" without console access. cache_read ≈ 0.1x price;
+# a healthy steady state shows read ≫ input.
+_usage_totals = {"calls": 0, "input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
+_USAGE_LOG_EVERY = 25
+
+
+def _track_anthropic_usage(resp) -> None:
+    try:
+        u = resp.usage
+        with _budget_lock:
+            _usage_totals["calls"] += 1
+            _usage_totals["input"] += int(getattr(u, "input_tokens", 0) or 0)
+            _usage_totals["cache_read"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
+            _usage_totals["cache_write"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+            _usage_totals["output"] += int(getattr(u, "output_tokens", 0) or 0)
+            if _usage_totals["calls"] % _USAGE_LOG_EVERY:
+                return
+            t = dict(_usage_totals)
+        seen = t["input"] + t["cache_read"] + t["cache_write"]
+        ratio = (100.0 * t["cache_read"] / seen) if seen else 0.0
+        log.info("Claude usage (last %d finals cumulative): uncached_in=%d cache_read=%d "
+                 "cache_write=%d out=%d — cache-read share %.0f%%",
+                 t["calls"], t["input"], t["cache_read"], t["cache_write"], t["output"], ratio)
+    except Exception:
+        pass
 
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
@@ -450,6 +502,7 @@ class Reranker:
             ],
             messages=[{"role": "user", "content": job_block}],
         )
+        _track_anthropic_usage(resp)
         return resp.content[0].text
 
     def _score_openai(self, resume_block: str, job_block: str) -> str:
@@ -545,8 +598,7 @@ class Reranker:
             try:
                 return _parse_prescore(call_fn(prompt))
             except Exception as e:
-                if any(kw in str(e).lower() for kw in
-                       ("credit", "insufficient", "billing", "quota", "payment")):
+                if _is_exhaustion_error(str(e).lower()):
                     _mark_provider_down(name)
                 log.debug("Prescore: %s failed for job %s: %s", name, job.id, e)
                 continue
@@ -607,12 +659,10 @@ class Reranker:
                     return self._calibrate(backend_name, _parse_response(text))
                 except Exception as e:
                     error_str = str(e).lower()
-                    is_rate_limit = any(kw in error_str for kw in [
+                    is_credit_error = _is_exhaustion_error(error_str)
+                    is_rate_limit = not is_credit_error and any(kw in error_str for kw in [
                         "rate_limit", "overloaded", "429", "529",
                         "timeout", "timed out", "timedout",  # SDK APITimeoutError says "Request timed out"
-                    ])
-                    is_credit_error = any(kw in error_str for kw in [
-                        "credit", "insufficient", "billing", "quota", "payment",
                     ])
                     if is_rate_limit and attempt < max_retries - 1:
                         # Exponential backoff: 1s, 2s, 4s, 8s (±20% jitter)

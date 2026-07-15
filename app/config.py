@@ -158,7 +158,8 @@ class Settings(BaseSettings):
     prescore_workers: int = 16            # PRESCORE_WORKERS — concurrent Tier-1 workers (cheap model tolerates more)
     llm_rerank_max_retries: int = 1       # LLM_RERANK_MAX_RETRIES — in-call attempts per backend on 429/overloaded. 1 = no in-call retry: a failed job stays rerank_score-NULL and the 90s scoring lane re-queues it anyway, so in-call backoff (old default 4) only stacked sleeps and hammered exhausted quotas.
     llm_provider_cooldown_minutes: int = 30  # LLM_PROVIDER_COOLDOWN_MINUTES — circuit breaker: a provider returning credit/quota errors is skipped for this long instead of being re-hit every cycle (0 disables)
-    llm_daily_final_cap: int = 5000       # LLM_DAILY_FINAL_CAP — max Tier-2 (authoritative) LLM scores per UTC day, all lanes combined. A runaway queue can no longer spend unbounded money overnight; jobs past the cap stay Queued for tomorrow. 0 = unlimited.
+    llm_daily_final_cap: int = 1500       # LLM_DAILY_FINAL_CAP — max Tier-2 (authoritative) LLM scores per UTC day, all lanes combined (~$5-8/day worst case). Jobs past the cap stay Queued for tomorrow, freshest-first. 0 = unlimited. Raise as paying users grow.
+    llm_hourly_final_cap: int = 150       # LLM_HOURLY_FINAL_CAP — smoothing: max finals per clock hour (~$0.50-0.75/hr). Without it the lane burst-drains a big backlog at ~2K finals/hour and the whole daily budget can burn in under an hour. Fresh jobs still score within the hour. 0 = unlimited.
     scoring_fail_max_attempts: int = 3    # SCORING_FAIL_MAX_ATTEMPTS — after this many failed final-score attempts a job is deferred (sits out) instead of re-queued every 90s forever
     scoring_fail_defer_hours: float = 6.0 # SCORING_FAIL_DEFER_HOURS — how long a repeatedly-failing job sits out before it may be retried
     # ── DB connection pool (Postgres/Supabase only) ───────────────────────────
@@ -186,7 +187,7 @@ class Settings(BaseSettings):
     scoring_lane_interval_seconds: int = 90  # cadence; 0 disables
     scoring_workers: int = 20              # GLOBAL concurrent LLM scoring workers (size to your Anthropic/OpenAI rate limit, not user count)
     scoring_per_user_cap: int = 40         # max queued jobs scored per user per cycle (fresh-first)
-    scoring_global_cap: int = 600          # max total jobs scored per cycle (bounds cost + wall-clock)
+    scoring_global_cap: int = 200          # max total jobs scored per cycle (bounds cost + wall-clock; also bounds how many prescores can overshoot when the finals budget trips mid-cycle)
     scoring_lane_max_seconds: int = 120    # hard wall-clock cap per cycle
     # ── Dual-provider final scoring (Option A) ────────────────────────────────
     # The prescore→final cascade is a RELAY (GPT drains misfits, then Claude
@@ -250,7 +251,7 @@ class Settings(BaseSettings):
     adoption_semantic_enabled: bool = True     # ADOPTION_SEMANTIC_ENABLED
     adoption_semantic_threshold: float = 0.30  # ADOPTION_SEMANTIC_THRESHOLD — min résumé↔job cosine for a non-title-match to be adopted
     adoption_semantic_max_candidates: int = 1500  # ADOPTION_SEMANTIC_MAX_CANDIDATES — cap on non-title jobs embedded per pass (CPU bound)
-    adoption_semantic_max_extras: int = 150    # ADOPTION_SEMANTIC_MAX_EXTRAS — cap on off-title neighbours ADOPTED per user per pass. Every adopted row is a new rerank_score-NULL job the LLM scorer must pay for; without this cap the semantic pass could fill all ~400 slots per user per pass and flood the scoring queue (the Jul 15 overnight spend). 0 = title-only.
+    adoption_semantic_max_extras: int = 50     # ADOPTION_SEMANTIC_MAX_EXTRAS — cap on off-title neighbours ADOPTED per user per pass. Every adopted row is a new rerank_score-NULL job the LLM scorer must pay for; adoption passes repeat every few hours, so a small per-pass budget still surfaces the same jobs — just spread out. 0 = title-only.
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
     max_boards_per_run: int = 400         # cap on registry boards scraped per discovery run. Higher covers the ~56K registry faster but holds more jobs in memory per run; 400 balances coverage vs. the container memory limit (800 contributed to an OOM crash).
     # Wall-clock cap on the board phase (fetch + per-board DB work) of a

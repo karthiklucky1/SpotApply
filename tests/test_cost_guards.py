@@ -25,12 +25,16 @@ def _reset_guard_state():
     rr._provider_down_until.clear()
     rr._daily_finals["day"] = ""
     rr._daily_finals["count"] = 0
+    rr._hourly_finals["hour"] = ""
+    rr._hourly_finals["count"] = 0
     sl._fail_counts.clear()
     sl._deferred_until.clear()
     yield
     rr._provider_down_until.clear()
     rr._daily_finals["day"] = ""
     rr._daily_finals["count"] = 0
+    rr._hourly_finals["hour"] = ""
+    rr._hourly_finals["count"] = 0
     sl._fail_counts.clear()
     sl._deferred_until.clear()
 
@@ -239,7 +243,7 @@ def test_cycle_skips_when_budget_exhausted(monkeypatch):
     rr._daily_finals["day"] = datetime.utcnow().strftime("%Y-%m-%d")
     rr._daily_finals["count"] = 1
     stats = sl.run_scoring_lane()
-    assert stats.get("skipped") == "daily LLM budget reached"
+    assert stats.get("skipped") == "LLM budget reached (hourly/daily cap)"
 
 
 def test_global_cap_is_shared_fairly_round_robin(monkeypatch):
@@ -412,3 +416,74 @@ def test_prescore_prompt_resume_slice_crosses_openai_cache_minimum():
     assert "x" * 4000 in prompt
     assert "x" * 4001 not in prompt                  # still bounded (cheap tier)
     assert prompt.index("<resume>") == 0             # résumé leads → static prefix
+
+
+# ── Hourly smoothing cap ──────────────────────────────────────────────────────
+def test_hourly_cap_blocks_burst(monkeypatch):
+    monkeypatch.setattr(settings, "llm_daily_final_cap", 1000)
+    monkeypatch.setattr(settings, "llm_hourly_final_cap", 2)
+    rk = _reranker_with(True, False)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_score_anthropic", lambda rb, jb:
+                        '{"score": 80, "reason": "ok", "concerns": [], "breakdown": {}}')
+    assert rk.score("resume", _job())[0] == 80.0
+    assert rk.score("resume", _job())[0] == 80.0
+    assert rr.llm_budget_exhausted()                     # hourly cap hit, daily far away
+    with pytest.raises(RuntimeError, match="budget"):
+        rk.score("resume", _job())
+
+
+def test_hourly_cap_resets_next_hour(monkeypatch):
+    monkeypatch.setattr(settings, "llm_hourly_final_cap", 1)
+    rr._hourly_finals["hour"] = "1999-01-01 00"          # stale hour
+    rr._hourly_finals["count"] = 999
+    assert not rr.llm_budget_exhausted()
+
+
+def test_hourly_cap_disabled_when_zero(monkeypatch):
+    monkeypatch.setattr(settings, "llm_hourly_final_cap", 0)
+    monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
+    rr._hourly_finals["hour"] = datetime.utcnow().strftime("%Y-%m-%d %H")
+    rr._hourly_finals["count"] = 10**9
+    assert not rr.llm_budget_exhausted()
+
+
+# ── Daily-quota 429 trips the breaker ─────────────────────────────────────────
+_OPENAI_RPD_MSG = ("Error code: 429 - {'error': {'message': 'Rate limit reached for "
+                   "gpt-4o-mini in organization org-X on requests per day (RPD): "
+                   "Limit 10000, Used 10000, Requested 1.', 'type': 'requests', "
+                   "'code': 'rate_limit_exceeded'}}")
+
+
+def test_daily_quota_429_trips_breaker_in_score(monkeypatch):
+    rk = _reranker_with(True, True)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_score_openai", lambda rb, jb: (_ for _ in ()).throw(
+        RuntimeError(_OPENAI_RPD_MSG)))
+    monkeypatch.setattr(settings, "dual_score_enabled", False)
+    monkeypatch.setattr(rk, "_score_anthropic", lambda rb, jb:
+                        '{"score": 66, "reason": "ok", "concerns": [], "breakdown": {}}')
+    score, *_ = rk.score("resume", _job(), provider="openai")
+    assert score == 66.0                                 # Claude picked it up
+    assert not rr.provider_available("openai")           # RPD exhaustion = breaker trip
+
+
+def test_daily_quota_429_trips_breaker_in_prescore(monkeypatch):
+    rk = _reranker_with(anthropic=False, openai=True)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_prescore_openai", lambda prompt: (_ for _ in ()).throw(
+        RuntimeError(_OPENAI_RPD_MSG)))
+    assert rk.prescore("resume", _job()) is None
+    assert not rr.provider_available("openai")
+
+
+def test_transient_429_does_not_trip_breaker(monkeypatch):
+    rk = _reranker_with(True, True)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_score_anthropic", lambda rb, jb: (_ for _ in ()).throw(
+        RuntimeError("Error code: 429 - rate_limit_error: too many requests, retry shortly")))
+    monkeypatch.setattr(rk, "_score_openai", lambda rb, jb:
+                        '{"score": 55, "reason": "ok", "concerns": [], "breakdown": {}}')
+    score, *_ = rk.score("resume", _job(), provider="anthropic")
+    assert score == 55.0
+    assert rr.provider_available("anthropic")            # per-minute 429 = transient, no trip

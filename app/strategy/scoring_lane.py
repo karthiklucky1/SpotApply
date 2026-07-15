@@ -338,7 +338,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     if not any_provider_available():
         return {**stats, "skipped": "all LLM providers cooling down"}
     if llm_budget_exhausted():
-        return {**stats, "skipped": "daily LLM budget reached"}
+        return {**stats, "skipped": "LLM budget reached (hourly/daily cap)"}
 
     users = _scorable_user_ids()
     if not users:

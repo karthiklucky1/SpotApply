@@ -104,12 +104,15 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `top_k_rerank`, `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
 - **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
   OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);
-  daily Tier-2 cap `LLM_DAILY_FINAL_CAP` (5000); credit/quota circuit breaker
-  `LLM_PROVIDER_COOLDOWN_MINUTES` (30); per-job attempt ceiling defers repeat
-  failures (`SCORING_FAIL_MAX_ATTEMPTS`); résumé block padded past Haiku's
-  4096-token cache minimum so prompt caching actually engages; semantic adoption
-  bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS` (150/user/pass). Scoring-lane work
-  list is round-robin across users (fair + cache-friendly).
+  Tier-2 caps `LLM_DAILY_FINAL_CAP` (1500) + `LLM_HOURLY_FINAL_CAP` (150 —
+  smoothing; a backlog otherwise burst-drains a day's budget in <1h);
+  credit/quota circuit breaker `LLM_PROVIDER_COOLDOWN_MINUTES` (30) — trips on
+  billing errors AND daily-quota 429s ("requests per day"); per-job attempt
+  ceiling defers repeat failures (`SCORING_FAIL_MAX_ATTEMPTS`); résumé block
+  padded past Haiku's 4096-token cache minimum; cache telemetry logged every 25
+  finals ("Claude usage … cache-read share"); semantic adoption bounded by
+  `ADOPTION_SEMANTIC_MAX_EXTRAS` (50/user/pass). Scoring-lane work list is
+  round-robin across users (fair + cache-friendly).
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.
