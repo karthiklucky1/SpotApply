@@ -1,6 +1,6 @@
-# CLAUDE.md — HirePath
+# CLAUDE.md — SpotApply (formerly HirePath)
 
-AI job-application copilot. Discovers tech roles from ATS APIs/feeds, scores each
+AI job-application copilot (app.spotapply.ai). Discovers tech roles from ATS APIs/feeds, scores each
 against the user's résumé via a cascade, tailors résumé+cover letter (grounded), and
 auto-fills forms. **The human always reviews and clicks Submit** — never auto-submit.
 

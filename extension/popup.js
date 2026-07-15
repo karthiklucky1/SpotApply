@@ -1,6 +1,6 @@
-// popup.js — HirePath Extension Popup
+// popup.js — SpotApply Extension Popup
 
-const HIREPATH_URL = "https://hirepath.dev";
+const HIREPATH_URL = "https://app.spotapply.ai";
 
 function showStatus(msg, type) {
   const el = document.getElementById("status");
@@ -34,7 +34,7 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
 
   chrome.storage.local.get(["hirepath_fill_pack"], (data) => {
     if (!data.hirepath_fill_pack) {
-      showStatus("No job loaded. Go to HirePath and click Fill with Extension.", "err");
+      showStatus("No job loaded. Go to SpotApply and click Fill with Extension.", "err");
       btn.disabled = false;
       btn.textContent = "⚡ Fill This Form Now";
       return;
@@ -126,7 +126,7 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
             (d.fit.missing && d.fit.missing.length
               ? ` — missing: ${d.fit.missing.slice(0, 6).map(s => String(s).replace(/[<>&]/g, "")).join(", ")}` : "");
         } else {
-          fitEl.textContent = token ? "" : "Sign in to HirePath to see your keyword fit for this job.";
+          fitEl.textContent = token ? "" : "Sign in to SpotApply to see your keyword fit for this job.";
         }
         document.getElementById("check-result").style.display = "block";
       } catch (e) {
@@ -177,7 +177,7 @@ document.getElementById("btn-linkedin")?.addEventListener("click", () => {
       if (chrome.runtime.lastError || !res) {
         showLinkedInStatus("Open your LinkedIn profile (linkedin.com/in/...) and try again.", "err");
       } else if (res.ok) {
-        showLinkedInStatus("✅ Imported! Open your HirePath dashboard for suggestions.", "ok");
+        showLinkedInStatus("✅ Imported! Open your SpotApply dashboard for suggestions.", "ok");
       } else {
         showLinkedInStatus("⚠️ " + (res.error || "Import failed."), "err");
       }

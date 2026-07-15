@@ -1,6 +1,6 @@
 {
-  "name": "HirePath — AI Job Agent",
-  "short_name": "HirePath",
+  "name": "SpotApply — AI Job Agent",
+  "short_name": "SpotApply",
   "description": "AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards.",
   "start_url": "/dashboard",
   "display": "standalone",

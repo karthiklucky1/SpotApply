@@ -46,7 +46,7 @@ _GREENHOUSE_EMBED_RE = re.compile(r"greenhouse\.io/embed/job_app\?.*?token=(\d+)
 _LEVER_RE = re.compile(r"jobs\.(?:eu\.)?lever\.co/([^/]+)/([0-9a-f-]{36})", re.I)
 _ASHBY_RE = re.compile(r"jobs\.ashbyhq\.com/([^/]+)/([0-9a-f-]{36})", re.I)
 
-_UA = {"User-Agent": "Mozilla/5.0 (HirePath job-check; +https://hirepath.dev)"}
+_UA = {"User-Agent": "Mozilla/5.0 (SpotApply job-check; +https://app.spotapply.ai)"}
 
 
 def _days_ago(iso: str) -> Optional[int]:

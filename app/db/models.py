@@ -290,7 +290,7 @@ class UserProfile(SQLModel, table=True):
     account_type: str = "candidate"     # "candidate" | "recruiter" — drives role separation
     email_verified: bool = False
     phone_verified: bool = False
-    public_handle: Optional[str] = Field(default=None, index=True)   # hirepath.dev/u/<handle>
+    public_handle: Optional[str] = Field(default=None, index=True)   # app.spotapply.ai/u/<handle>
     # Work Readiness Passport — recruiter-facing "can they start?" answers
     availability: str = ""              # "Immediately" | "2 weeks" | "Interviewing" | "Not looking"
     open_to_relocation: bool = False

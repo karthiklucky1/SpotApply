@@ -125,7 +125,7 @@ def assess_profile(profile) -> WorkAuthFraming:
             # H-1B/cap-exempt framing is meaningless outside the US.
             return WorkAuthFraming(
                 False, "Requires visa sponsorship", True, True,
-                f"Requires visa sponsorship — HirePath prioritizes employers known "
+                f"Requires visa sponsorship — SpotApply prioritizes employers known "
                 f"to sponsor work visas in {_place}.",
                 "Not yet — I would require sponsorship", "Yes", True,
                 f"I'm targeting employers that sponsor work visas in {_place}.",

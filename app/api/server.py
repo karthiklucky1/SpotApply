@@ -3465,7 +3465,7 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
 
     # Add hirepath_url and auth_token so extension can save answers back
     from app.config import settings
-    # Use request.base_url so local dev hits 127.0.0.1:8000, prod hits hirepath.dev
+    # Use request.base_url so local dev hits 127.0.0.1:8000, prod hits app.spotapply.ai
     _base = str(request.base_url).rstrip("/")
     pack["hirepath_url"] = getattr(settings, "hirepath_url", None) or _base
     token = request.headers.get("Authorization", "").split(" ", 1)[-1]
@@ -3968,13 +3968,13 @@ def download_extension():
             for root, _, files in _os.walk(ext_dir):
                 for fname in sorted(files):
                     fpath = _os.path.join(root, fname)
-                    arcname = "hirepath-extension/" + _os.path.relpath(fpath, ext_dir)
+                    arcname = "spotapply-extension/" + _os.path.relpath(fpath, ext_dir)
                     zf.write(fpath, arcname)
         buf.seek(0)
         return StreamingResponse(
             buf,
             media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=hirepath-extension.zip"},
+            headers={"Content-Disposition": "attachment; filename=spotapply-extension.zip"},
         )
     except HTTPException:
         raise
@@ -4055,7 +4055,7 @@ def mark_as_rejected(application_id: int, request: Request) -> dict:
     return {"success": True, "application_id": application_id}
 
 
-# Phase 1.5 — outcome tracking. Candidates mark real outcomes so HirePath
+# Phase 1.5 — outcome tracking. Candidates mark real outcomes so SpotApply
 # learns which profiles actually get interviews/offers (not just matches).
 _OUTCOME_STATUSES = {
     "interviewing": ApplicationStatus.INTERVIEWING,
@@ -4112,7 +4112,7 @@ def mark_outcome(application_id: int, request: Request, outcome: str) -> dict:
 @app.get("/api/funnel")
 def application_funnel(request: Request) -> dict:
     """Outcome funnel for the signed-in user: applied -> interview -> offer ->
-    accepted, with conversion rates. The data that lets HirePath eventually
+    accepted, with conversion rates. The data that lets SpotApply eventually
     optimize for real hiring outcomes, not just match similarity."""
     uid = _get_user_id(request)
     if settings.use_supabase and not uid:
@@ -6179,7 +6179,7 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
 
 
 def _ensure_public_handle(profile, session) -> Optional[str]:
-    """Mint a stable, unique public handle (hirepath.dev/u/<handle>) once."""
+    """Mint a stable, unique public handle (app.spotapply.ai/u/<handle>) once."""
     from app.db.models import UserProfile
     if profile.public_handle:
         return profile.public_handle
@@ -7588,7 +7588,7 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
         else:
             # ── No existing application matched — import as a tracked one ────
             # These are real job-related emails (rejections, acknowledgements,
-            # interview invites) for jobs the user applied to OUTSIDE HirePath.
+            # interview invites) for jobs the user applied to OUTSIDE SpotApply.
             # We surface them in the dashboard tracker so nothing is lost.
             raw_company = (email.get("company_guess") or "").strip()
             if not raw_company:

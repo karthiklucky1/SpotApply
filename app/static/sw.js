@@ -1,5 +1,5 @@
-// HirePath Service Worker — offline shell + asset cache
-const CACHE = 'hirepatch-v1';
+// SpotApply Service Worker — offline shell + asset cache
+const CACHE = 'spotapply-v1';
 const SHELL = ['/login', '/'];
 
 self.addEventListener('install', e => {

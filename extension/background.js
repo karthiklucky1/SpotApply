@@ -1,4 +1,4 @@
-// HirePath Extension — Background Service Worker
+// SpotApply Extension — Background Service Worker
 
 // ── Session auth (token refresh) ─────────────────────────────────────────────
 // The fill pack carries a short-lived Supabase access token plus (from the
@@ -21,13 +21,13 @@ function stashAuth(pack) {
   delete pack.supabase_url;
   delete pack.supabase_anon_key;
   console.log(
-    "[HirePath BG] stashAuth — refresh_token:", !!auth.refresh_token,
+    "[SpotApply BG] stashAuth — refresh_token:", !!auth.refresh_token,
     "supabase_url:", !!auth.supabase_url, "access_token:", !!auth.access_token
   );
   if (!auth.refresh_token) {
     console.warn(
-      "[HirePath BG] No refresh token in pack — the access token can't be renewed " +
-      "when it expires. Ensure the HirePath dashboard is up to date and re-click Fill."
+      "[SpotApply BG] No refresh token in pack — the access token can't be renewed " +
+      "when it expires. Ensure the SpotApply dashboard is up to date and re-click Fill."
     );
   }
   if (!Object.keys(auth).length) return;
@@ -108,7 +108,7 @@ async function handleApiFetch(payload) {
   // Only attempt a refresh for calls that were actually authenticated.
   if (result.status === 401 && payload.token) {
     if (!auth.refresh_token || !auth.supabase_url || !auth.supabase_anon_key) {
-      console.warn("[HirePath BG] 401 but no refresh creds available — cannot renew token");
+      console.warn("[SpotApply BG] 401 but no refresh creds available — cannot renew token");
       result.refreshAvailable = false;
     } else {
       let newToken = await refreshAccessTokenOnce(auth);
@@ -120,10 +120,10 @@ async function handleApiFetch(payload) {
         if (newToken === token) newToken = null; // nothing actually changed
       }
       if (newToken) {
-        console.log("[HirePath BG] Access token refreshed — retrying request");
+        console.log("[SpotApply BG] Access token refreshed — retrying request");
         result = await doFetch(payload.url, payload.method, newToken, payload.body);
       } else {
-        console.warn("[HirePath BG] Token refresh failed (refresh token rejected/expired)");
+        console.warn("[SpotApply BG] Token refresh failed (refresh token rejected/expired)");
         result.refreshAvailable = true;
         result.refreshFailed = true;
       }
@@ -136,12 +136,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Popup sends FILL_JOB → send DO_FILL to the currently active tab
   if (msg.type === "FILL_JOB") {
-    console.log("[HirePath BG] FILL_JOB received from popup");
+    console.log("[SpotApply BG] FILL_JOB received from popup");
     stashAuth(msg.payload);
     chrome.storage.local.set({ hirepath_fill_pack: msg.payload, hirepath_auto_fill: false }, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0]) { sendResponse({ ok: false, error: "No active tab" }); return; }
-        console.log("[HirePath BG] Sending DO_FILL to tab", tabs[0].id, tabs[0].url);
+        console.log("[SpotApply BG] Sending DO_FILL to tab", tabs[0].id, tabs[0].url);
         chrome.tabs.sendMessage(tabs[0].id, { type: "DO_FILL", fillPack: msg.payload }, (res) => {
           sendResponse(res || { ok: true });
         });
@@ -153,7 +153,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Content script (on dashboard page) sends OPEN_AND_FILL → open job tab, then fill when loaded
   if (msg.type === "OPEN_AND_FILL") {
     const pack = msg.payload;
-    console.log("[HirePath BG] OPEN_AND_FILL received for:", pack?.job_title, pack?.apply_url);
+    console.log("[SpotApply BG] OPEN_AND_FILL received for:", pack?.job_title, pack?.apply_url);
     stashAuth(pack);
     // Store BOTH a one-shot auto_fill flag AND a persistent copilot session.
     // The copilot session (30-min window) lets autofill survive cross-domain
@@ -165,7 +165,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       hirepath_copilot_ts: Date.now(),
     }, () => {
       chrome.tabs.create({ url: pack.apply_url }, (tab) => {
-        console.log("[HirePath BG] Opened tab", tab.id, "for", pack.apply_url);
+        console.log("[SpotApply BG] Opened tab", tab.id, "for", pack.apply_url);
         sendResponse({ ok: true, tabId: tab.id });
       });
     });
@@ -174,7 +174,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "INIT_EXTENSION") {
     const pack = msg.payload;
-    console.log("[HirePath BG] INIT_EXTENSION received");
+    console.log("[SpotApply BG] INIT_EXTENSION received");
     stashAuth(pack);
     chrome.storage.local.set({
       hirepath_copilot_pack: pack,
@@ -188,24 +188,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "FORM_SUBMITTED") {
     const appId = msg.appId;
     const pack = msg.pack;
-    console.log("[HirePath BG] FORM_SUBMITTED received for app:", appId);
+    console.log("[SpotApply BG] FORM_SUBMITTED received for app:", appId);
     
     // 1. Send submit API call to the backend
-    const url = `${pack.hirepath_url || 'https://hirepath.dev'}/application/${appId}/submit`;
+    const url = `${pack.hirepath_url || 'https://app.spotapply.ai'}/application/${appId}/submit`;
     handleApiFetch({
       url: url,
       method: 'POST',
       token: pack.auth_token,
       body: {}
     }).then(result => {
-      console.log("[HirePath BG] Submit API result:", result);
+      console.log("[SpotApply BG] Submit API result:", result);
     });
 
     // 2. Broadcast DASHBOARD_REFRESH message to any dashboard tabs
     chrome.tabs.query({}, (tabs) => {
       (tabs || []).forEach(tab => {
-        if (tab.url && (tab.url.includes("hirepath.dev") || tab.url.includes("localhost") || tab.url.includes("127.0.0.1"))) {
-          console.log("[HirePath BG] Sending DASHBOARD_REFRESH to tab", tab.id);
+        if (tab.url && (tab.url.includes("app.spotapply.ai") || tab.url.includes("localhost") || tab.url.includes("127.0.0.1"))) {
+          console.log("[SpotApply BG] Sending DASHBOARD_REFRESH to tab", tab.id);
           chrome.tabs.sendMessage(tab.id, { type: "DASHBOARD_REFRESH", appId: appId }, () => {
             if (chrome.runtime.lastError) {
               // ignore
@@ -234,7 +234,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // NOTE: linkedin.com and indeed.com are deliberately NOT here — their native
 // apply flows pre-fill from the user's own account, and automating their pages
-// violates their terms (the USER'S account carries the ban risk). HirePath
+// violates their terms (the USER'S account carries the ban risk). SpotApply
 // opens those jobs and tracks them hands-off; when a posting redirects to a
 // company ATS (greenhouse/workday/…) the copilot fills there as normal.
 const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com/i;
@@ -249,7 +249,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     (data) => {
       const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack;
       if (!pack) {
-        console.log("[HirePath BG] Tab", tabId, "loaded but no pack in storage — skipping");
+        console.log("[SpotApply BG] Tab", tabId, "loaded but no pack in storage — skipping");
         return;
       }
 
@@ -262,16 +262,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       // This also covers the auto_fill same-host path when apply_url points
       // at them. The LinkedIn profile-import card is separate and unaffected.
       if (tabHost.includes("linkedin.com") || tabHost.includes("indeed.com")) {
-        console.log("[HirePath BG] LinkedIn/Indeed page — hands-off (native apply pre-fills)");
+        console.log("[SpotApply BG] LinkedIn/Indeed page — hands-off (native apply pre-fills)");
         return;
       }
 
       // Diagnostic dump
-      console.log("[HirePath BG] === Tab loaded:", tabId, tabHost, "===");
-      console.log("[HirePath BG]   auto_fill:", data.hirepath_auto_fill);
-      console.log("[HirePath BG]   copilot_pack:", !!data.hirepath_copilot_pack);
-      console.log("[HirePath BG]   copilot_ts:", data.hirepath_copilot_ts);
-      console.log("[HirePath BG]   ATS match:", ATS_HOSTS.test(tabHost));
+      console.log("[SpotApply BG] === Tab loaded:", tabId, tabHost, "===");
+      console.log("[SpotApply BG]   auto_fill:", data.hirepath_auto_fill);
+      console.log("[SpotApply BG]   copilot_pack:", !!data.hirepath_copilot_pack);
+      console.log("[SpotApply BG]   copilot_ts:", data.hirepath_copilot_ts);
+      console.log("[SpotApply BG]   ATS match:", ATS_HOSTS.test(tabHost));
 
       // Determine if this tab should receive DO_FILL:
       // 1. One-shot flag set when we opened the tab (exact host match OR known ATS)
@@ -296,19 +296,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         shouldFill = true;
       }
 
-      console.log("[HirePath BG]   shouldFill:", shouldFill, "freshSession:", freshSession);
+      console.log("[SpotApply BG]   shouldFill:", shouldFill, "freshSession:", freshSession);
 
       if (!shouldFill) return;
 
-      console.log("[HirePath BG] ▶ Tab", tabId, "matched — sending DO_FILL in 2s");
+      console.log("[SpotApply BG] ▶ Tab", tabId, "matched — sending DO_FILL in 2s");
       if (data.hirepath_auto_fill) chrome.storage.local.set({ hirepath_auto_fill: false });
 
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
           if (chrome.runtime.lastError) {
-            console.warn("[HirePath BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
+            console.warn("[SpotApply BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
           } else {
-            console.log("[HirePath BG] DO_FILL sent, response:", res);
+            console.log("[SpotApply BG] DO_FILL sent, response:", res);
           }
         });
       }, 2000);

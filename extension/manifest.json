@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "HirePath Autofill",
+  "name": "SpotApply Autofill",
   "version": "1.2.0",
-  "description": "Auto-fill job application forms with your HirePath profile. Works on Greenhouse, Lever, Ashby, LinkedIn, Indeed, Workday and more.",
+  "description": "Auto-fill job application forms with your SpotApply profile. Works on Greenhouse, Lever, Ashby, LinkedIn, Indeed, Workday and more.",
   "permissions": ["activeTab", "storage", "scripting", "tabs"],
   "host_permissions": [
     "*://*/*",
@@ -26,7 +26,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "HirePath Autofill"
+    "default_title": "SpotApply Autofill"
   },
   "icons": {
     "16": "icon16.png",

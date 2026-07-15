@@ -1,4 +1,4 @@
-// HirePath Extension — Content Script
+// SpotApply Extension — Content Script
 // Fills job application forms in the user's browser tab.
 
 // ── Frame gating ──────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ document.addEventListener('click', (e) => {
       const val = opt.textContent?.trim();
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
-        console.log('[HirePath] Learning dropdown field:', label, '->', val);
+        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         chromeCall(() => chrome.storage.local.get(['hirepath_copilot_pack', 'hirepath_fill_pack'], (data) => {
           const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
           if (pack && pack.hirepath_url && pack.auth_token) {
@@ -82,7 +82,7 @@ document.addEventListener('click', (e) => {
   if (btn) {
     const txt = (btn.textContent || btn.value || '').toLowerCase().trim();
     if (/next|continue|save.*continue|submit|agree|accept/i.test(txt)) {
-      console.log('[HirePath] User clicked next/continue button — clearing overlay and scheduling check');
+      console.log('[SpotApply] User clicked next/continue button — clearing overlay and scheduling check');
       removeOverlay();
       _resumeAttachedOnPage = null; // reset for next page
       
@@ -104,7 +104,7 @@ document.addEventListener('click', (e) => {
         ? form.querySelectorAll('input, textarea, select').length > 1
         : document.querySelectorAll('input[type="file"], textarea').length > 0;
       if (hasFields) {
-        console.log('[HirePath] Submit button click detected:', txt);
+        console.log('[SpotApply] Submit button click detected:', txt);
         handleFormSubmitted();
       }
     }
@@ -113,7 +113,7 @@ document.addEventListener('click', (e) => {
 
 // Also detect form submit events
 document.addEventListener('submit', (e) => {
-  console.log('[HirePath] Form submit event detected');
+  console.log('[SpotApply] Form submit event detected');
   handleFormSubmitted();
 }, { capture: true, passive: true });
 
@@ -126,20 +126,20 @@ function handleFormSubmitted() {
     const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
     if (pack && pack.app_id) {
       if (_submitReportedApps.has(pack.app_id)) {
-        console.log('[HirePath] Submission already reported for app:', pack.app_id);
+        console.log('[SpotApply] Submission already reported for app:', pack.app_id);
         return;
       }
       _submitReportedApps.add(pack.app_id);
-      console.log('[HirePath] Reporting form submission for app:', pack.app_id);
+      console.log('[SpotApply] Reporting form submission for app:', pack.app_id);
       chrome.runtime.sendMessage({
         type: 'FORM_SUBMITTED',
         appId: pack.app_id,
         pack: pack
       }, (res) => {
         if (chrome.runtime.lastError) {
-          console.warn('[HirePath] FORM_SUBMITTED error:', chrome.runtime.lastError.message);
+          console.warn('[SpotApply] FORM_SUBMITTED error:', chrome.runtime.lastError.message);
         } else {
-          console.log('[HirePath] FORM_SUBMITTED response:', res);
+          console.log('[SpotApply] FORM_SUBMITTED response:', res);
         }
       });
       // The application is done — end the copilot session so this pack can
@@ -162,7 +162,7 @@ function fillInput(el, value) {
 
   // Respect manual user edits — do not overwrite
   if (el.dataset.hirepathUserModified === 'true') {
-    console.log('[HirePath] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
+    console.log('[SpotApply] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
     return;
   }
   
@@ -204,7 +204,7 @@ function fillInput(el, value) {
   } catch (e) {
     // Fallback: direct assignment (works for most elements)
     try { el.value = value; } catch (_) {}
-    console.warn('[HirePath] fillInput fallback for:', el.tagName, el.name || el.id || '', e.message);
+    console.warn('[SpotApply] fillInput fallback for:', el.tagName, el.name || el.id || '', e.message);
   }
 
   // Dispatch events to notify React/Angular/Vue of the change
@@ -798,7 +798,7 @@ async function fillWorkdayDateWidget(container, side, info) {
   }
   if (info.month) await setWorkdayDateSection(wrap, 'Month', String(info.month).padStart(2, '0'));
   await setWorkdayDateSection(wrap, 'Year', info.year);
-  console.log('[HirePath] Filled Workday', side, 'date spinner:', info.month || '?', '/', info.year);
+  console.log('[SpotApply] Filled Workday', side, 'date spinner:', info.month || '?', '/', info.year);
   return true;
 }
 
@@ -1376,7 +1376,7 @@ async function fillUniversal(pack) {
 
     if (matched) {
       filled++;
-      console.log('[HirePath] Universal filled:', signals.slice(0, 60));
+      console.log('[SpotApply] Universal filled:', signals.slice(0, 60));
     }
   }
 
@@ -1404,7 +1404,7 @@ function observeField(el, pack) {
     // Don't save calendar date fields (excluding years of experience etc.)
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
 
-    console.log('[HirePath] Learning field:', label, '->', val.slice(0, 40));
+    console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
     apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
       question: label,
       answer: val,
@@ -1459,7 +1459,7 @@ async function recallFromMemory(root, pack) {
     // Stay quiet once we've already surfaced the expired-session notice — the
     // 401 here is just a downstream symptom of that, not a separate problem.
     if (!_authExpired) {
-      console.log('[HirePath] recall-answers: no data or endpoint not available');
+      console.log('[SpotApply] recall-answers: no data or endpoint not available');
     }
     return 0;
   }
@@ -1489,7 +1489,7 @@ async function recallFromMemory(root, pack) {
         continue;
       }
       fillInput(el, answer);
-      console.log('[HirePath] Recalled from memory:', sig.slice(0, 50), '->', answer.slice(0, 30));
+      console.log('[SpotApply] Recalled from memory:', sig.slice(0, 50), '->', answer.slice(0, 30));
       recalled++;
     }
   }
@@ -1517,26 +1517,26 @@ function notifyAuthExpired(token, res) {
   // shows the actionable cause (no need to open the service-worker console).
   if (res && res.refreshAvailable === false) {
     console.warn(
-      "[HirePath] Session expired AND the fill pack carried no refresh token, so " +
-      "the access token can't be renewed. The HirePath dashboard (server) must be " +
+      "[SpotApply] Session expired AND the fill pack carried no refresh token, so " +
+      "the access token can't be renewed. The SpotApply dashboard (server) must be " +
       "redeployed with refresh-token support; then click Fill again."
     );
   } else if (res && res.refreshFailed) {
     console.warn(
-      "[HirePath] Session expired and the refresh token was rejected (it likely " +
-      "expired too). Log in again on the HirePath dashboard, then click Fill."
+      "[SpotApply] Session expired and the refresh token was rejected (it likely " +
+      "expired too). Log in again on the SpotApply dashboard, then click Fill."
     );
   } else {
     console.warn(
-      "[HirePath] Session token expired (401). Pausing authed API calls. " +
-      "Re-trigger 'Fill' from the HirePath dashboard to refresh your session."
+      "[SpotApply] Session token expired (401). Pausing authed API calls. " +
+      "Re-trigger 'Fill' from the SpotApply dashboard to refresh your session."
     );
   }
   try {
     showOverlay(
-      "🔒 <b>HirePath session expired</b><br>" +
+      "🔒 <b>SpotApply session expired</b><br>" +
       "<small>Your login timed out, so saved answers & tailored-resume upload are paused. " +
-      "Go back to the HirePath dashboard and click <b>Fill</b> again to refresh — " +
+      "Go back to the SpotApply dashboard and click <b>Fill</b> again to refresh — " +
       "fields already filled on this page stay filled.</small>",
       [], true
     );
@@ -1571,7 +1571,7 @@ function apiFetch(url, method, token, body) {
             // the token, or the user logged back in), lift the expired latch so
             // resume upload / saved answers resume without a full re-Fill.
             if (out.ok && token && _authExpired) {
-              console.log('[HirePath] Authed call succeeded again — clearing expired-session latch');
+              console.log('[SpotApply] Authed call succeeded again — clearing expired-session latch');
               _authExpired = false;
               _expiredToken = null;
               try { removeOverlay(); } catch (e) {}
@@ -1624,9 +1624,9 @@ async function fillEssayQuestions(root, pack) {
       );
       if (res.ok && res.data) {
         answer = res.data.answer || null;
-        if (answer) console.log(`[HirePath] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
+        if (answer) console.log(`[SpotApply] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
       } else {
-        console.warn("[HirePath] answer-question failed:", res.error || res.status);
+        console.warn("[SpotApply] answer-question failed:", res.error || res.status);
       }
     }
 
@@ -1658,7 +1658,7 @@ function observeAnswer(ta, pack) {
     ta.removeEventListener('blur', handler);
     apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token,
       { question: q, answer: newVal, app_id: pack.app_id });
-    console.log('[HirePath] Saved answer for:', q);
+    console.log('[SpotApply] Saved answer for:', q);
   });
 }
 
@@ -1725,15 +1725,15 @@ async function attachResume(root, pack) {
     let reason, hint;
     if (status === 401) {
       reason = 'auth_expired';
-      hint = "Your HirePath login timed out. Open the dashboard, sign in, then click Fill again.";
+      hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
     } else if (status === 503) {
       reason = 'tailoring_failed';
-      hint = "Your tailored résumé isn't generated yet. Open this application on the HirePath dashboard, generate the résumé, then return here.";
+      hint = "Your tailored résumé isn't generated yet. Open this application on the SpotApply dashboard, generate the résumé, then return here.";
     } else {
       reason = 'fetch_failed';
-      hint = "Couldn't download your résumé from HirePath (network/server). I'll keep retrying — you can also attach it manually.";
+      hint = "Couldn't download your résumé from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
     }
-    console.warn("[HirePath] resume fetch failed:", status, res.error || '');
+    console.warn("[SpotApply] resume fetch failed:", status, res.error || '');
     showOverlay(
       `📎 Résumé not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
       [], true
@@ -1752,7 +1752,7 @@ async function attachResume(root, pack) {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     file = new File([bytes], filename, { type: mime });
   } catch (e) {
-    console.warn("[HirePath] resume decode failed:", e.message);
+    console.warn("[SpotApply] resume decode failed:", e.message);
     reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
     return false;
   }
@@ -1767,7 +1767,7 @@ async function attachResume(root, pack) {
       fi.dispatchEvent(new Event("change", { bubbles: true }));
       if (fi.files && fi.files.length) domSet = true;
     } catch (e) {
-      console.warn("[HirePath] Could not set file input:", e.message);
+      console.warn("[SpotApply] Could not set file input:", e.message);
     }
   }
   if (!domSet) {
@@ -1791,11 +1791,11 @@ async function attachResume(root, pack) {
     return false;
   })();
   if (registered) {
-    console.log("[HirePath] Attached tailored resume:", filename);
+    console.log("[SpotApply] Attached tailored resume:", filename);
     reportTelemetry(pack, 'resume_attached', {});
     return true;
   }
-  console.warn("[HirePath] Résumé set but the form didn't register it — asking user to attach manually.");
+  console.warn("[SpotApply] Résumé set but the form didn't register it — asking user to attach manually.");
   showResumeHint(filename);
   reportTelemetry(pack, 'resume_attach_failed', { reason: 'not_registered' });
   return false;
@@ -1830,14 +1830,14 @@ async function fillForm(fillPack) {
   // (If the posting redirects to a company ATS, the copilot fills there.)
   if (/(^|\.)(linkedin|indeed)\.com$/i.test(window.location.hostname)) {
     const site = /indeed/i.test(window.location.hostname) ? 'Indeed' : 'LinkedIn';
-    console.log(`[HirePath] ${site} page — staying hands-off (native apply pre-fills)`);
+    console.log(`[SpotApply] ${site} page — staying hands-off (native apply pre-fills)`);
     try {
       showOverlay(
         `💼 <b>${site} application</b><br>` +
         `<small>${site} fills your details from your ${site} account automatically — ` +
-        'just choose your resume and click through. HirePath stays hands-off here to ' +
+        'just choose your resume and click through. SpotApply stays hands-off here to ' +
         'keep your account safe, and will still track this application. If the job ' +
-        'redirects to a company site, HirePath auto-fills there as usual.</small>',
+        'redirects to a company site, SpotApply auto-fills there as usual.</small>',
         [], true
       );
     } catch (e) {}
@@ -1905,7 +1905,7 @@ async function runCopilotStep() {
   if (!_copilotActive || !_copilotPack) return;
   // Prevent re-entrant calls (MutationObserver can fire during fill)
   if (_fillingInProgress) {
-    console.log('[HirePath] runCopilotStep skipped — fill already in progress');
+    console.log('[SpotApply] runCopilotStep skipped — fill already in progress');
     return;
   }
   const pack = _copilotPack;
@@ -1938,10 +1938,10 @@ async function runCopilotStep() {
         const attached = await attachResume(document, pack);
         if (attached) _resumeAttachedOnPage = pageKey;
       } catch (e) {
-        console.warn('[HirePath] attachResume error:', e.message);
+        console.warn('[SpotApply] attachResume error:', e.message);
       }
     } else {
-      console.log('[HirePath] Resume already attached on this page, skipping');
+      console.log('[SpotApply] Resume already attached on this page, skipping');
     }
   } finally {
     _fillingInProgress = false;
@@ -1963,7 +1963,7 @@ async function fillCurrentPage(pack) {
     if (host.includes('greenhouse.io'))       platformFilled = await fillGreenhouse(pack);
     else if (host.includes('lever.co'))       platformFilled = await fillLever(pack);
     else if (host.includes('ashbyhq.com'))    platformFilled = await fillAshby(pack);
-    // linkedin.com intentionally absent — HirePath never automates LinkedIn (see fillForm guard)
+    // linkedin.com intentionally absent — SpotApply never automates LinkedIn (see fillForm guard)
     // indeed.com intentionally absent — same hands-off policy as LinkedIn (see fillForm guard)
     else if (host.includes('myworkdayjobs.com') || host.includes('workday.com'))
                                               platformFilled = await fillWorkday(pack);
@@ -1971,23 +1971,23 @@ async function fillCurrentPage(pack) {
     else if (host.includes('avature.net') || isAvaturePage()) platformFilled = await fillAvature(pack);
     else                                      platformFilled = await fillGeneric(pack);
   } catch (e) {
-    console.warn('[HirePath] platform fill error:', e.message);
+    console.warn('[SpotApply] platform fill error:', e.message);
   }
 
   // Step 2: Universal signal-based filler — catches anything platform handlers missed
   try {
     const universalCount = await fillUniversal(pack);
-    if (universalCount > 0) console.log('[HirePath] Universal filler filled', universalCount, 'additional fields');
+    if (universalCount > 0) console.log('[SpotApply] Universal filler filled', universalCount, 'additional fields');
   } catch (e) {
-    console.warn('[HirePath] universal fill error:', e.message);
+    console.warn('[SpotApply] universal fill error:', e.message);
   }
 
   // Step 3: Recall from cross-form memory (previously learned answers)
   try {
     const recalledCount = await recallFromMemory(document, pack);
-    if (recalledCount > 0) console.log('[HirePath] Recalled', recalledCount, 'fields from memory');
+    if (recalledCount > 0) console.log('[SpotApply] Recalled', recalledCount, 'fields from memory');
   } catch (e) {
-    console.warn('[HirePath] recall error:', e.message);
+    console.warn('[SpotApply] recall error:', e.message);
   }
 
   // Step 4: Fill essay questions via AI
@@ -2327,7 +2327,7 @@ function watchForFormAppearance() {
     if (location.href !== startUrl) {
       clearInterval(check);
       removeOverlay();
-      console.log('[HirePath] URL changed during login watch:', location.href);
+      console.log('[SpotApply] URL changed during login watch:', location.href);
       // Re-read fresh pack from storage (timestamp was refreshed on load)
       chromeCall(() => chrome.storage.local.get(
         ['hirepath_fill_pack', 'hirepath_copilot_pack'],
@@ -2345,7 +2345,7 @@ function watchForFormAppearance() {
     if (!isLoginWall() && !isCaptcha()) {
       clearInterval(check);
       removeOverlay();
-      console.log('[HirePath] Login/captcha cleared — resuming copilot');
+      console.log('[SpotApply] Login/captcha cleared — resuming copilot');
       setTimeout(() => runCopilotStep(), 1000);
     }
   }, 1500);
@@ -2366,7 +2366,7 @@ function findAndClickApply(pack) {
   const chooser = clickables.find(el => /apply\s*manually/i.test(labelOf(el)));
   if (chooser) {
     chooser.click();
-    console.log('[HirePath] Clicked "Apply Manually" (Workday chooser)');
+    console.log('[SpotApply] Clicked "Apply Manually" (Workday chooser)');
     showOverlay('🖱️ Starting application…<br><small style="color:#94a3b8">If a sign-in appears, log in — I\'ll resume.</small>', [], false);
     watchForFormAppearance();
     return true;
@@ -2393,7 +2393,7 @@ function findAndClickApply(pack) {
 
   if (candidates.length > 0) {
     candidates[0].click();
-    console.log('[HirePath] Clicked Apply button:', labelOf(candidates[0]));
+    console.log('[SpotApply] Clicked Apply button:', labelOf(candidates[0]));
     showOverlay('🖱️ Clicked <strong>Apply</strong>. Waiting for the form to load…', [], false);
     watchForFormAppearance();
     return true;
@@ -2436,7 +2436,7 @@ function showBanner(msg) {
 function chromeCall(fn) {
   try { return fn(); } catch (e) {
     if (e?.message?.includes('Extension context invalidated')) {
-      console.warn('[HirePath] Extension was reloaded — please refresh this tab.');
+      console.warn('[SpotApply] Extension was reloaded — please refresh this tab.');
       
       // Close any open loading modals or overlays to prevent stuck states
       document.getElementById('hp-email-scanner-modal')?.remove();
@@ -2502,7 +2502,7 @@ function chromeCall(fn) {
         banner.querySelector('[data-hp-reload]')?.addEventListener('click', () => window.location.reload());
       }
     } else {
-      console.error('[HirePath]', e);
+      console.error('[SpotApply]', e);
     }
   }
 }
@@ -2511,12 +2511,12 @@ function chromeCall(fn) {
 
 chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'DO_FILL') {
-    console.log('[HirePath] DO_FILL received, starting copilot for:', msg.fillPack?.job_title);
+    console.log('[SpotApply] DO_FILL received, starting copilot for:', msg.fillPack?.job_title);
     fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (msg.type === 'DASHBOARD_REFRESH') {
-    console.log('[HirePath] DASHBOARD_REFRESH received, clearing pending apply and reloading dashboard page');
+    console.log('[SpotApply] DASHBOARD_REFRESH received, clearing pending apply and reloading dashboard page');
     try {
       localStorage.removeItem('hp_pending_apply');
     } catch (_) {}
@@ -2527,7 +2527,7 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
 }));
 
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
-// Only the HirePath dashboard may drive the extension. This content script
+// Only the SpotApply dashboard may drive the extension. This content script
 // runs on every site, so without these checks ANY page could post
 // HIREPATH_INIT_EXTENSION with attacker-controlled auth endpoints or force
 // tabs open via HIREPATH_LOAD_PACK.
@@ -2537,40 +2537,40 @@ window.addEventListener('message', (e) => {
   if (e.source !== window) return;
   if (!_DASHBOARD_ORIGIN_RE.test(e.origin || '')) return;
   if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
-    console.log('[HirePath] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
+    console.log('[SpotApply] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
     // Test extension context first with a PING
     let ctxOk = false;
     try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
     if (!ctxOk) {
-      console.warn('[HirePath] Extension context invalidated');
+      console.warn('[SpotApply] Extension context invalidated');
       window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
       return;
     }
     try {
       chrome.runtime.sendMessage({ type: 'OPEN_AND_FILL', payload: e.data.pack }, (res) => {
         if (chrome.runtime.lastError) {
-          console.warn('[HirePath] Background error:', chrome.runtime.lastError.message);
+          console.warn('[SpotApply] Background error:', chrome.runtime.lastError.message);
           window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
         } else {
-          console.log('[HirePath] Background opened tab, sending ACK to dashboard');
+          console.log('[SpotApply] Background opened tab, sending ACK to dashboard');
           window.postMessage({ type: 'HIREPATH_EXT_ACK' }, '*');
         }
       });
     } catch (err) {
-      console.warn('[HirePath] Extension context error:', err.message);
+      console.warn('[SpotApply] Extension context error:', err.message);
       window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
     }
   }
 
   if (e.data?.type === 'HIREPATH_INIT_EXTENSION' && e.data?.pack) {
-    console.log('[HirePath] Received HIREPATH_INIT_EXTENSION from dashboard, initializing background');
+    console.log('[SpotApply] Received HIREPATH_INIT_EXTENSION from dashboard, initializing background');
     let ctxOk = false;
     try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
     if (!ctxOk) return;
     try {
       chrome.runtime.sendMessage({ type: 'INIT_EXTENSION', payload: e.data.pack });
     } catch (err) {
-      console.warn('[HirePath] Extension init error:', err.message);
+      console.warn('[SpotApply] Extension init error:', err.message);
     }
   }
 });
@@ -2581,14 +2581,14 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
   (data) => {
     const host = window.location.hostname;
     const onDashboard = /hirepath\.dev$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
-    if (onDashboard) { console.log('[HirePath] On dashboard — skipping auto-fill'); return; }
+    if (onDashboard) { console.log('[SpotApply] On dashboard — skipping auto-fill'); return; }
 
     // LinkedIn + Indeed: hands-off on EVERY page. Their native apply flows
     // pre-fill from the user's own account, and automating their pages
     // violates their terms — the user's account carries the ban risk. The
     // LinkedIn profile-import card (separate module) is unaffected.
     if (host.includes('linkedin.com') || host.includes('indeed.com')) {
-      console.log('[HirePath] LinkedIn/Indeed — staying hands-off (native apply pre-fills)');
+      console.log('[SpotApply] LinkedIn/Indeed — staying hands-off (native apply pre-fills)');
       return;
     }
 
@@ -2604,12 +2604,12 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
     const hasPackOnATS = pack && atsMatch && freshSession;
 
     // ── Diagnostic dump ──
-    console.log('[HirePath] === Storage state on', host, '===');
-    console.log('[HirePath]   auto_fill:', data.hirepath_auto_fill);
-    console.log('[HirePath]   fill_pack:', data.hirepath_fill_pack ? 'YES (' + (data.hirepath_fill_pack.job_title || 'no title') + ')' : 'null');
-    console.log('[HirePath]   copilot_pack:', data.hirepath_copilot_pack ? 'YES (' + (data.hirepath_copilot_pack.job_title || 'no title') + ')' : 'null');
-    console.log('[HirePath]   copilot_ts:', ts, ts ? '(age: ' + Math.round(sessionAge/1000) + 's)' : '(none)');
-    console.log('[HirePath]   freshSession:', freshSession, '| isKnownATS:', atsMatch, '| hasPackOnATS:', hasPackOnATS);
+    console.log('[SpotApply] === Storage state on', host, '===');
+    console.log('[SpotApply]   auto_fill:', data.hirepath_auto_fill);
+    console.log('[SpotApply]   fill_pack:', data.hirepath_fill_pack ? 'YES (' + (data.hirepath_fill_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[SpotApply]   copilot_pack:', data.hirepath_copilot_pack ? 'YES (' + (data.hirepath_copilot_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[SpotApply]   copilot_ts:', ts, ts ? '(age: ' + Math.round(sessionAge/1000) + 's)' : '(none)');
+    console.log('[SpotApply]   freshSession:', freshSession, '| isKnownATS:', atsMatch, '| hasPackOnATS:', hasPackOnATS);
 
     // Refresh the copilot timestamp on ATS page loads so the session survives
     // multi-page login flows (Workday SSO, OAuth) — but only while the session
@@ -2621,7 +2621,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
       // A session that HAD a timestamp and expired — drop the stale pack so it
       // can't fill a different job. (A freshly opened tab carries the one-shot
       // auto_fill flag and possibly no timestamp yet; leave that alone.)
-      console.log('[HirePath] Copilot session expired — clearing stale pack');
+      console.log('[SpotApply] Copilot session expired — clearing stale pack');
       chromeCall(() => chrome.storage.local.remove(
         ['hirepath_copilot_pack', 'hirepath_copilot_ts', 'hirepath_fill_pack']));
       return;
@@ -2629,7 +2629,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
 
     // One-shot auto_fill flag (set by background when opening a new tab)
     if (data.hirepath_auto_fill && pack) {
-      console.log('[HirePath] ▶ Auto-fill flag — starting copilot');
+      console.log('[SpotApply] ▶ Auto-fill flag — starting copilot');
       chrome.storage.local.set({ hirepath_auto_fill: false });
       setTimeout(() => fillForm(pack), 800);
       return;
@@ -2637,7 +2637,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
 
     // Persistent copilot session — survives cross-domain hops and page reloads
     if (freshSession || hasPackOnATS) {
-      console.log('[HirePath] ▶ Copilot session active, checking page…');
+      console.log('[SpotApply] ▶ Copilot session active, checking page…');
 
       // On login/auth pages, skip straight to watching for form appearance.
       // This handles Workday SSO redirects where the page isn't actionable yet
@@ -2648,7 +2648,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
         // If this is a login wall or auth gateway, start the copilot in
         // login-wait mode immediately (don't waste time checking for forms)
         if (isLoginWall()) {
-          console.log('[HirePath] Login wall detected — waiting for user to log in');
+          console.log('[SpotApply] Login wall detected — waiting for user to log in');
           _copilotActive = true;
           _copilotPack = pack;
           showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
@@ -2657,20 +2657,20 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
         }
 
         if (isActionablePage()) {
-          console.log('[HirePath] Actionable page — resuming copilot');
+          console.log('[SpotApply] Actionable page — resuming copilot');
           fillForm(pack);
         } else {
           // Maybe a SPA that needs more time (e.g. Workday loading)
           setTimeout(() => {
             if (_copilotActive) return;
             if (isLoginWall()) {
-              console.log('[HirePath] Login wall appeared — waiting for user');
+              console.log('[SpotApply] Login wall appeared — waiting for user');
               _copilotActive = true;
               _copilotPack = pack;
               showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
               watchForFormAppearance();
             } else if (isActionablePage()) {
-              console.log('[HirePath] Page became actionable — resuming copilot');
+              console.log('[SpotApply] Page became actionable — resuming copilot');
               fillForm(pack);
             }
             // else: not a job/application page — do nothing. We must NOT pop up
@@ -2683,7 +2683,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
       return;
     }
 
-    console.log('[HirePath] ▶ No active session — showing fill button if actionable');
+    console.log('[SpotApply] ▶ No active session — showing fill button if actionable');
     // Show floating button on any job/form page so user can trigger manually
     // (the button itself reads fresh data from storage on click)
     setTimeout(() => {
@@ -2706,7 +2706,7 @@ function injectFillButton() {
   chromeCall(() => chrome.storage.local.get(['hirepath_dismissed'], (d) => {
     const dismissed = d.hirepath_dismissed || {};
     if (dismissed[_h]) {
-      console.log('[HirePath] Fill button dismissed for', _h, '— not showing');
+      console.log('[SpotApply] Fill button dismissed for', _h, '— not showing');
       return;
     }
     _renderFillButton(_h);
@@ -2726,7 +2726,7 @@ function _renderFillButton(host) {
   });
 
   const fill = document.createElement('button');
-  fill.textContent = '⚡ Fill with HirePath';
+  fill.textContent = '⚡ Fill with SpotApply';
   Object.assign(fill.style, {
     padding: '12px 14px 12px 18px', border: 'none', cursor: 'pointer',
     background: 'transparent', color: '#fff', fontSize: '13px', fontWeight: '700',
@@ -2763,11 +2763,11 @@ function _renderFillButton(host) {
           document.querySelectorAll('input, textarea, select').forEach(el => {
             delete el.dataset.hirepathUserModified;
           });
-          console.log('[HirePath] Fill button clicked — starting copilot with fresh pack');
+          console.log('[SpotApply] Fill button clicked — starting copilot with fresh pack');
           fillForm(freshPack);
         } else {
           showOverlay(
-            '⚠️ No job loaded yet.<br><small style="color:#c4b5fd;font-weight:400">Go to your <b>HirePath dashboard</b>, find the job, and click <b>Auto Fill</b>. HirePath will open the application here and fill it automatically.</small>',
+            '⚠️ No job loaded yet.<br><small style="color:#c4b5fd;font-weight:400">Go to your <b>SpotApply dashboard</b>, find the job, and click <b>Auto Fill</b>. SpotApply will open the application here and fill it automatically.</small>',
             [], true
           );
         }
@@ -2789,7 +2789,7 @@ function isKnownATS() {
 }
 
 // Everyday sites where the fill UI must NEVER appear. Prevents the "Fill with
-// HirePath" button from popping up on Google, YouTube, social media, etc.
+// SpotApply" button from popping up on Google, YouTube, social media, etc.
 const _BLOCKED_HOST_PARTS = [
   'google.', 'youtube.', 'gmail.', 'facebook.', 'instagram.', 'twitter.',
   'x.com', 'reddit.', 'netflix.', 'spotify.', 'tiktok.', 'wikipedia.',
@@ -2820,7 +2820,7 @@ function isActionablePage() {
     || _host === 'outlook.office365.com';
   if (!_isGmail && !_isOutlook) return;
 
-  console.log('[HirePath] Email scanner activated on', _host, '· extension v1.1.1 (paginated scan)');
+  console.log('[SpotApply] Email scanner activated on', _host, '· extension v1.1.1 (paginated scan)');
 
   // ── Job-related keyword filter ────────────────────────────────────────────
   const _JOB_KEYWORDS = /application|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent/i;
@@ -3108,7 +3108,7 @@ function isActionablePage() {
     function scrapePage() {
       let reachedCutoff = false;
       const rows = document.querySelectorAll('div[role="main"] tr.zA, table.F tr');
-      console.log(`[HirePath] Gmail scraper: found ${rows.length} email rows on page`);
+      console.log(`[SpotApply] Gmail scraper: found ${rows.length} email rows on page`);
 
       rows.forEach(row => {
         try {
@@ -3157,7 +3157,7 @@ function isActionablePage() {
             company_guess: guessCompany(senderEmail, senderName),
           });
         } catch (e) {
-          console.warn('[HirePath] Gmail row parse error:', e);
+          console.warn('[SpotApply] Gmail row parse error:', e);
         }
       });
       return reachedCutoff;
@@ -3201,13 +3201,13 @@ function isActionablePage() {
     for (let page = 0; page < MAX_PAGES; page++) {
       const reachedCutoff = scrapePage();
       if (reachedCutoff) {
-        console.log('[HirePath] Gmail scraper: reached cutoff date — stopping pagination');
+        console.log('[SpotApply] Gmail scraper: reached cutoff date — stopping pagination');
         break;
       }
 
       const older = getOlderButton();
       if (!older) {
-        console.log('[HirePath] Gmail scraper: no Older button — last page reached');
+        console.log('[SpotApply] Gmail scraper: no Older button — last page reached');
         break;
       }
 
@@ -3222,14 +3222,14 @@ function isActionablePage() {
         if (now && now !== rangeBefore) { advanced = true; break; }
       }
       if (!advanced) {
-        console.log(`[HirePath] Gmail scraper: page did not advance (range "${rangeBefore}") — stopping`);
+        console.log(`[SpotApply] Gmail scraper: page did not advance (range "${rangeBefore}") — stopping`);
         break;
       }
       // Settle delay so the new rows fully paint before scraping.
       await new Promise(r => setTimeout(r, 400));
     }
 
-    console.log(`[HirePath] Gmail scraper: collected ${results.length} job emails across pages`);
+    console.log(`[SpotApply] Gmail scraper: collected ${results.length} job emails across pages`);
     return results;
   }
 
@@ -3243,7 +3243,7 @@ function isActionablePage() {
     const items = document.querySelectorAll(
       'div[role="listbox"] div[role="option"], div.customScrollBar div[data-convid]'
     );
-    console.log(`[HirePath] Outlook scraper: found ${items.length} email items`);
+    console.log(`[SpotApply] Outlook scraper: found ${items.length} email items`);
 
     items.forEach(item => {
       try {
@@ -3297,7 +3297,7 @@ function isActionablePage() {
           company_guess: guessCompany(senderEmail, senderName),
         });
       } catch (e) {
-        console.warn('[HirePath] Outlook item parse error:', e);
+        console.warn('[SpotApply] Outlook item parse error:', e);
       }
     });
 
@@ -3323,7 +3323,7 @@ function isActionablePage() {
   async function executeScan(dayRange) {
     const scraper = _isGmail ? scrapeGmailEmails : scrapeOutlookEmails;
     const emails = await scraper(dayRange);
-    console.log(`[HirePath] Scan complete: ${emails.length} job emails found`);
+    console.log(`[SpotApply] Scan complete: ${emails.length} job emails found`);
 
     if (emails.length === 0) {
       showScannerToast(
@@ -3334,37 +3334,37 @@ function isActionablePage() {
       return;
     }
 
-    console.log('[HirePath] executeScan: emails found > 0, getting storage...');
+    console.log('[SpotApply] executeScan: emails found > 0, getting storage...');
     // POST to backend
     return new Promise((resolve) => {
       chromeCall(() => {
-        console.log('[HirePath] executeScan: calling chrome.storage.local.get');
+        console.log('[SpotApply] executeScan: calling chrome.storage.local.get');
         chrome.storage.local.get(
           ['hirepath_copilot_pack', 'hirepath_fill_pack'],
           async (data) => {
-            console.log('[HirePath] executeScan: storage data received:', data);
+            console.log('[SpotApply] executeScan: storage data received:', data);
             const pack = data?.hirepath_copilot_pack || data?.hirepath_fill_pack;
             if (!pack || !pack.hirepath_url) {
-              console.log('[HirePath] executeScan: no active pack/connection found in storage.');
+              console.log('[SpotApply] executeScan: no active pack/connection found in storage.');
               showScannerToast(
                 '<span style="color:#ef4444;font-weight:700">⚠️ Not connected</span>' +
-                '<br><span style="color:#94a3b8;font-size:11px">Open your HirePath dashboard first to connect.</span>',
+                '<br><span style="color:#94a3b8;font-size:11px">Open your SpotApply dashboard first to connect.</span>',
                 6000
               );
               resolve(false);
               return;
             }
 
-            console.log('[HirePath] executeScan: active pack found, URL:', pack.hirepath_url);
+            console.log('[SpotApply] executeScan: active pack found, URL:', pack.hirepath_url);
             try {
-              console.log('[HirePath] executeScan: sending apiFetch POST to /api/sync-emails');
+              console.log('[SpotApply] executeScan: sending apiFetch POST to /api/sync-emails');
               const res = await apiFetch(
                 `${pack.hirepath_url}/api/sync-emails`,
                 'POST',
                 pack.auth_token,
                 { emails, source: _isGmail ? 'gmail' : 'outlook', day_range: dayRange }
               );
-              console.log('[HirePath] executeScan: apiFetch response:', res);
+              console.log('[SpotApply] executeScan: apiFetch response:', res);
 
               const stats = classifyResults(emails);
               const d = (res && res.data) || {};
@@ -3381,7 +3381,7 @@ function isActionablePage() {
                   `${tracked} now tracked in your dashboard · ` +
                   `${rej} rejection${rej !== 1 ? 's' : ''}, ` +
                   `${intv} interview signal${intv !== 1 ? 's' : ''}.</span>` +
-                  `<br><span style="color:#a5b4fc;font-size:11px">Open your HirePath dashboard to review them.</span>`,
+                  `<br><span style="color:#a5b4fc;font-size:11px">Open your SpotApply dashboard to review them.</span>`,
                   9000
                 );
               } else {
@@ -3393,7 +3393,7 @@ function isActionablePage() {
               }
               resolve(res?.ok || false);
             } catch (err) {
-              console.error('[HirePath] Email sync error:', err);
+              console.error('[SpotApply] Email sync error:', err);
               showScannerToast(
                 '<span style="color:#ef4444;font-weight:700">❌ Sync error</span>' +
                 `<br><span style="color:#94a3b8;font-size:11px">${err.message || 'Network error'}</span>`,
@@ -3478,7 +3478,7 @@ function isActionablePage() {
     btn.innerHTML = '<span class="hp-icon">✉️</span> Sync Job Emails';
     btn.addEventListener('click', showScannerModal);
     document.body.appendChild(btn);
-    console.log('[HirePath] Email sync button injected');
+    console.log('[SpotApply] Email sync button injected');
   }
 
   // ── Init: wait for DOM to be ready, then inject ───────────────────────────
@@ -3528,7 +3528,7 @@ function isActionablePage() {
         async (data) => {
           const pack = data?.hirepath_copilot_pack || data?.hirepath_fill_pack;
           if (!pack || !pack.hirepath_url) {
-            resolve({ ok: false, error: 'Not connected. Open your HirePath dashboard first, then try again.' });
+            resolve({ ok: false, error: 'Not connected. Open your SpotApply dashboard first, then try again.' });
             return;
           }
           try {
@@ -3541,7 +3541,7 @@ function isActionablePage() {
             if (res && res.ok) {
               resolve({ ok: true, recommendations: (res.data && res.data.recommendations) || '' });
             } else if (res && res.status === 401) {
-              resolve({ ok: false, error: 'Session expired. Open your HirePath dashboard to sign in, then try again.' });
+              resolve({ ok: false, error: 'Session expired. Open your SpotApply dashboard to sign in, then try again.' });
             } else {
               resolve({ ok: false, error: (res && (res.error || (res.data && res.data.detail))) || 'Import failed. Please try again.' });
             }
@@ -3570,7 +3570,7 @@ function isActionablePage() {
     const res = await importProfile();
     btn.disabled = false;
     btn.textContent = label;
-    if (res.ok) setStatus(status, '✅ Imported! Open your HirePath dashboard for suggestions.', true);
+    if (res.ok) setStatus(status, '✅ Imported! Open your SpotApply dashboard for suggestions.', true);
     else setStatus(status, '⚠️ ' + res.error, false);
   }
 
@@ -3588,11 +3588,11 @@ function isActionablePage() {
     card.innerHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
         '<span style="font-size:16px">💼</span>' +
-        '<span style="font-weight:800;font-size:13px">Import to HirePath</span>' +
+        '<span style="font-weight:800;font-size:13px">Import to SpotApply</span>' +
         '<button data-hp-close style="margin-left:auto;background:none;border:none;color:#64748b;cursor:pointer;font-size:14px">✕</button>' +
       '</div>' +
       '<div style="font-size:11px;color:#94a3b8;line-height:1.4;margin-bottom:10px">' +
-        'Import <b>your own</b> profile so HirePath can tailor résumés and cover letters more accurately.' +
+        'Import <b>your own</b> profile so SpotApply can tailor résumés and cover letters more accurately.' +
       '</div>' +
       '<button data-hp-import style="display:block;width:100%;padding:10px 14px;border:none;border-radius:10px;font-weight:800;font-size:12px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#4f46e5,#7c3aed)">⚡ Import my LinkedIn profile</button>' +
       '<div data-hp-status style="display:none;font-size:11px;text-align:center;margin-top:8px;line-height:1.4"></div>';

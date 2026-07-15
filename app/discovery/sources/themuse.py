@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 _API_URL = "https://www.themuse.com/api/public/jobs"
 # The Muse's own category taxonomy — request ALL major sectors, not just tech, so
 # the keyword filter below (the user's real roles) decides what's relevant. This
-# is what makes HirePath work for non-software candidates out of the box.
+# is what makes SpotApply work for non-software candidates out of the box.
 _CATEGORIES = [
     "Software Engineering", "Data Science", "Data and Analytics", "IT",
     "Engineering", "Science and Engineering", "Design and UX", "Product",
