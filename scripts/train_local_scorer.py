@@ -44,29 +44,50 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--val-frac", type=float, default=0.1)
+    ap.add_argument("--eval-only", action="store_true",
+                    help="skip training; evaluate the model already saved at --out")
     args = ap.parse_args()
-
-    from sentence_transformers import CrossEncoder, InputExample
-    from torch.utils.data import DataLoader
 
     rows = load_rows(args.data)
     n_val = max(50, int(len(rows) * args.val_frac))
     val, train = rows[:n_val], rows[n_val:]
     print(f"{len(train)} train / {len(val)} val examples")
 
-    train_samples = [InputExample(texts=list(build_pair(r)), label=float(r["score"]) / 100.0)
-                     for r in train]
-    model = CrossEncoder(args.base, num_labels=1, max_length=512)
-    model.fit(
-        train_dataloader=DataLoader(train_samples, shuffle=True, batch_size=args.batch),
-        epochs=args.epochs,
-        warmup_steps=int(0.1 * len(train_samples) / args.batch),
-    )
-    model.save(args.out)
-    print(f"saved → {args.out}")
+    if not args.eval_only:
+        from sentence_transformers import CrossEncoder, InputExample
+        from torch.utils.data import DataLoader
 
-    # Validation: MAE + within-10 agreement against the LLM teacher.
-    preds = model.predict([build_pair(r) for r in val]) * 100.0
+        train_samples = [InputExample(texts=list(build_pair(r)), label=float(r["score"]) / 100.0)
+                         for r in train]
+        model = CrossEncoder(args.base, num_labels=1, max_length=512)
+        model.fit(
+            train_dataloader=DataLoader(train_samples, shuffle=True, batch_size=args.batch),
+            epochs=args.epochs,
+            warmup_steps=int(0.1 * len(train_samples) / args.batch),
+        )
+        model.save(args.out)
+        print(f"saved → {args.out}")
+
+    # Validation: MAE + within-10 vs the LLM teacher — through the SAME
+    # transformers+explicit-sigmoid path production inference uses
+    # (app/matching/local_scorer.py). The CrossEncoder wrapper's predict()
+    # activation varies across sentence-transformers versions (raw logits vs
+    # sigmoid), which once produced an impossible MAE=117 — never eval through it.
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tok = AutoTokenizer.from_pretrained(args.out)
+    eval_model = AutoModelForSequenceClassification.from_pretrained(args.out).eval().to(device)
+    preds: list[float] = []
+    with torch.no_grad():
+        for i in range(0, len(val), 64):
+            batch = [build_pair(r) for r in val[i:i + 64]]
+            enc = tok([a for a, _ in batch], [b for _, b in batch], truncation=True,
+                      max_length=512, padding=True, return_tensors="pt").to(device)
+            logits = eval_model(**enc).logits.squeeze(-1)
+            preds.extend((torch.sigmoid(logits) * 100.0).tolist())
+
     errs = [abs(float(p) - float(r["score"])) for p, r in zip(preds, val)]
     mae = sum(errs) / len(errs)
     within10 = 100.0 * sum(1 for e in errs if e <= 10) / len(errs)

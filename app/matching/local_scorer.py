@@ -67,6 +67,7 @@ class LocalScorer:
 
     def __init__(self):
         self._model = None
+        self._tokenizer = None
         self._load_failed = False
         self._load_lock = threading.Lock()
 
@@ -99,8 +100,17 @@ class LocalScorer:
                 self._load_failed = True
                 return False
             try:
-                from sentence_transformers import CrossEncoder
-                self._model = CrossEncoder(source, max_length=512)
+                # Plain transformers (not the CrossEncoder wrapper): the wrapper's
+                # predict() activation defaults vary across sentence-transformers
+                # versions (raw logits vs sigmoid — the exact bug that produced an
+                # impossible MAE=117 on the first training run). Owning the sigmoid
+                # explicitly makes the score scale version-proof, and training-side
+                # evaluation (scripts/train_local_scorer.py) uses this same path.
+                from transformers import (
+                    AutoModelForSequenceClassification, AutoTokenizer,
+                )
+                self._tokenizer = AutoTokenizer.from_pretrained(source)
+                self._model = AutoModelForSequenceClassification.from_pretrained(source).eval()
                 log.info("LocalScorer: loaded distilled model from %s", source)
                 return True
             except Exception as e:
@@ -113,9 +123,13 @@ class LocalScorer:
         if not self._ensure_loaded():
             return None
         try:
-            pair = build_pair(resume_text, job)
-            raw = float(self._model.predict([pair])[0])
-            return max(0.0, min(100.0, raw * 100.0))
+            import torch
+            a, b = build_pair(resume_text, job)
+            enc = self._tokenizer(a, text_pair=b, truncation=True,
+                                  max_length=512, return_tensors="pt")
+            with torch.no_grad():
+                logit = self._model(**enc).logits.view(-1)[0]
+            return float(torch.sigmoid(logit)) * 100.0
         except Exception as e:
             log.debug("LocalScorer: predict failed for job %s: %s", getattr(job, "id", "?"), e)
             return None
