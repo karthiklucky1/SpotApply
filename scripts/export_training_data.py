@@ -54,11 +54,43 @@ def is_llm_final(reasoning: str | None, breakdown_json: str | None) -> bool:
         return False
 
 
-def export(out_path: str, max_rows: int = 0) -> dict:
+_CHUNK = 300  # rows per query — full-table single selects hit Supabase's statement timeout
+
+
+def _scored_chunks(max_rows: int = 0):
+    """Keyset-paginated scored jobs, only the columns the export needs — one
+    small indexed query at a time so no statement can hit the DB timeout."""
+    from sqlalchemy.orm import load_only
     from sqlmodel import select
 
     from app.db.init_db import get_session
     from app.db.models import Job
+
+    last_id, seen = 0, 0
+    while True:
+        with get_session() as session:
+            chunk = session.exec(
+                select(Job)
+                .options(load_only(
+                    Job.id, Job.user_id, Job.title, Job.company, Job.location,
+                    Job.remote, Job.description, Job.rerank_score,
+                    Job.rerank_reasoning, Job.rerank_breakdown,
+                ))
+                .where(Job.rerank_score != None, Job.id > last_id)  # noqa: E711
+                .order_by(Job.id)
+                .limit(_CHUNK)
+            ).all()
+        if not chunk:
+            return
+        for job in chunk:
+            yield job
+            seen += 1
+            if max_rows and seen >= max_rows:
+                return
+        last_id = chunk[-1].id
+
+
+def export(out_path: str, max_rows: int = 0) -> dict:
     from app.matching.pipeline import _load_resume
 
     stats: Counter = Counter()
@@ -76,12 +108,11 @@ def export(out_path: str, max_rows: int = 0) -> dict:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     written = 0
-    with get_session() as session, out.open("w") as fh:
-        rows = session.exec(
-            select(Job).where(Job.rerank_score != None)  # noqa: E711
-        ).all()
-        stats["scored_rows"] = len(rows)
-        for job in rows:
+    with out.open("w") as fh:
+        for job in _scored_chunks(max_rows=0):
+            stats["scored_rows"] += 1
+            if written % 500 == 0 and written:
+                log.info("  ...%d exported so far (%d rows scanned)", written, stats["scored_rows"])
             if not is_llm_final(job.rerank_reasoning, job.rerank_breakdown):
                 stats["skipped_cheap_gate"] += 1
                 continue
