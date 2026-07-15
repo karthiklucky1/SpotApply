@@ -32,7 +32,8 @@ import json
 import logging
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -136,9 +137,11 @@ def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -
 
 # ── Per-job fast path ─────────────────────────────────────────────────────────
 
-def _fast_path_user(uid: str, score_budget: int) -> tuple[int, int, int]:
+def _fast_path_user(uid: str, score_budget: int,
+                    deadline: Optional[float] = None) -> tuple[int, int, int]:
     """Score this user's brand-new unscored jobs RIGHT NOW (bounded), shortlist
     the fits, and fire fresh alerts. Returns (scored, shortlisted, alerts).
+    Stops early once ``deadline`` (monotonic) passes so it can't overrun the tick.
 
     Deliberately lock-free: rule filter + ghost check + LLM cascade only — no
     FAISS/embedding model. Anything left unscored (budget, errors) is picked up
@@ -198,6 +201,8 @@ def _fast_path_user(uid: str, score_budget: int) -> tuple[int, int, int]:
     scored = 0
     shortlisted: list[int] = []
     for jid in fresh_ids:
+        if deadline is not None and time.monotonic() >= deadline:
+            break  # out of tick budget — the matching lane scores the rest
         with get_session() as session:
             job = session.get(Job, jid)
             if not job or job.rerank_score is not None or job.is_closed:
@@ -273,25 +278,38 @@ def _fast_path_user(uid: str, score_budget: int) -> tuple[int, int, int]:
 
 # ── One scheduler tick ────────────────────────────────────────────────────────
 
-# One tick at a time: the scheduler abandons a tick that overruns its budget,
-# but the abandoned THREAD keeps working — without this guard the next tick
-# re-selects the same due boards and double-fetches them (bootstrap thrash).
+# One tick at a time — but SELF-HEALING. A plain lock froze the whole lane once
+# a single slow tick (serial LLM scoring for 20+ min) held it. Now: a tick is
+# hard-bounded by pulse_tick_max_seconds (it stops taking new work and releases
+# promptly), and if a holder ever overruns a generous grace window it's treated
+# as dead and the next tick proceeds anyway — the lane can never freeze forever.
 _TICK_LOCK = threading.Lock()
+_TICK_DEADLINE = [0.0]  # monotonic time by which the current holder must be done
 
 
 def run_pulse_tick() -> dict:
     """Poll every board that's due, route changes, fast-path new jobs to alerts.
     Returns tick stats; records a ``pulse_tick`` FunnelEvent when work was done."""
-    if not _TICK_LOCK.acquire(blocking=False):
-        log.info("Pulse tick skipped — previous tick still running")
-        return {"boards": 0, "skipped": "previous tick still running"}
+    now_m = time.monotonic()
+    got = _TICK_LOCK.acquire(blocking=False)
+    if not got:
+        if now_m < _TICK_DEADLINE[0]:
+            log.info("Pulse tick skipped — previous tick still running")
+            return {"boards": 0, "skipped": "previous tick still running"}
+        # Holder blew past its grace window → hung/abandoned thread. Proceed
+        # without the lock so the lane recovers instead of freezing forever.
+        log.warning("Pulse tick: prior tick overran its grace window — proceeding")
+    work_deadline = now_m + settings.pulse_tick_max_seconds
+    # Grace: work deadline + a cushion for in-flight ops to drain before a steal.
+    _TICK_DEADLINE[0] = work_deadline + 90
     try:
-        return _run_pulse_tick_locked()
+        return _run_pulse_tick_locked(work_deadline)
     finally:
-        _TICK_LOCK.release()
+        if got:
+            _TICK_LOCK.release()
 
 
-def _run_pulse_tick_locked() -> dict:
+def _run_pulse_tick_locked(deadline: float) -> dict:
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert, scraper_for
     from app.strategy.hot_lane import (
         _active_users, _mark_polled, _retire_unsupported, _title_matches,
@@ -320,11 +338,32 @@ def _run_pulse_tick_locked() -> dict:
     users_touched: set[str] = set()
     pool = ThreadPoolExecutor(max_workers=min(settings.pulse_fetch_workers,
                                               max(1, len(boards))))
-    # Iterate lazily — never materialize 1000+ boards' raw postings at once
-    # (holding every fetched list in memory is how the old 800-board hot-lane
-    # cycles hit the container's memory ceiling).
-    results = pool.map(_fetch, boards)
-    for board, raw, err in results:
+    # Submit all fetches, then collect each with a deadline-bounded wait. A board
+    # that hasn't returned by the tick's wall-clock deadline is rescheduled (it's
+    # simply due again) rather than blocked on — so one slow board/host can never
+    # stall the tick. shutdown(wait=False) means stragglers finish on their own.
+    futures = {pool.submit(_fetch, b): b for b in boards}
+    deferred = 0
+    for fut in list(futures):
+        remaining = deadline - time.monotonic()
+        board = futures[fut]
+        if remaining <= 0:
+            deferred += 1
+            _set_schedule(board.slug, board.ats,
+                          datetime.utcnow() + _cadence(board, terms, now), None)
+            continue
+        try:
+            board, raw, err = fut.result(timeout=remaining)
+        except _FutureTimeout:
+            deferred += 1
+            _set_schedule(board.slug, board.ats,
+                          datetime.utcnow() + _cadence(board, terms, now), None)
+            continue
+        except Exception as e:
+            _mark_polled(board.slug, board.ats, job_count=None, ok=False, error=str(e))
+            _set_schedule(board.slug, board.ats,
+                          datetime.utcnow() + _cadence(board, terms, now), None)
+            continue
         if raw is None:
             if err == "unsupported":
                 _retire_unsupported(board.slug, board.ats)
@@ -368,15 +407,20 @@ def _run_pulse_tick_locked() -> dict:
         board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
         _set_schedule(board.slug, board.ats,
                       datetime.utcnow() + _cadence(board, terms, now), sig)
-    pool.shutdown(wait=True)
+    pool.shutdown(wait=False)
+    if deferred:
+        stats["deferred"] = deferred
 
-    # Per-job fast path for every user who just received something new.
+    # Per-job fast path for every user who just received something new — best
+    # effort within whatever wall-clock time the tick has left. Anything not
+    # scored here is picked up by the 5-min matching lane, so this only speeds
+    # alerts, never blocks the tick (which used to run serial LLM for 20+ min).
     budget = settings.pulse_fast_path_score_cap
     for uid in users_touched:
-        if budget <= 0:
+        if budget <= 0 or time.monotonic() >= deadline:
             break
         try:
-            scored, short, alerts = _fast_path_user(uid, budget)
+            scored, short, alerts = _fast_path_user(uid, budget, deadline)
             budget -= scored
             stats["scored"] += scored
             stats["shortlisted"] += short

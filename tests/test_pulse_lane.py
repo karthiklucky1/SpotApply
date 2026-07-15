@@ -103,7 +103,7 @@ def test_tick_routes_new_jobs_and_schedules_next_poll(monkeypatch):
                         lambda: [{"user_id": "u_ml", "roles": ["machine learning engineer"]}])
     fast_calls = []
     monkeypatch.setattr(pl, "_fast_path_user",
-                        lambda uid, budget: (fast_calls.append(uid) or (1, 1, 1)))
+                        lambda uid, budget, deadline=None: (fast_calls.append(uid) or (1, 1, 1)))
 
     stats = pl.run_pulse_tick()
     assert stats["boards"] == 1 and stats["changed"] == 1

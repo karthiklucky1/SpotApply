@@ -205,9 +205,10 @@ class Settings(BaseSettings):
     pulse_dead_interval_hours: int = 24    # 404/empty boards retry cadence
     pulse_active_days: int = 7             # "recently posted" = new job within N days
     pulse_tick_seconds: int = 60           # scheduler tick
-    pulse_max_boards_per_tick: int = 300   # hard cap per tick. Small enough that a tick ALWAYS finishes inside its budget on Supabase (1200 caused bootstrap ticks to overrun, get abandoned, and re-fetch the same boards); a backlog stretches the floor honestly instead of stampeding. Steady-state demand is ~150 boards/min, so 300 keeps headroom.
+    pulse_tick_max_seconds: int = 150      # HARD wall-clock cap per tick. The tick stops taking new work past this and reschedules the rest — so it always releases the lock promptly (a tick that ran serial LLM scoring for 20+ min once froze the whole lane). Keep < tick_seconds*3.
+    pulse_max_boards_per_tick: int = 300   # hard cap per tick. Steady-state demand is ~150 boards/min, so 300 keeps headroom; the wall-clock cap above bounds it further during bootstrap.
     pulse_fetch_workers: int = 24          # concurrent board fetches per tick
-    pulse_fast_path_score_cap: int = 25    # max brand-new jobs LLM-scored per tick via the fast path
+    pulse_fast_path_score_cap: int = 10    # max brand-new jobs LLM-scored per tick via the fast path (kept small so the tick stays short; the rest are scored by the 5-min matching lane)
     # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.
     # The rest goes to proven yielders + productive boards. Kept low so tens of
     # thousands of dead seeded slugs can't eat the budget (they 404 and get

@@ -554,9 +554,11 @@ async def _pulse_lane():
               "(fast=%dm floor=%dm)", tick, settings.pulse_fast_interval_minutes,
               settings.pulse_floor_interval_minutes)
     await asyncio.sleep(150)  # let boot + migrations settle
-    # A tick that overruns its budget is abandoned (its bounded DB/network calls
-    # finish on their own) so one stuck board can't freeze the whole lane.
-    _budget = max(600, tick * 10)
+    # The tick self-bounds to pulse_tick_max_seconds (+ a drain cushion) and its
+    # lock is self-healing, so this outer timeout is only a backstop just above
+    # the tick's own grace window — a truly hung tick's await is abandoned and
+    # the next tick recovers via the self-healing lock.
+    _budget = max(300, settings.pulse_tick_max_seconds + 120)
     while True:
         try:
             from app.strategy.pulse_lane import run_pulse_tick
