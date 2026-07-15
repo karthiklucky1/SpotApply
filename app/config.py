@@ -221,6 +221,16 @@ class Settings(BaseSettings):
     # The filter keeps a job when its title matches a role OR it scored at/above
     # this fit floor. 0 = title-only (no semantic catch).
     roles_filter_score_floor: int = 50        # ROLES_FILTER_SCORE_FLOOR
+    # Semantic adoption. When copying shared-pool jobs into a user's pool, the
+    # title gate (role_title_match) can miss "same work, different title" postings
+    # (an "Applied Scientist" that's really ML work). This adds a second pass: keep
+    # every title match PLUS the closest résumé-neighbours by embedding cosine
+    # (reuses the local MiniLM model — no API cost), so relevant postings are
+    # copied and scored instead of filtered out before scoring. Bounded by the
+    # adoption cap, with a title-only fallback if embeddings are unavailable.
+    adoption_semantic_enabled: bool = True     # ADOPTION_SEMANTIC_ENABLED
+    adoption_semantic_threshold: float = 0.30  # ADOPTION_SEMANTIC_THRESHOLD — min résumé↔job cosine for a non-title-match to be adopted
+    adoption_semantic_max_candidates: int = 1500  # ADOPTION_SEMANTIC_MAX_CANDIDATES — cap on non-title jobs embedded per pass (CPU bound)
     direct_ats_enabled: bool = True       # scrape active CompanyRegistry boards directly (live jobs, direct links)
     max_boards_per_run: int = 400         # cap on registry boards scraped per discovery run. Higher covers the ~56K registry faster but holds more jobs in memory per run; 400 balances coverage vs. the container memory limit (800 contributed to an OOM crash).
     # Wall-clock cap on the board phase (fetch + per-board DB work) of a
