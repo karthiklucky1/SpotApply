@@ -164,11 +164,20 @@ class SeniorReviewer:
             log.warning("SeniorReviewer: could not load historical ledger: %s", e)
         return ledger
 
-    def _build_prompt(self, job: Job, ledger: list[dict]) -> str:
-        profiles_block = "\n\n".join(
+    def _profiles_block(self) -> str:
+        """The static résumé variants — identical on every review, so they ride in
+        a cached system block (see _call_anthropic) instead of being re-sent (and
+        re-billed) inside each job's user message."""
+        return "\n\n".join(
             f"--- PROFILE: {name} ---\n{text}"
             for name, text in self._profiles.items()
         )
+
+    def _build_prompt(self, job: Job, ledger: list[dict]) -> str:
+        # Only the per-job varying half here (JD + ledger). The static profiles are
+        # sent once as a cached system block — putting them here (after the JD)
+        # made the whole prompt uncacheable, since the cacheable prefix must be
+        # stable and the JD changes every call.
         ledger_block = json.dumps(ledger, indent=2) if ledger else "[]"
 
         return f"""### TARGET_JD
@@ -176,10 +185,7 @@ Title: {job.title}
 Company: {job.company}
 Location: {job.location}
 
-{job.description[:6000]}
-
-### STATIC_PROFILES
-{profiles_block}
+{(job.description or '')[:6000]}
 
 ### HISTORICAL_LEDGER
 {ledger_block}
@@ -217,6 +223,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
                 max_tokens=1200,
                 system=[
                     {"type": "text", "text": SENIOR_REVIEWER_SYSTEM, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": self._profiles_block(), "cache_control": {"type": "ephemeral"}},
                 ],
                 messages=[{"role": "user", "content": user_content}],
             )
@@ -233,7 +240,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
                 model="gpt-4o-mini",
                 max_tokens=1200,
                 messages=[
-                    {"role": "system", "content": SENIOR_REVIEWER_SYSTEM},
+                    {"role": "system", "content": SENIOR_REVIEWER_SYSTEM + "\n\n" + self._profiles_block()},
                     {"role": "user", "content": user_content},
                 ],
             )
