@@ -261,3 +261,46 @@ def test_target_companies_api_roundtrip_and_pull_forward():
     with get_session() as session:
         row = session.exec(select(CompanyRegistry)).first()
         assert row.next_poll_at <= datetime.utcnow() + timedelta(seconds=5)
+
+
+def test_fast_path_prioritizes_on_role_over_noise(monkeypatch):
+    """With more fresh jobs than the budget, on-role titles are scored first so a
+    board-dump of off-role noise can't crowd out a genuine match."""
+    from datetime import datetime as _dt, timedelta as _td
+    with get_session() as session:
+        _clean(session)
+        session.add(UserProfile(user_id="u_ml", target_roles="machine learning engineer"))
+        now = _dt.utcnow()
+        # 3 off-role NEWER, then 1 on-role slightly older.
+        for i, (title, age) in enumerate([
+            ("Mechanical Engineer III", 1), ("Contact Center Analyst", 2),
+            ("Systems Engineer", 3), ("Senior Machine Learning Engineer", 5),
+        ]):
+            session.add(Job(title=title, company=f"Co{i}", location="Remote",
+                            remote=True, description="x", source=JobSource.GREENHOUSE,
+                            external_id=f"pr{i}", url=f"https://x/{i}", user_id="u_ml",
+                            first_seen=now - _td(minutes=age),
+                            posted_at=now - _td(hours=1)))
+        session.commit()
+
+    scored_titles = []
+
+    class FakeReranker:
+        def __init__(self, profile=None, feedback=""):
+            pass
+        def has_prescore_backend(self):
+            return False
+        def score(self, resume, job):
+            scored_titles.append(job.title)
+            return 20.0, "n/a", [], {}
+
+    monkeypatch.setattr("app.matching.reranker.Reranker", FakeReranker)
+    monkeypatch.setattr("app.matching.pipeline._load_resume", lambda user_id=None: "resume")
+
+    class _G:
+        is_ghost = False; ghost_score = 0.0; flags_json = None; flags = []
+    monkeypatch.setattr("app.matching.filters.score_ghost", lambda job, session: _G())
+
+    # Budget of 1 → the single slot must go to the on-role title.
+    pl._fast_path_user("u_ml", score_budget=1)
+    assert scored_titles == ["Senior Machine Learning Engineer"]

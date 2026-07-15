@@ -174,9 +174,17 @@ def _fast_path_user(uid: str, score_budget: int,
 
     cutoff = datetime.utcnow() - timedelta(minutes=15)
     posted_cut = datetime.utcnow() - timedelta(hours=48)
+    roles = [r.strip().lower()
+             for r in (getattr(profile, "target_roles", "") or "").split(",") if r.strip()]
     with get_session() as session:
-        fresh_ids = [r for r in session.exec(
-            select(Job.id).where(
+        # Pull a WIDER slice of fresh postings than we can score, so we can pick
+        # the on-role ones. Board dumps (e.g. Rippling serving a whole company's
+        # departments) flood the newest-first list with off-target titles
+        # (Mechanical Engineer, Contact Center Analyst); scoring newest-first
+        # could spend the whole LLM budget on those while a genuinely-fresh
+        # AI/ML match waits for the slower matching lane.
+        rows = session.exec(
+            select(Job.id, Job.title).where(
                 Job.user_id == uid_arg,
                 Job.rerank_score == None,  # noqa: E711
                 Job.is_closed == False,  # noqa: E712
@@ -186,13 +194,25 @@ def _fast_path_user(uid: str, score_budget: int,
                 # bootstrap adopting weeks of backlog) wait for the regular
                 # matching lane — they can't produce a valid fresh alert anyway.
                 (Job.posted_at == None) | (Job.posted_at >= posted_cut),  # noqa: E711
-            ).order_by(Job.first_seen.desc()).limit(score_budget)
-        ).all()]
+            ).order_by(Job.first_seen.desc()).limit(max(score_budget * 6, 60))
+        ).all()
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         q = select(Application).where(Application.created_at >= today_start)
         q = q.where(Application.user_id == uid_arg) if uid_arg \
             else q.where(Application.user_id.is_(None))
         today_count = len(session.exec(q).all())
+
+    # Relevance-first: score titles matching the user's target roles before the
+    # off-role remainder (still newest-first within each group). Off-role fresh
+    # jobs aren't dropped — the matching lane scores them next pass.
+    if roles:
+        from app.discovery.title_filter import role_title_match
+        on_role = [jid for jid, t in rows if role_title_match(t or "", roles)]
+        on_set = set(on_role)
+        off_role = [jid for jid, t in rows if jid not in on_set]
+        fresh_ids = (on_role + off_role)[:score_budget]
+    else:
+        fresh_ids = [jid for jid, _t in rows][:score_budget]
     if not fresh_ids:
         return 0, 0, 0
 
