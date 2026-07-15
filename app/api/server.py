@@ -690,6 +690,18 @@ def _run_matching_lane(uids) -> None:
     import time as _t
     from app.common.discovery_lock import discovery_guard
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
+
+    # Housekeeping (lock-free, global): drop shortlisted jobs whose posting has
+    # aged past the freshness window so the board stays applyable. Runs every tick
+    # regardless of the discovery lock, so it never waits on a heavy pass.
+    try:
+        from app.strategy.shortlist_hygiene import prune_stale_shortlist
+        pruned = prune_stale_shortlist()
+        if pruned:
+            log.info("Matching lane: pruned %d stale shortlisted job(s)", pruned)
+    except Exception as _pe:
+        log.warning("Matching lane: shortlist prune failed: %s", _pe)
+
     with discovery_guard(blocking=False, label="matching lane") as ran:
         if not ran:
             log.info("Matching lane: skipped — lock busy (another matching pass running)")
