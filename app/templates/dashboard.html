@@ -6125,6 +6125,77 @@
         } catch (e) { /* silent */ }
     }
 
+    // ── Live shortlist: surface background-scored matches WITHOUT a manual refresh ──
+    // The scoring lane shortlists jobs around the clock. The header count above
+    // climbs live, but the cards are server-rendered — so new matches used to sit
+    // invisible until the user hit refresh ("count went up but the jobs aren't
+    // there"). This poller closes that gap: it loads the first matches into an
+    // empty board automatically, and for later arrivals pops a one-tap banner so
+    // the user is never yanked mid-read.
+    function _renderedShortlistCount() {
+        const c = document.getElementById('shortlisted-container');
+        return c ? c.querySelectorAll('.jobrow').length : 0;
+    }
+    function _clearNewMatchesBanner() {
+        const b = document.getElementById('hp-new-matches'); if (b) b.remove();
+    }
+    function _showNewMatchesBanner(n) {
+        const container = document.getElementById('shortlisted-container');
+        if (!container || !container.parentNode) return;
+        let b = document.getElementById('hp-new-matches');
+        if (!b) {
+            b = document.createElement('button');
+            b.id = 'hp-new-matches'; b.type = 'button';
+            b.onclick = () => window.location.reload();
+            b.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:11px;margin-bottom:6px;border:1px solid rgba(var(--sage-rgb),0.45);border-radius:14px;background:var(--sage-tint);color:var(--sage-700);font-weight:800;font-size:12.5px;cursor:pointer;transition:transform .12s;';
+            b.onmouseenter = () => { b.style.transform = 'translateY(-1px)'; };
+            b.onmouseleave = () => { b.style.transform = 'none'; };
+            container.parentNode.insertBefore(b, container);
+        }
+        b.innerHTML = `<span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span><span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span></span> ↻ ${n} new match${n === 1 ? '' : 'es'} ready — tap to load`;
+    }
+    // Loop guard: never auto-reload more than once per 30s (protects against any
+    // edge where the server count and the rendered count can't converge).
+    function _canAutoReload() {
+        try {
+            const last = +(sessionStorage.getItem('hp_auto_reload_ts') || 0);
+            if (Date.now() - last < 30000) return false;
+            sessionStorage.setItem('hp_auto_reload_ts', String(Date.now()));
+            return true;
+        } catch (e) { return true; }
+    }
+    async function livePipelineTick() {
+        try {
+            const r = await fetch('/api/pipeline/live', { headers: _hpHeaders() });
+            if (!r.ok) return;
+            const d = await r.json();
+            const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
+            set('stat-pool', d.counts.pool);
+            set('stat-shortlist', d.counts.shortlisted);
+            set('stat-submitted', d.counts.submitted);
+            set('stat-rejected', d.counts.rejected);
+
+            const rendered = _renderedShortlistCount();
+            const server = d.counts.shortlisted || 0;
+            const emptyState = document.getElementById('empty-shortlist-state');
+            if (server > rendered) {
+                // Empty board + first matches → load them in for the user (nothing
+                // on screen to disrupt). Otherwise a one-tap banner.
+                if (emptyState && rendered === 0 && _canAutoReload()) {
+                    window.location.reload();
+                    return;
+                }
+                _showNewMatchesBanner(server - rendered);
+            } else {
+                _clearNewMatchesBanner();
+            }
+        } catch (e) { /* silent */ }
+    }
+    // Steady heartbeat so background-scored jobs appear on their own (a discovery
+    // run polls faster via _discoverPoll). 20s keeps the light endpoint cheap.
+    setInterval(livePipelineTick, 20000);
+    setTimeout(livePipelineTick, 3000);
+
     // Sidebar resume-status indicator (✓ uploaded / ⚠ missing).
     async function loadResumeStatus() {
         const el = document.getElementById('sb-resume-status');

@@ -2579,18 +2579,12 @@ def dashboard(request: Request, all_submitted: bool = False):
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
-
-            # True shortlist size (same filters, no display cap) — shown in the
-            # header tile, tab pill, and section badge so every "Shortlisted"
-            # number on the page agrees. The rendered list stays capped.
-            q_short_total = select(func.count(Application.id)).join(Job).where(
-                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            )
-            if _uid_filter:
-                q_short_total = q_short_total.where(Application.user_id == uid)
-            total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
+            # The badge/pill count is set from the RENDERED list further down
+            # (total_shortlisted_count = len(shortlisted)) so every "Shortlisted"
+            # number on the page equals the number of cards actually on the board.
+            # A separate uncapped COUNT used to report a bigger number than the
+            # list showed — "count went up but the jobs aren't there" — because the
+            # display drops per-company duplicates and caps the page.
 
             # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
             q_sub = select(Application, Job).join(Job).where(
@@ -2769,8 +2763,17 @@ def dashboard(request: Request, all_submitted: bool = False):
             capped.append((app_model, job_model))
         return capped
 
-    shortlisted = _cap_per_company(shortlisted)
+    # NOTE: no _cap_per_company on the shortlist. The pipeline already enforces
+    # settings.company_cap active applications per company AT CREATION
+    # (_check_and_enforce_company_cap), so a second, display-time cap only hid
+    # jobs that were legitimately shortlisted — the "count is higher than the
+    # cards shown" bug. manual_queue keeps the cap (it isn't creation-capped).
     manual_queue = _cap_per_company(manual_queue)
+
+    # The badge/pill count IS the rendered list — every "Shortlisted" number on
+    # the page now equals the number of cards, so it can never climb past what
+    # the board is showing.
+    total_shortlisted_count = len(shortlisted)
 
     return templates.TemplateResponse(
         request=request,
