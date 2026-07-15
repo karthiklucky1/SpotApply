@@ -349,9 +349,24 @@ class Reranker:
         return resp.content[0].text
 
     def _score_openai(self, prompt: str) -> str:
-        """Call GPT-4o-mini for scoring."""
+        """Call GPT-4o-mini for scoring (single-provider fallback path)."""
         resp = self._openai_client.chat.completions.create(
             model="gpt-4o-mini",
+            max_tokens=600,
+            messages=[
+                {"role": "system", "content": _get_system_prompt(self._profile)},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content
+
+    def _score_openai_final(self, prompt: str) -> str:
+        """Call the full GPT model (default gpt-4o) for an AUTHORITATIVE final
+        score in dual-provider mode — same rubric as Claude, so the two are
+        comparable. Used when the 60/40 router sends a job to OpenAI."""
+        resp = self._openai_client.chat.completions.create(
+            model=settings.dual_score_openai_model,
             max_tokens=600,
             messages=[
                 {"role": "system", "content": _get_system_prompt(self._profile)},
@@ -427,7 +442,27 @@ class Reranker:
                 continue
         return None
 
-    def score(self, resume_text: str, job: Job) -> Tuple[float, str, List[str], dict]:
+    def has_dual(self) -> bool:
+        """True when BOTH providers are available, so the final score can be
+        split across them (Option A). With one provider, routing is a no-op."""
+        return bool(self._anthropic_client and self._openai_client)
+
+    def _calibrate(self, backend_name: str, result):
+        """In dual mode, nudge GPT's scale onto Claude's so the shortlist bar is
+        fair across providers. No-op for Claude and when no offset is set."""
+        off = settings.dual_score_openai_offset
+        if settings.dual_score_enabled and backend_name == "openai" and off:
+            score, reason, concerns, breakdown = result
+            score = max(0.0, min(100.0, score + off))
+            return score, reason, concerns, breakdown
+        return result
+
+    def score(self, resume_text: str, job: Job,
+              provider: Optional[str] = None) -> Tuple[float, str, List[str], dict]:
+        """Authoritative final score. ``provider`` ('anthropic'|'openai') routes
+        the FIRST attempt to that backend (Option A's 60/40 split); the other
+        provider stays as the fallback, so a rate-limited/errored primary still
+        gets the job scored. None = default priority order."""
         # Run pre-filters first to avoid LLM calls on misfits
         pre_filtered = self._pre_filter_job(job)
         if pre_filtered is not None:
@@ -442,11 +477,11 @@ class Reranker:
         # it on a later run — a 429 must never become a silent score-0 drop that
         # biases the shortlist.
         max_retries = max(1, settings.llm_rerank_max_retries)
-        for backend_name, call_fn in self._backends():
+        for backend_name, call_fn in self._score_backends(provider):
             for attempt in range(max_retries):
                 try:
                     text = call_fn(prompt)
-                    return _parse_response(text)
+                    return self._calibrate(backend_name, _parse_response(text))
                 except Exception as e:
                     error_str = str(e).lower()
                     is_rate_limit = any(kw in error_str for kw in [
@@ -473,15 +508,26 @@ class Reranker:
         log.error("Reranker: All backends/retries exhausted for job %s — leaving unscored", job.id)
         raise RuntimeError(f"rerank failed for job {job.id}: all backends exhausted")
 
-    def _backends(self):
-        """Yield (name, callable) pairs in priority order."""
-        if self._active_backend == "anthropic":
-            if self._anthropic_client:
-                yield "anthropic", self._score_anthropic
-            if self._openai_client:
-                yield "openai", self._score_openai
+    def _score_backends(self, provider: Optional[str] = None):
+        """Ordered (name, callable) backends for the FINAL score.
+
+        - ``provider`` ('anthropic'|'openai'), when set and available, is tried
+          first; the other provider remains the fallback.
+        - In dual mode the OpenAI final scorer is the FULL model
+          (settings.dual_score_openai_model) so it's comparable to Claude;
+          otherwise it's the cheap gpt-4o-mini fallback.
+        - With no ``provider`` the historical priority order is preserved.
+        """
+        anth = ("anthropic", self._score_anthropic) if self._anthropic_client else None
+        oai_fn = self._score_openai_final if settings.dual_score_enabled else self._score_openai
+        oai = ("openai", oai_fn) if self._openai_client else None
+
+        if provider == "openai":
+            order = [oai, anth]
+        elif provider == "anthropic":
+            order = [anth, oai]
+        elif self._active_backend == "anthropic":
+            order = [anth, oai]
         else:
-            if self._openai_client:
-                yield "openai", self._score_openai
-            if self._anthropic_client:
-                yield "anthropic", self._score_anthropic
+            order = [oai, anth]
+        return [p for p in order if p]

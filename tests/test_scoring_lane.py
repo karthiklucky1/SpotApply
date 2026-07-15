@@ -31,7 +31,9 @@ class _FakeReranker:
         pass
     def has_prescore_backend(self):
         return False
-    def score(self, resume, job):
+    def has_dual(self):
+        return False
+    def score(self, resume, job, provider=None):
         # "Forklift" scores low (drain), everything else strong.
         if "Forklift" in job.title:
             return 12.0, "unrelated", [], {}

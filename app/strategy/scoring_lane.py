@@ -85,8 +85,22 @@ class _Ctx:
         self.gate = gate
 
 
-def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float]]]:
-    """Score one queued job. Returns ("scored"|"drained", jid, score) or None.
+def _pick_provider(jid: int, ctx: "_Ctx") -> Optional[str]:
+    """Option A: split the FINAL score across providers by job id — a stable,
+    balanced ~claude_share/rest partition. Both providers score against the same
+    rubric, so throughput becomes Claude's rate limit + GPT's, not just Claude's.
+    Returns None (default priority order) when dual mode is off or only one
+    provider is configured."""
+    if not settings.dual_score_enabled or not ctx.reranker.has_dual():
+        return None
+    share = max(0.0, min(1.0, settings.dual_score_claude_share))
+    return "anthropic" if (jid % 100) < int(round(share * 100)) else "openai"
+
+
+def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float], Optional[str]]]:
+    """Score one queued job. Returns ("scored"|"drained", jid, score, provider)
+    or None. ``provider`` is which backend produced the final score (for the
+    dual-provider split stats); None for drained/ghost/single-provider jobs.
     Idempotent: a job already scored (by another worker / lane) is skipped."""
     from app.matching.filters import score_ghost
     from app.matching.hire_probability import (
@@ -106,11 +120,11 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float]]
                 job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
                 session.add(job)
                 session.commit()
-                return ("drained", jid, None)
+                return ("drained", jid, None, None)
         except Exception as e:
             log.debug("scoring ghost check failed for %d: %s", jid, e)
 
-        # Cascade Tier-1: drain clear misfits without touching Claude.
+        # Cascade Tier-1: drain clear misfits without touching the final scorer.
         if ctx.use_prescore:
             pre = ctx.reranker.prescore(ctx.resume, job)
             if pre is not None and pre[0] < ctx.gate:
@@ -118,11 +132,13 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float]]
                 job.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
                 session.add(job)
                 session.commit()
-                return ("drained", jid, None)
+                return ("drained", jid, None, None)
 
-        # Tier-2: authoritative score (the rule pre-filter runs inside .score()).
+        # Tier-2: authoritative score. Option A routes ~60% to Claude, the rest
+        # to GPT-4o (both on the same rubric); the rule pre-filter runs in .score().
+        provider = _pick_provider(jid, ctx)
         try:
-            score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job)
+            score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
         except Exception as e:
             log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
             session.rollback()
@@ -139,7 +155,7 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float]]
             pass
         session.add(job)
         session.commit()
-        return ("scored", jid, float(score))
+        return ("scored", jid, float(score), provider)
 
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
@@ -201,7 +217,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     from app.matching.pipeline import _load_resume
     from app.matching.reranker import Reranker
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
-             "shortlisted": 0, "alerts": 0}
+             "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0}
 
     users = _scorable_user_ids()
     if not users:
@@ -273,10 +289,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             continue
         if not out:
             continue
-        uid, (kind, jid, score) = out
+        uid, (kind, jid, score, provider) = out
         if kind == "scored":
             stats["scored"] += 1
             scored_by_user[uid].append((jid, score))
+            if provider == "anthropic":
+                stats["by_claude"] += 1
+            elif provider == "openai":
+                stats["by_gpt"] += 1
         elif kind == "drained":
             stats["drained"] += 1
     pool.shutdown(wait=False)

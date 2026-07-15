@@ -176,6 +176,20 @@ class Settings(BaseSettings):
     scoring_per_user_cap: int = 40         # max queued jobs scored per user per cycle (fresh-first)
     scoring_global_cap: int = 600          # max total jobs scored per cycle (bounds cost + wall-clock)
     scoring_lane_max_seconds: int = 120    # hard wall-clock cap per cycle
+    # ── Dual-provider final scoring (Option A) ────────────────────────────────
+    # The prescore→final cascade is a RELAY (GPT drains misfits, then Claude
+    # scores the survivors) — one job flows GPT→Claude, so the two can't be
+    # "split" on the same job. To lift the single-provider rate-limit ceiling we
+    # instead split the FINAL score across providers by JOB: ~claude_share of
+    # jobs get Claude's authoritative score, the rest go to GPT-4o — in parallel.
+    # BOTH score against the SAME rubric (_get_system_prompt + _SCORE_BANDS), so
+    # the numbers are comparable; a small calibration offset nudges GPT's scale
+    # onto Claude's if it clusters low/high. Only active when BOTH provider keys
+    # exist; with one key it's a no-op (the single provider scores everything).
+    dual_score_enabled: bool = True         # DUAL_SCORE_ENABLED — split final scoring across Claude + GPT
+    dual_score_claude_share: float = 0.6    # DUAL_SCORE_CLAUDE_SHARE — fraction of finals routed to Claude (rest to GPT)
+    dual_score_openai_model: str = "gpt-4o" # DUAL_SCORE_OPENAI_MODEL — the GPT FINAL scorer (full model, not mini, so it's comparable to Claude). Set to gpt-4o-mini to cut cost at some accuracy loss.
+    dual_score_openai_offset: float = 0.0   # DUAL_SCORE_OPENAI_OFFSET — calibration added to GPT scores to align with Claude's scale (e.g. +5 if GPT clusters ~5 points low). Clamped to 0-100.
 
     # ── Observability (all dormant until set — safe to ship empty) ─────────────
     sentry_dsn: str = ""                   # SENTRY_DSN — enables error tracking when set
