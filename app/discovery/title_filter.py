@@ -286,6 +286,37 @@ def _role_matchers(roles_key: tuple) -> tuple:
     return tuple(_term_pattern(t) for t in sorted(terms))
 
 
+def role_match_terms(roles: List[str] | None, min_len: int = 4) -> List[str]:
+    """SQL-friendly title-match terms for a set of roles: the full phrases, alias
+    expansions and distinctive tokens — filtered to >= min_len chars so a plain
+    substring ILIKE is safe (drops 'ai'/'ml'/'sde', which as bare substrings match
+    'chair'/'html'/'inside'). Used by the All Jobs "my roles" filter; the ingestion
+    gate still uses the stricter, boundary-aware role_title_match. Empty roles →
+    empty list (caller treats that as "no filter")."""
+    if not roles:
+        return []
+    key = tuple(sorted({(r or "").lower().strip() for r in roles if r and r.strip()}))
+    if not key:
+        return []
+    terms: set = set()
+    for role in key:
+        r = re.sub(r"[/&,+|]", " ", role)
+        r = re.sub(r"\s+", " ", r).strip()
+        if not r:
+            continue
+        if len(r) >= min_len:
+            terms.add(r)
+        for akey, aliases in _ROLE_TERM_ALIASES.items():
+            if _term_pattern(akey).search(r):
+                if len(akey) >= min_len:
+                    terms.add(akey)
+                terms.update(a for a in aliases if len(a) >= min_len)
+        for tok in r.split():
+            if len(tok) >= min_len and tok not in _GENERIC_TOKENS:
+                terms.add(tok)
+    return sorted(terms)
+
+
 def role_title_match(title: str, roles: List[str] | None) -> bool:
     """Skills-aware routing gate (hot lane): does this title plausibly match one
     of the user's target roles? Alias- and token-aware, so 'Senior ML Engineer'

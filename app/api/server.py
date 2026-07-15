@@ -2383,6 +2383,7 @@ def api_jobs(
     closed: str = None,            # "true" = retrieve closed/ghost jobs
     sort: str = None,              # "fresh" = newest posted first (else priority)
     max_age_days: int = None,      # only jobs posted within N days
+    roles_only: str = None,        # "1" = only titles matching the user's target roles
 ) -> dict:
     uid = _get_user_id(request)
     # Fail closed: an unresolved uid must never return the unscoped
@@ -2433,6 +2434,18 @@ def api_jobs(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
 
+        # "My roles" relevance filter: keep only titles that match the user's
+        # target roles (alias/token-aware, ≥4-char terms so a substring match is
+        # safe). Built once here and applied to BOTH the page query and the count.
+        _roles_cond = None
+        if roles_only == "1":
+            from sqlalchemy import or_ as _or
+            from app.discovery.title_filter import role_match_terms
+            _terms = role_match_terms(_get_target_roles(uid) or [])
+            if _terms:
+                _roles_cond = _or(*[Job.title.ilike(f"%{t}%") for t in _terms])
+                query = query.where(_roles_cond)
+
         # Freshness age filter: only jobs posted within N days. Uses posted_at
         # when known, else first_seen (when we first discovered it).
         _age_cutoff = None
@@ -2469,6 +2482,8 @@ def api_jobs(
             count_query = count_query.where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
+        if _roles_cond is not None:
+            count_query = count_query.where(_roles_cond)
         if _age_cutoff is not None:
             count_query = count_query.where(
                 func.coalesce(Job.posted_at, Job.first_seen) >= _age_cutoff

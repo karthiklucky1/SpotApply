@@ -1400,7 +1400,7 @@
                     <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}"> <div class="flex justify-between items-start gap-2"> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3> <p class="text-[10px] text-slate-500 font-semibold mt-1"> {{ job.company or 'Unknown' }} |  {{ job.location or 'Remote' }}</p> </div> <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span> </div> </div> {% else %}
                     <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-skipped-msg"> No removed or cancelled applications.
                     </div> {% endfor %}
-                </div> </div> </div><!-- /archive row --></div> </div><!-- /view-content-kanban --> <!-- TAB 2 removed (manual apply) --> <!-- TAB 3: Jobs Explorer View --> <div id="view-content-explorer" class="hidden flex flex-col gap-6"> <!-- Filter Bar --> <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end"> <div class="flex-1 min-w-[200px]"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label> <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" /> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label> <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Styles</option> <option value="true">Fully Remote</option> <option value="false">On-site / Hybrid</option> </select> </div> <div class="w-44"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label> <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Jobs</option> <option value="unprocessed">Unprocessed Only</option> <option value="shortlisted">Shortlisted (Fit)</option> <option value="submitted">Submitted Only</option> </select> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label> <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Sources</option> <option value="autofill"> Autofill (GH/Lever/Ashby)</option> <option value="manual"> Manual (LinkedIn/Indeed)</option> </select> </div> <div class="w-48"> <div class="flex justify-between items-center mb-1"> <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label> </div> <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" /> </div> <button id="filter-fresh-btn" onclick="toggleFreshOnly()" class="text-[11px] font-black uppercase tracking-wider py-2.5 px-5 rounded-full border transition duration-200 bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white whitespace-nowrap" title="Show only jobs posted in the last 7 days (already sorted newest first)">🆕 Last 7 days</button> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" /> <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label> </div> <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200"> Reset
+                </div> </div> </div><!-- /archive row --></div> </div><!-- /view-content-kanban --> <!-- TAB 2 removed (manual apply) --> <!-- TAB 3: Jobs Explorer View --> <div id="view-content-explorer" class="hidden flex flex-col gap-6"> <!-- Filter Bar --> <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end"> <div class="flex-1 min-w-[200px]"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label> <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" /> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label> <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Styles</option> <option value="true">Fully Remote</option> <option value="false">On-site / Hybrid</option> </select> </div> <div class="w-44"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label> <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Jobs</option> <option value="unprocessed">Unprocessed Only</option> <option value="shortlisted">Shortlisted (Fit)</option> <option value="submitted">Submitted Only</option> </select> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label> <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Sources</option> <option value="autofill"> Autofill (GH/Lever/Ashby)</option> <option value="manual"> Manual (LinkedIn/Indeed)</option> </select> </div> <div class="w-48"> <div class="flex justify-between items-center mb-1"> <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label> </div> <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" /> </div> <button id="filter-fresh-btn" onclick="toggleFreshOnly()" class="text-[11px] font-black uppercase tracking-wider py-2.5 px-5 rounded-full border transition duration-200 bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white whitespace-nowrap" title="Show only jobs posted in the last 7 days (already sorted newest first)">🆕 Last 7 days</button> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-roles-only" checked onchange="searchJobs()" class="w-4 h-4 rounded accent-emerald-500 cursor-pointer" /> <label for="filter-roles-only" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none" title="Only show jobs whose title matches your target roles">🎯 My roles</label> </div> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" /> <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label> </div> <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-750 transition duration-200"> Reset
                 </button> </div> <!-- Job Explorer Results Table --> <div class="glass rounded-3xl overflow-hidden shadow-2xl"> <div class="overflow-x-auto"> <table class="w-full text-left border-collapse"> <thead> <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest"> <th class="py-4 px-6">Score</th> <th class="py-4 px-4">Title / Company</th> <th class="py-4 px-4">Location</th> <th class="py-4 px-4">Source / Track</th> <th class="py-4 px-4">Status</th> <th class="py-4 px-6 text-right">Actions</th> </tr> </thead> <tbody id="explorer-table-body" class="divide-y divide-slate-800/50 text-xs"> <tr> <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Loading job database...</td> </tr> </tbody> </table> </div> <!-- Table Pagination --> <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400"> <span id="explorer-page-info">Showing page 1 of ...</span> <div class="flex gap-2"> <button id="explorer-btn-first" onclick="explorePage(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button> <button id="explorer-btn-prev" onclick="explorePrevPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button> <button id="explorer-btn-next" onclick="exploreNextPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button> <button id="explorer-btn-last" onclick="exploreLastPage()" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button> </div> </div> </div> </div> <!-- TAB: Ghost Jobs View --> <div id="view-content-ghost" class="hidden flex flex-col gap-6"> <div class="glass rounded-[32px] p-5 border-slate-800 flex items-center gap-4"> <span class="text-2xl shrink-0"></span> <div class="flex-1 min-w-0"> <p class="text-sm font-bold" style="color:var(--ink);">Filtered Ghost Jobs</p> <p class="text-[11px]" style="color:var(--muted);">Jobs removed from company ATS boards, returned HTTP 404/410, or redirected to generic careers pages.</p> </div> <button onclick="loadGhostJobs(1)" class="text-[10px] font-black bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">↻ Refresh</button> </div> <div class="glass rounded-3xl overflow-hidden shadow-2xl"> <div class="overflow-x-auto"> <table class="w-full text-left border-collapse"> <thead> <tr class="border-b border-slate-800 bg-slate-950/30 text-[10px] font-bold text-slate-400 uppercase tracking-widest"> <th class="py-4 px-6">Score</th> <th class="py-4 px-4">Title / Company</th> <th class="py-4 px-4">Location</th> <th class="py-4 px-4">Source</th> <th class="py-4 px-4">Closed Reason</th> <th class="py-4 px-6 text-right">Link</th> </tr> </thead> <tbody id="ghost-table-body" class="divide-y divide-slate-800/50 text-xs"> <tr> <td colspan="6" class="text-center py-16 text-slate-500 font-semibold">Click the tab to load ghost jobs…</td> </tr> </tbody> </table> </div> <div class="flex items-center justify-between p-5 border-t border-slate-800 bg-slate-950/20 text-xs text-slate-400"> <span id="ghost-page-info">Showing page 1 of ...</span> <div class="flex gap-2"> <button id="ghost-btn-first" onclick="loadGhostJobs(1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&laquo;</button> <button id="ghost-btn-prev" onclick="loadGhostJobs(ghostCurrentPage - 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Prev</button> <button id="ghost-btn-next" onclick="loadGhostJobs(ghostCurrentPage + 1)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-4 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">Next</button> <button id="ghost-btn-last" onclick="loadGhostJobs(ghostTotalPages)" class="bg-slate-800 hover:bg-slate-750 text-white font-bold py-2 px-3.5 rounded-full border border-slate-700/50 disabled:opacity-40 disabled:pointer-events-none transition">&raquo;</button> </div> </div> </div> </div> <!-- TAB: Skill Gap View --> <div id="view-content-skills" class="hidden flex flex-col gap-6">
    <div class="glass rounded-[32px] p-5 border-slate-800 flex items-center gap-4">
      <span class="text-2xl shrink-0">🎯</span>
@@ -1483,6 +1483,7 @@
         let explorerScoreVal = 0;
         let explorerTrackVal = '';
         let explorerHideAggregators = false;
+        let explorerRolesOnly = true;  // All Jobs defaults to the user's target roles
 
         // Startup list matching
         const STARTUP_COMPANIES = new Set([
@@ -1705,6 +1706,20 @@
         // Load stats from API
         let distChartInstance = null;
         // Populate the "Target Roles" card from the user's saved target roles.
+        // Compact big numbers: 56242 → 56.2k, 394342 → 394k, 1860 → 1.9k.
+        // Small numbers (<1000) stay exact. Keeps the stat tiles readable.
+        function _trim1(x) {
+            const r = Math.round(x * 10) / 10;
+            return Number.isInteger(r) ? String(r) : r.toFixed(1);
+        }
+        function _fmtK(n) {
+            n = Number(n) || 0;
+            const abs = Math.abs(n);
+            if (abs < 1000) return String(n);
+            if (abs < 1e6) return (abs < 1e5 ? _trim1(n / 1e3) : Math.round(n / 1e3)) + 'k';
+            return (abs < 1e8 ? _trim1(n / 1e6) : Math.round(n / 1e6)) + 'M';
+        }
+
         // These are the roles we scrape & rank jobs for (separate from profile).
         async function loadTargetRoles() {
             const box = document.getElementById('target-roles-list');
@@ -1739,7 +1754,7 @@
                 const stats = await res.json();
                 
                 // Update metrics
-                document.getElementById('stat-pool').textContent = stats.total_jobs.toLocaleString();
+                document.getElementById('stat-pool').textContent = _fmtK(stats.total_jobs);
                 document.getElementById('stat-shortlist').textContent = stats.funnel.shortlisted;
 
                 // Reveal the fit-score analytics only once there's matching data
@@ -1747,9 +1762,9 @@
                 if (_analytics) _analytics.style.display = (stats.total_jobs > 0) ? '' : 'none';
                 
                 // Registry Stats
-                document.getElementById('reg-stat-total').textContent = stats.registry.total_boards;
-                document.getElementById('reg-stat-active').textContent = stats.registry.active_boards;
-                document.getElementById('reg-stat-jobs').textContent = stats.registry.total_validated_jobs.toLocaleString();
+                document.getElementById('reg-stat-total').textContent = _fmtK(stats.registry.total_boards);
+                document.getElementById('reg-stat-active').textContent = _fmtK(stats.registry.active_boards);
+                document.getElementById('reg-stat-jobs').textContent = _fmtK(stats.registry.total_validated_jobs);
 
                 // Freshness stats (measured, not claimed)
                 try {
@@ -1766,12 +1781,12 @@
                         // rather than "old feed".
                         const ageSub = document.getElementById('reg-stat-freshage-sub');
                         if (ageSub && f.scored_feed_jobs != null)
-                            ageSub.textContent = `Median age · ${f.scored_feed_jobs.toLocaleString()} jobs scored`;
+                            ageSub.textContent = `Median age · ${_fmtK(f.scored_feed_jobs)} jobs scored`;
                         if (latEl) latEl.textContent = f.median_post_to_alert_min == null ? '—'
                             : (f.median_post_to_alert_min < 120 ? `${Math.round(f.median_post_to_alert_min)}m` : `${Math.round(f.median_post_to_alert_min / 60)}h`);
                         // Lane health — answers "is anything actually running?"
                         const newEl = document.getElementById('reg-stat-new24');
-                        if (newEl) newEl.textContent = (f.jobs_discovered_24h || 0).toLocaleString();
+                        if (newEl) newEl.textContent = _fmtK(f.jobs_discovered_24h || 0);
                         const hotEl = document.getElementById('reg-stat-hotlane');
                         const hotSub = document.getElementById('reg-stat-hotlane-sub');
                         const pulse = f.pulse || {};
@@ -1782,17 +1797,17 @@
                             hotEl.textContent = mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
                             if (hotSub) {
                                 const floorOk = (pulse.overdue_boards || 0) === 0;
-                                hotSub.textContent = `⚡ ${(pulse.fast_boards || 0).toLocaleString()} boards on the ${pulse.fast_interval_min || 5}-min lane · ` +
-                                    `${(pulse.live_boards || 0).toLocaleString()} swept ≤${pulse.floor_interval_min || 60}m` +
-                                    (floorOk ? '' : ` (${pulse.overdue_boards.toLocaleString()} catching up)`) +
-                                    ` · +${(pulse.new_jobs_24h || 0).toLocaleString()} new (24h)`;
+                                hotSub.textContent = `⚡ ${_fmtK(pulse.fast_boards || 0)} boards on the ${pulse.fast_interval_min || 5}-min lane · ` +
+                                    `${_fmtK(pulse.live_boards || 0)} swept ≤${pulse.floor_interval_min || 60}m` +
+                                    (floorOk ? '' : ` (${_fmtK(pulse.overdue_boards)} catching up)`) +
+                                    ` · +${_fmtK(pulse.new_jobs_24h || 0)} new (24h)`;
                             }
                         } else if (hotEl) {
                             if (f.hot_lane_last_run) {
                                 const ts = /Z$|[+-]\d\d:\d\d$/.test(f.hot_lane_last_run) ? f.hot_lane_last_run : f.hot_lane_last_run + 'Z';
                                 const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
                                 hotEl.textContent = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
-                                if (hotSub) hotSub.textContent = `${f.hot_lane_runs_24h || 0} runs · ${(f.hot_lane_jobs_24h || 0).toLocaleString()} fetched · +${(f.hot_lane_inserted_24h || 0).toLocaleString()} added (24h)`;
+                                if (hotSub) hotSub.textContent = `${f.hot_lane_runs_24h || 0} runs · ${_fmtK(f.hot_lane_jobs_24h || 0)} fetched · +${_fmtK(f.hot_lane_inserted_24h || 0)} added (24h)`;
                             } else {
                                 hotEl.textContent = pulse.enabled ? 'starting…' : 'idle';
                                 if (hotSub) hotSub.textContent = pulse.enabled ? 'Pulse lane boots ~2 min after deploy' : 'No board-polling runs recorded in the last 24h';
@@ -2664,6 +2679,9 @@
             document.getElementById('filter-track').value = '';
             document.getElementById('filter-hide-aggregators').checked = false;
             explorerHideAggregators = false;
+            const _roReset = document.getElementById('filter-roles-only');
+            if (_roReset) _roReset.checked = true;  // "my roles" stays on by default
+            explorerRolesOnly = true;
             document.getElementById('score-val').textContent = 0;
             _setFreshState(0);  // reset Fresh-first button
 
@@ -2710,6 +2728,8 @@
                 explorerStatusVal = document.getElementById('filter-status').value;
                 explorerTrackVal = document.getElementById('filter-track').value;
                 explorerHideAggregators = document.getElementById('filter-hide-aggregators').checked;
+                const _ro = document.getElementById('filter-roles-only');
+                explorerRolesOnly = _ro ? _ro.checked : true;
                 loadJobsPage(1);
             }, 300);
         }
@@ -2762,6 +2782,7 @@
             if (explorerTrackVal) url += `&track=${explorerTrackVal}`;
             if (explorerScoreVal > 0) url += `&min_score=${explorerScoreVal}`;
             if (explorerHideAggregators) url += `&hide_aggregators=1`;
+            if (explorerRolesOnly) url += `&roles_only=1`;
             // Newest-posted first by default (fresh first). The toggle further
             // restricts to the last 7 days or the last 24h ("New today").
             url += `&sort=fresh`;
@@ -6135,7 +6156,7 @@
             if (!r.ok) return;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            set('stat-pool', d.counts.pool);
+            set('stat-pool', _fmtK(d.counts.pool));
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
@@ -6188,7 +6209,7 @@
             if (!r.ok) return;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            set('stat-pool', d.counts.pool);
+            set('stat-pool', _fmtK(d.counts.pool));
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
