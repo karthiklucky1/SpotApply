@@ -25,8 +25,10 @@ if settings.use_supabase:
     engine = create_engine(
         settings.sqlite_url,   # returns database_url when use_supabase=True
         echo=False,
-        pool_size=5,
-        max_overflow=10,
+        # Env-tunable (DB_POOL_SIZE / DB_MAX_OVERFLOW). The old hardcoded 5+10
+        # starved funnel/registry/web whenever the lanes overlapped.
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
         pool_pre_ping=True,
         pool_recycle=280,      # under Supabase's ~5-min pooler idle timeout
         connect_args={

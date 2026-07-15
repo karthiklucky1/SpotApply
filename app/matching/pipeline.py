@@ -49,6 +49,38 @@ _COMPANY_COOLDOWN_DAYS = 40   # once at the cap, a company is locked until its
 log = logging.getLogger(__name__)
 
 
+def _displace_weaker_shortlisted(session, job: Job, score: float, active) -> bool:
+    """Free ONE company-cap slot by evicting the weakest cap-holder that is
+    still just SHORTLISTED and loses to the new job by at least the configured
+    margin. Only ever displaces untouched shortlist entries — anything the user
+    or agent has acted on (TAILORED and beyond) keeps its slot. Returns True
+    when a slot was freed. The displaced job keeps its (SKIPPED) application
+    row, so the re-shortlist backstop can never bounce it straight back."""
+    from app.config import settings as _cap_settings
+    margin = max(0, _cap_settings.company_cap_displace_margin)
+    candidates = [a for a in active if a.status == ApplicationStatus.SHORTLISTED]
+    if not candidates:
+        return False
+
+    def _holder_score(a: Application) -> float:
+        j = session.get(Job, a.job_id)
+        return float(j.rerank_score) if (j and j.rerank_score is not None) else 0.0
+
+    weakest = min(candidates, key=_holder_score)
+    old_score = _holder_score(weakest)
+    if float(score) < old_score + margin:
+        return False
+    weakest.status = ApplicationStatus.SKIPPED
+    weakest.notes = (weakest.notes or "") + (
+        f"\nDisplaced by higher-scoring '{job.title}' "
+        f"({score:.0f} vs {old_score:.0f}) under the per-company cap."
+    )
+    session.add(weakest)
+    log.info("Company cap: displaced shortlisted app %s at %s (score %.0f) for "
+             "stronger '%s' (%.0f)", weakest.id, job.company, old_score, job.title, float(score))
+    return True
+
+
 def _app_age_days(app: Application) -> float:
     """Days since this application became active (submission date if known)."""
     ref = app.submitted_at or app.created_at
@@ -69,6 +101,12 @@ def _check_and_enforce_company_cap(session, job: Job, score: float) -> bool:
         until its existing active applications are ``_COMPANY_COOLDOWN_DAYS`` (40)
         days old. Applications past that age are treated as expired: they are
         marked SKIPPED to reopen the slot, and the new (fresher) role is allowed.
+      • DISPLACEMENT: when still at the cap, a new job that outscores the weakest
+        cap-holder which is merely SHORTLISTED (untouched — no tailoring, no
+        submission) by ``company_cap_displace_margin`` points evicts it (→
+        SKIPPED). A better role at the same company should not sit at "Reviewed"
+        for 40 days behind a weaker one nobody acted on. Applications with any
+        invested effort (TAILORED and beyond) are NEVER displaced.
 
     Returns True if a new application is allowed (slots have been freed if needed),
     False if the company is still within cooldown and the job must be skipped.
@@ -90,6 +128,10 @@ def _check_and_enforce_company_cap(session, job: Job, score: float) -> bool:
 
     # At the cap — only proceed if enough existing apps have aged out (>=40d).
     expired = [a for a in active if _app_age_days(a) >= _COMPANY_COOLDOWN_DAYS]
+    if not expired and _cap_settings.company_cap_displace_enabled:
+        displaced = _displace_weaker_shortlisted(session, job, score, active)
+        if displaced:
+            return True
     if not expired:
         log.info(
             "Company cap: %s already has %d active app(s), none older than %dd — "

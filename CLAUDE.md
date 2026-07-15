@@ -110,6 +110,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   4096-token cache minimum so prompt caching actually engages; semantic adoption
   bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS` (150/user/pass). Scoring-lane work
   list is round-robin across users (fair + cache-friendly).
+- **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
+  weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
+  displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.
+- **DB discipline:** NEVER hold a session across an LLM call (scoring lane is
+  read → LLM → idempotent write-back). Pool is env-tunable (`DB_POOL_SIZE` 10 /
+  `DB_MAX_OVERFLOW` 20) — the old 5+10 starved funnel/web when lanes overlapped.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

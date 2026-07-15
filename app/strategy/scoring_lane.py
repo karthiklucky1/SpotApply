@@ -142,25 +142,58 @@ def _pick_provider(jid: int, ctx: "_Ctx") -> Optional[str]:
     return "anthropic" if (jid % 100) < int(round(share * 100)) else "openai"
 
 
+def _stamp_job(jid: int, ghost: Optional[Tuple],
+               score: float, reasoning: str,
+               extras: Optional[Tuple] = None) -> bool:
+    """Short write-back session. Re-checks idempotency (another lane may have
+    scored the job while we were on the LLM). Returns False if it lost the race."""
+    with get_session() as session:
+        job = session.get(Job, jid)
+        if not job or job.rerank_score is not None or job.is_closed:
+            return False
+        if ghost is not None:
+            job.ghost_score, job.ghost_flags = ghost
+        job.rerank_score = score
+        job.rerank_reasoning = reasoning
+        if extras is not None:
+            breakdown, hp_fn = extras
+            job.rerank_breakdown = breakdown
+            try:
+                hp_fn(job, session)
+            except Exception:
+                pass
+        session.add(job)
+        session.commit()
+    return True
+
+
 def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float], Optional[str]]]:
     """Score one queued job. Returns ("scored"|"drained", jid, score, provider)
     or None. ``provider`` is which backend produced the final score (for the
     dual-provider split stats); None for drained/ghost/single-provider jobs.
-    Idempotent: a job already scored (by another worker / lane) is skipped."""
+    Idempotent: a job already scored (by another worker / lane) is skipped.
+
+    DB DISCIPLINE: a connection is held only for the short read/write phases —
+    NEVER across an LLM call. The old shape kept one session open for the whole
+    function, so 20 workers × multi-second LLM latency pinned 20 connections and
+    starved the pool for everything else (funnel/registry/web all timed out with
+    "QueuePool limit reached")."""
     from app.matching.filters import score_ghost
     from app.matching.hire_probability import (
         blended_score as compute_blended, score_hire_probability,
     )
+
+    # Phase 1 — short session: load + idempotency + ghost gate (cheap, DB+text).
+    ghost: Optional[Tuple] = None
     with get_session() as session:
         job = session.get(Job, jid)
         if not job or job.rerank_score is not None or job.is_closed:
             return None
-        # Ghost gate (cheap, DB+text) before any LLM spend.
         try:
             g = score_ghost(job, session)
-            job.ghost_score = g.ghost_score
-            job.ghost_flags = g.flags_json
+            ghost = (g.ghost_score, g.flags_json)
             if g.is_ghost:
+                job.ghost_score, job.ghost_flags = ghost
                 job.rerank_score = 5.0
                 job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
                 session.add(job)
@@ -168,41 +201,43 @@ def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float],
                 return ("drained", jid, None, None)
         except Exception as e:
             log.debug("scoring ghost check failed for %d: %s", jid, e)
+        # Detach with its loaded attributes — the LLM phase reads job fields
+        # only, so it must not keep the session (and its connection) alive.
+        session.expunge(job)
 
-        # Cascade Tier-1: drain clear misfits without touching the final scorer.
-        if ctx.use_prescore:
-            pre = ctx.reranker.prescore(ctx.resume, job)
-            if pre is not None and pre[0] < ctx.gate:
-                job.rerank_score = float(pre[0])
-                job.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
-                session.add(job)
-                session.commit()
+    # Phase 2 — NO session held: the slow LLM calls.
+    # Cascade Tier-1: drain clear misfits without touching the final scorer.
+    if ctx.use_prescore:
+        pre = ctx.reranker.prescore(ctx.resume, job)
+        if pre is not None and pre[0] < ctx.gate:
+            reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
+            if _stamp_job(jid, ghost, float(pre[0]), reasoning):
                 return ("drained", jid, None, None)
+            return None  # lost the race to another lane
 
-        # Tier-2: authoritative score. Option A routes ~60% to Claude, the rest
-        # to GPT-4o (both on the same rubric); the rule pre-filter runs in .score().
-        provider = _pick_provider(jid, ctx)
-        try:
-            score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
-        except Exception as e:
-            log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
-            session.rollback()
-            _note_score_failure(jid)  # attempt ceiling: defer after repeated failures
-            return None
-        _note_score_success(jid)
-        job.rerank_score = score
-        job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
-        job.rerank_breakdown = json.dumps(breakdown) if breakdown else None
-        try:
-            hp = score_hire_probability(job, session)
-            job.hire_probability_score = hp.score
-            job.hire_probability_signals = json.dumps(hp.signals)
-            job.blended_score = compute_blended(score, hp.score)
-        except Exception:
-            pass
-        session.add(job)
-        session.commit()
-        return ("scored", jid, float(score), provider)
+    # Tier-2: authoritative score (dual routing when enabled; the rule
+    # pre-filter runs inside .score()).
+    provider = _pick_provider(jid, ctx)
+    try:
+        score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
+    except Exception as e:
+        log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
+        _note_score_failure(jid)  # attempt ceiling: defer after repeated failures
+        return None
+    _note_score_success(jid)
+
+    # Phase 3 — short session: idempotent write-back + hire-probability blend.
+    def _hp(job, session):
+        hp = score_hire_probability(job, session)
+        job.hire_probability_score = hp.score
+        job.hire_probability_signals = json.dumps(hp.signals)
+        job.blended_score = compute_blended(score, hp.score)
+
+    reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
+    extras = (json.dumps(breakdown) if breakdown else None, _hp)
+    if not _stamp_job(jid, ghost, score, reasoning, extras):
+        return None  # another lane scored it while we were on the LLM
+    return ("scored", jid, float(score), provider)
 
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:

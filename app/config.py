@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     llm_daily_final_cap: int = 5000       # LLM_DAILY_FINAL_CAP — max Tier-2 (authoritative) LLM scores per UTC day, all lanes combined. A runaway queue can no longer spend unbounded money overnight; jobs past the cap stay Queued for tomorrow. 0 = unlimited.
     scoring_fail_max_attempts: int = 3    # SCORING_FAIL_MAX_ATTEMPTS — after this many failed final-score attempts a job is deferred (sits out) instead of re-queued every 90s forever
     scoring_fail_defer_hours: float = 6.0 # SCORING_FAIL_DEFER_HOURS — how long a repeatedly-failing job sits out before it may be retried
+    # ── DB connection pool (Postgres/Supabase only) ───────────────────────────
+    # Sized for the background lanes + web traffic. Scoring workers no longer
+    # hold a connection during LLM calls (they open short sessions before/after),
+    # so the pool does NOT need to scale with scoring_workers — but it does need
+    # headroom over the old 5+10, which starved funnel/registry/web requests
+    # ("QueuePool limit ... reached" errors) whenever the lanes overlapped.
+    db_pool_size: int = 10                # DB_POOL_SIZE
+    db_max_overflow: int = 20             # DB_MAX_OVERFLOW
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
@@ -206,6 +214,13 @@ class Settings(BaseSettings):
     shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
     shortlist_max_age_days: int = 14     # SHORTLIST_MAX_AGE_DAYS — a posting older than this is likely filled/ghosted, so a job that has sat SHORTLISTED (never tailored/applied) this long is auto-removed from the board (→ SKIPPED, which also frees the per-company slot). Keeps the shortlist to fresh, applyable roles. 0 disables the prune.
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
+    # When a company is at the cap and a NEW job scores clearly higher than a
+    # cap-holding application that is still just SHORTLISTED (untouched — not
+    # tailored/submitted), the weaker shortlist entry is displaced (→ SKIPPED)
+    # so the stronger role takes the slot. Applications the user or agent has
+    # invested effort in (TAILORED and beyond) are NEVER displaced.
+    company_cap_displace_enabled: bool = True  # COMPANY_CAP_DISPLACE_ENABLED
+    company_cap_displace_margin: int = 5       # COMPANY_CAP_DISPLACE_MARGIN — new job must beat the weakest shortlisted holder by at least this many points (hysteresis against churn)
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user
     # Onboarding: after a new user's résumé/roles land we first fill their board
