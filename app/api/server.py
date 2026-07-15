@@ -2763,16 +2763,13 @@ def dashboard(request: Request, all_submitted: bool = False):
             capped.append((app_model, job_model))
         return capped
 
-    # NOTE: no _cap_per_company on the shortlist. The pipeline already enforces
-    # settings.company_cap active applications per company AT CREATION
-    # (_check_and_enforce_company_cap), so a second, display-time cap only hid
-    # jobs that were legitimately shortlisted — the "count is higher than the
-    # cards shown" bug. manual_queue keeps the cap (it isn't creation-capped).
+    # Keep the per-company display cap (a safety net on top of the pipeline's
+    # creation-time cap, and what stops one company flooding the view), but derive
+    # the badge/pill count from the list AFTER capping — every "Shortlisted" number
+    # on the page then equals the cards actually rendered, so it can never climb
+    # past what the board is showing (the old "count is higher than the cards" bug).
+    shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
-
-    # The badge/pill count IS the rendered list — every "Shortlisted" number on
-    # the page now equals the number of cards, so it can never climb past what
-    # the board is showing.
     total_shortlisted_count = len(shortlisted)
 
     return templates.TemplateResponse(
