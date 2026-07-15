@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Optional, Tuple
@@ -29,6 +30,20 @@ from typing import Optional, Tuple
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+# LOCAL_SCORER_PATH accepts either a local directory OR a Hugging Face Hub id
+# ("username/hirepath-scorer") — the hub route means deploying a new model to
+# Railway is just an env var (+ HF_TOKEN for private repos), no file copying.
+_HUB_ID_RE = re.compile(r"^[\w.\-]+/[\w.\-]+$")
+
+
+def _model_source() -> Optional[str]:
+    path = settings.local_scorer_path
+    if Path(path).is_dir():
+        return str(Path(path))
+    if _HUB_ID_RE.match(path):
+        return path
+    return None
 
 # Cross-encoder inputs are capped at 512 tokens total, so the pair packs the
 # most decision-relevant content first. Slices are deliberately modest — the
@@ -67,7 +82,7 @@ class LocalScorer:
             return True
         if self._load_failed:
             return False
-        return Path(settings.local_scorer_path).is_dir()
+        return _model_source() is not None
 
     def _ensure_loaded(self) -> bool:
         if self._model is not None:
@@ -79,18 +94,18 @@ class LocalScorer:
                 return True
             if self._load_failed:
                 return False
-            path = Path(settings.local_scorer_path)
-            if not path.is_dir():
+            source = _model_source()
+            if source is None:
                 self._load_failed = True
                 return False
             try:
                 from sentence_transformers import CrossEncoder
-                self._model = CrossEncoder(str(path), max_length=512)
-                log.info("LocalScorer: loaded distilled model from %s", path)
+                self._model = CrossEncoder(source, max_length=512)
+                log.info("LocalScorer: loaded distilled model from %s", source)
                 return True
             except Exception as e:
                 self._load_failed = True
-                log.warning("LocalScorer: failed to load model at %s (%s) — disabled", path, e)
+                log.warning("LocalScorer: failed to load model at %s (%s) — disabled", source, e)
                 return False
 
     def score(self, resume_text: str, job) -> Optional[float]:

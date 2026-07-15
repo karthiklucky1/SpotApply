@@ -138,3 +138,15 @@ def test_shadow_report_aggregates(monkeypatch):
     assert r["within10_pct"] == 75                    # 3 of 4 within 10 pts
     # threshold=35: (80,78)✓ (40,45)✓ (90,60)✓ (30,33)✓ → all same side
     assert r["shortlist_decision_agreement_pct"] == 100.0
+
+
+def test_hub_id_is_accepted_as_model_source(monkeypatch):
+    monkeypatch.setattr(settings, "local_scorer_path", "karthik/hirepath-scorer")
+    assert ls._model_source() == "karthik/hirepath-scorer"
+    scorer = ls.LocalScorer()
+    assert scorer.available() is True                 # will attempt hub download
+
+
+def test_plain_missing_path_is_not_a_source(monkeypatch):
+    monkeypatch.setattr(settings, "local_scorer_path", "data/models/not-there")
+    assert ls._model_source() is None
