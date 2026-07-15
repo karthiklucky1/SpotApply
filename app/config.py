@@ -199,6 +199,7 @@ class Settings(BaseSettings):
     daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)
     daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
     shortlist_score_threshold: int = 35  # lowered from 40 — min LLM rerank score (0-100) to shortlist
+    shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user

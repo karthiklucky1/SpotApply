@@ -6132,6 +6132,7 @@
     // there"). This poller closes that gap: it loads the first matches into an
     // empty board automatically, and for later arrivals pops a one-tap banner so
     // the user is never yanked mid-read.
+    let _shortlistBaseline = null;  // shortlist count at page load; banner fires only above it
     function _renderedShortlistCount() {
         const c = document.getElementById('shortlisted-container');
         return c ? c.querySelectorAll('.jobrow').length : 0;
@@ -6178,17 +6179,23 @@
             const rendered = _renderedShortlistCount();
             const server = d.counts.shortlisted || 0;
             const emptyState = document.getElementById('empty-shortlist-state');
-            if (server > rendered) {
-                // Empty board + first matches → load them in for the user (nothing
-                // on screen to disrupt). Otherwise a one-tap banner.
-                if (emptyState && rendered === 0 && _canAutoReload()) {
-                    window.location.reload();
-                    return;
-                }
-                _showNewMatchesBanner(server - rendered);
-            } else {
-                _clearNewMatchesBanner();
+
+            // Baseline = shortlist size at page load. The banner fires only when the
+            // server count climbs ABOVE it — i.e. jobs added AFTER load — never for
+            // a render-cap gap (the board already renders up to shortlist_render_cap).
+            // Comparing to the rendered card count instead caused an endless "61 new
+            // matches" that a reload could never clear.
+            if (_shortlistBaseline === null) _shortlistBaseline = server;
+
+            // Brand-new user: first matches land in an empty board → load them in
+            // (nothing on screen to disrupt).
+            if (emptyState && rendered === 0 && server > 0 && _canAutoReload()) {
+                window.location.reload();
+                return;
             }
+            const fresh = server - _shortlistBaseline;
+            if (fresh > 0) _showNewMatchesBanner(fresh);
+            else _clearNewMatchesBanner();
         } catch (e) { /* silent */ }
     }
     // Steady heartbeat so background-scored jobs appear on their own (a discovery

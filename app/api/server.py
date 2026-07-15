@@ -2562,11 +2562,12 @@ def dashboard(request: Request, all_submitted: bool = False):
         ]
         
         with get_session() as session:
-            # 1. Fetch Shortlisted (limit to 100 to keep cache and parsing fast).
-            # Order by FIT (blended_score), not updated_at: with >100 shortlisted
-            # apps, an updated_at window would drop the best-fit ones outside the
-            # 100 most-recently-touched — the Python display sort below then only
-            # ever saw the wrong slice. Recency stays as the tiebreak.
+            # 1. Fetch Shortlisted. Render cap covers a full day's shortlisting
+            # (settings.shortlist_render_cap) — the old hard 100 HID jobs: with 161
+            # shortlisted the board showed 100 while the header/live count said 161,
+            # so 61 jobs never appeared and the "new matches" banner looped forever.
+            # Order by FIT (blended_score) so if the cap ever does truncate, it keeps
+            # the best-fit ones. Recency stays as the tiebreak.
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
@@ -2575,16 +2576,23 @@ def dashboard(request: Request, all_submitted: bool = False):
                 nullslast(desc(Job.blended_score)),
                 nullslast(desc(Job.rerank_score)),
                 Application.updated_at.desc(),
-            ).limit(100)
+            ).limit(settings.shortlist_render_cap)
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
-            # The badge/pill count is set from the RENDERED list further down
-            # (total_shortlisted_count = len(shortlisted)) so every "Shortlisted"
-            # number on the page equals the number of cards actually on the board.
-            # A separate uncapped COUNT used to report a bigger number than the
-            # list showed — "count went up but the jobs aren't there" — because the
-            # display drops per-company duplicates and caps the page.
+
+            # True (uncapped) shortlist size — the honest total shown on the header
+            # pill, tab and section badge, and the baseline the live "new matches"
+            # banner compares against so it fires ONLY for jobs added after load
+            # (never for a render-cap gap, which is what caused the endless "61 new").
+            q_short_total = select(func.count(Application.id)).join(Job).where(
+                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
+            ).where(
+                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+            )
+            if _uid_filter:
+                q_short_total = q_short_total.where(Application.user_id == uid)
+            total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
 
             # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
             q_sub = select(Application, Job).join(Job).where(
@@ -2764,13 +2772,13 @@ def dashboard(request: Request, all_submitted: bool = False):
         return capped
 
     # Keep the per-company display cap (a safety net on top of the pipeline's
-    # creation-time cap, and what stops one company flooding the view), but derive
-    # the badge/pill count from the list AFTER capping — every "Shortlisted" number
-    # on the page then equals the cards actually rendered, so it can never climb
-    # past what the board is showing (the old "count is higher than the cards" bug).
+    # creation-time cap, what stops one company flooding the view, and what the
+    # blank-company-not-collapsed behaviour depends on). total_shortlisted_count is
+    # the true uncapped total (computed above); the template shows a "top N shown"
+    # note when the render/per-company cap leaves rendered < total, so the number
+    # and the cards never silently disagree.
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
-    total_shortlisted_count = len(shortlisted)
 
     return templates.TemplateResponse(
         request=request,
