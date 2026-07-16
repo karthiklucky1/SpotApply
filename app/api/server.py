@@ -129,6 +129,25 @@ class SupabaseSessionMiddleware(BaseHTTPMiddleware):
             pass
         return response
 
+class CanonicalHostMiddleware(BaseHTTPMiddleware):
+    """301 apex/www traffic to the canonical host, preserving path + query.
+
+    The bare domain points at Railway (valid TLS) and lands here; Namecheap's
+    free URL-redirect can't serve HTTPS, so browsers that try https:// first
+    saw a dead connection instead of the app.
+    """
+    async def dispatch(self, request: StarletteRequest, call_next):
+        host = request.headers.get("host", "").split(":")[0].lower()
+        redirect_hosts = {h.strip().lower() for h in
+                          settings.canonical_redirect_hosts.split(",") if h.strip()}
+        if host in redirect_hosts and settings.canonical_host:
+            url = f"https://{settings.canonical_host}{request.url.path}"
+            if request.url.query:
+                url += f"?{request.url.query}"
+            from starlette.responses import RedirectResponse
+            return RedirectResponse(url, status_code=301)
+        return await call_next(request)
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # CORS Configuration
@@ -142,6 +161,7 @@ app.add_middleware(
 )
 
 app.add_middleware(SupabaseSessionMiddleware)
+app.add_middleware(CanonicalHostMiddleware)
 
 
 # ── Security audit logging ────────────────────────────────────────────────────
