@@ -352,6 +352,12 @@ class UnknownField:
 # --- generic personal-info map ---
 
 def _personal_fields() -> dict:
+    # Per-user identity (set for non-founder fills) takes precedence over the
+    # founder's qa_resolver/applicant_* globals, so one user's form is never
+    # filled with another user's — or the founder's — name/email/phone.
+    owner_identity = _autofill_identity.get()
+    if owner_identity:
+        return dict(owner_identity)
     data = qa_resolver.data
     identity = data.get("identity", {})
     return {
@@ -570,6 +576,71 @@ def _current_owner() -> str | None:
     single-user/local mode (which matches legacy NULL-user_id rows)."""
     owner = _autofill_owner.get()
     return owner if owner and owner != "local" else None
+
+
+# ── Per-application IDENTITY scope (cross-tenant PII leak guard) ───────────────
+# The filler must fill each user's form with THEIR OWN name/email/phone — never
+# the founder's. _autofill_identity holds the owning user's identity for the
+# duration of one fill; _personal_fields() reads it when set. It is only set for
+# NON-founder users (the founder path keeps its existing qa_resolver/applicant_*
+# behavior unchanged), and only when autofill_multi_user_enabled is on.
+_autofill_identity: contextvars.ContextVar = contextvars.ContextVar("autofill_identity", default=None)
+
+
+def _is_autofill_founder(uid: str | None) -> bool:
+    """True for the local dev user or the configured founder — the only users
+    whose autofill may fall back to the applicant_* / qa_resolver globals."""
+    if uid is None or uid == "local":
+        return True
+    return bool(settings.founder_user_id) and uid == settings.founder_user_id
+
+
+def _build_owner_identity(uid: str | None) -> dict | None:
+    """Identity dict from the owning user's UserProfile, or None if the profile
+    is too incomplete to safely fill a form (fail closed — better to refuse than
+    to submit under the wrong/founder identity)."""
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        p = _get_or_create_profile(user_id=uid)
+    except Exception:
+        return None
+    first = (getattr(p, "first_name", "") or "").strip()
+    email = (getattr(p, "email", "") or "").strip()
+    if not first or not email:
+        return None  # incomplete → caller refuses to autofill
+    return {
+        "first_name": first,
+        "last_name": (getattr(p, "last_name", "") or "").strip(),
+        "email": email,
+        "phone": (getattr(p, "phone", "") or "").strip(),
+        "location": (getattr(p, "location", "") or "").strip(),
+        "github": (getattr(p, "github_url", "") or "").strip(),
+        "linkedin": (getattr(p, "linkedin_url", "") or "").strip(),
+    }
+
+
+def _set_fill_owner(app_user_id: str | None) -> bool:
+    """Establish the owner + identity scope for one autofill run.
+
+    Returns True if autofill may proceed, False if it must be refused (a
+    non-founder user while multi-user autofill is disabled, or a non-founder
+    with an incomplete profile). Always call before filling.
+    """
+    _autofill_owner.set(app_user_id)
+    if _is_autofill_founder(app_user_id):
+        _autofill_identity.set(None)  # founder/local → existing behavior
+        return True
+    if not settings.autofill_multi_user_enabled:
+        log.warning("Autofill refused for user %s — AUTOFILL_MULTI_USER_ENABLED is off "
+                    "(a non-founder form must not be filled with founder PII).", app_user_id)
+        return False
+    identity = _build_owner_identity(app_user_id)
+    if not identity:
+        log.warning("Autofill refused for user %s — profile too incomplete to fill safely "
+                    "(need at least first name + email).", app_user_id)
+        return False
+    _autofill_identity.set(identity)
+    return True
 
 
 def _scope_answer_memory(query, owner: str | None):
@@ -1038,9 +1109,12 @@ async def _fill_greenhouse(page: Page, resume_docx: str, cover_text: str, job: J
     data = qa_resolver.data
     eeo = data.get("eeo", {})
     eeo_fields = {
-        "gender":             eeo.get("gender", "Male"),
+        # Decline by default — never inject one user's (or the founder's)
+        # demographics into another's EEO form. Declining is also the
+        # recommended, bias-neutral answer.
+        "gender":             eeo.get("gender", "Decline to self-identify"),
         "hispanic_ethnicity": "No" if not eeo.get("hispanic_latino", False) else "Yes",
-        "race":               eeo.get("race", "Asian"),
+        "race":               eeo.get("race", "Decline to self-identify"),
         "veteran_status":     eeo.get("veteran_status", "I am not a protected veteran"),
         "disability_status":  eeo.get("disability_status", "No, I do not have a disability, or history/record of having a disability"),
     }
@@ -1949,9 +2023,11 @@ async def _autofill_one(application_id: int) -> List[UnknownField]:
         apply_url = app.apply_url or job.url
         resume_path = app.tailored_resume_path
         cover_path = app.cover_letter_path
-        # Scope all AnswerMemory reads/writes in this fill to the app's owner so
-        # one tenant's cached answers never leak into another's form.
-        _autofill_owner.set(app.user_id)
+        _owner_uid = app.user_id
+    # Scope identity + AnswerMemory to the app's owner, and refuse to fill a
+    # non-founder's form with founder PII (see _set_fill_owner). Fail closed.
+    if not _set_fill_owner(_owner_uid):
+        return []
 
     cover_text = ""
     if cover_path:
@@ -2492,10 +2568,7 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         job = session.get(Job, app.job_id)
         job_company = job.company
         job_title = job.title
-
-        # Scope AnswerMemory to this application's owner for the whole fill (the
-        # async _autofill_one sets it too, but the sync path also reads memory).
-        _autofill_owner.set(app.user_id)
+        _owner_uid = app.user_id
 
         today_count = _todays_submission_count(session, app.user_id)
         
@@ -2514,6 +2587,12 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
             except Exception as e:
                 log.warning("Telegram notification failed: %s", e)
             return []
+
+    # Scope identity + AnswerMemory to the owner, and refuse to fill a
+    # non-founder's form with founder PII (fail closed). Must run before any
+    # fill/prep touches _personal_fields() or AnswerMemory.
+    if not _set_fill_owner(_owner_uid):
+        return []
 
     # 1b. Manual-track jobs: don't autofill — just prep materials and notify
     with get_session() as session:

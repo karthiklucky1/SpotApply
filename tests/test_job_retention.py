@@ -31,8 +31,10 @@ def scenario():
             "closed_recent": _mk_job(s, "ret-cr", True, RECENT),  # keep (too new)
             "open_old": _mk_job(s, "ret-oo", False, OLD),         # keep (not closed)
         }
-        app = Application(job_id=ids["closed_old_applied"], status=ApplicationStatus.SUBMITTED)
-        s.add(app)
+        # Hermetic: clear any stray applications other tests left on these ids,
+        # then attach exactly one to closed_old_applied.
+        s.exec(delete(Application).where(Application.job_id.in_(list(ids.values()))))
+        s.add(Application(job_id=ids["closed_old_applied"], status=ApplicationStatus.SUBMITTED))
         s.commit()
     yield ids
     with get_session() as s:

@@ -148,6 +148,17 @@ class Settings(BaseSettings):
     applicant_linkedin: str = ""
     applicant_work_auth: str = ""
 
+    # Autofill multi-tenancy guard. The Playwright filler historically sourced
+    # identity (name/email/phone/EEO) from the process-global qa_resolver +
+    # applicant_* defaults above — i.e. the FOUNDER's PII — for every user's form.
+    # Until the per-user identity path is browser-verified, autofill runs ONLY for
+    # the founder (founder_user_id) or the local dev user; a non-founder's autofill
+    # is refused rather than risk submitting an application under someone else's
+    # identity. Flip autofill_multi_user_enabled=True only after testing that a
+    # second real account fills with ITS OWN profile data.
+    autofill_multi_user_enabled: bool = False  # AUTOFILL_MULTI_USER_ENABLED
+    founder_user_id: str = ""                  # FOUNDER_USER_ID — Supabase user_id backing applicant_* defaults
+
     # Matching
     min_match_score: float = 0.15          # lowered from 0.20 — cross-encoder floor
     top_k_rerank: int = 600               # final candidate pool size returned by retrieval
