@@ -1233,6 +1233,18 @@ templates.env.globals["urgency_of"] = _urgency_of
 
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
+@app.get("/favicon.svg")
+@app.get("/favicon.ico")
+def serve_favicon():
+    """Serve the brand mark at the canonical paths browsers and search crawlers
+    request by default (a data-URI <link> alone isn't reliably picked up by
+    Google's favicon crawler, so the search result showed a generic globe)."""
+    import os
+    from fastapi.responses import FileResponse
+    file_path = os.path.join(os.path.dirname(__file__), "..", "static", "favicon.svg")
+    return FileResponse(file_path, media_type="image/svg+xml")
+
+
 @app.get("/robots.txt")
 def serve_robots():
     import os

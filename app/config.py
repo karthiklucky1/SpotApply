@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -107,6 +108,24 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""        # public anon key (safe to expose in browser)
     supabase_service_role_key: str = ""  # service role key (server-only, never expose)
     database_url: str = ""             # postgresql://postgres:[password]@db.xxxx.supabase.co:5432/postgres
+
+    @field_validator("supabase_url", mode="after")
+    @classmethod
+    def _normalize_supabase_url(cls, v: str) -> str:
+        """Self-heal a scheme-less Supabase URL.
+
+        A value like ``auth.spotapply.ai`` (pasted from the custom-domain setup
+        without ``https://``) makes supabase-js throw ``Invalid supabaseUrl:
+        Must be a valid HTTP or HTTPS URL`` in the browser — which aborts the
+        auth script before ``handleGoogle`` is even defined, so BOTH email and
+        Google sign-in silently break — and also breaks the server Storage
+        client, so résumés stop loading and scoring goes to zero. Prepending the
+        scheme + trimming a trailing slash makes that misconfiguration harmless.
+        """
+        v = (v or "").strip().rstrip("/")
+        if v and not v.startswith(("http://", "https://")):
+            v = "https://" + v
+        return v
 
     @property
     def use_supabase(self) -> bool:
