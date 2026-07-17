@@ -445,26 +445,34 @@ async def _registry_maintenance_once(cycle: int) -> None:
     _log.info("Registry maintenance: validated %d boards", validated)
     # Shared-pool retention: close shared postings older than 45 days so the
     # scrape-once pool doesn't grow unbounded (adoption ignores closed rows).
+    # A bulk UPDATE (not a load-then-set loop) so retention itself doesn't stream
+    # full job rows out of Postgres.
     try:
         from datetime import datetime as _rdt, timedelta as _rtd
+        from sqlalchemy import update as _sqlupdate
         from app.db.models import Job as _Job
         from app.discovery.pipeline import SHARED_POOL_USER
         cutoff = _rdt.utcnow() - _rtd(days=45)
         with get_session() as session:
-            olds = session.exec(
-                select(_Job).where(_Job.user_id == SHARED_POOL_USER,
-                                   _Job.is_closed == False,  # noqa: E712
-                                   _Job.first_seen < cutoff)
-            ).all()
-            for j in olds:
-                j.is_closed = True
-                j.closed_reason = "shared-pool retention (45d)"
-                session.add(j)
-            if olds:
-                session.commit()
-                _log.info("Shared-pool retention: closed %d old postings", len(olds))
+            res = session.exec(
+                _sqlupdate(_Job)
+                .where(_Job.user_id == SHARED_POOL_USER,
+                       _Job.is_closed == False,  # noqa: E712
+                       _Job.first_seen < cutoff)
+                .values(is_closed=True, closed_reason="shared-pool retention (45d)")
+            )
+            session.commit()
+            if getattr(res, "rowcount", 0):
+                _log.info("Shared-pool retention: closed %d old postings", res.rowcount)
     except Exception as e:
         _log.warning("Shared-pool retention failed: %s", e)
+    # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
+    # egress) stays bounded — closed rows were accumulating forever.
+    try:
+        from app.strategy.job_retention import purge_old_closed_jobs
+        purge_old_closed_jobs(days=settings.job_purge_max_age_days)
+    except Exception as e:
+        _log.warning("Job retention purge failed: %s", e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
