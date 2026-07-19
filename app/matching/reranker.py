@@ -61,6 +61,33 @@ def any_provider_available() -> bool:
     return provider_available("anthropic") or provider_available("openai")
 
 
+# ── Local (no-LLM) scoring fallback ──────────────────────────────────────────
+# When every LLM provider is unusable — no API keys configured, or all clients
+# cooling down after credit/billing errors — Reranker.score() falls back to
+# free local models (settings.local_score_fallback) instead of raising, so the
+# funnel keeps moving with zero LLM spend. Priority: the distilled scorer
+# (trained on this deployment's own LLM labels → calibrated 0-100) → the
+# retrieval cross-encoder, whose 0-1 relevance is mapped through the anchors
+# below. Local scores are always labeled in the reasoning (LOCAL_REASON_PREFIX)
+# so the UI and the lanes can tell an estimate from an LLM verdict.
+LOCAL_REASON_PREFIX = "Local fit estimate"
+
+# Piecewise-linear (relevance → 0-100) anchors for the mxbai cross-encoder's
+# sigmoid outputs. Anchored on observed behavior: strong on-role matches land
+# around 0.17-0.25, so ~0.20 maps just above the default shortlist threshold
+# (35) — good candidates shortlist, weak ones drain.
+_CE_ANCHORS = ((0.0, 8.0), (0.05, 15.0), (0.15, 30.0), (0.20, 38.0),
+               (0.30, 55.0), (0.45, 70.0), (0.60, 80.0), (1.0, 90.0))
+
+
+def _calibrate_ce(relevance: float) -> float:
+    r = max(0.0, min(1.0, relevance))
+    for (x0, y0), (x1, y1) in zip(_CE_ANCHORS, _CE_ANCHORS[1:]):
+        if r <= x1:
+            return y0 + (y1 - y0) * ((r - x0) / (x1 - x0))
+    return _CE_ANCHORS[-1][1]
+
+
 # ── Spend guards (daily ceiling + hourly smoothing) ───────────────────────────
 # Hard ceilings on Tier-2 (authoritative) LLM scores across every lane. The
 # scoring queue is unbounded (discovery keeps producing); the DAILY cap bounds
@@ -620,6 +647,57 @@ class Reranker:
         split across them (Option A). With one provider, routing is a no-op."""
         return bool(self._anthropic_client and self._openai_client)
 
+    def llm_usable(self) -> bool:
+        """True when at least one initialized LLM client is not in circuit-breaker
+        cooldown — i.e. a paid final score could actually be attempted right now."""
+        return bool(
+            (self._anthropic_client and provider_available("anthropic"))
+            or (self._openai_client and provider_available("openai"))
+        )
+
+    def _ce_relevance(self, resume_text: str, job: Job) -> Optional[float]:
+        """0-1 relevance from the retrieval cross-encoder for one (résumé, job)
+        pair. Uses the same lazily-cached model the matcher already loads, and
+        the same pair builder as the distilled scorer (consistent slicing)."""
+        try:
+            import math
+            from app.matching.local_scorer import build_pair
+            from app.matching.matcher import _get_cross_encoder
+            a, b = build_pair(resume_text, job)
+            logit = float(_get_cross_encoder().predict([(a, b)])[0])
+            return 1.0 / (1.0 + math.exp(-logit))
+        except Exception as e:
+            log.warning("Local CE relevance failed for job %s: %s", getattr(job, "id", "?"), e)
+            return None
+
+    def score_local(self, resume_text: str, job: Job) -> Tuple[float, str, List[str], dict]:
+        """$0 fallback final score for when no LLM provider is usable. The rule
+        pre-filter stays authoritative; then the distilled scorer if trained,
+        else the calibrated cross-encoder. Raises only when no local model can
+        run at all (the caller treats that like any other scoring failure)."""
+        pre = self._pre_filter_job(job)
+        if pre is not None:
+            return pre
+
+        from app.matching.local_scorer import LocalScorer
+        scorer = LocalScorer.get()
+        if scorer.available():
+            s = scorer.score(resume_text, job)
+            if s is not None:
+                s = max(0.0, min(100.0, s))
+                reason = (f"{LOCAL_REASON_PREFIX} (distilled scorer, no LLM provider "
+                          f"active): {s:.0f}/100")
+                return s, reason, [], _clean_breakdown(None, s)
+
+        rel = self._ce_relevance(resume_text, job)
+        if rel is None:
+            raise RuntimeError(f"local scoring unavailable for job {job.id}")
+        s = _calibrate_ce(rel)
+        reason = (f"{LOCAL_REASON_PREFIX} (no LLM provider active): cross-encoder "
+                  f"relevance {rel:.2f} → {s:.0f}/100. Free local estimate — less "
+                  f"precise than an LLM score.")
+        return s, reason, [], _clean_breakdown(None, s)
+
     def _calibrate(self, backend_name: str, result):
         """In dual mode, nudge GPT's scale onto Claude's so the shortlist bar is
         fair across providers. No-op for Claude and when no offset is set."""
@@ -661,6 +739,10 @@ class Reranker:
         max_retries = max(1, settings.llm_rerank_max_retries)
         backends = [(n, fn) for n, fn in self._score_backends(provider) if provider_available(n)]
         if not backends:
+            # No usable LLM at all (no keys, or everything cooling down after
+            # billing/quota errors) — keep the funnel moving on local models.
+            if settings.local_score_fallback:
+                return self.score_local(resume_text, job)
             raise RuntimeError(f"rerank skipped for job {job.id}: all providers cooling down")
         for backend_name, call_fn in backends:
             for attempt in range(max_retries):
@@ -690,6 +772,12 @@ class Reranker:
                     log.warning("Reranker: %s failed for job %s: %s", backend_name, job.id, e)
                     break  # try next backend
 
+        # Every configured backend failed. If nothing is usable anymore (the
+        # failures tripped the circuit breaker — e.g. the account simply has no
+        # credits), fall back to local models rather than stranding the job.
+        if settings.local_score_fallback and not self.llm_usable():
+            log.warning("Reranker: no usable LLM backend for job %s — scoring locally", job.id)
+            return self.score_local(resume_text, job)
         log.error("Reranker: All backends/retries exhausted for job %s — leaving unscored", job.id)
         raise RuntimeError(f"rerank failed for job {job.id}: all backends exhausted")
 

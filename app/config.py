@@ -208,6 +208,13 @@ class Settings(BaseSettings):
     # scripts/shadow_report.py shows the agreement you're comfortable with.
     local_scorer_path: str = "data/models/hirepath-scorer"  # LOCAL_SCORER_PATH
     local_scorer_shadow: bool = True      # LOCAL_SCORER_SHADOW
+    # When NO LLM provider is usable (no API keys configured, or every provider
+    # is in circuit-breaker cooldown after credit/billing errors), keep scoring
+    # on free local models instead of stalling the whole funnel: the distilled
+    # scorer if trained, else the retrieval cross-encoder with a piecewise
+    # calibration. Scores are labeled as local estimates in the reasoning.
+    # Set to 0 to restore the old wait-for-a-provider behavior.
+    local_score_fallback: bool = True     # LOCAL_SCORE_FALLBACK
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.

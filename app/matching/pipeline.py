@@ -481,8 +481,21 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # postings out of the cross-encoder budget — the "no new jobs" bug.
     candidates = matcher.search_for_resume(resume, k=settings.top_k_rerank, user_id=user_id,
                                            profile=_user_profile, only_unscored=True)
+    _retrieved = candidates
     candidates = [(jid, score) for jid, score in candidates if score >= settings.min_match_score]
     log.info("%d candidates above cross-encoder threshold %.2f", len(candidates), settings.min_match_score)
+    # Score scales differ across rerank backends (Jina relevance vs local CE
+    # sigmoid), so a fixed gate can sit just above an entire batch's top scores
+    # and admit NOBODY, pass after pass (observed: threshold 0.20 vs top 0.19)
+    # — starving those users' shortlists. When the gate zeroes out a non-empty
+    # batch, admit a handful of the best candidates above a soft floor; the LLM
+    # (or local) scorer downstream is the real judge of fit.
+    if not candidates and _retrieved:
+        soft_floor = settings.min_match_score * 0.6
+        candidates = [(jid, s) for jid, s in _retrieved[:5] if s >= soft_floor]
+        if candidates:
+            log.info("CE gate admitted 0 — soft floor %.2f admits top %d candidate(s) "
+                     "so this user's fresh jobs still get scored", soft_floor, len(candidates))
 
     rule_filter = RuleFilter(profile=_user_profile)
     candidate = None

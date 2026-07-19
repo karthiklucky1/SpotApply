@@ -289,6 +289,12 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     _note_score_success(jid)
     _prescore_memo.pop(jid, None)
 
+    # A score() call that fell back to local models tags its reasoning — surface
+    # that in the cycle stats so "who scored what" stays visible in the logs.
+    from app.matching.reranker import LOCAL_REASON_PREFIX
+    if reason.startswith(LOCAL_REASON_PREFIX):
+        provider = "local"
+
     # Phase 3 — short session: idempotent write-back + hire-probability blend.
     def _hp(job, session):
         hp = score_hire_probability(job, session)
@@ -372,12 +378,15 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         Reranker, any_provider_available, llm_budget_exhausted,
     )
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
-             "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0}
+             "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
+             "by_local": 0}
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —
-    # jobs stay Queued and the next eligible cycle picks them up.
-    if not any_provider_available():
+    # jobs stay Queued and the next eligible cycle picks them up. With the
+    # local-score fallback enabled, providers being down is NOT a stall: the
+    # cycle proceeds and Reranker.score() stamps free local estimates instead.
+    if not any_provider_available() and not settings.local_score_fallback:
         return {**stats, "skipped": "all LLM providers cooling down"}
     if llm_budget_exhausted():
         return {**stats, "skipped": "LLM budget reached (hourly/daily cap)"}
@@ -478,6 +487,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                 stats["by_claude"] += 1
             elif provider == "openai":
                 stats["by_gpt"] += 1
+            elif provider == "local":
+                stats["by_local"] += 1
         elif kind == "drained":
             stats["drained"] += 1
     pool.shutdown(wait=False)
