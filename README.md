@@ -1,12 +1,12 @@
-# HirePath — AI Job-Application Copilot
+# SpotApply — AI Job-Application Copilot
 
-HirePath discovers real, fresh roles straight from company ATS APIs and job feeds,
+SpotApply discovers real, fresh roles straight from company ATS APIs and job feeds,
 scores each one against **your** résumé with a multi-stage matching cascade, drafts
 tailored résumés and cover letters (fact-checked against your real experience),
 auto-fills application forms in your browser, and keeps you in control of the final
 **Submit**.
 
-> **You always click Submit.** HirePath prepares and fills — it never silently fires
+> **You always click Submit.** SpotApply prepares and fills — it never silently fires
 > off applications on your behalf. *The machine prepares, the human decides.*
 
 It began as a single-user personal job agent and has grown into a multi-tenant web app
@@ -15,7 +15,7 @@ Telegram review loop.
 
 ---
 
-## Why HirePath
+## Why SpotApply
 
 - **Fresh, not stale.** A per-board polling scheduler (the *pulse lane*) checks the
   companies you follow every few minutes and sweeps every live board at least hourly —
@@ -33,6 +33,13 @@ Telegram review loop.
   detected and filtered before they waste your time.
 - **Visa-aware.** Sponsorship and work-authorization assessment (including a public
   H-1B filing record lookup) is built into scoring, not bolted on.
+- **Measured, not claimed.** Job cards carry a Truth Strip — "Verified live
+  12 min ago" comes from our own board polling, and the dashboard header shows
+  the real last-sweep time instead of a decorative status light.
+- **Runs without paid LLM keys.** If no LLM provider is configured (or your
+  account runs out of credits), scoring falls back to free local models — the
+  distilled scorer when trained, else a calibrated cross-encoder — clearly
+  labeled as local estimates (`LOCAL_SCORE_FALLBACK`, on by default).
 
 ---
 
@@ -104,7 +111,8 @@ Stages run cheapest-first; a job only advances if it survives the previous gate
 - **Data:** Supabase Postgres in production, SQLite for local single-user dev (SQLModel)
 - **Auth:** Supabase Auth (email/OAuth), JWT-verified server-side
 - **Matching/ML:** `sentence-transformers` (all-MiniLM-L6-v2), FAISS, `rank-bm25`
-- **LLM:** Anthropic Claude (primary); OpenAI optional (Tier-1 prescoring, fallback)
+- **LLM:** Anthropic Claude (primary) and OpenAI (Tier-1 prescoring) — both
+  OPTIONAL: with no keys, free local models score everything
 - **Automation:** Playwright (Chromium) + a Manifest-V3 Chrome extension
 - **Docs:** `python-docx`, `pypdf` for résumé parsing/generation
 - **Handoff:** `python-telegram-bot` review loop
@@ -178,7 +186,8 @@ Configure via `.env` (see `.env.example` for the full list):
 | Group | Keys | Notes |
 |-------|------|-------|
 | Database / Auth | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL` | Leave blank for local SQLite single-user mode. |
-| LLM | `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional) | OpenAI enables the cheap Tier-1 prescorer (`PRESCORE_*` knobs). |
+| LLM | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (both optional) | Best scoring quality with Claude; with neither key set, free local models score everything (`LOCAL_SCORE_FALLBACK`). |
+| Payments | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID_PRO`, `STRIPE_WEBHOOK_SECRET`, `PAYMENT_BANK_DETAILS` | All empty = payments off, everyone gets Pro free. Set the Stripe vars to enable $10/mo checkout; `PAYMENT_BANK_DETAILS` shows a manual bank-transfer option. |
 | Freshness | `PULSE_LANE_ENABLED`, `PULSE_FAST_INTERVAL_MINUTES`, `PULSE_FLOOR_INTERVAL_MINUTES` | Defaults: on, 5 min fast lane, 60 min floor. |
 | Matching | `MIN_MATCH_SCORE`, `TOP_K_RERANK`, `LLM_RERANK_CAP`, `DAILY_APPLY_LIMIT` | Cascade and volume tuning. |
 | Discovery | `GREENHOUSE_BOARDS`, `LEVER_BOARDS`, `ASHBY_BOARDS` | Comma-separated slugs (registry-seeded boards cover the rest). |
@@ -225,13 +234,27 @@ scoping, and funnel analytics.
   `robots.txt`.
 - **No LinkedIn/Indeed automation.** Their ToS prohibit it; listings from such sources
   are discovery-only links you open yourself.
-- **Human review gate.** HirePath prepares and fills; you approve and submit.
+- **Human review gate.** SpotApply prepares and fills; you approve and submit.
 - **Grounded content.** Tailoring cannot fabricate experience or alter your
   credentials — enforced in code, not just prompts.
 - **Your data, your control.** Profiles, résumés, and job pools belong to each user
   and can be edited, replaced, or cleared at any time.
 
 ---
+
+## Pricing
+
+Two plans, stated the same everywhere in the app: **Free** (5 tailored
+resumes/day, 2 auto-fills/week, full discovery + scoring) and **Pro — $10/month**
+(no caps). While Stripe is not configured the app runs in pre-revenue mode and
+every account gets Pro for free.
+
+## Product research
+
+`docs/research/` holds the strategy work: a competitive analysis, a freshness
+strategy, and a user-research-driven redesign plan
+(`user-research-redesign-2026-07.md` + appendix) that maps the roadmap —
+Truth Layer, Visa Odds, Outcome Loop, Trust Economics, Recruiter Bridge.
 
 ## Status
 

@@ -91,6 +91,8 @@ def test_down_provider_is_skipped_without_api_call(monkeypatch):
 
 
 def test_all_providers_down_raises_before_any_call(monkeypatch):
+    # Old wait-for-a-provider behavior — explicit opt-out of the local fallback.
+    monkeypatch.setattr(settings, "local_score_fallback", False)
     rk = _reranker_with(True, True)
     monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
     rr._mark_provider_down("anthropic")
@@ -98,6 +100,21 @@ def test_all_providers_down_raises_before_any_call(monkeypatch):
     assert not rr.any_provider_available()
     with pytest.raises(RuntimeError, match="cooling down"):
         rk.score("resume", _job())
+
+
+def test_all_providers_down_falls_back_to_local(monkeypatch):
+    # Default behavior: with every provider cooling down, score() returns a
+    # labeled local estimate instead of stranding the job (LOCAL_SCORE_FALLBACK).
+    monkeypatch.setattr(settings, "local_score_fallback", True)
+    rk = _reranker_with(True, True)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_ce_relevance", lambda resume, job: 0.30)
+    rr._mark_provider_down("anthropic")
+    rr._mark_provider_down("openai")
+    score, reason, concerns, breakdown = rk.score("resume", _job())
+    assert reason.startswith(rr.LOCAL_REASON_PREFIX)
+    assert 0.0 <= score <= 100.0
+    assert set(breakdown) == {"skills", "experience", "location", "work_auth"}
 
 
 def test_breaker_expires_after_cooldown():
@@ -225,6 +242,8 @@ def test_shared_pool_is_not_a_scorable_user():
 
 
 def test_cycle_skips_when_all_providers_down(monkeypatch):
+    # Old fast-exit behavior applies only when the local fallback is opted out.
+    monkeypatch.setattr(settings, "local_score_fallback", False)
     with get_session() as session:
         _clean(session)
         session.add(Job(title="ML Engineer", company="C", location="R", remote=True,
@@ -236,6 +255,19 @@ def test_cycle_skips_when_all_providers_down(monkeypatch):
     stats = sl.run_scoring_lane()
     assert stats.get("skipped") == "all LLM providers cooling down"
     assert stats["scored"] == 0
+
+
+def test_cycle_proceeds_when_providers_down_with_local_fallback(monkeypatch):
+    # Default behavior: providers cooling down is not a stall — the cycle runs
+    # and Reranker.score() stamps local estimates instead.
+    monkeypatch.setattr(settings, "local_score_fallback", True)
+    with get_session() as session:
+        _clean(session)
+        session.commit()
+    rr._mark_provider_down("anthropic")
+    rr._mark_provider_down("openai")
+    stats = sl.run_scoring_lane()
+    assert stats.get("skipped") != "all LLM providers cooling down"
 
 
 def test_cycle_skips_when_budget_exhausted(monkeypatch):
