@@ -261,6 +261,9 @@ def init_db() -> None:
         ("trust_computed_at", "DATETIME"),
         ("updated_at", "DATETIME"),
         ("target_companies", "VARCHAR DEFAULT ''"),
+        ("ead_end_date", "VARCHAR DEFAULT ''"),
+        ("opt_unemployment_days_used", "INTEGER DEFAULT 0"),
+        ("stem_opt", "BOOLEAN DEFAULT FALSE"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
 

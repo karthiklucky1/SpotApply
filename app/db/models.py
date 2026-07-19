@@ -230,6 +230,12 @@ class UserProfile(SQLModel, table=True):
     work_authorization: str = ""        # e.g. "US Citizen", "OPT", "H1B"
     requires_sponsorship: bool = False
     visa_status: str = ""               # free-text for edge cases
+    # OPT clock (F-1 OPT/STEM-OPT users): drives the dashboard countdown widget.
+    # ead_end_date is ISO "YYYY-MM-DD"; unemployment budget is 90 days on
+    # initial OPT, 150 total with the STEM extension.
+    ead_end_date: str = ""              # EAD card expiry (ISO date string)
+    opt_unemployment_days_used: int = 0
+    stem_opt: bool = False              # on the 24-month STEM extension
     # Professional
     current_title: str = ""
     years_experience: int = 0

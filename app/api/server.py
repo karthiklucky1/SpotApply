@@ -3942,6 +3942,136 @@ def skill_gap_api(request: Request, refresh: bool = False) -> dict:
     return compute_skill_gap(uid)
 
 
+# ── Resume X-Ray: how screeners see the resume ───────────────────────────────
+# Computation walks the resume + skill-gap evidence + (optionally) embeddings,
+# so cache per user for a few minutes — the panel is exploratory UI, not live data.
+_xray_cache: dict = {}
+_XRAY_TTL_S = 300
+
+
+def _opt_clock_payload(profile) -> Optional[dict]:
+    """OPT countdown for F-1 users: EAD runway + unemployment-day budget.
+    Facts only, from the user's own dates — never legal advice."""
+    try:
+        if not profile:
+            return None
+        auth = ((getattr(profile, "work_authorization", "") or "") + " " +
+                (getattr(profile, "visa_status", "") or "")).lower()
+        ead = (getattr(profile, "ead_end_date", "") or "").strip()
+        if "opt" not in auth and not ead:
+            return None
+        from datetime import date
+        today = date.today()
+        days_to_ead = None
+        if ead:
+            try:
+                days_to_ead = (date.fromisoformat(ead) - today).days
+            except ValueError:
+                days_to_ead = None
+        budget = 150 if bool(getattr(profile, "stem_opt", False)) else 90
+        used = max(0, int(getattr(profile, "opt_unemployment_days_used", 0) or 0))
+        days_left = max(0, budget - used)
+        zone = "green" if days_left > 45 else ("amber" if days_left > 15 else "red")
+        if days_to_ead is not None and days_to_ead < 60:
+            zone = "red" if days_to_ead < 30 else ("amber" if zone == "green" else zone)
+        return {
+            "unemployment_budget": budget, "unemployment_used": used,
+            "unemployment_days_left": days_left,
+            "ead_end_date": ead or None, "days_to_ead_end": days_to_ead,
+            "stem_opt": bool(getattr(profile, "stem_opt", False)),
+            "zone": zone,
+            "note": "Counts come from your own dates in Profile → Work authorization. Not legal advice.",
+        }
+    except Exception:
+        return None
+
+
+@app.get("/api/resume/xray")
+def resume_xray_api(request: Request, refresh: bool = False) -> dict:
+    """Full Resume X-Ray: simulated screener verdicts (ATS parse, keyword
+    filter, AI grader, 6-second scan), employment-gap detail, ranked reject
+    reasons, detailed project suggestions, LinkedIn/GitHub sync check,
+    semantic coverage, and the OPT clock."""
+    import time as _xt
+    uid = _require_user(request)
+    now = _xt.time()
+    hit = _xray_cache.get(uid)
+    if hit and not refresh and (now - hit[0]) < _XRAY_TTL_S:
+        return hit[1]
+    from app.intelligence.resume_xray import compute_resume_xray
+    out = compute_resume_xray(uid)
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        prof = _get_or_create_profile(user_id=None if uid == "local" else uid)
+        out["opt_clock"] = _opt_clock_payload(prof)
+    except Exception:
+        out["opt_clock"] = None
+    if len(_xray_cache) > 500:
+        _xray_cache.clear()
+    _xray_cache[uid] = (now, out)
+    return out
+
+
+@app.get("/api/opt-clock")
+def opt_clock_api(request: Request) -> dict:
+    """Lightweight OPT-clock read for the dashboard strip (profile-only, no
+    resume analysis)."""
+    uid = _require_user(request)
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        prof = _get_or_create_profile(user_id=None if uid == "local" else uid)
+        return {"clock": _opt_clock_payload(prof)}
+    except Exception:
+        return {"clock": None}
+
+
+class XrayApproveSkillBody(BaseModel):
+    skill: str
+    evidence: _Opt[str] = None
+
+
+@app.post("/api/resume/xray/approve-skill")
+def resume_xray_approve_skill(request: Request, body: XrayApproveSkillBody) -> dict:
+    """User-approved change: add a skill THEY confirmed (with evidence shown in
+    the sync panel) to their profile key_skills, and record the confirmation as
+    a verified achievement so tailoring can ground on it. The human approval IS
+    the ground truth — same doctrine as the metric-gap flow."""
+    uid = _require_user(request)
+    skill = (body.skill or "").strip()
+    if not skill or len(skill) > 80:
+        raise HTTPException(status_code=422, detail="skill required (max 80 chars)")
+    user_id_arg = None if uid == "local" else uid
+    from app.db.models import AnswerMemory, UserProfile
+    with get_session() as session:
+        q = select(UserProfile)
+        if user_id_arg:
+            q = q.where(UserProfile.user_id == user_id_arg)
+        prof = session.exec(q).first()
+        if not prof:
+            prof = UserProfile(user_id=user_id_arg)
+            session.add(prof)
+        skills = [s.strip() for s in (prof.key_skills or "").split(",") if s.strip()]
+        if skill.lower() not in [s.lower() for s in skills]:
+            skills.append(skill)
+            prof.key_skills = ", ".join(skills)
+        line = f"Skill confirmed by user: {skill}" + (f" (evidence: {body.evidence.strip()[:160]})" if body.evidence else "")
+        row = session.exec(select(AnswerMemory).where(
+            AnswerMemory.user_id == uid,
+            AnswerMemory.label_normalized == "__verified_achievements")).first()
+        existing = [ln for ln in (row.answer.split("\n") if row and row.answer else []) if ln.strip()]
+        if line not in existing:
+            existing.append(line)
+        if row:
+            row.answer = "\n".join(existing)
+            session.add(row)
+        else:
+            session.add(AnswerMemory(user_id=uid, label_normalized="__verified_achievements",
+                                     label_original="Verified achievements", answer="\n".join(existing)))
+        session.commit()
+    _xray_cache.pop(uid, None)
+    return {"ok": True, "skill": skill}
+
+
 class SaveAnswerBody(BaseModel):
     question: str
     answer: str
@@ -5779,6 +5909,9 @@ class ProfileUpdate(BaseModel):
     open_to_relocation: Optional[bool] = None
     articulation_video_url: Optional[str] = None
     articulation_pr: Optional[str] = None
+    ead_end_date: Optional[str] = None
+    opt_unemployment_days_used: Optional[int] = None
+    stem_opt: Optional[bool] = None
 
 
 from datetime import datetime as _dt
