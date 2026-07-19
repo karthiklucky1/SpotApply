@@ -5300,10 +5300,9 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
         used = row.tailor_count
         session.commit()
     if used >= daily_limit:
-        upgrade = "Basic ($19/mo)" if plan == PlanTier.FREE else "Pro ($49/mo)"
         return False, (
             f"Daily tailoring limit reached ({used}/{daily_limit}). "
-            f"Resets at midnight UTC. Upgrade to {upgrade} for more."
+            f"Resets at midnight UTC. Upgrade to Pro ($10/mo) for unlimited tailoring."
         ), {"plan": plan, "used": used, "daily_limit": daily_limit}
     return True, "", {"plan": plan, "used": used, "daily_limit": daily_limit}
 
@@ -5333,15 +5332,14 @@ def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     if weekly_limit == 0:
         return False, (
             "Auto-fill is not available on the Free plan. "
-            "Upgrade to Basic ($19/mo) to get 10 auto-fills per week."
+            "Upgrade to Pro ($10/mo) for unlimited auto-fills."
         ), {"plan": plan, "weekly_limit": 0}
     with get_session() as session:
         used = _get_week_autofill_count(session, uid)
     if used >= weekly_limit:
-        upgrade = "Pro ($49/mo)" if plan == PlanTier.BASIC else "Agency ($99/mo)"
         return False, (
             f"Weekly auto-fill limit reached ({used}/{weekly_limit}). "
-            f"Resets Monday midnight UTC. Upgrade to {upgrade} for more."
+            f"Resets Monday midnight UTC. Upgrade to Pro ($10/mo) for unlimited auto-fills."
         ), {"plan": plan, "used": used, "weekly_limit": weekly_limit}
     return True, "", {"plan": plan, "used": used, "weekly_limit": weekly_limit}
 

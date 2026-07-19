@@ -3406,7 +3406,7 @@
                     const err = await r.json().catch(() => ({}));
                     btn.innerHTML = orig;
                     btn.disabled = false;
-                    alert(err.detail || 'Daily limit reached — upgrade to Basic ($19/mo) for 20 tailors/day.');
+                    alert(err.detail || 'Daily limit reached — upgrade to Pro ($10/mo) for unlimited tailoring.');
                     loadUsage();
                     return;
                 }
@@ -3458,7 +3458,7 @@
                     const err = await res.json().catch(() => ({}));
                     btn.innerHTML = orig;
                     btn.disabled = false;
-                    alert(err.detail || 'Daily limit reached — upgrade to Basic ($19/mo) for 20 tailors/day.');
+                    alert(err.detail || 'Daily limit reached — upgrade to Pro ($10/mo) for unlimited tailoring.');
                     loadUsage();
                     return;
                 }
@@ -4099,7 +4099,34 @@
         // ── Settings ───────────────────────────────────────────────────────────
         const SETTINGS_DOCS = {
             pricing: { title: ' Plans & Pricing', html: `
-                <div class="space-y-4"> <div class="rounded-2xl border border-slate-700/60 p-4 bg-white/[0.02]"> <div class="flex items-center justify-between mb-3"> <div><p class="font-black text-white text-sm">Free</p><p class="text-[10px] text-slate-500">Get started — no card needed</p></div> <div class="text-right"><span class="text-2xl font-black text-white">$0</span><span class="text-slate-500 text-xs">/mo</span></div> </div> <ul class="space-y-1.5 text-xs text-slate-400"> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Paste any job link &amp; get AI match score + hire probability</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 5 tailored resumes/day</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Answer pack generation for any application</li> <li class="flex items-center gap-2"><span class="text-slate-600">–</span> No auto-fills</li> <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-discovery across 1000+ job boards</li> <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-fill Greenhouse / Lever / Ashby / Workday</li> </ul> </div> <div class="rounded-2xl border border-sky-500/40 p-4 bg-sky-500/5"> <div class="flex items-center justify-between mb-3"> <div><p class="font-black text-white text-sm flex items-center gap-2">Basic <span class="text-[9px] font-bold bg-sky-500/20 text-sky-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">More tailors + auto-fill access</p></div> <div class="text-right"><span class="text-2xl font-black text-white">$19</span><span class="text-slate-500 text-xs">/mo</span></div> </div> <ul class="space-y-1.5 text-xs text-slate-400"> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 20 tailored resumes/day</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 10 auto-fills per week</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Free</li> <li class="flex items-center gap-2"><span class="text-slate-600">–</span> Auto-discovery</li> </ul> <p class="text-[10px] text-slate-600 mt-3">Get early access → <a href="mailto:karthiklucky899@gmail.com" class="text-sky-400 hover:text-white">karthiklucky899@gmail.com</a></p> </div> <div class="rounded-2xl border border-indigo-500/40 p-4 bg-indigo-500/5"> <div class="flex items-center justify-between mb-3"> <div><p class="font-black text-white text-sm flex items-center gap-2">Pro <span class="text-[9px] font-bold bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">Full automation — apply while you sleep</p></div> <div class="text-right"><span class="text-2xl font-black text-white">$49</span><span class="text-slate-500 text-xs">/mo</span></div> </div> <ul class="space-y-1.5 text-xs text-slate-400"> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited tailors</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited auto-fills</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Auto-discovery — 1000+ boards scraped every 6h</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Telegram approval flow before each submission</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority AI matching queue</li> </ul> <p class="text-[10px] text-slate-600 mt-3">Get early access → <a href="mailto:karthiklucky899@gmail.com" class="text-indigo-400 hover:text-white">karthiklucky899@gmail.com</a></p> </div> <div class="rounded-2xl border border-violet-500/30 p-4 bg-violet-500/5"> <div class="flex items-center justify-between mb-3"> <div><p class="font-black text-white text-sm flex items-center gap-2">Agency <span class="text-[9px] font-bold bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full">Coming Soon</span></p><p class="text-[10px] text-slate-500">Everything in Pro + team features</p></div> <div class="text-right"><span class="text-2xl font-black text-white">$99</span><span class="text-slate-500 text-xs">/mo</span></div> </div> <ul class="space-y-1.5 text-xs text-slate-400"> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Everything in Pro</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Team seats &amp; shared pipeline</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Team analytics dashboard</li> <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Dedicated support</li> </ul> </div> </div>` },
+                <div class="space-y-4">
+                  <div class="rounded-2xl border border-slate-700/60 p-4 bg-white/[0.02]">
+                    <div class="flex items-center justify-between mb-3">
+                      <div><p class="font-black text-white text-sm">Free</p><p class="text-[10px] text-slate-500">The full pipeline, with daily caps</p></div>
+                      <div class="text-right"><span class="text-2xl font-black text-white">$0</span><span class="text-slate-500 text-xs">/mo</span></div>
+                    </div>
+                    <ul class="space-y-1.5 text-xs text-slate-400">
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Fresh jobs from company boards, scored for fit</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Ghost-job filtering &amp; honest match scores</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 5 tailored resumes/day</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> 2 auto-fills/week</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Dashboard, kanban &amp; Telegram alerts</li>
+                    </ul>
+                  </div>
+                  <div class="rounded-2xl border border-indigo-500/40 p-4 bg-indigo-500/5">
+                    <div class="flex items-center justify-between mb-3">
+                      <div><p class="font-black text-white text-sm">Pro</p><p class="text-[10px] text-slate-500">Everything, no caps — cancel any time</p></div>
+                      <div class="text-right"><span class="text-2xl font-black text-white">$10</span><span class="text-slate-500 text-xs">/mo</span></div>
+                    </div>
+                    <ul class="space-y-1.5 text-xs text-slate-400">
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited tailored resumes &amp; cover letters</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited auto-fills — you always click Submit</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority matching queue</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Full analytics &amp; funnel insights</li>
+                    </ul>
+                    <a href="/pricing" class="block text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — $10/mo</a>
+                  </div>
+                </div>` },
             about: { title: 'ℹ️ About SpotApply', html: `
                 <p><strong class="text-white">SpotApply</strong> is your personal AI job-search agent. It scans job boards and company career APIs around the clock, ranks every role against your résumé with a multi-stage AI pipeline, tailors application materials, and surfaces the strongest matches so you can apply faster.</p> <p>It is built for a focused, high-signal job search — quality matches over noise — and keeps you in control of every application.</p> <p class="text-slate-500 text-xs">Stack: discovery across 15+ sources · cross-encoder + embedding scoring · LLM re-ranking · grounded résumé tailoring.</p>` },
             contact: { title: ' Contact', html: `

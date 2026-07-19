@@ -312,24 +312,31 @@ class UserProfile(SQLModel, table=True):
 
 class PlanTier(str, Enum):
     FREE    = "free"
-    BASIC   = "basic"      # $19/mo
-    PRO     = "pro"        # $49/mo
-    AGENCY  = "agency"     # $99/mo
+    PRO     = "pro"        # $10/mo — the only paid plan
+    # Legacy tiers: kept ONLY so existing user_subscription rows keep
+    # deserializing. New signups never get these; they resolve to PRO
+    # limits/pricing below. Do not surface them in any UI.
+    BASIC   = "basic"
+    AGENCY  = "agency"
 
 
-# Per-plan limits
+# Per-plan limits — THE single source of truth for pricing. Every surface
+# (pricing.html, the dashboard Plans modal, upsell strings in server.py)
+# must state these same two plans: Free $0 and Pro $10/mo. The old lineup
+# ($19/$49/$99 in code vs $29/$99 on the pricing page) shipped three
+# contradictory prices at once — never let that happen again.
 PLAN_LIMITS = {
     PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2},
-    PlanTier.BASIC:  {"tailor_daily": 20, "autofill_weekly": 10},
     PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None},   # None = unlimited
-    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None},
+    PlanTier.BASIC:  {"tailor_daily": None, "autofill_weekly": None},   # legacy → PRO limits
+    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None},   # legacy → PRO limits
 }
 
 PLAN_PRICES = {
     PlanTier.FREE:   0,
-    PlanTier.BASIC:  19,
-    PlanTier.PRO:    49,
-    PlanTier.AGENCY: 99,
+    PlanTier.PRO:    10,
+    PlanTier.BASIC:  10,   # legacy rows count as Pro
+    PlanTier.AGENCY: 10,   # legacy rows count as Pro
 }
 
 
