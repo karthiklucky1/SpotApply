@@ -215,6 +215,17 @@ class Settings(BaseSettings):
     # calibration. Scores are labeled as local estimates in the reasoning.
     # Set to 0 to restore the old wait-for-a-provider behavior.
     local_score_fallback: bool = True     # LOCAL_SCORE_FALLBACK
+    # ── Payments (Stripe + manual bank transfer) ──────────────────────────────
+    # All empty by default = payments OFF: every user resolves to PRO free of
+    # charge (pre-revenue mode). After the LLC + Stripe account exist, set the
+    # three STRIPE_* vars and real checkout/webhook plan enforcement turns on —
+    # no code change needed. PAYMENT_BANK_DETAILS enables a manual path in the
+    # meantime (shown on the upgrade screen; activate via admin set-plan).
+    stripe_secret_key: str = ""           # STRIPE_SECRET_KEY
+    stripe_price_id_pro: str = ""         # STRIPE_PRICE_ID_PRO — $10/mo recurring Price id
+    stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook
+    payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
+    payment_contact_email: str = "karthiklucky899@gmail.com"  # PAYMENT_CONTACT_EMAIL
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.

@@ -4096,6 +4096,30 @@
             } catch (e) { showToast('Could not open résumé.', 'error') }
         }
 
+        // ── Billing: Pro checkout (Stripe when live, manual options otherwise) ──
+        async function startProCheckout(btn) {
+            const orig = btn.textContent;
+            btn.disabled = true; btn.textContent = 'Opening checkout…';
+            try {
+                const r = await fetch('/api/billing/checkout', { method: 'POST', headers: authHeaders() });
+                if (r.ok) { const d = await r.json(); window.location.href = d.url; return; }
+                const err = await r.json().catch(() => ({}));
+                const opts = await fetch('/api/billing/options').then(x => x.json()).catch(() => null);
+                const box = document.getElementById('manual-pay-options');
+                if (box) {
+                    let html = '<p class="font-bold text-slate-300 mb-1">' + (err.detail || 'Card payments are not live yet.') + '</p>';
+                    if (opts && opts.bank_details) {
+                        html += '<p class="mb-1">Pay $10 by bank transfer:</p><pre class="whitespace-pre-wrap text-slate-300 bg-black/20 rounded-lg p-2">' + opts.bank_details.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>';
+                    }
+                    if (opts && opts.contact_email) {
+                        html += '<p class="mt-1">Then email your receipt to <a class="text-indigo-400" href="mailto:' + opts.contact_email + '">' + opts.contact_email + '</a> — we activate Pro within a day.</p>';
+                    }
+                    box.innerHTML = html; box.classList.remove('hidden');
+                }
+            } catch (e) { showToast('Could not start checkout — try again.', 'error'); }
+            finally { btn.disabled = false; btn.textContent = orig; }
+        }
+
         // ── Settings ───────────────────────────────────────────────────────────
         const SETTINGS_DOCS = {
             pricing: { title: ' Plans & Pricing', html: `
@@ -4124,7 +4148,8 @@
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority matching queue</li>
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Full analytics &amp; funnel insights</li>
                     </ul>
-                    <a href="/pricing" class="block text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — $10/mo</a>
+                    <button onclick="startProCheckout(this)" class="w-full text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — $10/mo</button>
+                    <div id="manual-pay-options" class="hidden mt-3 rounded-xl border border-slate-700/60 bg-white/[0.02] p-3 text-xs text-slate-400"></div>
                   </div>
                 </div>` },
             about: { title: 'ℹ️ About SpotApply', html: `

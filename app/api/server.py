@@ -5241,8 +5241,89 @@ def admin_page(request: Request):
 
 
 def _get_user_plan(uid: str) -> PlanTier:
-    """Return the user's current plan tier. Always return PRO to allow everyone to use all features."""
-    return PlanTier.PRO
+    """The user's current plan tier.
+
+    Pre-revenue mode: while Stripe is NOT configured, everyone rides free on
+    PRO (nothing to buy yet — limits must not lock people out of a product
+    that has no checkout). The moment STRIPE_* env vars are set, plans come
+    from user_subscription: paid rows are PRO, everyone else is FREE, and an
+    expired period (past current_period_end + 3-day grace) falls back to FREE.
+    Manual bank-transfer activations are the same rows, set via admin set-plan.
+    """
+    from datetime import datetime, timedelta
+    from app.billing import stripe_enabled
+    if uid == "local" or not stripe_enabled():
+        return PlanTier.PRO
+    with get_session() as session:
+        row = session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == uid)
+        ).first()
+    if not row:
+        return PlanTier.FREE
+    if row.current_period_end and \
+            row.current_period_end + timedelta(days=3) < datetime.utcnow():
+        return PlanTier.FREE
+    return row.plan
+
+
+@app.get("/api/billing/options")
+def billing_options() -> dict:
+    """Public: how Pro can be paid for right now (Stripe and/or bank transfer)."""
+    from app.billing import payment_options
+    return payment_options()
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(request: Request) -> dict:
+    """Start a Stripe Checkout session for Pro ($10/mo). 503 when payments are
+    not configured yet — the UI then shows the manual payment options."""
+    uid = _get_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Sign in to upgrade.")
+    from app.billing import create_checkout_session, stripe_enabled
+    if not stripe_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Card payments aren't live yet — use the bank-transfer option "
+                   "or contact us; we'll activate Pro manually.")
+    email = None
+    try:
+        email = _get_user_email(request)
+    except Exception:
+        pass
+    base = str(request.base_url).rstrip("/")
+    try:
+        url = create_checkout_session(uid, email, base)
+    except Exception as e:
+        log.warning("Stripe checkout failed for %s: %s", uid, e)
+        raise HTTPException(status_code=502, detail="Could not start checkout — try again.")
+    return {"url": url}
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request) -> dict:
+    """Stripe webhook — signature-verified; syncs plan changes."""
+    from app.billing import handle_webhook
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        return handle_webhook(payload, sig)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/admin/set-plan")
+def admin_set_plan(request: Request, body: dict) -> dict:
+    """Manual plan activation — the bank-transfer path until Stripe exists.
+    Body: {"user_id": "...", "plan": "pro"|"free"}."""
+    _require_admin_user(request)
+    from app.billing import set_plan
+    target = (body.get("user_id") or "").strip()
+    plan_raw = (body.get("plan") or "").strip().lower()
+    if not target or plan_raw not in (PlanTier.FREE.value, PlanTier.PRO.value):
+        raise HTTPException(status_code=422, detail="user_id and plan ('pro'|'free') required")
+    set_plan(target, PlanTier(plan_raw))
+    return {"ok": True, "user_id": target, "plan": plan_raw}
 
 
 def _get_or_create_usage(session, uid: str):
