@@ -1227,6 +1227,43 @@ def _sponsorship_of(job):
 templates.env.globals["sponsorship_of"] = _sponsorship_of
 
 
+def _liveness_of(job):
+    """Jinja global: the Truth Strip's liveness read for a job card.
+
+    Honest by construction: `last_seen` is stamped every time the posting is
+    present in a board poll (pulse lane: watchlist ~5 min, live boards ≤60 min),
+    so "Verified live 12 min ago" is a measured fact, not a claim. Tiers:
+      ≤ 2h   → live   ("Verified live X ago")
+      ≤ 48h  → seen   ("On the company board X ago")
+      older / closed / missing → None (say nothing rather than something stale).
+    """
+    try:
+        if getattr(job, "is_closed", False):
+            return None
+        ls = getattr(job, "last_seen", None)
+        if not ls:
+            return None
+        from datetime import datetime as _dtm
+        secs = (_dtm.utcnow() - ls).total_seconds()
+        if secs < 0:
+            secs = 0
+        if secs <= 7200:
+            mins = int(secs // 60)
+            human = "just now" if mins < 2 else (
+                f"{mins} min ago" if mins < 60 else f"{int(mins // 60)}h ago")
+            return {"tone": "live", "label": f"Verified live {human}"}
+        if secs <= 172800:
+            hrs = int(secs // 3600)
+            human = f"{hrs}h ago" if hrs < 24 else "yesterday"
+            return {"tone": "seen", "label": f"On the company board {human}"}
+        return None
+    except Exception:
+        return None
+
+
+templates.env.globals["liveness_of"] = _liveness_of
+
+
 def _urgency_of(job):
     """Jinja global: timing/urgency assessment for a job (fresh / hard-to-fill)."""
     try:
