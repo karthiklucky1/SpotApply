@@ -3,10 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpotApply — AI-Powered Job Search Automation</title>
-    <meta name="description" content="SpotApply finds fresh, real jobs straight from company job boards, scores them against your resume, and prepares tailored applications — you review everything and click Submit.">
-    <meta property="og:title" content="SpotApply — AI Job Agent">
-    <meta property="og:description" content="Fresh, real jobs from company boards — scored, tailored, and filled for you. You always click Submit.">
+    <title>SpotApply — Your AI Job Search Copilot</title>
+    <meta name="description" content="SpotApply finds fresh jobs straight from 1,000+ company boards, ranks each one against your résumé, and preps tailored applications — you review everything and click Submit.">
+    <link rel="canonical" href="https://spotapply.ai/">
+    <meta property="og:title" content="SpotApply — Your AI Job Search Copilot">
+    <meta property="og:description" content="Fresh jobs from 1,000+ company boards — ranked against your résumé, tailored and prefilled for you. You always click Submit.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://spotapply.ai/">
+    <meta property="og:image" content="https://spotapply.ai/static/og-card.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="SpotApply — Your AI Job Search Copilot">
+    <meta name="twitter:description" content="Fresh jobs from 1,000+ company boards — ranked against your résumé. You always click Submit.">
+    <meta name="twitter:image" content="https://spotapply.ai/static/og-card.png">
     <meta name="theme-color" content="#2FB4A6">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -20,13 +30,38 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <!-- AOS Animations Stylesheet -->
     <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "SpotApply",
+      "url": "https://spotapply.ai/",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Web",
+      "description": "AI job-search copilot that discovers fresh roles from public company job boards, ranks them against your résumé, and preps tailored applications you review and submit yourself.",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Free to start — no card required" }
+    }
+    </script>
     <style>
         :root {
             --canvas: #F4F1EA; --surface: #FCFAF5; --surface-2: #EFEaDf;
-            --ink: #2E2A24; --ink-soft: #4A453C; --muted: #8C857A; --border: #E6E0D3;
+            /* --muted was #8C857A (3.2:1 on the canvas — fails WCAG AA for body
+               copy); #6E675C keeps the warm tone at 4.95:1. */
+            --ink: #2E2A24; --ink-soft: #4A453C; --muted: #6E675C; --border: #E6E0D3;
             --sage: #2FB4A6; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E7F5F2;
         }
         html, body { overflow-x: hidden; scroll-behavior: smooth; }
+        /* Respect reduced-motion: kill the ambient loops (marquee, pulse,
+           lasers, floats) and let AOS content render in place. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+                scroll-behavior: auto !important;
+            }
+            [data-aos] { opacity: 1 !important; transform: none !important; }
+        }
         .blur-teaser {
             filter: blur(4.5px);
             user-select: none;
@@ -50,7 +85,9 @@
             border: 1px solid var(--border);
         }
         .btn-primary {
-            background: var(--sage);
+            /* sage-700, not sage: white on #2FB4A6 is 2.56:1 (fails AA);
+               white on #16847A is 4.55:1. The glow keeps the brand hue. */
+            background: var(--sage-700);
             box-shadow: 0 4px 20px rgba(47,180,166,0.35);
             transition: all 0.2s ease;
             color: white;
@@ -158,7 +195,7 @@
 <body>
 
 <!-- Scroll Progress Bar -->
-<div id="scroll-progress" class="fixed top-[63px] left-0 h-[2px] bg-[var(--sage)] z-50 pointer-events-none transition-all duration-75" style="width: 0%;"></div>
+<div id="scroll-progress" class="fixed top-16 left-0 h-[2px] bg-[var(--sage)] z-50 pointer-events-none transition-all duration-75" style="width: 0%;"></div>
 
 <!-- Nav -->
 <nav class="fixed top-0 left-0 right-0 z-50 glass" style="border-bottom:1px solid var(--border);">
@@ -174,9 +211,9 @@
             <a href="#how-it-works" class="hover:underline transition-colors" style="color:var(--ink-soft);">How it works</a>
             <a href="/pricing" class="hover:underline transition-colors" style="color:var(--ink-soft);">Pricing</a>
         </div>
-        <div class="flex items-center gap-3">
-            <a href="/login" class="text-sm font-bold transition-colors px-4 py-2" style="color:var(--ink-soft);">Sign in</a>
-            <a href="/login" class="btn-primary text-sm font-black px-5 py-2.5 rounded-xl">Get started free</a>
+        <div class="flex items-center gap-2 sm:gap-3">
+            <a href="/login" class="text-sm font-bold transition-colors px-2 sm:px-4 py-2 whitespace-nowrap" style="color:var(--ink-soft);">Sign in</a>
+            <a href="/login" class="btn-primary text-sm font-black px-4 sm:px-5 py-2.5 rounded-xl whitespace-nowrap">Get started free</a>
         </div>
     </div>
 </nav>
@@ -196,10 +233,10 @@
             </div>
             <h1 data-aos="fade-up" data-aos-delay="100" data-aos-duration="600" class="text-4xl sm:text-6xl font-black tracking-tight leading-[1.05] mb-5" style="color:var(--ink);">
                 Stop scrolling<br>job boards.<br>
-                <span class="gradient-text">Let AI find &amp; rank them.</span>
+                <span class="gradient-text">Let AI find &amp; rank the jobs.</span>
             </h1>
             <p data-aos="fade-up" data-aos-delay="200" data-aos-duration="600" class="text-lg max-w-xl mx-auto lg:mx-0 mb-8" style="color:var(--muted);">
-                SpotApply scans 1,000+ boards, scores every role against your résumé, and surfaces only the matches worth your time — with tailored resumes and one-click apply.
+                SpotApply scans 1,000+ boards, scores every role against your résumé, and surfaces only the matches worth your time — with tailored résumés and one-click auto-fill. You always click Submit.
             </p>
             <div data-aos="fade-up" data-aos-delay="300" data-aos-duration="600" class="flex flex-col sm:flex-row gap-3 justify-center lg:justify-start mb-8">
                 <a href="/login" class="btn-primary btn-pulse font-black text-base px-8 py-4 rounded-2xl flex items-center justify-center gap-2">
@@ -211,7 +248,7 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
                 </a>
             </div>
-            <div data-aos="fade-up" data-aos-delay="400" data-aos-duration="600" class="flex items-center gap-4 justify-center lg:justify-start text-xs font-semibold" style="color:var(--muted);">
+            <div data-aos="fade-up" data-aos-delay="400" data-aos-duration="600" class="flex flex-wrap items-center gap-x-4 gap-y-2 justify-center lg:justify-start text-xs font-semibold" style="color:var(--muted);">
                 <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> Free to start</span>
                 <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> Resume-aware ranking</span>
                 <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> You approve every apply</span>
@@ -260,8 +297,8 @@
                     <div id="demo-state-input" class="space-y-4 flex-1 flex flex-col justify-between">
                         <div class="text-center mb-2">
                             <span class="text-[10px] font-extrabold uppercase tracking-widest text-[#16847A] bg-[var(--sage-tint)] px-3 py-1 rounded-full border border-emerald-100">Try Interactive Demo</span>
-                            <h3 class="text-sm font-black text-[var(--ink)] mt-3">Resume × Target Role Scanner</h3>
-                            <p class="text-[11px] text-[var(--muted)] mt-1">Get an instant match score, autopsy door verdict, and outreach drafts.</p>
+                            <h3 class="text-sm font-black text-[var(--ink)] mt-3">See how your résumé matches real jobs</h3>
+                            <p class="text-[11px] text-[var(--muted)] mt-1">Get an instant match score, a clear fit verdict, and ready-to-send outreach drafts.</p>
                         </div>
                         <div class="flex-1 flex flex-col min-h-[180px]">
                             <!-- Tab Bar -->
@@ -271,7 +308,7 @@
                             </div>
                             
                             <!-- Tab 1: Upload File -->
-                            <div id="demo-area-upload" class="flex-1 flex flex-col items-center justify-center p-4 border border-dashed border-[var(--border)] rounded-xl bg-[var(--surface)] hover:border-[var(--sage)] transition cursor-pointer relative min-h-[140px]" onclick="triggerDemoFileInput(event)">
+                            <div id="demo-area-upload" role="button" tabindex="0" aria-label="Upload your resume file" class="flex-1 flex flex-col items-center justify-center p-4 border border-dashed border-[var(--border)] rounded-xl bg-[var(--surface)] hover:border-[var(--sage)] focus:border-[var(--sage)] focus:outline-none transition cursor-pointer relative min-h-[140px]" onclick="triggerDemoFileInput(event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();triggerDemoFileInput(event);}">
                                 <input type="file" id="demo-file-input" accept=".pdf,.docx,.txt,.md" class="hidden" onchange="demoFileSelected(this)">
                                 <svg class="w-7 h-7 text-[var(--muted)] mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
                                 <p id="demo-upload-text" class="text-[10px] font-bold text-[var(--ink-soft)] text-center">Drag & drop your resume file or click to browse</p>
@@ -280,16 +317,21 @@
                             
                             <!-- Tab 2: Paste Text (hidden by default) -->
                             <div id="demo-area-paste" class="hidden flex-1 flex flex-col">
-                                <textarea id="demo-resume" class="w-full text-xs p-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition flex-1 resize-none h-36" placeholder="Education: University of Cincinnati. Experience: 3 years as AI Engineer..."></textarea>
+                                <textarea id="demo-resume" class="w-full text-base sm:text-xs p-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition flex-1 resize-none h-36" placeholder="Education: University of Cincinnati. Experience: 3 years as AI Engineer..."></textarea>
                             </div>
+                            <div class="flex items-center justify-between mt-1.5">
+                                <button type="button" onclick="fillDemoSample()" class="text-[10px] font-bold text-[var(--sage-700)] hover:underline">No résumé handy? Try a sample →</button>
+                                <span class="text-[9px] text-[var(--muted)]">🔒 Used only for matching — never shared.</span>
+                            </div>
+                            <p id="demo-error" class="hidden text-[10px] font-bold text-rose-600 mt-1.5" role="alert"></p>
                         </div>
                         <div class="grid grid-cols-3 gap-2 items-end">
                             <div class="col-span-2">
                                 <label class="block text-[10px] font-extrabold uppercase tracking-wide text-[var(--muted)] mb-1">Target Role</label>
-                                <input id="demo-role" type="text" class="w-full text-xs px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition" placeholder="e.g. AI Engineer, Backend Developer" value="AI Engineer">
+                                <input id="demo-role" type="text" class="w-full text-base sm:text-xs px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition" placeholder="e.g. AI Engineer, Backend Developer" value="AI Engineer">
                             </div>
                             <div>
-                                <button id="demo-btn-submit" onclick="submitDemoMatch()" class="w-full btn-primary font-black text-xs py-2.5 rounded-xl text-center">Scan Fits</button>
+                                <button id="demo-btn-submit" onclick="submitDemoMatch()" class="w-full btn-primary font-black text-xs py-2.5 rounded-xl text-center">See my matches</button>
                             </div>
                         </div>
                     </div>
@@ -313,23 +355,23 @@
                             <span class="text-[11px] font-black px-2.5 py-1 rounded-full text-white" style="background:var(--sage);">📋 Demo Dashboard</span>
                             <button onclick="resetDemoForm()" class="text-[11px] font-extrabold text-[var(--sage-700)] hover:underline">← Start Over</button>
                         </div>
-                        <!-- Split View (Left: Cards, Right: Detail Pane) -->
-                        <div class="grid grid-cols-5 gap-3 flex-1">
+                        <!-- Split View (stacks on phones; side-by-side from sm:) -->
+                        <div class="grid grid-cols-1 sm:grid-cols-5 gap-3 flex-1">
                             <!-- Left: 3 cards (takes 2 cols) -->
-                            <div id="demo-job-cards" class="col-span-2 space-y-2 max-h-[400px] overflow-y-auto pr-1"></div>
+                            <div id="demo-job-cards" class="sm:col-span-2 space-y-2 max-h-[160px] sm:max-h-[400px] overflow-y-auto pr-1"></div>
                             <!-- Right: detail pane (takes 3 cols) -->
-                            <div id="demo-detail-pane" class="col-span-3 rounded-xl p-3 border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] text-[11px] overflow-y-auto max-h-[400px]"></div>
+                            <div id="demo-detail-pane" class="sm:col-span-3 rounded-xl p-3 border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] text-[11px] overflow-y-auto max-h-[280px] sm:max-h-[400px]"></div>
                         </div>
                     </div>
 
                     <!-- Auth Lock Overlay (hidden by default) -->
-                    <div id="demo-auth-gate" class="hidden absolute inset-0 bg-black/85 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center">
+                    <div id="demo-auth-gate" role="dialog" aria-modal="true" aria-labelledby="demo-gate-title" class="hidden absolute inset-0 bg-black/85 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center">
                         <div class="w-11 h-11 rounded-full bg-[var(--sage-tint)] flex items-center justify-center mb-3">
                             <svg class="w-5 h-5 text-[var(--sage-700)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                         </div>
-                        <h4 class="text-xs font-bold text-white mb-1.5 uppercase tracking-wider">Unlock Your Personal Copilot</h4>
+                        <h4 id="demo-gate-title" class="text-xs font-bold text-white mb-1.5 uppercase tracking-wider">Unlock Your Personal Copilot</h4>
                         <p class="text-[10px] text-slate-300 mb-5 max-w-[280px]">
-                            You've previewed your top jobs! Sign up for free to search 1,000+ daily listings, auto-tailor resumes, and get referral introductions.
+                            You've previewed your top matches. Sign up free to unlock your full job board, auto-tailored résumés, and referral introductions.
                         </p>
                         <button onclick="redirectToSignUp()" class="btn-primary text-[10px] font-black px-6 py-3 rounded-xl w-full max-w-[240px] mb-3">
                             Sign Up & Import Resume
@@ -348,11 +390,11 @@
 <!-- Logo / trust marquee -->
 <section data-aos="fade-up" data-aos-duration="800" class="py-8 px-4 overflow-hidden" style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);">
     <div class="max-w-6xl mx-auto">
-        <p class="text-center text-[11px] font-bold uppercase tracking-widest mb-5" style="color:var(--muted);">Sources we scan every few hours</p>
+        <p class="text-center text-[11px] font-bold uppercase tracking-widest mb-5" style="color:var(--muted);">Where we find roles — public company boards &amp; job feeds</p>
         <div style="overflow:hidden;mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);">
             <div class="marquee">
-                <span>LinkedIn</span><span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>Indeed</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
-                <span>LinkedIn</span><span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>Indeed</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
+                <span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>LinkedIn</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
+                <span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>LinkedIn</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
             </div>
         </div>
     </div>
@@ -364,159 +406,7 @@
         <div data-aos="fade-up" data-aos-delay="0"><div class="text-4xl font-black gradient-text">1,000+</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Job boards scanned</div></div>
         <div data-aos="fade-up" data-aos-delay="100"><div class="text-4xl font-black gradient-text-green">5-stage</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">AI ranking pipeline</div></div>
         <div data-aos="fade-up" data-aos-delay="200"><div class="text-4xl font-black" style="color:#C07733;">24/7</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Always-on agent</div></div>
-        <div data-aos="fade-up" data-aos-delay="300"><div class="text-4xl font-black gradient-text">Top 1%</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Surfaced to you</div></div>
-    </div>
-</section>
-
-<!-- Recruiter & Trust Ecosystem Section -->
-<section class="py-20 px-4 bg-[var(--surface-2)]" style="border-top:1px solid var(--border);">
-    <div class="max-w-6xl mx-auto">
-        <div class="grid lg:grid-cols-12 gap-12 items-center">
-            
-            <!-- Left: Feature Explanations -->
-            <div class="lg:col-span-5 space-y-8" data-aos="fade-right">
-                <div>
-                    <span class="kicker" style="color:var(--sage-700);">Ecosystem &amp; Verification</span>
-                    <h2 class="text-3xl sm:text-4xl font-black tracking-tight leading-[1.1] mt-2 mb-4" style="color:var(--ink);">
-                        Attract recruiters with verified skills.
-                    </h2>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">
-                        SpotApply is a verified professional ecosystem that translates your raw resume into trusted, search-optimized candidate profiles that recruiters can discover and chat with directly.
-                    </p>
-                </div>
-
-                <!-- Feature 1 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-[var(--sage-tint)] border border-[rgba(47,180,166,0.15)] flex items-center justify-center shrink-0 text-lg">
-                        ✨
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">AI Skills Harvesting</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Our parsing engine extracts and maps your technical stack, projects, and work history. It indexes your expertise into standardized tags, making your profile immediately discoverable in recruiter searches.
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Feature 2 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0 text-lg">
-                        🛡️
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Verified Candidate Trust Badge</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Profiles are verified against real evidence — email, GitHub activity, and resume-consistency checks. A solid green check badge appears on your profile and search cards, showing recruiters that your skills and background have been verified.
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Feature 3 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0 text-lg">
-                        💬
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Direct Recruiter Portals &amp; DMs</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Approved tech recruiters access candidate profiles directly. They can instantly search by verified skills, inspect matching scores, and open secure chat dialogues for interviews without leaving the platform.
-                        </p>
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- Right: Browser Simulator Showcase -->
-            <div class="lg:col-span-7" data-aos="fade-left">
-                <div class="browser">
-                    <div class="browser-bar">
-                        <span class="browser-dot" style="background:#f87171;"></span>
-                        <span class="browser-dot" style="background:#fbbf24;"></span>
-                        <span class="browser-dot" style="background:#34d399;"></span>
-                        <span class="ml-3 text-xs font-mono font-bold" style="color:var(--muted);">app.spotapply.ai/recruiter/candidates</span>
-                    </div>
-
-                    <!-- Simulator Viewport -->
-                    <div class="p-6 space-y-4 shadow-inner" style="background:var(--canvas);">
-                        
-                        <!-- Search Bar Mockup -->
-                        <div class="flex items-center gap-3 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-2.5 shadow-sm">
-                            <span class="text-slate-400 text-xs">🔍</span>
-                            <div class="flex flex-wrap gap-1.5 flex-1 items-center">
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">React</span>
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">FastAPI</span>
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">ML Engineering</span>
-                                <span class="animate-pulse w-[1.5px] h-3 bg-slate-400"></span>
-                            </div>
-                            <span class="text-[9px] font-bold text-[var(--muted)]">1 candidate found</span>
-                        </div>
-
-                        <!-- Candidate Card Results Mockup -->
-                        <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3 relative overflow-hidden transition-all duration-300 hover:border-emerald-500/30">
-                            
-                            <!-- Card Header: Profile Info -->
-                            <div class="flex items-center gap-3">
-                                <div class="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center border-2 border-emerald-500/30 bg-emerald-50 text-emerald-600 font-extrabold text-base relative flex-shrink-0">
-                                    K
-                                    <!-- Trust Badge in Top Right Corner Overlay (just like notification style) -->
-                                    <span class="absolute -top-0.5 -right-0.5 text-[8px] font-black rounded-full w-[15px] h-[15px] flex items-center justify-center shadow-sm border border-[var(--surface)]" style="background: #10b981; color: #ffffff; line-height: 1;">✓</span>
-                                </div>
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex items-center gap-2">
-                                        <span class="text-sm font-black" style="color:var(--ink);">Karthik</span>
-                                        <span class="text-[8px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 px-2 py-0.2 rounded-full uppercase tracking-wider">Verified Candidate</span>
-                                    </div>
-                                    <div class="text-[10px]" style="color:var(--muted);">Software Engineer · USA</div>
-                                </div>
-                                <div class="text-right">
-                                    <div class="text-xs font-black text-emerald-600">98% Match</div>
-                                    <div class="text-[8px] font-bold text-[var(--muted)]">Trust Score: 98/100</div>
-                                </div>
-                            </div>
-
-                            <!-- Skills harvested dynamically -->
-                            <div class="border-t border-b border-[var(--border)] py-2.5 space-y-1.5">
-                                <div class="text-[8px] font-bold uppercase tracking-wider text-[var(--muted)]">AI Harvested Skills:</div>
-                                <div class="flex flex-wrap gap-1.5">
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">React</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">FastAPI</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Python</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Machine Learning</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">PostgreSQL</span>
-                                </div>
-                            </div>
-
-                            <!-- Recruiter Message exchange dialogue -->
-                            <div class="bg-[var(--surface-2)] border border-[var(--border)] rounded-xl p-3 space-y-2.5">
-                                <div class="flex items-center gap-1.5 text-[8px] font-extrabold text-[var(--muted)] uppercase tracking-wider">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                                    Recruiter DM Introduction
-                                </div>
-                                <div class="space-y-2">
-                                    <!-- Recruiter Message -->
-                                    <div class="flex gap-2">
-                                        <div class="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[9px] shrink-0">LM</div>
-                                        <div class="text-[10px] bg-white border border-[var(--border)] p-2 rounded-lg rounded-tl-none max-w-[85%] shadow-sm text-[var(--ink-soft)] leading-relaxed">
-                                            Hi Karthik! Loved your verified FastAPI experience. We have a matching role open at Figma. Are you open for a call?
-                                        </div>
-                                    </div>
-                                    <!-- Candidate Message Mockup typing animation -->
-                                    <div class="flex gap-2 justify-end">
-                                        <div class="text-[10px] bg-emerald-600 text-white p-2 rounded-lg rounded-tr-none max-w-[80%] shadow-sm leading-relaxed min-h-[30px] flex items-center" id="recruiter-page-reply">
-                                            Hi Lauren! Yes, I am free this Thursday afternoon.
-                                        </div>
-                                        <div class="w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-[9px] shrink-0">K</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                        </div>
-
-                    </div>
-                </div>
-            </div>
-
-        </div>
+        <div data-aos="fade-up" data-aos-delay="300"><div class="text-4xl font-black gradient-text">≤ 60 min</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Live boards re-checked</div></div>
     </div>
 </section>
 
@@ -562,7 +452,7 @@
                         <h3 class="font-extrabold text-base text-[var(--ink)]">3. Smart Auto-Fill</h3>
                     </div>
                     <p class="text-xs leading-relaxed text-[var(--muted)]">
-                        Pre-fills Greenhouse, Lever, and Ashby job forms in a single click directly from your parsed matching resume, ready for you to review.
+                        Pre-fills Greenhouse, Lever, Ashby and Workday job forms in a single click directly from your parsed matching resume, ready for you to review.
                     </p>
                 </div>
 
@@ -570,10 +460,10 @@
                 <div id="step-desc-3" onmouseenter="handleShowcaseMouseEnter(3)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(3, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="3">
                     <div class="flex items-center gap-3 mb-2">
                         <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-[#C07733] bg-amber-50">4</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">4. LinkedIn Referrals</h3>
+                        <h3 class="font-extrabold text-base text-[var(--ink)]">4. Referral Copilot</h3>
                     </div>
                     <p class="text-xs leading-relaxed text-[var(--muted)]">
-                        Finds contacts at target companies, labels H-1B sponsors, and auto-drafts customizable referral request emails to boost your response rate.
+                        Spots likely referrers at your target companies, labels H-1B sponsors, and drafts referral request messages — you review and send them yourself.
                     </p>
                 </div>
 
@@ -608,8 +498,8 @@
                     <!-- Simulator viewport -->
                     <div class="p-6 min-h-[300px] lg:min-h-0 flex-1 flex items-center justify-center" style="background:var(--canvas);" id="simulator-viewport">
                         <!-- Panel 0: Resume Scanner -->
-                        <div id="panel-0" class="w-full flex gap-4 items-stretch demo-panel">
-                            <div class="w-1/2 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 relative overflow-hidden shadow-sm flex flex-col justify-between min-h-[260px]">
+                        <div id="panel-0" class="w-full flex flex-col sm:flex-row gap-4 items-stretch demo-panel">
+                            <div class="w-full sm:w-1/2 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 relative overflow-hidden shadow-sm flex flex-col justify-between min-h-[200px] sm:min-h-[260px]">
                                 <div class="absolute left-0 w-full h-[2px] bg-[var(--sage)] shadow-[0_0_8px_var(--sage)] laser-scanner" style="top: 0%;"></div>
                                 <div class="space-y-2">
                                     <div class="h-4 w-2/3 bg-slate-200 rounded"></div>
@@ -625,7 +515,7 @@
                                     Parsing resume.pdf...
                                 </div>
                             </div>
-                            <div class="w-1/2 flex flex-col justify-center space-y-2.5">
+                            <div class="w-full sm:w-1/2 flex flex-col justify-center space-y-2.5">
                                 <div class="text-xs font-bold text-[var(--ink-soft)] uppercase tracking-wider mb-1">Extracted profile tags:</div>
                                 <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
                                     <span class="text-xs">💻</span>
@@ -656,11 +546,11 @@
 
                         <!-- Panel 1: AI Match Rating -->
                         <div id="panel-1" class="w-full hidden flex flex-col gap-5 demo-panel">
-                            <div class="flex gap-6 items-center w-full">
+                            <div class="flex flex-col sm:flex-row gap-6 items-center w-full">
                                 <div class="relative w-32 h-32 flex items-center justify-center shrink-0">
                                     <svg class="w-full h-full -rotate-90">
                                         <circle cx="64" cy="64" r="54" stroke="var(--border)" stroke-width="8" fill="none"></circle>
-                                        <circle id="score-ring" cx="64" cy="64" r="54" stroke="url(#scoreGrad)" stroke-dasharray="340" stroke-dashoffset="90" stroke-width="8" stroke-linecap="round" fill="none" class="transition-all duration-1000 ease-out"></circle>
+                                        <circle id="score-ring" cx="64" cy="64" r="54" stroke="url(#scoreGrad)" stroke-dasharray="340" stroke-dashoffset="20.4" stroke-width="8" stroke-linecap="round" fill="none" class="transition-all duration-1000 ease-out"></circle>
                                         <defs>
                                             <linearGradient id="scoreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                                                 <stop offset="0%" stop-color="var(--sage)" />
@@ -669,7 +559,7 @@
                                         </defs>
                                     </svg>
                                     <div class="absolute flex flex-col items-center justify-center text-center">
-                                        <span class="text-2xl font-black tracking-tight" id="score-text" style="color:var(--ink);">88%</span>
+                                        <span class="text-2xl font-black tracking-tight" id="score-text" style="color:var(--ink);">94%</span>
                                         <span class="text-[8px] font-bold text-white uppercase px-2 py-0.5 rounded-full mt-0.5" style="background:var(--sage);">Strong Fit</span>
                                     </div>
                                 </div>
@@ -700,9 +590,9 @@
                         </div>
 
                         <!-- Panel 2: Smart Auto-Fill -->
-                        <div id="panel-2" class="w-full hidden flex gap-4 items-stretch demo-panel">
+                        <div id="panel-2" class="w-full hidden flex flex-col sm:flex-row gap-4 items-stretch demo-panel">
                             <!-- Left: Mock Extension Overlay -->
-                            <div class="w-[150px] shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 shadow-sm flex flex-col justify-between">
+                            <div class="w-full sm:w-[150px] sm:shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 shadow-sm flex flex-col justify-between">
                                 <div>
                                     <div class="flex items-center gap-1.5 pb-2 border-b border-[var(--border)] mb-3">
                                         <div class="w-4 h-4 rounded flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
@@ -729,7 +619,7 @@
                             <div class="flex-1 bg-white border border-[var(--border)] rounded-xl p-4 shadow-sm text-[10px] space-y-3 flex flex-col justify-between">
                                 <div>
                                     <div class="flex justify-between items-center pb-2 border-b border-[var(--border)] mb-2.5">
-                                        <span class="font-extrabold text-[var(--ink)]">Stripe Application Form</span>
+                                        <span class="font-extrabold text-[var(--ink)]">Northwind Labs — Application Form</span>
                                         <span class="text-[8px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-1">
                                             <span class="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></span>
                                             Active
@@ -778,7 +668,7 @@
                                 <div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center font-bold text-xs">SJ</div>
                                 <div>
                                     <div class="text-xs font-extrabold text-[var(--ink)]">Sarah Jenkins</div>
-                                    <div class="text-[9px] text-[var(--muted)]">1st Degree · Software Engineer at Stripe</div>
+                                    <div class="text-[9px] text-[var(--muted)]">1st Degree · Software Engineer at Northwind Labs</div>
                                 </div>
                                 <span class="ml-auto text-[9px] font-black text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
                                     <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
@@ -801,7 +691,7 @@
                                         <div class="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center font-bold text-[10px]">DC</div>
                                         <div>
                                             <div class="text-[10px] font-extrabold text-[var(--ink)]">David Chen</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Stripe</div>
+                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Northwind Labs</div>
                                         </div>
                                     </div>
                                     <span class="text-[8px] font-bold text-[var(--sage-700)] bg-[var(--sage-tint)] px-2 py-0.5 rounded">2nd Degree</span>
@@ -811,7 +701,7 @@
                                         <div class="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center font-bold text-[10px]">ET</div>
                                         <div>
                                             <div class="text-[10px] font-extrabold text-[var(--ink)]">Emily Taylor</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Engineering Manager at Stripe</div>
+                                            <div class="text-[8px] text-[var(--muted)]">Engineering Manager at Northwind Labs</div>
                                         </div>
                                     </div>
                                     <span class="text-[8px] font-bold text-[var(--sage-700)] bg-[var(--sage-tint)] px-2 py-0.5 rounded">2nd Degree</span>
@@ -850,17 +740,18 @@
                                         <div class="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[10px]">LM</div>
                                         <div>
                                             <div class="text-[10px] font-extrabold text-[var(--ink)]">Lauren Miller</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Figma</div>
+                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Acme AI</div>
                                         </div>
                                     </div>
                                     <span class="text-[8px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">Connected</span>
                                 </div>
                             </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+                        </div><!-- /panel-4 -->
+                    </div><!-- /simulator-viewport -->
+                </div><!-- /browser -->
+            </div><!-- /lg:col-span-8 -->
+        </div><!-- /grid -->
+    </div><!-- /max-w-6xl -->
 </section>
 
 <!-- Features -->
@@ -878,7 +769,7 @@
                     <svg class="w-5 h-5" style="color:var(--sage);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 </div>
                 <h3 class="font-black mb-2" style="color:var(--ink);">Multi-board discovery</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">Scans Greenhouse, Lever, Ashby, LinkedIn, Indeed, Remotive, HN Hiring and 20+ more — filtered to your country and target roles.</p>
+                <p class="text-sm leading-relaxed" style="color:var(--muted);">Scans Greenhouse, Lever, Ashby, Workday, LinkedIn, Remotive, HN Hiring and 1,000+ company boards — filtered to your country and target roles.</p>
             </div>
 
             <div data-aos="fade-up" data-aos-delay="100" class="feature-card lift rounded-2xl p-6">
@@ -1013,6 +904,204 @@
     </div>
 </section>
 
+<!-- Recruiter & Trust Ecosystem Section -->
+<section class="py-20 px-4 bg-[var(--surface-2)]" style="border-top:1px solid var(--border);">
+    <div class="max-w-6xl mx-auto">
+        <div class="grid lg:grid-cols-12 gap-12 items-center">
+            
+            <!-- Left: Feature Explanations -->
+            <div class="lg:col-span-5 space-y-8" data-aos="fade-right">
+                <div>
+                    <span class="kicker" style="color:var(--sage-700);">Bonus — once you're in</span>
+                    <h2 class="text-3xl sm:text-4xl font-black tracking-tight leading-[1.1] mt-2 mb-4" style="color:var(--ink);">
+                        Recruiters can find you, too.
+                    </h2>
+                    <p class="text-sm leading-relaxed" style="color:var(--muted);">
+                        SpotApply is a verified professional ecosystem that translates your raw resume into trusted, search-optimized candidate profiles that recruiters can discover and chat with directly.
+                    </p>
+                </div>
+
+                <!-- Feature 1 -->
+                <div class="flex gap-4">
+                    <div class="w-10 h-10 rounded-xl bg-[var(--sage-tint)] border border-[rgba(47,180,166,0.15)] flex items-center justify-center shrink-0 text-lg">
+                        ✨
+                    </div>
+                    <div>
+                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">AI Skills Harvesting</h3>
+                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
+                            Our parsing engine extracts and maps your technical stack, projects, and work history. It indexes your expertise into standardized tags, making your profile immediately discoverable in recruiter searches.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Feature 2 -->
+                <div class="flex gap-4">
+                    <div class="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0 text-lg">
+                        🛡️
+                    </div>
+                    <div>
+                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Verified Candidate Trust Badge</h3>
+                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
+                            Profiles are verified against real evidence — email, GitHub activity, and résumé-consistency checks. A solid green check badge appears on your profile and search cards, showing recruiters that your skills and background have been verified.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Feature 3 -->
+                <div class="flex gap-4">
+                    <div class="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0 text-lg">
+                        💬
+                    </div>
+                    <div>
+                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Direct Recruiter Portals &amp; DMs</h3>
+                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
+                            Approved tech recruiters access candidate profiles directly. They can instantly search by verified skills, inspect matching scores, and open secure chat dialogues for interviews without leaving the platform.
+                        </p>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right: Browser Simulator Showcase -->
+            <div class="lg:col-span-7" data-aos="fade-left">
+                <div class="browser">
+                    <div class="browser-bar">
+                        <span class="browser-dot" style="background:#f87171;"></span>
+                        <span class="browser-dot" style="background:#fbbf24;"></span>
+                        <span class="browser-dot" style="background:#34d399;"></span>
+                        <span class="ml-3 text-xs font-mono font-bold" style="color:var(--muted);">app.spotapply.ai/recruiter/candidates</span>
+                    </div>
+
+                    <!-- Simulator Viewport -->
+                    <div class="p-6 space-y-4 shadow-inner" style="background:var(--canvas);">
+                        
+                        <!-- Search Bar Mockup -->
+                        <div class="flex items-center gap-3 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-2.5 shadow-sm">
+                            <span class="text-slate-400 text-xs">🔍</span>
+                            <div class="flex flex-wrap gap-1.5 flex-1 items-center">
+                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">React</span>
+                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">FastAPI</span>
+                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">ML Engineering</span>
+                                <span class="animate-pulse w-[1.5px] h-3 bg-slate-400"></span>
+                            </div>
+                            <span class="text-[9px] font-bold text-[var(--muted)]">1 candidate found</span>
+                        </div>
+
+                        <!-- Candidate Card Results Mockup -->
+                        <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3 relative overflow-hidden transition-all duration-300 hover:border-emerald-500/30">
+                            
+                            <!-- Card Header: Profile Info -->
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center border-2 border-emerald-500/30 bg-emerald-50 text-emerald-600 font-extrabold text-base relative flex-shrink-0">
+                                    K
+                                    <!-- Trust Badge in Top Right Corner Overlay (just like notification style) -->
+                                    <span class="absolute -top-0.5 -right-0.5 text-[8px] font-black rounded-full w-[15px] h-[15px] flex items-center justify-center shadow-sm border border-[var(--surface)]" style="background: #10b981; color: #ffffff; line-height: 1;">✓</span>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-sm font-black" style="color:var(--ink);">Karthik</span>
+                                        <span class="text-[8px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 px-2 py-0.5 rounded-full uppercase tracking-wider">Verified Candidate</span>
+                                    </div>
+                                    <div class="text-[10px]" style="color:var(--muted);">Software Engineer · USA</div>
+                                </div>
+                                <div class="text-right">
+                                    <div class="text-xs font-black text-emerald-600">98% Match</div>
+                                    <div class="text-[8px] font-bold text-[var(--muted)]">Trust Score: 98/100</div>
+                                </div>
+                            </div>
+
+                            <!-- Skills harvested dynamically -->
+                            <div class="border-t border-b border-[var(--border)] py-2.5 space-y-1.5">
+                                <div class="text-[8px] font-bold uppercase tracking-wider text-[var(--muted)]">AI Harvested Skills:</div>
+                                <div class="flex flex-wrap gap-1.5">
+                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">React</span>
+                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">FastAPI</span>
+                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Python</span>
+                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Machine Learning</span>
+                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">PostgreSQL</span>
+                                </div>
+                            </div>
+
+                            <!-- Recruiter Message exchange dialogue -->
+                            <div class="bg-[var(--surface-2)] border border-[var(--border)] rounded-xl p-3 space-y-2.5">
+                                <div class="flex items-center gap-1.5 text-[8px] font-extrabold text-[var(--muted)] uppercase tracking-wider">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                                    Recruiter DM Introduction
+                                </div>
+                                <div class="space-y-2">
+                                    <!-- Recruiter Message -->
+                                    <div class="flex gap-2">
+                                        <div class="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[9px] shrink-0">LM</div>
+                                        <div class="text-[10px] bg-white border border-[var(--border)] p-2 rounded-lg rounded-tl-none max-w-[85%] shadow-sm text-[var(--ink-soft)] leading-relaxed">
+                                            Hi Karthik! Loved your verified FastAPI experience. We have a matching role open at Acme AI. Are you open for a call?
+                                        </div>
+                                    </div>
+                                    <!-- Candidate Message Mockup typing animation -->
+                                    <div class="flex gap-2 justify-end">
+                                        <div class="text-[10px] bg-emerald-600 text-white p-2 rounded-lg rounded-tr-none max-w-[80%] shadow-sm leading-relaxed min-h-[30px] flex items-center" id="recruiter-page-reply">
+                                            Hi Lauren! Yes, I am free this Thursday afternoon.
+                                        </div>
+                                        <div class="w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-[9px] shrink-0">K</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</section>
+
+<!-- FAQ -->
+<section id="faq" class="py-20 px-4" style="background:var(--surface);border-top:1px solid var(--border);">
+    <div class="max-w-3xl mx-auto">
+        <div data-aos="fade-up" class="text-center mb-10">
+            <span class="kicker">Questions, answered</span>
+            <h2 class="text-4xl font-black mb-3" style="color:var(--ink);">Frequently asked</h2>
+        </div>
+        <div class="space-y-3">
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Does SpotApply apply to jobs for me automatically?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">No — and that's deliberate. The agent finds and ranks roles, tailors your r&eacute;sum&eacute; and cover letter, and pre-fills the application form. You review everything and click Submit yourself. Nothing is ever sent without you.</p>
+            </details>
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Is it really free to start?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Yes — upload your r&eacute;sum&eacute; and get your ranked job board with no card required. Paid plans raise the daily tailoring and auto-fill limits; see <a href="/pricing" class="font-bold underline" style="color:var(--sage-700);">pricing</a>.</p>
+            </details>
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Where do the jobs come from?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Public company career boards and ATS feeds — Greenhouse, Lever, Ashby, Workday and 1,000+ more — re-checked throughout the day, so postings reach you while they're fresh and link straight to the company's own application page.</p>
+            </details>
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">How does the match score work?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">A multi-stage AI pipeline reads each posting against your actual r&eacute;sum&eacute; — skills, experience level, location and work authorization — and shows you the score with its reasoning, so you can see exactly why a role surfaced.</p>
+            </details>
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">I need visa sponsorship — does it help?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Yes. Built-in public USCIS H-1B data flags likely sponsors and cap-exempt employers directly on each role, so you stop wasting applications on companies that never sponsor.</p>
+            </details>
+            <details class="feature-card rounded-2xl p-5 group">
+                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">What happens to my r&eacute;sum&eacute;?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
+                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">It's used to rank jobs and generate your tailored documents — nothing else. It isn't sold or shared with third parties, and tailored documents stay grounded in your real experience. See our <a href="/privacy" class="font-bold underline" style="color:var(--sage-700);">privacy policy</a>.</p>
+            </details>
+        </div>
+    </div>
+</section>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"Does SpotApply apply to jobs for me automatically?","acceptedAnswer":{"@type":"Answer","text":"No — the agent finds and ranks roles, tailors your resume and cover letter, and pre-fills the application form, but you review everything and click Submit yourself. Nothing is sent without you."}},
+{"@type":"Question","name":"Is it really free to start?","acceptedAnswer":{"@type":"Answer","text":"Yes — upload your resume and get your ranked job board with no card required. Paid plans raise the daily tailoring and auto-fill limits."}},
+{"@type":"Question","name":"Where do the jobs come from?","acceptedAnswer":{"@type":"Answer","text":"Public company career boards and ATS feeds — Greenhouse, Lever, Ashby, Workday and 1,000+ more — re-checked throughout the day and linking straight to the company's own application page."}},
+{"@type":"Question","name":"How does the match score work?","acceptedAnswer":{"@type":"Answer","text":"A multi-stage AI pipeline reads each posting against your actual resume — skills, experience level, location and work authorization — and shows the score with its reasoning."}},
+{"@type":"Question","name":"I need visa sponsorship — does it help?","acceptedAnswer":{"@type":"Answer","text":"Yes. Built-in public USCIS H-1B data flags likely sponsors and cap-exempt employers directly on each role."}},
+{"@type":"Question","name":"What happens to my resume?","acceptedAnswer":{"@type":"Answer","text":"It's used to rank jobs and generate your tailored documents — nothing else. It isn't sold or shared with third parties."}}
+]}
+</script>
+
 <!-- CTA -->
 <section data-aos="fade-up" class="py-20 px-4">
     <div class="max-w-3xl mx-auto text-center">
@@ -1108,10 +1197,11 @@
             const ring = document.getElementById('score-ring');
             const scoreText = document.getElementById('score-text');
             if (ring) {
-                ring.style.strokeDashoffset = '390';
+                // dasharray is 340 (r=54 → circumference ≈ 339.3); start fully
+                // hidden, animate to 94%: 340 * (1 - 0.94) = 20.4
+                ring.style.strokeDashoffset = '340';
                 setTimeout(() => {
-                    // 94% of 390 is 390 * (1 - 0.94) = 23.4
-                    ring.style.strokeDashoffset = '23.4';
+                    ring.style.strokeDashoffset = '20.4';
                 }, 100);
             }
 
@@ -1185,7 +1275,7 @@
                 typewriter.innerHTML = '';
                 if (typewriterInterval) clearInterval(typewriterInterval);
 
-                const message = "Hi Sarah! I saw an opening for the ML Engineer role at Stripe and would love to get your advice on the team. Could you refer me?";
+                const message = "Hi Sarah! I saw an opening for the ML Engineer role at Northwind Labs and would love to get your advice on the team. Could you refer me?";
                 let charIdx = 0;
                 
                 typewriterInterval = setInterval(() => {
@@ -1329,6 +1419,11 @@
     }
 
     async function loadDynamicTestimonials() {
+        // User-authored content goes through innerHTML — escape it (a review
+        // name/body containing markup would otherwise execute: stored XSS).
+        const esc = (s) => String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
         try {
             const res = await fetch('/api/reviews');
             if (!res.ok) return;
@@ -1338,12 +1433,13 @@
                 if (!grid) return;
                 grid.innerHTML = data.reviews.map((r, i) => {
                     const delay = i * 100;
-                    const ratingStars = '★'.repeat(r.rating) + '☆'.repeat(5 - r.rating);
+                    const rating = Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0));
+                    const ratingStars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
                     return `
                         <div data-aos="fade-up" data-aos-delay="${delay}" class="feature-card rounded-2xl p-6">
                             <div class="text-amber-500 text-sm mb-3" style="letter-spacing: 2px;">${ratingStars}</div>
-                            <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft); font-weight: 500;">"${r.content}"</p>
-                            <p class="text-xs font-bold" style="color:var(--muted);">— ${r.user_name}</p>
+                            <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft); font-weight: 500;">"${esc(r.content)}"</p>
+                            <p class="text-xs font-bold" style="color:var(--muted);">— ${esc(r.user_name)}</p>
                         </div>
                     `;
                 }).join('');
@@ -1377,15 +1473,36 @@
             observer.observe(section);
         }
 
-        // Setup Scroll Progress Bar
+        // Setup Scroll Progress Bar (passive + rAF-throttled: one style write
+        // per frame instead of one per scroll event)
+        let progressTicking = false;
         window.addEventListener('scroll', () => {
-            const scrollTop = window.scrollY || document.documentElement.scrollTop;
-            const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
-            const scrollPercent = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
-            const progressEl = document.getElementById('scroll-progress');
-            if (progressEl) {
-                progressEl.style.width = scrollPercent + '%';
-            }
+            if (progressTicking) return;
+            progressTicking = true;
+            requestAnimationFrame(() => {
+                progressTicking = false;
+                const scrollTop = window.scrollY || document.documentElement.scrollTop;
+                const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+                const scrollPercent = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+                const progressEl = document.getElementById('scroll-progress');
+                if (progressEl) {
+                    progressEl.style.width = scrollPercent + '%';
+                }
+            });
+        }, { passive: true });
+
+        // Keyboard access for the showcase step selectors (they're divs driven
+        // by hover/click — give them button semantics and Enter/Space support).
+        document.querySelectorAll('.step-card').forEach((card, idx) => {
+            card.setAttribute('tabindex', '0');
+            card.setAttribute('role', 'button');
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    showShowcaseTab(idx, true);
+                }
+            });
+            card.addEventListener('focus', () => showShowcaseTab(idx, false));
         });
     });
 })();
@@ -1397,8 +1514,11 @@
     AOS.init({
         duration: 800,
         easing: 'ease-out-quad',
-        once: false,
-        offset: 100
+        // once:false replayed every entrance animation on every scroll pass —
+        // janky on phones and hostile to motion-sensitive users.
+        once: true,
+        offset: 100,
+        disable: window.matchMedia('(prefers-reduced-motion: reduce)').matches
     });
 </script>
 
@@ -1453,6 +1573,36 @@
         document.getElementById('demo-file-input').click();
     };
 
+    function showDemoError(msg) {
+        const el = document.getElementById('demo-error');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.remove('hidden');
+    }
+    function clearDemoError() {
+        const el = document.getElementById('demo-error');
+        if (el) { el.textContent = ''; el.classList.add('hidden'); }
+    }
+
+    const SAMPLE_RESUME = [
+        'Jordan Lee — AI Engineer, Austin TX. jordan.lee@example.com',
+        'Experience: 3 years building ML products. AI Engineer @ HealthTech startup:',
+        'built a RAG pipeline (Python, FastAPI, LangChain) serving 40k queries/day;',
+        'fine-tuned transformer models for clinical text; shipped feature store on AWS.',
+        'Previously: Backend Engineer — Python, PostgreSQL, Docker, Kubernetes, CI/CD.',
+        'Education: BS Computer Science, University of Texas at Austin.',
+        'Skills: Python, PyTorch, FastAPI, SQL, AWS, Docker, MLOps, LLM fine-tuning.'
+    ].join(' ');
+
+    window.fillDemoSample = function() {
+        clearDemoError();
+        switchDemoTab('paste');
+        document.getElementById('demo-resume').value = SAMPLE_RESUME;
+        const role = document.getElementById('demo-role');
+        if (role && !role.value.trim()) role.value = 'AI Engineer';
+        submitDemoMatch();
+    };
+
     window.demoFileSelected = function(input) {
         const file = input.files[0];
         const textEl = document.getElementById('demo-upload-text');
@@ -1500,17 +1650,18 @@
         const fd = new FormData();
         fd.append('target_role', targetRole);
         
+        clearDemoError();
         if (activeTab === 'upload') {
             const fileInput = document.getElementById('demo-file-input');
             if (!fileInput.files || !fileInput.files[0]) {
-                alert('Please upload a resume file first!');
+                showDemoError('Please add your résumé file first — or try the sample below.');
                 return;
             }
             fd.append('file', fileInput.files[0]);
         } else {
             const resumeText = document.getElementById('demo-resume').value.trim();
             if (!resumeText) {
-                alert('Please paste your resume text first!');
+                showDemoError('Please paste your résumé text first — or try the sample below.');
                 return;
             }
             fd.append('resume_text', resumeText);
@@ -1533,9 +1684,9 @@
         // Scan status text rotation
         const statusEl = document.getElementById('demo-scan-status');
         const statuses = [
-            'Parsing resume years & university...',
-            'Running Rejection Autopsy filters...',
-            'Drafting alumni and GitHub outreach...',
+            'Parsing your experience & education...',
+            'Checking fit against screening filters...',
+            'Drafting outreach messages...',
             'Finalizing matches...'
         ];
         
@@ -1554,8 +1705,8 @@
             clearInterval(interval);
             
             if (!res.ok) {
-                alert('Demo matching failed. Please try again.');
                 resetDemoForm();
+                showDemoError('Demo matching failed. Please try again.');
                 return;
             }
             
@@ -1572,8 +1723,8 @@
         } catch (e) {
             clearInterval(interval);
             console.error('Demo match error:', e);
-            alert('Network error. Please try again.');
             resetDemoForm();
+            showDemoError('Network error. Please try again.');
         }
     };
 
@@ -1623,18 +1774,23 @@
             cardsContainer.appendChild(card);
         });
         
-        // Auto-select first job
+        // Auto-select first job (programmatic — doesn't count against the gate)
         if (data.jobs && data.jobs.length) {
-            selectJobCard(0);
+            selectJobCard(0, false);
         }
     }
 
-    function selectJobCard(index) {
-        // Increment view count for the gating logic
-        clickCount++;
-        if (clickCount > 2) {
-            document.getElementById('demo-auth-gate').classList.remove('hidden');
-            return;
+    function selectJobCard(index, fromUser = true) {
+        // Gate on the 4th deliberate interaction: with 3 demo jobs the user can
+        // open every card once before the sign-up wall. The programmatic
+        // auto-select doesn't count (it used to eat one of the allowed views,
+        // so users hit the wall after a single click of their own).
+        if (fromUser) {
+            clickCount++;
+            if (clickCount > 3) {
+                document.getElementById('demo-auth-gate').classList.remove('hidden');
+                return;
+            }
         }
         
         const cards = document.getElementById('demo-job-cards').children;
@@ -1718,7 +1874,7 @@
 
     window.closeAuthGate = function() {
         document.getElementById('demo-auth-gate').classList.add('hidden');
-        clickCount = 1;
+        clickCount = 0;
     };
 
     window.redirectToSignUp = function() {
