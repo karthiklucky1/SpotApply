@@ -264,8 +264,22 @@ def init_db() -> None:
         ("ead_end_date", "VARCHAR DEFAULT ''"),
         ("opt_unemployment_days_used", "INTEGER DEFAULT 0"),
         ("stem_opt", "BOOLEAN DEFAULT FALSE"),
+        ("last_active_at", "DATETIME"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
+
+    # Backfill: activity tracking starts NOW — grandfather every existing
+    # profile as active-at-deploy, so the dormancy gate (dormant_user_grace_days)
+    # measures from a real timestamp instead of exempting NULL rows forever.
+    # Idempotent (only fills NULLs); new rows are stamped by the auth layer.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE userprofile SET last_active_at = CURRENT_TIMESTAMP "
+                "WHERE last_active_at IS NULL"
+            ))
+    except Exception as e:
+        print(f"last_active_at backfill skipped: {e}")
 
     # Migrations for discoveryrun table
     for col, col_type in [

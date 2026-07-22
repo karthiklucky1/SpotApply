@@ -122,7 +122,21 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
             ).distinct().limit(limit)
         ).all()
     users = [r[0] if isinstance(r, tuple) else r for r in rows]
-    return [u for u in users if u != SHARED_POOL_USER]
+    users = [u for u in users if u != SHARED_POOL_USER]
+    # Dormancy gate: even with adoption stopped, a vanished user's existing
+    # unscored backlog would keep burning LLM budget (and round-robin slots
+    # active users need). Skip them here too; their queue resumes on return.
+    if settings.dormant_user_grace_days > 0 and users:
+        from app.api.server import _user_is_active
+        from app.db.models import UserProfile
+        with get_session() as session:
+            profiles = {p.user_id: p for p in session.exec(
+                select(UserProfile).where(UserProfile.user_id.in_(
+                    [u for u in users if u]))
+            ).all()}
+        users = [u for u in users
+                 if u is None or u not in profiles or _user_is_active(profiles[u])]
+    return users
 
 
 def _user_queue(user_id: Optional[str], cap: int) -> List[int]:

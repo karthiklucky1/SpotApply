@@ -312,6 +312,10 @@ class UserProfile(SQLModel, table=True):
     trust_evidence: Optional[str] = None   # JSON: per-dimension evidence items
     resume_grounded_ratio: Optional[float] = None  # real grounding ratio (set by tailoring); None = not yet checked
     trust_computed_at: Optional[datetime] = None
+    # Last authenticated request (stamped, throttled, by the API auth layer).
+    # Gates background spend: lanes skip users dormant past
+    # dormant_user_grace_days. NULL = predates tracking → treated as active.
+    last_active_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

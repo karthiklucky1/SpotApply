@@ -224,6 +224,7 @@ def _get_user_id(request: Request) -> str | None:
             continue
         uid = get_user_id_from_token(token)
         if uid:
+            _touch_last_active(uid)
             return uid
     return None
 
@@ -234,6 +235,56 @@ def _require_user(request: Request) -> str:
     if not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return uid
+
+
+# Activity tracking — the signal the dormancy gate runs on. Throttled so it
+# costs at most one UPDATE per user per window; must never fail a request.
+_LAST_ACTIVE_STAMP: dict[str, float] = {}
+_LAST_ACTIVE_STAMP_SECONDS = 900
+
+
+def _touch_last_active(uid: str) -> None:
+    import time as _time
+    mono = _time.monotonic()
+    last = _LAST_ACTIVE_STAMP.get(uid)
+    if last is not None and mono - last < _LAST_ACTIVE_STAMP_SECONDS:
+        return
+    _LAST_ACTIVE_STAMP[uid] = mono
+    try:
+        from datetime import datetime as _now_dt
+        from app.db.models import UserProfile
+        with get_session() as session:
+            prof = session.exec(
+                select(UserProfile).where(UserProfile.user_id == uid)
+            ).first()
+            if prof:
+                prof.last_active_at = _now_dt.utcnow()
+                session.add(prof)
+                session.commit()
+    except Exception as e:
+        log.debug("last_active stamp failed for %s: %s", uid, e)
+
+
+def _user_is_active(profile) -> bool:
+    """Dormancy gate for the scheduled lanes.
+
+    False when the user hasn't made an authenticated request in
+    dormant_user_grace_days — their pool stops refilling and no LLM money is
+    spent on them until they come back (the next visit re-stamps and the next
+    lane tick picks them up again). NULL last_active_at (rows predating
+    tracking, backfilled at startup) and a disabled gate (0) count as active.
+    """
+    days = settings.dormant_user_grace_days
+    if days <= 0:
+        return True
+    la = getattr(profile, "last_active_at", None)
+    if la is None:
+        return True
+    from datetime import datetime as _dt2, timedelta as _td2
+    if la.tzinfo is not None:
+        from datetime import timezone as _tz2
+        la = la.astimezone(_tz2.utc).replace(tzinfo=None)
+    return la >= _dt2.utcnow() - _td2(days=days)
 
 
 def _user_has_resume(uid: str | None) -> bool:
@@ -534,7 +585,8 @@ async def _fresh_lane():
             from app.db.models import UserProfile
             with get_session() as session:
                 users = session.exec(select(UserProfile)).all()
-            user_ids = [u.user_id for u in users if u.user_id and _user_has_resume(u.user_id)]
+            user_ids = [u.user_id for u in users
+                        if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
             if user_ids:
                 _log.info("Fresh lane: ONE shared scan for %d user(s)", len(user_ids))
                 await asyncio.to_thread(_global_fresh_scan, user_ids)
@@ -635,11 +687,12 @@ async def _matching_lane():
             from app.db.models import UserProfile
             with get_session() as session:
                 users = session.exec(select(UserProfile)).all()
-            uids = [u.user_id for u in users if u.user_id and _user_has_resume(u.user_id)]
+            uids = [u.user_id for u in users
+                    if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
             if uids:
                 await asyncio.to_thread(_run_matching_lane, uids)
             else:
-                _log.info("Matching lane: no users with resumes")
+                _log.info("Matching lane: no active users with resumes")
         except Exception as e:
             _log.exception("Matching lane outer error: %s", e)
         await asyncio.sleep(minutes * 60)
@@ -871,9 +924,10 @@ async def _scheduler():
             from app.db.models import UserProfile
             with get_session() as session:
                 users = session.exec(select(UserProfile)).all()
-            user_ids = [u.user_id for u in users if u.user_id and _user_has_resume(u.user_id)]
+            user_ids = [u.user_id for u in users
+                        if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
             if not user_ids:
-                _log.info("Scheduler: no users with resumes, skipping run")
+                _log.info("Scheduler: no active users with resumes, skipping run")
             else:
                 _log.info("Scheduler: ONE global discovery for %d user(s)", len(user_ids))
                 await asyncio.to_thread(_global_discover_then_match, user_ids)
@@ -2344,12 +2398,21 @@ def api_stats(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     _uid_filter = (uid and uid != "local")
     with get_session() as session:
-        # Total OPEN jobs — matches what All Jobs shows, so the Pool card and
-        # the browsable list can never drift apart as ghost jobs get closed.
+        # Total OPEN jobs. NOTE: the All Jobs list applies a default-on "My
+        # roles" filter, so its *filtered* total is smaller — the tab badge uses
+        # /api/jobs' total_open (this same query) to stay equal to the Pool card.
         jq = select(func.count(Job.id)).where(Job.is_closed == False)
         if _uid_filter:
             jq = jq.where(Job.user_id == uid)
         total_jobs = session.exec(jq).first() or 0
+
+        # Closed/ghosted jobs — fills the Ghost Jobs tab badge at page load
+        # (previously that badge stayed a "..." placeholder until the tab was
+        # first clicked, because only the tab's own loader wrote it).
+        gq = select(func.count(Job.id)).where(Job.is_closed == True)  # noqa: E712
+        if _uid_filter:
+            gq = gq.where(Job.user_id == uid)
+        closed_jobs = session.exec(gq).first() or 0
 
         # Unique companies in Job db
         cq = select(func.count(func.distinct(Job.company)))
@@ -2432,6 +2495,7 @@ def api_stats(request: Request) -> dict:
 
     return {
         "total_jobs": total_jobs,
+        "closed_jobs": closed_jobs,
         "total_companies": total_companies,
         "funnel": {
             "total_pool": total_jobs,
@@ -2591,6 +2655,14 @@ def api_jobs(
 
         total = session.exec(count_query).first() or 0
 
+        # Unfiltered open-pool size — same query as /api/stats total_jobs, so
+        # the "All Jobs" tab badge can always equal the Pool card while `total`
+        # (which respects the default-on "My roles" filter) drives pagination.
+        open_q = select(func.count(Job.id)).where(Job.is_closed == False)  # noqa: E712
+        if _uid_filter:
+            open_q = open_q.where(Job.user_id == uid)
+        total_open = session.exec(open_q).first() or 0
+
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
         # priority sort otherwise buries under older high-scoring ones).
@@ -2654,6 +2726,7 @@ def api_jobs(
         return {
             "jobs": jobs_list,
             "total": total,
+            "total_open": total_open,
             "page": page,
             "pages": pages,
             "limit": limit
@@ -2923,6 +2996,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
+            "shortlist_strong_threshold": settings.shortlist_strong_threshold,
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
@@ -2943,7 +3017,10 @@ def pipeline_live(request: Request) -> dict:
     _SHORTLIST = {ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED}
     _INPROGRESS = {ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
                    ApplicationStatus.READY_TO_SUBMIT}
-    _SUBMITTED = {ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING}
+    # SUBMITTED only — INTERVIEWING has its own tab/count; folding it in here
+    # made the header tile disagree with the Submitted tab by exactly the
+    # number of interviewing applications (58 vs 57 in prod).
+    _SUBMITTED = {ApplicationStatus.SUBMITTED}
 
     counts = {"pool": 0, "shortlisted": 0, "submitted": 0, "rejected": 0}
     shortlist: list[dict] = []

@@ -36,13 +36,13 @@ log = logging.getLogger(__name__)
 
 def _active_users() -> list[dict]:
     """Users with a resume + target roles — {user_id, roles:[lowercased]}."""
-    from app.api.server import _user_has_resume, _get_target_roles
+    from app.api.server import _user_has_resume, _user_is_active, _get_target_roles
     out = []
     with get_session() as session:
         profiles = session.exec(select(UserProfile)).all()
     for p in profiles:
         uid = p.user_id
-        if not uid or not _user_has_resume(uid):
+        if not uid or not _user_is_active(p) or not _user_has_resume(uid):
             continue
         roles = [r.lower() for r in (_get_target_roles(uid) or [])]
         if not roles:
