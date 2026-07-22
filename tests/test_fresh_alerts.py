@@ -53,6 +53,40 @@ def test_fresh_alert_created_and_deduped():
         assert len(session.exec(select(UserNotification)).all()) == 1
 
 
+def test_weak_fit_not_alerted():
+    """Shortlist-bar fits (35-64) stay on the board but never push a
+    'Fresh match — apply now' notification (fresh_alert_min_score gate)."""
+    from app.strategy.fresh_alerts import dispatch_fresh_alerts
+    with get_session() as session:
+        _clean(session)
+        weak = _mk_job(session, 10, hours_old=1, score=35.0)
+        strong = _mk_job(session, 11, hours_old=1, score=80.0)
+        ids = [weak.id, strong.id]
+
+    assert dispatch_fresh_alerts("local", ids) == 1
+    with get_session() as session:
+        notes = session.exec(select(UserNotification)).all()
+        assert len(notes) == 1
+        assert "fit 80" in notes[0].message
+
+
+def test_daily_alert_cap(monkeypatch):
+    """Repeated dispatch calls in one day stop at fresh_alert_daily_cap even
+    for brand-new (non-deduped) jobs."""
+    import app.strategy.fresh_alerts as fa
+    from app.config import settings
+    monkeypatch.setattr(settings, "fresh_alert_daily_cap", 6)
+    with get_session() as session:
+        _clean(session)
+        first = [_mk_job(session, 20 + i, hours_old=1).id for i in range(5)]
+        second = [_mk_job(session, 30 + i, hours_old=1).id for i in range(5)]
+
+    assert fa.dispatch_fresh_alerts("local", first) == 5   # per-pass cap
+    assert fa.dispatch_fresh_alerts("local", second) == 1  # daily budget left
+    with get_session() as session:
+        assert len(session.exec(select(UserNotification)).all()) == 6
+
+
 def test_greenhouse_edited_old_post_not_alerted(monkeypatch):
     import app.strategy.fresh_alerts as fa
     with get_session() as session:

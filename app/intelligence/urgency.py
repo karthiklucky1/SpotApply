@@ -57,11 +57,14 @@ def assess(job) -> UrgencyAssessment:
     open_span = _span_days(getattr(job, "first_seen", None), getattr(job, "last_seen", None))
     ghost = getattr(job, "ghost_score", 0) or 0
 
-    # Just posted — the highest-response window ("zero-minute application").
-    if age is not None and age <= 2:
+    # Posted today — the highest-response window ("zero-minute application").
+    # Age is whole days, so the old <=2 tier fired "Just posted" on postings up
+    # to ~72h old — right next to a card stamp saying "15h ago", which read as
+    # a contradiction. Day-0 gets the hot label; day 1-6 folds into "Fresh".
+    if age is not None and age == 0:
         return UrgencyAssessment(
-            92, "🆕 Just posted",
-            "Posted in the last 48 hours — the highest-response window. Applying now "
+            92, "🆕 Posted today",
+            "Posted today — the highest-response window. Applying now "
             "maximizes your interview odds.", "hot",
         )
     if age is not None and age <= 6:

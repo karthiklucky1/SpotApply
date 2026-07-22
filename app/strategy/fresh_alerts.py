@@ -98,10 +98,32 @@ def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]
             select(Job).where(Job.id.in_(shortlisted_job_ids), Job.user_id == uid)  # noqa: E711
         ).all()
 
+        # Daily cap: lanes call this every few minutes, so the per-pass cap
+        # alone still allows dozens of pushes/day — count today's fresh alerts
+        # once and shrink the pass budget accordingly.
+        pass_budget = MAX_ALERTS_PER_PASS
+        if settings.fresh_alert_daily_cap > 0:
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            sent_today = len(session.exec(
+                select(UserNotification.id).where(
+                    UserNotification.user_id == notif_user,
+                    UserNotification.type == "fresh_job",
+                    UserNotification.created_at >= day_start,
+                )
+            ).all())
+            pass_budget = min(pass_budget,
+                              max(0, settings.fresh_alert_daily_cap - sent_today))
+
         for job in sorted(jobs, key=lambda j: (j.blended_score or j.rerank_score or 0),
                           reverse=True):
-            if sent >= MAX_ALERTS_PER_PASS:
+            if sent >= pass_budget:
                 break
+            # Alert only on strong fits: shortlisting keeps its lower bar, but an
+            # "apply now" push for a job the model scored 35 trains users to
+            # ignore notifications (and the reasoning may even call it a misfit).
+            fit = int(job.rerank_score or 0)
+            if max(fit, int(job.blended_score or 0)) < settings.fresh_alert_min_score:
+                continue
             posted = _utc_naive(job.posted_at) or job.first_seen
             if not posted or posted < cutoff:
                 continue
@@ -130,7 +152,6 @@ def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]
 
             age_min = max(1, int((now - posted).total_seconds() // 60))
             age_txt = f"{age_min}m" if age_min < 60 else f"{age_min // 60}h"
-            fit = int(job.rerank_score or 0)
             msg = (f"{job.title} @ {job.company} — posted {age_txt} ago, fit {fit}. "
                    f"Early applicants win: tailor and apply now.")
             session.add(UserNotification(
