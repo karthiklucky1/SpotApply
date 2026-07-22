@@ -18,3 +18,4 @@ scratch/*.png
 scratch/
 data/training/
 data/models/
+node_modules/

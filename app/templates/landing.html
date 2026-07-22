@@ -25,11 +25,15 @@
     <link rel="apple-touch-icon" href="/static/icon-192.svg">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Compiled Tailwind (landing page only — replaces the Play CDN script).
+         IMPORTANT: after adding/changing Tailwind classes in THIS file, rebuild
+         with `npm run build` (output is committed; prod needs no node). -->
+    <link rel="stylesheet" href="/static/tailwind-landing.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <!-- AOS Animations Stylesheet -->
-    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- AOS Animations (self-hosted — was unpkg, a third-party point of failure) -->
+    <link href="/static/vendor/aos.css" rel="stylesheet">
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -1526,8 +1530,8 @@
 })();
 </script>
 
-<!-- AOS Animation Script -->
-<script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+<!-- AOS Animation Script (self-hosted) -->
+<script src="/static/vendor/aos.js"></script>
 <script>
     AOS.init({
         duration: 800,

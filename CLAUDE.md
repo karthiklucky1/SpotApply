@@ -30,7 +30,12 @@ this file is the working map for editing the code.
 Python 3.11 · FastAPI/Uvicorn · SQLModel. **Supabase Postgres + Auth in prod; local
 SQLite fallback when `SUPABASE_URL` is unset.** Claude (primary LLM) / OpenAI optional ·
 sentence-transformers + FAISS + rank-bm25 · Playwright (Chromium) + MV3 Chrome extension ·
-python-telegram-bot · APScheduler · Jinja + Tailwind (CDN) + Chart.js (server-rendered).
+python-telegram-bot · APScheduler · Jinja + Tailwind + Chart.js (server-rendered).
+**Landing page CSS is compiled** (`app/static/tailwind-landing.css`, committed; AOS
+self-hosted in `app/static/vendor/`) — after editing Tailwind classes in
+`landing.html` run `npm run build` (tests/test_landing_assets.py guards this).
+Dashboard + other authed templates stay on the Tailwind Play CDN (they build
+class strings in JS — do NOT compile them without a safelist).
 
 ## File structure
 ```
