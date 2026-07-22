@@ -6581,10 +6581,21 @@
         // a user's own slider choice (localStorage, including an explicit 0)
         // always wins over the default.
         let v = {{ shortlist_strong_threshold or 0 }};
+        let isDefault = true;
         try {
             const stored = localStorage.getItem('hp_shortlist_minscore');
-            if (stored !== null) v = parseInt(stored, 10) || 0;
+            if (stored !== null) { v = parseInt(stored, 10) || 0; isDefault = false; }
         } catch (e) {}
+        // Sparse-board guard: a just-onboarded user's first matches often score
+        // 35-64 — hiding them behind the strong-fit default would make a
+        // working board look empty. Apply the default only when enough strong
+        // cards exist to fill the view.
+        if (isDefault && v > 0) {
+            const rows = document.querySelectorAll('#shortlisted-container .jobrow');
+            let passing = 0;
+            rows.forEach(el => { if ((parseFloat(el.dataset.score || '0') || 0) >= v) passing++; });
+            if (rows.length > 0 && passing < 5) v = 0;
+        }
         filterShortlistByScore(v, false);
     }
     document.addEventListener('DOMContentLoaded', _initShortlistFilters);

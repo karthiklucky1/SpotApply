@@ -426,6 +426,23 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # cap is applied — stopping the fetch at the cap would hand all slots to
     # whichever users happened to come first, which is the unfairness this
     # rewrite removes.
+    # Empty-board (new/just-onboarded) users first: they're staring at a blank
+    # dashboard, so their queue items must survive the global cap and reach the
+    # workers earliest. One grouped query identifies owners who already have at
+    # least one scored open job; everyone else is "new" for ordering purposes.
+    try:
+        with get_session() as session:
+            has_scored = {r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.user_id).where(
+                    Job.rerank_score.is_not(None),
+                    Job.is_closed == False,  # noqa: E712
+                    Job.user_id.in_([u for u in users if u]),
+                ).distinct()
+            ).all()}
+        users = sorted(users, key=lambda u: (u in has_scored,))
+    except Exception as e:
+        log.debug("new-user priority ordering skipped: %s", e)
+
     queues: List[List[Tuple[Optional[str], int]]] = []
     for uid in users:
         q = [(uid, jid) for jid in _user_queue(uid, settings.scoring_per_user_cap)]

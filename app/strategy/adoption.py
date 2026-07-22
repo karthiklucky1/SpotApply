@@ -204,15 +204,55 @@ def adopt_and_match(user_id: str | None) -> int:
     and role edits. Matching waits politely on the discovery lock; adoption
     itself never needs it (pure DB copy)."""
     adopted = adopt_shared_jobs(user_id)
+    matched = False
     try:
         from app.common.discovery_lock import discovery_guard
         from app.matching.pipeline import run_matching
         with discovery_guard(label="instant feed") as ran:
             if ran:
                 run_matching(user_id)
+                matched = True
     except Exception as e:
         log.warning("instant-feed matching failed for %s: %s", user_id, e)
+    if not matched:
+        # The discovery lock was busy (a global pass in flight) — previously we
+        # silently skipped here and the new user stared at an empty board until
+        # a scheduled lane got to them. The scoring lane is lock-free and
+        # prioritizes empty-board users, so kick a cycle right now instead.
+        _score_first_slice(user_id)
     return adopted
+
+
+def _score_first_slice(user_id: str | None, attempts: int = 3) -> None:
+    """Drive scoring-lane cycles until this user has their first scored jobs.
+
+    Lock-free path for onboarding: run_scoring_lane() skips when a cycle is
+    already in flight (whose work list won't include jobs adopted after it
+    started), so retry a couple of times with short waits. Bounded and
+    best-effort — the scheduled lane remains the backstop."""
+    import time as _time
+    from app.strategy.scoring_lane import run_scoring_lane
+    uid_arg = None if (not user_id or user_id == "local") else user_id
+    for attempt in range(attempts):
+        try:
+            with get_session() as session:
+                cond = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
+                scored = int(session.exec(
+                    select(func.count(Job.id)).where(
+                        cond, Job.is_closed == False,  # noqa: E712
+                        Job.rerank_score.is_not(None),
+                    )
+                ).first() or 0)
+            if scored > 0:
+                return  # first matches are on the board — mission accomplished
+            result = run_scoring_lane()
+            if not result.get("skipped"):
+                continue  # a cycle ran (we were in its work list) — recheck
+        except Exception as e:
+            log.debug("onboarding first-slice scoring attempt failed for %s: %s",
+                      user_id or "local", e)
+        if attempt < attempts - 1:
+            _time.sleep(20)
 
 
 def _user_pool_count(user_id: str | None) -> int:
