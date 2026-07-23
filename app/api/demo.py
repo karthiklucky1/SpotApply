@@ -1,11 +1,11 @@
 """Public demo endpoints for anonymous resume matching."""
 import logging
 import re
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel
 from sqlmodel import select
 from app.db.init_db import get_session
-from app.db.models import Job, JobSource
+from app.db.models import Job
 from app.intelligence.door_match import CandidateProfile, classify_door
 from app.intelligence.role_bar import build_role_bar
 
@@ -15,11 +15,19 @@ class PublicDemoRequest(BaseModel):
     resume_text: str
     target_role: str
 
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # matches the "up to 4MB" promise in the UI
+
+
 def extract_text_from_file(file) -> str:
     """Read file content and extract plain text depending on file extension."""
     filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    content = file.file.read()
+    # Server-side size cap — this is an UNAUTHENTICATED endpoint; without it an
+    # anonymous visitor could tie up a worker and RAM with an arbitrarily large
+    # upload (the UI's "4MB" label was advisory only).
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise ValueError("File too large — please upload a resume under 4MB.")
     
     if ext == "pdf":
         import io
@@ -121,9 +129,13 @@ def get_demo_jobs(target_role: str) -> List[dict]:
     # If database is clean or doesn't have enough matching jobs, supplement with mock jobs
     if len(jobs_list) < 3:
         mock_jobs = [
+            # Fictional companies only — presenting invented job descriptions
+            # under real company names (this used to say Stripe/Google) reads
+            # as fabricated data the moment a visitor checks, and trademarks
+            # don't belong in made-up postings.
             {
                 "id": -1,
-                "company": "Stripe",
+                "company": "Northwind Labs",
                 "title": f"Staff {target_role or 'AI Engineer'} (Platform)",
                 "description": (
                     "We are looking for a Staff Engineer to lead our Core Platform team. "
@@ -131,22 +143,22 @@ def get_demo_jobs(target_role: str) -> List[dict]:
                     "or backend systems at an enterprise scale. PhD or Master's in CS preferred. "
                     "Strictly on-site in San Francisco, CA. Visa sponsorship is not available for this role."
                 ),
-                "url": "https://stripe.com/jobs",
+                "url": "#",
                 "location": "San Francisco, CA (On-site)",
-                "source": "stripe",
+                "source": "demo",
             },
             {
                 "id": -2,
-                "company": "Google",
-                "title": f"Senior {target_role or 'AI Engineer'} - Google Cloud AI",
+                "company": "Acme AI",
+                "title": f"Senior {target_role or 'AI Engineer'} - Cloud Platform",
                 "description": (
-                    "Google Cloud AI is hiring a Senior Engineer to build next-generation enterprise API solutions. "
+                    "Acme AI is hiring a Senior Engineer to build next-generation enterprise API solutions. "
                     "Requirements: 5+ years of software development experience, proficiency in Python, Go, and PyTorch. "
                     "Experience with LLMs, RAG, and APIs is highly desired. Hybrid role (3 days in office in Mountain View, CA)."
                 ),
-                "url": "https://careers.google.com",
+                "url": "#",
                 "location": "Mountain View, CA (Hybrid)",
-                "source": "google",
+                "source": "demo",
             },
             {
                 "id": -3,
@@ -158,9 +170,9 @@ def get_demo_jobs(target_role: str) -> List[dict]:
                     "Requirements: 2+ years of experience with Python, FastAPI, and PostgreSQL. "
                     "100% remote. F-1 OPT candidates are welcome to apply."
                 ),
-                "url": "https://fuzerx.com/careers",
+                "url": "#",
                 "location": "Remote",
-                "source": "fuzerx",
+                "source": "demo",
             }
         ]
         # Merge or override to make sure we show 3 diverse jobs (including a wrong door!)

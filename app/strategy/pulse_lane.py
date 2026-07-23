@@ -48,6 +48,15 @@ from app.db.models import (
 log = logging.getLogger(__name__)
 
 
+def _record_spend(uid: str | None, kind: str) -> None:
+    """Per-user spend attribution for fast-path LLM calls — never raises."""
+    try:
+        from app.analytics.spend import record_llm_spend
+        record_llm_spend(uid, kind)
+    except Exception:
+        pass
+
+
 def _norm(s: str) -> str:
     """Alphanumeric-only lowercase form for fuzzy company/slug comparison."""
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
@@ -247,6 +256,7 @@ def _fast_path_user(uid: str, score_budget: int,
             # Cascade Tier-1: drain clear misfits without touching Claude.
             if use_prescore:
                 pre = reranker.prescore(resume, job)
+                _record_spend(uid, "score_prescore")
                 if pre is not None and pre[0] < gate:
                     job.rerank_score = float(pre[0])
                     job.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
@@ -262,6 +272,7 @@ def _fast_path_user(uid: str, score_budget: int,
                 log.debug("pulse fast-path score failed for %d (left for matching lane): %s", jid, e)
                 session.rollback()
                 continue
+            _record_spend(uid, "score_final")
             scored += 1
             job.rerank_score = score
             job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")

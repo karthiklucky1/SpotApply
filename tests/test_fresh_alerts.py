@@ -133,3 +133,29 @@ def test_job_check_blocks_private_hosts():
                 "http://169.254.169.254/latest/meta-data/", "http://10.0.0.5/internal"):
         out = check_job_url(url)
         assert out["live"] is None, url  # blocked, never fetched
+
+
+def test_tailor_charge_on_success_only(monkeypatch):
+    """A failed tailor must not consume the user's daily credit, and must leave
+    a notification explaining what happened."""
+    import app.api.server as srv
+    calls = {"inc": 0}
+    monkeypatch.setattr(srv, "_increment_tailor", lambda uid: calls.__setitem__("inc", calls["inc"] + 1))
+    monkeypatch.setattr("app.tailoring.tailor.tailor_for_application",
+                        lambda aid, instr=None: (_ for _ in ()).throw(RuntimeError("LLM down")))
+    with get_session() as session:
+        session.exec(delete(UserNotification))
+        session.commit()
+    ok = srv._tailor_and_settle(999999, "user-x")
+    assert ok is False and calls["inc"] == 0
+    with get_session() as session:
+        notes = session.exec(select(UserNotification).where(
+            UserNotification.user_id == "user-x")).all()
+        assert len(notes) == 1 and notes[0].type == "tailor_failed"
+        assert "NOT used" in notes[0].message
+
+    # success path charges exactly once
+    monkeypatch.setattr("app.tailoring.tailor.tailor_for_application",
+                        lambda aid, instr=None: ("a", "b"))
+    ok = srv._tailor_and_settle(999999, "user-x")
+    assert ok is True and calls["inc"] == 1

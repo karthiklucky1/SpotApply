@@ -570,6 +570,25 @@ class UserNotification(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class LlmSpend(SQLModel, table=True):
+    """Per-user, per-day, per-kind LLM spend ledger (estimated).
+
+    One row per (user_id, day, kind); the recorder upserts counts. Costs are
+    ESTIMATES from flat per-call figures (see analytics/spend.py) — the point
+    is attribution and trend ("which user/day/feature costs what"), not
+    accounting-grade precision. Written by the scoring lane, pulse fast path,
+    and tailoring; read by /api/admin/spend."""
+    __tablename__ = "llm_spend"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)              # "local" in dev; shared-pool never scored
+    day: date = Field(index=True)
+    kind: str = Field(index=True)                 # score_final | score_prescore | score_local | tailor
+    calls: int = 0
+    est_cost_usd: float = 0.0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Coupon(SQLModel, table=True):
     """Admin-created promo codes that grant free plan days (e.g. LAUNCH50 → 30 days PRO)."""
     __tablename__ = "coupon"

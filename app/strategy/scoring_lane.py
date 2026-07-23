@@ -501,6 +501,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         return (uid, res) if res else None
 
     scored_by_user: dict = defaultdict(list)
+    spend_by_user: dict = defaultdict(int)   # (uid, kind) -> calls this cycle
     pool = ThreadPoolExecutor(max_workers=min(settings.scoring_workers, max(1, len(items))))
     futures = [pool.submit(_work, it) for it in items]
     for fut in futures:
@@ -521,13 +522,25 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             scored_by_user[uid].append((jid, score))
             if provider == "anthropic":
                 stats["by_claude"] += 1
+                spend_by_user[(uid, "score_final")] += 1
             elif provider == "openai":
                 stats["by_gpt"] += 1
+                spend_by_user[(uid, "score_prescore")] += 1
             elif provider == "local":
                 stats["by_local"] += 1
+                spend_by_user[(uid, "score_local")] += 1
         elif kind == "drained":
             stats["drained"] += 1
+            spend_by_user[(uid, "score_prescore")] += 1
     pool.shutdown(wait=False)
+
+    # Per-user spend attribution (batched: one upsert per user+kind per cycle).
+    try:
+        from app.analytics.spend import record_llm_spend
+        for (s_uid, s_kind), n in spend_by_user.items():
+            record_llm_spend(s_uid, s_kind, n)
+    except Exception:
+        pass
 
     # Phase B — shortlist + alert, serial per user (cap-safe).
     for uid, results in scored_by_user.items():

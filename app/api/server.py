@@ -1481,9 +1481,16 @@ async def public_demo_match(
             
         payload = PublicDemoRequest(resume_text=text, target_role=target_role)
         return run_demo_match(payload)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Curated user-facing messages (e.g. file too large) — safe to show.
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        # Never leak internals to anonymous callers.
         log.exception("Public demo matching failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500,
+                            detail="Demo is temporarily unavailable — please try again.")
 
 
 # ── Auth pages ───────────────────────────────────────────────────────────────
@@ -5113,6 +5120,11 @@ button.btn-sm{font-size:11px;padding:4px 10px}
 <div id=err></div>
 <div class=grid id=kpis></div>
 
+<div class=card><h2>💸 LLM spend (estimated) — per user</h2>
+<div id=spend-total style="font-size:22px;font-weight:800;color:var(--sage-700);margin-bottom:10px">—</div>
+<table id=spend-tbl><thead><tr><th>User</th><th>Calls</th><th>Est. cost</th><th>Breakdown</th></tr></thead><tbody></tbody></table>
+<p style="font-size:11px;color:var(--muted);margin:10px 0 0">Flat per-call estimates (analytics/spend.py) · covers scoring lane, pulse fast path and tailoring · resets nothing, pure attribution.</p></div>
+
 <div class=card><h2>🎟️ Promo codes</h2>
 <div class=row>
   <div><label style="font-size:11px;font-weight:700;display:block;margin-bottom:3px;color:var(--muted)">CODE</label><input id=c-code placeholder="LAUNCH50" style="text-transform:uppercase;width:130px"></div>
@@ -5150,9 +5162,20 @@ async function load(){
       `<tr><td>${x.name}</td><td>${x.email}</td><td><code>${x.code||''}</code></td><td><b>${x.count}</b></td>
       <td>${x.rewarded?'<span class=pill>🎁 Rewarded</span>':''}</td></tr>`).join('')
       || '<tr><td colspan=5 style="color:#8C857A">No referrals yet.</td></tr>';
+    await loadSpend();
     await loadCoupons();
     await loadReviews();
   }catch(e){document.getElementById('err').textContent=''+e;}
+}
+async function loadSpend(){
+  const res=await fetch('/api/admin/spend',{headers:H()});
+  if(!res.ok)return;
+  const s=await res.json();
+  document.getElementById('spend-total').textContent='$'+(s.total_est_cost_usd||0).toFixed(2)+' est · last '+s.days+' days';
+  document.querySelector('#spend-tbl tbody').innerHTML=(s.top_users||[]).map(u=>
+    `<tr><td style="font-size:11px"><code>${(u.user_id||'').slice(0,14)}</code></td><td>${u.calls}</td><td><b>$${u.est_cost_usd.toFixed(2)}</b></td>
+     <td style="font-size:11px">${Object.entries(u.kinds||{}).map(([k,v])=>k+': '+v.calls).join(' · ')}</td></tr>`).join('')
+    || '<tr><td colspan=4 style="color:#8C857A">No spend recorded yet.</td></tr>';
 }
 async function loadCoupons(){
   const res=await fetch('/api/admin/coupons',{headers:H()});
@@ -5258,6 +5281,14 @@ def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
             "note": "Seeding ~62K companies across all ATSes in the background. "
                     "New boards appear in the registry over the next few minutes; "
                     "jobs follow as the crawlers validate them."}
+
+
+@app.get("/api/admin/spend")
+def api_admin_spend(request: Request, days: int = 14):
+    """Per-user estimated LLM spend (scoring lane + pulse fast path + tailoring)."""
+    _require_admin_user(request)
+    from app.analytics.spend import spend_summary
+    return spend_summary(max(1, min(days, 60)))
 
 
 @app.get("/api/admin/metrics")
@@ -5633,7 +5664,24 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
     limits = PLAN_LIMITS[plan]
     daily_limit = limits["tailor_daily"]
     if daily_limit is None:
-        return True, "", {"plan": plan, "daily_limit": None}
+        # "Unlimited" plans still get an anti-abuse ceiling: tailoring is
+        # user-triggered LLM spend outside the scoring lane's budget, and in
+        # pre-revenue mode EVERY user rides PRO — without a ceiling one
+        # scripted user could fire thousands of paid calls a day.
+        cap = settings.tailor_abuse_daily_cap
+        if cap <= 0:
+            return True, "", {"plan": plan, "daily_limit": None}
+        with get_session() as session:
+            row = _get_or_create_usage(session, uid)
+            used = row.tailor_count
+            session.commit()
+        if used >= cap:
+            return False, (
+                f"Daily safety limit reached ({used}/{cap} tailors today). "
+                f"This protects against runaway usage — it resets at midnight "
+                f"UTC. If you genuinely need more, contact support."
+            ), {"plan": plan, "used": used, "daily_limit": cap}
+        return True, "", {"plan": plan, "used": used, "daily_limit": None}
     with get_session() as session:
         row = _get_or_create_usage(session, uid)
         used = row.tailor_count
@@ -5736,11 +5784,79 @@ def get_usage(request: Request) -> dict:
     }
 
 
+def _notify_tailor_failed(uid: str, application_id: int | None = None) -> None:
+    """Tell the user their tailor run failed and that no credit was spent —
+    previously failures were log-only and the customer just saw documents
+    that never arrived."""
+    try:
+        from app.db.models import UserNotification
+        with get_session() as session:
+            session.add(UserNotification(
+                user_id=uid or "local",
+                title="Tailoring failed — no credit used",
+                message=("We couldn't generate your tailored documents just now "
+                         "(the AI provider was unavailable). Your daily credit "
+                         "was NOT used — please try again in a few minutes."),
+                type="tailor_failed",
+                link=f"/dashboard?app={application_id}" if application_id else "/dashboard",
+            ))
+            session.commit()
+    except Exception as e:
+        log.debug("tailor-failed notification failed for %s: %s", uid, e)
+
+
+def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = None) -> bool:
+    """Run one tailor; charge the credit ONLY on success (it used to be charged
+    at queue time, so provider outages burned a free user's 5-a-day budget with
+    nothing delivered). Two racing requests can each pass the pre-check — a
+    ±1 overshoot we accept over holding a lock across an LLM call."""
+    from app.tailoring.tailor import tailor_for_application
+    try:
+        tailor_for_application(application_id, instruction)
+    except Exception as e:
+        log.warning("tailor failed for app %s (user %s): %s", application_id, uid, e)
+        _notify_tailor_failed(uid, application_id)
+        return False
+    _increment_tailor(uid)
+    try:
+        from app.analytics.spend import record_llm_spend
+        record_llm_spend(uid, "tailor")
+    except Exception:
+        pass
+    return True
+
+
+def _tailor_all_settled(uid: str) -> None:
+    """Bulk tailor with per-item limit checks + charge-on-success. The old
+    path handed the WHOLE shortlist to tailor_all_shortlisted with no limit
+    check at all — one click could fire hundreds of paid generations."""
+    uid_arg = None if (not uid or uid == "local") else uid
+    with get_session() as session:
+        q = select(Application.id).where(Application.status == ApplicationStatus.SHORTLISTED)
+        q = q.where(Application.user_id == uid_arg) if uid_arg \
+            else q.where(Application.user_id.is_(None))
+        ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(q).all()]
+    failures = 0
+    for aid in ids:
+        allowed, _detail, _usage = _check_tailor_limit(uid)
+        if not allowed:
+            log.info("bulk tailor stopped at daily limit for %s (%d done)", uid, ids.index(aid))
+            break
+        if not _tailor_and_settle(aid, uid):
+            failures += 1
+            if failures >= 3:
+                log.warning("bulk tailor aborted for %s after 3 consecutive-ish failures", uid)
+                break
+
+
 @app.post("/run/tailor")
 def trigger_tailor(request: Request, bg: BackgroundTasks) -> dict:
     uid = _get_user_id(request)
-    bg.add_task(tailor_all_shortlisted, uid if uid != "local" else None)
-    return {"started": "tailoring"}
+    allowed, detail, usage = _check_tailor_limit(uid or "local")
+    if not allowed:
+        raise HTTPException(status_code=429, detail=detail)
+    bg.add_task(_tailor_all_settled, uid or "local")
+    return {"started": "tailoring", "usage": usage}
 
 
 @app.post("/run/tailor/{application_id}")
@@ -5755,9 +5871,9 @@ def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundT
     allowed, detail, usage = _check_tailor_limit(uid)
     if not allowed:
         raise HTTPException(status_code=429, detail=detail)
-    from app.tailoring.tailor import tailor_for_application
-    bg.add_task(tailor_for_application, application_id, (instruction or "").strip()[:500] or None)
-    _increment_tailor(uid)
+    # Credit is charged inside _tailor_and_settle ON SUCCESS — not here.
+    bg.add_task(_tailor_and_settle, application_id, uid,
+                (instruction or "").strip()[:500] or None)
     return {"started": "tailoring", "application_id": application_id, "usage": usage}
 
 
