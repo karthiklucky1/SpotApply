@@ -114,21 +114,47 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
+_REFRESH_ATTEMPTED: dict = {}          # token -> monotonic ts of last refresh try
+_REFRESH_THROTTLE_SECONDS = 600        # at most one Auth API call per token / 10 min
+_REFRESH_MAP_MAX = 5000                # bound memory; evict oldest half when hit
+
+
 class SupabaseSessionMiddleware(BaseHTTPMiddleware):
+    """Rolls the Supabase session token forward.
+
+    Throttled + off-loop: this used to call the SYNC gotrue refresh endpoint on
+    the event loop after EVERY authenticated response — one blocking ~100-500ms
+    Auth round-trip per request serialized the whole app (the single hottest
+    scalability bug found in the production review). Tokens live ~1h, so one
+    refresh attempt per token per 10 minutes is plenty, and the call now runs
+    in the threadpool so the loop keeps serving other users."""
     async def dispatch(self, request: StarletteRequest, call_next):
         response = await call_next(request)
         from app.config import settings
         if not settings.use_supabase:
             return response
-        # Only attempt refresh if a bearer token is present
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return response
         token = auth_header.split(" ", 1)[1]
+        import time as _t
+        now = _t.monotonic()
+        last = _REFRESH_ATTEMPTED.get(token)
+        if last is not None and now - last < _REFRESH_THROTTLE_SECONDS:
+            return response
+        if len(_REFRESH_ATTEMPTED) > _REFRESH_MAP_MAX:
+            for k in list(_REFRESH_ATTEMPTED)[: _REFRESH_MAP_MAX // 2]:
+                _REFRESH_ATTEMPTED.pop(k, None)
+        _REFRESH_ATTEMPTED[token] = now
         try:
-            from app.db.supabase_client import anon_client
-            sb = anon_client()
-            result = sb.auth.refresh_session(token)
+            import anyio
+
+            def _refresh():
+                from app.db.supabase_client import anon_client
+                sb = anon_client()
+                return sb.auth.refresh_session(token)
+
+            result = await anyio.to_thread.run_sync(_refresh)
             if result and result.session:
                 response.headers["X-Supabase-Token"] = result.session.access_token
         except Exception:
@@ -263,6 +289,20 @@ def _touch_last_active(uid: str) -> None:
                 session.commit()
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
+
+
+def _lane_user_ids() -> list:
+    """Active users with resumes — the scheduled lanes' user list.
+
+    SYNC ON PURPOSE: call via asyncio.to_thread from the async lane loops. The
+    per-user Supabase Storage list() in _user_has_resume is a blocking HTTP
+    round-trip; building this list inline on the event loop froze the whole
+    app for O(users) x RTT every lane tick (production-review finding)."""
+    from app.db.models import UserProfile
+    with get_session() as session:
+        users = session.exec(select(UserProfile)).all()
+    return [u.user_id for u in users
+            if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
 
 
 def _user_is_active(profile) -> bool:
@@ -582,11 +622,7 @@ async def _fresh_lane():
     await asyncio.sleep(20 * 60)
     while True:
         try:
-            from app.db.models import UserProfile
-            with get_session() as session:
-                users = session.exec(select(UserProfile)).all()
-            user_ids = [u.user_id for u in users
-                        if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
+            user_ids = await asyncio.to_thread(_lane_user_ids)
             if user_ids:
                 _log.info("Fresh lane: ONE shared scan for %d user(s)", len(user_ids))
                 await asyncio.to_thread(_global_fresh_scan, user_ids)
@@ -684,11 +720,7 @@ async def _matching_lane():
     await asyncio.sleep(150)  # let boot + first discovery settle
     while True:
         try:
-            from app.db.models import UserProfile
-            with get_session() as session:
-                users = session.exec(select(UserProfile)).all()
-            uids = [u.user_id for u in users
-                    if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
+            uids = await asyncio.to_thread(_lane_user_ids)
             if uids:
                 await asyncio.to_thread(_run_matching_lane, uids)
             else:
@@ -921,11 +953,7 @@ async def _scheduler():
     await asyncio.sleep(120)  # let server fully boot first
     while True:
         try:
-            from app.db.models import UserProfile
-            with get_session() as session:
-                users = session.exec(select(UserProfile)).all()
-            user_ids = [u.user_id for u in users
-                        if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
+            user_ids = await asyncio.to_thread(_lane_user_ids)
             if not user_ids:
                 _log.info("Scheduler: no active users with resumes, skipping run")
             else:
@@ -2222,7 +2250,8 @@ class JobSubmitPayload(BaseModel):
 
 @app.post("/api/jobs/submit")
 def submit_job(payload: JobSubmitPayload, request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Fail closed in prod: anonymous callers must not write into the job table.
+    uid = _require_user(request) if settings.use_supabase else _get_user_id(request)
     with get_session() as session:
         import hashlib
         ext_id = hashlib.md5(payload.url.encode("utf-8")).hexdigest()
@@ -4679,7 +4708,8 @@ def _discovery_gate(uid) -> tuple[bool, str]:
 
 @app.post("/run/matching")
 def trigger_matching(request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Fail closed in prod: an unresolved uid must not kick pipeline work.
+    uid = _require_user(request) if settings.use_supabase else _get_user_id(request)
     bg.add_task(run_matching, uid if uid != "local" else None)
     return {"started": "matching"}
 
@@ -5851,7 +5881,8 @@ def _tailor_all_settled(uid: str) -> None:
 
 @app.post("/run/tailor")
 def trigger_tailor(request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Fail closed in prod: bulk tailoring is paid work — require a real user.
+    uid = _require_user(request) if settings.use_supabase else _get_user_id(request)
     allowed, detail, usage = _check_tailor_limit(uid or "local")
     if not allowed:
         raise HTTPException(status_code=429, detail=detail)

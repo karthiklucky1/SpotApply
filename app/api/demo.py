@@ -104,12 +104,19 @@ def get_demo_jobs(target_role: str) -> List[dict]:
     """Fetch 3 jobs matching the target role or use fallback mock jobs."""
     jobs_list = []
     
-    # Try to find real jobs in the local database matching the target role
+    # Try to find real jobs in the local database matching the target role.
+    # SHARED POOL ONLY: this is an unauthenticated endpoint on a multi-tenant
+    # table — without the user_id filter it returned other tenants' private
+    # rows, including email-imported jobs whose description is the raw body of
+    # a user's inbox email. Title-match only (description LIKE forced a full
+    # scan of JD text and could match on private content).
     try:
+        from app.discovery.pipeline import SHARED_POOL_USER
         with get_session() as session:
-            # Query jobs matching the target role case-insensitively
             q = select(Job).where(
-                Job.title.like(f"%{target_role}%") | Job.description.like(f"%{target_role}%")
+                Job.user_id == SHARED_POOL_USER,
+                Job.is_closed == False,  # noqa: E712
+                Job.title.like(f"%{target_role}%"),
             ).limit(10)
             real_jobs = session.exec(q).all()
             
