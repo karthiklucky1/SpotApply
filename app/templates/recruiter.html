@@ -129,26 +129,27 @@
     if (!res.ok) { box.innerHTML = '<div class="glass p-5 text-rose-400 text-sm border border-rose-500/20">Search failed.</div>'; return; }
     const d = await res.json();
     if (!d.results.length) { box.innerHTML = '<div class="glass p-5 text-slate-400 text-sm border border-white/5">No verified candidates match yet.</div>'; return; }
+    const esc = v => String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     box.innerHTML = d.results.map(c => `
       <div class="glass p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border border-white/10 hover:border-indigo-500/30 transition shadow-md">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="font-extrabold text-white text-base">${c.name}</span>
-            ${c.tier ? `<span class="text-[10px] font-black px-2.5 py-0.5 rounded-full border" style="background:rgba(16,185,129,0.12);color:#10b981;border-color:rgba(16,185,129,0.35)">✓ ${c.tier}</span>` : ''}
+            <span class="font-extrabold text-white text-base">${esc(c.name)}</span>
+            ${c.tier ? `<span class="text-[10px] font-black px-2.5 py-0.5 rounded-full border" style="background:rgba(16,185,129,0.12);color:#10b981;border-color:rgba(16,185,129,0.35)">✓ ${esc(c.tier)}</span>` : ''}
             <span class="text-[11px] text-indigo-300 font-bold px-2 py-0.5 rounded-full border border-indigo-500/20 bg-indigo-500/5">${c.match}% match</span>
             ${c.rating ? `<span class="text-[11px] text-amber-400 font-bold flex items-center gap-0.5">★ ${c.rating}</span>` : ''}
           </div>
           <div class="text-[12px] text-slate-400 mt-1.5 flex flex-wrap gap-x-2 gap-y-1 font-medium">
-            <span>${c.title || ''}</span>
-            ${c.availability ? `<span class="text-slate-600">•</span> <span class="text-white">${c.availability}</span>` : ''}
-            ${c.work_auth ? `<span class="text-slate-600">•</span> <span class="text-white">${c.work_auth}</span>` : ''}
+            <span>${esc(c.title || '')}</span>
+            ${c.availability ? `<span class="text-slate-600">•</span> <span class="text-white">${esc(c.availability)}</span>` : ''}
+            ${c.work_auth ? `<span class="text-slate-600">•</span> <span class="text-white">${esc(c.work_auth)}</span>` : ''}
             ${c.needs_sponsorship ? `<span class="text-slate-600">•</span> <span class="text-rose-400 font-semibold">needs sponsorship</span>` : ''}
           </div>
-          <div class="text-[11px] text-slate-500 mt-2 font-mono">${(c.skills||[]).join(' · ')}</div>
+          <div class="text-[11px] text-slate-500 mt-2 font-mono">${esc((c.skills||[]).join(' · '))}</div>
         </div>
         <div class="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          ${c.share_url ? `<a href="${c.share_url}" target="_blank" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 hover:underline transition">View Profile ↗</a>` : ''}
-          <button onclick='requestIntro("${c.candidate_user_id}", this)' class="text-xs font-bold text-white rounded-xl px-4 py-2 hover:scale-[1.02] active:scale-[0.98] transition shadow" style="background:#4f46e5;">Request Intro</button>
+          ${c.share_url ? `<a href="${esc(c.share_url)}" target="_blank" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 hover:underline transition">View Profile ↗</a>` : ''}
+          <button onclick='requestIntro("${esc(c.candidate_user_id)}", this)' class="text-xs font-bold text-white rounded-xl px-4 py-2 hover:scale-[1.02] active:scale-[0.98] transition shadow" style="background:#4f46e5;">Request Intro</button>
         </div>
       </div>`).join('');
   }

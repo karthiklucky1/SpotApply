@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotApply — Signing in...</title>
     <style>
         :root { --canvas: #F4F1EA; --sage: #2FB4A6; --ink: #2E2A24; --muted: #8C857A; }
@@ -36,24 +37,34 @@
                     document.cookie = 'sb_token=' + session.access_token + '; path=/; max-age=3600; SameSite=Lax' + _secure;
                 }
 
-                // Bootstrap profile from Google metadata
+                // Bootstrap profile from Google metadata — FILL-ONLY. This used
+                // to PUT unconditionally on every OAuth login, stomping names
+                // the user had corrected in the dashboard (or blanking them
+                // when Google had no name metadata).
                 const meta = session.user.user_metadata || {}
-                const name = meta.full_name || meta.name || '';
+                const name = (meta.full_name || meta.name || '').trim();
                 const parts = name.split(' ');
-                
+
                 try {
-                    await fetch('/api/profile', {
-                        method: 'PUT',
-                        headers: { 
-                            'Content-Type': 'application/json', 
-                            'Authorization': `Bearer ${session.access_token}` 
-                        },
-                        body: JSON.stringify({ 
-                            first_name: parts[0] || '', 
-                            last_name: parts.slice(1).join(' ') || '', 
-                            email: session.user.email || '' 
-                        })
-                    });
+                    const hdrs = { 'Content-Type': 'application/json',
+                                   'Authorization': `Bearer ${session.access_token}` };
+                    let existing = {};
+                    try {
+                        const pr = await fetch('/api/profile', { headers: hdrs });
+                        if (pr.ok) existing = await pr.json();
+                    } catch(e) {}
+                    const body = {};
+                    if (name && !(existing.first_name || '').trim()) {
+                        body.first_name = parts[0];
+                        body.last_name = parts.slice(1).join(' ');
+                    }
+                    if (session.user.email && !(existing.email || '').trim()) {
+                        body.email = session.user.email;
+                    }
+                    if (Object.keys(body).length) {
+                        await fetch('/api/profile', { method: 'PUT', headers: hdrs,
+                                                      body: JSON.stringify(body) });
+                    }
                 } catch(e) {
                     console.error("Error bootstrapping profile:", e);
                 }

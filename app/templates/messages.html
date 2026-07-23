@@ -162,7 +162,7 @@
     if (!d.conversations.length) { list.innerHTML = '<div class="glass p-5 text-slate-500 text-sm text-center border border-white/5">No accepted introductions yet.</div>'; return; }
     list.innerHTML = d.conversations.map(c => `
       <div class="convo-card p-4 cursor-pointer" id="convo-${c.intro_id}" onclick="openThread(${c.intro_id})">
-        <div class="font-extrabold text-white text-sm flex items-center gap-1.5">👤 ${c.with}</div>
+        <div class="font-extrabold text-white text-sm flex items-center gap-1.5">👤 ${String(c.with==null?'':c.with).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}</div>
         <div class="text-[11px] text-slate-500 truncate mt-1 font-mono">${(c.job_context||'').replace(/</g,'&lt;')}</div>
       </div>`).join('');
   }

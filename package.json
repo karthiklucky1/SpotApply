@@ -1,11 +1,12 @@
 {
   "name": "spotapply-assets",
   "private": true,
-  "description": "Frontend asset build for the landing page. The compiled CSS is COMMITTED, so production needs no node — run the build only after editing Tailwind classes in app/templates/landing.html.",
+  "description": "Frontend asset build for the landing page. The compiled CSS is COMMITTED, so production needs no node \u2014 run the build only after editing Tailwind classes in app/templates/landing.html.",
   "scripts": {
     "build:css": "tailwindcss -c tailwind.config.js -i app/static/tailwind.in.css -o app/static/tailwind-landing.css --minify",
     "vendor:aos": "node -e \"const fs=require('fs');fs.mkdirSync('app/static/vendor',{recursive:true});for(const f of ['aos.css','aos.js']){fs.copyFileSync(require.resolve('aos/dist/'+f),'app/static/vendor/'+f)}\"",
-    "build": "npm run build:css && npm run vendor:aos"
+    "build": "npm run build:css && npm run build:css:dashboard && npm run vendor:aos",
+    "build:css:dashboard": "tailwindcss -c tailwind.dashboard.config.js -i app/static/tailwind.in.css -o app/static/tailwind.css --minify"
   },
   "devDependencies": {
     "aos": "2.3.4",

@@ -39,3 +39,15 @@ def test_compiled_css_covers_landing_classes():
                 r".sm\:grid-cols-5", r".sm\:col-span-2", r".lg\:col-span-8",
                 r".sm\:flex-row", r".sm\:text-xs", r".lg\:grid-cols-2"):
         assert cls in css, f"{cls} missing from compiled CSS — run `npm run build`"
+
+
+def test_dashboard_css_covers_js_built_classes():
+    """The dashboard stylesheet is scanned from the template (npm run build).
+    These were the classes the stale hand-built file silently dropped."""
+    css = (ROOT / "app" / "static" / "tailwind.css").read_text()
+    for cls in (r".bg-rose-500\/15", r".border-rose-500\/25",
+                r".hover\:bg-slate-700", ".text-slate-300"):
+        assert cls in css, f"{cls} missing — run `npm run build`"
+    dash = (ROOT / "app" / "templates" / "dashboard.html").read_text()
+    for phantom in ("slate-850", "slate-750", "slate-350"):
+        assert phantom not in dash, f"nonexistent Tailwind class {phantom} reintroduced"
