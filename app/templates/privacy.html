@@ -42,45 +42,57 @@
     <div class="max-w-2xl mx-auto">
         <div class="mb-10">
             <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Privacy Policy</h1>
-            <p class="text-sm" style="color:var(--muted);">Last updated: June 2025</p>
+            <p class="text-sm" style="color:var(--muted);">Last updated: July 2026</p>
         </div>
 
         <div class="prose-dark space-y-2">
 
-            <p>SpotApply ("we", "us", "our") is committed to protecting your personal data. This Privacy Policy explains what data we collect, how we use it, and your rights.</p>
+            <p><strong>SpotApply LLC</strong>, an Ohio limited liability company ("SpotApply", "we", "us", "our"), is the data controller responsible for the personal data described in this policy. This Privacy Policy explains what data we collect, how we use it, who we share it with, and your rights.</p>
 
             <h2>1. What data we collect</h2>
             <ul>
                 <li><strong>Account data:</strong> Email address and name provided at sign-up via Supabase Auth or Google OAuth.</li>
-                <li><strong>Resume data:</strong> The resume file you upload and the structured profile fields extracted from it (name, skills, experience, education, etc.).</li>
-                <li><strong>Application data:</strong> Job listings discovered, matching scores, tailored documents generated, and application statuses.</li>
-                <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
+                <li><strong>Resume data:</strong> The resume file you upload and the structured profile fields extracted from it (name, contact details, skills, experience, education, and — where you choose to provide it — work authorization and sponsorship status).</li>
+                <li><strong>Application data:</strong> Job listings discovered, matching scores, tailored documents generated, saved answers to application questions, and application statuses.</li>
+                <li><strong>Billing data:</strong> If you subscribe to a paid plan, your subscription status and plan tier. Card details are collected and stored by Stripe, not by us.</li>
+                <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the Service.</li>
             </ul>
 
             <h2>2. How we use your data</h2>
             <ul>
                 <li>To discover, rank, and match job listings to your profile.</li>
                 <li>To generate tailored resumes and cover letters for each application.</li>
-                <li>To auto-fill job application forms on your behalf.</li>
-                <li>To send you Telegram notifications and daily summaries.</li>
+                <li>To pre-fill job application forms for your review before you submit them.</li>
+                <li>To send you notifications, alerts, and daily summaries.</li>
                 <li>To maintain your application history and pipeline state.</li>
+                <li>To process payments and manage your subscription.</li>
+                <li>To secure the Service, prevent abuse, and comply with legal obligations.</li>
             </ul>
-            <p>Your data is never sold, licensed, or shared with third parties for advertising purposes.</p>
+            <p>Your data is never sold, licensed, or shared with third parties for advertising purposes. We do not use your resume or application data to train our own models.</p>
 
             <h2>3. Data storage</h2>
-            <p>Your data is stored in Supabase (PostgreSQL database and file storage), hosted on AWS infrastructure in your region. Resume files are stored in Supabase Storage and accessible only to your account. Application data is stored in a private PostgreSQL database.</p>
+            <p>Your data is stored in Supabase (PostgreSQL database and file storage), hosted on AWS infrastructure. Resume files are stored in Supabase Storage and are accessible only to your account. Every database query is scoped to your account, and we do not permit data to be read across user accounts.</p>
 
-            <h2>4. Third-party services</h2>
+            <h2>4. Third-party services (sub-processors)</h2>
+            <p>We share the minimum data necessary with the following providers so they can perform services for us. Each is bound by its own data processing terms.</p>
             <ul>
-                <li><strong>Supabase</strong> — authentication and database hosting.</li>
-                <li><strong>Anthropic (Claude)</strong> — AI model used for resume extraction, job scoring, and document generation. Data sent to Claude is governed by Anthropic's data processing terms.</li>
-                <li><strong>Telegram</strong> — notification delivery. Your Telegram chat ID is stored to route messages to you.</li>
+                <li><strong>Supabase</strong> — authentication, database, and file hosting.</li>
+                <li><strong>Anthropic (Claude)</strong> — AI models used for resume extraction, job scoring, and document generation. Job descriptions and relevant resume content are sent for processing.</li>
+                <li><strong>OpenAI</strong> — AI models used for the first-pass scoring cascade and certain analysis features. Job descriptions and relevant resume content are sent for processing.</li>
+                <li><strong>Stripe</strong> — payment processing and subscription management for paid plans. Stripe collects your payment details directly; we receive only your subscription status.</li>
+                <li><strong>SerpAPI</strong> — search queries used to discover public job postings and publicly indexed profile information. We do not send your resume to this provider.</li>
+                <li><strong>Telegram</strong> — optional notification delivery. If you connect Telegram, your chat ID is stored to route messages to you.</li>
             </ul>
+            <p>We may also disclose data where required by law, to enforce our Terms, or to protect the rights and safety of our users.</p>
 
-            <h2>5. Important disclosure — platform terms of service</h2>
-            <p>SpotApply automates interactions with job boards and ATS platforms. Some platforms (including LinkedIn and Indeed) prohibit automated scraping in their Terms of Service. By using SpotApply, you acknowledge this risk and accept responsibility for any consequences of using automated job search tools on those platforms. We recommend reviewing the ToS of each platform before enabling sources that interact with them.</p>
+            <h2>5. AI processing and automated decisions</h2>
+            <p>SpotApply uses large language models to score jobs and generate documents. This means portions of your resume and the job descriptions you are matched against are transmitted to the AI providers listed above for processing. Match scores, hire probabilities, and similar outputs are automated estimates — they are informational, they are not decisions made about you by an employer, and a human (you) reviews and approves every application before it is submitted.</p>
 
-            <h2>6. Your rights (GDPR / CCPA)</h2>
+            <h2>6. How we discover jobs — platform disclosure</h2>
+            <p>SpotApply discovers roles from public ATS APIs, employer career pages, public RSS/JSON feeds, and licensed third-party data providers, and respects robots.txt where applicable. <strong>We do not log into, scrape, or automate LinkedIn or Indeed.</strong> Where results reference those sites, they are discovery-only links you may choose to follow yourself.</p>
+            <p>When you use auto-fill on an employer's own application form, you remain responsible for complying with that employer's or platform's terms.</p>
+
+            <h2>7. Your rights (GDPR / CCPA)</h2>
             <p>You have the right to:</p>
             <ul>
                 <li><strong>Access</strong> your data — request a copy of all data we hold about you.</li>
@@ -90,17 +102,17 @@
             </ul>
             <p>To exercise any of these rights, email us at <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a> or use the in-app delete flow.</p>
 
-            <h2>7. Data retention</h2>
-            <p>We retain your data for as long as your account is active. If you delete your account, all data is permanently removed within 30 days.</p>
+            <h2>8. Data retention</h2>
+            <p>We retain your data for as long as your account is active. If you delete your account, all data is permanently removed within 30 days, except where we are required to retain limited records (such as billing records) to comply with legal or tax obligations.</p>
 
-            <h2>8. Cookies</h2>
+            <h2>9. Cookies</h2>
             <p>SpotApply does not use tracking cookies. Authentication tokens are stored in your browser's localStorage and in a strictly-necessary session cookie (<code>sb_token</code>) — both are used only to maintain your session, never for tracking or advertising.</p>
 
-            <h2>9. Changes to this policy</h2>
+            <h2>10. Changes to this policy</h2>
             <p>We may update this Privacy Policy from time to time. We will notify you via email or an in-app notice for material changes.</p>
 
-            <h2>10. Contact</h2>
-            <p>Questions about your data? Email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a>.</p>
+            <h2>11. Contact</h2>
+            <p>Questions about your data, or want to exercise a right above? Email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a>, or write to SpotApply LLC, Cincinnati, Ohio, United States.</p>
         </div>
 
         <div class="mt-12 pt-8 flex gap-6 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
