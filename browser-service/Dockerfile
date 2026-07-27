@@ -1,19 +1,24 @@
 # Chromium lives HERE, not in the main app container.
 #
-# The Playwright base image ships a Chromium build matched to the library
-# version plus every OS-level font/codec dependency it needs. Installing that
-# into the main app image is what put a ~400MB browser inside the same memory
-# limit as torch, FAISS, and five background lanes.
-FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
+# The Playwright base image ships browser builds matched to the library version
+# in its tag, plus every OS-level font/codec dependency they need. Installing
+# that into the main app image is what put a ~400MB browser inside the same
+# memory limit as torch, FAISS, and five background lanes.
+#
+# This tag MUST match the pinned `playwright==` in requirements.txt. The image's
+# browsers are keyed to that exact library version; if pip installs a different
+# one, Playwright rejects the pre-baked Chromium at launch with "Executable
+# doesn't exist … run playwright install". Bump both together or neither.
+FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
 
 WORKDIR /svc
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Chromium only — this service never needs Firefox or WebKit, and each unused
-# browser is ~300MB of image for nothing.
-RUN playwright install chromium
+# NOTE: no `playwright install` here on purpose — the base image already carries
+# browsers built for this exact library version. Running it would re-download a
+# second copy for no benefit and add minutes to every build.
 
 COPY main.py .
 

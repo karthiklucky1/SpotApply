@@ -4,4 +4,11 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.6
-playwright>=1.42
+
+# PINNED, and it must stay in lock-step with the Dockerfile's base image tag
+# (mcr.microsoft.com/playwright/python:v1.55.0-noble). The base image bakes in a
+# Chromium build matched to this exact library version; a floating `>=` resolves
+# to whatever is newest at build time, which then rejects the baked browser with
+# "Executable doesn't exist … run playwright install". Bump both lines together
+# or neither.
+playwright==1.55.0

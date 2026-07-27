@@ -98,6 +98,21 @@ body. Unprotected, it is an SSRF proxy into your private network.
 | `BROWSER_EXECUTABLE_PATH` | *(empty)* | Explicit Chromium binary; needed when the host's build revision differs from Playwright's expected one |
 | `LOG_LEVEL` | `INFO` | |
 
+### Version pinning
+
+`playwright==1.55.0` in `requirements.txt` and the
+`mcr.microsoft.com/playwright/python:v1.55.0-noble` base image tag **must move
+together**. The image bakes browser builds keyed to that exact library version;
+a floating `>=` resolves to whatever is newest at build time and then rejects
+the pre-baked Chromium with *"Executable doesn't exist … run playwright
+install"*. This is the same revision mismatch `BROWSER_EXECUTABLE_PATH` exists
+to work around on hosts with a system Chromium.
+
+The API surface used here (`launch`, `new_context`, `goto`, `evaluate`,
+`is_connected`, `set_default_timeout`) is stable across 1.4x–1.6x, so bumping
+both lines is normally a no-op. Verified against 1.61.0 locally and pinned to
+1.55.0 for the image.
+
 ## Deploying on Railway
 
 1. New service in the same project, root directory `browser-service/`. It builds
