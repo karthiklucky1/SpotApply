@@ -68,7 +68,9 @@ If the role survives Steps 1 and 2, compare the selected STATIC_PROFILE against 
 class ReviewResult:
     is_genuine_match: bool
     rejection_risks: List[str]
-    recommended_resume_variant: str
+    # None for non-founder tenants: they have one résumé, so there is no founder
+    # variant to recommend (see SeniorReviewer.review).
+    recommended_resume_variant: Optional[str]
     fit_score: int
     senior_reviewer_verdict: str
     custom_highlight_block: str
@@ -106,17 +108,31 @@ class SeniorReviewer:
         tenant's company names and private highlight blocks are never fed into
         another tenant's review prompt.
         """
-        if not self._profiles:
-            log.warning("SeniorReviewer: no profiles loaded from %s — skipping", settings.profiles_dir)
+        # Per-tenant: the founder's static variants for the founder, this user's
+        # own résumé for anyone else. Never another tenant's CV.
+        profiles = self._profiles_for(user_id)
+        if not profiles:
+            log.warning("SeniorReviewer: no résumé available for user %s — skipping", user_id)
             return None
 
         ledger = self._build_historical_ledger(exclude_job_id=job.id, user_id=user_id)
         user_content = self._build_prompt(job, ledger)
 
-        result = self._call_anthropic(user_content) or self._call_openai(user_content)
+        result = (self._call_anthropic(user_content, profiles)
+                  or self._call_openai(user_content, profiles))
         if result is None:
             log.error("SeniorReviewer: both LLM backends failed for job %d (%s @ %s)", job.id, job.title, job.company)
             return None
+
+        # Defence in depth: a non-founder has exactly one résumé, so there is no
+        # variant to choose. The system prompt still asks for one of the founder's
+        # variant names, and _parse_response defaults to "ai_agents" when the key
+        # is missing — so without this, a tenant's Application would carry a
+        # founder filename that tailor.py has to defend against on every tailor.
+        # Null it at the source instead of relying on the downstream guard alone.
+        from app.common.tenancy import is_founder
+        if not is_founder(user_id):
+            result.recommended_resume_variant = None
 
         if result.fit_score >= 75 and result.is_genuine_match:
             self._push_telegram(job, result)
@@ -128,6 +144,13 @@ class SeniorReviewer:
     # ------------------------------------------------------------------
 
     def _load_profiles(self) -> dict[str, str]:
+        """The FOUNDER's résumé variants from data/profiles/*.md.
+
+        Founder/local only — see _profiles_for(). These files carry a real
+        person's name and contact details, so they must never reach another
+        tenant's prompt or, via Application.profile_variant, their tailored
+        résumé (app/tailoring/tailor.py).
+        """
         d = settings.profiles_dir
         profiles: dict[str, str] = {}
         for name in ("backend", "ai_agents", "fullstack"):
@@ -137,6 +160,33 @@ class SeniorReviewer:
             else:
                 log.warning("SeniorReviewer: profile not found at %s", p)
         return profiles
+
+    def _profiles_for(self, user_id: str | None) -> dict[str, str]:
+        """Résumé(s) this review should judge the job against.
+
+        Founder/local: the three static variants, and the LLM picks one.
+        Every other tenant: their OWN résumé under a single "master" key.
+
+        Reviewing a tenant's job against the founder's CV was wrong twice over —
+        it put the founder's name, phone and email in the cached system block of
+        every tenant's review, and it made `senior_fit_score` measure how well
+        the FOUNDER fits the job rather than the user. Returning `{}` (no résumé
+        available) makes review() skip cleanly rather than fall back to someone
+        else's CV.
+        """
+        from app.common.tenancy import is_founder
+        if is_founder(user_id):
+            return self._profiles
+        try:
+            from app.matching.pipeline import _load_resume
+            resume = (_load_resume(user_id=user_id) or "").strip()
+        except Exception as e:
+            log.warning("SeniorReviewer: could not load résumé for user %s: %s", user_id, e)
+            return {}
+        if not resume:
+            log.info("SeniorReviewer: no résumé for user %s — skipping review", user_id)
+            return {}
+        return {"master": resume}
 
     def _build_historical_ledger(self, exclude_job_id: int, user_id: str | None = None,
                                  limit: int = 6) -> list[dict]:
@@ -177,13 +227,19 @@ class SeniorReviewer:
             log.warning("SeniorReviewer: could not load historical ledger: %s", e)
         return ledger
 
-    def _profiles_block(self) -> str:
-        """The static résumé variants — identical on every review, so they ride in
-        a cached system block (see _call_anthropic) instead of being re-sent (and
-        re-billed) inside each job's user message."""
+    @staticmethod
+    def _profiles_block(profiles: dict[str, str]) -> str:
+        """Résumé block for the cached system prompt.
+
+        Stable per tenant (the founder's variants, or one user's résumé), so it
+        still rides in a cached block instead of being re-sent and re-billed
+        inside each job's user message. Takes the profiles explicitly rather
+        than reading self._profiles so a tenant's review cannot accidentally
+        serialize the founder's CV.
+        """
         return "\n\n".join(
             f"--- PROFILE: {name} ---\n{text}"
-            for name, text in self._profiles.items()
+            for name, text in profiles.items()
         )
 
     def _build_prompt(self, job: Job, ledger: list[dict]) -> str:
@@ -227,7 +283,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
             log.error("SeniorReviewer: failed to parse LLM JSON: %s | raw=%r", e, raw[:300])
             return None
 
-    def _call_anthropic(self, user_content: str) -> Optional[ReviewResult]:
+    def _call_anthropic(self, user_content: str, profiles: dict[str, str]) -> Optional[ReviewResult]:
         if not self._anthropic:
             return None
         try:
@@ -236,7 +292,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
                 max_tokens=1200,
                 system=[
                     {"type": "text", "text": SENIOR_REVIEWER_SYSTEM, "cache_control": {"type": "ephemeral"}},
-                    {"type": "text", "text": self._profiles_block(), "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": self._profiles_block(profiles), "cache_control": {"type": "ephemeral"}},
                 ],
                 messages=[{"role": "user", "content": user_content}],
             )
@@ -245,7 +301,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
             log.warning("SeniorReviewer: Anthropic call failed: %s", e)
             return None
 
-    def _call_openai(self, user_content: str) -> Optional[ReviewResult]:
+    def _call_openai(self, user_content: str, profiles: dict[str, str]) -> Optional[ReviewResult]:
         if not self._openai:
             return None
         try:
@@ -253,7 +309,7 @@ Now run the 3-step evaluation protocol and return the JSON object."""
                 model="gpt-4o-mini",
                 max_tokens=1200,
                 messages=[
-                    {"role": "system", "content": SENIOR_REVIEWER_SYSTEM + "\n\n" + self._profiles_block()},
+                    {"role": "system", "content": SENIOR_REVIEWER_SYSTEM + "\n\n" + self._profiles_block(profiles)},
                     {"role": "user", "content": user_content},
                 ],
             )

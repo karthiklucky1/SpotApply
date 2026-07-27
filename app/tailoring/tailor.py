@@ -447,7 +447,24 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # Resolve the master resume. Prefer a SeniorReviewer-recommended profile
     # variant; otherwise use THIS user's own uploaded/synthesized resume
     # (multi-tenant) so tailoring is grounded in their real CV, not a shared one.
-    _variant_path = settings.profiles_dir / f"{profile_variant}.md" if profile_variant else None
+    # FAIL CLOSED on tenant identity. data/profiles/*.md are the FOUNDER's résumé
+    # variants (real name, phone, email, LinkedIn, GitHub), committed to the repo
+    # from the single-user era. Honouring a recommended variant for an arbitrary
+    # tenant tailors THEIR application from the founder's CV — the founder's PII
+    # is then what gets rendered into the résumé and cover letter they download
+    # and send, and the grounding checker waves it through because the output is
+    # faithfully grounded in that master. Only the founder/local dev may use a
+    # variant; every other user is tailored from their own uploaded résumé.
+    from app.common.tenancy import is_founder
+    _variant_path = None
+    if profile_variant:
+        if is_founder(app_user_id):
+            _variant_path = settings.profiles_dir / f"{profile_variant}.md"
+        else:
+            log.warning(
+                "Tailor app %d: ignoring profile_variant=%s for non-founder user %s — "
+                "tailoring from their own résumé (a variant file is another person's CV).",
+                application_id, profile_variant, app_user_id)
     if _variant_path and _variant_path.exists():
         master = _variant_path.read_text(encoding="utf-8")
         profile_source = _variant_path.name
