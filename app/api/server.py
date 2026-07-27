@@ -3625,12 +3625,22 @@ def application_insights(application_id: int, request: Request) -> dict:
 
 
 @app.get("/application/{application_id}/senior-review")
-def application_senior_review(application_id: int, request: Request) -> dict:
+def application_senior_review(application_id: int, request: Request,
+                              compute: int = 0) -> dict:
     """A senior-engineer's independent take on this job (fit score + verdict).
 
-    Computed on demand the first time the user opens a job, then cached on the
-    Application — moved off the matching loop so matching doesn't pay a second
-    serial LLM call per shortlisted job.
+    READ-ONLY BY DEFAULT. `compute=1` is what pays for an LLM call.
+
+    This used to compute on first *open*, which meant merely browsing the board
+    spent money: the drawer auto-fetched this endpoint, so scrolling through 50
+    jobs was 50 Claude calls (~$0.32-0.56) that no one had asked for, charged
+    synchronously inside the request handler and — unlike scoring — never
+    counted against LLM_DAILY_FINAL_CAP. Reading is now free; the user clicks
+    "Analyze fit" when they actually want the second opinion, which is also
+    when they'll actually read it.
+
+    `computed` in the response tells the client whether a verdict exists yet, so
+    it can render the button instead of an empty panel.
     """
     _require_owned_application(request, application_id)
     with get_session() as session:
@@ -3640,8 +3650,8 @@ def application_senior_review(application_id: int, request: Request) -> dict:
         cached = application.senior_verdict
         job_id = application.job_id
 
-    # Compute + cache on first open.
-    if not cached:
+    # Only ever pay when the user explicitly asked for it.
+    if not cached and compute:
         try:
             from app.intelligence.senior_reviewer import SeniorReviewer
             from app.matching.pipeline import _run_senior_review
@@ -3657,6 +3667,7 @@ def application_senior_review(application_id: int, request: Request) -> dict:
             "verdict": application.senior_verdict or "",
             "highlight_block": application.custom_highlight_block or "",
             "resume_variant": application.profile_variant or "",
+            "computed": bool(application.senior_verdict),
         }
 
 

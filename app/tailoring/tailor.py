@@ -29,6 +29,29 @@ from app.qa_store.resolver import QAResolver
 
 log = logging.getLogger(__name__)
 
+
+def _register_llm_spend(kind: str) -> None:
+    """Count a tailoring call against the process-wide LLM budget counter.
+
+    Tailoring is Sonnet spend — several times pricier per call than a scoring
+    final — and it used to be completely invisible to the budget: `/api/debug`
+    and the caps reported only what the scoring lane had spent, so the number
+    an operator read was not the number being billed. Registering here makes
+    the counter truthful.
+
+    Deliberately does NOT block. `llm_budget_exhausted()` gates *background*
+    scoring, which is speculative work nobody asked for; tailoring is a paying
+    user pressing a button, and failing it because a background lane drained
+    the day's budget would be the wrong trade. The per-user ceiling
+    (`tailor_abuse_daily_cap`) is what bounds tailoring — this only makes the
+    spend observable.
+    """
+    try:
+        from app.matching.reranker import _register_final_call
+        _register_final_call()
+    except Exception:  # accounting must never fail a user's tailor
+        log.debug("tailor spend registration failed (%s)", kind, exc_info=True)
+
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
 
@@ -217,6 +240,7 @@ Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a se
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
                 )
+                _register_llm_spend("tailor_resume")
                 return self._clean_tailored_resume(resp.content[0].text)
             except Exception as e:
                 log.warning("Tailor: Anthropic failed, falling back to OpenAI: %s", e)
@@ -265,6 +289,7 @@ Ground every claim in the resume. Invent nothing."""
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
                 )
+                _register_llm_spend("cover_letter")
                 return resp.content[0].text
             except Exception as e:
                 log.warning("Tailor: Anthropic failed for cover letter, falling back to OpenAI: %s", e)

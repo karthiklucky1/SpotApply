@@ -6240,21 +6240,30 @@
 
     // Fetch + render the resume fit verdict. Runs on demand when the job
     // opens (computed + cached server-side on first open).
-    async function loadSeniorReview(appId, slot) {
+    // Reads the cached verdict for free. Passing compute=true is the ONLY path
+    // that spends an LLM call — opening a job used to trigger one every time,
+    // so browsing the board quietly cost money on jobs nobody asked about.
+    async function loadSeniorReview(appId, slot, compute) {
         if (!slot) return;
-        slot.innerHTML = `
+        if (compute) {
+            slot.innerHTML = `
             <div class="jd-sec flex flex-col items-center justify-center py-6"> <div style="font-size:10px;font-weight:800;color:var(--sage-700,#10b981);text-transform:uppercase;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;margin-bottom:6px;"> <span class="animate-spin" style="display:inline-block;width:12px;height:12px;border:2px solid var(--sage-700,#10b981);border-top-color:transparent;border-radius:50%;"></span> Analyzing...
                 </div> <div class="text-[10px] text-slate-500">Senior engineer review in progress</div> </div>`;
+        }
         try {
             const token = localStorage.getItem('sb_token');
-            const r = await fetch('/application/' + appId + '/senior-review', { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
+            const url = '/application/' + appId + '/senior-review' + (compute ? '?compute=1' : '');
+            const r = await fetch(url, { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
             if (!r.ok) {
                 slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No resume fit analysis feedback.</div>`;
                 return;
             }
             const d = await r.json();
             if (!d.verdict) {
-                slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No resume fit analysis feedback.</div>`;
+                // Nothing computed yet — offer it instead of buying it unasked.
+                slot.innerHTML = `<button type="button" class="jbtn text-[12.5px] py-3 w-full font-bold" style="background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.16));border:1.5px solid rgba(var(--sage-rgb),0.5);color:var(--sage-700);border-radius:14px;">🧭 Analyze fit — get a senior engineer's second opinion</button>`;
+                const sbtn = slot.querySelector('button');
+                if (sbtn) sbtn.addEventListener('click', () => loadSeniorReview(appId, slot, true));
                 return;
             }
             const scoreTag = (d.fit_score != null) ? `<span class="jd-sec-stat" style="color:var(--sage-600);">${Math.round(d.fit_score)}/100</span>` : '';

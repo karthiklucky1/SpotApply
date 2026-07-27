@@ -184,10 +184,80 @@ def test_long_resume_needs_no_padding():
     assert resume[: rr._RESUME_SLICE_CHARS] in block     # slice raised from 6000
 
 
-def test_tiny_resume_is_not_padded():
-    block = rr._resume_context_block("short resume")     # padding would need 100s of repeats
+@pytest.mark.parametrize("length", [1, 50, 200, 500, 1000, 2579, 2580, 5000, 15000])
+def test_every_resume_length_clears_the_cache_minimum(length):
+    """Replaces `test_tiny_resume_is_not_padded`, which asserted the bug.
+
+    That test accepted "stays uncached (status quo)" for résumés under ~2,580
+    chars, on the reasoning that padding them "would need 100s of repeats". The
+    repeat COUNT is irrelevant — the padded block is a constant
+    ~_CACHE_MIN_BLOCK_CHARS whether it took one repetition or two hundred, so a
+    short résumé costs exactly what a long one does to cache. What the guard
+    actually bought was a permanent 2.3x markup ($0.0075 vs $0.0033 per final)
+    on precisely the newest users, who have the shortest résumés.
+
+    Padding is one cache WRITE at 1.25x that pays for itself on the second job
+    of a batch, and users are scored in batches of dozens to hundreds.
+    """
+    block = rr._resume_context_block("x" * length)
+    assert len(block) >= rr._CACHE_MIN_BLOCK_CHARS, (
+        f"{length}-char résumé -> {len(block)}-char block: under the cache "
+        "minimum, so cache_control is silently ignored and every final re-bills"
+    )
+
+
+def test_empty_resume_is_not_padded():
+    """Nothing to repeat — must not spin or emit a pad of empty strings."""
+    block = rr._resume_context_block("")
     assert "<resume_repeat>" not in block
-    assert len(block) < rr._CACHE_MIN_BLOCK_CHARS        # stays uncached (status quo)
+    assert len(block) < 100
+
+
+# ── Shared LLM clients ────────────────────────────────────────────────────────
+# A Reranker is built per user per 90s cycle. Constructing fresh Anthropic and
+# OpenAI clients each time leaked an httpx connection pool + SSL context per
+# construction — ~960 cycles/day x N users — which is the slow climb from an
+# ~850MB baseline to the container ceiling over a day or two.
+
+def test_llm_clients_are_built_once_per_process():
+    rr._CLIENTS = None                      # force a cold build
+    assert rr._shared_llm_clients() is rr._shared_llm_clients()
+
+
+def test_rerankers_share_the_same_client_objects():
+    rr._CLIENTS = None
+    a, b = rr.Reranker(), rr.Reranker()
+    assert a._anthropic_client is b._anthropic_client
+    assert a._openai_client is b._openai_client
+
+
+# ── Tailoring is real spend and must be counted ───────────────────────────────
+
+def test_tailor_spend_registers_against_the_budget_counter():
+    """Tailoring is Sonnet spend that never touched the counter, so the number
+    an operator read was not the number being billed."""
+    from app.tailoring.tailor import _register_llm_spend
+    before = rr._daily_finals.get("count", 0)
+    _register_llm_spend("tailor_resume")
+    assert rr._daily_finals["count"] == before + 1
+
+
+def test_tailor_spend_never_raises(monkeypatch):
+    """Accounting must not be able to fail a paying user's tailor."""
+    from app.tailoring import tailor
+
+    def boom():
+        raise RuntimeError("counter exploded")
+    monkeypatch.setattr(rr, "_register_final_call", boom)
+    tailor._register_llm_spend("tailor_resume")   # must not raise
+
+
+def test_tailor_abuse_cap_bounds_a_single_account():
+    """At ~$0.045-0.17/tailor the old default of 150/day allowed $6.75-25.50
+    from ONE account — multiples of the whole platform scoring budget."""
+    assert settings.tailor_abuse_daily_cap > 0, "an unlimited cap is an unlimited bill"
+    worst_case = settings.tailor_abuse_daily_cap * 0.17
+    assert worst_case <= 5.0, f"cap allows ${worst_case:.2f}/user/day"
 
 
 def test_resume_block_is_deterministic():

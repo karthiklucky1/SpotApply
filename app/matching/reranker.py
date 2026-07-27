@@ -392,26 +392,43 @@ def _sponsor_note(job: Job, profile) -> str:
 # prefix over the cache minimum so re-reads bill at ~0.1x instead of 1x.
 _RESUME_SLICE_CHARS = 16000       # was 6000
 _CACHE_MIN_BLOCK_CHARS = 15500    # + rubric (~2.5-3.5K chars) ≈ comfortably >4096 tokens
-_CACHE_PAD_MAX_REPEATS = 5        # a tiny résumé isn't worth padding — skip (no cache, status quo)
 
 
 def _resume_context_block(resume_text: str, feedback: str = "") -> str:
     """The user-stable half — identical across every job we score for this user,
-    so it's the cacheable prefix. Deterministic for a given résumé+feedback."""
+    so it's the cacheable prefix. Deterministic for a given résumé+feedback.
+
+    ALWAYS padded to the cache minimum. A previous `_CACHE_PAD_MAX_REPEATS = 5`
+    guard skipped padding whenever the résumé was short enough to need more than
+    five repetitions (under ~2,580 chars) — reasoning that a tiny résumé "isn't
+    worth padding". That was backwards: skipping the pad means the prefix stays
+    under Anthropic's 4,096-token minimum, `cache_control` is silently ignored,
+    and EVERY final re-bills the whole prompt at 1x ($0.0075) instead of ~0.1x
+    ($0.0033). The penalty landed precisely on new users with the shortest
+    résumés — the ones a first impression matters most for.
+
+    The cap also bought nothing: the padded block is a constant
+    ~_CACHE_MIN_BLOCK_CHARS regardless of how many repetitions that takes, so a
+    500-char résumé repeated 31 times is exactly as large as a 15,000-char
+    résumé repeated once. Padding is a one-off cache WRITE at 1.25x that pays
+    for itself on the second job in the batch, and users are scored in batches
+    of dozens to hundreds.
+    """
     fb = f"\n<user_feedback>\n{feedback}\n</user_feedback>" if feedback else ""
     body = resume_text[:_RESUME_SLICE_CHARS]
     block = f"<resume>\n{body}\n</resume>{fb}"
     short_by = _CACHE_MIN_BLOCK_CHARS - len(block)
     if short_by > 0 and body:
-        repeats = -(-short_by // (len(body) + 1))  # ceil
-        if repeats <= _CACHE_PAD_MAX_REPEATS:
-            pad = "\n".join([body] * repeats)
-            block += (
-                "\n<resume_repeat>\nThe following is a verbatim repetition of the résumé "
-                "above, included only for prompt-cache alignment. It contains no new "
-                "information — read the résumé once and ignore the repetition.\n"
-                f"{pad}\n</resume_repeat>"
-            )
+        # Repeat-and-slice rather than a repeat count: the pad is exactly the
+        # length needed, for any body size, with no cap to fall off.
+        unit = body + "\n"
+        pad = (unit * (-(-short_by // len(unit))))[:short_by]
+        block += (
+            "\n<resume_repeat>\nThe following is a verbatim repetition of the résumé "
+            "above, included only for prompt-cache alignment. It contains no new "
+            "information — read the résumé once and ignore the repetition.\n"
+            f"{pad}\n</resume_repeat>"
+        )
     return block
 
 
@@ -464,6 +481,72 @@ def _parse_response(text: str) -> Tuple[float, str, List[str], dict]:
     return score, data.get("reason", ""), data.get("concerns", []), breakdown
 
 
+# ── Process-wide LLM clients ────────────────────────────────────────────────
+# A Reranker is constructed per USER per CYCLE — once every 90s by the scoring
+# lane, again by the matching lane, again by the pulse fast path. Building a
+# fresh Anthropic + OpenAI client each time meant ~960 cycles/day x N users of
+# SDK clients, each wrapping an httpx connection pool, an SSL context, and its
+# own buffers, none of them ever .close()d. Nothing referenced them afterwards,
+# so they were collectable — but only on GC finalization, and the pooled sockets
+# and SSL state are exactly the kind of allocation that fragments the heap and
+# is never returned to the OS. That is the slow climb from a ~850MB baseline to
+# the container ceiling over a day or two.
+#
+# Both SDKs are explicitly designed to be long-lived and thread-safe, and the
+# clients carry no per-user state (the profile only shapes the prompt), so ONE
+# pair for the whole process is both correct and much cheaper.
+_CLIENTS: tuple | None = None
+_CLIENTS_LOCK = threading.Lock()
+
+
+def _shared_llm_clients() -> tuple:
+    """(anthropic_client, openai_client, active_backend), built once per process."""
+    global _CLIENTS
+    if _CLIENTS is not None:
+        return _CLIENTS
+    with _CLIENTS_LOCK:
+        if _CLIENTS is not None:      # another thread won the race
+            return _CLIENTS
+        anthropic_client = None
+        openai_client = None
+        active: Optional[str] = None
+
+        if settings.anthropic_api_key:
+            try:
+                from anthropic import Anthropic
+                # Bound each request: the SDK default is a 10-MINUTE timeout with
+                # internal retries, so one slow/overloaded call could freeze a
+                # matching pass (up to llm_rerank_cap jobs) for many minutes while
+                # it holds the discovery/matching lock — stalling ALL matching.
+                anthropic_client = Anthropic(
+                    api_key=settings.anthropic_api_key,
+                    timeout=settings.llm_request_timeout,
+                    max_retries=0,  # we do our own retry/backoff in score()
+                )
+                active = "anthropic"
+                log.info("Reranker: Anthropic (Claude) client initialized (process-wide, once)")
+            except Exception as e:
+                log.warning("Reranker: Failed to init Anthropic client: %s", e)
+
+        if settings.openai_api_key:
+            try:
+                from openai import OpenAI
+                openai_client = OpenAI(
+                    api_key=settings.openai_api_key,
+                    timeout=settings.llm_request_timeout,
+                    max_retries=0,  # we do our own retry/backoff in score()
+                )
+                if not active:
+                    active = "openai"
+                log.info("Reranker: OpenAI (gpt-4o-mini) client initialized (process-wide) as %s",
+                         "primary" if active == "openai" else "fallback")
+            except Exception as e:
+                log.warning("Reranker: Failed to init OpenAI client: %s", e)
+
+        _CLIENTS = (anthropic_client, openai_client, active)
+        return _CLIENTS
+
+
 class Reranker:
     def __init__(self, profile=None, feedback: str = ""):
         self._profile = profile
@@ -476,41 +559,8 @@ class Reranker:
         self._init_clients()
 
     def _init_clients(self):
-        """Initialize available LLM clients."""
-        # Try Anthropic first
-        if settings.anthropic_api_key:
-            try:
-                from anthropic import Anthropic
-                # Bound each request: the SDK default is a 10-MINUTE timeout with
-                # internal retries, so one slow/overloaded call could freeze a
-                # matching pass (up to llm_rerank_cap jobs) for many minutes while
-                # it holds the discovery/matching lock — stalling ALL matching.
-                self._anthropic_client = Anthropic(
-                    api_key=settings.anthropic_api_key,
-                    timeout=settings.llm_request_timeout,
-                    max_retries=0,  # we do our own retry/backoff in score()
-                )
-                self._active_backend = "anthropic"
-                log.info("Reranker: Anthropic (Claude) client initialized")
-            except Exception as e:
-                log.warning("Reranker: Failed to init Anthropic client: %s", e)
-
-        # OpenAI fallback
-        if settings.openai_api_key:
-            try:
-                from openai import OpenAI
-                self._openai_client = OpenAI(
-                    api_key=settings.openai_api_key,
-                    timeout=settings.llm_request_timeout,
-                    max_retries=0,  # we do our own retry/backoff in score()
-                )
-                if not self._active_backend:
-                    self._active_backend = "openai"
-                log.info("Reranker: OpenAI (gpt-4o-mini) client initialized as %s",
-                         "primary" if self._active_backend == "openai" else "fallback")
-            except Exception as e:
-                log.warning("Reranker: Failed to init OpenAI client: %s", e)
-
+        """Attach the process-wide LLM clients (see _shared_llm_clients)."""
+        self._anthropic_client, self._openai_client, self._active_backend = _shared_llm_clients()
         if not self._active_backend:
             log.error("Reranker: No LLM backend available! Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
 
