@@ -396,6 +396,17 @@ class Settings(BaseSettings):
     browser_max_concurrency: int = 1      # BROWSER_MAX_CONCURRENCY
     browser_slot_wait_seconds: float = 120.0  # BROWSER_SLOT_WAIT_SECONDS — waiters give up (clear error) instead of queueing behind a hung browser
 
+    # Browser SERVICE (browser-service/). When browser_service_url is set, the
+    # three stateless render/search paths (JD page scrape, Google discovery,
+    # search-engine source) run in a separate container and Chromium's ~400MB
+    # never enters this one. Unset = unchanged local behaviour behind the gate
+    # above. Autofill/preview deliberately stay local: they are stateful,
+    # interactive sessions, and server-side autofill is founder-only today
+    # (autofill_multi_user_enabled) while everyone else fills via the extension.
+    browser_service_url: str = ""            # BROWSER_SERVICE_URL — e.g. http://browser-service.railway.internal:8080
+    browser_service_token: str = ""          # BROWSER_SERVICE_TOKEN — shared bearer secret; MUST match the service
+    browser_service_fallback_local: bool = True  # BROWSER_SERVICE_FALLBACK_LOCAL — on service outage, render locally (slower + ~400MB) rather than failing. Set 0 on a container with no room for a local Chromium.
+
     # Memory telemetry. An OOM kill leaves no traceback, so the only way to know
     # what was resident when the platform reaped us is to have logged it on the
     # way up. Cheap (two procfs reads); the watcher logs WARNING once container

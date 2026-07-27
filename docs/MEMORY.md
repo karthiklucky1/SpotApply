@@ -76,9 +76,21 @@ Do **not** raise `WEB_CONCURRENCY` — the startup guard logs CRITICAL for good
 reason. Run additional replicas with `LANES_ENABLED=0` so they serve web traffic
 only, and keep exactly one lanes-enabled process.
 
-## The real fix, when it's worth doing
+## The structural fix — now built
 
-Splitting the browser work into its own service is the structural answer: the web
-container drops Chromium's ~500 MB spike entirely, and browser capacity scales
-independently of the API. The gate above makes the current single-container setup
-survivable, not optimal.
+`browser-service/` runs Chromium in its own container behind a two-endpoint HTTP
+API. The three *stateless* render/search paths that run on the background lanes
+for every tenant — JD page scrape, Google board discovery, the search-engine
+source — now call `app/common/browser_client.py`, which routes to the service
+when `BROWSER_SERVICE_URL` is set and falls back to a local, gate-limited launch
+otherwise. Turning it on is one env var; turning it off is unsetting it.
+
+Autofill and form preview deliberately stay local: they are stateful interactive
+sessions (CAPTCHA hand-off, pending questions, a live page held across a human's
+review), and server-side autofill is founder-only today
+(`autofill_multi_user_enabled=False`) while every other tenant autofills through
+the MV3 Chrome extension in their own browser at zero server cost.
+
+See `browser-service/README.md` for deployment, sizing, and the security model
+(bearer auth + private-IP SSRF blocking — an open "render any URL" endpoint is a
+proxy into your VPC).

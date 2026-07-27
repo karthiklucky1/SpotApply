@@ -9,9 +9,7 @@ import re
 from typing import List, Set
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright
-
-from app.common.browser import browser_slot
+# No direct Playwright import — see app.common.browser_client.
 from bs4 import BeautifulSoup
 
 from app.discovery.base import RawJob
@@ -30,34 +28,13 @@ class GoogleSearchDiscovery:
 
     async def _search_google_playwright(self, query: str) -> List[str]:
         """Returns a list of URLs found on Google for the query using Playwright."""
-        import urllib.parse
-        encoded_query = urllib.parse.quote_plus(query)
-        url = f"https://www.google.com/search?q={encoded_query}"
-        links = []
-        try:
-            # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
-            async with browser_slot("google-search"), async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
-                # Set a real user agent at context level
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(2000) # wait for results
-                
-                # Extract all result links
-                hrefs = await page.evaluate('''() => {
-                    return Array.from(document.querySelectorAll('a'))
-                        .map(a => a.href)
-                        .filter(h => h.startsWith('http'));
-                }''')
-                links = hrefs
-                await browser.close()
-            return links
-        except Exception as e:
-            log.warning("Google Playwright search failed for query '%s': %s", query, e)
-            return []
+        # Routed through app.common.browser_client — the browser service when
+        # BROWSER_SERVICE_URL is set, otherwise a local launch behind the
+        # browser_slot gate. search_links() already returns [] on failure
+        # (a bot-walled search engine is "found nothing this pass", not an error).
+        from app.common.browser_client import search_links
+        return await search_links(query, engine="google",
+                                  timeout_ms=30000, settle_ms=2000)
 
     async def discover_slugs(self) -> dict[str, Set[str]]:
         """Finds board slugs for Greenhouse, Lever, and Ashby."""

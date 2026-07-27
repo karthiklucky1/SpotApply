@@ -7,9 +7,10 @@ import logging
 from typing import Dict, Any, Tuple
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright
-
-from app.common.browser import browser_slot
+# No direct Playwright import: page rendering goes through
+# app.common.browser_client, which picks the browser service or a local,
+# gate-limited launch. Keeping the import out means this module no longer drags
+# Playwright in at import time either.
 from anthropic import Anthropic
 import numpy as np
 from sqlmodel import select
@@ -103,22 +104,17 @@ async def scrape_linkedin_job(url: str) -> str:
 
 
 async def scrape_job_page(url: str) -> str:
-    """Use Playwright to render the page and extract all text content."""
+    """Render the page and return all of its text.
+
+    Routed through app.common.browser_client: the browser service when
+    BROWSER_SERVICE_URL is set (no Chromium in this container at all), otherwise
+    a local launch behind the process-wide browser_slot gate. Same behaviour
+    either way — 30s navigation budget, 2s for JS hydration, body innerText.
+    """
     log.info("Scraping job page URL: %s", url)
-    # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
-    async with browser_slot("job-page-scrape"), async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)  # Wait for JS hydration
-            body_text = await page.evaluate("() => document.body.innerText")
-            return body_text
-        finally:
-            await browser.close()
+    from app.common.browser_client import render_text
+    return await render_text(url, wait_until="domcontentloaded",
+                             timeout_ms=30000, settle_ms=2000)
 
 
 def parse_job_text_with_llm(text: str) -> Dict[str, Any]:

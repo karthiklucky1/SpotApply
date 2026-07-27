@@ -1,0 +1,7 @@
+# Deliberately tiny. This service must NOT grow the main app's dependency set —
+# no torch, no FAISS, no SQLModel. Its whole value is being a container that
+# holds a browser and nothing else.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+playwright>=1.42

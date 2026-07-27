@@ -132,6 +132,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `matcher._get_embed_model()` — never construct a second `SentenceTransformer`.
   `app.common.memuse` + the memory watcher log the climb; `/api/debug/memory`
   (admin) shows `non_python_mb` = the browsers.
+- **Browser service** (`browser-service/`, its own container + README): the three
+  STATELESS render/search paths (JD scrape, Google discovery, search-engine
+  source) call `app.common.browser_client`, which routes to the service when
+  `BROWSER_SERVICE_URL` is set and otherwise renders locally behind the gate —
+  flip it with one env var, no code change. Autofill/preview stay local on
+  purpose (stateful interactive sessions; server-side autofill is founder-only
+  via `autofill_multi_user_enabled`, everyone else fills via the MV3 extension).
+  New page-rendering code belongs in the client, NOT a fresh `pw.chromium.launch`.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

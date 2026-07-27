@@ -57,33 +57,12 @@ class SearchEngineSource:
 
     async def _query_playwright(self, query: str) -> List[str]:
         log.info("Search Engine: Querying Google via Playwright for: '%s'", query)
-        from playwright.async_api import async_playwright
-        from app.common.browser import browser_slot
-        import urllib.parse
-        encoded_query = urllib.parse.quote_plus(query)
-        url = f"https://www.google.com/search?q={encoded_query}"
-        links = []
-        try:
-            # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
-            async with browser_slot("search-engine"), async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(1500)
-                hrefs = await page.evaluate('''() => {
-                    return Array.from(document.querySelectorAll('a'))
-                        .map(a => a.href)
-                        .filter(h => h.startsWith('http'));
-                }''')
-                links = hrefs
-                await browser.close()
-            return links
-        except Exception as e:
-            log.warning("Search Engine: Playwright Google search failed: %s", e)
-            return []
+        # Routed through app.common.browser_client — the browser service when
+        # BROWSER_SERVICE_URL is set, otherwise a local launch behind the
+        # browser_slot gate. Returns [] on failure, as this source always has.
+        from app.common.browser_client import search_links
+        return await search_links(query, engine="google",
+                                  timeout_ms=20000, settle_ms=1500)
 
     async def discover(self) -> List[DiscoveredCompany]:
         queries = []
