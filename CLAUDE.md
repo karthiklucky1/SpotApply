@@ -1,5 +1,10 @@
 # CLAUDE.md — SpotApply (formerly HirePath)
 
+> Deep reference (read from the code, `file:line` cited): **docs/ARCHITECTURE.md** (topology,
+> per-user lifecycle, the full ranking cascade) · **docs/CAPACITY.md** (every cap + arithmetic;
+> binding constraint = `LLM_DAILY_FINAL_CAP`) · **docs/SCALING.md** (10→10k roadmap) ·
+> **docs/MEMORY.md** (OOM post-mortem). This file stays the short working map.
+
 AI job-application copilot (app.spotapply.ai). Discovers tech roles from ATS APIs/feeds, scores each
 against the user's résumé via a cascade, tailors résumé+cover letter (grounded), and
 auto-fills forms. **The human always reviews and clicks Submit** — never auto-submit.
