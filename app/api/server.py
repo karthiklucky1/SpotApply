@@ -452,6 +452,10 @@ async def startup_event():
         except Exception as _ie:
             log.warning("Performance index build failed (non-fatal): %s", _ie)
     asyncio.create_task(_build_indexes())
+    # Memory watcher — an OOM kill leaves no traceback, so the only record of
+    # what was resident is the one we wrote on the way up. Runs in EVERY process
+    # (web-only replicas included), before the lanes_enabled early-return.
+    asyncio.create_task(_memory_watch())
     if not settings.lanes_enabled:
         return  # web-only process (extra replica) — no lanes, no duplicate spend
     # Start background scheduler — runs discovery + matching every
@@ -490,6 +494,42 @@ async def startup_event():
     # primary "get fresh jobs scored within a minute" engine; the matching lane
     # stays as the FAISS-retrieval + reshortlist + self-heal backstop.
     asyncio.create_task(_scoring_lane())
+
+
+async def _memory_watch():
+    """Log container memory every settings.memory_watch_interval_seconds.
+
+    This container holds torch + three-models-worth of ML, FAISS, five
+    background lanes, and (transiently) headless Chromium — all under ONE
+    platform memory limit. When the platform OOM-kills us there is no Python
+    traceback to read, so without this the post-mortem is guesswork. The line
+    flips to WARNING at settings.memory_warn_pct of the cgroup limit, which is
+    the signal that arrives BEFORE the kill.
+
+    Purely observational: never raises, never blocks a lane, never sheds load.
+    """
+    import asyncio
+    _log = logging.getLogger("memory")
+    secs = int(getattr(settings, "memory_watch_interval_seconds", 120) or 0)
+    if secs <= 0:
+        _log.info("Memory watcher disabled (MEMORY_WATCH_INTERVAL_SECONDS=0)")
+        return
+    from app.common.memuse import log_snapshot, snapshot
+    first = snapshot()
+    if first.get("limit_mb") is None:
+        # No cgroup limit visible (bare metal, or a platform that doesn't expose
+        # it). RSS still logs; the used_pct warning just can't fire.
+        _log.info("Memory watcher started (every %ds); no cgroup limit visible — "
+                  "logging process RSS only", secs)
+    else:
+        _log.info("Memory watcher started (every %ds); container limit %.0fMB, "
+                  "warn at %.0f%%", secs, first["limit_mb"], settings.memory_warn_pct)
+    while True:
+        try:
+            log_snapshot("watch", warn_pct=settings.memory_warn_pct, logger=_log)
+        except Exception:
+            _log.debug("memory watch tick failed (non-fatal)", exc_info=True)
+        await asyncio.sleep(secs)
 
 
 def _seed_missing_ats_datasets() -> int:
@@ -2349,7 +2389,44 @@ async def verify_job(job_id: int, request: Request) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    # Memory rides along on the healthcheck the platform already polls, so the
+    # last reading before an OOM kill is always in the logs/response history.
+    # Keys are additive — the platform only checks for a 200.
+    try:
+        from app.common.memuse import snapshot
+        return {"ok": True, "memory": snapshot()}
+    except Exception:
+        return {"ok": True}
+
+
+@app.get("/api/debug/memory")
+def debug_memory(request: Request) -> dict:
+    """Where memory actually sits right now — process RSS, whole-container usage,
+    the cgroup limit the platform kills on, and the gap between them.
+
+    ``non_python_mb`` is the tell: it is almost entirely headless Chromium. If it
+    is large, the fix is browser concurrency (BROWSER_MAX_CONCURRENCY), not
+    anything in the Python heap. Admin only — it reveals deployment config."""
+    from app.common.memuse import snapshot, env_summary
+    _require_admin_user(request)
+    snap = snapshot()
+    return {
+        **snap,
+        "env": env_summary(),
+        "browser_max_concurrency": settings.browser_max_concurrency,
+        "scoring_workers": settings.scoring_workers,
+        "lanes_enabled": settings.lanes_enabled,
+        "models_loaded": sorted(_loaded_model_keys()),
+    }
+
+
+def _loaded_model_keys() -> list:
+    """Which heavy ML models are currently resident (each is hundreds of MB)."""
+    try:
+        from app.matching.matcher import _MODEL_CACHE
+        return list(_MODEL_CACHE.keys())
+    except Exception:
+        return []
 
 
 @app.get("/api/debug/tenancy")

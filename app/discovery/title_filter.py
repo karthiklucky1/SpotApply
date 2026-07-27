@@ -132,8 +132,12 @@ def _try_init_semantic():
     if _semantic_available is not None:
         return _semantic_available
     try:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        # Share the matcher's single process-wide MiniLM instead of loading a
+        # third copy of the same checkpoint. Three resident copies (matcher,
+        # grounding, here) bought nothing but memory in a container that gets
+        # OOM-killed for it.
+        from app.matching.matcher import _get_embed_model
+        _model = _get_embed_model()
         import numpy as np
         _anchor_embeddings = _model.encode(_ANCHORS, convert_to_numpy=True, normalize_embeddings=True)
         _semantic_available = True

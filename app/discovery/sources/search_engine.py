@@ -58,12 +58,14 @@ class SearchEngineSource:
     async def _query_playwright(self, query: str) -> List[str]:
         log.info("Search Engine: Querying Google via Playwright for: '%s'", query)
         from playwright.async_api import async_playwright
+        from app.common.browser import browser_slot
         import urllib.parse
         encoded_query = urllib.parse.quote_plus(query)
         url = f"https://www.google.com/search?q={encoded_query}"
         links = []
         try:
-            async with async_playwright() as pw:
+            # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
+            async with browser_slot("search-engine"), async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 context = await browser.new_context(
                     user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

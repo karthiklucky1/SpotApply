@@ -124,6 +124,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **DB discipline:** NEVER hold a session across an LLM call (scoring lane is
   read → LLM → idempotent write-back). Pool is env-tunable (`DB_POOL_SIZE` 10 /
   `DB_MAX_OVERFLOW` 20) — the old 5+10 starved funnel/web when lanes overlapped.
+- **Memory discipline** (`docs/MEMORY.md` — one container holds torch + models +
+  FAISS + all lanes + Chromium): ALL Playwright launches go through
+  `app.common.browser.browser_slot` (`BROWSER_MAX_CONCURRENCY`, default 1 — each
+  headless Chromium is a ~400MB child process charged to the container but
+  invisible in our RSS; unbounded concurrency was an OOM kill). Load MiniLM via
+  `matcher._get_embed_model()` — never construct a second `SentenceTransformer`.
+  `app.common.memuse` + the memory watcher log the climb; `/api/debug/memory`
+  (admin) shows `non_python_mb` = the browsers.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

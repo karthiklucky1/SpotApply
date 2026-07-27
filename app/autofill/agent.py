@@ -18,6 +18,8 @@ from typing import List
 from urllib.parse import urlparse
 
 from playwright.async_api import Page, async_playwright
+
+from app.common.browser import BrowserBusy, browser_slot
 from sqlmodel import select
 
 from app.config import settings
@@ -2051,7 +2053,10 @@ async def _autofill_one(application_id: int) -> List[UnknownField]:
         or "gh_src" in query_params
     )
 
-    async with async_playwright() as pw:
+    # browser_slot: one Chromium at a time process-wide (see app/common/browser.py).
+    # Autofill is user-triggered, so N simultaneous clicks used to mean N
+    # browsers — the fastest route to an OOM kill this container had.
+    async with browser_slot("autofill"), async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=settings.headless,
             args=[
@@ -2296,7 +2301,8 @@ async def _preview_one(application_id: int) -> None:
         or "gh_src" in _qparams
     )
     try:
-        async with async_playwright() as pw:
+        # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
+        async with browser_slot("preview"), async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=False,
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
@@ -2696,6 +2702,14 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
 
     try:
         unknown = asyncio.run(_autofill_one(application_id))
+    except BrowserBusy as _busy:
+        # Every browser slot was taken for the whole wait budget. Deliberately a
+        # no-op on status: the application is untouched and the user can simply
+        # click again once the in-flight run finishes. Refusing here is the
+        # point — launching a second Chromium anyway is what got the container
+        # OOM-killed.
+        log.warning("Autofill for app %d deferred — %s", application_id, _busy)
+        return []
     except CaptchaDetectedError:
         with get_session() as session:
             app = session.get(Application, application_id)

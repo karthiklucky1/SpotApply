@@ -8,6 +8,8 @@ from typing import Dict, Any, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+
+from app.common.browser import browser_slot
 from anthropic import Anthropic
 import numpy as np
 from sqlmodel import select
@@ -103,7 +105,8 @@ async def scrape_linkedin_job(url: str) -> str:
 async def scrape_job_page(url: str) -> str:
     """Use Playwright to render the page and extract all text content."""
     log.info("Scraping job page URL: %s", url)
-    async with async_playwright() as pw:
+    # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
+    async with browser_slot("job-page-scrape"), async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

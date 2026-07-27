@@ -387,6 +387,22 @@ class Settings(BaseSettings):
     submission_jitter_max: float = 480.0
     headless: bool = True
 
+    # Browser memory guard. Every Playwright launch (autofill, preview, JD page
+    # scrape, search-engine source) happens in the SAME container as torch +
+    # the models + every lane, and each headless Chromium is a ~300-500MB child
+    # process charged to the container's memory limit. Unbounded, three
+    # concurrent launches are an OOM kill on their own. 1 = strictly serialized;
+    # raise ONLY after raising the container's memory limit to match.
+    browser_max_concurrency: int = 1      # BROWSER_MAX_CONCURRENCY
+    browser_slot_wait_seconds: float = 120.0  # BROWSER_SLOT_WAIT_SECONDS — waiters give up (clear error) instead of queueing behind a hung browser
+
+    # Memory telemetry. An OOM kill leaves no traceback, so the only way to know
+    # what was resident when the platform reaped us is to have logged it on the
+    # way up. Cheap (two procfs reads); the watcher logs WARNING once container
+    # usage crosses memory_warn_pct of the cgroup limit.
+    memory_watch_interval_seconds: int = 120  # MEMORY_WATCH_INTERVAL_SECONDS — 0 disables the watcher
+    memory_warn_pct: float = 85.0             # MEMORY_WARN_PCT — container usage share that flips the log line to WARNING
+
     # Discovery
     greenhouse_boards: str = ""
     lever_boards: str = ""

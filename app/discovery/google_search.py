@@ -10,6 +10,8 @@ from typing import List, Set
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+
+from app.common.browser import browser_slot
 from bs4 import BeautifulSoup
 
 from app.discovery.base import RawJob
@@ -33,7 +35,8 @@ class GoogleSearchDiscovery:
         url = f"https://www.google.com/search?q={encoded_query}"
         links = []
         try:
-            async with async_playwright() as pw:
+            # browser_slot: one Chromium at a time process-wide (see app/common/browser.py)
+            async with browser_slot("google-search"), async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 # Set a real user agent at context level
                 context = await browser.new_context(

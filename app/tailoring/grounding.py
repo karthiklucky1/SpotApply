@@ -2,7 +2,6 @@ import logging
 import os
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
 from app.config import settings
 from app.db.init_db import get_session
@@ -34,9 +33,17 @@ class GroundingResult:
 
 class GroundingChecker:
     def __init__(self):
-        import torch
-        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=device)
+        # Reuse the ONE process-wide MiniLM held by the matcher rather than
+        # constructing a second copy. tailor.py builds a GroundingChecker per
+        # tailor request, so this constructor used to load a fresh
+        # SentenceTransformer (model weights + a torch graph, ~150-200MB of
+        # transient allocation) on every user-triggered tailor — concurrent
+        # tailors stacked those loads on top of the matcher's already-resident
+        # copy and pushed the container into an OOM kill. It is the exact same
+        # checkpoint (all-MiniLM-L6-v2) and the model is stateless once loaded,
+        # so sharing is free.
+        from app.matching.matcher import _get_embed_model
+        self.model = _get_embed_model()
 
     _SECTION_KEYS = ("EXPERIENCE", "PROJECT", "WORK", "EMPLOYMENT")
     _BULLET_PREFIXES = ("- ", "* ", "• ", "·", "– ", "— ", "‣ ", "▪ ", "◦ ", "● ", "» ")
