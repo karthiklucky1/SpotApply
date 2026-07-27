@@ -88,7 +88,6 @@ def test_run_matching_scores_fresh_job_and_reshortlists_scored():
              patch("app.matching.pipeline._load_resume", return_value="Python ML resume"), \
              patch("app.matching.filters.EmbeddingFilter.filter",
                    return_value=(True, 0.7, "ok")), \
-             patch("app.matching.pipeline.SeniorReviewer", autospec=True), \
              patch("app.matching.reranker.Reranker.score",
                    return_value=(70.0, "good fit", [], {})), \
              patch("app.discovery.verify.check_job_alive",

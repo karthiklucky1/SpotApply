@@ -522,10 +522,7 @@ async def list_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["*Top Applications:*\n"]
     for app_row, job_row in rows[:10]:
         rerank = job_row.rerank_score or 0
-        senior = app_row.senior_fit_score
         score_str = f"{rerank:.0f}"
-        if senior is not None:
-            score_str = f"rerank:{rerank:.0f} | sr:{senior:.0f}"
         profile_tag = f" | `{app_row.profile_variant}`" if app_row.profile_variant else ""
         date_str = (job_row.posted_at or job_row.discovered_at).strftime("%b %d")
         lines.append(

@@ -23,7 +23,6 @@ from app.matching.reranker import Reranker
 from app.matching.filters import RuleFilter, EmbeddingFilter, score_ghost
 from app.matching.hire_probability import score_hire_probability, blended_score as compute_blended
 from app.matching.fresh_budget import freshness_tier, order_fresh_first, order_fit_first
-from app.intelligence.senior_reviewer import SeniorReviewer
 
 # Sources where the bot can fill the form automatically
 _AUTOFILL_SOURCES = {JobSource.GREENHOUSE, JobSource.LEVER, JobSource.ASHBY, JobSource.WORKDAY, JobSource.SMARTRECRUITERS}
@@ -220,34 +219,6 @@ def _load_resume_file(user_id: str | None = None) -> str:
             f"Resume not found at {p}. Put a markdown version of your resume there."
         )
     return p.read_text(encoding="utf-8")
-
-
-def _run_senior_review(reviewer: SeniorReviewer, job_id: int, app_id: int) -> None:
-    """Call SeniorReviewer for one job and write results back to the Application row."""
-    try:
-        with get_session() as session:
-            job = session.get(Job, job_id)
-            if not job:
-                return
-            app = session.get(Application, app_id)
-            if not app:
-                return
-            result = reviewer.review(job, user_id=app.user_id)
-            if result is None:
-                return
-            app.profile_variant = result.recommended_resume_variant
-            app.senior_fit_score = float(result.fit_score)
-            app.senior_verdict = result.senior_reviewer_verdict
-            app.custom_highlight_block = result.custom_highlight_block or None
-            session.add(app)
-            session.commit()
-            log.info(
-                "SeniorReview job %d app %d: variant=%s score=%d genuine=%s",
-                job_id, app_id, result.recommended_resume_variant,
-                result.fit_score, result.is_genuine_match,
-            )
-    except Exception as e:
-        log.exception("SeniorReview failed for job %d app %d: %s", job_id, app_id, e)
 
 
 def _reset_stale_sponsorship_scores(user_id: str | None) -> int:
@@ -885,9 +856,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.info("Job %s @ %s: sim=%.3f rerank=%.0f — %s",
                      job.title, job.company, sim, score, reason)
 
-        # NOTE: SeniorReviewer is NOT run here anymore — it was a second serial
-        # LLM call per shortlisted job, doubling matching time and cost. It now
-        # runs on demand when the user opens a job (see /application/{id}/senior-review).
     return shortlisted
 
 

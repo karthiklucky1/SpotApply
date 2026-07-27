@@ -142,8 +142,10 @@ class Application(SQLModel, table=True):
     # Instrumentation fields
     resume_variant: Optional[str] = None  # e.g., "variant_a", "variant_b"
     profile_variant: Optional[str] = None  # "backend" | "ai_agents" | "fullstack"
-    senior_fit_score: Optional[float] = None  # conservative score from SeniorReviewer (0-100)
-    senior_verdict: Optional[str] = None  # 2-sentence blunt verdict from SeniorReviewer
+    # Optional tailoring steer: extra bullets to emphasise for this application.
+    # Written by nothing today (the SeniorReviewer that set it was removed); kept
+    # because tailor.py already honours it and it is the natural hook for a
+    # user-facing "what should we emphasise?" field.
     custom_highlight_block: Optional[str] = None  # 3-bullet markdown framing missing JD gaps
     response_type: str = Field(default="none")  # none, auto_rejected, screening, phone_screen, interview, offer
     rejection_analysis: Optional[str] = None  # JSON string containing forensic analysis (reason, gaps, tip)

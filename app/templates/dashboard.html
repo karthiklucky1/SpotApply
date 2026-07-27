@@ -1177,7 +1177,7 @@
                         </div>
                         {% if not _is_submitted_state %}
                         <!-- AI Match Report — full width, in the flow -->
-                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="insider-intel-placeholder"></div> <div class="senior-review-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading senior engineer verdict…</span> </div> </div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> <div class="pipeline-trail-placeholder"></div> </div> {% set gflags = job.ghost_flags|fromjson %}
+                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="insider-intel-placeholder"></div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> <div class="pipeline-trail-placeholder"></div> </div> {% set gflags = job.ghost_flags|fromjson %}
                         {% if job.ghost_score and job.ghost_score >= 0.5 %}
                         <div class="rounded-2xl border border-rose-500/30 bg-rose-950/20 px-4 py-3"> <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1 text-rose-400">⚠ Possible ghost posting</span> <p class="text-[11px] leading-relaxed text-rose-200/80">Low activity signals detected{% if gflags %}: {{ gflags|join(', ') }}{% endif %}.</p> </div> {% endif %}
                         {% else %}
@@ -5934,15 +5934,11 @@
         
         if (appId) {
             const matchPlaceholder = body.querySelector('.match-panel-placeholder');
-            const seniorPlaceholder = body.querySelector('.senior-review-placeholder');
             const sponsorPlaceholder = body.querySelector('.sponsorship-signals-placeholder');
             const docsPlaceholder = body.querySelector('.drawer-documents-placeholder');
             
             if (matchPlaceholder) {
                 loadMatchPanel(appId, matchPlaceholder);
-            }
-            if (seniorPlaceholder) {
-                loadSeniorReview(appId, seniorPlaceholder);
             }
             const autopsyPlaceholder = body.querySelector('.autopsy-placeholder');
             if (autopsyPlaceholder) {
@@ -6095,7 +6091,6 @@
 
             panel.innerHTML = headerHtml + reasonHtml + barsHtml + skillsHtml + signalsHtml;
             // The vetting trail belongs at the very bottom of the report, after
-            // the senior verdict and sponsorship sections.
             const trailSlot = panel.parentElement && panel.parentElement.querySelector('.pipeline-trail-placeholder');
             if (trailSlot) trailSlot.innerHTML = pipelineHtml; else panel.innerHTML += pipelineHtml;
         } catch (e) { panel.innerHTML = `<div class="jd-sec min-h-[120px] flex items-center justify-center text-xs text-rose-500">Failed to load match report.</div>`; }
@@ -6235,42 +6230,6 @@
                     </div> <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5;">Based on the employer's public H-1B filing record and the job posting's own language.</div> </div>`;
         } catch (e) {
             slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-rose-500">Failed to load sponsorship data.</div>`;
-        }
-    }
-
-    // Fetch + render the resume fit verdict. Runs on demand when the job
-    // opens (computed + cached server-side on first open).
-    // Reads the cached verdict for free. Passing compute=true is the ONLY path
-    // that spends an LLM call — opening a job used to trigger one every time,
-    // so browsing the board quietly cost money on jobs nobody asked about.
-    async function loadSeniorReview(appId, slot, compute) {
-        if (!slot) return;
-        if (compute) {
-            slot.innerHTML = `
-            <div class="jd-sec flex flex-col items-center justify-center py-6"> <div style="font-size:10px;font-weight:800;color:var(--sage-700,#10b981);text-transform:uppercase;letter-spacing:0.05em;display:flex;align-items:center;gap:6px;margin-bottom:6px;"> <span class="animate-spin" style="display:inline-block;width:12px;height:12px;border:2px solid var(--sage-700,#10b981);border-top-color:transparent;border-radius:50%;"></span> Analyzing...
-                </div> <div class="text-[10px] text-slate-500">Senior engineer review in progress</div> </div>`;
-        }
-        try {
-            const token = localStorage.getItem('sb_token');
-            const url = '/application/' + appId + '/senior-review' + (compute ? '?compute=1' : '');
-            const r = await fetch(url, { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
-            if (!r.ok) {
-                slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No resume fit analysis feedback.</div>`;
-                return;
-            }
-            const d = await r.json();
-            if (!d.verdict) {
-                // Nothing computed yet — offer it instead of buying it unasked.
-                slot.innerHTML = `<button type="button" class="jbtn text-[12.5px] py-3 w-full font-bold" style="background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.16));border:1.5px solid rgba(var(--sage-rgb),0.5);color:var(--sage-700);border-radius:14px;">🧭 Analyze fit — get a senior engineer's second opinion</button>`;
-                const sbtn = slot.querySelector('button');
-                if (sbtn) sbtn.addEventListener('click', () => loadSeniorReview(appId, slot, true));
-                return;
-            }
-            const scoreTag = (d.fit_score != null) ? `<span class="jd-sec-stat" style="color:var(--sage-600);">${Math.round(d.fit_score)}/100</span>` : '';
-            slot.innerHTML = `
-                <div class="jd-sec"> <div class="jd-sec-title"> <span>Senior engineer verdict</span> ${scoreTag} </div> <div style="font-size:13.5px;color:var(--ink-soft,#cbd5e1);line-height:1.6;font-style:italic;"> "${_esc(d.verdict)}" </div> <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5;">An independent second opinion, scored conservatively — separate from the match score above.</div> </div>`;
-        } catch (e) {
-            slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-rose-500">Failed to load resume review.</div>`;
         }
     }
 

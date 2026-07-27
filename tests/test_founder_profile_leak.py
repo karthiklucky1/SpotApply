@@ -4,8 +4,6 @@
 real name, phone, email, LinkedIn, GitHub — committed to the repo and shipped in
 the image. Two single-user-era paths used them for every tenant:
 
-  1. `SeniorReviewer` sent all three as the cached system block of EVERY review,
-     so `senior_fit_score` measured the founder's fit, not the user's.
   2. The recommended variant was stored on the tenant's Application, and
      `tailor.py` then read that file as the tailoring master — putting the
      founder's identity into a résumé another user downloads and sends. The
@@ -56,64 +54,6 @@ def test_unset_founder_id_means_nobody_is_founder():
     assert is_founder("any-real-uid") is False
     # …but the local sentinels still work, so dev is unaffected.
     assert is_founder("local") is True
-
-
-# ── door 1: the reviewer's prompt ────────────────────────────────────────────
-
-def _reviewer():
-    from app.intelligence.senior_reviewer import SeniorReviewer
-    rev = object.__new__(SeniorReviewer)      # skip __init__ (builds LLM clients)
-    rev._profiles = {
-        "backend": "# KARTHIK AMRUTHALURI\n(513) 276-3950 | founder@example.com",
-        "ai_agents": "# KARTHIK AMRUTHALURI\nfounder variant two",
-        "fullstack": "# KARTHIK AMRUTHALURI\nfounder variant three",
-    }
-    return rev
-
-
-def test_founder_review_still_uses_the_variants():
-    settings.founder_user_id = "founder-uid"
-    rev = _reviewer()
-    assert set(rev._profiles_for("founder-uid")) == {"backend", "ai_agents", "fullstack"}
-
-
-def test_tenant_review_uses_their_own_resume(monkeypatch):
-    settings.founder_user_id = "founder-uid"
-    rev = _reviewer()
-    import app.matching.pipeline as pipeline
-    monkeypatch.setattr(pipeline, "_load_resume", lambda user_id=None: "# ALEX TENANT\nreal user résumé")
-
-    profiles = rev._profiles_for("tenant-uid")
-
-    assert list(profiles) == ["master"]
-    assert "ALEX TENANT" in profiles["master"]
-    blob = " ".join(profiles.values())
-    assert "KARTHIK" not in blob
-    assert "276-3950" not in blob
-
-
-def test_tenant_with_no_resume_is_skipped_not_given_the_founders(monkeypatch):
-    """The dangerous failure mode is falling back to the founder's CV. An empty
-    dict makes review() return None instead."""
-    settings.founder_user_id = "founder-uid"
-    rev = _reviewer()
-    import app.matching.pipeline as pipeline
-    monkeypatch.setattr(pipeline, "_load_resume", lambda user_id=None: "")
-    assert rev._profiles_for("tenant-uid") == {}
-
-    def boom(user_id=None):
-        raise RuntimeError("storage down")
-    monkeypatch.setattr(pipeline, "_load_resume", boom)
-    assert rev._profiles_for("tenant-uid") == {}
-
-
-def test_profiles_block_serializes_only_what_it_is_given():
-    """_profiles_block takes profiles explicitly so a tenant's review cannot
-    reach self._profiles by accident."""
-    from app.intelligence.senior_reviewer import SeniorReviewer
-    block = SeniorReviewer._profiles_block({"master": "# ALEX TENANT\nmine"})
-    assert "ALEX TENANT" in block
-    assert "KARTHIK" not in block
 
 
 # ── door 2: the tailoring master ─────────────────────────────────────────────

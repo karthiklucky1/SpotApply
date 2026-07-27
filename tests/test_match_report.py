@@ -68,13 +68,15 @@ def test_match_report_includes_signals_and_pipeline():
 
         # Vetting trail: every gate named, ghost + AI fit + hiring intent passed.
         steps = {st["name"]: st for st in d["pipeline"]}
-        assert len(d["pipeline"]) == 7
+        assert len(d["pipeline"]) == 6
         assert steps["Ghost-posting check"]["ok"] is True
         assert steps["AI fit review"]["ok"] is True
         assert "78/100" in steps["AI fit review"]["detail"]
         assert "64%" in steps["Hiring-intent analysis"]["detail"]
-        # No senior review recorded yet → surfaced as pending, not passed.
-        assert steps["Senior engineer review"]["ok"] is False
+        # The senior-engineer step is gone — it was a second LLM opinion nobody
+        # opened, and the Tier-2 final already returns concerns + a four-factor
+        # breakdown, which is what the card actually renders.
+        assert "Senior engineer review" not in steps
 
         # Keyword coverage is best-effort (needs a resume on disk); when present
         # it must carry the matched/missing structure the skill chips render.

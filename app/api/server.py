@@ -3345,8 +3345,6 @@ def application_match(application_id: int, request: Request) -> dict:
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
-        senior_score = application.senior_fit_score
-        senior_done = bool(application.senior_verdict)
     breakdown = {}
     if job and job.rerank_breakdown:
         try:
@@ -3443,11 +3441,6 @@ def application_match(application_id: int, request: Request) -> dict:
         {"name": "Hiring-intent analysis", "ok": hp is not None,
          "detail": (f"{hp}% likelihood this team is actively filling the role"
                     if hp is not None else "No hiring-intent data yet")},
-        {"name": "Senior engineer review", "ok": senior_done,
-         "detail": (f"Independent second opinion scored {round(senior_score)}/100"
-                    if senior_done and senior_score is not None
-                    else ("Second opinion recorded" if senior_done
-                          else "Runs the first time you open this job — see the verdict below"))},
     ]
 
     return {
@@ -3622,53 +3615,6 @@ def application_insights(application_id: int, request: Request) -> dict:
         "salary_estimated": salary_estimated,
         "work_model": insights.get("work_model"),
     }
-
-
-@app.get("/application/{application_id}/senior-review")
-def application_senior_review(application_id: int, request: Request,
-                              compute: int = 0) -> dict:
-    """A senior-engineer's independent take on this job (fit score + verdict).
-
-    READ-ONLY BY DEFAULT. `compute=1` is what pays for an LLM call.
-
-    This used to compute on first *open*, which meant merely browsing the board
-    spent money: the drawer auto-fetched this endpoint, so scrolling through 50
-    jobs was 50 Claude calls (~$0.32-0.56) that no one had asked for, charged
-    synchronously inside the request handler and — unlike scoring — never
-    counted against LLM_DAILY_FINAL_CAP. Reading is now free; the user clicks
-    "Analyze fit" when they actually want the second opinion, which is also
-    when they'll actually read it.
-
-    `computed` in the response tells the client whether a verdict exists yet, so
-    it can render the button instead of an empty panel.
-    """
-    _require_owned_application(request, application_id)
-    with get_session() as session:
-        application = session.get(Application, application_id)
-        if not application:
-            raise HTTPException(status_code=404, detail="Application not found")
-        cached = application.senior_verdict
-        job_id = application.job_id
-
-    # Only ever pay when the user explicitly asked for it.
-    if not cached and compute:
-        try:
-            from app.intelligence.senior_reviewer import SeniorReviewer
-            from app.matching.pipeline import _run_senior_review
-            _run_senior_review(SeniorReviewer(), job_id, application_id)
-        except Exception as e:
-            log.warning("On-demand senior review failed for app %d: %s", application_id, e)
-
-    with get_session() as session:
-        application = session.get(Application, application_id)
-        return {
-            "id": application_id,
-            "fit_score": application.senior_fit_score,
-            "verdict": application.senior_verdict or "",
-            "highlight_block": application.custom_highlight_block or "",
-            "resume_variant": application.profile_variant or "",
-            "computed": bool(application.senior_verdict),
-        }
 
 
 @app.get("/application/{application_id}/autopsy")

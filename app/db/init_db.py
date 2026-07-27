@@ -164,8 +164,6 @@ def init_db() -> None:
         ("response_type", "VARCHAR DEFAULT 'none'"),
         ("apply_track", "VARCHAR NOT NULL DEFAULT 'autofill'"),
         ("profile_variant", "VARCHAR"),
-        ("senior_fit_score", "FLOAT"),
-        ("senior_verdict", "TEXT"),
         ("custom_highlight_block", "TEXT"),
         ("rejection_analysis", "TEXT"),
     ]:
