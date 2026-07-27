@@ -707,8 +707,16 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # could plausibly shortlist always reaches Claude. Fail-open: a None prescore
     # (cheap-model error) advances the job rather than dropping it.
     prescore_rejects: list[tuple[int, float, str]] = []  # (jid, score, reason)
+    # Tier-1 is cheap, not free, and it is worthless once the budget is gone:
+    # every job it advances would immediately fail at the Tier-2 call. The
+    # matching lane had no budget pre-check at all, so a tripped cap turned each
+    # pass into up to prescore_cap paid prescores thrown away. Skipping the pass
+    # leaves the jobs rerank_score-NULL, exactly as before — the next eligible
+    # cycle picks them up.
+    from app.matching.reranker import llm_budget_exhausted
     if (settings.prescore_enabled and to_rerank
-            and reranker.has_prescore_backend()):
+            and reranker.has_prescore_backend()
+            and not llm_budget_exhausted()):
         advance_gate = min(settings.prescore_advance_threshold,
                            settings.shortlist_score_threshold)
         prescore_pool = to_rerank[: settings.prescore_cap]

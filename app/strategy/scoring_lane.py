@@ -336,6 +336,37 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     return ("scored", jid, float(score), provider)
 
 
+def _plan_finals_cap(uid: Optional[str]) -> Optional[int]:
+    """This user's plan allowance of Tier-2 finals per UTC day, or None if the
+    plan is unknown (fail OPEN — a billing hiccup must never stall scoring).
+
+    Imported lazily: server.py imports this module, so a top-level import would
+    be circular. By the time a lane cycle runs, server is fully loaded."""
+    if not uid or uid == "local":
+        return None
+    try:
+        from app.api.server import _get_user_plan
+        from app.db.models import PLAN_LIMITS
+        return PLAN_LIMITS[_get_user_plan(uid)].get("finals_daily")
+    except Exception as e:
+        log.debug("plan lookup failed for %s (%s) — no per-user cap this cycle", uid, e)
+        return None
+
+
+def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
+    """How many jobs of ``uid``'s queue this cycle may take.
+
+    Bounded by BOTH the per-cycle fairness cap and what is left of the user's
+    plan allowance for the day. Returning 0 drops the user from this cycle's
+    work list entirely, so their queue items are never even prescored — the
+    cheap Tier-1 pass is not free either."""
+    cap = _plan_finals_cap(uid)
+    if cap is None or cap <= 0:
+        return per_cycle_cap
+    from app.matching.reranker import user_finals_today
+    return max(0, min(per_cycle_cap, cap - user_finals_today(uid)))
+
+
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     """Serial, cap-safe: shortlist a user's freshly-scored fits + fire alerts."""
     from app.matching.pipeline import _AUTOFILL_SOURCES, _check_and_enforce_company_cap
@@ -444,10 +475,20 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         log.debug("new-user priority ordering skipped: %s", e)
 
     queues: List[List[Tuple[Optional[str], int]]] = []
+    capped_out = 0
     for uid in users:
-        q = [(uid, jid) for jid in _user_queue(uid, settings.scoring_per_user_cap)]
+        # Per-plan daily allowance, not a slice of one global pool — see
+        # PLAN_LIMITS["finals_daily"]. A user who has spent today's allowance
+        # contributes nothing to this cycle's work list.
+        allowance = _remaining_finals_today(uid, settings.scoring_per_user_cap)
+        if allowance <= 0:
+            capped_out += 1
+            continue
+        q = [(uid, jid) for jid in _user_queue(uid, allowance)]
         if q:
             queues.append(q)
+    if capped_out:
+        stats["plan_capped_users"] = capped_out
     items: List[Tuple[Optional[str], int]] = []
     depth = 0
     while len(items) < settings.scoring_global_cap and any(depth < len(q) for q in queues):
@@ -467,30 +508,45 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     ctx_lock = threading.Lock()
 
     def _ctx_for(uid) -> Optional[_Ctx]:
+        # The whole build runs under the lock, deliberately. Two things depend
+        # on it being single-flight: (1) the cache prewarm below must happen
+        # exactly once and must COMPLETE before any worker for this user starts
+        # a real call, or the workers race the write and all miss it; (2) the
+        # old check-then-build shape let two workers both miss the cache and
+        # each build a résumé load + Reranker for the same user. This runs once
+        # per user per cycle, so serializing it costs nothing measurable.
         with ctx_lock:
             if uid in ctx_cache:
                 return ctx_cache[uid]
-        uid_arg = None if (not uid or uid == "local") else uid
-        try:
-            resume = _load_resume(user_id=uid_arg)
-        except Exception as e:
-            log.debug("scoring: no résumé for %s (%s) — skipping", uid, e)
-            with ctx_lock:
+            uid_arg = None if (not uid or uid == "local") else uid
+            try:
+                resume = _load_resume(user_id=uid_arg)
+            except Exception as e:
+                log.debug("scoring: no résumé for %s (%s) — skipping", uid, e)
                 ctx_cache[uid] = None
-            return None
-        profile = None
-        try:
-            from app.autofill.answer_pack import _get_or_create_profile
-            profile = _get_or_create_profile(user_id=uid_arg)
-        except Exception:
-            pass
-        reranker = Reranker(profile=profile)
-        ctx = _Ctx(resume, reranker,
-                   settings.prescore_enabled and reranker.has_prescore_backend(),
-                   min(settings.prescore_advance_threshold, settings.shortlist_score_threshold))
-        with ctx_lock:
+                return None
+            profile = None
+            try:
+                from app.autofill.answer_pack import _get_or_create_profile
+                profile = _get_or_create_profile(user_id=uid_arg)
+            except Exception:
+                pass
+            reranker = Reranker(profile=profile)
+            # Write the shared prefix once (prefill only, 0 output tokens) so the
+            # jobs that follow read it at 0.1x instead of each paying the 1.25x
+            # write. See Reranker.prewarm_cache. Purely an optimization, so it is
+            # never allowed to fail the cycle — a scorer without the method (or a
+            # provider hiccup) just means the first real call writes the cache,
+            # exactly as before.
+            try:
+                reranker.prewarm_cache(resume)
+            except Exception as e:
+                log.debug("cache prewarm unavailable for %s (%s)", uid, e)
+            ctx = _Ctx(resume, reranker,
+                       settings.prescore_enabled and reranker.has_prescore_backend(),
+                       min(settings.prescore_advance_threshold, settings.shortlist_score_threshold))
             ctx_cache[uid] = ctx
-        return ctx
+            return ctx
 
     def _work(item):
         uid, jid = item

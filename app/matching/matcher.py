@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.config import settings
@@ -39,6 +40,47 @@ DIM = 384
 # the embedding model runs on a shared CPU: encoding 25k long job texts on a
 # contended box took 20+ min (an effective hang); 4k of shortened text is ~1 min.
 REBUILD_MAX_JOBS = 4000
+
+
+class _Candidate(NamedTuple):
+    """The only Job fields retrieval touches — see ``search_for_resume``.
+
+    Retrieval used to `select(Job)` (SELECT *), streaming every candidate's FULL
+    multi-KB description over the wire, then feeding at most 800 chars of it to
+    BM25 (`_job_text`) and ~700 to the cross-encoder (`_job_text_ce`). At
+    corpus_cap=2000 rows that is ~16 MB per pass, per user, every matching tick
+    — which is what put the Supabase project at 205% of its egress quota (513 GB
+    on a 250 GB plan) with 14 users and 2 MB of stored data, and what was
+    draining the Disk IO budget. The `rebuild()` path above already learned this
+    lesson (see its "cheap pass first" comment); this is the same fix for the
+    retrieval path, which was missed.
+
+    Truncation happens in SQL so the bytes never leave Postgres. Using a plain
+    tuple rather than a partially-loaded Job also keeps 2k rows off the ORM
+    identity map — the container is memory-tight (docs/MEMORY.md)."""
+    id: int
+    title: str
+    company: str
+    location: Optional[str]
+    remote: bool
+    description: Optional[str]
+
+
+def _retrieval_desc_chars() -> int:
+    """Longest description prefix any retrieval stage reads. `_job_text` slices
+    800; `_job_text_ce` slices `cross_encoder_text_chars`. Take the max so the
+    SQL truncation can never starve a stage, even if that setting is raised."""
+    return max(800, int(settings.cross_encoder_text_chars or 0))
+
+
+def _candidate_columns() -> tuple:
+    """SELECT list for `_Candidate`. Order MUST match the field order, because
+    rows are unpacked positionally — a mismatch would silently swap, say, title
+    and company rather than raise. Tested in tests/test_retrieval_egress.py."""
+    return (
+        Job.id, Job.title, Job.company, Job.location, Job.remote,
+        func.substr(Job.description, 1, _retrieval_desc_chars()),
+    )
 
 # Supabase enforces a statement_timeout, so a single UPDATE over thousands of
 # rows gets cancelled ("QueryCanceled … N bound parameter sets"). Commit the
@@ -209,7 +251,7 @@ class Matcher:
         return embs.astype("float32")
 
     @staticmethod
-    def _job_text(job: Job) -> str:
+    def _job_text(job) -> str:
         """Document text we embed for each job. Title weighted heavily.
 
         Only the first ~800 chars of the JD are embedded: CPU encode time scales
@@ -220,7 +262,7 @@ class Matcher:
         return f"{job.title}\n{job.title}\n{job.company} | {job.location}\n\n{(job.description or '')[:800]}"
 
     @staticmethod
-    def _job_text_ce(job: Job, max_chars: int) -> str:
+    def _job_text_ce(job, max_chars: int) -> str:
         """Short job text for the cross-encoder — title + opening of the JD only.
         Keeps each pair short so CPU scoring stays fast (cost scales with length)."""
         head = (job.description or "")[: max(0, max_chars - len(job.title) - 4)]
@@ -279,27 +321,34 @@ class Matcher:
             log.info("All %d jobs are already indexed. No update needed.", len(id_rows))
             return len(id_rows)
 
-        def _load_full(ids: list[int] | None) -> list[Job]:
+        def _load_full(ids: list[int] | None) -> list[_Candidate]:
+            """Rows to embed. Callers use only `_job_text` (800 chars of JD) and
+            `.id`, so this selects the same narrow, SQL-truncated set as
+            retrieval — see `_Candidate`. The cheap id-only pass above already
+            skips ALREADY-indexed jobs; this stops the ones that DO need
+            indexing from streaming their full multi-KB descriptions (up to
+            REBUILD_MAX_JOBS=4000 rows on a from-scratch build)."""
+            cols = _candidate_columns()
             with get_session() as session:
                 if ids is not None:
                     # Fetch by id in bounded chunks — one IN (...) over thousands
                     # of ids is a single statement Supabase cancels on timeout.
-                    out: list[Job] = []
+                    out: list[_Candidate] = []
                     for start in range(0, len(ids), _DB_ID_CHUNK):
                         batch = ids[start:start + _DB_ID_CHUNK]
-                        q = select(Job).where(Job.is_closed == False)  # noqa: E712
+                        q = select(*cols).where(Job.is_closed == False)  # noqa: E712
                         if user_id:
                             q = q.where(Job.user_id == user_id)
                         q = q.where(Job.id.in_(batch))
-                        out.extend(session.exec(q).all())
+                        out.extend(_Candidate(*r) for r in session.exec(q).all())
                     return out
                 # Full (from-scratch) build — same newest-first cap as the
                 # cheap pass so a bloated pool can't produce a 100k-vector encode.
-                q = select(Job).where(Job.is_closed == False)  # noqa: E712
+                q = select(*cols).where(Job.is_closed == False)  # noqa: E712
                 if user_id:
                     q = q.where(Job.user_id == user_id)
                 q = q.order_by(Job.first_seen.desc()).limit(REBUILD_MAX_JOBS)
-                return session.exec(q).all()
+                return [_Candidate(*r) for r in session.exec(q).all()]
 
         if force_rebuild or existing_index is None or self.job_ids is None:
             # Build from scratch
@@ -379,14 +428,18 @@ class Matcher:
 
         with get_session() as session:
             # Exclude closed/purged jobs from candidate retrieval.
-            q = select(Job).where(Job.is_closed == False)
+            # Only the six columns retrieval actually reads, with the description
+            # truncated IN SQL to the longest prefix any stage consumes — see
+            # `_Candidate`. `substr` (not `left`) so the local SQLite fallback
+            # works too.
+            q = select(*_candidate_columns()).where(Job.is_closed == False)  # noqa: E712
             if user_id:
                 q = q.where(Job.user_id == user_id)
             if only_unscored:
                 q = (q.where(Job.rerank_score == None)  # noqa: E711
                       .order_by(Job.first_seen.desc())
                       .limit(corpus_cap))
-            jobs = session.exec(q).all()
+            jobs = [_Candidate(*row) for row in session.exec(q).all()]
 
         if not jobs:
             return []
@@ -469,7 +522,7 @@ class Matcher:
         faiss_ranks = {j.id: rank for rank, j in enumerate(faiss_ranking)}
 
         # 3. Reciprocal Rank Fusion (RRF)
-        rrf_scores: List[Tuple[Job, float]] = []
+        rrf_scores: List[Tuple[_Candidate, float]] = []
         for j in jobs:
             b_rank = bm25_ranks.get(j.id, len(jobs))
             f_rank = faiss_ranks.get(j.id, len(jobs))

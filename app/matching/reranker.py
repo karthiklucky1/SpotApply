@@ -97,21 +97,47 @@ def _calibrate_ce(relevance: float) -> float:
 # ever errs toward spending slightly more — acceptable for a safety net.
 _daily_finals = {"day": "", "count": 0}
 _hourly_finals = {"hour": "", "count": 0}
+
+# Per-user daily finals: {user_id: count}, reset whenever _daily_finals rolls.
+# The global caps above are a PLATFORM backstop, not an allocation: one global
+# number divided by N users means every signup silently thins every existing
+# user's feed (at 600/day, user 1 gets 600 alone and 6 at N=100). Spend has to
+# scale WITH revenue, so the real allocation is per-user and plan-tied — see
+# PLAN_LIMITS["finals_daily"] and scoring_lane._remaining_finals_today().
+_user_finals: dict[str, int] = {}
 _budget_lock = threading.Lock()
 
 
-def _register_final_call() -> None:
+def _roll_day_locked(today: str) -> None:
+    """Reset the daily counters when the UTC day changes. Caller holds the lock."""
+    if _daily_finals["day"] != today:
+        _daily_finals["day"] = today
+        _daily_finals["count"] = 0
+        _user_finals.clear()
+
+
+def _register_final_call(user_id: Optional[str] = None) -> None:
     now = datetime.utcnow()
     today, hour = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d %H")
     with _budget_lock:
-        if _daily_finals["day"] != today:
-            _daily_finals["day"] = today
-            _daily_finals["count"] = 0
+        _roll_day_locked(today)
         _daily_finals["count"] += 1
+        if user_id:
+            _user_finals[user_id] = _user_finals.get(user_id, 0) + 1
         if _hourly_finals["hour"] != hour:
             _hourly_finals["hour"] = hour
             _hourly_finals["count"] = 0
         _hourly_finals["count"] += 1
+
+
+def user_finals_today(user_id: Optional[str]) -> int:
+    """Tier-2 finals charged to ``user_id`` so far this UTC day, all lanes."""
+    if not user_id:
+        return 0
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with _budget_lock:
+        _roll_day_locked(today)
+        return _user_finals.get(user_id, 0)
 
 
 def llm_budget_exhausted() -> bool:
@@ -548,8 +574,17 @@ def _shared_llm_clients() -> tuple:
 
 
 class Reranker:
+    # Declared at class level so the attribute exists on EVERY construction
+    # path — spend attribution must never be the thing that raises inside a
+    # scoring call. `None` simply means "count this final globally only".
+    _user_id: Optional[str] = None
+
     def __init__(self, profile=None, feedback: str = ""):
         self._profile = profile
+        # Whose budget this instance's finals are charged to. A Reranker is
+        # already built per-user by every lane (pipeline, pulse, scoring), so
+        # the profile is the natural carrier — no call-site threading needed.
+        self._user_id: Optional[str] = getattr(profile, "user_id", None)
         # Revealed-preference note from preference_learning — lets the LLM
         # calibrate fit to what this user actually dismisses/engages with.
         self._feedback = feedback or ""
@@ -581,6 +616,44 @@ class Reranker:
         )
         _track_anthropic_usage(resp)
         return resp.content[0].text
+
+    def prewarm_cache(self, resume_text: str) -> bool:
+        """Write this user's cached prefix ONCE, before their jobs fan out.
+
+        A cache entry only becomes readable after the response that writes it
+        starts streaming, so N concurrent calls sharing a prefix ALL miss and
+        ALL pay the 1.25x write. The scoring lane runs 20 workers and interleaves
+        round-robin, so with a handful of active users several of one user's jobs
+        launch simultaneously against a cold prefix: on Haiku 4.5 that is
+        $0.0059 a call instead of $0.00047 — 12.5x. The hourly cap makes it
+        recur, because the lane bursts for a few minutes and the 5-minute TTL
+        then expires before the next burst.
+
+        ``max_tokens=0`` runs prefill only: it writes the cache and returns an
+        empty content list with ZERO output tokens billed. Best-effort — any
+        failure just means the first real call writes the cache as before.
+        Returns True when the prefix was (re)written."""
+        if not self._anthropic_client:
+            return False
+        try:
+            resp = self._anthropic_client.messages.create(
+                model=settings.scoring_model,
+                max_tokens=0,
+                # Byte-identical to _score_anthropic's prefix — any difference
+                # here and the workers would miss the entry this just wrote.
+                system=[
+                    {"type": "text", "text": _get_system_prompt(self._profile),
+                     "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": _resume_context_block(resume_text, self._feedback),
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                messages=[{"role": "user", "content": "warmup"}],
+            )
+            _track_anthropic_usage(resp)
+            return True
+        except Exception as e:
+            log.debug("cache prewarm skipped (%s) — first real call will write it", e)
+            return False
 
     def _score_openai(self, resume_block: str, job_block: str) -> str:
         """Call GPT-4o-mini for scoring (single-provider fallback path). The
@@ -649,7 +722,7 @@ class Reranker:
         # caps bound total Anthropic spend, whatever the tier mix. (Jul 15
         # evening: OpenAI hit its daily quota, prescores silently fell to Haiku
         # uncapped, and Tier-1 quietly outspent the capped finals.)
-        _register_final_call()
+        _register_final_call(self._user_id)
         return resp.content[0].text
 
     def has_prescore_backend(self) -> bool:
@@ -798,7 +871,7 @@ class Reranker:
             for attempt in range(max_retries):
                 try:
                     text = call_fn(resume_block, job_block)
-                    _register_final_call()
+                    _register_final_call(self._user_id)
                     return self._calibrate(backend_name, _parse_response(text))
                 except Exception as e:
                     error_str = str(e).lower()

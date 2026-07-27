@@ -2,7 +2,7 @@
 
 > Deep reference (read from the code, `file:line` cited): **docs/ARCHITECTURE.md** (topology,
 > per-user lifecycle, the full ranking cascade) · **docs/CAPACITY.md** (every cap + arithmetic;
-> binding constraint = `LLM_DAILY_FINAL_CAP`) · **docs/SCALING.md** (10→10k roadmap) ·
+> note its banner — the allocation moved to per-plan caps) · **docs/SCALING.md** (10→10k roadmap) ·
 > **docs/MEMORY.md** (OOM post-mortem). This file stays the short working map.
 
 AI job-application copilot (app.spotapply.ai). Discovers tech roles from ATS APIs/feeds, scores each
@@ -110,19 +110,33 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Dashboard** is one big `templates/dashboard.html` (HTML + inline `<script>`). Modals
   toggle via `style.display` (not the `hidden` class — inline `display` overrides it).
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
-- **Tuning lives in env/Settings:** `shortlist_score_threshold` (default 35),
-  `top_k_rerank`, `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **Tuning lives in env/Settings:** `shortlist_score_threshold` (60 — of real
+  Claude finals 44.5% cleared 35 but only 11.6% cleared 65, so the old bar
+  shortlisted ~1,800 jobs/user that the board's own default filter
+  (`shortlist_strong_threshold`=65) then hid. **Raise `PRESCORE_ADVANCE_THRESHOLD`
+  in lockstep** — the Tier-1 gate is `min(advance, shortlist)`), `top_k_rerank`,
+  `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **Spend is allocated PER USER, per plan** — `PLAN_LIMITS["finals_daily"]`
+  (Free 15 / Pro 50 / Agency 100 finals per UTC day), enforced in
+  `scoring_lane._remaining_finals_today` and the pulse fast path; lookup fails
+  OPEN. One global pool divided by N users meant every signup thinned every
+  existing user's feed. `LLM_DAILY_FINAL_CAP` (5000) / `_HOURLY_` (400) are now
+  only a runaway backstop + burst smoothing — raise as users grow.
 - **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
   OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);
-  Tier-2 caps `LLM_DAILY_FINAL_CAP` (1500) + `LLM_HOURLY_FINAL_CAP` (150 —
-  smoothing; a backlog otherwise burst-drains a day's budget in <1h);
   credit/quota circuit breaker `LLM_PROVIDER_COOLDOWN_MINUTES` (30) — trips on
   billing errors AND daily-quota 429s ("requests per day"); per-job attempt
   ceiling defers repeat failures (`SCORING_FAIL_MAX_ATTEMPTS`); résumé block
-  padded past Haiku's 4096-token cache minimum; cache telemetry logged every 25
-  finals ("Claude usage … cache-read share"); semantic adoption bounded by
-  `ADOPTION_SEMANTIC_MAX_EXTRAS` (50/user/pass). Scoring-lane work list is
-  round-robin across users (fair + cache-friendly).
+  padded past Haiku's 4096-token cache minimum and written once per user/cycle by
+  `Reranker.prewarm_cache` (`max_tokens=0` prefill) — a cache entry is unreadable
+  until the response writing it streams, so 20 concurrent workers otherwise all
+  miss and all pay the 1.25x write; cache telemetry every 25 finals; adoption
+  extras bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS`. **Every lane checks
+  `llm_budget_exhausted()` BEFORE Tier-1** — prescores are cheap, not free.
+- **DB egress:** never `select(Job)` on a hot path. Retrieval + FAISS rebuild use
+  `matcher._candidate_columns()` (6 cols, description truncated in SQL — nothing
+  reads past ~800 chars). Full descriptions put Supabase at 205% of its egress
+  quota on 2 MB of stored data (tests/test_retrieval_egress.py).
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.

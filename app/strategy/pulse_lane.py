@@ -159,8 +159,21 @@ def _fast_path_user(uid: str, score_budget: int,
     from app.matching.pipeline import (
         _AUTOFILL_SOURCES, _check_and_enforce_company_cap, _load_resume,
     )
-    from app.matching.reranker import Reranker
+    from app.matching.reranker import Reranker, llm_budget_exhausted
     from app.matching.filters import score_ghost
+    from app.strategy.scoring_lane import _remaining_finals_today
+
+    # Budget gate BEFORE any spend. The fast path had no cycle-level check at
+    # all: it paid for a Tier-1 prescore per job and only then discovered the
+    # budget was gone, when reranker.score() raised. At 10 finals/tick and up to
+    # 1,440 ticks/day that leaked thousands of prescores a day for nothing.
+    if llm_budget_exhausted():
+        return 0, 0, 0
+    # And this user's own plan allowance — the fast path spends the same budget
+    # as the scoring lane, so it has to respect the same per-plan ceiling.
+    score_budget = _remaining_finals_today(uid, score_budget)
+    if score_budget <= 0:
+        return 0, 0, 0
     from app.matching.hire_probability import (
         blended_score as compute_blended, score_hire_probability,
     )
@@ -233,6 +246,8 @@ def _fast_path_user(uid: str, score_budget: int,
     for jid in fresh_ids:
         if deadline is not None and time.monotonic() >= deadline:
             break  # out of tick budget — the matching lane scores the rest
+        if llm_budget_exhausted():
+            break  # hourly/daily cap tripped mid-loop — stop before paying Tier-1
         with claim(jid) as _owned, get_session() as session:
             if not _owned:
                 continue  # another lane is scoring this job right now

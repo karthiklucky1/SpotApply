@@ -27,6 +27,7 @@ def _reset_guard_state():
     rr._daily_finals["count"] = 0
     rr._hourly_finals["hour"] = ""
     rr._hourly_finals["count"] = 0
+    rr._user_finals.clear()
     sl._fail_counts.clear()
     sl._deferred_until.clear()
     yield
@@ -35,6 +36,7 @@ def _reset_guard_state():
     rr._daily_finals["count"] = 0
     rr._hourly_finals["hour"] = ""
     rr._hourly_finals["count"] = 0
+    rr._user_finals.clear()
     sl._fail_counts.clear()
     sl._deferred_until.clear()
 
@@ -621,3 +623,144 @@ def test_openai_prescore_does_not_touch_budget(monkeypatch):
     for _ in range(5):                                    # mini is pennies — never budgeted
         assert rk.prescore("resume", _job())[0] == 25.0
     assert not rr.llm_budget_exhausted()
+
+
+# ── Per-plan daily final caps ────────────────────────────────────────────────
+# The global LLM_DAILY_FINAL_CAP is a platform backstop; the ALLOCATION is
+# per user and plan-tied (PLAN_LIMITS["finals_daily"]). A single global pool
+# divided by N users means every signup thins every existing user's feed.
+
+def test_finals_are_attributed_per_user():
+    rr._register_final_call("user-a")
+    rr._register_final_call("user-a")
+    rr._register_final_call("user-b")
+    assert rr.user_finals_today("user-a") == 2
+    assert rr.user_finals_today("user-b") == 1
+    # ...and still roll up into the global backstop counter.
+    assert rr._daily_finals["count"] == 3
+
+
+def test_unattributed_finals_still_count_globally():
+    """A lane with no profile (no user_id) must not silently escape the backstop."""
+    rr._register_final_call(None)
+    assert rr._daily_finals["count"] == 1
+    assert rr.user_finals_today(None) == 0
+
+
+def test_user_counters_reset_on_day_roll():
+    rr._register_final_call("user-a")
+    assert rr.user_finals_today("user-a") == 1
+    rr._daily_finals["day"] = "1999-01-01"      # simulate yesterday
+    assert rr.user_finals_today("user-a") == 0  # rolled, not carried over
+
+
+def test_remaining_finals_is_bounded_by_plan_allowance(monkeypatch):
+    from app.db.models import PlanTier
+    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+    assert sl._remaining_finals_today("u", 40) == 40      # per-cycle cap binds
+    for _ in range(30):
+        rr._register_final_call("u")
+    assert sl._remaining_finals_today("u", 40) == 20      # plan allowance binds
+    for _ in range(20):
+        rr._register_final_call("u")
+    assert sl._remaining_finals_today("u", 40) == 0       # spent for the day
+    assert PlanTier.PRO  # plan enum still resolvable
+
+
+def test_plan_lookup_failure_fails_open(monkeypatch):
+    """A billing hiccup must never stall scoring — no cap beats no feed."""
+    def _boom(uid):
+        raise RuntimeError("supabase down")
+    monkeypatch.setattr(sl, "_plan_finals_cap", _boom)
+    with pytest.raises(RuntimeError):
+        sl._plan_finals_cap("u")
+    # The real helper swallows it and returns None → no per-user cap.
+    monkeypatch.undo()
+    monkeypatch.setattr("app.api.server._get_user_plan", _boom, raising=False)
+    assert sl._plan_finals_cap("u") is None
+    assert sl._remaining_finals_today("u", 40) == 40
+
+
+def test_local_dev_user_has_no_plan_cap():
+    assert sl._plan_finals_cap("local") is None
+    assert sl._plan_finals_cap(None) is None
+
+
+def test_every_plan_declares_a_finals_allowance():
+    """A plan without finals_daily would silently fall through to uncapped."""
+    from app.db.models import PLAN_LIMITS
+    for tier, limits in PLAN_LIMITS.items():
+        assert "finals_daily" in limits, tier
+        assert limits["finals_daily"] > 0, tier
+
+
+# ── Cache prewarm ────────────────────────────────────────────────────────────
+# A cache entry is only readable once the response writing it starts streaming,
+# so N concurrent calls sharing a prefix all miss and all pay the 1.25x write.
+
+class _FakeAnthropic:
+    def __init__(self):
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        class _R:
+            content = []
+            usage = None
+        return _R()
+
+
+def test_prewarm_uses_prefill_only_and_the_same_cached_prefix():
+    r = rr.Reranker.__new__(rr.Reranker)
+    r._profile, r._feedback, r._user_id = None, "", None
+    fake = _FakeAnthropic()
+    r._anthropic_client = fake
+
+    assert r.prewarm_cache("RESUME TEXT") is True
+    kw = fake.calls[0]
+    # Prefill only: zero output tokens billed.
+    assert kw["max_tokens"] == 0
+    # Both prefix blocks are marked cacheable, exactly as _score_anthropic does —
+    # a byte difference here and the workers miss the entry this just wrote.
+    assert [b["cache_control"] for b in kw["system"]] == \
+           [{"type": "ephemeral"}, {"type": "ephemeral"}]
+    assert kw["system"][1]["text"] == rr._resume_context_block("RESUME TEXT", "")
+    assert kw["model"] == settings.scoring_model
+
+
+def test_prewarm_never_breaks_scoring():
+    """Best-effort: a failed warm just means the first real call writes the cache."""
+    class _Boom:
+        messages = None
+        def create(self, **kw):
+            raise RuntimeError("overloaded")
+    r = rr.Reranker.__new__(rr.Reranker)
+    r._profile, r._feedback, r._user_id = None, "", None
+    boom = _Boom()
+    boom.messages = boom
+    r._anthropic_client = boom
+    assert r.prewarm_cache("RESUME") is False
+
+
+def test_prewarm_noop_without_anthropic_client():
+    r = rr.Reranker.__new__(rr.Reranker)
+    r._profile, r._feedback, r._user_id = None, "", None
+    r._anthropic_client = None
+    assert r.prewarm_cache("RESUME") is False
+
+
+# ── Tier-1 is not free: don't prescore once the budget is gone ───────────────
+
+def test_prescore_gate_tracks_the_shortlist_bar():
+    """The effective gate is min(advance, shortlist). If the shortlist bar is
+    raised without the advance threshold, Claude keeps scoring jobs that can no
+    longer shortlist — pure waste. Keep them equal."""
+    assert settings.prescore_advance_threshold == settings.shortlist_score_threshold
+
+
+def test_pulse_fast_path_checks_budget_before_spending(monkeypatch):
+    import app.strategy.pulse_lane as pl
+    monkeypatch.setattr(rr, "llm_budget_exhausted", lambda: True)
+    # Exhausted budget → no resume load, no prescore, no Claude call.
+    assert pl._fast_path_user("u", 10) == (0, 0, 0)

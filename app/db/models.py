@@ -335,11 +335,20 @@ class PlanTier(str, Enum):
 # must state these same two plans: Free $0 and Pro $10/mo. The old lineup
 # ($19/$49/$99 in code vs $29/$99 on the pricing page) shipped three
 # contradictory prices at once — never let that happen again.
+#
+# "finals_daily" is this plan's share of Tier-2 (Claude) scores per UTC day —
+# the cost driver, and the thing that decides how many strong matches a user
+# can be shown. It replaces dividing one global LLM_DAILY_FINAL_CAP among
+# everyone, which made each new signup thin every existing user's feed.
+# Sizing (production evidence, 57,309 real finals): ~11.6% of finals score >=65,
+# and raising the shortlist bar to 60 lifts that rate among scored jobs to
+# roughly a quarter — so ~50 finals/day yields ~10-12 strong matches/day, and
+# ~100 yields ~20-25. At ~$0.0033/final that is ~$5/user/month at PRO.
 PLAN_LIMITS = {
-    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2},
-    PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None},   # None = unlimited
-    PlanTier.BASIC:  {"tailor_daily": None, "autofill_weekly": None},   # legacy → PRO limits
-    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None},   # legacy → PRO limits
+    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2,    "finals_daily": 15},
+    PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 50},
+    PlanTier.BASIC:  {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 50},   # legacy → PRO limits
+    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 100},  # legacy → PRO limits
 }
 
 PLAN_PRICES = {

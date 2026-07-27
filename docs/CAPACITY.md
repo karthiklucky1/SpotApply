@@ -2,6 +2,32 @@
 
 *Present-day analysis at committed defaults. Every number is either read from the code (cited with `file:line`) or derived from cited numbers with the arithmetic shown. Where the code does not determine a value, it says so.*
 
+> ### ⚠️ Partially superseded — read this first
+>
+> This document analysed the defaults as they stood **before** the per-plan cap
+> change. Four of its inputs have since moved, so the §2–§3 arithmetic is a
+> record of the old regime, not current behaviour:
+>
+> | | Then | Now |
+> |---|---|---|
+> | Tier-2 allocation | one global `LLM_DAILY_FINAL_CAP = 1500` | **per user**, `PLAN_LIMITS["finals_daily"]` (Free 15 / Pro 50 / Agency 100) |
+> | `LLM_DAILY_FINAL_CAP` | the binding constraint | a runaway **backstop** (5000) |
+> | `LLM_HOURLY_FINAL_CAP` | 150 | 400 |
+> | `SHORTLIST_SCORE_THRESHOLD` / `PRESCORE_ADVANCE_THRESHOLD` | 35 / 35 | **60 / 60** |
+>
+> Also fixed since: the two uncapped Tier-1 leaks in §2.2 (both lanes now check
+> `llm_budget_exhausted()` before prescoring), and the retrieval `select(Job)`
+> that was streaming full job descriptions — the direct cause of a 205% Supabase
+> egress overage on 2 MB of stored data.
+>
+> **Production evidence that drove the threshold change** (57,309 real Claude
+> finals, identified by `rerank_breakdown IS NOT NULL` — the only marker that
+> distinguishes a Tier-2 final from a free-filter or Tier-1 stamp): **44.5%
+> scored ≥35, 11.6% scored ≥65.** Of 335,867 stamped rows only 17% ever reached
+> Claude; 60% were drained by the Tier-1 gate and 20% by the ghost filter, so
+> the cheap cascade is doing its job. The §2.4 "25% shortlist rate" assumption
+> was low by ~1.8×.
+
 ---
 
 ## 0. Executive summary
