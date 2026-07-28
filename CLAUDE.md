@@ -172,7 +172,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`scripts/train_local_scorer.py`) → drop model at `LOCAL_SCORER_PATH` →
   shadow mode records LLM-vs-local agreement (`scripts/shadow_report.py`).
   Flip to local-first only on ≥90% shortlist-decision agreement. `build_pair`
-  must stay identical in `local_scorer.py` + the train script.
+  must stay identical in `local_scorer.py` + the train script. The competing
+  "compiler layer" plan (JD → per-family scoring program) is gated by
+  `scripts/compiler_replay.py`: fits linear programs against logged Claude
+  finals (LOO-validated, `--selftest` for synthetic check) — build the
+  compiler only if COMPILABLE families cover most scored volume.
 
 ## Workflow
 - Tests: `pytest` (or target files); lint: `ruff check app`.
