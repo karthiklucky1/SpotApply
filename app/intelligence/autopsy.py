@@ -72,8 +72,8 @@ Return the refined axis in the requested JSON format."""
     raw_response = None
     try:
         if anthropic_api_key:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=anthropic_api_key)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic()
             resp = client.messages.create(
                 model=settings.scoring_model,
                 max_tokens=250,
@@ -82,8 +82,8 @@ Return the refined axis in the requested JSON format."""
             )
             raw_response = resp.content[0].text
         elif openai_api_key:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_api_key)
+            from app.common.llm import shared_openai
+            client = shared_openai()
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=250,

@@ -210,9 +210,9 @@ def generate_referral_drafts(application_id: int, user_id: str | None = None) ->
     # Try to upgrade the drafts with the LLM (cheap Haiku). Non-fatal on failure.
     try:
         from app.config import settings
-        from anthropic import Anthropic
+        from app.common.llm import shared_anthropic
         if settings.anthropic_api_key:
-            client = Anthropic(api_key=settings.anthropic_api_key)
+            client = shared_anthropic()
             prompt = (
                 "You are a job-search outreach coach. Rewrite each draft below to be "
                 "warm, specific, and under 90 words. Keep the placeholder {name} for "

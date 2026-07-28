@@ -756,8 +756,8 @@ Write a professional response answering this question based on the resume and jo
     # 1. Try Anthropic
     if settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic()
             resp = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=300,
@@ -773,8 +773,8 @@ Write a professional response answering this question based on the resume and jo
     # 2. Try OpenAI fallback
     if settings.openai_api_key:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+            from app.common.llm import shared_openai
+            client = shared_openai()
             resp = client.chat.completions.create(
                 model="gpt-4o",
                 max_tokens=300,

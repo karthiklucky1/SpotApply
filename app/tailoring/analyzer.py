@@ -12,17 +12,19 @@ class RejectionAnalyzer:
         self._openai_client = None
         self._anthropic_client = None
 
+        # Shared process-wide clients (app/common/llm.py) — never build fresh
+        # SDK clients per instance; each leaks an httpx pool + SSL context.
         if settings.anthropic_api_key:
             try:
-                from anthropic import Anthropic
-                self._anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+                from app.common.llm import shared_anthropic
+                self._anthropic_client = shared_anthropic(timeout=120.0, max_retries=1)
                 self._active_backend = "anthropic"
             except Exception:
                 pass
         if settings.openai_api_key:
             try:
-                from openai import OpenAI
-                self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                from app.common.llm import shared_openai
+                self._openai_client = shared_openai(timeout=120.0, max_retries=1)
                 if not self._active_backend:
                     self._active_backend = "openai"
             except Exception:

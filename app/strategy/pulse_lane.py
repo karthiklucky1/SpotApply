@@ -335,6 +335,24 @@ def _fast_path_user(uid: str, score_budget: int,
 _TICK_LOCK = threading.Lock()
 _TICK_DEADLINE = [0.0]  # monotonic time by which the current holder must be done
 
+# One fetch pool for the life of the process — see scoring_lane._worker_pool.
+# A fresh 24-thread pool per 60s tick, abandoned with shutdown(wait=False), was
+# constant OS-thread (and glibc-arena) churn: the RSS-climbs-forever pattern.
+_FETCH_POOL = None
+_FETCH_POOL_LOCK = threading.Lock()
+
+
+def _fetch_pool() -> ThreadPoolExecutor:
+    global _FETCH_POOL
+    if _FETCH_POOL is None:
+        with _FETCH_POOL_LOCK:
+            if _FETCH_POOL is None:
+                _FETCH_POOL = ThreadPoolExecutor(
+                    max_workers=max(1, settings.pulse_fetch_workers),
+                    thread_name_prefix="pulse-fetch",
+                )
+    return _FETCH_POOL
+
 
 def run_pulse_tick() -> dict:
     """Poll every board that's due, route changes, fast-path new jobs to alerts.
@@ -392,18 +410,21 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             return board, None, str(e)
 
     users_touched: set[str] = set()
-    pool = ThreadPoolExecutor(max_workers=min(settings.pulse_fetch_workers,
-                                              max(1, len(boards))))
+    pool = _fetch_pool()
     # Submit all fetches, then collect each with a deadline-bounded wait. A board
     # that hasn't returned by the tick's wall-clock deadline is rescheduled (it's
     # simply due again) rather than blocked on — so one slow board/host can never
-    # stall the tick. shutdown(wait=False) means stragglers finish on their own.
-    futures = {pool.submit(_fetch, b): b for b in boards}
+    # stall the tick; its queued future is CANCELLED so leftovers don't drain
+    # into the next tick on the shared pool. Each processed slot is nulled out
+    # immediately: holding every board's full posting list until the end of the
+    # tick kept a few hundred MB resident, every 60 seconds.
+    pending = [(pool.submit(_fetch, b), b) for b in boards]
     deferred = 0
-    for fut in list(futures):
+    for _pi, (fut, board) in enumerate(pending):
+        pending[_pi] = None  # release the future (and its postings) once handled
         remaining = fetch_deadline - time.monotonic()
-        board = futures[fut]
         if remaining <= 0:
+            fut.cancel()
             deferred += 1
             _set_schedule(board.slug, board.ats,
                           datetime.utcnow() + _cadence(board, terms, now), None)
@@ -420,6 +441,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             _set_schedule(board.slug, board.ats,
                           datetime.utcnow() + _cadence(board, terms, now), None)
             continue
+        finally:
+            del fut
         if raw is None:
             if err == "unsupported":
                 _retire_unsupported(board.slug, board.ats)
@@ -463,7 +486,6 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
         _set_schedule(board.slug, board.ats,
                       datetime.utcnow() + _cadence(board, terms, now), sig)
-    pool.shutdown(wait=False)
     if deferred:
         stats["deferred"] = deferred
 

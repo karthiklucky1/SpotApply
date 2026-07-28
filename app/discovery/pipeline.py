@@ -854,6 +854,16 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             # Failed fetches (raw is None) were already retired in bulk above.
         except Exception as e:
             log.exception("Scraper %s processing failed: %s", scraper.name, e)
+        finally:
+            # Release this board's postings NOW. Holding all ~400 boards' full
+            # fetches until the end of the run kept 300-650MB resident for the
+            # whole pass (up to board_phase_budget_minutes) — the big post-boot
+            # RSS step in the OOM crash.
+            fetched_boards[_bi] = None
+
+    # A budget break above leaves deferred boards' postings in the list — drop
+    # them too before the aggregator phase allocates its own buffer on top.
+    fetched_boards = []
 
     # E.5 HN "Who is hiring?" monthly thread — pre-posting intelligence.
     # Postings here often predate the big boards. We upsert them directly
@@ -1049,6 +1059,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             asyncio.run(feed_companies_from_aggregators(_direct_raw_holder))
         except Exception as e:
             log.warning("Aggregator company feeder failed (non-fatal): %s", e)
+        _direct_raw_holder = []  # release the aggregator postings
     try:
         ats_upgraded = run_ats_upgrade_for_shortlisted()
         log.info("ATS upgrade: registered %d boards from shortlisted companies", ats_upgraded)

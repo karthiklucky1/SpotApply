@@ -222,9 +222,11 @@ class ResumeDoctor:
         """Ask claude-haiku for a blunt 2-sentence hiring signal. Returns None on failure."""
         from app.config import settings
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic()
         except Exception:
+            return None
+        if client is None:
             return None
 
         prompt = f"""You are a cynical technical recruiter doing a 30-second resume screen.

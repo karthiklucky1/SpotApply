@@ -317,6 +317,18 @@ class Matcher:
         # If there are updated jobs, we must do a full rebuild to clean up stale vectors
         force_rebuild = len(updated_ids) > 0
 
+        # Compaction: the incremental branch only ever ADDs vectors, while job
+        # retention deletes the underlying rows — so an aging index grows without
+        # bound and is read fully into RAM on every rebuild (and searched with
+        # k=ntotal). Once it drifts well past the indexing cap, rebuild from
+        # scratch instead of appending; retrieval only ever looks at the newest
+        # jobs, so the dropped tail is dead weight by construction.
+        if (not force_rebuild and existing_index is not None
+                and existing_index.ntotal > 3 * REBUILD_MAX_JOBS):
+            log.info("FAISS index holds %d vectors (cap %d) — compacting via full rebuild.",
+                     existing_index.ntotal, REBUILD_MAX_JOBS)
+            force_rebuild = True
+
         if not new_ids and not force_rebuild:
             log.info("All %d jobs are already indexed. No update needed.", len(id_rows))
             return len(id_rows)

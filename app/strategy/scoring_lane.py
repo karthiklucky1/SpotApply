@@ -50,6 +50,27 @@ log = logging.getLogger(__name__)
 
 _LANE_LOCK = threading.Lock()  # one scoring cycle at a time in this process
 
+# One worker pool for the LIFE OF THE PROCESS, not one per cycle. A fresh
+# 20-thread ThreadPoolExecutor every 90s — abandoned with shutdown(wait=False)
+# — was ~19k new OS threads/day; every thread that touches malloc can pin a
+# glibc arena, and arena high-water marks never shrink, so the churn read as an
+# RSS climb that no heap profile could explain (docs/MEMORY.md). A persistent
+# pool keeps a fixed set of threads (and arenas) instead.
+_POOL: Optional[ThreadPoolExecutor] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _worker_pool() -> ThreadPoolExecutor:
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                _POOL = ThreadPoolExecutor(
+                    max_workers=max(1, settings.scoring_workers),
+                    thread_name_prefix="scoring",
+                )
+    return _POOL
+
 # ── Per-job attempt ceiling ───────────────────────────────────────────────────
 # A job whose final score keeps failing (provider outage, poison payload) used
 # to be re-selected EVERY 90s cycle forever — re-paying the prescore each time.
@@ -70,6 +91,10 @@ def _note_score_failure(jid: int) -> None:
             log.warning("Scoring: job %d failed %d attempts — deferred %.1fh",
                         jid, n, settings.scoring_fail_defer_hours)
         else:
+            # Hard bound: a job that fails here but is later scored by another
+            # lane never triggers _note_score_success, so its entry is immortal.
+            if len(_fail_counts) > 50_000:
+                _fail_counts.clear()
             _fail_counts[jid] = n
 
 
@@ -558,7 +583,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
 
     scored_by_user: dict = defaultdict(list)
     spend_by_user: dict = defaultdict(int)   # (uid, kind) -> calls this cycle
-    pool = ThreadPoolExecutor(max_workers=min(settings.scoring_workers, max(1, len(items))))
+    pool = _worker_pool()
     futures = [pool.submit(_work, it) for it in items]
     for fut in futures:
         remaining = (deadline - time.monotonic()) if deadline else None
@@ -588,7 +613,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         elif kind == "drained":
             stats["drained"] += 1
             spend_by_user[(uid, "score_prescore")] += 1
-    pool.shutdown(wait=False)
+    # Cancel whatever is still QUEUED so a deadline-truncated cycle can't drain
+    # its leftovers into the next one (the old per-cycle pool's shutdown(wait=
+    # False) let up to ~200 queued LLM calls keep running while a fresh pool
+    # spawned 90s later — overlapping thread generations). Already-running
+    # calls finish on their own, bounded by llm_request_timeout; their jobs
+    # stay Queued in the DB either way and are simply re-selected next cycle.
+    for fut in futures:
+        fut.cancel()
 
     # Per-user spend attribution (batched: one upsert per user+kind per cycle).
     try:

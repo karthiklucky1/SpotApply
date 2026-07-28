@@ -49,11 +49,16 @@ def test_generate_referral_drafts_extensions():
         ]
         mock_github_repos = ["cli", "desktop"]
 
+        import app.matching.reranker as rr
         with patch("app.intelligence.linkedin_xray.find_champions", return_value={"ok": True, "people": mock_people}), \
              patch("app.intelligence.referral.get_company_github_repos", return_value=mock_github_repos), \
              patch("app.config.settings.anthropic_api_key", "dummy_key"), \
              patch("anthropic.Anthropic") as mock_anthropic:
-             
+
+            # Referral drafts go through the process-wide shared client pair —
+            # force a cold build under the patch (reset again in _cleanup-safe
+            # finally below so the mock never leaks into other tests).
+            rr._CLIENTS = None
             mock_client = MagicMock()
             mock_anthropic.return_value = mock_client
             mock_message = MagicMock()
@@ -75,4 +80,6 @@ def test_generate_referral_drafts_extensions():
             univ_draft = next(d for d in res["drafts"] if d["type"] == "university_alumni")
             assert "Cincinnati" in univ_draft["body"]
     finally:
+        import app.matching.reranker as rr
+        rr._CLIENTS = None   # drop the mock-built shared clients
         _cleanup()

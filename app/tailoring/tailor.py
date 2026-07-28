@@ -18,7 +18,6 @@ import re
 from pathlib import Path
 from typing import Tuple, Optional
 
-from anthropic import Anthropic
 from docx import Document
 from sqlmodel import select
 
@@ -110,17 +109,21 @@ class Tailor:
         self._openai_client = None
         self._active_backend = None
         
+        # Shared process-wide clients (app/common/llm.py) — a fresh SDK client
+        # per Tailor leaked an httpx pool + SSL context per tailor request.
+        # Long-form generation needs more than the lane-safe default timeout;
+        # with_options reuses the same connection pool.
         if settings.anthropic_api_key:
             try:
-                from anthropic import Anthropic
-                self._anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+                from app.common.llm import shared_anthropic
+                self._anthropic_client = shared_anthropic(timeout=180.0, max_retries=1)
                 self._active_backend = "anthropic"
             except Exception:
                 pass
         if settings.openai_api_key:
             try:
-                from openai import OpenAI
-                self._openai_client = OpenAI(api_key=settings.openai_api_key)
+                from app.common.llm import shared_openai
+                self._openai_client = shared_openai(timeout=180.0, max_retries=1)
                 if not self._active_backend:
                     self._active_backend = "openai"
             except Exception:

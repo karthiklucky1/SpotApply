@@ -1737,8 +1737,8 @@ Return only valid JSON, no markdown, no explanation."""
     method = "llm"
     if _settings.anthropic_api_key:
         try:
-            import anthropic as _anthropic
-            client = _anthropic.Anthropic(api_key=_settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic as _shared_anthropic
+            client = _shared_anthropic(max_retries=1)
             msg = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=2500,
@@ -2017,8 +2017,8 @@ def _resume_llm_json(prompt: str, max_tokens: int = 1200) -> dict:
     if not _s.anthropic_api_key:
         return {}
     try:
-        import anthropic as _a
-        client = _a.Anthropic(api_key=_s.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+        from app.common.llm import shared_anthropic as _shared_anthropic
+        client = _shared_anthropic(max_retries=1)
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
@@ -3461,7 +3461,11 @@ def application_match(application_id: int, request: Request) -> dict:
 
 
 # In-process cache for LLM company briefs — one call per company per process.
+# Capped: the registry holds ~56K companies, and an uncapped dict keyed by
+# every company ever viewed is one of the small-but-real unbounded growths
+# behind the RSS climb. FIFO eviction (dicts preserve insertion order).
 _COMPANY_BRIEF_CACHE: dict = {}
+_COMPANY_BRIEF_CACHE_MAX = 2000
 
 
 @app.get("/application/{application_id}/company")
@@ -3509,8 +3513,8 @@ def application_company(application_id: int, request: Request) -> dict:
     profile = _COMPANY_BRIEF_CACHE.get(company.lower()) if company else None
     if company and profile is None and settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic(max_retries=1)
             resp = client.messages.create(
                 model=settings.scoring_model,
                 max_tokens=350,
@@ -3531,6 +3535,8 @@ def application_company(application_id: int, request: Request) -> dict:
                     text = text.strip("`").lstrip("json").strip()
                 parsed = _json.loads(text)
                 profile = parsed if isinstance(parsed, dict) else {}
+            if len(_COMPANY_BRIEF_CACHE) >= _COMPANY_BRIEF_CACHE_MAX:
+                _COMPANY_BRIEF_CACHE.pop(next(iter(_COMPANY_BRIEF_CACHE)))
             _COMPANY_BRIEF_CACHE[company.lower()] = profile
         except Exception as _be:
             log.debug("company brief LLM call failed for %s: %s", company, _be)
@@ -7820,8 +7826,8 @@ Do NOT use markdown headers or introduction/conversational prefix. Return only t
     answer = ""
     if settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic(max_retries=1)
             resp = client.messages.create(
                 model=settings.cover_letter_model,
                 max_tokens=500,
@@ -7834,8 +7840,8 @@ Do NOT use markdown headers or introduction/conversational prefix. Return only t
             
     if not answer and settings.openai_api_key:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+            from app.common.llm import shared_openai
+            client = shared_openai(max_retries=1)
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=500,

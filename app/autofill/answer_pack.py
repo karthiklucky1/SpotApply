@@ -152,8 +152,8 @@ Write a concise, honest answer."""
 
     if settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic()
             resp = client.messages.create(
                 model=settings.cover_letter_model,   # Haiku — cheap
                 max_tokens=250,
@@ -453,8 +453,8 @@ Resume text:
 Return only valid JSON. No explanations, no markdown formatting."""
 
     try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        from app.common.llm import shared_anthropic
+        client = shared_anthropic()
         resp = client.messages.create(
             model=settings.cover_letter_model,
             max_tokens=1500,
