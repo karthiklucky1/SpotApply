@@ -5376,6 +5376,110 @@ def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
                     "jobs follow as the crawlers validate them."}
 
 
+# ── Compiler replay (admin) ──────────────────────────────────────────────────
+# Browser wrapper around scripts/compiler_replay.py so the replay experiment
+# runs with zero local setup: the first visit starts ONE background run
+# (single-flight — the state+lock make a second thread impossible), the page
+# auto-refreshes while it works, and the finished report renders as a table.
+# Read-only against the DB; the JSON also lands in data/ for later analysis.
+_replay_state: dict = {"status": "idle"}
+_replay_lock = None
+
+
+def _replay_page(body: str, refresh: bool = False) -> str:
+    meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
+    return f"""<!doctype html><html><head><title>Compiler replay</title>{meta}
+<style>body{{font:14px/1.5 -apple-system,system-ui,sans-serif;background:#0b1020;color:#dbe2f0;
+max-width:900px;margin:40px auto;padding:0 16px}}table{{border-collapse:collapse;width:100%;margin:16px 0}}
+td,th{{padding:6px 10px;border-bottom:1px solid #24304d;text-align:left}}th{{color:#8fa3c8}}
+.ok{{color:#5dd39e}}.mid{{color:#e8c468}}.bad{{color:#e87a68}}code{{color:#9ecbff}}a{{color:#9ecbff}}
+p.note{{color:#8fa3c8}}</style></head><body>
+<h2>Compiler replay — is our job volume compilable?</h2>{body}</body></html>"""
+
+
+@app.get("/api/admin/compiler-replay", response_class=HTMLResponse)
+def admin_compiler_replay(request: Request, restart: int = 0) -> HTMLResponse:
+    """Fit per-family scoring programs against the Claude finals already in the
+    DB and report agreement — the go/no-go gate for the compiler-layer plan.
+    Zero LLM calls. Admin only. `?restart=1` reruns after new finals accrue."""
+    import html as _html
+    import threading
+    import time as _time
+    global _replay_lock
+    _require_admin_user(request)
+    if _replay_lock is None:
+        _replay_lock = threading.Lock()
+
+    def _worker():
+        try:
+            from scripts.compiler_replay import collect_rows, run_report
+            families, stats = collect_rows()
+            summary = run_report(families, stats, min_samples=15,
+                                 shortlist_threshold=float(settings.shortlist_score_threshold),
+                                 out_path="data/compiler_replay_report.json")
+            _replay_state.update(status="done", summary=summary)
+        except Exception as e:
+            log.exception("compiler replay failed")
+            _replay_state.update(status="error", error=str(e)[:500])
+
+    with _replay_lock:
+        st = _replay_state.get("status")
+        if st == "running":
+            elapsed = int(_time.time() - _replay_state.get("started_at", _time.time()))
+            return HTMLResponse(_replay_page(
+                f"<p>Running for {elapsed}s — reading every stored Claude final and "
+                "fitting per-family programs. A full run takes a few minutes; this "
+                "page refreshes itself.</p>", refresh=True))
+        if st == "idle" or (restart and st in ("done", "error")):
+            _replay_state.clear()
+            _replay_state.update(status="running", started_at=_time.time())
+            threading.Thread(target=_worker, daemon=True, name="compiler-replay").start()
+            return HTMLResponse(_replay_page(
+                "<p>Started — reading stored Claude finals. A full run takes a few "
+                "minutes; this page refreshes itself.</p>", refresh=True))
+        if st == "error":
+            return HTMLResponse(_replay_page(
+                f"<p class=bad>Run failed: <code>{_html.escape(_replay_state.get('error', ''))}</code></p>"
+                "<p><a href='?restart=1'>Try again</a></p>"))
+
+    summary = _replay_state.get("summary") or {}
+    fams = summary.get("families") or {}
+    vol = summary.get("volume") or {}
+    stats = summary.get("stats") or {}
+    rows = []
+    for fam, r in sorted(fams.items(), key=lambda kv: -kv[1]["n"]):
+        cls = {"COMPILABLE": "ok", "BORDERLINE": "mid"}.get(r["verdict"], "bad")
+        rows.append(
+            f"<tr><td>{_html.escape(fam)}</td><td>{r['n']}</td><td>{r['users']}</td>"
+            f"<td>{r['rho']:.2f}</td><td>{r['r2_loo']:.2f}</td>"
+            f"<td>{r['decision_agreement'] * 100:.0f}%</td>"
+            f"<td class={cls}>{r['verdict']}</td></tr>")
+    fitted, comp = vol.get("fitted", 0), vol.get("compilable", 0)
+    bord = vol.get("borderline", 0)
+    if fitted:
+        pct = 100 * comp / fitted
+        headline = (f"<p><b>{pct:.0f}% of fitted volume is COMPILABLE</b> "
+                    f"({comp} of {fitted} finals; borderline {bord}). "
+                    "Rule of thumb: build the compiler layer only if this is well "
+                    "over half — otherwise the distillation path wins.</p>")
+    else:
+        headline = ("<p class=bad>No family had enough genuine Claude finals to fit "
+                    "(min 15). The counters below say why rows were skipped.</p>")
+    stat_lines = "".join(f"<li><code>{_html.escape(str(k))}</code>: {v}</li>"
+                         for k, v in sorted(stats.items()))
+    table = ("<table><tr><th>family</th><th>finals</th><th>users</th><th>rank ρ</th>"
+             "<th>held-out R²</th><th>decision agree</th><th>verdict</th></tr>"
+             + "".join(rows) + "</table>") if rows else ""
+    body = (headline + table
+            + f"<ul>{stat_lines}</ul>"
+            + "<p class=note>ρ = rank agreement with Claude's stored scores "
+              "(1.0 = identical order), held-out R² = predictions on jobs the fit "
+              "never saw, decision agree = same shortlist call at the "
+              f"{settings.shortlist_score_threshold:.0f} threshold. "
+              "<a href='?restart=1'>Re-run</a> after more finals accumulate.</p>")
+    return HTMLResponse(_replay_page(body))
+
+
 @app.get("/api/admin/spend")
 def api_admin_spend(request: Request, days: int = 14):
     """Per-user estimated LLM spend (scoring lane + pulse fast path + tailoring)."""
