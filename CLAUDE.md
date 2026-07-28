@@ -150,7 +150,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   invisible in our RSS; unbounded concurrency was an OOM kill). Load MiniLM via
   `matcher._get_embed_model()` — never construct a second `SentenceTransformer`.
   `app.common.memuse` + the memory watcher log the climb; `/api/debug/memory`
-  (admin) shows `non_python_mb` = the browsers.
+  (admin) shows `non_python_mb` = the browsers. **LLM SDK clients come ONLY from
+  `app/common/llm.py`** (shared process-wide pair; `with_options()` for per-path
+  timeout/retry) — a fresh `Anthropic()`/`OpenAI()` per call leaks an httpx pool
+  + SSL context. Lanes reuse persistent thread pools (never a per-tick
+  `ThreadPoolExecutor` — glibc-arena churn); allocator env (`MALLOC_ARENA_MAX=2`
+  etc.) is pinned in the Dockerfile and must stay process env.
 - **Browser service** (`browser-service/`, its own container + README): the three
   STATELESS render/search paths (JD scrape, Google discovery, search-engine
   source) call `app.common.browser_client`, which routes to the service when
