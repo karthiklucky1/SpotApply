@@ -4,9 +4,11 @@ refuse a vague one (the plan's whole safety story). The selftest runs the full
 path — feature extraction, family fit, LOO scoring, verdicts — on synthetic
 data with known ground truth. No DB, no LLM, no network."""
 from scripts.compiler_replay import (
+    bucket_for_reasoning,
     family_key,
     grade_evidence,
     jd_requirements,
+    jd_signals,
     selftest,
 )
 
@@ -18,6 +20,29 @@ def test_selftest_end_to_end():
     # The vague family MUST be rejected — shipping a confident rubric for
     # boilerplate is worse than not compiling at all (FM-5).
     assert verdicts["swe|mid"] == "KEEP-LLM"
+    # The visa feature must produce measurable lift over the skills-only fit.
+    back = summary["families"]["backend|senior"]
+    assert back["rho"] > back["rho_v1"]
+
+
+def test_jd_visa_signals():
+    no = jd_signals("Great role. We are unable to provide visa sponsorship.")
+    ok = jd_signals("H1B sponsorship available for the right candidate.")
+    neither = jd_signals("We need a Python developer.")
+    assert no["no_sponsor"] == 1.0 and no["sponsor_ok"] == 0.0
+    assert ok["sponsor_ok"] == 1.0 and ok["no_sponsor"] == 0.0
+    assert neither["no_sponsor"] == 0.0 and neither["sponsor_ok"] == 0.0
+
+
+def test_disagreement_buckets_read_claudes_reasoning():
+    assert bucket_for_reasoning(
+        "Strong overlap but the posting offers no visa sponsorship") == "visa/work-auth"
+    assert bucket_for_reasoning(
+        "Role requires 8+ years; the candidate is early-career") == "seniority"
+    assert bucket_for_reasoning(
+        "Solid engineer but the role is onsite in Berlin") == "location"
+    assert bucket_for_reasoning(
+        "A nuanced judgement call on overall trajectory") == "holistic/other"
 
 
 def test_graded_evidence_separates_depth_from_listing():

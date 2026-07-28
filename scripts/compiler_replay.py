@@ -1,29 +1,27 @@
-"""Compiler-layer replay experiment — which job families are compilable?
+"""Compiler-layer replay experiment v2 — which job families are compilable,
+and WHY does a compiled score still disagree with Claude?
 
-The "LLM as compiler" plan (JD → tiny scoring program, runtime is free
-arithmetic) is only worth building if a linear program over cheap features can
-actually reproduce Claude's judgment for a meaningful share of our job volume.
-This script answers that question for $0, using the Claude finals ALREADY
-stored in the DB as ground truth — no LLM calls, no panels to hand-write yet.
+v1 asked one question: can a linear program over skill features reproduce the
+Claude finals already stored in the DB? (Answer on real data: no — rank rho
+~0.25 everywhere.) v2 asks the three questions that decide the architecture:
+
+  1. LIFT — do richer "reasoning" features close the gap? Every family is
+     fitted TWICE: v1 features (skills + years) and v2 features (adds
+     visa-refusal x needs-sponsorship, country mismatch, remote, seniority
+     gap, overqualification, domain match). The report shows rho side by side.
+  2. WHY — for pairs where the v2 program still disagrees with Claude by >=15
+     points, classify the reason using Claude's own stored rerank_reasoning
+     (no new LLM calls — Claude wrote down why at scoring time).
+  3. VERDICT — if the remaining disagreement is dominated by nameable,
+     deterministic causes (visa, seniority, location), those are worth
+     engineering as features/gates. If "holistic/other" dominates, feature
+     engineering is done — the distilled apprentice model is the path.
 
     python -m scripts.compiler_replay                 # against the real DB
     python -m scripts.compiler_replay --selftest      # synthetic end-to-end check
 
-Per job family (role core × seniority) it:
-  1. collects genuine LLM finals (same filter as export_training_data — rows
-     stamped by the cheap gates would teach the fit the gates, not the rubric),
-  2. builds the compiler plan's feature shape: requirement-in-JD × graded
-     evidence-in-résumé per skill (acceptance sets baked in), plus a years gate,
-  3. ridge-fits ~14 weights and scores them with LEAVE-ONE-OUT predictions —
-     the demo's in-sample R² flatters a 12-weight/20-point fit; held-out
-     numbers are the honest version,
-  4. reports Spearman ρ, held-out R², and shortlist-decision agreement vs the
-     stored Claude score, with a verdict per family.
-
-Read the verdicts as: COMPILABLE families could run on a compiled program with
-Claude kept for the borderline band; KEEP-LLM families stay on the LLM path
-(the vague-JD case the plan's R² gate exists for). Build the compiler layer
-only if COMPILABLE families cover most of the scored volume.
+Fits are ridge, scored with exact leave-one-out predictions (hat-matrix
+shortcut) — held-out numbers, not in-sample flattery. Zero LLM calls.
 """
 from __future__ import annotations
 
@@ -82,6 +80,10 @@ _SENIOR_TOKENS = [
     ("junior",    ("junior", " jr ", " jr.", "intern", "entry", "graduate", " i ")),
 ]
 
+# Rough years a title level implies — used only to shape the seniority-gap
+# feature; the per-family fit learns how much (if at all) the gap matters.
+_SENIORITY_EXPECTED_YOE = {"junior": 1.0, "mid": 3.0, "senior": 5.0, "lead": 7.0, "staff": 9.0}
+
 _ROLE_CORES = [
     ("ml-eng",    ("machine learning", "ml engineer", "ai engineer", "deep learning")),
     ("data-sci",  ("data scientist", "data science")),
@@ -95,6 +97,65 @@ _ROLE_CORES = [
     ("qa",        ("qa ", "quality", "test engineer")),
     ("swe",       ("software engineer", "software developer", "swe")),
 ]
+
+# ── v2: JD-level reasoning signals ───────────────────────────────────────────
+
+_NO_SPONSOR_RE = re.compile(
+    r"(?:no|not|unable\s+to|cannot|can't|will\s+not|won't|do(?:es)?\s+not)\s+"
+    r"(?:currently\s+)?(?:provide|offer|support)?\s*(?:visa\s+)?sponsor"
+    r"|without\s+(?:visa\s+)?sponsorship|no\s+visa"
+    r"|citizens?\s+only|citizenship\s+(?:is\s+)?required"
+    r"|must\s+be\s+(?:a\s+)?(?:us|u\.s\.?)\s+citizen|security\s+clearance",
+    re.IGNORECASE)
+_SPONSOR_OK_RE = re.compile(
+    r"(?:visa|h-?1b|immigration)\s+sponsorship|will\s+sponsor"
+    r"|sponsorship\s+(?:is\s+)?(?:available|offered|possible|provided)",
+    re.IGNORECASE)
+
+_DOMAINS = {
+    "fintech":   ("fintech", "banking", "payments", "trading", "financial services"),
+    "health":    ("healthcare", "health tech", "medical", "clinical", "biotech", "pharma"),
+    "crypto":    ("crypto", "blockchain", "web3", "defi"),
+    "gaming":    ("gaming", "game studio", "unity", "unreal"),
+    "defense":   ("defense", "defence", "military", "aerospace"),
+    "ecommerce": ("e-commerce", "ecommerce", "marketplace", "retail tech"),
+}
+
+# ── v2: disagreement buckets, mined from Claude's stored reasoning ──────────
+# Priority-ordered: blockers first (they cap scores in the rubric), then the
+# softer explanations. First match wins; anything unmatched is "holistic".
+_DISAGREE_BUCKETS: list[tuple[str, re.Pattern]] = [
+    ("visa/work-auth", re.compile(
+        r"visa|sponsor|work authoriz|citizen|clearance|right to work|\bopt\b|h-?1b|immigration",
+        re.IGNORECASE)),
+    ("location", re.compile(
+        r"locat|country|on-?site|relocat|based in|time ?zone|hybrid|must be in|geograph",
+        re.IGNORECASE)),
+    ("seniority", re.compile(
+        r"senior|junior|years of experience|\byoe\b|experience level|overqualif|underqualif"
+        r"|early.career|too (?:junior|senior)|staff-level|seniority",
+        re.IGNORECASE)),
+    ("domain/industry", re.compile(
+        r"domain|industry|fintech|healthcare|health-?tech|biotech|pharma|crypto|blockchain"
+        r"|gaming|regulated|e-?commerce",
+        re.IGNORECASE)),
+    ("missing-skill", re.compile(
+        r"lacks?\b|missing|no (?:evidence|experience|exposure|background)|not demonstrated"
+        r"|gap in|unfamiliar|absent|little (?:experience|exposure)|limited (?:experience|exposure)",
+        re.IGNORECASE)),
+    ("role-mismatch", re.compile(
+        r"different role|not a\b.{0,30}\brole|mismatch|wrong door|unrelated|career chang|pivot",
+        re.IGNORECASE)),
+]
+DISAGREE_THRESHOLD = 15.0   # |compiled − Claude| points before we ask "why?"
+
+
+def bucket_for_reasoning(reasoning: str) -> str:
+    text = (reasoning or "")[:600]
+    for name, pat in _DISAGREE_BUCKETS:
+        if pat.search(text):
+            return name
+    return "holistic/other"
 
 
 def _seniority(title: str) -> str:
@@ -126,7 +187,7 @@ def _alias_pattern(alias: str) -> re.Pattern:
     return re.compile(r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])", re.IGNORECASE)
 
 
-_PATTERNS = {skill: [( _alias_pattern(a), credit) for a, credit in aliases.items()]
+_PATTERNS = {skill: [(_alias_pattern(a), credit) for a, credit in aliases.items()]
              for skill, aliases in SKILLS.items()}
 
 
@@ -181,10 +242,29 @@ def jd_min_yoe(jd_text: str) -> float:
     return float(max(yrs)) if yrs else 0.0
 
 
-# ── The per-family fit ───────────────────────────────────────────────────────
+def jd_signals(jd_text: str) -> dict:
+    """Visa + domain signals stated in the JD text itself."""
+    text = (jd_text or "")[:8000]
+    no_sponsor = 1.0 if _NO_SPONSOR_RE.search(text) else 0.0
+    sponsor_ok = 1.0 if (not no_sponsor and _SPONSOR_OK_RE.search(text)) else 0.0
+    domains = {d for d, toks in _DOMAINS.items()
+               if any(t in text.lower() for t in toks)}
+    return {"no_sponsor": no_sponsor, "sponsor_ok": sponsor_ok, "domains": domains}
+
+
+def resume_domains(resume_text: str) -> set:
+    low = (resume_text or "")[:16000].lower()
+    return {d for d, toks in _DOMAINS.items() if any(t in low for t in toks)}
+
+
+# ── The per-family fit (v1 features vs v2 features, same machinery) ─────────
 
 TOP_SKILLS_PER_FAMILY = 12
 RIDGE_LAMBDA = 1.0
+
+_V2_EXTRA = ["visa_refused_needed", "sponsor_ok_needed", "country_mismatch",
+             "remote", "seniority_gap", "overqualified", "domain_match",
+             "jd_domain_unmatched"]
 
 
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
@@ -199,41 +279,59 @@ def _spearman(a: np.ndarray, b: np.ndarray) -> float:
         return float(c) if np.isfinite(c) else 0.0
 
 
-def fit_family(rows: list[dict], shortlist_threshold: float) -> dict:
-    """Ridge-fit a tiny linear program for one family; score it honestly with
-    leave-one-out predictions (closed form via the ridge hat matrix — no
-    n retrains needed)."""
-    req_freq: Counter = Counter()
-    for r in rows:
-        req_freq.update(r["req"])
-    top_skills = [s for s, _n in req_freq.most_common(TOP_SKILLS_PER_FAMILY)]
-
-    X = np.array([
-        [r["req"].get(s, 0.0) * r["evidence"].get(s, 0.0) for s in top_skills]
-        + [min(r["user_yoe"], 12.0), max(0.0, r["jd_yoe"] - r["user_yoe"])]
-        for r in rows
-    ])
-    y = np.array([r["score"] for r in rows], dtype=float)
-
-    # Center so the ridge penalty never fights the intercept.
+def _loo_fit(X: np.ndarray, y: np.ndarray, threshold: float) -> tuple[dict, np.ndarray]:
+    """Ridge + exact leave-one-out predictions; returns (metrics, loo_resid)."""
     Xm, ym = X.mean(axis=0), y.mean()
     Xc, yc = X - Xm, y - ym
     A = Xc.T @ Xc + RIDGE_LAMBDA * np.eye(Xc.shape[1])
     w = np.linalg.solve(A, Xc.T @ yc)
-    H = Xc @ np.linalg.solve(A, Xc.T)          # hat matrix
+    H = Xc @ np.linalg.solve(A, Xc.T)
     pred_in = Xc @ w + ym
     h = np.clip(np.diag(H), 0.0, 0.999)
-    resid_loo = (y - pred_in) / (1.0 - h)      # exact LOO residuals for ridge
+    resid_loo = (y - pred_in) / (1.0 - h)
     pred_loo = y - resid_loo
-
     ss_tot = ((y - ym) ** 2).sum() or 1e-9
-    r2_loo = 1.0 - float((resid_loo ** 2).sum() / ss_tot)
-    rho = _spearman(y, pred_loo)
-    agree = float(((pred_loo >= shortlist_threshold) == (y >= shortlist_threshold)).mean())
+    metrics = {
+        "r2_loo": round(1.0 - float((resid_loo ** 2).sum() / ss_tot), 3),
+        "rho": round(_spearman(y, pred_loo), 3),
+        "agree": round(float(((pred_loo >= threshold) == (y >= threshold)).mean()), 3),
+        "weights": w,
+    }
+    return metrics, resid_loo
 
-    if rho >= 0.85 and agree >= 0.90:
+
+def _feature_rows(rows: list[dict], top_skills: list[str], v2: bool) -> np.ndarray:
+    out = []
+    for r in rows:
+        x = [r["req"].get(s, 0.0) * r["evidence"].get(s, 0.0) for s in top_skills]
+        x += [min(r["user_yoe"], 12.0), max(0.0, r["jd_yoe"] - r["user_yoe"])]
+        if v2:
+            x += [r.get(k, 0.0) for k in _V2_EXTRA]
+        out.append(x)
+    return np.array(out)
+
+
+def fit_family(rows: list[dict], shortlist_threshold: float) -> dict:
+    """Fit v1 (skills+years) and v2 (adds reasoning features) side by side,
+    then bucket the v2 program's remaining big disagreements using Claude's
+    stored reasoning text."""
+    req_freq: Counter = Counter()
+    for r in rows:
+        req_freq.update(r["req"])
+    top_skills = [s for s, _n in req_freq.most_common(TOP_SKILLS_PER_FAMILY)]
+    y = np.array([r["score"] for r in rows], dtype=float)
+
+    m1, _ = _loo_fit(_feature_rows(rows, top_skills, v2=False), y, shortlist_threshold)
+    m2, resid2 = _loo_fit(_feature_rows(rows, top_skills, v2=True), y, shortlist_threshold)
+
+    disagreements: list[tuple[str, float]] = []
+    for r, resid in zip(rows, resid2):
+        if abs(resid) >= DISAGREE_THRESHOLD:
+            disagreements.append((bucket_for_reasoning(r.get("reasoning", "")), float(abs(resid))))
+
+    if m2["rho"] >= 0.85 and m2["agree"] >= 0.90:
         verdict = "COMPILABLE"
-    elif rho >= 0.70:
+    elif m2["rho"] >= 0.70:
         verdict = "BORDERLINE"
     else:
         verdict = "KEEP-LLM"
@@ -241,35 +339,62 @@ def fit_family(rows: list[dict], shortlist_threshold: float) -> dict:
         "n": len(rows),
         "users": len({r["user"] for r in rows}),
         "top_skills": top_skills,
-        "rho": round(rho, 3),
-        "r2_loo": round(r2_loo, 3),
-        "decision_agreement": round(agree, 3),
+        "rho_v1": m1["rho"], "r2_v1": m1["r2_loo"], "agree_v1": m1["agree"],
+        "rho": m2["rho"], "r2_loo": m2["r2_loo"], "decision_agreement": m2["agree"],
         "verdict": verdict,
-        "weights": {s: round(float(v), 2) for s, v in zip(top_skills + ["yoe", "yoe_gap"], w)},
+        "disagreements": disagreements,
+        "weights": {k: round(float(v), 2)
+                    for k, v in zip(top_skills + ["yoe", "yoe_gap"] + _V2_EXTRA, m2["weights"])},
     }
 
 
 # ── Data collection (real DB) ────────────────────────────────────────────────
 
 def collect_rows(max_rows: int = 0) -> tuple[dict[str, list[dict]], Counter]:
-    """Genuine Claude finals grouped by family, with features precomputed.
-    Reuses the export script's filter + keyset pagination — cheap-gate stamped
-    rows would teach the fit the gates, not the rubric."""
+    """Genuine Claude finals grouped by family, with v1+v2 features and the
+    stored reasoning kept for disagreement mining. Reuses the export script's
+    filter + keyset pagination."""
+    from app.common.geo import detect_country
     from app.matching.pipeline import _load_resume
     from scripts.export_training_data import _scored_chunks, is_llm_final
 
     stats: Counter = Counter()
-    resume_feats: dict = {}   # uid -> (evidence dict, yoe) | None
+    user_cache: dict = {}   # uid -> dict | None
 
-    def _feats_for(uid):
-        if uid not in resume_feats:
+    def _user_for(uid):
+        if uid not in user_cache:
             try:
                 uid_arg = None if (not uid or uid == "local") else uid
                 text = (_load_resume(user_id=uid_arg) or "").strip()
-                resume_feats[uid] = (grade_evidence(text), resume_yoe(text)) if text else None
+                if not text:
+                    user_cache[uid] = None
+                    return None
+                needs_sponsor, profile_yoe, user_country = 0.0, 0.0, ""
+                try:
+                    from sqlmodel import select
+
+                    from app.db.init_db import get_session
+                    from app.db.models import UserProfile
+                    with get_session() as session:
+                        prof = session.exec(select(UserProfile)
+                                            .where(UserProfile.user_id == uid_arg)).first()
+                    if prof:
+                        needs_sponsor = 1.0 if prof.requires_sponsorship else 0.0
+                        profile_yoe = float(prof.years_experience or 0)
+                        user_country = detect_country(prof.location or "")
+                except Exception:
+                    log.debug("profile lookup failed for %s — visa/country features "
+                              "default to 0 for this user", uid, exc_info=True)
+                user_cache[uid] = {
+                    "evidence": grade_evidence(text),
+                    "yoe": max(resume_yoe(text), profile_yoe),
+                    "needs_sponsor": needs_sponsor,
+                    "country": user_country,
+                    "domains": resume_domains(text),
+                }
             except Exception:
-                resume_feats[uid] = None
-        return resume_feats[uid]
+                user_cache[uid] = None
+        return user_cache[uid]
 
     families: dict[str, list[dict]] = defaultdict(list)
     for job in _scored_chunks():
@@ -277,19 +402,35 @@ def collect_rows(max_rows: int = 0) -> tuple[dict[str, list[dict]], Counter]:
         if not is_llm_final(job.rerank_reasoning, job.rerank_breakdown):
             stats["skipped_cheap_gate"] += 1
             continue
-        feats = _feats_for(job.user_id)
-        if feats is None:
+        u = _user_for(job.user_id)
+        if u is None:
             stats["skipped_no_resume"] += 1
             continue
-        evidence, user_yoe = feats
         jd = (job.description or "")
+        sig = jd_signals(jd)
+        seniority = _seniority(job.title or "")
+        expected = _SENIORITY_EXPECTED_YOE.get(seniority, 3.0)
+        jd_country = detect_country(job.location or "")
+        remote = 1.0 if job.remote else 0.0
         families[family_key(job.title or "")].append({
             "user": str(job.user_id or "local"),
             "score": float(job.rerank_score),
             "req": jd_requirements(jd),
-            "evidence": evidence,
-            "user_yoe": user_yoe,
+            "evidence": u["evidence"],
+            "user_yoe": u["yoe"],
             "jd_yoe": jd_min_yoe(jd),
+            # v2 reasoning features
+            "visa_refused_needed": sig["no_sponsor"] * u["needs_sponsor"],
+            "sponsor_ok_needed": sig["sponsor_ok"] * u["needs_sponsor"],
+            "country_mismatch": 1.0 if (jd_country and u["country"]
+                                        and jd_country != u["country"] and not remote) else 0.0,
+            "remote": remote,
+            "seniority_gap": max(0.0, expected - u["yoe"]),
+            "overqualified": max(0.0, u["yoe"] - expected - 4.0),
+            "domain_match": 1.0 if (sig["domains"] & u["domains"]) else 0.0,
+            "jd_domain_unmatched": 1.0 if (sig["domains"] and not (sig["domains"] & u["domains"])) else 0.0,
+            # Claude's own explanation, kept for disagreement mining.
+            "reasoning": (job.rerank_reasoning or "")[:400],
         })
         stats["usable_finals"] += 1
         if max_rows and stats["usable_finals"] >= max_rows:
@@ -313,14 +454,33 @@ def run_report(families: dict[str, list[dict]], stats: Counter,
     compilable = sum(r["n"] for r in results.values() if r["verdict"] == "COMPILABLE")
     borderline = sum(r["n"] for r in results.values() if r["verdict"] == "BORDERLINE")
 
+    # Aggregate WHY the v2 program still disagrees, weighted by miss size.
+    bucket_weight: Counter = Counter()
+    bucket_count: Counter = Counter()
+    for r in results.values():
+        for bucket, wgt in r["disagreements"]:
+            bucket_weight[bucket] += wgt
+            bucket_count[bucket] += 1
+    wtotal = sum(bucket_weight.values()) or 1.0
+    buckets = {b: {"count": bucket_count[b],
+                   "weighted_pct": round(100.0 * bucket_weight[b] / wtotal, 1)}
+               for b in bucket_weight}
+
     log.info("")
-    log.info("── Compiler replay — per-family agreement with stored Claude finals ──")
-    log.info("%-28s %5s %5s %6s %7s %7s  %s",
-             "family", "n", "users", "rho", "R2loo", "agree", "verdict")
+    log.info("── Compiler replay v2 — per-family agreement with stored Claude finals ──")
+    log.info("%-28s %5s %5s %7s %7s %7s %7s  %s",
+             "family", "n", "users", "rho v1", "rho v2", "R2loo", "agree", "verdict")
     for fam, r in sorted(results.items(), key=lambda kv: -kv[1]["n"]):
-        log.info("%-28s %5d %5d %6.2f %7.2f %6.0f%%  %s",
-                 fam[:28], r["n"], r["users"], r["rho"], r["r2_loo"],
+        log.info("%-28s %5d %5d %7.2f %7.2f %7.2f %6.0f%%  %s",
+                 fam[:28], r["n"], r["users"], r["rho_v1"], r["rho"], r["r2_loo"],
                  r["decision_agreement"] * 100, r["verdict"])
+    if buckets:
+        log.info("")
+        log.info("── Why the compiled score still disagrees with Claude (>=%.0f pts) ──",
+                 DISAGREE_THRESHOLD)
+        for b, d in sorted(buckets.items(), key=lambda kv: -kv[1]["weighted_pct"]):
+            log.info("  %-18s %5d pairs  %5.1f%% of weighted disagreement",
+                     b, d["count"], d["weighted_pct"])
     log.info("")
     for k, v in sorted(stats.items()):
         log.info("  %s: %s", k, v)
@@ -332,16 +492,17 @@ def run_report(families: dict[str, list[dict]], stats: Counter,
                  borderline, 100 * borderline / total,
                  total - compilable - borderline,
                  100 * (total - compilable - borderline) / total)
-        log.info("")
-        log.info("  Reading: build the compiler layer only if COMPILABLE covers most")
-        log.info("  volume. BORDERLINE families would ship with a wide Sonnet band.")
 
     summary = {"families": results, "stats": dict(stats),
-               "volume": {"fitted": total, "compilable": compilable, "borderline": borderline}}
+               "volume": {"fitted": total, "compilable": compilable, "borderline": borderline},
+               "disagreements": {"threshold": DISAGREE_THRESHOLD, "buckets": buckets}}
     if out_path:
         p = Path(out_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(summary, indent=2))
+        slim = {**summary,
+                "families": {f: {k: v for k, v in r.items() if k != "disagreements"}
+                             for f, r in results.items()}}
+        p.write_text(json.dumps(slim, indent=2))
         log.info("  Full report → %s", out_path)
     return summary
 
@@ -349,30 +510,40 @@ def run_report(families: dict[str, list[dict]], stats: Counter,
 # ── Self-test: synthetic end-to-end validation, no DB, no LLM ────────────────
 
 def selftest() -> dict:
-    """Run the whole path on synthetic data where ground truth is known:
-    three consistent families a linear program CAN express, and one 'vague
-    boilerplate' family whose scores are mostly noise. The machinery must
-    ship the first three and reject the fourth."""
+    """Ground-truth checks for the v2 machinery:
+    1. a family whose hidden scorer applies a VISA PENALTY must fit clearly
+       better with v2 features than v1 (the lift is measurable),
+    2. a vague family (mostly noise) must still be rejected (KEEP-LLM),
+    3. its disagreements must land in the holistic bucket via the stored
+       reasoning text."""
     rng = np.random.default_rng(11)
 
-    resumes = {
-        "u_strong": ("Built production python services for 6 years. Python scheduler, "
+    users = {
+        "u_strong": {
+            "text": ("Built production python services for 6 years. Python scheduler, "
                      "fastapi and flask APIs, postgres and redis. Deployed on aws with "
                      "docker and kubernetes (k8s, helm) via github actions. 6+ years "
                      "python, kafka pipelines, system design for distributed systems. "
                      "pytest everywhere. python python."),
-        "u_junior": ("Bootcamp graduate. Skills: Python, HTML, CSS, React. One personal "
+            "needs_sponsor": 0.0},
+        "u_junior": {
+            "text": ("Bootcamp graduate. Skills: Python, HTML, CSS, React. One personal "
                      "project using flask. 1 year experience."),
-        "u_data":   ("Data engineer, 4+ years airflow and spark on gcp bigquery. dbt, "
+            "needs_sponsor": 1.0},
+        "u_data": {
+            "text": ("Data engineer, 4+ years airflow and spark on gcp bigquery. dbt, "
                      "etl data pipeline design, python for 5 years, sql postgres. "
                      "airflow airflow spark docker terraform."),
+            "needs_sponsor": 1.0},
     }
-    feats = {u: (grade_evidence(t), resume_yoe(t)) for u, t in resumes.items()}
+    feats = {}
+    for name, u in users.items():
+        feats[name] = {"evidence": grade_evidence(u["text"]), "yoe": resume_yoe(u["text"]),
+                       "needs_sponsor": u["needs_sponsor"], "domains": resume_domains(u["text"])}
 
     fam_skills = {
         "backend|senior":  ["python", "fastapi", "sql", "aws", "docker", "kubernetes", "kafka"],
         "data-eng|mid":    ["python", "airflow", "spark", "gcp", "sql", "data_eng"],
-        "platform|senior": ["kubernetes", "terraform", "aws", "docker", "ci_cd", "observability"],
         "swe|mid":         ["python", "javascript", "sql", "aws"],   # the vague one
     }
     hidden_w = {s: rng.uniform(4, 9) for s in SKILLS}
@@ -380,33 +551,57 @@ def selftest() -> dict:
     families: dict[str, list[dict]] = defaultdict(list)
     for fam, pool in fam_skills.items():
         vague = fam == "swe|mid"
-        for _i in range(48):
+        visa_family = fam == "backend|senior"
+        for i in range(48):
             ask = [s for s in pool if rng.random() < 0.8] or pool[:2]
             jd_yoe = float(rng.choice([0, 2, 3, 5]))
+            jd_no_sponsor = 1.0 if (visa_family and i % 2 == 0) else 0.0
             jd_text = ("We are hiring. Requirements: " + ", ".join(ask)
-                       + (f". {int(jd_yoe)}+ years required." if jd_yoe else ""))
+                       + (f". {int(jd_yoe)}+ years required." if jd_yoe else "")
+                       + (" We are unable to provide visa sponsorship." if jd_no_sponsor else ""))
             req = jd_requirements(jd_text)
-            for user, (evidence, yoe) in feats.items():
-                x = sum(hidden_w[s] * req.get(s, 0) * evidence.get(s, 0.0) for s in SKILLS)
-                x += 2.5 * min(yoe, 12) - 6.0 * max(0.0, jd_yoe - yoe)
-                noise = rng.normal(0, 30.0 if vague else 2.5)
-                score = float(np.clip(x * 0.55 + (rng.normal(35, 18) if vague else 8) + noise, 0, 100))
+            sig = jd_signals(jd_text)
+            for uname, u in feats.items():
+                x = sum(hidden_w[s] * req.get(s, 0) * u["evidence"].get(s, 0.0) for s in SKILLS)
+                x += 2.5 * min(u["yoe"], 12) - 6.0 * max(0.0, jd_yoe - u["yoe"])
+                visa_hit = sig["no_sponsor"] * u["needs_sponsor"]
+                x -= 80.0 * visa_hit
+                if vague:
+                    score = float(np.clip(rng.normal(45, 22), 0, 100))
+                    reasoning = "Holistic judgement of the overall profile narrative and trajectory."
+                else:
+                    score = float(np.clip(x * 0.55 + 8 + rng.normal(0, 2.5), 0, 100))
+                    reasoning = ("Strong skills but the posting offers no visa sponsorship — blocker."
+                                 if visa_hit else "Good skill and seniority match for the role.")
                 families[fam].append({
-                    "user": user, "score": score, "req": req,
-                    "evidence": evidence, "user_yoe": yoe, "jd_yoe": jd_yoe,
+                    "user": uname, "score": score, "req": req, "evidence": u["evidence"],
+                    "user_yoe": u["yoe"], "jd_yoe": jd_yoe,
+                    "visa_refused_needed": visa_hit,
+                    "sponsor_ok_needed": sig["sponsor_ok"] * u["needs_sponsor"],
+                    "country_mismatch": 0.0, "remote": 0.0,
+                    "seniority_gap": max(0.0, 5.0 - u["yoe"]),
+                    "overqualified": max(0.0, u["yoe"] - 9.0),
+                    "domain_match": 0.0, "jd_domain_unmatched": 0.0,
+                    "reasoning": reasoning,
                 })
 
     stats: Counter = Counter(usable_finals=sum(len(v) for v in families.values()))
     summary = run_report(families, stats, min_samples=15,
                          shortlist_threshold=60.0, out_path=None)
-    verdicts = {f: r["verdict"] for f, r in summary["families"].items()}
-    ok_consistent = all(verdicts[f] in ("COMPILABLE", "BORDERLINE")
-                        for f in ("backend|senior", "data-eng|mid", "platform|senior"))
-    ok_vague = verdicts["swe|mid"] == "KEEP-LLM"
+    fams = summary["families"]
+    lift = fams["backend|senior"]["rho"] - fams["backend|senior"]["rho_v1"]
+    ok_lift = lift >= 0.05 and fams["backend|senior"]["rho"] >= 0.85
+    ok_vague = fams["swe|mid"]["verdict"] == "KEEP-LLM"
+    buckets = summary["disagreements"]["buckets"]
+    top_bucket = max(buckets, key=lambda b: buckets[b]["weighted_pct"]) if buckets else ""
+    ok_bucket = top_bucket == "holistic/other"
     log.info("")
-    log.info("SELFTEST consistent-families fitted: %s", "PASS" if ok_consistent else "FAIL")
-    log.info("SELFTEST vague family rejected:      %s", "PASS" if ok_vague else "FAIL")
-    summary["selftest_pass"] = bool(ok_consistent and ok_vague)
+    log.info("SELFTEST v2 visa-feature lift (rho %+.2f, v2=%.2f): %s",
+             lift, fams["backend|senior"]["rho"], "PASS" if ok_lift else "FAIL")
+    log.info("SELFTEST vague family rejected:            %s", "PASS" if ok_vague else "FAIL")
+    log.info("SELFTEST holistic bucket dominates (%s):   %s",
+             top_bucket or "none", "PASS" if ok_bucket else "FAIL")
+    summary["selftest_pass"] = bool(ok_lift and ok_vague and ok_bucket)
     return summary
 
 

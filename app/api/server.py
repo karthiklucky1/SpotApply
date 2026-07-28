@@ -5446,12 +5446,16 @@ def admin_compiler_replay(request: Request, restart: int = 0) -> HTMLResponse:
     fams = summary.get("families") or {}
     vol = summary.get("volume") or {}
     stats = summary.get("stats") or {}
+    buckets = (summary.get("disagreements") or {}).get("buckets") or {}
     rows = []
     for fam, r in sorted(fams.items(), key=lambda kv: -kv[1]["n"]):
         cls = {"COMPILABLE": "ok", "BORDERLINE": "mid"}.get(r["verdict"], "bad")
+        rho_v1 = r.get("rho_v1")
+        rho_cell = (f"{rho_v1:.2f} → {r['rho']:.2f}" if rho_v1 is not None
+                    else f"{r['rho']:.2f}")
         rows.append(
             f"<tr><td>{_html.escape(fam)}</td><td>{r['n']}</td><td>{r['users']}</td>"
-            f"<td>{r['rho']:.2f}</td><td>{r['r2_loo']:.2f}</td>"
+            f"<td>{rho_cell}</td><td>{r['r2_loo']:.2f}</td>"
             f"<td>{r['decision_agreement'] * 100:.0f}%</td>"
             f"<td class={cls}>{r['verdict']}</td></tr>")
     fitted, comp = vol.get("fitted", 0), vol.get("compilable", 0)
@@ -5465,16 +5469,36 @@ def admin_compiler_replay(request: Request, restart: int = 0) -> HTMLResponse:
     else:
         headline = ("<p class=bad>No family had enough genuine Claude finals to fit "
                     "(min 15). The counters below say why rows were skipped.</p>")
+    bucket_html = ""
+    if buckets:
+        holistic_pct = (buckets.get("holistic/other") or {}).get("weighted_pct", 0)
+        ranked = sorted(buckets.items(), key=lambda kv: -kv[1]["weighted_pct"])
+        brows = "".join(
+            f"<tr><td>{_html.escape(b)}</td><td>{d['count']}</td>"
+            f"<td>{d['weighted_pct']:.1f}%</td></tr>" for b, d in ranked)
+        if holistic_pct >= 50:
+            guidance = ("Holistic reasoning dominates — feature engineering is "
+                        "done; the distilled apprentice model is the path.")
+        else:
+            top = ranked[0][0] if ranked else ""
+            guidance = (f"Deterministic causes dominate (top: {_html.escape(top)}) — "
+                        "those are worth engineering as cheap features/gates.")
+        bucket_html = (
+            "<h3>Why the compiled score still disagrees with Claude (≥15 pts)</h3>"
+            "<table><tr><th>reason (from Claude's stored reasoning)</th>"
+            "<th>pairs</th><th>share of weighted disagreement</th></tr>"
+            + brows + f"</table><p><b>{guidance}</b></p>")
     stat_lines = "".join(f"<li><code>{_html.escape(str(k))}</code>: {v}</li>"
                          for k, v in sorted(stats.items()))
-    table = ("<table><tr><th>family</th><th>finals</th><th>users</th><th>rank ρ</th>"
-             "<th>held-out R²</th><th>decision agree</th><th>verdict</th></tr>"
-             + "".join(rows) + "</table>") if rows else ""
-    body = (headline + table
+    table = ("<table><tr><th>family</th><th>finals</th><th>users</th>"
+             "<th>rank ρ v1 → v2</th><th>held-out R²</th><th>decision agree</th>"
+             "<th>verdict</th></tr>" + "".join(rows) + "</table>") if rows else ""
+    body = (headline + table + bucket_html
             + f"<ul>{stat_lines}</ul>"
-            + "<p class=note>ρ = rank agreement with Claude's stored scores "
-              "(1.0 = identical order), held-out R² = predictions on jobs the fit "
-              "never saw, decision agree = same shortlist call at the "
+            + "<p class=note>ρ v1 = skills-only program, ρ v2 = adds visa/country/"
+              "seniority/domain features (1.0 = identical order to Claude). "
+              "held-out R² = predictions on jobs the fit never saw, decision agree "
+              "= same shortlist call at the "
               f"{settings.shortlist_score_threshold:.0f} threshold. "
               "<a href='?restart=1'>Re-run</a> after more finals accumulate.</p>")
     return HTMLResponse(_replay_page(body))
