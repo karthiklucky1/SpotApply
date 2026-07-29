@@ -5,7 +5,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -73,6 +73,18 @@ class Job(SQLModel, table=True):
     """
     __table_args__ = (
         UniqueConstraint("user_id", "source", "external_id", name="uq_job_user_source_external_id"),
+        # mark_ghost_jobs runs once per board on (user_id, source, company);
+        # without this the un-indexed company filter scanned the whole table
+        # (recurring Supabase statement timeouts). create_all only builds it on
+        # FRESH databases — on the live DB run once, in the Supabase SQL editor:
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_source_company
+        #     ON job (user_id, source, company);
+        Index("ix_job_user_source_company", "user_id", "source", "company"),
+        # Adoption/retention/analytics filter the shared pool by recency; same
+        # one-time backfill:
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_discovered
+        #     ON job (user_id, discovered_at);
+        Index("ix_job_user_discovered", "user_id", "discovered_at"),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.
