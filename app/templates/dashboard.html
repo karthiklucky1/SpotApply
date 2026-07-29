@@ -1337,13 +1337,33 @@
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-skipped', this)">Removed <span class="pt-count">{{ skipped|length }}</span></button>
             </div>
             <div id="pipe-shortlist" class="pipe-pane"><!-- Shortlisted — full-width Jobright-style rows -->
+            <style>
+                /* Board info tooltip: a real hover card instead of squinty inline text */
+                .sa-tip { position: relative; display: inline-flex; }
+                .sa-tip-btn { width: 17px; height: 17px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 800; cursor: help; background: var(--sage-tint); color: var(--sage-700); border: 1px solid rgba(var(--sage-rgb), 0.4); }
+                .sa-tip-card { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(-4px); width: 290px; padding: 12px 14px; border-radius: 14px; background: #0F172A; color: #E2E8F0; border: 1px solid rgba(148,163,184,0.25); box-shadow: 0 12px 32px rgba(2,6,23,0.45); font-size: 11.5px; line-height: 1.55; font-weight: 500; z-index: 60; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s ease, transform .15s ease; }
+                .sa-tip:hover .sa-tip-card, .sa-tip:focus-within .sa-tip-card { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+                .sa-tip-card b { color: #fff; }
+                .sa-tip-row { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; }
+                /* Shortlist board: side-by-side cards on wide screens (sketch layout) */
+                #shortlisted-container { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+                @media (min-width: 1280px) { #shortlisted-container { grid-template-columns: 1fr 1fr; } }
+                #shortlisted-container > #empty-shortlist-state { grid-column: 1 / -1; }
+            </style>
             <div data-tour="shortlist" class="flex flex-col gap-4">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div class="flex items-center gap-2.5">
                         <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span> <span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span> </span>
                         <h2 class="font-bold text-white text-base">Shortlisted Fits</h2>
                         <span class="text-xs font-black px-2.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">{{ total_shortlisted_count or shortlisted|length }}</span>
-                        <span class="text-[10px] text-slate-500 font-semibold cursor-help" title="Newest postings first — today's jobs lead. Within the same day, Priority (65% AI fit + 35% hiring intent) ranks the best matches on top. Personalized: companies and role types you ✕-dismiss sink, ones you apply to float.">ⓘ fresh first · learns from you{% if total_shortlisted_count and total_shortlisted_count > shortlisted|length %} · top {{ shortlisted|length }} shown (max {{ company_cap or 2 }} per company){% endif %}</span>
+                        <span class="sa-tip" tabindex="0" aria-label="How this list is ordered">
+                            <span class="sa-tip-btn">i</span>
+                            <span class="sa-tip-card">
+                                <span class="sa-tip-row"><span>🕐</span><span><b>Fresh first</b> — today's postings lead; within the same day, Priority (65% fit + 35% hiring intent) ranks best on top.</span></span>
+                                <span class="sa-tip-row"><span>🧠</span><span><b>Learns from you</b> — companies and roles you ✕-dismiss sink; ones you apply to float.</span></span>
+                                {% if total_shortlisted_count and total_shortlisted_count > shortlisted|length %}<span class="sa-tip-row"><span>🎯</span><span><b>Top {{ shortlisted|length }} shown</b> — max {{ company_cap or 2 }} per company, so one company never floods your board.</span></span>{% endif %}
+                            </span>
+                        </span>
                     </div>
                     <div class="flex items-center gap-2 flex-wrap">
                         <!-- Sort toggle: freshest posting vs. best AI match -->
@@ -1352,15 +1372,15 @@
                             <button type="button" data-sort="match" onclick="sortShortlist('match', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Highest AI match score first">🎯 Best match</button>
                         </div>
                         <!-- Min match-score filter: hide weak matches, focus on the strong ones -->
-                        <div class="flex items-center gap-1.5 text-[11px] font-bold text-slate-400" title="Hide shortlisted jobs below this match score">
-                            <span>Min</span>
-                            <input type="range" id="shortlist-minscore" min="0" max="90" step="5" value="{{ shortlist_strong_threshold or 0 }}" oninput="filterShortlistByScore(this.value)" style="width:84px;accent-color:var(--sage-600);cursor:pointer;">
-                            <span id="shortlist-minscore-val" class="text-slate-300 tabular-nums" style="width:30px;">{{ shortlist_strong_threshold or 0 }}%</span>
+                        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full" style="background:var(--surface-2, rgba(15,23,42,0.5));border:1px solid var(--border, rgba(148,163,184,0.18));" title="Hide shortlisted jobs below this match score">
+                            <span class="text-[10.5px] font-extrabold uppercase tracking-wide text-slate-400">Min score</span>
+                            <input type="range" id="shortlist-minscore" min="0" max="90" step="5" value="{{ shortlist_strong_threshold or 0 }}" oninput="filterShortlistByScore(this.value)" style="width:92px;accent-color:var(--sage-600);cursor:pointer;">
+                            <span id="shortlist-minscore-val" class="text-[10.5px] font-black tabular-nums px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);min-width:34px;text-align:center;">{{ shortlist_strong_threshold or 0 }}%</span>
                         </div>
                         <div class="relative w-56 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
                     </div>
                 </div>
-                <div class="flex flex-col gap-4 pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
+                <div class="pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
                     {{ jobrow(app, job, visa_framing) }}
                     {% else %}
                     <div id="empty-shortlist-state" class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">🔍 Your AI agent is finding your first matches…</p> <p class="text-slate-600 text-xs mt-1">New jobs are scanned, scored and shortlisted for you automatically — around the clock, no button needed. First matches usually appear within minutes of uploading your resume; “Discover Jobs” just runs an extra pass right now.</p> </div>
