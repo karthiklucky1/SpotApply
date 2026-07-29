@@ -460,7 +460,7 @@ def _expire_stale_unscored() -> int:
     they exit the queue WITHOUT costing a prescore or final.
 
     Rationale: 'be first to apply' is the product — a posting that sat unscored
-    for weeks (credit outage, backlog) is filled or stale, and paying LLM calls
+    for days (credit outage, backlog) is going stale, and paying LLM calls
     to rank it wastes budget and disk IO exactly when the lane is trying to
     catch up. One indexed UPDATE per cycle (0 rows in steady state) replaces
     thousands of per-job LLM calls during a backlog drain. Shared-pool rows are
