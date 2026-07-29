@@ -73,13 +73,16 @@ class Job(SQLModel, table=True):
     """
     __table_args__ = (
         UniqueConstraint("user_id", "source", "external_id", name="uq_job_user_source_external_id"),
-        # mark_ghost_jobs runs once per board on (user_id, source, company);
-        # without this the un-indexed company filter scanned the whole table
-        # (recurring Supabase statement timeouts). create_all only builds it on
+        # ONE composite serves both per-job hot paths: the ghost detector's
+        # repost check hits (user_id, company, title) exactly, and
+        # mark_ghost_jobs' per-board close uses the (user_id, company) prefix.
+        # Without it both scanned the whole table (the repost count alone was
+        # 93% of all DB time / the Disk-IO-budget drain; the board close was
+        # the recurring statement timeout). create_all only builds indexes on
         # FRESH databases — on the live DB run once, in the Supabase SQL editor:
-        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_source_company
-        #     ON job (user_id, source, company);
-        Index("ix_job_user_source_company", "user_id", "source", "company"),
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_company_title
+        #     ON job (user_id, company, title);
+        Index("ix_job_user_company_title", "user_id", "company", "title"),
         # Adoption/retention/analytics filter the shared pool by recency; same
         # one-time backfill:
         #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_discovered
