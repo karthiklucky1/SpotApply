@@ -619,6 +619,14 @@ async def _registry_maintenance_once(cycle: int) -> None:
                 _log.info("Shared-pool retention: closed %d old postings", res.rowcount)
     except Exception as e:
         _log.warning("Shared-pool retention failed: %s", e)
+    # Per-user retention: age-close open per-user rows nobody acted on — the
+    # missing half of retention (shared rows closed above; per-user copies
+    # previously never closed by age, so the job table grew unbounded).
+    try:
+        from app.strategy.job_retention import close_stale_user_jobs
+        close_stale_user_jobs(days=settings.user_job_close_age_days)
+    except Exception as e:
+        _log.warning("Per-user job retention failed: %s", e)
     # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
     # egress) stays bounded — closed rows were accumulating forever.
     try:
