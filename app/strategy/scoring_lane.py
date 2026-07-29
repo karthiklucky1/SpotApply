@@ -430,6 +430,50 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
         _LANE_LOCK.release()
 
 
+def _expire_stale_unscored() -> int:
+    """Bulk-stamp unscored per-user jobs older than scoring_max_job_age_days so
+    they exit the queue WITHOUT costing a prescore or final.
+
+    Rationale: 'be first to apply' is the product — a posting that sat unscored
+    for weeks (credit outage, backlog) is filled or stale, and paying LLM calls
+    to rank it wastes budget and disk IO exactly when the lane is trying to
+    catch up. One indexed UPDATE per cycle (0 rows in steady state) replaces
+    thousands of per-job LLM calls during a backlog drain. Shared-pool rows are
+    excluded (never scored directly); 0 disables."""
+    days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+    if days <= 0:
+        return 0
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.discovery.pipeline import SHARED_POOL_USER
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    try:
+        with get_session() as session:
+            res = session.exec(
+                update(Job)
+                .where(
+                    Job.rerank_score == None,   # noqa: E711
+                    Job.is_closed == False,     # noqa: E712
+                    Job.user_id != SHARED_POOL_USER,
+                    Job.first_seen < cutoff,
+                )
+                .values(rerank_score=8.0,
+                        rerank_reasoning=f"Expired unscored (older than {days}d "
+                                         f"before scoring caught up — too stale to apply)")
+            )
+            session.commit()
+            n = int(getattr(res, "rowcount", 0) or 0)
+        if n:
+            log.info("Scoring: expired %d stale unscored job(s) older than %dd "
+                     "(drained free, no LLM spend)", n, days)
+        return n
+    except Exception as e:
+        log.debug("stale-unscored expiry failed (non-fatal): %s", e)
+        return 0
+
+
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     from app.matching.pipeline import _load_resume
     from app.matching.reranker import (
@@ -438,6 +482,10 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
              "by_local": 0}
+
+    # Age gate first: never spend LLM budget (or backlog IO) on postings too
+    # old to be worth applying to.
+    _expire_stale_unscored()
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —
