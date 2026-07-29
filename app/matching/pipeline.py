@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
@@ -185,40 +187,74 @@ def _load_resume(user_id: str | None = None) -> str:
     return text + extra if extra else text
 
 
+# In-process résumé cache. _load_resume_file used to hit Supabase Storage on
+# EVERY call — up to four sequential download attempts (md→txt→pdf→docx) — and
+# it's called once per user per 90s scoring cycle plus pulse/matching passes:
+# ~1,000 Storage downloads/user/day, the dominant driver of the 5-8 GB/day
+# Storage-egress baseline (530 GB billing overage). A résumé changes only on
+# upload, which calls invalidate_resume_cache(); the TTL is a backstop.
+_RESUME_CACHE: dict[str, tuple[float, str]] = {}
+_RESUME_CACHE_LOCK = threading.Lock()
+_RESUME_CACHE_TTL_S = 900.0
+
+
+def invalidate_resume_cache(user_id: str | None) -> None:
+    """Drop the cached résumé for a user — called by the upload endpoints so a
+    fresh upload is picked up by the very next scoring cycle."""
+    with _RESUME_CACHE_LOCK:
+        _RESUME_CACHE.pop(user_id or "local", None)
+
+
 def _load_resume_file(user_id: str | None = None) -> str:
-    """The raw résumé text (Supabase Storage per user, else local file)."""
+    """The raw résumé text (Supabase Storage per user, else local file; cached)."""
     from app.config import settings as _s
     if user_id and _s.use_supabase:
-        for ext in ("md", "txt", "pdf", "docx"):
-            try:
-                from app.db.supabase_client import service_client
-                sb = service_client()
-                path = f"{user_id}/resume.{ext}"
-                data = sb.storage.from_("resume").download(path)
-                if data:
-                    if ext in ("md", "txt"):
-                        return data.decode("utf-8", errors="ignore")
-                    # For PDF/DOCX, extract text
-                    if ext == "docx":
-                        import io
-                        from docx import Document
-                        doc = Document(io.BytesIO(data))
-                        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-                    if ext == "pdf":
-                        import io
-                        from pypdf import PdfReader
-                        reader = PdfReader(io.BytesIO(data))
-                        return "\n".join((page.extract_text() or "") for page in reader.pages)
-            except Exception:
-                continue
-        raise ValueError("No resume found. Please upload your resume in the Profile page first.")
-    
+        key = user_id
+        now = time.time()
+        with _RESUME_CACHE_LOCK:
+            hit = _RESUME_CACHE.get(key)
+            if hit and now - hit[0] < _RESUME_CACHE_TTL_S:
+                return hit[1]
+        text = _fetch_resume_from_storage(user_id)
+        with _RESUME_CACHE_LOCK:
+            _RESUME_CACHE[key] = (now, text)
+        return text
+
     p: Path = settings.resume_path
     if not p.exists():
         raise FileNotFoundError(
             f"Resume not found at {p}. Put a markdown version of your resume there."
         )
     return p.read_text(encoding="utf-8")
+
+
+def _fetch_resume_from_storage(user_id: str) -> str:
+    """The actual Storage download + parse (uncached; callers go through
+    _load_resume_file). Raises when no résumé exists — a MISS is never cached,
+    so a user who uploads seconds later isn't stuck behind a negative entry."""
+    for ext in ("md", "txt", "pdf", "docx"):
+        try:
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            path = f"{user_id}/resume.{ext}"
+            data = sb.storage.from_("resume").download(path)
+            if data:
+                if ext in ("md", "txt"):
+                    return data.decode("utf-8", errors="ignore")
+                # For PDF/DOCX, extract text
+                if ext == "docx":
+                    import io
+                    from docx import Document
+                    doc = Document(io.BytesIO(data))
+                    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                if ext == "pdf":
+                    import io
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(data))
+                    return "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception:
+            continue
+    raise ValueError("No resume found. Please upload your resume in the Profile page first.")
 
 
 def _reset_stale_sponsorship_scores(user_id: str | None) -> int:

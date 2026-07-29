@@ -1676,7 +1676,14 @@ async def upload_resume(request: Request):
             return {"success": True, "path": local_path}
 
     import anyio
-    return await anyio.to_thread.run_sync(_store)
+    result = await anyio.to_thread.run_sync(_store)
+    # New résumé → drop the cached copy so the next scoring cycle reads it.
+    try:
+        from app.matching.pipeline import invalidate_resume_cache
+        invalidate_resume_cache(uid)
+    except Exception:
+        pass
+    return result
 
 
 @app.post("/api/resume/extract-profile")
@@ -2280,6 +2287,11 @@ def synthesize_resume(request: Request) -> dict:
         os.makedirs("./data", exist_ok=True)
         with open("./data/resume_master.md", "w", encoding="utf-8") as f:
             f.write(md)
+    try:
+        from app.matching.pipeline import invalidate_resume_cache
+        invalidate_resume_cache(uid)
+    except Exception:
+        pass
     return {"success": True}
 
 
