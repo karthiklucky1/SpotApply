@@ -514,41 +514,48 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
     Scoped to a single user — jobs are per-user, so one user's discovery run must
     never close another tenant's jobs.
     """
-    from datetime import datetime
     # Safety: an empty active list means we have nothing to compare against —
     # never close every job for the company on an empty/failed fetch.
     if not active_external_ids:
         log.debug("mark_ghost_jobs: empty active_external_ids for %s (%s) — skipping", company, source)
         return
+    active = set(active_external_ids)
     with get_session() as session:
-        # Find all open jobs for this source and company (this user only)
-        q = select(Job).where(
+        # Runs once PER BOARD, so it must stay cheap: project only (id,
+        # external_id) instead of streaming full rows (the old select(Job) here
+        # pulled every open row's multi-KB description and, with no index on
+        # source/company, was a recurring Supabase statement-timeout + egress
+        # hit). Full rows are loaded below only for the few jobs actually
+        # being closed. Backed by ix_job_user_source_company (models.py).
+        q = select(Job.id, Job.external_id).where(
             Job.source == JobSource(source),
             Job.company == company,
-            Job.is_closed == False,
+            Job.is_closed == False,  # noqa: E712
         )
         if user_id is not None:
             q = q.where(Job.user_id == user_id)
-        jobs = session.exec(q).all()
-        
+        to_close = [jid for jid, ext in session.exec(q).all() if ext not in active]
+
         closed_count = 0
-        for job in jobs:
-            if job.external_id not in active_external_ids:
-                job.is_closed = True
-                source_name = source.value if hasattr(source, "value") else str(source)
-                job.closed_reason = f"Removed from company {source_name} ATS board"
-                session.add(job)
-                closed_count += 1
-                
-                # Update any active applications associated with this job
-                app_model = session.exec(
-                    select(Application).where(Application.job_id == job.id)
-                ).first()
-                if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
-                    app_model.status = ApplicationStatus.SKIPPED
-                    app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
-                    session.add(app_model)
-                    
+        source_name = source.value if hasattr(source, "value") else str(source)
+        for jid in to_close:
+            job = session.get(Job, jid)
+            if job is None or job.is_closed:
+                continue
+            job.is_closed = True
+            job.closed_reason = f"Removed from company {source_name} ATS board"
+            session.add(job)
+            closed_count += 1
+
+            # Update any active applications associated with this job
+            app_model = session.exec(
+                select(Application).where(Application.job_id == jid)
+            ).first()
+            if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
+                app_model.status = ApplicationStatus.SKIPPED
+                app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
+                session.add(app_model)
+
         session.commit()
         if closed_count > 0:
             log.info("Closed %d ghost jobs for %s (%s)", closed_count, company, source)
