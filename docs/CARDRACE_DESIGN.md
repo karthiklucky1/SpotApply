@@ -6,6 +6,21 @@ and cited file:line anchors. -->
 
 # CardRace v2 — SpotApply's Hiring Intelligence Engine
 
+> **Implementation status (Phases 0–3 SHIPPED, behind flags):**
+> `app/matching/cards.py` (JobCard mint + UserCard compile, budget-capped) ·
+> `app/matching/skill_graph.py` + `data/skill_graph.json` (Layer 2, guard rails
+> enforced in code + tests) · `app/matching/card_match.py` (deterministic g(),
+> dual direct/expanded scoring, Layer-4 level equivalence) ·
+> `app/matching/conformal.py` (banding; all-BAND without a fitted calibration) ·
+> `app/matching/card_shadow.py` + scoring-lane hook (shadow beside every real
+> final, `CARD_MATCH_SHADOW=1` default) · `scripts/build_calibration.py` (PAV
+> isotonic + Wilson-certified t_hi/t_lo on a deterministic holdout) ·
+> `scripts/cardrace_phase0.py` (measurements) · `scripts/cardrace_demo.py`
+> (worked example, runnable offline) · tests: `tests/test_skill_graph.py`,
+> `test_card_match.py`, `test_conformal.py`, `test_build_calibration.py`,
+> `test_card_shadow.py`. **Cutover (`CARD_MATCH_ENABLED`) stays OFF until the
+> §3.4 holdout gates pass on real shadow data.**
+
 *Part I (§1–7) is the judged base design. **Part II (§8–13) is v2**: the founder's
 intelligence layers (success-profile cards, skill ecosystem graph, evidence-strength
 model, disagreement detector) plus two additions (stakes-gated escalation,

@@ -600,6 +600,56 @@ class LlmSpend(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class JobCardRow(SQLModel, table=True):
+    """CardRace v2 (docs/CARDRACE_DESIGN.md): ONE structured understanding of a
+    distinct posting, shared by every tenant — "understand once, serve many".
+    Keyed by the cross-tenant card key (dedupe slug / content hash), NOT by
+    job.id, so all users' copies of one posting read the same card."""
+    __tablename__ = "job_card"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    card_key: str = Field(index=True, unique=True)
+    version: int = Field(default=1)
+    model: str = ""                    # mint model id, for calibration invalidation
+    payload: str = ""                  # JSON JobCard (see app/matching/cards.py)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserCardRow(SQLModel, table=True):
+    """CardRace v2: one compiled UserCard per user; recompiled only when the
+    résumé/profile material changes (resume_hash mismatch)."""
+    __tablename__ = "user_card"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True, unique=True)
+    version: int = Field(default=1)
+    model: str = ""
+    resume_hash: str = ""              # hash of the compile material
+    payload: str = ""                  # JSON UserCard
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CardMatchShadow(SQLModel, table=True):
+    """CardRace v2 shadow ledger: one row per (real Claude final, deterministic
+    g() score) pair. THE dataset that decides cutover — scripts/build_calibration.py
+    fits the isotonic map + band thresholds from it, and the §3.4 launch gates
+    are measured on its holdout split. Written by app/matching/card_shadow.py."""
+    __tablename__ = "card_match_shadow"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    llm_score: float                    # the authoritative Claude final
+    llm_breakdown: Optional[str] = None  # JSON four-factor breakdown from Claude
+    direct_score: float                 # g() with direct evidence only
+    expanded_score: float               # g() with skill-graph inference
+    spread: float                       # expanded - direct (assumption share)
+    calibrated: Optional[float] = None  # calibrated expanded (None pre-calibration)
+    band: str = "band"                  # would-be routing: auto_in | band | auto_out
+    breakdown: Optional[str] = None     # JSON g() four-factor breakdown
+    card_key: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class Coupon(SQLModel, table=True):
     """Admin-created promo codes that grant free plan days (e.g. LAUNCH50 → 30 days PRO)."""
     __tablename__ = "coupon"

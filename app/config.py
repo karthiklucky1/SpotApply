@@ -215,6 +215,27 @@ class Settings(BaseSettings):
     # calibration. Scores are labeled as local estimates in the reasoning.
     # Set to 0 to restore the old wait-for-a-provider behavior.
     local_score_fallback: bool = True     # LOCAL_SCORE_FALLBACK
+    # ── CardRace v2 (docs/CARDRACE_DESIGN.md) ─────────────────────────────────
+    # Understand-once matching: JobCard per distinct posting (shared by every
+    # tenant) x UserCard per user -> deterministic g() pair arithmetic; Claude
+    # only for the certified-uncertain band. Rollout is two independent flags:
+    #   card_match_shadow  — Phase 3: mint cards + score g() BESIDE every real
+    #     Claude final and record agreement (card_match_shadow table). Zero
+    #     effect on user-visible decisions; extra spend ~= one ~$0.005 card
+    #     mint per Claude-scored job, bounded by card_mint_daily_cap.
+    #   card_match_enabled — Phase 4 cutover: g() + conformal bands become
+    #     authoritative and Claude becomes the band escalator. NEVER flip this
+    #     before scripts/build_calibration.py has fitted a calibration AND its
+    #     holdout gates pass (docs/CARDRACE_DESIGN.md §3.4) — without a
+    #     calibration file every pair is BAND (= Claude decides) by design.
+    card_match_enabled: bool = False      # CARD_MATCH_ENABLED
+    card_match_shadow: bool = True        # CARD_MATCH_SHADOW
+    card_mint_model: str = "claude-haiku-4-5-20251001"  # CARD_MINT_MODEL
+    card_mint_daily_cap: int = 300        # CARD_MINT_DAILY_CAP — mints/day backstop (~$1.5/day max)
+    card_graph_enabled: bool = True       # CARD_GRAPH_ENABLED — skill-graph inference in g()
+    card_graph_path: str = "data/skill_graph.json"       # CARD_GRAPH_PATH
+    card_calibration_path: str = "data/calibration.json" # CARD_CALIBRATION_PATH — written by scripts/build_calibration.py
+    card_max_auto_in_spread: float = 12.0 # CARD_MAX_AUTO_IN_SPREAD — wider direct-vs-expanded spread never auto-admits
     # ── Payments (Stripe + manual bank transfer) ──────────────────────────────
     # All empty by default = payments OFF: every user resolves to PRO free of
     # charge (pre-revenue mode). After the LLC + Stripe account exist, set the
