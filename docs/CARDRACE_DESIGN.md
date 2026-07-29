@@ -4,9 +4,15 @@ judges (cost / quality / engineering lenses) that recomputed all arithmetic, and
 one synthesis. All SpotApply numbers trace to docs/CAPACITY.md, docs/ARCHITECTURE.md
 and cited file:line anchors. -->
 
-# CardRace — the final SpotApply matching engine
+# CardRace v2 — SpotApply's Hiring Intelligence Engine
 
-*Merged from the four judged designs. Chassis: **CardMatch** (unanimous judge #1). Certification and stopping: **RACE-K**. Validation discipline and lazy reasoning: **MatchSpec**. Coverage economics and portfolio selection: **Passport & Portfolio**. Every number below is derived from the repo's documented figures (CAPACITY.md, ARCHITECTURE.md, verified `file:line`) or from the four briefs' judge-verified arithmetic; where an input is unmeasured, it is named as such and scheduled for measurement in Phase 0.*
+*Part I (§1–7) is the judged base design. **Part II (§8–13) is v2**: the founder's
+intelligence layers (success-profile cards, skill ecosystem graph, evidence-strength
+model, disagreement detector) plus two additions (stakes-gated escalation,
+Claude-repairs-the-map), with the updated cost model and an honest pros/cons ledger.
+Part II supersedes Part I wherever they differ.*
+
+*Part I was merged from four judged designs. Chassis: **CardMatch** (unanimous judge #1). Certification and stopping: **RACE-K**. Validation discipline and lazy reasoning: **MatchSpec**. Coverage economics and portfolio selection: **Passport & Portfolio**. Every number below is derived from the repo's documented figures (CAPACITY.md, ARCHITECTURE.md, verified `file:line`) or from the four briefs' judge-verified arithmetic; where an input is unmeasured, it is named as such and scheduled for measurement in Phase 0.*
 
 ---
 
@@ -164,3 +170,254 @@ The per-(user x job) operation is 20-microsecond CPU arithmetic. No term multipl
 - **Retired from the hot path** (kept in the fallback lane): the Tier-1 prescore, the 120-pair cross-encoder wall, the embedding-gate re-encodes, and per-user FAISS as a scoring dependency — incidentally defusing the unbounded-index issue in ARCHITECTURE.md §7.2.
 
 **Constraint ledger:** (1) no O(users x jobs) LLM — spend is O(J + U + K_opened), proven in §3.5. (2) No trained neural scorer — deterministic named-parameter arithmetic + counting calibration; the one boundary judgment (isotonic fitting) is surfaced for explicit founder sign-off with a hand-set fallback. (3) Quality — every seat is Claude-adjudicated or CP-certified >= 95%, with the residual risk quantified (~0.4 jobs/day, dialable) and the two real risks named. (4) Top-K selection, not pool scoring — stopping rule, seat assembly, portfolio ordering. (5) Shared-pool, CPU-only, compliant — unchanged. (6) The math is shown, every number derivable from CAPACITY.md, the verified code anchors, and the judge-checked briefs.
+
+---
+---
+
+# Part II — v2: the Intelligence Layers
+
+*Adopted from the founder's booster proposal, with the guard rails from review. v2 does
+not replace Part I's chassis — the card lanes, conformal certification, stopping rule,
+audit stream, and migration plan all stand. v2 upgrades the two factors Part I's own
+launch gates flagged as "the real test" (skills, experience) and adds two mechanisms
+that make the engine self-improving without any trained model.*
+
+## 8. Changelog — v1 → v2
+
+| Component | v1 (Part I) | v2 |
+|---|---|---|
+| JobCard skills | flat must/nice skill lists with weights | **success profile**: capabilities with `importance` + `evidence_needed` lists (§9.1) |
+| Skill matching | exact ontology ID / alias / MiniLM cosine >= 0.75 synonym bridge | + **typed skill ecosystem graph** with directional strengths (§9.2) |
+| UserCard skills | skills with an evidence-depth field | **scored evidence rubric**: mentioned / project / production / recency / years → 0–100 per skill (§9.3) |
+| Experience factor | years/level window arithmetic | + **effective_level**: years + impact + scale + ownership, judged ONCE per user in the compile call (§9.4) |
+| Escalation trigger | calibrated score inside the conformal BAND | **disagreement detector** (conservative-vs-expanded spread) AND top-K contention (§10.1–10.2) |
+| Escalation output | one score, then discarded | score + **graph repair edit** — every escalation permanently removes a class of doubt (§10.3) |
+| Learning | none (by constraint) | **outcome logging** from day one; validation-only until further notice (§10.5) |
+| Card cost | ~$0.0038/job | ~$0.0045/job (richer extraction) |
+| Escalations | ~5–8/user/day | ~3/user/day early, **decaying toward ~1.5** as the map matures |
+
+## 9. The five layers
+
+### 9.1 Success-profile JobCard
+
+The card stops being a score table and becomes a small model of what success in the role
+looks like:
+
+```json
+{
+  "role": "AI Backend Engineer",
+  "capabilities": [
+    { "name": "ML production systems", "importance": 0.9,
+      "evidence_needed": ["model deployment", "API serving", "inference optimization"] },
+    { "name": "Backend engineering", "importance": 0.8,
+      "evidence_needed": ["APIs", "databases", "scaling"] }
+  ]
+}
+```
+
+The `evidence_needed` lists are load-bearing twice: they drive the matcher, and they are
+the template for the free per-seat explanation ("matched because: your vLLM serving
+engine covers inference optimization ..."). Mint cost rises $0.0038 → ~$0.0045.
+
+### 9.2 Skill ecosystem graph — inference is a hint, never proof
+
+One LLM-authored, human-readable graph over the ~2–3k-term ontology (one-time build
+~$10–50, versioned in config, refreshed monthly ~$5): directional edges with strengths,
+e.g. `PyTorch → ML deployment (0.7)`, `vLLM → inference optimization (0.9)`.
+
+Hard rules (from review — without these the graph backfires):
+- **Multiply strengths along a path; take the MAX over paths, never the sum** (summing
+  double-counts); **depth <= 2**.
+- **Inferred coverage is capped at 0.85 of direct evidence** — a must-have is never
+  fully satisfied by inference alone.
+- Graph errors are correlated across all tenants (same class as a bad card, risk R2):
+  the audit stream **over-samples AUTO-INs whose score is mostly inference** (importance
+  sampling by inference share).
+
+### 9.3 Evidence-strength candidate model
+
+The UserCard compile (still the one existing signup call) scores every skill:
+
+```
+Python:  mentioned ✓  project ✓  production ✓  recent ✓  → evidence 95
+PyTorch: mentioned ✓  research project ✓  production ✗   → evidence 70
+AWS:     skills-section line only                        → evidence 40
+```
+
+Same single call, richer output. This mirrors what Claude actually does when it reasons,
+and it is what separates "lists Python" from "ships Python".
+
+### 9.4 Two brains + effective_level
+
+- **Brain 1 (deterministic, ~all pairs):** visa, location, salary, years windows,
+  certifications, direct-evidence skills — Part I's g(), now graph- and evidence-aware.
+- **Brain 2 (Claude, only when needed):** transferable skills, unusual candidates,
+  career trajectory edge cases.
+
+Career trajectory moves into Brain 1 the right way: the compile call judges the PERSON
+once — `effective_level` = years + impact + scale + ownership, with a confidence — and
+g() compares that level to the card's window. O(U), never O(U x J). Low confidence on
+`effective_level` routes the user's borderline pairs to Brain 2.
+
+### 9.5 Disagreement detector — the uncertainty measure
+
+Every pair is scored **twice** in the same 20-microsecond pass:
+- `S_direct` — direct evidence only;
+- `S_expanded` — with graph inference.
+
+The spread is the machine admitting how much of the score is assumption:
+
+```
+Candidate A (PyTorch/CUDA/vLLM, JD says "AI + inference"):  direct 75, expanded 94, spread 19 → Claude
+Candidate B (Python/FastAPI/AWS, JD says "backend APIs"):   direct 82, expanded 84, spread  2 → auto
+```
+
+Spread composes with the conformal machinery: Mondrian cells may condition on spread, so
+the certificates price "confident" and "assumed" scores separately.
+
+## 10. The v2 mechanisms
+
+### 10.1 Certified confidence still rules
+
+A self-declared "96% confident" is never trusted. The graph must EARN its confidence:
+Phase-3 shadow re-runs the 57,309 stored finals **graph-on vs graph-off**; the conformal
+calibration re-fits on the train split, and the certificates on the untouched holdout
+decide whether the band narrows. If the graph helps, escalations fall provably; if not,
+nothing degrades — the band simply stays where v1 put it. The booster plugs in UNDER the
+certification layer, so it can help or be neutral, never silently hurt.
+
+### 10.2 Stakes-gated escalation
+
+Wide spread alone does not buy a Claude call. Escalate iff **(spread wide OR band) AND
+the job contends for the user's current top-K** (Part I's stopping rule supplies the
+contention test). Uncertainty is common; uncertainty that would change the shortlist is
+rare — this is the single biggest escalation-volume cut in v2.
+
+### 10.3 Claude repairs the map
+
+Every escalated call carries one extra structured question (~150 output tokens,
++$0.00075/call): *"Which inference was right or wrong here? (e.g. does 'built LLM
+inference engine' satisfy 'inference optimization' for this role — yes/no, strength?)"*
+The answer is written back to the graph as a **proposed edge edit**.
+
+Guard rails: an edit goes live only after **two agreeing verdicts** (or one audit
+confirmation); edits are versioned with provenance; the weekly binomial test watches
+realized precision as edits accumulate.
+
+Effect: the same confusion is never escalated twice. Escalation volume **decays** —
+budgeted ~3/user/day at launch, trending toward ~1.5 as the map fills in. Every $0.0033
+escalation becomes an investment, not a cost.
+
+### 10.4 Ordering within the certified set
+
+Unchanged from Part I: diversity re-rank and any personalization operate strictly within
+the bar-clearing set. v2 adds nothing that can promote a below-bar job.
+
+### 10.5 Outcome logging (learn later, log now)
+
+From Phase 0, log per application: UserCard version, JobCard version, S_direct,
+S_expanded, escalation verdict if any, and the funnel outcome (viewed / tailored /
+submitted / interview / offer — the funnel events already exist). Logging is free.
+**Stance: validation only.** Outcomes are slow, few, and biased (ghost jobs, market
+mood, applicant competition); a model trained on offers drifts toward keyword-pleasing.
+The founder's no-trained-model rule stands until this dataset is large enough to force
+the conversation on evidence.
+
+## 11. v2 cost model — how much do we actually save vs today?
+
+Per-unit deltas vs Part I §3.2: card $0.0045 (was $0.0038); escalations 3/day early →
+1.5 mature (was 5–8), each +$0.00075 repair tax; instant-pulse and lazy-prose terms
+unchanged; graph build one-time $10–50, refresh ~$5/mo; audits unchanged $0.35/day.
+
+**Marginal cost per active Pro user per day:**
+
+```
+TODAY:      50 finals x $0.0033 + prescores            = $0.198–0.232  ($5.94–6.95/mo)
+v1:         5 esc + 0.5 instant + 2 prose              = $0.038        ($1.15/mo)
+v2 early:   3 esc(+repair) + 0.5 instant + 2 prose     = $0.034        ($1.02/mo)
+v2 mature:  1.5 esc(+repair) + 0.5 instant + 2 prose   = $0.028        ($0.84/mo)
+```
+
+**≈ 83–88% reduction per user vs today** — and unlike v1, the number keeps falling as
+the map repairs.
+
+**Platform totals** (cards amortized, coupon-collector coverage from §3.3):
+
+| N users | TODAY $/day | v1 $/day | v2 early $/day | v2 mature $/day |
+|---|---|---|---|---|
+| 10 | $1.98–2.32 | $2.53 (card-budget mode) | **$2.79** | ~$2.7 |
+| 100 | $19.8–23.2 | $18.14 | **$20.0** | ~$18.5 |
+| 1,000 | $198–232 — **infeasible** (rate-limit wall ~N=100–150) | $53.6 | **$49.3** | **~$44** |
+| 10,000 | impossible | $396 | ~$370 | ~$330 |
+
+Honest reading of that table:
+- **At today's ~10 users v2 saves nothing** — it costs parity to ~1.4x MORE, because the
+  shared card line dominates at tiny N. What you buy today is recall (100% of the pool
+  evaluated vs 120 cross-encoder slots), zero backlog, zero-latency alerts, and
+  hidden-skill handling — not dollars.
+- **At ~100 users: parity to ~15% cheaper.** The crossover where v2 is strictly cheaper
+  than today is N ~= 85–100.
+- **At 1,000 users: ~4–5x cheaper — and the only design of the two that can run at all**
+  (today's engine needs 50,000 finals/day there; the provider rate-limit wall arrives
+  near N=100–150).
+- Marginal user N+1 costs **~$1/mo falling to ~$0.85** vs ~$6–7 today.
+- v2 vs v1: slightly MORE expensive below ~N=300 (richer cards), cheaper above it, and
+  the only version whose cost *decays over time*.
+
+## 12. Pros and cons — the honest ledger
+
+**Pros**
+1. ~85% lower marginal cost per user at scale; cost bounded by the job market, not N;
+   feasible at N=1,000+ where the current engine is not.
+2. Quality guarded by construction: every seat is a real Claude final >= 60 or certified
+   >= 95%; expected contamination ~0.4 jobs on a 15-seat day, dialable to ~0.1.
+3. Full-pool recall — evaluates 100% of carded jobs vs 120 CE slots today; finds jobs
+   the current engine never reads at any budget.
+4. The "Queued" backlog and scoring latency disappear; fresh alerts fire with zero LLM
+   latency.
+5. Hidden-skill understanding (PyTorch → ML deployment) via graph + evidence depth —
+   fixes the exact keyword weakness of naive card matching.
+6. Self-improving with NO trained model: Claude repairs the map; escalations decay;
+   the knowledge base is human-readable, versioned, auditable.
+7. Better explanations on auto seats: factor-by-factor evidence trace vs today's
+   one-sentence reason; real Claude reasoning preserved on every escalated seat.
+8. All constraints hold: no O(U x J) LLM, no neural scorer, top-K selection, CPU-only,
+   compliance stance unchanged; one-flag rollback with the old cascade kept as fallback.
+9. Outcome dataset accumulates from day one at zero cost — an asset either way.
+
+**Cons / risks**
+1. **No savings at current scale.** Below ~85 users this costs the same or slightly more
+   than today. The near-term purchase is quality + recall + latency, not money.
+2. **Build + ownership cost:** ~6–8 weeks plus a 3–6 week shadow; new permanent moving
+   parts (card lane, graph, calibration, audit lane) that must be owned.
+3. **R1 stands until measured:** factorized arithmetic may still miss holistic judgment
+   for career-changers and thin resumes; mitigated by spread-routing and the per-user
+   fallback, but the shadow period is what proves it, not this document.
+4. **Correlated errors:** one bad card or wrong graph edge is wrong for every tenant at
+   once (today's errors are independent noise). Audits and the two-verdict edit rule
+   detect this; they do not prevent it.
+5. **The ontology + graph are a permanent chore.** New skills appear monthly (vLLM did
+   not exist three years ago); an unowned graph decays silently. The skills-factor MAE
+   canary is the alarm, a human is the fix.
+6. **Calibration is tied to its labels.** A Claude model/rubric bump, or a user base
+   that outgrows the 57k finals' archetypes, forces recalibration windows where more
+   traffic goes to Claude and cost drifts toward the (still plan-capped) ceiling.
+7. **Product change on auto seats:** most shortlist cards carry a templated evidence
+   trace instead of freshly-written Claude prose (deep prose stays available lazily at
+   drawer-open). Cosmetic, but users may notice.
+
+## 13. Migration deltas vs Part I §5
+
+- **Phase 0 (+0 weeks):** start outcome logging immediately (free); add the graph-term
+  inventory to the ontology build.
+- **Phase 2 (+1 week):** graph authoring + validation harness; evidence rubric in the
+  UserCard compile; success-profile card schema; S_direct/S_expanded dual scoring in
+  g().
+- **Phase 3 (shadow):** add the **graph-on/off ablation** to the cutover gates — the
+  graph ships only if the holdout shows the band narrowing at equal certified precision.
+- **Phase 4:** escalation router = spread + top-K contention; repair question appended
+  to escalated calls behind `GRAPH_REPAIR_ENABLED` (default on, two-verdict rule).
+- **Phase 5:** graph-refresh cron; repair-provenance viewer (a JSON dump is enough);
+  outcome-validation report.
+- **Rollback ladder:** `GRAPH_ENABLED=0` reverts to v1 CardRace; `CARD_MATCH_ENABLED=0`
+  reverts to the legacy cascade. Two independent flags, two safe states.
