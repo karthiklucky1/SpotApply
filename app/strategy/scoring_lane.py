@@ -358,6 +358,14 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             shadow_score(jid, ctx.resume, job, float(score))
         except Exception:
             pass
+        # CardRace v2 shadow (docs/CARDRACE_DESIGN.md §5 Phase 3): score the
+        # deterministic card engine beside this real final and record agreement.
+        # Best-effort and flag-gated; never touches the authoritative score.
+        try:
+            from app.matching.card_shadow import shadow_card_match
+            shadow_card_match(jid, ctx.resume, float(score), breakdown)
+        except Exception:
+            pass
     return ("scored", jid, float(score), provider)
 
 

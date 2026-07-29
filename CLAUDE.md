@@ -178,6 +178,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   finals (LOO-validated, `--selftest` for synthetic check) — build the
   compiler only if COMPILABLE families cover most scored volume.
 
+- **CardRace v2 (shadow)** — `docs/CARDRACE_DESIGN.md`: understand-once matching.
+  JobCard per DISTINCT posting (shared across tenants, `matching/cards.py`) ×
+  UserCard per user → deterministic `g()` (`card_match.py`: dual direct/expanded
+  score via `skill_graph.py` inference; spread = assumption share) → conformal
+  bands (`conformal.py`; **no calibration file = everything BAND = Claude decides**).
+  `CARD_MATCH_SHADOW=1` (default) records agreement beside every real final
+  (`card_match_shadow` table); fit with `scripts/build_calibration.py`; NEVER set
+  `CARD_MATCH_ENABLED=1` before its holdout gates pass (§3.4). Mint spend capped
+  by `CARD_MINT_DAILY_CAP` and never charged to plan finals.
+
 ## Workflow
 - Tests: `pytest` (or target files); lint: `ruff check app`.
 - Validate template/python edits before committing; keep commits scoped + descriptive.
