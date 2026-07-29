@@ -2924,6 +2924,18 @@ def dashboard(request: Request, all_submitted: bool = False):
             # so 61 jobs never appeared and the "new matches" banner looped forever.
             # Order by FIT (blended_score) so if the cap ever does truncate, it keeps
             # the best-fit ones. Recency stays as the tiebreak.
+            # Freshness is enforced AT RENDER TIME too (not only by the hygiene
+            # lane, which doesn't run when LANES_ENABLED=0): plain SHORTLISTED
+            # postings older than shortlist_max_age_days never render. Jobs the
+            # user invested in (TAILORED / autofill review) are never hidden.
+            _fresh_cutoff = None
+            if settings.shortlist_max_age_days and settings.shortlist_max_age_days > 0:
+                from datetime import datetime as _fdt, timedelta as _ftd
+                _fresh_cutoff = _fdt.utcnow() - _ftd(days=settings.shortlist_max_age_days)
+            _fresh_ok = (
+                (Application.status != ApplicationStatus.SHORTLISTED)
+                | (func.coalesce(Job.posted_at, Job.first_seen) >= _fresh_cutoff)
+            ) if _fresh_cutoff else None
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
@@ -2933,6 +2945,8 @@ def dashboard(request: Request, all_submitted: bool = False):
                 nullslast(desc(Job.rerank_score)),
                 Application.updated_at.desc(),
             ).limit(settings.shortlist_render_cap)
+            if _fresh_ok is not None:
+                q_short = q_short.where(_fresh_ok)
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
@@ -2946,6 +2960,8 @@ def dashboard(request: Request, all_submitted: bool = False):
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
+            if _fresh_ok is not None:
+                q_short_total = q_short_total.where(_fresh_ok)
             if _uid_filter:
                 q_short_total = q_short_total.where(Application.user_id == uid)
             total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)

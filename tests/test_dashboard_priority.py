@@ -22,14 +22,20 @@ def _seeded_jobs():
             s.delete(j)
         s.commit()
 
+        # posted_at must be INSIDE the shortlist freshness window
+        # (settings.shortlist_max_age_days) — the dashboard hides stale
+        # SHORTLISTED postings at render time now. Older-vs-newer ordering
+        # intent is preserved with a 2-day spread.
+        from datetime import timedelta
+        _now = datetime.utcnow()
         jA = Job(source=JobSource.GREENHOUSE, external_id="prio-A", company="AlphaCorp",
                  title="ML Engineer", url="http://a", description="x",
                  rerank_score=80, hire_probability_score=0.1,
-                 blended_score=round(0.65 * 80 + 0.35 * 10, 1), posted_at=datetime(2026, 1, 1))
+                 blended_score=round(0.65 * 80 + 0.35 * 10, 1), posted_at=_now - timedelta(days=2))
         jB = Job(source=JobSource.LEVER, external_id="prio-B", company="BetaAI",
                  title="AI Engineer", url="http://b", description="x",
                  rerank_score=72, hire_probability_score=0.9,
-                 blended_score=round(0.65 * 72 + 0.35 * 90, 1), posted_at=datetime(2026, 6, 1))
+                 blended_score=round(0.65 * 72 + 0.35 * 90, 1), posted_at=_now - timedelta(hours=6))
         s.add(jA); s.add(jB); s.commit(); s.refresh(jA); s.refresh(jB)
         s.add(Application(job_id=jA.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
         s.add(Application(job_id=jB.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
@@ -58,8 +64,10 @@ def test_dashboard_orders_by_blended_priority(_seeded_jobs):
 
 
 def test_dashboard_fresh_jobs_lead_shortlist():
-    """A job posted today must appear ABOVE a higher-scoring week-old job —
-    fresh first is the default; priority only ranks within the same day."""
+    """A job posted today must appear ABOVE a higher-scoring 4-day-old job —
+    fresh first is the default; priority only ranks within the same day.
+    (4 days, not a week: postings past shortlist_max_age_days are now hidden
+    at render time entirely — that behavior is pinned separately below.)"""
     from datetime import timedelta
     from sqlmodel import select as _select
     now = datetime.utcnow()
@@ -72,7 +80,7 @@ def test_dashboard_fresh_jobs_lead_shortlist():
         old_high = Job(source=JobSource.GREENHOUSE, external_id="freshfirst-old",
                        company="OldHighCo", title="Staff ML Engineer", url="http://oh",
                        description="x", rerank_score=95, blended_score=95,
-                       posted_at=now - timedelta(days=6))
+                       posted_at=now - timedelta(days=4))
         new_low = Job(source=JobSource.GREENHOUSE, external_id="freshfirst-new",
                       company="NewLowCo", title="ML Engineer", url="http://nl",
                       description="x", rerank_score=60, blended_score=60,
@@ -90,6 +98,45 @@ def test_dashboard_fresh_jobs_lead_shortlist():
 
     with get_session() as s:
         for j in s.exec(_select(Job).where(Job.external_id.like("freshfirst-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+
+
+def test_dashboard_hides_stale_shortlisted_but_keeps_tailored():
+    """Render-time freshness: a plain SHORTLISTED posting older than
+    shortlist_max_age_days never renders (even when the hygiene lane is off,
+    e.g. LANES_ENABLED=0) — but a stale job the user TAILORED is never hidden."""
+    from datetime import timedelta
+    from sqlmodel import select as _select
+    now = datetime.utcnow()
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("stalewin-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+        stale = Job(source=JobSource.GREENHOUSE, external_id="stalewin-short",
+                    company="StaleShortCo", title="ML Engineer", url="http://ss",
+                    description="x", rerank_score=90, blended_score=90,
+                    posted_at=now - timedelta(days=9))
+        invested = Job(source=JobSource.GREENHOUSE, external_id="stalewin-tail",
+                       company="StaleTailoredCo", title="ML Engineer", url="http://st",
+                       description="x", rerank_score=90, blended_score=90,
+                       posted_at=now - timedelta(days=9))
+        s.add(stale); s.add(invested); s.commit()
+        s.refresh(stale); s.refresh(invested)
+        s.add(Application(job_id=stale.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
+        s.add(Application(job_id=invested.id, status=ApplicationStatus.TAILORED, apply_track="autofill"))
+        s.commit()
+
+    html = _client().get("/dashboard").text
+    assert html.find("StaleShortCo") == -1, "stale shortlisted posting must be hidden"
+    assert html.find("StaleTailoredCo") != -1, "tailored work must never be hidden by age"
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("stalewin-%"))).all():
             for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
                 s.delete(a)
             s.delete(j)

@@ -1333,6 +1333,8 @@
                 .sa-tip-btn { width: 17px; height: 17px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 800; cursor: help; background: var(--sage-tint); color: var(--sage-700); border: 1px solid rgba(var(--sage-rgb), 0.4); }
                 .sa-tip-card { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%) translateY(-4px); width: 290px; padding: 12px 14px; border-radius: 14px; background: #0F172A; color: #E2E8F0; border: 1px solid rgba(148,163,184,0.25); box-shadow: 0 12px 32px rgba(2,6,23,0.45); font-size: 11.5px; line-height: 1.55; font-weight: 500; z-index: 60; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s ease, transform .15s ease; }
                 .sa-tip:hover .sa-tip-card, .sa-tip:focus-within .sa-tip-card { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+                .sa-tip-card-right { left: auto; right: 0; transform: translateY(-4px); }
+                .sa-tip:hover .sa-tip-card-right, .sa-tip:focus-within .sa-tip-card-right { transform: translateY(0); }
                 .sa-tip-card b { color: #fff; }
                 .sa-tip-row { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; }
                 /* Shortlist board: side-by-side cards on wide screens (sketch layout).
@@ -1346,7 +1348,7 @@
                 #shortlisted-container .jr-info { display: flex; flex-direction: column; width: 100%; }
                 #shortlisted-container .jr-actions { margin-top: auto; }
                 /* Score bar — slim and light: soft tinted fill, dark text, no glow */
-                .jr-scorebar { position: relative; height: 20px; border-radius: 7px; background: rgba(15,23,42,0.05); overflow: hidden; margin: 12px 18px 6px; flex-shrink: 0; }
+                .jr-scorebar { position: relative; height: 20px; border-radius: 7px; background: rgba(15,23,42,0.05); overflow: hidden; margin: 6px 18px 4px; flex-shrink: 0; }
                 .jr-scorebar-pad { margin-right: 44px; } /* clears the ✕ remove button */
                 .jr-scorebar-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 7px; }
                 .jr-fill-strong { background: rgba(var(--sage-rgb), 0.32); }
@@ -1356,48 +1358,33 @@
                 .jr-scorebar-text { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 9.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--ink); white-space: nowrap; }
                 /* Card action buttons: quiet boxes, BLACK text — color only wakes on hover.
                    !important needed: the theme forces .jbtn-primary * { color:#fff !important }. */
-                #shortlisted-container .jr-actions { padding-top: 16px; }
+                #shortlisted-container .jr-actions { padding-top: 12px; }
                 #shortlisted-container .jr-actions .jbtn,
                 #shortlisted-container .jr-actions .jbtn * { background: rgba(255,255,255,0.8); color: #1E293B !important; border-color: var(--border); box-shadow: none; font-weight: 700; }
-                #shortlisted-container .jr-actions .jbtn { border: 1px solid var(--border); }
+                #shortlisted-container .jr-actions .jbtn { border: 1px solid var(--border); padding: 8px 14px; font-size: 11px; }
                 #shortlisted-container .jr-actions .jbtn:hover,
                 #shortlisted-container .jr-actions .jbtn:hover * { background: var(--sage-tint); color: var(--sage-700) !important; }
                 #shortlisted-container .jr-actions .jbtn:hover { border-color: rgba(var(--sage-rgb),0.5); box-shadow: 0 0 0 3px rgba(var(--sage-rgb),0.12); }
-                /* Min-score slider: white track (the default dark one read as a black bar) */
-                #shortlist-minscore { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 99px; background: #fff; border: 1px solid var(--border); outline: none; }
-                #shortlist-minscore::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--sage-600); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(2,6,23,0.25); cursor: pointer; }
-                #shortlist-minscore::-moz-range-track { height: 6px; border-radius: 99px; background: #fff; border: 1px solid var(--border); }
-                #shortlist-minscore::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--sage-600); border: 2px solid #fff; cursor: pointer; }
             </style>
-            <div data-tour="shortlist" class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span> <span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span> </span>
-                        <h2 class="font-bold text-white text-base">Shortlisted Fits</h2>
-                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">{{ total_shortlisted_count or shortlisted|length }}</span>
+            <div data-tour="shortlist" class="flex flex-col gap-3">
+                {#- One slim controls row. The old "Shortlisted Fits · 312" title duplicated
+                    the selected stage chip right above it; the Min-score slider is gone
+                    (founder: not needed). -#}
+                <div class="flex flex-wrap items-center justify-end gap-2">
                         <span class="sa-tip" tabindex="0" aria-label="How this list is ordered">
                             <span class="sa-tip-btn">i</span>
-                            <span class="sa-tip-card">
+                            <span class="sa-tip-card sa-tip-card-right">
                                 <span class="sa-tip-row"><span>🕐</span><span><b>Fresh first</b> — today's postings lead; within the same day, Priority (65% fit + 35% hiring intent) ranks best on top.</span></span>
                                 <span class="sa-tip-row"><span>🧠</span><span><b>Learns from you</b> — companies and roles you ✕-dismiss sink; ones you apply to float.</span></span>
                                 {% if total_shortlisted_count and total_shortlisted_count > shortlisted|length %}<span class="sa-tip-row"><span>🎯</span><span><b>Top {{ shortlisted|length }} shown</b> — max {{ company_cap or 2 }} per company, so one company never floods your board.</span></span>{% endif %}
                             </span>
                         </span>
-                    </div>
-                    <div class="flex items-center gap-2 flex-wrap">
                         <!-- Sort toggle: freshest posting vs. best AI match -->
                         <div id="shortlist-sort" class="flex items-center gap-1 p-0.5 rounded-full" style="background:var(--surface-2, rgba(15,23,42,0.5));border:1px solid var(--border, rgba(148,163,184,0.18));">
                             <button type="button" data-sort="fresh" onclick="sortShortlist('fresh', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Newest postings first (default)">🕐 Freshest</button>
                             <button type="button" data-sort="match" onclick="sortShortlist('match', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Highest AI match score first">🎯 Best match</button>
                         </div>
-                        <!-- Min match-score filter: hide weak matches, focus on the strong ones -->
-                        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full" style="background:var(--surface-2, rgba(15,23,42,0.5));border:1px solid var(--border, rgba(148,163,184,0.18));" title="Hide shortlisted jobs below this match score">
-                            <span class="text-[10.5px] font-extrabold uppercase tracking-wide text-slate-400">Min score</span>
-                            <input type="range" id="shortlist-minscore" min="0" max="90" step="5" value="{{ shortlist_strong_threshold or 0 }}" oninput="filterShortlistByScore(this.value)" style="width:92px;accent-color:var(--sage-600);cursor:pointer;">
-                            <span id="shortlist-minscore-val" class="text-[10.5px] font-black tabular-nums px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);min-width:34px;text-align:center;">{{ shortlist_strong_threshold or 0 }}%</span>
-                        </div>
                         <div class="relative w-56 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                    </div>
                 </div>
                 <div class="pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
                     {{ jobrow(app, job, visa_framing) }}
@@ -6154,13 +6141,13 @@
             // Clean and quiet on purpose: muted labels, normal-weight text, no
             // colored boxes — the leverage hook below is the only highlighted item.
             const rowsHtml = rows.map(([ic, k, v, tip, raw]) => `
-                <div style="padding:9px 0;border-bottom:1px solid var(--border);" title="${_esc(tip)}"> <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:3px;">${k}</div> <div style="font-size:13px;color:var(--ink-soft);line-height:1.6;font-weight:500;">${raw ? v : _esc(v)}</div> </div>`).join('');
+                <div style="padding:9px 0;border-bottom:1px solid var(--border);" title="${_esc(tip)}"> <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--sage-700);margin-bottom:3px;">${k}</div> <div style="font-size:13px;color:var(--ink-soft);line-height:1.6;font-weight:500;">${raw ? v : _esc(v)}</div> </div>`).join('');
 
             let cultureHtml = '';
             if (d.culture && d.culture.length) {
                 const items = d.culture.slice(0, 4).map(c => `
                     <div style="padding:6px 0;font-size:12.5px;line-height:1.6;"> <span style="font-style:italic;color:var(--muted);">“${_esc(c.phrase)}”</span> <span style="color:var(--muted-2);margin:0 4px;">—</span> <span style="color:var(--ink-soft);">${_esc(c.meaning)}</span> </div>`).join('');
-                cultureHtml = `<div style="margin-top:10px;"> <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:2px;">Buzzword decoder</div> ${items} </div>`;
+                cultureHtml = `<div style="margin-top:10px;"> <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--sage-700);margin-bottom:2px;">Buzzword decoder</div> ${items} </div>`;
             }
 
             let hookHtml = '';
