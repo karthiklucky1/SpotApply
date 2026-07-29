@@ -1262,7 +1262,6 @@
                 <div class="jr-scorebar{% if stage == 'shortlist' %} jr-scorebar-pad{% endif %}" title="AI match score — Claude read the full posting and scored it against your resume">
                     <div class="jr-scorebar-fill jr-fill-{{ 'strong' if score >= 75 else ('good' if score >= 55 else ('fair' if score >= 40 else 'low')) }}" style="width:{{ score }}%;"></div>
                     <span class="jr-scorebar-text">{{ score }}% · {% if score >= 75 %}Strong match{% elif score >= 55 %}Good match{% elif score >= 40 %}Fair match{% else %}Low match{% endif %}</span>
-                    <span class="jr-scorebar-vet">✦ AI-vetted · 7 checks</span>
                 </div>
                 {% endif %}
                 <div class="jr-flex">
@@ -1277,7 +1276,7 @@
                             <span class="co-logo co-logo-lg"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span>{% set _dom = job.company|company_domain %}{% if _dom %}<img src="/api/favicon?domain={{ _dom }}&name={{ job.company|urlencode }}" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()">{% endif %}</span>
                             <div class="min-w-0 flex-1">
                                 <h3 class="jr-title">{{ job.title }}</h3>
-                                <p class="jr-company">{{ job.company or 'Unknown company' }} <span class="jr-sep">/</span> <span class="jr-src">found on {{ job.source.value|upper }}</span>{% if job.source.value in ('greenhouse','lever','ashby','workday','smartrecruiters','workable','recruitee','personio') %}<span class="jr-direct" title="This link opens the company's own application form — no job-board middleman or signup wall in between.">⚡ Direct company link</span>{% endif %}</p>
+                                <p class="jr-company">{{ job.company or 'Unknown company' }} <span class="jr-sep">/</span> <span class="jr-src">found on {{ job.source.value|upper }}</span>{% if job.source.value in ('greenhouse','lever','ashby','workday','smartrecruiters','workable','recruitee','personio') %}<span class="jr-direct" title="This link opens the company's own application form — no job-board middleman or signup wall in between.">⚡ Direct company link</span>{% endif %}{% if score is not none %}<span class="jr-vet-inline" title="Passed all 7 automated checks (liveness, ghost, fit, visa…) before reaching your board">✦ AI-vetted · 7 checks</span>{% endif %}</p>
                             </div>
                         </div>
                         <div class="jr-meta">
@@ -1347,16 +1346,21 @@
                 #shortlisted-container .jr-flex { flex: 1; display: flex; }
                 #shortlisted-container .jr-info { display: flex; flex-direction: column; width: 100%; }
                 #shortlisted-container .jr-actions { margin-top: auto; }
-                /* Score bar — replaces the old circle panel; same data, one clean strip */
-                .jr-scorebar { position: relative; height: 30px; border-radius: 10px; background: rgba(15,23,42,0.07); overflow: hidden; margin: 14px 18px 0; flex-shrink: 0; }
+                /* Score bar — slim and light: soft tinted fill, dark text, no glow */
+                .jr-scorebar { position: relative; height: 20px; border-radius: 7px; background: rgba(15,23,42,0.05); overflow: hidden; margin: 12px 18px 6px; flex-shrink: 0; }
                 .jr-scorebar-pad { margin-right: 44px; } /* clears the ✕ remove button */
-                .jr-scorebar-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 10px; }
-                .jr-fill-strong { background: linear-gradient(90deg, var(--sage), var(--sage-600)); }
-                .jr-fill-good   { background: linear-gradient(90deg, #818CF8, #6366F1); }
-                .jr-fill-fair   { background: linear-gradient(90deg, #FBBF24, #D97706); }
-                .jr-fill-low    { background: linear-gradient(90deg, #94A3B8, #64748B); }
-                .jr-scorebar-text { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #fff; text-shadow: 0 1px 2px rgba(2,6,23,0.25); white-space: nowrap; }
-                .jr-scorebar-vet { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--sage-700); background: rgba(255,255,255,0.92); border: 1px solid rgba(var(--sage-rgb),0.35); padding: 2px 8px; border-radius: 9999px; white-space: nowrap; }
+                .jr-scorebar-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 7px; }
+                .jr-fill-strong { background: rgba(var(--sage-rgb), 0.32); }
+                .jr-fill-good   { background: rgba(99,102,241, 0.26); }
+                .jr-fill-fair   { background: rgba(245,158,11, 0.30); }
+                .jr-fill-low    { background: rgba(100,116,139, 0.25); }
+                .jr-scorebar-text { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 9.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--ink); white-space: nowrap; }
+                /* AI-vetted pill lives in the company row, next to the direct-link chip */
+                .jr-vet-inline { display: inline-flex; align-items: center; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--sage-700); background: var(--sage-tint); border: 1px solid rgba(var(--sage-rgb),0.3); padding: 2px 8px; border-radius: 9999px; margin-left: 8px; vertical-align: middle; white-space: nowrap; }
+                /* Card action buttons: quiet boxes, dark text — the color only wakes on hover */
+                #shortlisted-container .jr-actions { padding-top: 16px; }
+                #shortlisted-container .jr-actions .jbtn { background: rgba(255,255,255,0.75); color: var(--ink); border: 1px solid var(--border); box-shadow: none; font-weight: 700; }
+                #shortlisted-container .jr-actions .jbtn:hover { background: var(--sage-tint); color: var(--sage-700); border-color: rgba(var(--sage-rgb),0.5); box-shadow: 0 0 0 3px rgba(var(--sage-rgb),0.12); }
             </style>
             <div data-tour="shortlist" class="flex flex-col gap-4">
                 <div class="flex flex-wrap items-center justify-between gap-3">
