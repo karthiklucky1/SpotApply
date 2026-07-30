@@ -2002,6 +2002,7 @@ def analyze_resume_text(text: str, uid: str) -> dict:
 
 
 @app.get("/api/resume/analysis")
+@_rate_limit("6/minute")  # full-resume LLM analysis
 def resume_analysis(request: Request) -> dict:
     """General ATS-readiness analysis of the user's résumé — no specific job needed.
 
@@ -2050,6 +2051,7 @@ def _resume_llm_json(prompt: str, max_tokens: int = 1200) -> dict:
 
 
 @app.get("/api/resume/recruiter-read")
+@_rate_limit("6/minute")  # LLM recruiter read of the whole resume
 def resume_recruiter_read(request: Request) -> dict:
     """A recruiter's-eye read of the master résumé — the 10-second scan plus an
     honest 'how do I rank against hundreds' assessment. DIAGNOSTIC ONLY: it never
@@ -2091,6 +2093,7 @@ def resume_recruiter_read(request: Request) -> dict:
 
 
 @app.get("/api/resume/metric-gaps")
+@_rate_limit("6/minute")  # LLM pass over every bullet
 def resume_metric_gaps(request: Request) -> dict:
     """Find experience bullets that lack a concrete, measurable outcome and return
     a targeted follow-up QUESTION for each — so we can ground real numbers from the
@@ -2126,6 +2129,7 @@ class MetricAnswersRequest(BaseModel):
 
 
 @app.post("/api/resume/metric-answers")
+@_rate_limit("6/minute")  # LLM rewrite per answered gap
 def resume_metric_answers(request: Request, body: MetricAnswersRequest) -> dict:
     """Store the candidate's real answers to metric-gap questions as
     candidate-confirmed achievements. _load_resume appends these so every future
@@ -2266,6 +2270,7 @@ def resume_text_view(request: Request) -> dict:
 
 
 @app.post("/api/resume/synthesize")
+@_rate_limit("3/minute")  # builds a whole resume from the profile
 def synthesize_resume(request: Request) -> dict:
     """Build a minimal markdown resume from the user's profile fields.
 
@@ -4167,6 +4172,7 @@ def public_freshness() -> dict:
 
 
 @app.get("/api/skill-gap")
+@_rate_limit("10/minute")  # LLM JD-vs-resume advice
 def skill_gap_api(request: Request, refresh: bool = False) -> dict:
     """Skill-gap analysis across the user's top matches: what the JDs demand,
     classified by the user's strongest evidence (résumé / GitHub / LinkedIn).
@@ -4384,6 +4390,7 @@ class AskQuestionBody(BaseModel):
 
 
 @app.post("/api/answer-question")
+@_rate_limit("20/minute")  # ~$0.002 per cache miss; the extension calls it per textarea
 def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     """Generate (or retrieve cached) answer for a single essay question.
 
@@ -6641,6 +6648,7 @@ def get_account_type(request: Request) -> dict:
 
 
 @app.post("/api/recruiter/search")
+@_rate_limit("6/minute")  # LLM-ranks the candidate pool
 def recruiter_search(request: Request, body: dict) -> dict:
     """Reverse search — a verified recruiter pastes a job description and gets an
     AI-ranked list of VERIFIED candidates from the pool. The pull model: demand
@@ -8021,6 +8029,7 @@ class AskCopilotRequest(BaseModel):
 
 
 @app.post("/application/{application_id}/ask")
+@_rate_limit("10/minute")  # one Claude call per question
 def ask_copilot(application_id: int, req: AskCopilotRequest, request: Request) -> dict:
     # sync on purpose: runs a Claude call — FastAPI threadpool, not the event loop
     """Ask custom question grounded in the JD and resume context."""
