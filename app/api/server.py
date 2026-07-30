@@ -2224,9 +2224,20 @@ def view_resume(request: Request) -> dict:
 
 @app.get("/api/resume/file")
 def resume_file(request: Request):
-    """Serve the locally-stored resume (local/dev mode only)."""
+    """Serve the locally-stored resume (local/dev mode only).
+
+    SECURITY: "local/dev mode only" was documentation, not enforcement — this
+    route had no auth and no mode gate, so in production an anonymous GET
+    returned whatever ./data/resume_master.* happened to be on the container
+    (the founder's master résumé: real name, phone, email, full history). That
+    is the docs/ARCHITECTURE.md §7.1 incident class as a public endpoint. Now
+    both are enforced.
+    """
     from fastapi.responses import FileResponse
     import glob
+    if settings.use_supabase:
+        raise HTTPException(status_code=404, detail="Not available")
+    _require_user(request)
     matches = glob.glob("./data/resume_master.*")
     if not matches:
         raise HTTPException(status_code=404, detail="No resume on file")
@@ -2928,14 +2939,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             # lane, which doesn't run when LANES_ENABLED=0): plain SHORTLISTED
             # postings older than shortlist_max_age_days never render. Jobs the
             # user invested in (TAILORED / autofill review) are never hidden.
-            _fresh_cutoff = None
-            if settings.shortlist_max_age_days and settings.shortlist_max_age_days > 0:
-                from datetime import datetime as _fdt, timedelta as _ftd
-                _fresh_cutoff = _fdt.utcnow() - _ftd(days=settings.shortlist_max_age_days)
-            _fresh_ok = (
-                (Application.status != ApplicationStatus.SHORTLISTED)
-                | (func.coalesce(Job.posted_at, Job.first_seen) >= _fresh_cutoff)
-            ) if _fresh_cutoff else None
+            _fresh_ok = _shortlist_fresh_clause()
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
@@ -3218,6 +3222,12 @@ def pipeline_live(request: Request) -> dict:
         ).join(Job).where(
             Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
         ).order_by(Job.rerank_score.desc())
+        # Same freshness window the board renders with — otherwise this endpoint
+        # reports shortlisted jobs the page cannot show, and the dashboard's
+        # auto-reloader loops.
+        _live_fresh = _shortlist_fresh_clause()
+        if _live_fresh is not None:
+            q = q.where(_live_fresh)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         for (app_id, st, apply_track, apply_url,
@@ -4719,9 +4729,16 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
 
 @app.delete("/run/discovery")
 def cancel_discovery(request: Request) -> dict:
-    """Mark the active discovery run as cancelled so the poller stops tracking it."""
+    """Mark the active discovery run as cancelled so the poller stops tracking it.
+
+    SECURITY: this used to call _get_user_id, which returns None when
+    unauthenticated — and the `if uid and uid != "local"` scoping below was then
+    skipped entirely, so an anonymous DELETE cancelled the newest run belonging
+    to ANY tenant, including the global shared-pool runs that refill everyone's
+    feed. _require_user makes the scoping unconditional.
+    """
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -4734,6 +4751,30 @@ def cancel_discovery(request: Request) -> dict:
             session.commit()
             return {"cancelled": True}
     return {"cancelled": False}
+
+
+def _shortlist_fresh_clause():
+    """SQL predicate: hide plain-SHORTLISTED postings past the freshness window.
+
+    MUST be applied by EVERY surface that counts or lists the shortlist. When
+    the dashboard render applied it but /api/pipeline/live did not, SSR rendered
+    0 cards while the live poll reported N — and dashboard.html's auto-reloader
+    (rendered === 0 && server > 0) reloaded the page every 30s forever. Returns
+    None when the window is disabled.
+
+    Jobs the user invested in (TAILORED / autofill review) are never hidden.
+    coalesce(posted_at, first_seen, discovered_at): first_seen reached prod via a
+    bare ALTER TABLE with no backfill, so it is NULL on the oldest rows, and
+    `NULL < cutoff` is NULL — without discovered_at as the final fallback those
+    rows would evade the window entirely.
+    """
+    days = settings.shortlist_max_age_days
+    if not days or days <= 0:
+        return None
+    from datetime import datetime as _fdt, timedelta as _ftd
+    cutoff = _fdt.utcnow() - _ftd(days=days)
+    freshness = func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= cutoff)
 
 
 def _has_active_paid_plan(uid) -> bool:

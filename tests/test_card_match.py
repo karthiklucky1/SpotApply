@@ -110,10 +110,61 @@ def test_citizens_only_blocks_non_citizens_even_without_sponsorship_need():
     assert r.expanded <= BLOCKER_OVERALL_CAP
 
 
+# "citizens only" and "citizens OR PERMANENT RESIDENTS only" are different legal
+# bars, and this pair exists because collapsing them broke once in each
+# direction: reading "Green Card" as citizenship admitted PR candidates to real
+# ITAR/cleared roles, and reading it as non-citizenship rejected them from the
+# far more common postings that explicitly accept permanent residents.
+@pytest.mark.parametrize("work_auth", ["Green Card", "Permanent Resident",
+                                       "lawful permanent resident"])
+def test_permanent_residents_are_eligible_when_the_posting_accepts_them(work_auth):
+    u = user_card()
+    u["_profile"]["work_authorization"] = work_auth
+    r = match_cards(u, job_card(disqualifiers=["us citizens or permanent residents only"]),
+                    graph=GRAPH)
+    assert r.breakdown["work_auth"]["score"] >= 80, r.breakdown["work_auth"]["note"]
+    assert not any("work_auth" in b for b in r.blockers)
+
+
+@pytest.mark.parametrize("work_auth", ["Green Card", "Permanent Resident"])
+def test_permanent_residents_are_still_blocked_by_a_strict_citizens_only_posting(work_auth):
+    u = user_card()
+    u["_profile"]["work_authorization"] = work_auth
+    r = match_cards(u, job_card(disqualifiers=["must be a us citizen"]), graph=GRAPH)
+    assert r.breakdown["work_auth"]["score"] <= 15
+    assert "citizen" in r.breakdown["work_auth"]["note"].lower()
+
+
+@pytest.mark.parametrize("work_auth", ["F-1 OPT", "H-1B", "not a us citizen"])
+def test_non_citizens_blocked_by_either_phrasing(work_auth):
+    """A negated status ("not a us citizen") must never read as citizenship."""
+    u = user_card()
+    u["_profile"]["work_authorization"] = work_auth
+    for disq in (["us citizens only"], ["us citizens or permanent residents only"]):
+        r = match_cards(u, job_card(disqualifiers=disq), graph=GRAPH)
+        assert r.breakdown["work_auth"]["score"] <= 15, (work_auth, disq)
+
+
+def test_citizens_only_does_not_punish_an_actual_citizen():
+    u = user_card()
+    u["_profile"]["work_authorization"] = "US Citizen"
+    for disq in (["us citizens only"], ["us citizens or permanent residents only"]):
+        r = match_cards(u, job_card(disqualifiers=disq), graph=GRAPH)
+        assert r.breakdown["work_auth"]["score"] >= 80, (disq, r.breakdown["work_auth"])
+
+
 def test_clearance_requirement_blocks():
     r = match_cards(user_card(), job_card(disqualifiers=["security clearance required"]),
                     graph=GRAPH)
     assert r.breakdown["work_auth"]["score"] <= 15
+
+
+def test_clearance_holder_is_not_blocked_by_a_clearance_requirement():
+    u = user_card()
+    u["_profile"]["work_authorization"] = "US Citizen"
+    u["_profile"]["visa_status"] = "Active Secret clearance"
+    r = match_cards(u, job_card(disqualifiers=["security clearance required"]), graph=GRAPH)
+    assert r.breakdown["work_auth"]["score"] >= 80, r.breakdown["work_auth"]["note"]
 
 
 # ── location ─────────────────────────────────────────────────────────────────

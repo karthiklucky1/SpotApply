@@ -44,6 +44,25 @@ class CardMatchResult:
     low_confidence: List[str] = field(default_factory=list)  # fields unsafe to auto-decide
 
 
+def _num(x, default: float = 0.0) -> float:
+    """Tolerant numeric coercion for LLM-provided fields.
+
+    Cards are model output: `years_experience` arrives as "5+", `importance` as
+    "high", scores as None. Raising here meant the pair contributed no shadow row
+    at all (the exception was swallowed upstream at DEBUG), silently biasing the
+    calibration set. Fall back instead."""
+    if isinstance(x, bool) or x is None:
+        return default
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        import re as _re
+        m = _re.search(r"-?\d+(?:\.\d+)?", str(x))
+        return float(m.group(0)) if m else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, x))
 
@@ -53,17 +72,35 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 def _work_auth_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
     prof = user_card.get("_profile") or {}
     needs = bool(prof.get("requires_sponsorship", False))
-    wa = (prof.get("work_authorization") or "").lower()
-    is_citizen = "citizen" in wa
+    wa = f"{prof.get('work_authorization') or ''} {prof.get('visa_status') or ''}".lower()
+    # "US citizens only" and "citizens OR PERMANENT RESIDENTS only" are different
+    # bars, and conflating them is wrong in both directions. The first is real
+    # ITAR/cleared work that genuinely excludes a green-card holder; the second
+    # admits them. So resolve citizenship and permanent residency separately on
+    # both sides and require the posting itself to accept PR before PR counts.
+    # (Same taxonomy as intelligence/work_auth.py — keep the two in step.)
+    _negated = ("not " in wa) or ("non-" in wa) or ("non " in wa)
+    is_citizen = (not _negated) and "citizen" in wa
+    is_pr = (not _negated) and any(
+        t in wa for t in ("green card", "permanent resident", "lawful permanent", "lpr")
+    )
     visa = (job_card.get("visa") or "silent").lower()
     disq = " | ".join(str(d).lower() for d in (job_card.get("disqualifiers") or []))
     wants_clearance = "clearance" in disq
     citizens_only = "citizen" in disq or "permanent resident" in disq
+    pr_accepted = any(
+        t in disq for t in ("permanent resident", "green card", "lawful permanent")
+    )
 
     if wants_clearance and "clearance" not in wa:
         return 8.0, "role requires a security clearance the candidate does not list"
-    if citizens_only and not is_citizen:
-        return 8.0, "posting restricts to citizens/permanent residents"
+    if citizens_only and not (is_citizen or (is_pr and pr_accepted)):
+        if is_pr and not pr_accepted:
+            return 8.0, "posting restricts to U.S. citizens only; candidate is a permanent resident"
+        return 8.0, (
+            "posting restricts to citizens/permanent residents"
+            if pr_accepted else "posting restricts to U.S. citizens"
+        )
 
     if needs:
         if visa == "no_sponsorship":
@@ -77,11 +114,18 @@ def _work_auth_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
 # ── location ─────────────────────────────────────────────────────────────────
 
 def _location_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
+    from app.common.geo import norm_country
     prof = user_card.get("_profile") or {}
-    want_country = (prof.get("preferred_country") or "").strip().lower()
+    # Both sides go through norm_country: the JobCard's country is free-form LLM
+    # output ("us", "usa", "u.s."), the profile's comes from a fixed UI list
+    # ("United States"). Raw string equality made a flawless US candidate for a
+    # US role score 25 (location 10 = hard blocker), and the old substring test
+    # false-matched "us" inside "australia" and "uk" inside "ukraine".
+    want_country = norm_country(prof.get("preferred_country") or "")
     remote_ok = bool(prof.get("remote_ok", True))
     relocate = bool(prof.get("open_to_relocation", False))
-    country = (job_card.get("country") or "unknown").strip().lower()
+    _raw_country = (job_card.get("country") or "").strip().lower()
+    country = norm_country(_raw_country) or ("unknown" if _raw_country in ("", "unknown") else _raw_country)
     policy = (job_card.get("remote_policy") or "unknown").lower()
     scope = (job_card.get("remote_scope") or "unknown").lower()
 
@@ -97,7 +141,7 @@ def _location_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
             return 88.0, "globally-open remote role"
         return 60.0, "role location unclear from the posting"
 
-    same = country == want_country or country in want_country or want_country in country
+    same = bool(country) and country == want_country
     if same:
         if policy == "remote":
             return 95.0, f"remote within {want_country}"
@@ -121,9 +165,9 @@ def _location_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
 # ── experience ───────────────────────────────────────────────────────────────
 
 def _experience_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
-    years = int(user_card.get("years_experience") or 0)
+    years = int(_num(user_card.get("years_experience"), 0))
     eff_level = (user_card.get("effective_level") or "").lower()
-    eff_conf = float(user_card.get("effective_level_confidence") or 0.0)
+    eff_conf = _num(user_card.get("effective_level_confidence"), 0.0)
     years_min = job_card.get("years_min")
     seniority = (job_card.get("seniority") or "unknown").lower()
 
@@ -176,10 +220,17 @@ def _experience_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
 def _evidence_map(user_card: dict) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for s in user_card.get("skills") or []:
-        name = str(s.get("name") or "").strip().lower()
+        # Tolerate a bare string ("python") as well as {"name","evidence"}: both
+        # shapes pass the mint validator, and raising here cost a ledger row.
+        if isinstance(s, str):
+            name, ev = s.strip().lower(), 0.5
+        elif isinstance(s, dict):
+            name = str(s.get("name") or "").strip().lower()
+            ev = _num(s.get("evidence"), 0.0)
+        else:
+            continue
         if not name:
             continue
-        ev = float(s.get("evidence") or 0.0)
         if ev > out.get(name, 0.0):
             out[name] = ev
     return out
@@ -221,7 +272,7 @@ def _skills_factor(user_card: dict, job_card: dict, graph: SkillGraph,
     notes: List[str] = []
     worst: Tuple[float, str] = (2.0, "")
     for cap in caps:
-        w = float(cap.get("importance") or 0.5)
+        w = _num(cap.get("importance"), 0.5)
         w = max(0.05, min(1.0, w))
         cov, via = _capability_coverage(evidence, cap, graph, use_inference)
         total_w += w
@@ -278,15 +329,12 @@ def match_cards(user_card: dict, job_card: dict,
     low_conf: List[str] = []
     conf = job_card.get("confidence") or {}
     for fld in ("skills", "experience", "location", "visa"):
-        try:
-            if float(conf.get(fld, 1.0)) < 0.5:
-                low_conf.append(fld)
-        except (TypeError, ValueError):
+        if _num(conf.get(fld, 1.0), 0.0) < 0.5:
             low_conf.append(fld)
     if not judged:
         low_conf.append("skills")
     if (user_card.get("effective_level_confidence") is not None
-            and float(user_card.get("effective_level_confidence") or 0.0) < 0.3
+            and _num(user_card.get("effective_level_confidence"), 0.0) < 0.3
             and job_card.get("years_min") is None):
         low_conf.append("experience")
 

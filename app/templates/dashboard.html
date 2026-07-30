@@ -5656,7 +5656,7 @@
                             const block = document.createElement('div');
                             block.className = "bg-slate-800/60 rounded-xl p-4 relative transform translate-y-2 opacity-0 transition-all duration-300";
                             block.innerHTML = `
-                                <p class="text-[11px] text-violet-300 font-bold mb-2">${ea.question}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
+                                <p class="text-[11px] text-violet-300 font-bold mb-2">${_esc(ea.question)}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
                             list.appendChild(block);
                             
                             setTimeout(() => {
@@ -6185,8 +6185,9 @@
             if (d.hq) facts.push(['Headquarters', d.hq]);
             if (d.size) facts.push(['Company size', d.size]);
             if (d.industry) facts.push(['Industry', d.industry]);
-            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`]);
-            const factRows = facts.map(([k, v]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${k}</span> <span style="color:var(--ink-soft);font-weight:600;">${v}</span> </div>`).join('');
+            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`, true]);
+            {#- XSS: v is LLM output derived from third-party job.company — escape it. -#}
+            const factRows = facts.map(([k, v, raw]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${_esc(k)}</span> <span style="color:var(--ink-soft);font-weight:600;">${raw ? v : _esc(v)}</span> </div>`).join('');
             slot.innerHTML = `
                 <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">🏢 Company Snapshot</span> <span class="jd-rh-sub">${_esc(d.company || '')}</span> </div>
                     ${d.brief ? `<div class="jd-sec"> <div class="jd-sec-title">About ${_esc(d.company || 'the company')}</div> <p class="text-[13px] leading-relaxed" style="color:var(--ink-soft);">${_esc(d.brief)}</p> <div style="font-size:10.5px;color:var(--muted-2);margin-top:6px;">AI-written from public knowledge — verify details on the company site.</div> </div>` : ''}
