@@ -7975,37 +7975,68 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
 
 # ── GDPR / Account deletion ──────────────────────────────────────────────────
 
+# Tables that own user data under a column OTHER than `user_id`. Everything with
+# a plain `user_id` column is found from the schema instead of being listed, so a
+# new table cannot silently escape deletion (see tests/test_account_deletion.py).
+_EXTRA_OWNER_COLUMNS = {
+    "candidateintro": ("candidate_user_id", "recruiter_user_id"),
+    "intromessage": ("sender_user_id",),
+    "introrating": ("rater_user_id", "ratee_user_id"),
+}
+
+
 @app.delete("/api/account")
 def delete_account(request: Request) -> dict:
-    """Permanently delete all data for the authenticated user."""
-    uid = _require_user(request)
-    from app.db.models import (
-        UserProfile, PendingQuestion, AnswerMemory, DiscoveryRun,
-        UserSubscription, UserUsage,
-    )
-    from app.db.init_db import get_session
-    from sqlmodel import select, delete as sql_delete
+    """Permanently delete all data for the authenticated user.
 
+    Schema-driven ON PURPOSE. The hand-written list this replaced named 7 tables
+    and the schema had 18 with a `user_id` column, because tables kept being added
+    after the route was written — the CardRace tables (user_card,
+    card_match_shadow) were the most recent. An enumeration cannot fall behind
+    that way, and the accompanying test fails the moment a new user-scoped table
+    appears without a deletion story.
+    """
+    uid = _require_user(request)
+    from sqlmodel import SQLModel, delete as sql_delete, select
+
+    from app.db.init_db import get_session
+    from app.db.models import PendingQuestion
+
+    # Never let a sentinel identity through: SHARED_POOL_USER owns the pool every
+    # tenant is served from, so "delete my account" for it would wipe the corpus.
+    from app.discovery.pipeline import SHARED_POOL_USER
+    if uid in (SHARED_POOL_USER, "shared", ""):
+        raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
+
+    deleted: dict[str, int] = {}
     with get_session() as session:
-        # Collect application IDs for this user
         if uid != "local":
-            app_ids = [
-                a.id for a in session.exec(
-                    select(Application).where(Application.user_id == uid)
-                ).all()
-            ]
-            # Delete pending questions linked to those applications
+            # PendingQuestion hangs off the application, not the user.
+            app_ids = list(session.exec(
+                select(Application.id).where(Application.user_id == uid)).all())
             if app_ids:
-                session.exec(sql_delete(PendingQuestion).where(PendingQuestion.application_id.in_(app_ids)))
-            # Delete every user-scoped row so no orphaned data remains (GDPR).
-            session.exec(sql_delete(Application).where(Application.user_id == uid))
-            session.exec(sql_delete(Job).where(Job.user_id == uid))
-            session.exec(sql_delete(UserProfile).where(UserProfile.user_id == uid))
-            session.exec(sql_delete(AnswerMemory).where(AnswerMemory.user_id == uid))
-            session.exec(sql_delete(DiscoveryRun).where(DiscoveryRun.user_id == uid))
-            session.exec(sql_delete(UserSubscription).where(UserSubscription.user_id == uid))
-            session.exec(sql_delete(UserUsage).where(UserUsage.user_id == uid))
+                r = session.exec(sql_delete(PendingQuestion).where(
+                    PendingQuestion.application_id.in_(app_ids)))
+                deleted["pendingquestion"] = r.rowcount or 0
+
+            for name, table in SQLModel.metadata.tables.items():
+                cols = table.columns
+                owner_cols = [cols[c] for c in ("user_id",) if c in cols]
+                owner_cols += [cols[c] for c in _EXTRA_OWNER_COLUMNS.get(name, ())
+                               if c in cols]
+                if not owner_cols:
+                    continue
+                for col in owner_cols:
+                    try:
+                        r = session.exec(sql_delete(table).where(col == uid))
+                        deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
+                    except Exception as e:
+                        # One undeletable table must not abandon the rest half-done.
+                        log.exception("Account deletion: %s.%s failed for %s: %s",
+                                      name, col.name, uid, e)
             session.commit()
+    log.info("Account deletion for %s removed: %s", uid,
+             {k: v for k, v in sorted(deleted.items()) if v})
 
     # Delete resume files from Supabase Storage
     from app.config import settings
