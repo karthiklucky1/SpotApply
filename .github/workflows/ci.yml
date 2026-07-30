@@ -1,0 +1,80 @@
+name: CI
+
+# Runs on every push and PR. Deliberately does NOT install the ML stack
+# (torch / faiss-cpu / sentence-transformers ≈ 1 GB and several minutes): the
+# suites that need it skip cleanly via pytest.importorskip, so CI stays fast
+# and still exercises 650+ tests including every multi-tenancy, cost-guard,
+# retention and grounding guard.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (excluding the heavy ML stack)
+        run: |
+          grep -viE '^(torch|faiss-cpu|sentence-transformers)' requirements.txt > requirements-ci.txt
+          python -m pip install --upgrade pip
+          # PyJWT ships with some base images in a state pip can't uninstall.
+          pip install --ignore-installed PyJWT
+          pip install -r requirements-ci.txt
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+      - name: Syntax + undefined-name check (blocking)
+        # Only the rules that catch code which cannot possibly work: syntax
+        # errors, undefined names, f-string mistakes. Style debt must never
+        # block a deploy, but a NameError must never ship.
+        run: ruff check app scripts tests --select=E9,F63,F7,F82
+
+      - name: Tests
+        run: python -m pytest tests/ -q --maxfail=5
+        env:
+          # Force the SQLite path: no Supabase/LLM credentials in CI, and
+          # conftest.py points the engine at a throwaway file.
+          SUPABASE_URL: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+
+      - name: Lint report (non-blocking style debt)
+        if: always()
+        run: ruff check app scripts tests || true
+
+  templates:
+    # The dashboard is one large Jinja template with inline JS; a broken script
+    # block or Jinja tag is invisible to pytest but breaks the whole app in the
+    # browser. This is the guard for that.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Jinja2
+        run: pip install jinja2
+
+      - name: Validate Jinja parse + JS syntax in every template
+        run: python scripts/validate_templates.py

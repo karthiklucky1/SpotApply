@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 import httpx
 from sqlmodel import select
 
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import CompanyRegistry, JobSource
+
+if TYPE_CHECKING:  # imported lazily at call sites to avoid a circular import
+    from app.discovery.sources.base import DiscoveredCompany
 
 log = logging.getLogger(__name__)
 
@@ -450,7 +453,6 @@ async def register_discovered_companies(discovered: List[DiscoveredCompany]) -> 
     background validation loop to avoid blocking the discovery hot path.
     """
     import asyncio
-    from app.discovery.sources.base import DiscoveredCompany
 
     new_added = 0
 
