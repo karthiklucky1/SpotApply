@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -24,6 +24,9 @@ from app.db.init_db import get_session
 from app.db.models import Job
 from app.qa_store.resolver import QAResolver
 from app.common.geo import detect_country, norm_country
+
+if TYPE_CHECKING:  # faiss is imported lazily inside methods (memory: docs/MEMORY.md)
+    import faiss
 
 log = logging.getLogger(__name__)
 
