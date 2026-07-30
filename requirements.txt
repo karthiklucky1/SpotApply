@@ -1,6 +1,11 @@
 # Core
 fastapi>=0.110
 uvicorn[standard]>=0.27
+jinja2>=3.1              # server.py's Jinja2Templates renders EVERY page. FastAPI
+                         # does not pull it in, and it was undeclared — production
+                         # only worked because torch happens to depend on it. Trim
+                         # the ML stack (as CI does deliberately) and the app fails
+                         # to import at startup.
 python-multipart>=0.0.9
 sqlmodel>=0.0.16
 pydantic-settings>=2.2

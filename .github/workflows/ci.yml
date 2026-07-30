@@ -36,6 +36,33 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
+      - name: App imports from requirements.txt alone
+        # The app must be importable from its DECLARED dependencies. jinja2 was
+        # missing from requirements.txt for a long time and nobody noticed,
+        # because torch happens to depend on it — so production worked by
+        # accident and any image that trimmed the ML stack would have failed to
+        # start. Without this step the symptom was four unrelated-looking test
+        # collection errors. (conftest stubs only the intentionally-omitted ML
+        # stack; everything else must genuinely be installed.)
+        run: |
+          python -c "
+          import sys, types, importlib.util
+          for name, attrs in (('sentence_transformers', {'SentenceTransformer': object, 'CrossEncoder': object}),
+                              ('faiss', {}), ('rank_bm25', {'BM25Okapi': object})):
+              if importlib.util.find_spec(name) is None:
+                  m = types.ModuleType(name); m.__path__ = []
+                  for k, v in attrs.items(): setattr(m, k, v)
+                  sys.modules[name] = m
+          u = types.ModuleType('sentence_transformers.util'); u.cos_sim = lambda *a, **k: None
+          sys.modules.setdefault('sentence_transformers.util', u)
+          import app.api.server, app.main
+          print('app imports cleanly')
+          "
+        env:
+          SUPABASE_URL: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+
       - name: Syntax + undefined-name check (blocking)
         # Only the rules that catch code which cannot possibly work: syntax
         # errors, undefined names, f-string mistakes. Style debt must never
