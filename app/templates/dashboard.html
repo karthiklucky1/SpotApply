@@ -1342,6 +1342,12 @@
                     </div>
                     <div class="relative w-52 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
                 </div>
+                <div id="submitted-controls" class="items-center gap-2 ml-auto" style="display:none;">
+                    <div class="relative w-64 max-w-full"> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
+                <div id="interviewing-controls" class="items-center gap-2 ml-auto" style="display:none;">
+                    <div class="relative w-64 max-w-full"> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
             </div>
             <div id="pipe-shortlist" class="pipe-pane"><!-- Shortlisted — full-width Jobright-style rows -->
             <style>
@@ -1387,9 +1393,6 @@
             </div>
             <div id="pipe-submitted" class="pipe-pane hidden"><!-- Submitted — full-width rows -->
             <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-end gap-3">
-                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                </div>
                 <div class="pr-1" id="submitted-container"> {% for app, job in submitted %}
                     {{ jobrow(app, job, visa_framing, 'submitted') }}
                     {% else %}
@@ -1404,9 +1407,6 @@
             </div></div>
             <div id="pipe-interviewing" class="pipe-pane hidden"><!-- Interviewing — full-width rows -->
             <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-end gap-3">
-                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                </div>
                 <div class="pr-1" id="interviewing-container"> {% for app, job in interviewing %}
                     {{ jobrow(app, job, visa_framing, 'interviewing') }}
                     {% else %}
@@ -5844,10 +5844,15 @@
     function switchPipeTab(paneId, btn) {
         document.querySelectorAll('.pipe-pane').forEach(pn => pn.classList.toggle('hidden', pn.id !== paneId));
         document.querySelectorAll('.pipe-tab').forEach(t => t.classList.toggle('active', t === btn));
-        // The sort/search controls live in the shared tab row but only act on
-        // the shortlist pane — hide them elsewhere.
-        const ctl = document.getElementById('shortlist-controls');
-        if (ctl) ctl.style.display = (paneId === 'pipe-shortlist') ? '' : 'none';
+        // Each pane's search/sort controls live in the shared tab row —
+        // show only the group matching the selected pane.
+        const ctlMap = { 'pipe-shortlist': 'shortlist-controls',
+                         'pipe-submitted': 'submitted-controls',
+                         'pipe-interviewing': 'interviewing-controls' };
+        Object.values(ctlMap).forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = (ctlMap[paneId] === id) ? 'flex' : 'none';
+        });
     }
 
     // Company logo avatar: tries the real logo, falls back to a branded initial.
