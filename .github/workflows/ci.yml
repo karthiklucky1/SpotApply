@@ -43,10 +43,43 @@ jobs:
         run: ruff check --isolated --select=E9,F63,F7,F82 app scripts tests
 
       - name: Tests
-        run: python -m pytest tests/ -q --maxfail=5
+        # No --maxfail: the suite is ~35s, so there is no budget reason to hide
+        # failures after the fifth. A PR should show everything it broke at once.
+        run: python -m pytest tests/ -q --disable-socket --allow-unix-socket
         env:
           # Force the SQLite path: no Supabase/LLM credentials in CI, and
           # conftest.py points the engine at a throwaway file.
+          SUPABASE_URL: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+
+      - name: Tests again in reverse file order (isolation check)
+        # Process-global state (budget counters, the provider breaker, deferral
+        # maps) is real in production and leaks between tests under pytest. A
+        # deferral left on job id 1 by one file once made another file's jobs
+        # silently unscorable — green alphabetically, red in any other order.
+        # 35 seconds is a cheap price for never debugging that from a bug report.
+        run: python -m pytest -q --disable-socket --allow-unix-socket $(ls tests/test_*.py | tac)
+        env:
+          SUPABASE_URL: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+
+      - name: Skip count must not grow
+        # "Make CI green by skipping the failing test" already happened once, to
+        # 25 tests covering the DOCX users actually send to employers. This makes
+        # the next attempt a build failure instead of a quiet loss of coverage.
+        run: |
+          MAX=8
+          N=$(python -m pytest tests/ -q -rs --disable-socket --allow-unix-socket \
+                2>/dev/null | grep -cE '^SKIPPED' || true)
+          echo "skipped test groups: $N (ceiling $MAX)"
+          if [ "$N" -gt "$MAX" ]; then
+            echo "::error::$N skipped groups exceeds the ceiling of $MAX."
+            echo "Un-skip the test, or raise MAX here with a reason in the commit."
+            exit 1
+          fi
+        env:
           SUPABASE_URL: ""
           ANTHROPIC_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -77,3 +110,13 @@ jobs:
 
       - name: Validate Jinja parse + JS syntax in every template
         run: python scripts/validate_templates.py
+
+      - name: Chrome extension syntax
+        # The MV3 extension is the autofill path for every non-founder user
+        # (server-side autofill is founder-only) and has no other coverage.
+        run: |
+          for f in extension/*.js; do
+            echo "checking $f"
+            node --check "$f"
+          done
+          python -c "import json,sys; json.load(open('extension/manifest.json')); print('manifest.json parses')"

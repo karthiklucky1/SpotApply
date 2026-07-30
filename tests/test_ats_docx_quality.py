@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import re
 import zipfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from docx import Document
 from docx.oxml.ns import qn
 
-from app.config import settings as _settings
 from sqlmodel import select
 
 from app.db.init_db import get_session
@@ -28,10 +26,13 @@ from app.db.models import Application, ApplicationStatus, Job, JobSource
 # Needs the local master résumé (data/resume_master.md) — a developer artifact
 # that is intentionally NOT committed. Skip when absent so a missing local
 # fixture never reads as a broken build.
-pytestmark = pytest.mark.skipif(
-    not _settings.resume_path.exists(),
-    reason="data/resume_master.md not present (local dev fixture)",
-)
+# Self-contained on purpose. This file used to be skipped whenever
+# data/resume_master.md was absent — and that file is gitignored, so the check
+# ran on a developer's laptop and NEVER in CI. It covers the artifact users
+# actually send to employers (ATS-safe DOCX, no tables, required sections,
+# action-verb bullets, cover-letter length), which is the last thing that should
+# go unverified on every build. The fixture below supplies its own master résumé
+# instead, so these tests run everywhere.
 
 # ── Realistic ML Engineer JD ─────────────────────────────────────────────────
 REAL_JD = """
@@ -184,7 +185,13 @@ class TestATSDocxQuality:
         mock_cover_resp.content = [MagicMock(text=TAILORED_COVER)]
         mock_client.messages.create.side_effect = [mock_resp, mock_cover_resp]
 
-        with patch("app.tailoring.tailor.settings") as ms:
+        # tailor.py resolves the master through app.matching.pipeline._load_resume,
+        # which reads the REAL settings.resume_path — patching
+        # app.tailoring.tailor.settings alone does not redirect it. Supply the
+        # résumé directly so no committed developer artifact is needed.
+        with patch("app.matching.pipeline._load_resume",
+                   lambda user_id=None: TAILORED_RESUME), \
+                patch("app.tailoring.tailor.settings") as ms:
             ms.anthropic_api_key = "sk-fake"
             ms.openai_api_key = ""
             ms.tailoring_model = "claude-sonnet-4-6"
@@ -194,7 +201,7 @@ class TestATSDocxQuality:
             ms.data_dir = tmp_path
             ms.jobs_keywords_list = ["machine learning", "python"]
 
-            from app.tailoring.tailor import tailor_for_application, Tailor
+            from app.tailoring.tailor import tailor_for_application
             from app.tailoring.grounding import GroundingResult
             with patch("app.tailoring.grounding.GroundingChecker") as MockGrounding:
                 mock_g = MockGrounding.return_value

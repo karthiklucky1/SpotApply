@@ -42,6 +42,9 @@ slowapi>=0.1.9          # Rate limiting for FastAPI
 
 # Dev
 pytest>=8.0
+pytest-socket>=0.7      # CI runs with --disable-socket: a test that reaches the
+                        # network is a hard failure, not a flake that surfaces
+                        # only when a scraper target is down
 ruff>=0.3
 tiktoken>=0.6.0
 
