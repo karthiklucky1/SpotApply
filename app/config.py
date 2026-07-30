@@ -394,6 +394,17 @@ class Settings(BaseSettings):
     min_embedding_score: float = 0.28    # lowered from 0.35 — was too aggressive
     qa_confidence_threshold: float = 0.7
     grounding_similarity_threshold: float = 0.5
+    # What to do when the grounding check cannot RUN at all (grounding.py imports
+    # sentence_transformers at module level, so a broken/absent ML stack or an
+    # unreachable model download raises before any bullet is examined).
+    #   False (default) — deliver the résumé, but report grounding_status as
+    #     "unverified" rather than "passed" and put a warning on the application.
+    #     The human review + Submit step is the backstop. Chosen as the default
+    #     because failing closed here turns a transient ML hiccup into a total
+    #     outage of the core tailoring feature.
+    #   True — treat "could not verify" as a failure and block at ERROR.
+    # Either way the check never reports "passed" for a résumé it did not read.
+    grounding_required: bool = False
 
     # score_hire_probability is a hot, in-DB step (called per reranked job while a
     # pooled DB connection + the matching lock are held). Its GitHub/Crunchbase

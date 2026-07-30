@@ -1495,7 +1495,7 @@
        <div class="flex items-center gap-2 shrink-0">
          <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
          <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
-         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span>
+         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span> <span id="ts-grounding" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
          <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
        </div>
      </div>
@@ -3363,6 +3363,35 @@
                 const cov = document.getElementById('ts-coverage');
                 cov.textContent = `ATS keywords ${d.ats.coverage_pct}%`;
                 cov.classList.remove('hidden');
+            }
+            // Grounding has three states and the middle one is the point: when the
+            // anti-hallucination check could not RUN, say so instead of implying a
+            // clean pass. The user's own review is the last line of defence, and it
+            // only works if they know the automated one was skipped.
+            const gEl = document.getElementById('ts-grounding');
+            const gStatus = q.grounding_status
+                || (q.grounding_passed === true ? 'passed'
+                    : q.grounding_passed === false ? 'failed' : null);
+            if (gStatus) {
+                const G = {
+                    passed:     ['✓ Grounded in your résumé', 'rgba(16,185,129,0.12)', '#34d399', 'rgba(16,185,129,0.35)',
+                                 'Every bullet was matched back to your master résumé.'],
+                    failed:     ['✕ Grounding failed', 'rgba(244,63,94,0.12)', '#fb7185', 'rgba(244,63,94,0.35)',
+                                 'One or more bullets could not be traced to your master résumé. Rebuild before sending.'],
+                    unverified: ['⚠ Grounding not verified', 'rgba(245,158,11,0.14)', '#fbbf24', 'rgba(245,158,11,0.3)',
+                                 'The automated hallucination check did not run for this draft. Read every bullet against your own résumé before you submit.'],
+                }[gStatus];
+                if (G) {
+                    gEl.textContent = G[0];
+                    gEl.title = G[4];
+                    gEl.style.cssText = `background:${G[1]};color:${G[2]};border:1px solid ${G[3]}`;
+                    gEl.classList.remove('hidden');
+                    if (gStatus !== 'passed') {
+                        document.getElementById('ts-rebuild').classList.remove('hidden');
+                    }
+                }
+            } else {
+                gEl.classList.add('hidden');
             }
             if ((q.attempts || 1) > 1) {
                 const at = document.getElementById('ts-attempts');

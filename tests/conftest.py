@@ -134,6 +134,20 @@ def _reset_process_globals():
 # True only when the real sentence-transformers/torch stack is installed.
 _HAS_REAL_ST = importlib.util.find_spec("torch") is not None
 
+# Tests that genuinely construct a real GroundingChecker (which imports
+# sentence_transformers at module scope) and so cannot run on the stub.
+#
+# This list used to be the substring "test_grounding", which swept up every file
+# whose name began that way — including pure-Python ones like
+# test_grounding_metric_gate.py and test_grounding_enforcement.py, the latter
+# stubbing the grounding module precisely so it could test the ML-ABSENT path.
+# The anti-hallucination gate is exactly what must not go untested in CI, so this
+# matches whole files by name and nothing more.
+_NEEDS_TORCH = (
+    "tests/test_grounding.py::",
+    "tests/test_grounding_fail_open.py::",
+)
+
 
 def pytest_collection_modifyitems(config, items):
     """Skip tests that need the real ML stack (torch) when it isn't installed.
@@ -145,5 +159,6 @@ def pytest_collection_modifyitems(config, items):
         return
     skip_ml = pytest.mark.skip(reason="requires torch/sentence-transformers (not installed)")
     for item in items:
-        if "test_grounding" in item.nodeid:
+        nodeid = item.nodeid.replace("\\", "/")
+        if any(nodeid.startswith(m) or f"/{m}" in f"/{nodeid}" for m in _NEEDS_TORCH):
             item.add_marker(skip_ml)
