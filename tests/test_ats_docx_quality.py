@@ -18,6 +18,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from docx import Document
 from docx.oxml.ns import qn
+
+from app.config import settings as _settings  # noqa: E402
+
+# Needs the local master résumé (data/resume_master.md) — a developer artifact
+# that is intentionally NOT committed. Skip when absent so a missing local
+# fixture never reads as a broken build.
+pytestmark = pytest.mark.skipif(
+    not _settings.resume_path.exists(),
+    reason="data/resume_master.md not present (local dev fixture)",
+)
 from sqlmodel import select
 
 from app.db.init_db import get_session
