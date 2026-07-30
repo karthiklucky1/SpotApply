@@ -1925,7 +1925,9 @@ Return only valid JSON, no markdown, no explanation."""
 @app.get("/api/resume/status")
 def resume_status(request: Request) -> dict:
     """Whether the current user has a resume on file. Drives the Discover gate."""
-    uid = _get_user_id(request)
+    # _user_has_resume(None) falls back to the local ./data glob, so anonymously
+    # this reported the founder's résumé as the caller's own.
+    uid = _require_user(request)
     return {"has_resume": _user_has_resume(uid)}
 
 
@@ -2170,7 +2172,9 @@ def discovery_last_run(request: Request) -> dict:
     """Return the most recent discovery run's per-source summary for this user."""
     import json
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    # Must refuse anonymous callers: the `if uid and uid != "local"` scoping below
+    # fails OPEN, so uid=None returned the newest DiscoveryRun of ANY tenant.
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -4701,7 +4705,12 @@ def _discover_then_match_locked(user_id) -> None:
 @app.post("/run/discovery")
 @_rate_limit("10/minute")
 def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Authentication first: every gate below is a no-op for an anonymous caller.
+    # _user_has_resume(None) falls through to glob("./data/resume_master.*") —
+    # the founder's own file — so an unauthenticated POST cleared the resume gate
+    # and launched a full discovery + match run against the NULL-owner pool,
+    # burning scraper quota and LLM budget. Rate limiting alone only slows that.
+    uid = _require_user(request)
     # Gate: no resume → no discovery. Without a resume there is nothing to match
     # against, so scraping jobs into the user's pool would only show noise.
     if not _user_has_resume(uid):
@@ -7648,7 +7657,7 @@ def _sign_avatar(bucket, path: str) -> str | None:
 def get_avatar(request: Request) -> dict:
     """Return the signed URL for the user's profile avatar, or null."""
     from app.config import settings
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     if settings.use_supabase and uid and uid != "local":
         try:
             from app.db.supabase_client import service_client
@@ -7678,7 +7687,9 @@ def get_avatar(request: Request) -> dict:
 async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
     """Upload a profile photo and store in Supabase storage (avatars bucket)."""
     from app.config import settings
-    uid = _get_user_id(request)
+    # Refuse before reading the body — an anonymous caller could otherwise push
+    # 3 MB per request and get a 200 back.
+    uid = _require_user(request)
     ext = (file.filename or "avatar.jpg").rsplit(".", 1)[-1].lower()
     if ext not in {"jpg", "jpeg", "png", "webp", "gif"}:
         raise HTTPException(status_code=400, detail="Unsupported image type")

@@ -89,6 +89,48 @@ def _init_db():
             pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_globals():
+    """Clear every module-level mutable counter/cache between tests.
+
+    These modules deliberately hold process-global state (budget counters, the
+    provider circuit breaker, attempt-ceiling deferrals, caches) because in
+    production one process serves all lanes for its whole lifetime. Under pytest
+    that lifetime spans the entire suite, so one test's leftovers silently change
+    another file's result.
+
+    This was not hypothetical. test_scoring_lane_starvation.py set
+    `_deferred_until[1] = now + 3600` and never cleaned up; SQLite then reused
+    row id 1 in test_scoring_lane.py, whose jobs the lane skipped as "deferred".
+    Two tests failed only when the files ran in that order — invisible in the
+    default alphabetical order, reproducible under any reordering.
+
+    Resetting after each test (not just before) makes the whole class of bug
+    impossible rather than fixing the one instance.
+    """
+    yield
+    from app.matching import reranker as _rr
+    from app.strategy import scoring_lane as _sl
+    for d in (_sl._fail_counts, _sl._deferred_until, _sl._prescore_memo,
+              _rr._provider_down_until, _rr._user_finals):
+        d.clear()
+    for counter, key in ((_rr._daily_finals, "day"), (_rr._hourly_finals, "hour")):
+        counter[key] = ""
+        counter["count"] = 0
+    _rr._usage_totals.update(calls=0, input=0, cache_read=0, cache_write=0, output=0)
+    try:
+        from app.matching import cards as _cards
+        _cards._mints_today["day"] = ""
+        _cards._mints_today["count"] = 0
+    except ImportError:      # module is optional in trimmed environments
+        pass
+    try:
+        from app.matching.pipeline import _RESUME_CACHE
+        _RESUME_CACHE.clear()
+    except ImportError:
+        pass
+
+
 # True only when the real sentence-transformers/torch stack is installed.
 _HAS_REAL_ST = importlib.util.find_spec("torch") is not None
 
