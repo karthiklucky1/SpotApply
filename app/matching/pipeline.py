@@ -341,7 +341,12 @@ def _reset_incident_frozen_scores(user_id: str | None) -> int:
                 return 0
             cutoff = datetime.utcnow() - timedelta(days=3)
             reason_col = Job.rerank_reasoning
-            q = select(Job).where(
+            # ORM objects (this loop mutates them), but only the two columns it
+            # writes — a bare select(Job) would stream every matched posting's full
+            # description just to null out two fields. See docs/CAPACITY.md.
+            q = select(Job).options(
+                load_only(Job.id, Job.rerank_score, Job.rerank_reasoning)
+            ).where(
                 Job.user_id == user_id,
                 Job.rerank_score.isnot(None),  # type: ignore[union-attr]
                 (reason_col.like(_REJECT_PREFIXES[0])  # type: ignore[union-attr]

@@ -146,6 +146,58 @@ def test_fail_open_scoping_is_always_preceded_by_a_refusal(route):
     )
 
 
+# Routes that take a resource id in the path but legitimately need no ownership
+# check: admin-gated moderation, and reads of deliberately public content.
+_NO_OWNERSHIP_NEEDED = {
+    "/api/admin/coupons/{coupon_id}",
+    "/api/admin/reviews/{review_id}/approve",
+    "/api/admin/reviews/{review_id}/feature",
+}
+
+_OWNERSHIP_MARKERS = (
+    "_require_owned_application(",   # the shared helper
+    "_intro_participant(",           # intro-thread participants
+    "user_id != uid",                # hand-rolled: 404 when not yours
+    "user_id != user_id_arg",
+    "user_id == uid",
+    "user_id == user_id_arg",
+)
+
+_WITH_RESOURCE_ID = [
+    r for r in _api_routes()
+    if any(p.endswith("_id") for p in __import__("re").findall(r"\{(\w+)\}", r.path))
+    and r.path not in _NO_OWNERSHIP_NEEDED
+]
+
+
+@pytest.mark.parametrize("route", _WITH_RESOURCE_ID, ids=_ids(_WITH_RESOURCE_ID))
+def test_routes_taking_a_resource_id_check_who_owns_it(route):
+    """Authentication is not authorization.
+
+    Every route above passes the anonymous-caller tests by calling _require_user,
+    which proves only that SOMEONE is logged in. A route that then loads row N by
+    id without checking who owns it lets any authenticated tenant read or mutate
+    another's data — worst case POST .../submit or .../reject on someone else's
+    pipeline. All 20 /application/{id}/* routes currently route through
+    _require_owned_application; this keeps the 21st honest.
+    """
+    src = _source(route)
+    if "_require_admin" in src:
+        return           # admin-gated: cross-tenant access is the point
+    assert any(m in src for m in _OWNERSHIP_MARKERS), (
+        f"{_methods(route)} {route.path} ({route.endpoint.__name__}) loads a "
+        f"resource by id but never checks who owns it. Use "
+        f"_require_owned_application(request, id) for applications, or compare the "
+        f"row's owner column to the requesting uid and 404 on mismatch."
+    )
+
+
+def test_the_resource_id_route_set_is_populated():
+    assert len(_WITH_RESOURCE_ID) > 20, (
+        f"only {len(_WITH_RESOURCE_ID)} id-bearing routes found — the sweep above "
+        f"would be near-vacuous")
+
+
 def test_public_paths_all_exist():
     """A stale allowlist silently exempts nothing — but it also hides typos that
     would otherwise be caught the moment a real path is renamed."""

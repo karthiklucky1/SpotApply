@@ -5702,6 +5702,32 @@ def admin_page(request: Request):
     return HTMLResponse(_ADMIN_HTML)
 
 
+def _is_grandfathered(uid: str) -> bool:
+    """True when this user signed up before settings.plan_grandfather_until.
+
+    Exists so turning on payments is not a silent downgrade for the people who
+    were already using the product for free. Fails CLOSED (not grandfathered) if
+    the date is unset or the profile has no created_at — never hand out PRO by
+    accident.
+    """
+    raw = (getattr(settings, "plan_grandfather_until", "") or "").strip()
+    if not raw:
+        return False
+    from datetime import datetime as _dt
+
+    from app.db.models import UserProfile
+    try:
+        cutoff = _dt.fromisoformat(raw)
+    except ValueError:
+        log.warning("PLAN_GRANDFATHER_UNTIL=%r is not an ISO date — ignoring", raw)
+        return False
+    with get_session() as session:
+        prof = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)).first()
+    created = getattr(prof, "created_at", None) if prof else None
+    return bool(created and created < cutoff)
+
+
 def _get_user_plan(uid: str) -> PlanTier:
     """The user's current plan tier.
 
@@ -5721,6 +5747,14 @@ def _get_user_plan(uid: str) -> PlanTier:
             select(UserSubscription).where(UserSubscription.user_id == uid)
         ).first()
     if not row:
+        # SWITCHING STRIPE ON IS A CLIFF: every existing user has no subscription
+        # row, so the instant STRIPE_SECRET_KEY + STRIPE_PRICE_ID_PRO are set they
+        # all drop PRO → FREE (50 → 15 finals/day, unlimited → 5 tailors/day,
+        # unlimited → 2 autofills/week) with no warning and no action on their part.
+        # Set PLAN_GRANDFATHER_UNTIL to an ISO date to keep users who signed up
+        # before then on PRO. Unset (default) = the cliff, i.e. current behaviour.
+        if _is_grandfathered(uid):
+            return PlanTier.PRO
         return PlanTier.FREE
     if row.current_period_end and \
             row.current_period_end + timedelta(days=3) < datetime.utcnow():
