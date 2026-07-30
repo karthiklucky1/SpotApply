@@ -253,6 +253,15 @@ class Settings(BaseSettings):
     # warning. Set this to an ISO date (e.g. "2026-08-01") to keep everyone who
     # signed up before then on PRO. Empty (default) = that cliff, unchanged.
     plan_grandfather_until: str = ""       # PLAN_GRANDFATHER_UNTIL
+    # Recruiter verification unlocks /api/recruiter/search, which returns every
+    # pooled candidate's full name, work authorization and sponsorship need. The
+    # old auto-verify compared work_email's domain to company_domain — but BOTH
+    # arrive in the same request body, so a match proved only that the caller typed
+    # two consistent strings, never that they control the mailbox. Off by default:
+    # a domain match is recorded as a signal and an admin promotes
+    # (POST /api/admin/recruiter/verify). Turn on only once email ownership is
+    # actually proven (verification link / SSO).
+    recruiter_autoverify_on_domain_match: bool = False
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
