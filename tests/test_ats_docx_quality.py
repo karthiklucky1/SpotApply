@@ -19,7 +19,11 @@ import pytest
 from docx import Document
 from docx.oxml.ns import qn
 
-from app.config import settings as _settings  # noqa: E402
+from app.config import settings as _settings
+from sqlmodel import select
+
+from app.db.init_db import get_session
+from app.db.models import Application, ApplicationStatus, Job, JobSource
 
 # Needs the local master résumé (data/resume_master.md) — a developer artifact
 # that is intentionally NOT committed. Skip when absent so a missing local
@@ -28,10 +32,6 @@ pytestmark = pytest.mark.skipif(
     not _settings.resume_path.exists(),
     reason="data/resume_master.md not present (local dev fixture)",
 )
-from sqlmodel import select
-
-from app.db.init_db import get_session
-from app.db.models import Application, ApplicationStatus, Job, JobSource
 
 # ── Realistic ML Engineer JD ─────────────────────────────────────────────────
 REAL_JD = """
