@@ -5455,6 +5455,51 @@ def _scalar(v) -> int:
     return int(v if not isinstance(v, (list, tuple)) else v[0])
 
 
+@app.post("/api/admin/recruiter/verify")
+def admin_verify_recruiter(request: Request, body: dict) -> dict:
+    """Promote (or demote) a recruiter account by hand — admin only.
+
+    This is the promotion path now that a corporate-domain match no longer grants
+    verification on its own (see _verify_recruiter): both sides of that comparison
+    arrive in the same request body, so it proved nothing about mailbox ownership,
+    and verification unlocks every pooled candidate's name, work authorization and
+    sponsorship need. Until there is a real ownership proof (verification link or
+    SSO), a human decides.
+
+    Body: {"user_id" | "work_email": str, "verified": bool (default true),
+           "note": str (optional)}
+    """
+    from app.db.models import RecruiterProfile
+    admin = _require_admin_user(request)
+    uid = (body.get("user_id") or "").strip()
+    email = (body.get("work_email") or "").strip().lower()
+    if not uid and not email:
+        raise HTTPException(status_code=400, detail="user_id or work_email required")
+    want = bool(body.get("verified", True))
+    with get_session() as session:
+        q = select(RecruiterProfile)
+        q = q.where(RecruiterProfile.user_id == uid) if uid else \
+            q.where(func.lower(RecruiterProfile.work_email) == email)
+        rp = session.exec(q).first()
+        if not rp:
+            raise HTTPException(status_code=404, detail="Recruiter profile not found")
+        if want and rp.banned:
+            raise HTTPException(
+                status_code=409,
+                detail="Account is banned (indicated charging candidates) — "
+                       "clear the ban before verifying.")
+        rp.verified = want
+        stamp = f"{'verified' if want else 'unverified'} by {admin}"
+        if body.get("note"):
+            stamp += f": {str(body['note'])[:200]}"
+        rp.verification_notes = (f"{rp.verification_notes} · {stamp}").strip(" ·")
+        session.add(rp)
+        session.commit()
+        log.info("Recruiter %s %s", rp.user_id, stamp)
+        return {"user_id": rp.user_id, "verified": rp.verified,
+                "notes": rp.verification_notes}
+
+
 @app.post("/api/admin/seed-registry")
 def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
     """Trigger the open-dataset registry seed on demand (admin-only). Lets the
@@ -6571,8 +6616,25 @@ def _verify_recruiter(rp) -> None:
         rp.verification_notes = "Banned: indicated charging candidates (prohibited)."
         return
     if domain and email_domain and email_domain == domain and domain not in _free:
-        rp.verified = True
+        # SELF-VERIFICATION HOLE: work_email and company_domain both arrive in the
+        # same request body, so "they match" proves only that the caller typed two
+        # consistent strings — not that they control either. Verification unlocks
+        # /api/recruiter/search, which returns every pooled candidate's full name,
+        # work authorization, and sponsorship need. Handing that to an unverified
+        # stranger is the exposure; needing sponsorship is precisely the attribute
+        # a discriminating actor would filter on.
+        #
+        # So a domain match is now a SIGNAL, not a grant. Promotion to verified
+        # goes through the admin path (POST /api/admin/recruiter/verify) unless
+        # RECRUITER_AUTOVERIFY_ON_DOMAIN_MATCH is explicitly turned on. Fails
+        # closed: a new registration is unverified until a human says otherwise.
         notes.append(f"Corporate email matches {domain}")
+        if settings.recruiter_autoverify_on_domain_match:
+            rp.verified = True
+        else:
+            rp.verified = False
+            notes.append("Pending manual review (domain match alone is not proof "
+                         "of email ownership)")
     elif email_domain in _free:
         notes.append("Free email — corporate domain required to verify")
     else:
