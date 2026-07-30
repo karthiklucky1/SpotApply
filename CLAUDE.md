@@ -183,6 +183,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - Tests: `pytest` (or target files); lint: `ruff check app`.
 - Validate template/python edits before committing; keep commits scoped + descriptive.
 - Branch per the session's assigned feature branch; commit + push when done.
+- CI installs requirements MINUS the ML stack, so the app must import from its
+  DECLARED deps (jinja2 was missing; prod only worked because torch pulls it in).
+  Suite runs twice — normal + reversed file order — with `--disable-socket`; skips
+  capped at 8.
+- **Guard tests fail on a whole CLASS of mistake** — read the one that covers what
+  you're touching (rationale + incidents: docs/AUDIT_2026_07_30.md).
+  `route_auth_inventory` (every route on `PUBLIC_PATHS` with a reason or guarded,
+  + ownership on id-bearing routes; `if uid and uid != "local"` is FAIL-OPEN and
+  leaked 7 routes) · `account_deletion` (schema-driven — a new user-scoped table
+  fails until handled) · `architecture_invariants` (Playwright only in
+  `browser_slot`; MiniLM/CrossEncoder only in `matcher._MODEL_CACHE`; no
+  unprojected `select(Job)` on a hot path) · `settings_defaults` (the load-bearing
+  numbers + their lockstep relations) · `index_declarations` (the 3 DDL sites can't
+  disagree) · `grounding_enforcement` (3 states; "never ran" ≠ passed).
 
 ## Maintenance
 Update on major architectural changes or completed modules. Keep under ~150 lines —
