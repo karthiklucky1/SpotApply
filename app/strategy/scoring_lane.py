@@ -455,7 +455,7 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
         _LANE_LOCK.release()
 
 
-def _expire_stale_unscored() -> int:
+def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> int:
     """Bulk-stamp unscored per-user jobs older than scoring_max_job_age_days so
     they exit the queue WITHOUT costing a prescore or final.
 
@@ -474,29 +474,52 @@ def _expire_stale_unscored() -> int:
 
     from app.discovery.pipeline import SHARED_POOL_USER
     cutoff = datetime.utcnow() - timedelta(days=days)
+    # Age is coalesce(posted_at, first_seen, discovered_at) — the SAME measure the
+    # render filter, hygiene lane and pulse fast path use. Keying off first_seen
+    # alone let an aggregator posting that is 30 days old but adopted today sail
+    # through the gate and buy a prescore + a Claude final, only to be hidden at
+    # render — exactly the spend this gate exists to prevent. discovered_at is the
+    # final fallback because first_seen reached prod via a bare ALTER TABLE with no
+    # backfill, so it is NULL on the oldest rows and `NULL < cutoff` is NULL.
+    from sqlalchemy import func as _func
+    age = _func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    total = 0
     try:
-        with get_session() as session:
-            res = session.exec(
-                update(Job)
-                .where(
-                    Job.rerank_score == None,   # noqa: E711
-                    Job.is_closed == False,     # noqa: E712
-                    Job.user_id != SHARED_POOL_USER,
-                    Job.first_seen < cutoff,
+        # Batched like close_stale_user_jobs: the first run after deploy can match
+        # six figures of rows on a 764k-row table, and one unbounded UPDATE is the
+        # Supabase statement-timeout / Disk-IO pattern we just spent a day fixing.
+        for _ in range(max_batches):
+            with get_session() as session:
+                ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                    select(Job.id).where(
+                        Job.rerank_score == None,   # noqa: E711
+                        Job.is_closed == False,     # noqa: E712
+                        (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
+                        age < cutoff,
+                    ).limit(batch)
+                ).all()]
+                if not ids:
+                    break
+                session.exec(
+                    update(Job)
+                    .where(Job.id.in_(ids))
+                    .values(rerank_score=8.0,
+                            rerank_reasoning=f"Expired unscored (older than {days}d "
+                                             f"before scoring caught up — too stale to apply)")
                 )
-                .values(rerank_score=8.0,
-                        rerank_reasoning=f"Expired unscored (older than {days}d "
-                                         f"before scoring caught up — too stale to apply)")
-            )
-            session.commit()
-            n = int(getattr(res, "rowcount", 0) or 0)
-        if n:
+                session.commit()
+                total += len(ids)
+            if len(ids) < batch:
+                break
+        if total:
             log.info("Scoring: expired %d stale unscored job(s) older than %dd "
-                     "(drained free, no LLM spend)", n, days)
-        return n
+                     "(drained free, no LLM spend)", total, days)
+        return total
     except Exception as e:
-        log.debug("stale-unscored expiry failed (non-fatal): %s", e)
-        return 0
+        # WARNING not DEBUG: this runs every 90s, so a silent failure means a
+        # repeating unlogged IO burn.
+        log.warning("stale-unscored expiry failed (non-fatal): %s", e)
+        return total
 
 
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:

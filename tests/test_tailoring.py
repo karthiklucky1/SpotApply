@@ -6,14 +6,11 @@ requiring a real API key.
 """
 from __future__ import annotations
 
-import pathlib
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import select
 
-from app.config import settings as _settings
 
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource
@@ -21,10 +18,9 @@ from app.db.models import Application, ApplicationStatus, Job, JobSource
 # Needs the local master résumé (data/resume_master.md) — a developer artifact
 # that is intentionally NOT committed. Skip when absent so a missing local
 # fixture never reads as a broken build.
-pytestmark = pytest.mark.skipif(
-    not _settings.resume_path.exists(),
-    reason="data/resume_master.md not present (local dev fixture)",
-)
+# No file-level skip. The gitignored data/resume_master.md meant this whole file
+# ran on a laptop and never in CI — including test_tailor_raises_without_llm,
+# which never needed a résumé at all. Each test now supplies what it needs.
 
 FAKE_RESUME_MD = """# Karthik Test
 ## Summary
@@ -101,7 +97,12 @@ def test_tailor_for_application_mocked(tmp_path):
         mock_cover_resp.content = [MagicMock(text=FAKE_COVER)]
         mock_client.messages.create.side_effect = [mock_resp, mock_cover_resp]
 
-        with patch("app.tailoring.tailor.settings") as mock_settings:
+        # tailor.py resolves the master via app.matching.pipeline._load_resume,
+        # which reads the REAL settings.resume_path — patching tailor's settings
+        # alone does not redirect it.
+        with patch("app.matching.pipeline._load_resume",
+                   lambda user_id=None: FAKE_RESUME_MD), \
+                patch("app.tailoring.tailor.settings") as mock_settings:
             mock_settings.anthropic_api_key = "sk-fake-key"
             mock_settings.openai_api_key = ""
             mock_settings.tailoring_model = "claude-sonnet-4-6"

@@ -1495,7 +1495,7 @@
        <div class="flex items-center gap-2 shrink-0">
          <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
          <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
-         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span>
+         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span> <span id="ts-grounding" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
          <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
        </div>
      </div>
@@ -3363,6 +3363,35 @@
                 const cov = document.getElementById('ts-coverage');
                 cov.textContent = `ATS keywords ${d.ats.coverage_pct}%`;
                 cov.classList.remove('hidden');
+            }
+            // Grounding has three states and the middle one is the point: when the
+            // anti-hallucination check could not RUN, say so instead of implying a
+            // clean pass. The user's own review is the last line of defence, and it
+            // only works if they know the automated one was skipped.
+            const gEl = document.getElementById('ts-grounding');
+            const gStatus = q.grounding_status
+                || (q.grounding_passed === true ? 'passed'
+                    : q.grounding_passed === false ? 'failed' : null);
+            if (gStatus) {
+                const G = {
+                    passed:     ['✓ Grounded in your résumé', 'rgba(16,185,129,0.12)', '#34d399', 'rgba(16,185,129,0.35)',
+                                 'Every bullet was matched back to your master résumé.'],
+                    failed:     ['✕ Grounding failed', 'rgba(244,63,94,0.12)', '#fb7185', 'rgba(244,63,94,0.35)',
+                                 'One or more bullets could not be traced to your master résumé. Rebuild before sending.'],
+                    unverified: ['⚠ Grounding not verified', 'rgba(245,158,11,0.14)', '#fbbf24', 'rgba(245,158,11,0.3)',
+                                 'The automated hallucination check did not run for this draft. Read every bullet against your own résumé before you submit.'],
+                }[gStatus];
+                if (G) {
+                    gEl.textContent = G[0];
+                    gEl.title = G[4];
+                    gEl.style.cssText = `background:${G[1]};color:${G[2]};border:1px solid ${G[3]}`;
+                    gEl.classList.remove('hidden');
+                    if (gStatus !== 'passed') {
+                        document.getElementById('ts-rebuild').classList.remove('hidden');
+                    }
+                }
+            } else {
+                gEl.classList.add('hidden');
             }
             if ((q.attempts || 1) > 1) {
                 const at = document.getElementById('ts-attempts');
@@ -5656,7 +5685,7 @@
                             const block = document.createElement('div');
                             block.className = "bg-slate-800/60 rounded-xl p-4 relative transform translate-y-2 opacity-0 transition-all duration-300";
                             block.innerHTML = `
-                                <p class="text-[11px] text-violet-300 font-bold mb-2">${ea.question}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
+                                <p class="text-[11px] text-violet-300 font-bold mb-2">${_esc(ea.question)}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
                             list.appendChild(block);
                             
                             setTimeout(() => {
@@ -6185,8 +6214,9 @@
             if (d.hq) facts.push(['Headquarters', d.hq]);
             if (d.size) facts.push(['Company size', d.size]);
             if (d.industry) facts.push(['Industry', d.industry]);
-            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`]);
-            const factRows = facts.map(([k, v]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${k}</span> <span style="color:var(--ink-soft);font-weight:600;">${v}</span> </div>`).join('');
+            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`, true]);
+            {#- XSS: v is LLM output derived from third-party job.company — escape it. -#}
+            const factRows = facts.map(([k, v, raw]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${_esc(k)}</span> <span style="color:var(--ink-soft);font-weight:600;">${raw ? v : _esc(v)}</span> </div>`).join('');
             slot.innerHTML = `
                 <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">🏢 Company Snapshot</span> <span class="jd-rh-sub">${_esc(d.company || '')}</span> </div>
                     ${d.brief ? `<div class="jd-sec"> <div class="jd-sec-title">About ${_esc(d.company || 'the company')}</div> <p class="text-[13px] leading-relaxed" style="color:var(--ink-soft);">${_esc(d.brief)}</p> <div style="font-size:10.5px;color:var(--muted-2);margin-top:6px;">AI-written from public knowledge — verify details on the company site.</div> </div>` : ''}

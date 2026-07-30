@@ -171,7 +171,12 @@ def get_or_mint_job_card(job, allow_mint: bool = True) -> Optional[dict]:
     key = job_card_key(job)
     with get_session() as session:
         row = session.exec(select(JobCardRow).where(JobCardRow.card_key == key)).first()
-        if row is not None:
+        # A stored card is only reusable if it was minted by the CURRENT schema.
+        # Without this, bumping JOB_CARD_VERSION — which you do precisely when the
+        # card shape changes — kept serving old-shape payloads to match_cards()
+        # forever, so the version constant did nothing and the shadow agreement
+        # data feeding the calibration gates would be silently mixed-schema.
+        if row is not None and row.version == JOB_CARD_VERSION:
             try:
                 return json.loads(row.payload)
             except Exception:
@@ -235,8 +240,38 @@ def user_card_material(profile, resume_text: str) -> str:
             f"Résumé:\n{(resume_text or '')[:12000]}")
 
 
+def profile_facts(profile) -> dict:
+    """The deterministic facts stamped onto every UserCard.
+
+    Deliberately NOT part of the LLM prompt — the model never decides work
+    authorization or location preferences, the profile does. But they ARE part of
+    the cache key, because card_match's work_auth and location factors read
+    nothing else. Without them in the hash, a user who got a green card or
+    switched preferred country kept a cached card carrying the old facts and went
+    on being gated by them indefinitely: their résumé text had not changed, so
+    nothing ever triggered a recompile.
+    """
+    if profile is None:
+        return {}
+    return {
+        "requires_sponsorship": bool(getattr(profile, "requires_sponsorship", False)),
+        "work_authorization": (getattr(profile, "work_authorization", "")
+                               or getattr(profile, "work_auth_status", "") or ""),
+        # card_match reads this alongside work_authorization, the same pair
+        # intelligence/work_auth.py assesses — a clearance or visa category
+        # recorded only here would otherwise be invisible to the matcher.
+        "visa_status": (getattr(profile, "visa_status", "") or ""),
+        "preferred_country": (getattr(profile, "preferred_country", "") or "").lower(),
+        "remote_ok": bool(getattr(profile, "remote_ok", True)),
+        "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
+        "location": (getattr(profile, "location", "") or ""),
+    }
+
+
 def resume_hash(profile, resume_text: str) -> str:
-    return hashlib.sha256(user_card_material(profile, resume_text).encode()).hexdigest()[:16]
+    material = user_card_material(profile, resume_text)
+    facts = json.dumps(profile_facts(profile), sort_keys=True)
+    return hashlib.sha256(f"{material}\n--facts--\n{facts}".encode()).hexdigest()[:16]
 
 
 def compile_user_card(profile, resume_text: str) -> Optional[dict]:
@@ -250,17 +285,11 @@ def compile_user_card(profile, resume_text: str) -> Optional[dict]:
     card["_version"] = USER_CARD_VERSION
     card["_model"] = settings.card_mint_model
     # Deterministic profile facts ride along verbatim — the LLM never decides
-    # work authorization or location preferences; the profile does.
+    # work authorization or location preferences; the profile does. Same helper
+    # the cache key uses, so what the card carries and what invalidates it can
+    # never drift apart.
     if profile is not None:
-        card["_profile"] = {
-            "requires_sponsorship": bool(getattr(profile, "requires_sponsorship", False)),
-            "work_authorization": (getattr(profile, "work_authorization", "")
-                                   or getattr(profile, "work_auth_status", "") or ""),
-            "preferred_country": (getattr(profile, "preferred_country", "") or "").lower(),
-            "remote_ok": bool(getattr(profile, "remote_ok", True)),
-            "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
-            "location": (getattr(profile, "location", "") or ""),
-        }
+        card["_profile"] = profile_facts(profile)
     return card
 
 
@@ -271,11 +300,22 @@ def get_or_compile_user_card(user_id: Optional[str], profile, resume_text: str,
     from app.db.models import UserCardRow
     from sqlmodel import select
 
-    uid = user_id or "local"
+    # FAIL CLOSED on identity. `user_id or "local"` mapped every None-owner job to
+    # the local/founder card row, which in Supabase mode means reading one
+    # identity's compiled résumé card for another user's match — and writing that
+    # user's material back over it. NULL-owner Job rows do occur, so this was
+    # reachable. Only single-user local mode gets the "local" identity.
+    uid = user_id or ("local" if not settings.use_supabase else None)
+    if not uid:
+        log.warning("UserCard requested with no user_id in multi-tenant mode — "
+                    "refusing (would read/write the 'local' identity's card).")
+        return None
     want_hash = resume_hash(profile, resume_text)
     with get_session() as session:
         row = session.exec(select(UserCardRow).where(UserCardRow.user_id == uid)).first()
-        if row is not None and row.resume_hash == want_hash:
+        # Version AND material must both match — see get_or_mint_job_card.
+        if (row is not None and row.resume_hash == want_hash
+                and row.version == USER_CARD_VERSION):
             try:
                 return json.loads(row.payload)
             except Exception:

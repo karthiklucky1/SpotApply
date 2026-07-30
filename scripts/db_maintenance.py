@@ -113,10 +113,18 @@ def fix_indexes(c) -> None:
             "WHERE ic.relname = :n"), {"n": name}).fetchone()
 
     for name in LEFTOVER_INDEXES:
-        if _state(name) is None:
+        st = _state(name)
+        if st is None:
             print(f"{name}: already gone")
             continue
-        print(f"dropping {name} (CONCURRENTLY)...")
+        if st.indisvalid:
+            # Safety: only INVALID leftovers are droppable. A valid index may be
+            # one the app actively depends on (init_db._PERF_INDEXES), and
+            # dropping it would be a self-inflicted outage.
+            print(f"{name}: VALID — refusing to drop (remove it from "
+                  f"_PERF_INDEXES first if it is genuinely redundant)")
+            continue
+        print(f"dropping {name} (invalid, CONCURRENTLY)...")
         c.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {name}"))
         print(f"{name}: dropped")
 

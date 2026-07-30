@@ -561,6 +561,9 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             log.warning("Lock layer skipped for app %d (non-fatal): %s", application_id, _le)
         grounding_failed = False
         grounding_notes = None
+        # Three states, not two: passed / failed / never ran. Collapsing the third
+        # into "passed" is how an unchecked résumé came to be reported as verified.
+        grounding_ran = False
         doctor_failed = False
         doctor_notes = None
 
@@ -571,6 +574,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             log.info("Grounding check: app %d (variant: %s, attempt %d)...",
                      application_id, variant, attempt)
             g_result = checker.check(master, resume_md)
+            grounding_ran = True
             if not g_result.passed:
                 grounding_failed = True
                 grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
@@ -591,7 +595,14 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             except Exception as _te:
                 log.debug("trust consistency update skipped: %s", _te)
         except Exception as e:
-            log.warning("Failed to run grounding check: %s", e)
+            # The anti-hallucination gate did not run. This is an infrastructure
+            # failure (grounding.py imports sentence_transformers at module level,
+            # so a missing/broken ML stack or an unreachable model download lands
+            # here), NOT a clean résumé — log it as such and let the honest
+            # `grounding_ran=False` state flow through to the report and the UI.
+            log.error("Grounding check DID NOT RUN for app %d — résumé is "
+                      "unverified: %s", application_id, e)
+            grounding_ran = False
 
         # 2. Resume Doctor — quality, ATS coverage, banned words, integrity
         try:
@@ -660,7 +671,11 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         (out_dir / "report.json").write_text(_json.dumps({
             "doctor_score": doctor_score,
             "doctor_passed": not doctor_failed,
-            "grounding_passed": not grounding_failed,
+            # None (not True) when the check never ran — the UI must be able to
+            # tell "verified clean" apart from "not verified".
+            "grounding_passed": (not grounding_failed) if grounding_ran else None,
+            "grounding_status": ("failed" if grounding_failed
+                                 else "passed" if grounding_ran else "unverified"),
             "attempts": attempts_used,
             "variant": variant,
             # Rich, previously log-only quality feedback — surfaced in the UI so
@@ -707,6 +722,11 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         app.cover_letter_path = str(cover_path)
         app.updated_at = datetime.utcnow()
 
+        _unverified_note = (
+            "⚠ Grounding could not be verified — the anti-hallucination check did "
+            "not run for this résumé (see server logs). Read every bullet against "
+            "your master résumé before you submit."
+        )
         if grounding_failed:
             app.status = ApplicationStatus.ERROR
             app.notes = grounding_notes
@@ -715,8 +735,21 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             app.status = ApplicationStatus.ERROR
             app.notes = doctor_notes
             log.warning("Application %d blocked at ERROR: doctor quality failure", application_id)
+        elif not grounding_ran and settings.grounding_required:
+            # Strict posture: refuse to hand over a résumé whose claims were never
+            # checked. Off by default because a transient ML-stack failure would
+            # otherwise take the whole tailoring feature down; on, this is the
+            # fail-CLOSED behaviour.
+            app.status = ApplicationStatus.ERROR
+            app.notes = _unverified_note
+            log.error("Application %d blocked at ERROR: grounding unverified and "
+                      "GROUNDING_REQUIRED is set", application_id)
         else:
             app.status = ApplicationStatus.TAILORED
+            if not grounding_ran:
+                # Delivered, but never silently: the human review step is the
+                # design's backstop and it can only work if the human is told.
+                app.notes = _unverified_note
 
         session.add(app)
         session.commit()

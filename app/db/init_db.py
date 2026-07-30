@@ -325,8 +325,27 @@ def init_db() -> None:
 # (user_id, is_closed) covers the matcher's main query.
 _PERF_INDEXES = [
     ("ix_job_user_id", "job", "(user_id)"),
-    ("ix_job_user_closed", "job", "(user_id, is_closed)"),
+    # NOTE: ix_job_user_closed (user_id, is_closed) was REMOVED from this list.
+    # It was byte-for-byte redundant with the existing ix_job_user_open on the
+    # same columns, so it cost write amplification on every Job insert for
+    # nothing, and scripts/db_maintenance.py --fix-indexes drops it. Because
+    # this function runs on EVERY startup, leaving it here meant each deploy
+    # re-issued a multi-minute CREATE INDEX CONCURRENTLY on a 764k-row table
+    # and silently undid the runbook. Do not re-add it: ix_job_user_open
+    # already covers (user_id, is_closed).
     ("ix_job_user_slug", "job", "(user_id, cross_source_slug)"),
+    # The ghost detector's repost check runs once per scored job on
+    # (user_id, company, title) — unindexed it was measured at 93% of ALL
+    # database time (373k calls averaging 3-5s) and was the Disk-IO-budget
+    # drain of Jul 29. mark_ghost_jobs' per-board close uses the
+    # (user_id, company) prefix of the same index, which is what was causing
+    # the recurring "canceling statement due to statement timeout" on the
+    # greenhouse scraper. Declared here (not only in models.py __table_args__)
+    # because create_all builds indexes ONLY on a fresh database — without
+    # this entry, any restore or new environment reinstates both incidents.
+    ("ix_job_user_company_title", "job", "(user_id, company, title)"),
+    # Adoption / retention / analytics filter the pool by recency.
+    ("ix_job_user_discovered", "job", "(user_id, discovered_at)"),
     ("ix_app_user_id", "application", "(user_id)"),
     ("ix_app_job_id", "application", "(job_id)"),
     ("ix_funnel_stage_created", "funnel_events", "(stage, created_at)"),

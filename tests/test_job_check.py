@@ -43,6 +43,12 @@ class FakeClient:
 
 def _patch(monkeypatch, routes):
     monkeypatch.setattr(jc.httpx, "Client", lambda **kw: FakeClient(routes))
+    # The SSRF guard calls socket.getaddrinfo, so a file that advertises itself as
+    # "mocked HTTP" was still doing real DNS for every generic-page test — passing
+    # only because example.com happened to resolve to a public address. The guard
+    # gets its own deterministic tests below; here it is stubbed open so these
+    # tests exercise the parsing they are actually about.
+    monkeypatch.setattr(jc, "_is_public_host", lambda host: True)
 
 
 def test_greenhouse_live_posting(monkeypatch):
@@ -136,3 +142,57 @@ def test_aggregator_domain_flagged(monkeypatch):
     out = jc.check_job_url("https://lensa.com/some-job")
     assert "aggregator_redirect_domain" in out["signals"]
     assert out["ghost_score"] >= 0.5
+
+
+# ── SSRF guard (deterministic — a fake resolver, never real DNS) ──────────────
+
+def _resolve_to(monkeypatch, *addresses):
+    """Make _is_public_host see exactly these addresses for any host."""
+    import socket as _socket
+    infos = [(None, None, None, "", (a, 0)) for a in addresses]
+    monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: infos)
+
+
+@pytest.mark.parametrize("addr", [
+    "127.0.0.1",        # loopback
+    "10.0.0.5",         # RFC1918
+    "192.168.1.10",     # RFC1918
+    "172.16.0.9",       # RFC1918
+    "169.254.169.254",  # cloud instance metadata — the classic SSRF target
+    "0.0.0.0",          # unspecified
+    "224.0.0.1",        # multicast
+    "::1",              # IPv6 loopback
+    "fd00::1",          # IPv6 unique-local
+])
+def test_ssrf_guard_rejects_non_public_addresses(monkeypatch, addr):
+    """/api/public/job-check fetches a URL supplied by an ANONYMOUS caller, so a
+    hostname that resolves inward is a server-side request forgery into the
+    cluster. Attacker-controlled DNS can point any name at any address, which is
+    why the check is on the resolved address and not on the string."""
+    _resolve_to(monkeypatch, addr)
+    assert jc._is_public_host("attacker-controlled.example") is False
+
+
+def test_ssrf_guard_allows_a_purely_public_host(monkeypatch):
+    _resolve_to(monkeypatch, "93.184.216.34")
+    assert jc._is_public_host("example.com") is True
+
+
+def test_ssrf_guard_rejects_a_host_that_resolves_to_public_AND_private(monkeypatch):
+    """DNS rebinding / multi-record answers: one private record must sink it."""
+    _resolve_to(monkeypatch, "93.184.216.34", "10.0.0.5")
+    assert jc._is_public_host("split-horizon.example") is False
+
+
+def test_ssrf_guard_fails_closed(monkeypatch):
+    """Resolution failure, no records, and an empty host all mean "do not fetch"."""
+    import socket as _socket
+
+    def _boom(*a, **k):
+        raise OSError("dns down")
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _boom)
+    assert jc._is_public_host("whatever.example") is False
+    monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: [])
+    assert jc._is_public_host("whatever.example") is False
+    assert jc._is_public_host("") is False

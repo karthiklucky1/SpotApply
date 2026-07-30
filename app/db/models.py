@@ -78,15 +78,15 @@ class Job(SQLModel, table=True):
         # mark_ghost_jobs' per-board close uses the (user_id, company) prefix.
         # Without it both scanned the whole table (the repost count alone was
         # 93% of all DB time / the Disk-IO-budget drain; the board close was
-        # the recurring statement timeout). create_all only builds indexes on
-        # FRESH databases — on the live DB run once, in the Supabase SQL editor:
-        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_company_title
-        #     ON job (user_id, company, title);
+        # the recurring statement timeout).
+        #
+        # These declarations only take effect when create_all() builds the table
+        # FRESH. On an existing database they are created by
+        # init_db._PERF_INDEXES via ensure_performance_indexes() at startup —
+        # keep BOTH places in sync, and add new hot-path indexes to
+        # _PERF_INDEXES too or they will never exist in production.
         Index("ix_job_user_company_title", "user_id", "company", "title"),
-        # Adoption/retention/analytics filter the shared pool by recency; same
-        # one-time backfill:
-        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_job_user_discovered
-        #     ON job (user_id, discovered_at);
+        # Adoption/retention/analytics filter the shared pool by recency.
         Index("ix_job_user_discovered", "user_id", "discovered_at"),
     )
     id: Optional[int] = Field(default=None, primary_key=True)

@@ -94,7 +94,7 @@ def test_dashboard_fresh_jobs_lead_shortlist():
     html = _client().get("/dashboard").text
     i_new, i_old = html.find("NewLowCo"), html.find("OldHighCo")
     assert i_new != -1 and i_old != -1
-    assert i_new < i_old, "today's posting must render above the week-old high scorer"
+    assert i_new < i_old, "today's posting must render above the older high scorer"
 
     with get_session() as s:
         for j in s.exec(_select(Job).where(Job.external_id.like("freshfirst-%"))).all():

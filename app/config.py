@@ -247,6 +247,12 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
     payment_contact_email: str = "karthiklucky899@gmail.com"  # PAYMENT_CONTACT_EMAIL
+    # Turning payments ON is a cliff: no existing user has a user_subscription row,
+    # so the instant the STRIPE_* vars are set they ALL drop PRO → FREE (50 → 15
+    # finals/day, unlimited → 5 tailors/day, unlimited → 2 autofills/week) with no
+    # warning. Set this to an ISO date (e.g. "2026-08-01") to keep everyone who
+    # signed up before then on PRO. Empty (default) = that cliff, unchanged.
+    plan_grandfather_until: str = ""       # PLAN_GRANDFATHER_UNTIL
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
@@ -298,7 +304,7 @@ class Settings(BaseSettings):
     shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
     shortlist_max_age_days: int = 5      # SHORTLIST_MAX_AGE_DAYS — a posting older than this is likely filled/ghosted, so a job that has sat SHORTLISTED (never tailored/applied) this long is auto-removed from the board (→ SKIPPED, which also frees the per-company slot). Keeps the shortlist to fresh, applyable roles. Founder-set to 5 in lockstep with SCORING_MAX_JOB_AGE_DAYS=5: the whole funnel is fresh-only — score nothing older than 5d, show nothing older than 5d. 0 disables the prune.
     job_purge_max_age_days: int = 60     # JOB_PURGE_MAX_AGE_DAYS — hard-DELETE closed jobs older than this that have no Application attached, so the job table (and every scan's DB egress) stays bounded. Applied jobs are never deleted. 0 disables.
-    user_job_close_age_days: int = 45    # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application (a 45-day-old posting is filled/ghost; SHORTLIST_MAX_AGE_DAYS is 7). Shared-pool rows have their own 45d close; per-user rows previously NEVER closed by age, so the table grew forever (the 3.8 GB job-table finding). Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
+    user_job_close_age_days: int = 45    # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application (a 45-day-old posting is filled/ghost; SHORTLIST_MAX_AGE_DAYS is 5). Shared-pool rows have their own 45d close; per-user rows previously NEVER closed by age, so the table grew forever (the 3.8 GB job-table finding). Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
     scoring_max_job_age_days: int = 5    # SCORING_MAX_JOB_AGE_DAYS — unscored jobs older than this are bulk-stamped out of the queue (score 8) instead of paying prescores/finals: 'be first to apply' is the product, and a posting that sat unscored this long (outage backlog) is going stale. One indexed UPDATE per scoring cycle replaces thousands of LLM calls during a backlog drain. Founder-set to 5 (fresh-only feed); raise if discovery volume ever outpaces scoring at 5d. 0 disables.
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     # When a company is at the cap and a NEW job scores clearly higher than a
@@ -394,6 +400,17 @@ class Settings(BaseSettings):
     min_embedding_score: float = 0.28    # lowered from 0.35 — was too aggressive
     qa_confidence_threshold: float = 0.7
     grounding_similarity_threshold: float = 0.5
+    # What to do when the grounding check cannot RUN at all (grounding.py imports
+    # sentence_transformers at module level, so a broken/absent ML stack or an
+    # unreachable model download raises before any bullet is examined).
+    #   False (default) — deliver the résumé, but report grounding_status as
+    #     "unverified" rather than "passed" and put a warning on the application.
+    #     The human review + Submit step is the backstop. Chosen as the default
+    #     because failing closed here turns a transient ML hiccup into a total
+    #     outage of the core tailoring feature.
+    #   True — treat "could not verify" as a failure and block at ERROR.
+    # Either way the check never reports "passed" for a résumé it did not read.
+    grounding_required: bool = False
 
     # score_hire_probability is a hot, in-DB step (called per reranked job while a
     # pooled DB connection + the matching lock are held). Its GitHub/Crunchbase

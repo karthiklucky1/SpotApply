@@ -1925,7 +1925,9 @@ Return only valid JSON, no markdown, no explanation."""
 @app.get("/api/resume/status")
 def resume_status(request: Request) -> dict:
     """Whether the current user has a resume on file. Drives the Discover gate."""
-    uid = _get_user_id(request)
+    # _user_has_resume(None) falls back to the local ./data glob, so anonymously
+    # this reported the founder's résumé as the caller's own.
+    uid = _require_user(request)
     return {"has_resume": _user_has_resume(uid)}
 
 
@@ -2170,7 +2172,9 @@ def discovery_last_run(request: Request) -> dict:
     """Return the most recent discovery run's per-source summary for this user."""
     import json
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    # Must refuse anonymous callers: the `if uid and uid != "local"` scoping below
+    # fails OPEN, so uid=None returned the newest DiscoveryRun of ANY tenant.
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -2224,9 +2228,20 @@ def view_resume(request: Request) -> dict:
 
 @app.get("/api/resume/file")
 def resume_file(request: Request):
-    """Serve the locally-stored resume (local/dev mode only)."""
+    """Serve the locally-stored resume (local/dev mode only).
+
+    SECURITY: "local/dev mode only" was documentation, not enforcement — this
+    route had no auth and no mode gate, so in production an anonymous GET
+    returned whatever ./data/resume_master.* happened to be on the container
+    (the founder's master résumé: real name, phone, email, full history). That
+    is the docs/ARCHITECTURE.md §7.1 incident class as a public endpoint. Now
+    both are enforced.
+    """
     from fastapi.responses import FileResponse
     import glob
+    if settings.use_supabase:
+        raise HTTPException(status_code=404, detail="Not available")
+    _require_user(request)
     matches = glob.glob("./data/resume_master.*")
     if not matches:
         raise HTTPException(status_code=404, detail="No resume on file")
@@ -2928,14 +2943,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             # lane, which doesn't run when LANES_ENABLED=0): plain SHORTLISTED
             # postings older than shortlist_max_age_days never render. Jobs the
             # user invested in (TAILORED / autofill review) are never hidden.
-            _fresh_cutoff = None
-            if settings.shortlist_max_age_days and settings.shortlist_max_age_days > 0:
-                from datetime import datetime as _fdt, timedelta as _ftd
-                _fresh_cutoff = _fdt.utcnow() - _ftd(days=settings.shortlist_max_age_days)
-            _fresh_ok = (
-                (Application.status != ApplicationStatus.SHORTLISTED)
-                | (func.coalesce(Job.posted_at, Job.first_seen) >= _fresh_cutoff)
-            ) if _fresh_cutoff else None
+            _fresh_ok = _shortlist_fresh_clause()
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
@@ -3218,6 +3226,12 @@ def pipeline_live(request: Request) -> dict:
         ).join(Job).where(
             Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
         ).order_by(Job.rerank_score.desc())
+        # Same freshness window the board renders with — otherwise this endpoint
+        # reports shortlisted jobs the page cannot show, and the dashboard's
+        # auto-reloader loops.
+        _live_fresh = _shortlist_fresh_clause()
+        if _live_fresh is not None:
+            q = q.where(_live_fresh)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         for (app_id, st, apply_track, apply_url,
@@ -4697,7 +4711,12 @@ def _discover_then_match_locked(user_id) -> None:
 @app.post("/run/discovery")
 @_rate_limit("10/minute")
 def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Authentication first: every gate below is a no-op for an anonymous caller.
+    # _user_has_resume(None) falls through to glob("./data/resume_master.*") —
+    # the founder's own file — so an unauthenticated POST cleared the resume gate
+    # and launched a full discovery + match run against the NULL-owner pool,
+    # burning scraper quota and LLM budget. Rate limiting alone only slows that.
+    uid = _require_user(request)
     # Gate: no resume → no discovery. Without a resume there is nothing to match
     # against, so scraping jobs into the user's pool would only show noise.
     if not _user_has_resume(uid):
@@ -4725,9 +4744,16 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
 
 @app.delete("/run/discovery")
 def cancel_discovery(request: Request) -> dict:
-    """Mark the active discovery run as cancelled so the poller stops tracking it."""
+    """Mark the active discovery run as cancelled so the poller stops tracking it.
+
+    SECURITY: this used to call _get_user_id, which returns None when
+    unauthenticated — and the `if uid and uid != "local"` scoping below was then
+    skipped entirely, so an anonymous DELETE cancelled the newest run belonging
+    to ANY tenant, including the global shared-pool runs that refill everyone's
+    feed. _require_user makes the scoping unconditional.
+    """
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -4740,6 +4766,30 @@ def cancel_discovery(request: Request) -> dict:
             session.commit()
             return {"cancelled": True}
     return {"cancelled": False}
+
+
+def _shortlist_fresh_clause():
+    """SQL predicate: hide plain-SHORTLISTED postings past the freshness window.
+
+    MUST be applied by EVERY surface that counts or lists the shortlist. When
+    the dashboard render applied it but /api/pipeline/live did not, SSR rendered
+    0 cards while the live poll reported N — and dashboard.html's auto-reloader
+    (rendered === 0 && server > 0) reloaded the page every 30s forever. Returns
+    None when the window is disabled.
+
+    Jobs the user invested in (TAILORED / autofill review) are never hidden.
+    coalesce(posted_at, first_seen, discovered_at): first_seen reached prod via a
+    bare ALTER TABLE with no backfill, so it is NULL on the oldest rows, and
+    `NULL < cutoff` is NULL — without discovered_at as the final fallback those
+    rows would evade the window entirely.
+    """
+    days = settings.shortlist_max_age_days
+    if not days or days <= 0:
+        return None
+    from datetime import datetime as _fdt, timedelta as _ftd
+    cutoff = _fdt.utcnow() - _ftd(days=days)
+    freshness = func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= cutoff)
 
 
 def _has_active_paid_plan(uid) -> bool:
@@ -5786,6 +5836,32 @@ def admin_page(request: Request):
     return HTMLResponse(_ADMIN_HTML)
 
 
+def _is_grandfathered(uid: str) -> bool:
+    """True when this user signed up before settings.plan_grandfather_until.
+
+    Exists so turning on payments is not a silent downgrade for the people who
+    were already using the product for free. Fails CLOSED (not grandfathered) if
+    the date is unset or the profile has no created_at — never hand out PRO by
+    accident.
+    """
+    raw = (getattr(settings, "plan_grandfather_until", "") or "").strip()
+    if not raw:
+        return False
+    from datetime import datetime as _dt
+
+    from app.db.models import UserProfile
+    try:
+        cutoff = _dt.fromisoformat(raw)
+    except ValueError:
+        log.warning("PLAN_GRANDFATHER_UNTIL=%r is not an ISO date — ignoring", raw)
+        return False
+    with get_session() as session:
+        prof = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)).first()
+    created = getattr(prof, "created_at", None) if prof else None
+    return bool(created and created < cutoff)
+
+
 def _get_user_plan(uid: str) -> PlanTier:
     """The user's current plan tier.
 
@@ -5805,6 +5881,14 @@ def _get_user_plan(uid: str) -> PlanTier:
             select(UserSubscription).where(UserSubscription.user_id == uid)
         ).first()
     if not row:
+        # SWITCHING STRIPE ON IS A CLIFF: every existing user has no subscription
+        # row, so the instant STRIPE_SECRET_KEY + STRIPE_PRICE_ID_PRO are set they
+        # all drop PRO → FREE (50 → 15 finals/day, unlimited → 5 tailors/day,
+        # unlimited → 2 autofills/week) with no warning and no action on their part.
+        # Set PLAN_GRANDFATHER_UNTIL to an ISO date to keep users who signed up
+        # before then on PRO. Unset (default) = the cliff, i.e. current behaviour.
+        if _is_grandfathered(uid):
+            return PlanTier.PRO
         return PlanTier.FREE
     if row.current_period_end and \
             row.current_period_end + timedelta(days=3) < datetime.utcnow():
@@ -7741,7 +7825,7 @@ def _sign_avatar(bucket, path: str) -> str | None:
 def get_avatar(request: Request) -> dict:
     """Return the signed URL for the user's profile avatar, or null."""
     from app.config import settings
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     if settings.use_supabase and uid and uid != "local":
         try:
             from app.db.supabase_client import service_client
@@ -7771,7 +7855,9 @@ def get_avatar(request: Request) -> dict:
 async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
     """Upload a profile photo and store in Supabase storage (avatars bucket)."""
     from app.config import settings
-    uid = _get_user_id(request)
+    # Refuse before reading the body — an anonymous caller could otherwise push
+    # 3 MB per request and get a 200 back.
+    uid = _require_user(request)
     ext = (file.filename or "avatar.jpg").rsplit(".", 1)[-1].lower()
     if ext not in {"jpg", "jpeg", "png", "webp", "gif"}:
         raise HTTPException(status_code=400, detail="Unsupported image type")
@@ -8057,37 +8143,68 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
 
 # ── GDPR / Account deletion ──────────────────────────────────────────────────
 
+# Tables that own user data under a column OTHER than `user_id`. Everything with
+# a plain `user_id` column is found from the schema instead of being listed, so a
+# new table cannot silently escape deletion (see tests/test_account_deletion.py).
+_EXTRA_OWNER_COLUMNS = {
+    "candidateintro": ("candidate_user_id", "recruiter_user_id"),
+    "intromessage": ("sender_user_id",),
+    "introrating": ("rater_user_id", "ratee_user_id"),
+}
+
+
 @app.delete("/api/account")
 def delete_account(request: Request) -> dict:
-    """Permanently delete all data for the authenticated user."""
-    uid = _require_user(request)
-    from app.db.models import (
-        UserProfile, PendingQuestion, AnswerMemory, DiscoveryRun,
-        UserSubscription, UserUsage,
-    )
-    from app.db.init_db import get_session
-    from sqlmodel import select, delete as sql_delete
+    """Permanently delete all data for the authenticated user.
 
+    Schema-driven ON PURPOSE. The hand-written list this replaced named 7 tables
+    and the schema had 18 with a `user_id` column, because tables kept being added
+    after the route was written — the CardRace tables (user_card,
+    card_match_shadow) were the most recent. An enumeration cannot fall behind
+    that way, and the accompanying test fails the moment a new user-scoped table
+    appears without a deletion story.
+    """
+    uid = _require_user(request)
+    from sqlmodel import SQLModel, delete as sql_delete, select
+
+    from app.db.init_db import get_session
+    from app.db.models import PendingQuestion
+
+    # Never let a sentinel identity through: SHARED_POOL_USER owns the pool every
+    # tenant is served from, so "delete my account" for it would wipe the corpus.
+    from app.discovery.pipeline import SHARED_POOL_USER
+    if uid in (SHARED_POOL_USER, "shared", ""):
+        raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
+
+    deleted: dict[str, int] = {}
     with get_session() as session:
-        # Collect application IDs for this user
         if uid != "local":
-            app_ids = [
-                a.id for a in session.exec(
-                    select(Application).where(Application.user_id == uid)
-                ).all()
-            ]
-            # Delete pending questions linked to those applications
+            # PendingQuestion hangs off the application, not the user.
+            app_ids = list(session.exec(
+                select(Application.id).where(Application.user_id == uid)).all())
             if app_ids:
-                session.exec(sql_delete(PendingQuestion).where(PendingQuestion.application_id.in_(app_ids)))
-            # Delete every user-scoped row so no orphaned data remains (GDPR).
-            session.exec(sql_delete(Application).where(Application.user_id == uid))
-            session.exec(sql_delete(Job).where(Job.user_id == uid))
-            session.exec(sql_delete(UserProfile).where(UserProfile.user_id == uid))
-            session.exec(sql_delete(AnswerMemory).where(AnswerMemory.user_id == uid))
-            session.exec(sql_delete(DiscoveryRun).where(DiscoveryRun.user_id == uid))
-            session.exec(sql_delete(UserSubscription).where(UserSubscription.user_id == uid))
-            session.exec(sql_delete(UserUsage).where(UserUsage.user_id == uid))
+                r = session.exec(sql_delete(PendingQuestion).where(
+                    PendingQuestion.application_id.in_(app_ids)))
+                deleted["pendingquestion"] = r.rowcount or 0
+
+            for name, table in SQLModel.metadata.tables.items():
+                cols = table.columns
+                owner_cols = [cols[c] for c in ("user_id",) if c in cols]
+                owner_cols += [cols[c] for c in _EXTRA_OWNER_COLUMNS.get(name, ())
+                               if c in cols]
+                if not owner_cols:
+                    continue
+                for col in owner_cols:
+                    try:
+                        r = session.exec(sql_delete(table).where(col == uid))
+                        deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
+                    except Exception as e:
+                        # One undeletable table must not abandon the rest half-done.
+                        log.exception("Account deletion: %s.%s failed for %s: %s",
+                                      name, col.name, uid, e)
             session.commit()
+    log.info("Account deletion for %s removed: %s", uid,
+             {k: v for k, v in sorted(deleted.items()) if v})
 
     # Delete resume files from Supabase Storage
     from app.config import settings

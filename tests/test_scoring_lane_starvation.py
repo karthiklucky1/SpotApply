@@ -16,13 +16,20 @@ def _reset():
     sl._deferred_until.clear()
 
 
+# Sentinel ids far outside any range SQLite hands out, so that even without the
+# conftest teardown a leaked deferral cannot land on a real job row. (It did: id
+# 1 deferred here for an hour made test_scoring_lane.py skip its own job 1.)
+_LIVE_ID = 10 ** 9
+_EXPIRED_ID = 10 ** 9 + 1
+
+
 def test_deferred_ids_purges_expired_and_returns_set():
     _reset()
-    sl._deferred_until[1] = time.time() + 3600   # live
-    sl._deferred_until[2] = time.time() - 1       # expired
+    sl._deferred_until[_LIVE_ID] = time.time() + 3600
+    sl._deferred_until[_EXPIRED_ID] = time.time() - 1
     ids = sl._deferred_ids()
-    assert ids == {1}
-    assert 2 not in sl._deferred_until            # expired entry purged
+    assert ids == {_LIVE_ID}
+    assert _EXPIRED_ID not in sl._deferred_until   # expired entry purged
 
 
 def test_transient_stall_true_when_budget_exhausted(monkeypatch):
