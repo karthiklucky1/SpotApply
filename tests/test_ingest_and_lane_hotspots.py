@@ -220,21 +220,38 @@ def test_the_lane_still_orders_new_users_first(seeded):
 # Postgres only to be dropped in Python, so the DISTINCT sorted hundreds of
 # thousands of rows to yield ~8 values.
 
-def test_the_shared_pool_is_excluded_in_sql_not_in_python():
-    """The Python post-filter is gone; if the SQL clause is ever dropped the
-    shared pool reappears as a 'user' and the lane wastes every work slot."""
+def test_owner_enumeration_uses_a_skip_scan_not_a_distinct():
+    """EXPLAIN ANALYZE on production, 2026-08-01: the plain DISTINCT is a Parallel
+    Seq Scan at 4,527 ms, and forcing it onto ix_job_unscored is FIVE TIMES worse
+    (25,430 ms) because that index's predicate omits is_closed. Neither predicate
+    tweak can help: 411,915 of 411,916 unscored-open jobs are '__shared__', so the
+    mass IS what must be scanned to discover it is excluded.
+
+    The recursive-CTE skip scan seeks past the whole shared block in one index
+    descent — measured at 35.6 ms, ~128x. If this ever reverts to a DISTINCT the
+    lane silently goes back to 4.5s per tick.
+    """
     import inspect
 
     import app.strategy.scoring_lane as sl
+    assert "WITH RECURSIVE" in sl._SKIP_SCAN_OWNERS, (
+        "owner enumeration must use the loose index scan")
     src = inspect.getsource(sl._scorable_user_ids)
-    assert "SHARED_POOL_USER" in src, (
-        "the shared-pool exclusion must be part of the WHERE clause")
-    assert "is_distinct_from" in src, (
-        "use IS DISTINCT FROM, not `(user_id IS NULL OR user_id != ...)` — an OR "
-        "on the leading column of ix_job_unscored can push the planner off that "
-        "partial index onto a seq scan of the whole job table")
-    assert "for u in users if u != SHARED_POOL_USER" not in src, (
-        "filtering in Python means Postgres still streams the whole pool")
+    assert "_unscored_owners_fast" in src, (
+        "the skip scan must be the primary path, not dead code")
+    assert "SHARED_POOL_USER" in src, "the shared pool must still be excluded"
+
+
+def test_the_skip_scan_anchor_is_explicit_about_nulls():
+    """Postgres sorts NULLs LAST in ASC, SQLite sorts them FIRST. Without an
+    explicit IS NOT NULL the anchor picks up the NULL owner on SQLite, the
+    recursive guard fires immediately, and the walk returns one row — which is
+    exactly what the equivalence test caught before this was pinned."""
+    import app.strategy.scoring_lane as sl
+    anchor = sl._SKIP_SCAN_OWNERS.split("UNION ALL")[0]
+    assert "IS NOT NULL" in anchor, (
+        "the anchor must exclude NULL explicitly rather than relying on the "
+        "dialect's NULL ordering")
 
 
 def test_scorable_users_semantics(monkeypatch):
