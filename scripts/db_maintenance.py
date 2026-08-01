@@ -8,6 +8,7 @@ Default run is a read-only REPORT. Every mutating action is opt-in:
   python -m scripts.db_maintenance --terminate-stale     # kill idle-in-tx > 30 min
   python -m scripts.db_maintenance --set-idle-timeout    # 10-min idle-in-tx cap, permanent
   python -m scripts.db_maintenance --fix-indexes         # drop invalid leftovers + build the real one
+  python -m scripts.db_maintenance --drop-redundant ix_job_user_closed
   python -m scripts.db_maintenance --purge-funnel 60     # batched funnel_events retention
 
 Recommended order (see docs/CARDRACE_DESIGN.md ops notes):
@@ -143,6 +144,56 @@ def fix_indexes(c) -> None:
     print(f"{TARGET_INDEX}: built in {time.time() - t0:.0f}s, valid={bool(st and st.indisvalid)}")
 
 
+def drop_redundant_index(c, name: str) -> None:
+    """Drop a VALID index, but only after PROVING it is redundant.
+
+    --fix-indexes deliberately refuses to drop anything valid, because a valid
+    index may be one the app depends on. This path is for the other case: an
+    index that duplicates another one exactly. It does not take that on trust —
+    it checks the live catalog for a twin with the identical column list, and
+    checks the app is not re-creating this name on every startup.
+
+    ix_job_user_closed is the case this exists for: it and ix_job_user_open are
+    both `btree (user_id, is_closed)`, so the ~480 scans it serves simply move to
+    the twin, while every INSERT stops paying to maintain two identical trees.
+    """
+    from app.db.init_db import _PERF_INDEXES
+    if name in {n for n, _t, _c in _PERF_INDEXES}:
+        print(f"REFUSING: {name} is in init_db._PERF_INDEXES, so every deploy "
+              f"would re-create it. Remove it there first.")
+        return
+
+    row = c.execute(text("""
+        SELECT ic2.relname AS twin
+        FROM pg_index i1
+        JOIN pg_class ic1 ON ic1.oid = i1.indexrelid
+        JOIN pg_index i2  ON i2.indrelid = i1.indrelid
+                         AND i2.indkey::text = i1.indkey::text
+                         AND i2.indexrelid <> i1.indexrelid
+        JOIN pg_class ic2 ON ic2.oid = i2.indexrelid
+        WHERE ic1.relname = :n
+          AND i1.indpred   IS NULL AND i2.indpred   IS NULL
+          AND i1.indexprs  IS NULL AND i2.indexprs  IS NULL
+          AND i2.indisvalid
+          AND NOT i1.indisunique  AND NOT i2.indisunique
+          AND NOT i1.indisprimary AND NOT i2.indisprimary
+        LIMIT 1"""), {"n": name}).fetchone()
+    if row is None:
+        print(f"REFUSING: no valid twin index covers the same columns as {name}. "
+              f"Dropping it would lose coverage, not duplicate work.")
+        return
+
+    print(f"{name} is redundant with {row.twin} (identical column list, neither "
+          f"unique/primary/partial).")
+    print(f"dropping {name} CONCURRENTLY (safe under load, no table lock)...")
+    t0 = time.time()
+    c.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {name}"))
+    gone = c.execute(text(
+        "SELECT 1 FROM pg_class WHERE relname = :n"), {"n": name}).fetchone() is None
+    print(f"{name}: {'dropped' if gone else 'STILL PRESENT'} in {time.time() - t0:.0f}s. "
+          f"Its scans now go to {row.twin}.")
+
+
 def purge_funnel(c, days: int, batch: int, max_batches: int, sleep_s: float) -> None:
     total = 0
     for i in range(max_batches):
@@ -168,6 +219,9 @@ def main() -> int:
                     help="ALTER DATABASE idle_in_transaction_session_timeout (default 10 min)")
     ap.add_argument("--fix-indexes", action="store_true",
                     help=f"drop invalid leftovers {LEFTOVER_INDEXES} + build {TARGET_INDEX}")
+    ap.add_argument("--drop-redundant", metavar="INDEX",
+                    help="drop a VALID index after proving a twin with the same "
+                         "columns exists (e.g. ix_job_user_closed)")
     ap.add_argument("--purge-funnel", nargs="?", const=60, type=int, metavar="DAYS",
                     help="batched delete of funnel_events older than DAYS (default 60)")
     ap.add_argument("--batch", type=int, default=50_000)
@@ -186,6 +240,9 @@ def main() -> int:
         if args.fix_indexes:
             print()
             fix_indexes(c)
+        if args.drop_redundant:
+            print()
+            drop_redundant_index(c, args.drop_redundant)
         if args.purge_funnel is not None:
             print()
             purge_funnel(c, args.purge_funnel, args.batch, args.max_batches, args.sleep)
