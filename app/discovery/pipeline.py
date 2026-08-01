@@ -479,6 +479,23 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
 # Consecutive failed polls before a non-404 board is retired from rotation.
 BOARD_DEACTIVATE_AFTER_FAILURES = 5
 
+# How long to stop polling a board that answered 429. Upstream throttling is a
+# statement about our request RATE, not about the board — retiring it would
+# silently shrink job coverage for a company that is perfectly alive.
+THROTTLED_BOARD_BACKOFF_HOURS = 6
+
+
+def _is_throttled(error: str) -> bool:
+    """True when the board asked us to slow down rather than reporting a fault.
+
+    Workday in particular 429s under the pulse lane's polling cadence. Counting
+    that toward BOARD_DEACTIVATE_AFTER_FAILURES meant five throttled polls in a
+    row permanently deactivated a healthy board with reason "unreachable x5" —
+    a quiet, cumulative loss of discovery coverage that nothing alerts on.
+    """
+    e = (error or "").lower()
+    return "429" in e or "too many requests" in e or "rate limit" in e
+
 
 def record_board_failure(source_name: str, slug: str | None, error: str) -> None:
     """Count consecutive fetch failures per registry board and retire dead ones.
@@ -499,8 +516,20 @@ def record_board_failure(source_name: str, slug: str | None, error: str) -> None
             ).first()
             if not row:
                 return
-            row.failure_count = (row.failure_count or 0) + 1
             row.last_error = (error or "")[:300]
+            if _is_throttled(error):
+                # Back off, don't retire. failure_count is deliberately NOT
+                # incremented: a throttled board is healthy, and letting 429s
+                # accumulate toward the retirement threshold deletes it.
+                from datetime import datetime as _dt, timedelta as _td
+                row.next_poll_at = _dt.utcnow() + _td(
+                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                log.info("Board %s/%s throttled (429) — backing off %dh, not retiring",
+                         source_name, slug, THROTTLED_BOARD_BACKOFF_HOURS)
+                session.add(row)
+                session.commit()
+                return
+            row.failure_count = (row.failure_count or 0) + 1
             is_404 = "404" in (error or "")
             if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
                 row.is_active = False
@@ -539,8 +568,15 @@ def record_board_failures_bulk(failures: list) -> int:
                 ).first()
                 if not row or not row.is_active:
                     continue
-                row.failure_count = (row.failure_count or 0) + 1
                 row.last_error = (error or "")[:300]
+                if _is_throttled(error):
+                    # Same policy as record_board_failure: back off, never retire.
+                    from datetime import datetime as _dt, timedelta as _td
+                    row.next_poll_at = _dt.utcnow() + _td(
+                        hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                    session.add(row)
+                    continue
+                row.failure_count = (row.failure_count or 0) + 1
                 is_404 = "404" in (error or "")
                 if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
                     row.is_active = False
