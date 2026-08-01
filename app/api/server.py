@@ -4214,12 +4214,22 @@ def _opt_clock_payload(profile) -> Optional[dict]:
         zone = "green" if days_left > 45 else ("amber" if days_left > 15 else "red")
         if days_to_ead is not None and days_to_ead < 60:
             zone = "red" if days_to_ead < 30 else ("amber" if zone == "green" else zone)
+        # The OPT clock only tells half the story: the other half is where the
+        # H-1B cap year sits, because registration is a once-a-year March door.
+        # An offer in April cannot reach cap-subject status until Oct of the
+        # NEXT year — worth knowing while there is still runway to act on it.
+        try:
+            from app.intelligence.h1b_calendar import phase as _h1b_phase
+            h1b = _h1b_phase().as_dict()
+        except Exception:
+            h1b = None
         return {
             "unemployment_budget": budget, "unemployment_used": used,
             "unemployment_days_left": days_left,
             "ead_end_date": ead or None, "days_to_ead_end": days_to_ead,
             "stem_opt": bool(getattr(profile, "stem_opt", False)),
             "zone": zone,
+            "h1b": h1b,
             "note": "Counts come from your own dates in Profile → Work authorization. Not legal advice.",
         }
     except Exception:

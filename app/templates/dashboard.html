@@ -4304,9 +4304,10 @@
                 <span class="text-2xl">🕐</span>
                 <div><p class="text-[9px] font-black uppercase tracking-widest" style="color:${color}">OPT Clock — ${oc.zone.toUpperCase()} zone</p>
                 <p class="text-lg font-black text-white">${oc.unemployment_days_left} unemployment days left <span class="text-[11px] text-slate-500 font-normal">of ${oc.unemployment_budget}${oc.stem_opt ? ' (STEM)' : ''}</span></p>
-                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}</div>
+                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}
+                ${oc.h1b ? `<p class="text-[11px] text-slate-400 mt-1" title="${_esc(oc.h1b.message)}">🗓 ${_esc(oc.h1b.label)} · earliest cap-subject start ${_esc(oc.h1b.next_employment_start)}</p>` : ''}</div>
                 <div class="flex-1"></div>
-                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}</p>
+                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}${oc.h1b ? ' H-1B dates are the typical schedule — confirm on uscis.gov.' : ''}</p>
               </div>`;
             renderOptStrip(oc);
         }
@@ -6249,9 +6250,19 @@
             if (tone === 'good') {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;">✓</span>';
                 headline = a && a.cap_exempt ? 'Sponsors visas — no lottery needed' : 'This employer sponsors work visas';
-                sub = a && a.cap_exempt
-                    ? 'Cap-exempt: they can sponsor H-1B year-round, no lottery. Their public filing record backs it up.'
-                    : 'Their public H-1B filing record shows they sponsor — apply with confidence.';
+                // Only claim a filing record when we actually have one. Cap-exempt
+                // status is inferred from the employer TYPE (INA 214(g)(5)), often
+                // with no filings consulted at all, and the H-1B stats block below
+                // renders only when `h` is present. Saying "their public filing
+                // record backs it up" without `h` asserted a source we never read.
+                if (a && a.cap_exempt) {
+                    sub = 'Cap-exempt employer (university, non-profit research or hospital) under INA 214(g)(5) — they can file H-1B year-round with no lottery.'
+                        + (h ? ' Their public filing record is below.' : ' We infer this from the employer type, not from filing data.');
+                } else {
+                    sub = h
+                        ? 'Their public H-1B filing record shows they sponsor — apply with confidence.'
+                        : 'Signals point to a sponsoring employer. We have no public filing record for them, so confirm before you count on it.';
+                }
                 cardStyle = 'background:linear-gradient(180deg,var(--sage-tint),rgba(var(--sage-rgb),0.03));border:1px solid rgba(var(--sage-rgb),0.4);';
             } else if (tone === 'bad') {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FCE9E2;color:#C2410C;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">✕</span>';
