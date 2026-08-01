@@ -198,6 +198,41 @@ def scraper_for(ats, slug: str, career_url: str | None = None):
     return factory() if factory else None
 
 
+def _insert_job_returning_id(session, job: "Job") -> int | None:
+    """INSERT the job, doing nothing on a unique-constraint collision.
+
+    Returns the new row's id, or None when another worker already inserted the
+    same (user_id, source, external_id). Dialect-aware because both Postgres
+    (prod) and SQLite (local dev + tests) support ON CONFLICT, but via separate
+    constructs. Falls back to a plain ORM add on any other dialect so this can
+    never be the thing that stops discovery.
+    """
+    values = {c.name: getattr(job, c.name)
+              for c in Job.__table__.columns if c.name != "id"}
+    dialect = session.get_bind().dialect.name
+    try:
+        if dialect.startswith("postgres"):
+            from sqlalchemy.dialects.postgresql import insert as _ins
+        elif dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as _ins
+        else:
+            session.add(job)
+            session.flush()
+            return job.id
+        stmt = (_ins(Job.__table__).values(**values)
+                .on_conflict_do_nothing()
+                .returning(Job.__table__.c.id))
+        row = session.execute(stmt).first()
+        return row[0] if row else None
+    except Exception:
+        # Never let an optimisation break ingestion; the caller's IntegrityError
+        # handler still covers the race on this path.
+        session.rollback()
+        session.add(job)
+        session.flush()
+        return job.id
+
+
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             preferred_country: str | None = None, remote_ok: bool = True,
             user_keywords: List[str] | None = None,
@@ -412,10 +447,23 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     cross_source_slug=slug,
                     user_id=user_id,
                 )
-                session.add(job)
+                # Let Postgres resolve the race instead of raising into it.
+                #
+                # The duplicate checks above run in a DIFFERENT transaction from
+                # this insert, so two lanes (discovery, pulse, fresh) polling the
+                # same board can both see "no row" and both insert. The
+                # IntegrityError below caught that and behaviour was correct — but
+                # each collision still cost a failed round trip, a transaction
+                # abort, and a Postgres ERROR line. Production logged 6,099 of
+                # them in 24h, 100% of all database errors, which buried anything
+                # real. ON CONFLICT DO NOTHING makes the collision a no-op that
+                # returns no row, so the loser simply skips.
+                new_id = _insert_job_returning_id(session, job)
+                if new_id is None:
+                    continue          # another worker won the race — nothing to do
                 session.commit()
-                session.refresh(job)
-                FunnelTracker.record(job.id, "discovered", True)
+                job.id = new_id
+                FunnelTracker.record(new_id, "discovered", True)
                 inserted += 1
                 if prefetched:
                     # Keep the snapshot current so later items in THIS batch that

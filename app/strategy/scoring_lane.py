@@ -565,15 +565,32 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # dashboard, so their queue items must survive the global cap and reach the
     # workers earliest. One grouped query identifies owners who already have at
     # least one scored open job; everyone else is "new" for ordering purposes.
+    # This is an EXISTS question per user, so ask it that way. The obvious
+    # spelling — SELECT DISTINCT user_id ... WHERE rerank_score IS NOT NULL AND
+    # user_id IN (...) — has to visit every scored open row across every user and
+    # then dedupe, and no index covers that predicate. Production measured it at
+    # 31-38s per execution, 277 times in a day, on a lane that ticks every 90s:
+    # roughly 40% of the lane's wall clock spent on an ordering nicety, with
+    # per-id UPDATEs queueing behind it at 15-37s each.
+    #
+    # One LIMIT 1 probe per user rides ix_job_user_open (user_id, is_closed) and
+    # stops at the first hit, so each is sub-millisecond and the total scales with
+    # the number of ACTIVE users rather than the size of the job table.
     try:
+        has_scored = set()
         with get_session() as session:
-            has_scored = {r[0] if isinstance(r, tuple) else r for r in session.exec(
-                select(Job.user_id).where(
-                    Job.rerank_score.is_not(None),
-                    Job.is_closed == False,  # noqa: E712
-                    Job.user_id.in_([u for u in users if u]),
-                ).distinct()
-            ).all()}
+            for _u in users:
+                if not _u:
+                    continue
+                hit = session.exec(
+                    select(Job.id).where(
+                        Job.user_id == _u,
+                        Job.is_closed == False,  # noqa: E712
+                        Job.rerank_score.is_not(None),
+                    ).limit(1)
+                ).first()
+                if hit is not None:
+                    has_scored.add(_u)
         users = sorted(users, key=lambda u: (u in has_scored,))
     except Exception as e:
         log.debug("new-user priority ordering skipped: %s", e)
