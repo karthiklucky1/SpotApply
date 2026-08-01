@@ -155,9 +155,13 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
                 # log_min_duration_statement threshold.
                 #
                 # NULL owners are local/legacy rows and must survive: in SQL
-                # `NULL != '__shared__'` is NULL, not true, so the IS NULL arm is
-                # required to keep the Python filter's exact semantics.
-                (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
+                # `NULL != '__shared__'` is NULL, not true. IS DISTINCT FROM says
+                # exactly that in one term — deliberately NOT `(user_id IS NULL OR
+                # user_id != ...)`, because an OR on the LEADING column of
+                # ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL
+                # can push the planner off that index onto a seq scan of the whole
+                # job table, which would be slower than the query it replaced.
+                Job.user_id.is_distinct_from(SHARED_POOL_USER),
             ).distinct().limit(limit)
         ).all()
     users = [r[0] if isinstance(r, tuple) else r for r in rows]
