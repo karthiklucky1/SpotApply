@@ -60,6 +60,19 @@ def _is_not_a_bullet(line: str) -> bool:
     s = (line or "").strip()
     if not s:
         return True
+    # A markdown heading that carried a bullet glyph ("- ## PROFESSIONAL
+    # EXPERIENCE"). The section detector checks for "#" BEFORE glyph stripping,
+    # so this reached the bullet list. Seen flagging application 1358.
+    if s.lstrip("-*•·–—‣▪◦●» ").startswith("#"):
+        return True
+    # A label introducing a list, not a claim: "Familiar / Actively Adopting:",
+    # "Systems & Infrastructure:", "Generative AI & LLM Engineering:". These are
+    # skills-section headings that the section detector missed (not ALL-CAPS, no
+    # known section keyword), so they were graded as experience bullets and
+    # failed to ground — blocking applications 1358, 1359 and 1284. A real
+    # achievement bullet is a sentence; it does not end in a colon.
+    if s.endswith(":"):
+        return True
     if _DATE_ONLY_RE.match(s):
         return True
     if _ORG_LOCATION_RE.search(s) and not s.endswith((".", "!", "?")):

@@ -133,38 +133,90 @@ def _transient_llm_stall() -> bool:
     return llm_budget_exhausted() or not any_provider_available()
 
 
+# Loose index scan ("skip scan"): walk the DISTINCT values of an indexed column
+# by repeatedly seeking to the next one, instead of reading every row and
+# deduping. Postgres has no native skip scan, so it is spelled as a recursive CTE.
+#
+# This is the only shape that works here, and the numbers say why. Of 411,916
+# unscored OPEN jobs, 411,915 belong to '__shared__'. Filtering the shared pool
+# out cannot make the query cheap, because the mass IS what has to be scanned to
+# discover it is excluded — measured as a Parallel Seq Scan at 4,527 ms with
+# 434,005 rows removed by filter per worker. Forcing it onto
+# ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL is FIVE TIMES
+# WORSE (25,430 ms, 73,759 blocks): that index's predicate omits is_closed, so
+# every candidate entry needs a heap fetch. The planner was right both times.
+#
+# The skip scan seeks past the entire shared block in a single index descent, so
+# cost tracks the number of DISTINCT owners (~12), not the number of rows.
+# Measured against the same index, same data: 35.6 ms, 85 buffers — ~128x.
+_SKIP_SCAN_OWNERS = """
+WITH RECURSIVE owners AS (
+    -- IS NOT NULL is load-bearing, not decoration: Postgres sorts NULLs LAST in
+    -- ASC, SQLite sorts them FIRST. Without it the anchor picks up the NULL
+    -- owner on SQLite, the recursive term's `o.user_id IS NOT NULL` guard fires
+    -- immediately, and the walk returns exactly one row. NULL owners are probed
+    -- separately by the caller.
+    SELECT (SELECT j.user_id FROM job j
+             WHERE j.rerank_score IS NULL AND j.user_id IS NOT NULL
+             ORDER BY j.user_id LIMIT 1) AS user_id
+    UNION ALL
+    SELECT (SELECT j.user_id FROM job j
+             WHERE j.rerank_score IS NULL AND j.user_id > o.user_id
+             ORDER BY j.user_id LIMIT 1)
+      FROM owners o WHERE o.user_id IS NOT NULL
+)
+SELECT user_id FROM owners WHERE user_id IS NOT NULL
+"""
+
+
+def _unscored_owners_fast(session, limit: int) -> List[str]:
+    """Distinct non-NULL owners having at least one unscored job, via skip scan.
+
+    Returns owners with ANY unscored job; the caller re-checks `is_closed` per
+    owner, because is_closed is not in the partial index and folding it in here
+    would reintroduce the heap fetch that made the index path lose.
+    """
+    from sqlalchemy import text
+    rows = session.execute(text(_SKIP_SCAN_OWNERS)).all()
+    return [r[0] for r in rows if r[0] is not None][:limit]
+
+
 def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
     """Distinct owners that currently have at least one unscored open job.
     The shared pool ('__shared__') is a corpus, not a user — its rows are never
     scored directly (they're adopted into per-user pools first), so it must not
     consume work slots."""
     from app.discovery.pipeline import SHARED_POOL_USER
+    users: List[Optional[str]] = []
     with get_session() as session:
-        rows = session.exec(
-            select(Job.user_id).where(
-                Job.rerank_score == None,  # noqa: E711
-                Job.is_closed == False,    # noqa: E712
-                # Exclude the shared pool IN SQL, not in Python afterwards.
-                # '__shared__' is a corpus, not a user, and it is the large
-                # majority of unscored rows — so streaming it out of Postgres
-                # only to drop it here meant this DISTINCT sorted hundreds of
-                # thousands of rows to produce ~8 values. pg_stat_statements
-                # measured 4.5s per call, ~18 calls/hour, and the single largest
-                # total_exec_time of any statement in the database. It never
-                # appeared in the slow-query log because 4.5s sits under the 10s
-                # log_min_duration_statement threshold.
-                #
-                # NULL owners are local/legacy rows and must survive: in SQL
-                # `NULL != '__shared__'` is NULL, not true. IS DISTINCT FROM says
-                # exactly that in one term — deliberately NOT `(user_id IS NULL OR
-                # user_id != ...)`, because an OR on the LEADING column of
-                # ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL
-                # can push the planner off that index onto a seq scan of the whole
-                # job table, which would be slower than the query it replaced.
-                Job.user_id.is_distinct_from(SHARED_POOL_USER),
-            ).distinct().limit(limit)
-        ).all()
-    users = [r[0] if isinstance(r, tuple) else r for r in rows]
+        try:
+            candidates: List[Optional[str]] = list(
+                _unscored_owners_fast(session, limit))
+        except Exception as e:
+            # Never let an optimisation stop the scoring lane. The plain DISTINCT
+            # is slow but correct, so degrade to it rather than returning nothing.
+            log.warning("skip-scan owner enumeration failed, using DISTINCT: %s", e)
+            candidates = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.user_id).where(
+                    Job.rerank_score == None,  # noqa: E711
+                ).distinct().limit(limit)
+            ).all()]
+        # The NULL owner (local/legacy rows) can't be reached by `user_id >` in
+        # the recursion — ORDER BY sorts NULLs last — so probe it explicitly.
+        candidates.append(None)
+
+        for uid in candidates:
+            if uid == SHARED_POOL_USER:
+                continue
+            hit = session.exec(
+                select(Job.id).where(
+                    Job.user_id.is_(None) if uid is None else Job.user_id == uid,
+                    Job.rerank_score == None,  # noqa: E711
+                    Job.is_closed == False,    # noqa: E712
+                ).limit(1)
+            ).first()
+            if hit is not None:
+                users.append(uid)
     # Dormancy gate: even with adoption stopped, a vanished user's existing
     # unscored backlog would keep burning LLM budget (and round-robin slots
     # active users need). Skip them here too; their queue resumes on return.

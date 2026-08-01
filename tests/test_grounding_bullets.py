@@ -133,3 +133,39 @@ def test_the_messy_pdf_fallback_filters_structure_too():
     assert all(not _is_not_a_bullet(b) for b in out)
     assert "Home Depot Cincinnati, OH" not in out
     assert "May 2022 – Aug 2024" not in out
+
+
+# ── skills-section labels and bullet-prefixed headings ───────────────────────
+# The nine-deep ERROR backlog (2026-08-01) contained 26 flagged lines. Only one
+# was a date range; the pattern that actually blocks applications 1358, 1359 and
+# 1284 is skills-section labels the section detector missed — not ALL-CAPS, no
+# known section keyword — so they were graded as experience bullets.
+
+@pytest.mark.parametrize("line", [
+    "Familiar / Actively Adopting:",          # real, from application 1358
+    "Systems & Infrastructure:",              # real
+    "Generative AI & LLM Engineering:",       # real
+    "Core Competencies:",
+    "Tools:",
+])
+def test_list_labels_are_not_bullets(line):
+    """A label introducing a list is not a claim. A real achievement bullet is a
+    sentence, and does not end in a colon."""
+    assert _is_not_a_bullet(line) is True
+
+
+@pytest.mark.parametrize("line", [
+    "- ## PROFESSIONAL EXPERIENCE",           # real, from application 1358
+    "## PROFESSIONAL EXPERIENCE",
+    "* # Skills",
+])
+def test_a_bullet_prefixed_markdown_heading_is_not_a_bullet(line):
+    """_is_header checks for '#' BEFORE stripping the bullet glyph, so a heading
+    that carried one reached the bullet list."""
+    assert _is_not_a_bullet(line) is True
+
+
+def test_a_colon_inside_a_bullet_does_not_disqualify_it():
+    """Only a TRAILING colon marks a label — mid-sentence colons are ordinary."""
+    assert _is_not_a_bullet(
+        "Shipped the pricing rewrite: revenue per user rose 18%") is False
