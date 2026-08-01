@@ -227,8 +227,12 @@ def test_the_shared_pool_is_excluded_in_sql_not_in_python():
 
     import app.strategy.scoring_lane as sl
     src = inspect.getsource(sl._scorable_user_ids)
-    assert "SHARED_POOL_USER" in src and "Job.user_id !=" in src, (
+    assert "SHARED_POOL_USER" in src, (
         "the shared-pool exclusion must be part of the WHERE clause")
+    assert "is_distinct_from" in src, (
+        "use IS DISTINCT FROM, not `(user_id IS NULL OR user_id != ...)` — an OR "
+        "on the leading column of ix_job_unscored can push the planner off that "
+        "partial index onto a seq scan of the whole job table")
     assert "for u in users if u != SHARED_POOL_USER" not in src, (
         "filtering in Python means Postgres still streams the whole pool")
 
