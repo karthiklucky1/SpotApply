@@ -144,10 +144,23 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
             select(Job.user_id).where(
                 Job.rerank_score == None,  # noqa: E711
                 Job.is_closed == False,    # noqa: E712
+                # Exclude the shared pool IN SQL, not in Python afterwards.
+                # '__shared__' is a corpus, not a user, and it is the large
+                # majority of unscored rows — so streaming it out of Postgres
+                # only to drop it here meant this DISTINCT sorted hundreds of
+                # thousands of rows to produce ~8 values. pg_stat_statements
+                # measured 4.5s per call, ~18 calls/hour, and the single largest
+                # total_exec_time of any statement in the database. It never
+                # appeared in the slow-query log because 4.5s sits under the 10s
+                # log_min_duration_statement threshold.
+                #
+                # NULL owners are local/legacy rows and must survive: in SQL
+                # `NULL != '__shared__'` is NULL, not true, so the IS NULL arm is
+                # required to keep the Python filter's exact semantics.
+                (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
             ).distinct().limit(limit)
         ).all()
     users = [r[0] if isinstance(r, tuple) else r for r in rows]
-    users = [u for u in users if u != SHARED_POOL_USER]
     # Dormancy gate: even with adoption stopped, a vanished user's existing
     # unscored backlog would keep burning LLM budget (and round-robin slots
     # active users need). Skip them here too; their queue resumes on return.
