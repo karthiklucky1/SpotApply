@@ -106,6 +106,43 @@ def test_the_returned_id_is_the_real_row_id():
     assert row is not None and row.external_id == "HS-1"
 
 
+def test_the_none_return_is_handled_at_the_caller_not_just_produced():
+    """`None` on a lost race is now load-bearing in a way the exception was not.
+
+    An exception could not be ignored; a quiet `None` can. This drives the real
+    caller — _upsert — rather than the helper, so the guard cannot be dropped
+    without a test failing: re-upserting an identical batch must return 0 new
+    rows, raise nothing, and leave the row count unchanged.
+    """
+    from app.discovery.pipeline import RawJob, _upsert
+
+    batch = [RawJob(source="greenhouse", external_id="HS-caller",
+                    company="Patrique Mercier", title="Backend Engineer",
+                    location="Remote", remote=True,
+                    url="https://example.test/hs/caller",
+                    description="Python and Postgres. " * 20, posted_at=None)]
+
+    first = _upsert(batch, user_id=_U)
+    assert first == 1, f"first upsert should insert one row, got {first}"
+
+    second = _upsert(batch, user_id=_U)          # must not raise
+    assert second == 0, (
+        f"a re-upsert reported {second} new rows — the None path is being counted "
+        f"as an insert")
+
+    with get_session() as s:
+        rows = s.exec(select(Job.id).where(
+            Job.user_id == _U, Job.external_id == "HS-caller")).all()
+    assert len(rows) == 1
+
+
+def test_upsert_returns_a_count_not_a_row():
+    """Eight call sites do `n += _upsert(...)`. If it ever returns a model or
+    None instead of an int, all eight break at once."""
+    from app.discovery.pipeline import _upsert
+    assert isinstance(_upsert([], user_id=_U), int)
+
+
 # ── 2. the EXISTS-per-user rewrite must mean the same thing ──────────────────
 
 def _old_form(session, users):
