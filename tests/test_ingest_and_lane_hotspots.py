@@ -207,3 +207,50 @@ def test_the_lane_still_orders_new_users_first(seeded):
     ordered = sorted(seeded, key=lambda u: (u in has_scored,))
     assert ordered[-1] == "hotspot-u1", (
         f"the only user with scored jobs must sort last, got {ordered}")
+
+
+# ── 3. the IS NULL sibling of (a) ────────────────────────────────────────────
+# pg_stat_statements, 2026-08-01: `SELECT DISTINCT job.user_id WHERE
+# rerank_score IS NULL` ran 4,511 ms per call, ~18 calls/hour, and held the
+# single largest total_exec_time of any statement in the database (29.3M ms).
+# It never appeared in the slow-query log because 4.5s is under the 10s
+# log_min_duration_statement threshold — the log was structurally blind to it.
+#
+# Cause: '__shared__' is the bulk of the unscored corpus and was streamed out of
+# Postgres only to be dropped in Python, so the DISTINCT sorted hundreds of
+# thousands of rows to yield ~8 values.
+
+def test_the_shared_pool_is_excluded_in_sql_not_in_python():
+    """The Python post-filter is gone; if the SQL clause is ever dropped the
+    shared pool reappears as a 'user' and the lane wastes every work slot."""
+    import inspect
+
+    import app.strategy.scoring_lane as sl
+    src = inspect.getsource(sl._scorable_user_ids)
+    assert "SHARED_POOL_USER" in src and "Job.user_id !=" in src, (
+        "the shared-pool exclusion must be part of the WHERE clause")
+    assert "for u in users if u != SHARED_POOL_USER" not in src, (
+        "filtering in Python means Postgres still streams the whole pool")
+
+
+def test_scorable_users_semantics(monkeypatch):
+    """All four cases the SQL clause has to get right — especially the NULL
+    owner, since `NULL != '__shared__'` is NULL in SQL, not true."""
+    from app.config import settings
+    from app.discovery.pipeline import SHARED_POOL_USER
+    import app.strategy.scoring_lane as sl
+
+    monkeypatch.setattr(settings, "dormant_user_grace_days", 0, raising=False)
+    seed = [(SHARED_POOL_USER, None), ("hotspot-alpha", None), (None, None),
+            ("hotspot-beta", 80.0), ("hotspot-gamma", None)]
+    with get_session() as s:
+        for i, (uid, score) in enumerate(seed):
+            s.add(_job(user_id=uid, external_id=f"sc{i}",
+                       url=f"https://example.test/sc{i}", rerank_score=score))
+        s.commit()
+
+    got = sl._scorable_user_ids()
+    assert SHARED_POOL_USER not in got, "the shared pool is a corpus, not a user"
+    assert "hotspot-alpha" in got and "hotspot-gamma" in got
+    assert None in got, "the NULL/local owner must survive the SQL filter"
+    assert "hotspot-beta" not in got, "fully-scored users have no work"
