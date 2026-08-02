@@ -1486,7 +1486,7 @@
                     </button> <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Tailoring Studio: watch the resume being written, ATS keywords highlighted, score-checked -->
  <div id="tailor-studio" style="display:none; position:fixed; inset:0; z-index:120;">
    <div onclick="closeTailorStudio()" style="position:absolute; inset:0; background:rgba(2,6,23,0.8); backdrop-filter:blur(6px);"></div>
-   <div class="glass" style="position:relative; max-width:860px; margin:4vh auto; max-height:92vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
+   <div class="glass" style="position:relative; max-width:1080px; margin:3vh auto; max-height:94vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
      <div class="flex items-center justify-between gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
        <div class="min-w-0">
          <div class="text-sm font-black text-white truncate" id="ts-title">✍️ Tailoring…</div>
@@ -1507,10 +1507,10 @@
        <button type="button" id="ts-rebuild" onclick="tsRebuild()" class="hidden text-[10px] font-black px-4 py-1.5 rounded-full" style="background:rgba(244,63,94,0.12);color:#fb7185;border:1px solid rgba(244,63,94,0.35)">↻ Rebuild for a better score</button>
      </div>
      <div class="flex-1 overflow-y-auto px-6 pb-4" id="ts-scroll">
-       <pre id="ts-content" class="text-[11.5px] text-slate-200 leading-relaxed whitespace-pre-wrap bg-slate-950/60 border border-white/5 rounded-2xl p-5 min-h-[300px]" style="font-family:inherit"></pre>
+       <pre id="ts-content" class="text-[13.5px] text-slate-100 leading-[1.75] whitespace-pre-wrap bg-slate-950/60 border border-white/5 rounded-2xl p-6 min-h-[460px]" style="font-family:inherit"></pre>
      </div>
      <div class="px-6 pb-3 text-[10px] text-slate-500 flex flex-wrap items-center gap-3" id="ts-legend" style="display:none">
-       <span><mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
+       <span><mark style="background:none;color:#059669;font-weight:600">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
        <span id="ts-missing" class="text-amber-300/90"></span>
      </div>
      <div class="px-6 pb-3 hidden" id="ts-feedback"></div>
@@ -3311,7 +3311,7 @@
                 const pat = _tsEscape(kw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 try {
                     html = html.replace(new RegExp(`(?<![\\w>])(${pat})(?![\\w])`, 'gi'),
-                        '<mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">$1</mark>');
+                        '<mark style="background:none;color:#059669;font-weight:600">$1</mark>');
                 } catch (e) { /* skip pathological keyword */ }
             });
             return html;

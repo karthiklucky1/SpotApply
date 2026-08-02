@@ -97,3 +97,68 @@ def test_jobs_without_dates_are_left_alone():
     with get_session() as s:
         j = s.exec(select(Job).where(Job.external_id == "7")).first()
         assert _status(s, j.id) == ApplicationStatus.SHORTLISTED
+
+
+# ── the freshness clause across every status and age ─────────────────────────
+# Reported 2026-08-02: 6-7 week old jobs sitting in the shortlist. The board data
+# settled it — all 25 offending rows were TAILORED, none SHORTLISTED, and
+# filter_age matched displayed_age exactly. So it was not a measurement bug: the
+# clause exempted invested work from the window ENTIRELY. That sounded protective
+# and was not. Those postings are long filled, and they buried the current week's
+# matches under two months of dead listings. Invested work now gets a LONGER
+# window, not an unlimited one.
+
+import pytest  # noqa: E402
+from datetime import datetime as _dt, timedelta as _td  # noqa: E402
+
+
+@pytest.mark.parametrize("status_name,age_days,should_show,why", [
+    ("SHORTLISTED",     2,  True,  "inside the 5-day match window"),
+    ("SHORTLISTED",     9,  False, "past the 5-day window"),
+    ("TAILORED",        9,  True,  "invested work inside the 14-day grace"),
+    ("TAILORED",        45, False, "the 32-52 day rows that prompted this"),
+    ("READY_TO_SUBMIT", 45, False, "autofill review is invested work, not immortal"),
+    ("AWAITING_USER",   3,  True,  "fresh autofill review"),
+    ("SUBMITTED",       45, True,  "pipeline history — the window must not touch it"),
+    ("INTERVIEWING",    90, True,  "never hide an interview"),
+])
+def test_freshness_window_by_status_and_age(status_name, age_days, should_show, why):
+    from sqlmodel import select
+
+    from app.api.server import _shortlist_fresh_clause
+    from app.db.models import Application, ApplicationStatus, Job, JobSource
+
+    status = getattr(ApplicationStatus, status_name)
+    ext = f"fw-{status_name}-{age_days}"
+    with get_session() as s:
+        for a in s.exec(select(Application).where(Application.user_id == "fw-user")).all():
+            s.delete(a)
+        for j in s.exec(select(Job).where(Job.user_id == "fw-user")).all():
+            s.delete(j)
+        s.commit()
+        job = Job(user_id="fw-user", source=JobSource.GREENHOUSE, external_id=ext,
+                  company="C", title="T", url=f"https://x/{ext}", description="d",
+                  posted_at=_dt.utcnow() - _td(days=age_days))
+        s.add(job)
+        s.commit()
+        s.refresh(job)
+        s.add(Application(user_id="fw-user", job_id=job.id, status=status))
+        s.commit()
+        rows = s.exec(
+            select(Job.external_id)
+            .join(Application, Application.job_id == Job.id)
+            .where(Application.user_id == "fw-user")
+            .where(_shortlist_fresh_clause())
+        ).all()
+    shown = ext in {r if isinstance(r, str) else r[0] for r in rows}
+    assert shown is should_show, (
+        f"{status_name} at {age_days}d: visible={shown}, expected {should_show} — {why}")
+
+
+def test_invested_work_gets_a_longer_window_than_a_plain_match():
+    """The whole point: tailoring something buys it more time, not immunity."""
+    from app.config import settings
+    assert settings.tailored_max_age_days > settings.shortlist_max_age_days
+    assert settings.tailored_max_age_days > 0, (
+        "0 restores the never-hide behaviour that let 52-day-old postings bury "
+        "the current week's matches")

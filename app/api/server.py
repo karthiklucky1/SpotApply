@@ -2612,6 +2612,13 @@ def api_stats(request: Request) -> dict:
         # Job row was deleted) are excluded; otherwise counts here disagree with
         # the dashboard kanban, which inner-joins Job and never shows orphans.
         app_counts = {}
+        # The freshness window is applied HERE too. /api/stats feeds the header
+        # pill and the section badge, while the dashboard render and
+        # /api/pipeline/live both filter — so without this the badge said N and
+        # the board showed fewer, with no way for the user to find the missing
+        # ones by scrolling. Every surface that COUNTS the shortlist has to use
+        # the same predicate as the surface that LISTS it.
+        _stats_fresh = _shortlist_fresh_clause()
         for status in ApplicationStatus:
             aq = (
                 select(func.count(Application.id))
@@ -2621,6 +2628,8 @@ def api_stats(request: Request) -> dict:
                     Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
                 )
             )
+            if _stats_fresh is not None:
+                aq = aq.where(_stats_fresh)
             if _uid_filter:
                 aq = aq.where(Application.user_id == uid)
             count = session.exec(aq).first() or 0
@@ -4794,7 +4803,15 @@ def _shortlist_fresh_clause():
     (rendered === 0 && server > 0) reloaded the page every 30s forever. Returns
     None when the window is disabled.
 
-    Jobs the user invested in (TAILORED / autofill review) are never hidden.
+    Work the user invested in (TAILORED / autofill review) gets a LONGER window,
+    not an unlimited one. It was exempt entirely, which sounded protective and
+    was not: a board check on 2026-08-02 found 25 TAILORED applications aged 32
+    to 52 days still occupying the shortlist. Every one of those postings is long
+    filled, so the exemption was not preserving the user's work — it was burying
+    this week's matches under two months of dead listings. A tailored résumé the
+    user never submitted still deserves time to act on; it does not deserve
+    forever.
+
     coalesce(posted_at, first_seen, discovered_at): first_seen reached prod via a
     bare ALTER TABLE with no backfill, so it is NULL on the oldest rows, and
     `NULL < cutoff` is NULL — without discovered_at as the final fallback those
@@ -4804,9 +4821,26 @@ def _shortlist_fresh_clause():
     if not days or days <= 0:
         return None
     from datetime import datetime as _fdt, timedelta as _ftd
-    cutoff = _fdt.utcnow() - _ftd(days=days)
+    now = _fdt.utcnow()
     freshness = func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
-    return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= cutoff)
+    fresh_cut = now - _ftd(days=days)
+
+    invested_days = int(getattr(settings, "tailored_max_age_days", 0) or 0)
+    if invested_days <= 0:
+        # Explicitly opted back into "never hide invested work".
+        return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= fresh_cut)
+    invested_cut = now - _ftd(days=invested_days)
+    invested = [ApplicationStatus.TAILORED,
+                ApplicationStatus.AUTOFILLED,
+                ApplicationStatus.AWAITING_USER,
+                ApplicationStatus.READY_TO_SUBMIT]
+    return (
+        # Anything past the shortlist board (submitted, interviewing, rejected…)
+        # is pipeline history, not a match feed — the window must not touch it.
+        (~Application.status.in_([ApplicationStatus.SHORTLISTED] + invested))
+        | (Application.status.in_(invested) & (freshness >= invested_cut))
+        | (freshness >= fresh_cut)
+    )
 
 
 def _has_active_paid_plan(uid) -> bool:
