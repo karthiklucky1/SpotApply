@@ -148,6 +148,37 @@ def score_ghost(job: Job, session: Session) -> GhostResult:
     except Exception as exc:
         log.debug("Ghost detector: duplicate-count query failed: %s", exc)
 
+    # Guide ghost-test 3, the agency-duplicate tell: the SAME job text posted
+    # under DIFFERENT company names. One client requisition fans out to a prime
+    # vendor and its sub-vendors, and each of them posts it, so the pool shows
+    # five openings where one exists. The check above only catches repeats of
+    # (company, title) — by construction it cannot see this, because the whole
+    # point is that the company name differs.
+    #
+    # content_hash is sha256(description) and is indexed, so this is a keyed
+    # lookup, not a scan; scoped to this user's own pool for the same reason the
+    # query above is (each tenant holds its own copy of a posting, so an
+    # unscoped count would flag every popular job).
+    try:
+        if job.content_hash:
+            same_text_companies = session.exec(
+                select(Job.company).where(
+                    Job.user_id == job.user_id,
+                    Job.content_hash == job.content_hash,
+                    Job.company != job.company,
+                    Job.is_closed == False,  # noqa: E712
+                ).limit(10)
+            ).all()
+            distinct_others = {c for c in same_text_companies if c}
+            if distinct_others:
+                # Deliberately modest: this means the req is real but multiplied,
+                # not that it is fake. It de-duplicates a flooded pool rather
+                # than condemning the posting.
+                score += 0.25
+                flags.append(f"same_text_other_companies_{len(distinct_others)}")
+    except Exception as exc:
+        log.debug("Ghost detector: cross-company duplicate query failed: %s", exc)
+
     score = min(score, 1.0)
     flags_json = json.dumps(flags)
     return GhostResult(ghost_score=round(score, 3), flags=flags, flags_json=flags_json)

@@ -7141,13 +7141,30 @@ def application_sponsorship(application_id: int, request: Request) -> dict:
     self-reported claims). Combines the employer's USCIS filing record with a
     legal, explainable sponsorship assessment of the posting."""
     _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    from app.db.models import UserProfile
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+        # Needed for the STEM OPT caution below, which is only shown to F-1
+        # users — read inside the same session, before any of the work below.
+        profile = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)
+        ).first() if uid else None
     company = (job.company if job else "") or ""
-    out = {"company": company, "h1b": None, "assessment": None}
+    out = {"company": company, "h1b": None, "assessment": None, "vendor": None}
+    # Who is actually hiring you. A staffing-vendor posting is legitimate but is
+    # a different transaction than applying direct, and for an F-1 user a
+    # client-site placement collides with the I-983 training requirement.
+    try:
+        from app.intelligence.vendor_posting import assess as _vendor_assess
+        v = _vendor_assess(job, profile)
+        if v.is_vendor_posting or v.red_flags:
+            out["vendor"] = v.as_dict()
+    except Exception as e:
+        log.debug("vendor posting assess failed: %s", e)
     try:
         from app.intelligence.h1b_data import lookup
         rec = lookup(company)

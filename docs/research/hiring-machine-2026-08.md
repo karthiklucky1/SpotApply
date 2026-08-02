@@ -510,6 +510,47 @@ coverage buys **findability in recruiter boolean search**, not immunity from a
 rejecter that does not exist. The analysis is unchanged and still useful; only the
 stated rationale was wrong. `tailoring/ats_keywords.py`.
 
+**H. New: staffing-vendor posting detection** (§1.7) — *the gap flagged as most
+likely to matter, now closed.* A grep for `staffing|C2C|RTR|bill rate|markup|MSP|VMS|
+hotlist` across `app/` and `extension/` returned **nothing** — Part 2 had zero
+coverage, in a product whose core users are exactly the people it endangers.
+
+`intelligence/vendor_posting.py` (pure: no DB, LLM or network) classifies a posting
+as vendor-sourced from deterministic fingerprints — an unnamed end client (the
+strongest tell), contract-engagement vocabulary (C2C, corp-to-corp, W2, RTR, prime/
+sub-vendor), hourly rather than salaried pay, visa-status filtering in the posting
+body, and agency-shaped company names. It requires either the unnamed-client signal
+or two independent corroborating signals, because staffing is a **legitimate**
+industry (~75% of the Fortune 1000) and a badge that cries wolf is a badge users
+learn to ignore.
+
+Three deliberate design choices:
+
+- **The badge is descriptive, never an accusation.** Misconduct lives on a separate
+  `red_flags` axis — fee requests, immigration documents demanded before an offer,
+  blanket RTR, chat-only interviews, offers to "adjust" your experience. A normal
+  vendor post gets the chain explanation and the seven-item checklist; only genuine
+  red-flag language gets the warning treatment.
+- **The STEM OPT caution is gated on the user's own profile.** Only F-1/OPT users see
+  it, because only for them does a client-site placement collide with the I-983
+  training requirement and the E-Verify rule — the asymmetry being that when a vendor
+  lies, the owners face prosecution and *the worker* faces a permanent bar.
+- **"No sponsorship available" is not a vendor signal.** That is a lawful statement by
+  a direct employer, owned by `sponsorship.py`, and is explicitly tested against.
+
+Wired into `/application/{id}/sponsorship` and rendered in the job drawer. 26 tests
+across `tests/test_vendor_posting.py` (both directions — five true-positive and five
+true-negative fixtures) and `tests/test_vendor_posting_endpoint.py` (end-to-end,
+including the profile gating).
+
+**I. The agency-duplicate tell** (§1.5, ghost test 3). `ghost_detector.py` counted
+repeats of `(company, title)` — which by construction cannot see one client req
+fanned out across a prime vendor and its sub-vendors, because the whole point is that
+the *company name differs*. Added a check on `content_hash` (already
+`sha256(description)` and already indexed, so this is a keyed lookup, not a scan),
+tenant-scoped like the existing query, scoring modestly: the req is real but
+multiplied, not fake. `matching/filters/ghost_detector.py`, +3 tests.
+
 ### Audited and found already covered
 
 The freshness thesis in `freshness-strategy-2026-07.md` is genuinely implemented: we
@@ -523,25 +564,27 @@ own ATS API. `Job.is_cap_exempt` already exists.
 Ranked by value/effort from the audit, and **not** verified as thoroughly as the items
 above (the verification pass was cut short — see §5):
 
-1. **Staffing-agency fingerprint detection** (§1.5 test 3, §1.7) — we do not detect
-   that a posting is a vendor's rather than the end employer's, which is the single
-   biggest uncovered risk for our core user.
-2. **"Refreshed, not reopened" badge** (§1.2) — we now read the right timestamp but do
+1. **"Refreshed, not reopened" badge** (§1.2) — we now read the right timestamp but do
    not yet tell the user when the two dates disagree.
-3. **Evergreen-is-not-ghost exception** (§1.5) — genuine rolling-basis early-career
+2. **Evergreen-is-not-ghost exception** (§1.5) — genuine rolling-basis early-career
    pipelines may be over-penalised by the age signal.
-4. **Pre-apply knockout prediction** (§1.3) — Greenhouse's public API exposes the real
+3. **Pre-apply knockout prediction** (§1.3) — Greenhouse's public API exposes the real
    application questions via `?questions=true`; we fetch content but never questions,
    so we cannot warn "this posting's sponsorship question will eliminate you" before
    the user spends a tailoring credit.
-5. **Initial vs continuing H-1B approvals** (§1.6) — `h1b_data.py` sums them, so "400
+4. **Initial vs continuing H-1B approvals** (§1.6) — `h1b_data.py` sums them, so "400
    approvals" may be 397 renewals for existing staff. The Data Hub ships them as
    separate columns.
-6. **Cap-exempt detection breadth** (§1.6) — a ~16-substring name match catches
+5. **Cap-exempt detection breadth** (§1.6) — a ~16-substring name match catches
    "Stanford University" but misses Mass General Brigham, Fred Hutchinson, Battelle,
    HHMI, SRI International and JPL, which is where the volume actually is.
-7. **DOL LCA / PERM ingestion** (§1.6) — needed to answer "do they sponsor at *entry*
+6. **DOL LCA / PERM ingestion** (§1.6) — needed to answer "do they sponsor at *entry*
    level" and "will they keep me past year six". Free bulk files, but real work.
+
+Still entirely unaudited: **referral and outreach craft** (§1.8, §1.9), **funnel
+benchmarks and the recruiting calendar** (§1.4, §1.12), and **application routing**
+(ATS page vs aggregator, §1.1). The §1.10 research line — professional vs personal —
+is worth a dedicated pass, since it is a guardrail question and we generate outreach.
 
 ---
 
@@ -579,12 +622,19 @@ referral mechanics) is structural and stable.
 
 ## 5. How complete this audit is
 
-Eight themes were scoped against the codebase; **four completed**: ATS freshness/
-timestamps, ghost-job detection, knockout/AI-screening, and sponsorship intelligence.
-**Four were not run**: the staffing-vendor chain (Part 2), referral and outreach craft
-(Part 4), funnel benchmarks and the recruiting calendar (§1.4, §1.9, §1.12), and
-application routing (ATS page vs aggregator). The adversarial verification pass and the
-synthesis step did not run either.
+Eight themes were scoped against the codebase; **four completed** by the automated
+audit: ATS freshness/timestamps, ghost-job detection, knockout/AI-screening, and
+sponsorship intelligence. The adversarial verification pass and synthesis step never
+ran — the audit hit its usage limit twice, on the first run and again on resume.
+
+**The staffing-vendor theme (Part 2) was then audited by hand** rather than retried a
+third time, and it produced items H and I above. That was the right call on the
+evidence: it was predicted to be the likeliest place for another serious finding, and
+it turned out to have *zero* prior coverage.
+
+**Three themes remain unaudited**: referral and outreach craft (Part 4), funnel
+benchmarks and the recruiting calendar (§1.4, §1.9, §1.12), and application routing
+(ATS page vs aggregator).
 
 Every change listed in §2 was therefore re-verified by hand against the code before it
 was made, and each one is a factual correction with a citation above it. The §2 "known
