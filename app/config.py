@@ -253,6 +253,13 @@ class Settings(BaseSettings):
     # warning. Set this to an ISO date (e.g. "2026-08-01") to keep everyone who
     # signed up before then on PRO. Empty (default) = that cliff, unchanged.
     plan_grandfather_until: str = ""       # PLAN_GRANDFATHER_UNTIL
+    # How long a TAILORED / autofill-review application keeps its place on the
+    # board. Longer than SHORTLIST_MAX_AGE_DAYS because the user put work into
+    # it, but NOT unlimited: these used to be exempt outright, and the board
+    # accumulated 25 tailored applications aged 32-52 days that buried the
+    # current week's matches under postings that are certainly filled by now.
+    # 0 restores the old never-hide behaviour.
+    tailored_max_age_days: int = 14        # TAILORED_MAX_AGE_DAYS
     # Recruiter verification unlocks /api/recruiter/search, which returns every
     # pooled candidate's full name, work authorization and sponsorship need. The
     # old auto-verify compared work_email's domain to company_domain — but BOTH
