@@ -398,12 +398,32 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     )
                 ).first()
                 if existing_cross:
+                    # Every ATS we scrape DIRECTLY belongs here. The list used to
+                    # name only the first five, so a Workable/Recruitee/BambooHR
+                    # (etc.) posting could never upgrade an aggregator row — we
+                    # held the aggregator's link even though we had the
+                    # employer's own. The careers page is a strict superset and
+                    # aggregator applications route in with degraded field
+                    # mapping, so the direct link is always the better one.
+                    # See docs/research/hiring-machine-2026-08.md §1.1.
                     direct_ats_sources = {
                         JobSource.GREENHOUSE,
                         JobSource.LEVER,
                         JobSource.ASHBY,
                         JobSource.WORKDAY,
-                        JobSource.SMARTRECRUITERS
+                        JobSource.SMARTRECRUITERS,
+                        JobSource.WORKABLE,
+                        JobSource.RECRUITEE,
+                        JobSource.PERSONIO,
+                        JobSource.BAMBOOHR,
+                        JobSource.ICIMS,
+                        JobSource.JOBVITE,
+                        JobSource.COMEET,
+                        JobSource.TEAMTAILOR,
+                        JobSource.RIPPLING,
+                        JobSource.BREEZY,
+                        JobSource.PINPOINT,
+                        JobSource.JOIN,
                     }
                     # Upgrade to direct ATS version if existing was from a manual/aggregator source
                     if existing_cross.source not in direct_ats_sources and JobSource(r.source) in direct_ats_sources:
@@ -417,6 +437,13 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         existing_cross.description = r.description
                         existing_cross.content_hash = content_hash
                         existing_cross.embedding_id = None  # force re-embed
+                        # Take the ATS's posting date too. Aggregators reset the
+                        # visible date on a repost; the ATS timestamp does not,
+                        # so keeping the aggregator's date here would discard the
+                        # only unfalsifiable one at the exact moment we finally
+                        # have it — and freshness is what the whole feed ranks on.
+                        if r.posted_at:
+                            existing_cross.posted_at = r.posted_at
                         existing_cross.last_seen = datetime.utcnow()
                         session.add(existing_cross)
                         

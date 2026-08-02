@@ -551,6 +551,42 @@ the *company name differs*. Added a check on `content_hash` (already
 tenant-scoped like the existing query, scoring modestly: the req is real but
 multiplied, not fake. `matching/filters/ghost_detector.py`, +3 tests.
 
+**J. Funding rounds no longer boost a job's ranking** (§1.11). `hire_probability.py`
+added up to **+0.20** on a 0–1 scale for funding language in the description, and a
+further boost from a Crunchbase lookup — and that score feeds `blended_score`, which
+orders the feed. The research is blunt: there is no statistically significant
+correlation between capital raised and headcount growth, Revelio Labs found median
+Series A headcount *fell* 57 → 44 from 2020–2025 while funding per employee doubled,
+and the "Series B precedes a hiring wave by 3–6 weeks" claim vendors sell has no
+published methodology. Funding is now recorded as a descriptive signal and scores
+zero. `matching/hire_probability.py`.
+
+**K. Referral asks rebuilt around how the ATS actually works** (§1.8, §1.9). We led
+with *"Would you be open to referring me through your employee referral link?"* — the
+guide's **lowest-yield** ask — and offered to send a resume on first contact, another
+measured mistake. Neither draft carried a link to the specific requisition, despite
+the referrer being mechanically unable to refer without selecting one.
+
+Replaced with the descending-yield ladder: forward-the-req (costs them nothing and
+needs no relationship claim) → 15-minute call with two concrete windows → who owns
+this req → and the cold ask dropped as a lead. Every draft now carries the req link,
+no draft mentions a resume, and the LLM rewrite prompt carries the measured
+constraints (LinkedIn under 300 characters, email 150–199 words, common-ground →
+proof → low-cost ask, never lead with credentials, never explain how you found them).
+`intelligence/referral.py`, +1 guard test.
+
+**L. The aggregator → ATS upgrade had two silent bugs** (§1.1, §1.2). The upgrade path
+itself was already right — we prefer the employer's own link, which is what the guide
+recommends. But its eligible-source set named only five of the ATSs we scrape
+directly, so a Workable, Recruitee, BambooHR, Personio, Breezy, Rippling, Pinpoint,
+Teamtailor, iCIMS, Jobvite, Comeet or Join posting could **never** displace an
+aggregator row — we held the aggregator's link while holding the employer's own. And
+the upgrade copied URL and description but not `posted_at`, discarding the ATS's
+unfalsifiable date at the exact moment we finally had it, which quietly undid change
+C above. Both fixed, with a guard test that derives the expected set from `JobSource`
+so a newly added ATS fails the build until it is handled. `discovery/pipeline.py`,
+`tests/test_ats_upgrade.py`.
+
 ### Audited and found already covered
 
 The freshness thesis in `freshness-strategy-2026-07.md` is genuinely implemented: we
@@ -581,10 +617,16 @@ above (the verification pass was cut short — see §5):
 6. **DOL LCA / PERM ingestion** (§1.6) — needed to answer "do they sponsor at *entry*
    level" and "will they keep me past year six". Free bulk files, but real work.
 
-Still entirely unaudited: **referral and outreach craft** (§1.8, §1.9), **funnel
-benchmarks and the recruiting calendar** (§1.4, §1.12), and **application routing**
-(ATS page vs aggregator, §1.1). The §1.10 research line — professional vs personal —
-is worth a dedicated pass, since it is a guardrail question and we generate outreach.
+7. **No conversion benchmarks shown** (§1.4) — the user cannot tell whether their own
+   funnel is normal. The research supplies real ones (application → first stage
+   8–22%, recruiter screen ~35% / 52% referred, application → offer ~0.5%).
+8. **No seasonality anywhere** (§1.12) — nothing knows September is peak, January is
+   the second wave, or that quant/HFT run 14–18 months ahead.
+9. **No departure/backfill signal** (§1.11) — the research ranks it the strongest
+   predictive signal after direct ATS polling, and we do not look for it.
+10. **Follow-up cadence is not tracked** (§1.9) — we do not know how many times a user
+    has touched a contact, so we cannot stop them at touch three, which is where 93.2%
+    of all replies have already arrived.
 
 ---
 
@@ -627,14 +669,17 @@ audit: ATS freshness/timestamps, ghost-job detection, knockout/AI-screening, and
 sponsorship intelligence. The adversarial verification pass and synthesis step never
 ran — the audit hit its usage limit twice, on the first run and again on resume.
 
-**The staffing-vendor theme (Part 2) was then audited by hand** rather than retried a
-third time, and it produced items H and I above. That was the right call on the
-evidence: it was predicted to be the likeliest place for another serious finding, and
-it turned out to have *zero* prior coverage.
+**The remaining four themes were then audited by hand** rather than retrying the
+workflow a third time — the staffing-vendor chain (items H, I), referral and outreach
+craft (K), funnel benchmarks and the calendar (J), and application routing (L). Doing
+Part 2 by hand was clearly the right call: it was predicted to be the likeliest place
+for another serious finding, and it turned out to have *zero* prior coverage.
 
-**Three themes remain unaudited**: referral and outreach craft (Part 4), funnel
-benchmarks and the recruiting calendar (§1.4, §1.9, §1.12), and application routing
-(ATS page vs aggregator).
+**All eight themes are now covered.** What is left is in the "known gaps" list above —
+items nobody has built yet, not areas nobody has looked at. The one thing still
+genuinely unexamined is §1.10, the professional-vs-personal research line: it is a
+guardrail question rather than a feature, and since we generate outreach it deserves
+its own pass.
 
 Every change listed in §2 was therefore re-verified by hand against the code before it
 was made, and each one is a factual correction with a citation above it. The §2 "known
