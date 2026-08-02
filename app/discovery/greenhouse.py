@@ -47,8 +47,17 @@ class GreenhouseScraper:
             # below would crash and take down the WHOLE board's fetch.
             location = (j.get("location") or {}).get("name") or ""
             remote = "remote" in location.lower()
-            posted = j.get("updated_at")
-            posted_dt = datetime.fromisoformat(posted.replace("Z", "+00:00")) if posted else None
+            # first_published is the only unfalsifiable date on the posting:
+            # updated_at moves every time a recruiter touches or re-posts the
+            # req, so an eight-month-old listing that was refreshed yesterday
+            # used to read as brand new — and "freshest first" is the whole
+            # product. Fall back to updated_at only when first_published is
+            # absent. See docs/research/hiring-machine-2026-08.md §1.2.
+            posted = j.get("first_published") or j.get("updated_at")
+            try:
+                posted_dt = datetime.fromisoformat(posted.replace("Z", "+00:00")) if posted else None
+            except (AttributeError, ValueError):
+                posted_dt = None
             jobs.append(
                 RawJob(
                     source="greenhouse",

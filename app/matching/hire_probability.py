@@ -129,10 +129,20 @@ def score_hire_probability(job: Job, session: Session) -> HireProbabilityResult:
         signals.append(f"low_velocity_{open_count}_openings")
 
     # ── 3. Funding / growth language in description ───────────────────────────
+    # Funding is recorded but NO LONGER SCORED. It used to add up to +0.20 on a
+    # 0-1 scale, which meaningfully reordered the user's feed on a signal that
+    # does not hold up: there is no statistically significant correlation
+    # between capital raised and headcount growth, and Revelio Labs found median
+    # Series A headcount FELL from 57 to 44 between 2020 and 2025 while funding
+    # per employee doubled. The "a Series B precedes a hiring wave by 3-6 weeks"
+    # claim that recruiting-signal vendors sell has no published methodology.
+    #
+    # Kept as a descriptive signal because it is still true and users like
+    # seeing it — it just must not move the ranking.
+    # See docs/research/hiring-machine-2026-08.md §1.11.
     funding_hits = [s for s in _FUNDING_SIGNALS if s in desc]
     if funding_hits:
-        score += min(0.20, 0.08 * len(funding_hits))
-        signals.append(f"funding_language:{','.join(funding_hits[:2])}")
+        signals.append(f"funding_language_informational:{','.join(funding_hits[:2])}")
 
     growth_hits = [s for s in _GROWTH_SIGNALS if s in desc]
     if growth_hits:
@@ -168,10 +178,10 @@ def score_hire_probability(job: Job, session: Session) -> HireProbabilityResult:
         except Exception:
             pass
         try:
+            # Recorded, not scored — same reason as the funding keywords above.
             cb_boost, cb_signal = check_crunchbase_funding(job.company)
             if cb_boost > 0:
-                score += cb_boost
-                signals.append(cb_signal)
+                signals.append(f"{cb_signal}_informational")
         except Exception:
             pass
 

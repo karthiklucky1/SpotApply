@@ -45,7 +45,13 @@ class AshbyScraper:
         for j in payload.get("jobs", []):
             location = j.get("locationName") or ""  # coerce null → "" (see greenhouse.py)
             remote = j.get("isRemote", False) or "remote" in location.lower()
-            published = j.get("publishedDate")
+            # Ashby's posting API documents this as publishedAt, and our own
+            # job-check consumer already reads publishedAt
+            # (app/intelligence/job_check.py). This scraper alone read
+            # publishedDate, so it was silently producing posted_at=None and
+            # every Ashby job fell back to discovered_at for freshness ranking.
+            # Try both rather than trading one guess for another.
+            published = j.get("publishedAt") or j.get("publishedDate")
             try:
                 posted_dt = datetime.fromisoformat(published.replace("Z", "+00:00")) if published else None
             except Exception:

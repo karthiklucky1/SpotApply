@@ -83,3 +83,41 @@ def test_generate_referral_drafts_extensions():
         import app.matching.reranker as rr
         rr._CLIENTS = None   # drop the mock-built shared clients
         _cleanup()
+
+
+def test_referral_asks_follow_the_ats_mechanics():
+    """Guard: the ask ladder, the req link, and no resume on first contact.
+
+    Two mechanical facts drive this. A referrer must select a SPECIFIC LIVE JOB
+    (so every draft carries the req link), and must describe their RELATIONSHIP
+    to you in writing on the record (so a cold "will you refer me?" gets silence
+    and must never be the lead ask). Offering a resume on first contact is the
+    other measured mistake. See docs/research/hiring-machine-2026-08.md §1.8.
+    """
+    from app.intelligence.referral import _fallback_drafts
+
+    drafts = _fallback_drafts(
+        name="Ada Lovelace", title="Data Engineer", company="Globex", role="Analytics Engineer",
+        skills="python, sql, dbt", selling="", needs_sponsorship=False,
+        job_url="https://boards.example.com/globex/jobs/42",
+    )
+    by_type = {d["type"]: d["body"] for d in drafts}
+
+    # The ladder exists, in descending order of yes.
+    for t in ("referral_request", "referral_intro_call", "referral_who_owns"):
+        assert t in by_type, f"missing ask: {t}"
+
+    # The lead ask is forward-the-req, which needs no relationship claim.
+    assert "forward the req" in by_type["referral_request"].lower()
+
+    # Every referral ask carries the specific requisition link.
+    for t in ("referral_request", "referral_intro_call", "referral_who_owns"):
+        assert "https://boards.example.com/globex/jobs/42" in by_type[t], f"{t} lost the req link"
+
+    # No resume offered or mentioned on first contact, in any draft.
+    for t, body in by_type.items():
+        assert "resume" not in body.lower(), f"{t} mentions a resume on first contact"
+
+    # A low-cost ask with concrete windows, not an open-ended one.
+    assert "15 minutes" in by_type["referral_intro_call"]
+    assert "Wednesday" in by_type["referral_intro_call"]

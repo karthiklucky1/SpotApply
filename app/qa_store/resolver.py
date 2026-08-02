@@ -7,6 +7,23 @@ from app.db.models import Job
 
 log = logging.getLogger(__name__)
 
+# Phrasings of the future-sponsorship knockout question. This is deliberately a
+# module-level constant so the primary branch and the yes/no fallback in
+# resolve() can never drift apart and leave one path auto-answering it.
+_SPONSORSHIP_KWS = (
+    "require sponsorship",
+    "requires sponsorship",
+    "sponsorship now or in the future",
+    "visa sponsorship",
+    "sponsorship in the future",
+    "require visa",
+    "sponsorship requirements",
+    "need sponsorship",
+    "immigration sponsorship",
+    "employment visa status",
+    "require employer sponsorship",
+)
+
 US_STATES = {
     "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
     "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
@@ -102,15 +119,36 @@ class QAResolver:
             return self._get_nested(["identity", "phone"], "(513) 276-3950"), 0.95
 
         # 2. Work Authorization
+        #
+        # Sponsorship is checked FIRST, and on a deliberately broad "sponsor"
+        # substring, because the most common real phrasing is COMPOUND:
+        #   "Are you authorized to work in the US *without sponsorship*?"
+        # That matches the work-auth keywords below, and answering it from
+        # authorized_to_work_us returns "Yes" — which for an F-1 OPT holder is
+        # false. They are authorized now, but not without future sponsorship.
+        #
+        # The sponsorship question is the ONE genuine auto-reject gate in
+        # Greenhouse/Ashby (auto-reject fires only on yes/no, single- and
+        # multi-select custom questions — never on resume keywords), and its
+        # truthful answer depends on the applicant's real plans, not on a stored
+        # default. Answering it falsely is wilful misrepresentation under
+        # INA 212(a)(6)(C)(i) — a PERMANENT inadmissibility bar with no time
+        # limit — and the standard is wilful misrepresentation by the APPLICANT,
+        # so "the tool answered for me" is not a defence.
+        #
+        # We therefore never resolve any question that mentions sponsorship:
+        # return (None, 0.0) so the caller routes it to the human, exactly as
+        # answer_pack.py already does ("auto": False). Over-routing costs the
+        # user one click; under-routing can cost them the right to be here.
+        # See docs/research/hiring-machine-2026-08.md §1.3 and §1.7.
+        if "sponsor" in low or any(kw in low for kw in _SPONSORSHIP_KWS):
+            log.info("QAResolver: refusing to auto-answer sponsorship question '%s'", question_text)
+            return None, 0.0
+
         auth_kws = ["authorized to work", "legally authorized", "legal right to work", "lawful right to work", "eligible to work in", "right to work", "work authorization", "work permit", "unrestricted work"]
         if any(kw in low for kw in auth_kws):
             auth = self._get_nested(["work_authorization", "authorized_to_work_us"], True)
             return "Yes" if auth else "No", 0.95
-
-        spons_kws = ["require sponsorship", "sponsorship now or in the future", "visa sponsorship", "sponsorship in the future", "require visa", "sponsorship requirements"]
-        if any(kw in low for kw in spons_kws):
-            spons = self._get_nested(["work_authorization", "requires_sponsorship"], False)
-            return "Yes" if spons else "No", 0.95
 
         # 3. Security Clearance
         clearance_kws = ["security clearance", "active clearance", "clearance level", "government clearance", "active security clearance"]
@@ -274,10 +312,12 @@ class QAResolver:
         )
 
         if is_yes_no:
-            # Re-check visa sponsorship and security clearance as safety fallback
-            if any(kw in low for kw in spons_kws):
-                spons = self._get_nested(["work_authorization", "requires_sponsorship"], False)
-                return "Yes" if spons else "No", 0.95
+            # Re-check visa sponsorship and security clearance as safety fallback.
+            # Sponsorship stays human-routed here too — a yes/no-shaped phrasing
+            # we did not match above is exactly the case where guessing is worst.
+            if "sponsor" in low or any(kw in low for kw in _SPONSORSHIP_KWS):
+                log.info("QAResolver: refusing to auto-answer sponsorship question '%s'", question_text)
+                return None, 0.0
             if any(kw in low for kw in clearance_kws):
                 req_clearance = self._get_nested(["general", "requires_clearance"], False)
                 return "Yes" if req_clearance else "No", 0.95

@@ -50,6 +50,65 @@ def test_same_pool_reposts_still_flag():
     _cleanup()
 
 
+def test_same_text_under_other_company_names_flags():
+    """The agency-duplicate tell: one client req fanned out across vendors.
+
+    The (company, title) check above cannot see this by construction — the whole
+    point is that the company name differs. Matched on content_hash instead.
+    """
+    init_db()
+    _cleanup()
+    with get_session() as session:
+        mine = _job(session, "u1", "j-1", company="Acme")
+        mine.content_hash = "sha-shared"
+        session.add(mine)
+        for i, vendor in enumerate(("Vendor One Staffing", "Vendor Two Consulting")):
+            j = _job(session, "u1", f"j-v{i}", company=vendor)
+            j.content_hash = "sha-shared"
+            session.add(j)
+        session.commit()
+        session.refresh(mine)
+        res = score_ghost(mine, session)
+        assert any(f.startswith("same_text_other_companies") for f in res.flags), res.flags
+    _cleanup()
+
+
+def test_same_text_at_the_same_company_is_not_the_agency_tell():
+    """A company reposting its own req is ordinary; only OTHER names count."""
+    init_db()
+    _cleanup()
+    with get_session() as session:
+        mine = _job(session, "u1", "j-1", company="Acme")
+        mine.content_hash = "sha-shared"
+        session.add(mine)
+        twin = _job(session, "u1", "j-2", company="Acme", title="Other Title")
+        twin.content_hash = "sha-shared"
+        session.add(twin)
+        session.commit()
+        session.refresh(mine)
+        res = score_ghost(mine, session)
+        assert not any(f.startswith("same_text_other_companies") for f in res.flags), res.flags
+    _cleanup()
+
+
+def test_same_text_check_is_tenant_scoped():
+    """Another tenant's copy of the same posting must not look like an agency fan-out."""
+    init_db()
+    _cleanup()
+    with get_session() as session:
+        mine = _job(session, "u1", "j-1", company="Acme")
+        mine.content_hash = "sha-shared"
+        session.add(mine)
+        theirs = _job(session, "u2", "j-2", company="Globex")
+        theirs.content_hash = "sha-shared"
+        session.add(theirs)
+        session.commit()
+        session.refresh(mine)
+        res = score_ghost(mine, session)
+        assert not any(f.startswith("same_text_other_companies") for f in res.flags), res.flags
+    _cleanup()
+
+
 def test_duplicate_read_is_bounded():
     init_db()
     _cleanup()
