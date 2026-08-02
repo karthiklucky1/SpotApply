@@ -2612,6 +2612,13 @@ def api_stats(request: Request) -> dict:
         # Job row was deleted) are excluded; otherwise counts here disagree with
         # the dashboard kanban, which inner-joins Job and never shows orphans.
         app_counts = {}
+        # The freshness window is applied HERE too. /api/stats feeds the header
+        # pill and the section badge, while the dashboard render and
+        # /api/pipeline/live both filter — so without this the badge said N and
+        # the board showed fewer, with no way for the user to find the missing
+        # ones by scrolling. Every surface that COUNTS the shortlist has to use
+        # the same predicate as the surface that LISTS it.
+        _stats_fresh = _shortlist_fresh_clause()
         for status in ApplicationStatus:
             aq = (
                 select(func.count(Application.id))
@@ -2621,6 +2628,8 @@ def api_stats(request: Request) -> dict:
                     Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
                 )
             )
+            if _stats_fresh is not None:
+                aq = aq.where(_stats_fresh)
             if _uid_filter:
                 aq = aq.where(Application.user_id == uid)
             count = session.exec(aq).first() or 0

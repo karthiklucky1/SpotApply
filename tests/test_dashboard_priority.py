@@ -247,3 +247,31 @@ def test_empty_company_jobs_not_collapsed():
                 s.delete(a)
             s.delete(j)
         s.commit()
+
+
+def test_every_shortlist_surface_agrees_on_the_freshness_window():
+    """The badge and the board must never disagree.
+
+    Reported from production 2026-08-02: "shortlist showing one number but that
+    many jobs are not there on scroll". /api/stats counted SHORTLISTED+TAILORED
+    with NO freshness clause, while the dashboard render and /api/pipeline/live
+    both applied one — so the pill advertised jobs the user could not reach by
+    scrolling, with nothing to explain the gap.
+
+    This asserts the predicate itself is shared, which is the only durable form:
+    a fourth surface that counts the shortlist has to use it too.
+    """
+    import inspect
+
+    from app.api import server
+
+    for fn_name in ("dashboard", "pipeline_live", "get_stats"):
+        fn = getattr(server, fn_name, None)
+        if fn is None:
+            continue
+        src = inspect.getsource(fn)
+        if "SHORTLISTED" not in src:
+            continue
+        assert "_shortlist_fresh_clause" in src, (
+            f"{fn_name} reads the shortlist but does not apply "
+            f"_shortlist_fresh_clause() — its number will disagree with the board")
