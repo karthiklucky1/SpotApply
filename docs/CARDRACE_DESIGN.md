@@ -249,6 +249,38 @@ Hard rules (from review — without these the graph backfires):
   the audit stream **over-samples AUTO-INs whose score is mostly inference** (importance
   sampling by inference share).
 
+**The vocabulary mismatch (found in shadow, 2026-08-03).** §9.1 prompts the JobCard mint
+for success-profile PHRASES — "LLM application development" — while §9.3 UserCard skills
+arrive as TOKENS — "langchain". The graph is keyed on tokens, so a resolver that only
+asked it about the whole phrase could never match one: ~9 of every 12 capabilities scored
+a flat **0.00**, `spread` was **0.00** on every row (the inference layer was unreachable,
+not unhelpful), and g() would have **dropped 37.2% of the jobs Claude accepted** at
+61.9% decision agreement. The graph was never the problem — 144 edges including
+`langchain → llm (0.8)` sat unused.
+
+`coverage()` therefore resolves a want by three routes, strongest wins:
+
+| route | credit | example |
+|---|---|---|
+| direct / alias | full evidence | `k8s` → `kubernetes` |
+| graph inference | `evidence x path`, ≤ `INFERRED_CAP` 0.85 | `pytorch` → `ml deployment` |
+| **phrase decomposition** | mean over content tokens, x `PHRASE_CAP` **0.75** | `LLM application development` → `llm` → `langchain` |
+
+Filler tokens (`development`, `systems`, `production`, `experience`, …) are stripped
+before decomposition, and a token may reach a multi-word node it heads (`backend` →
+`backend development`) — otherwise `fastapi` has no route to a backend capability.
+Phrase credit sits *below* the inference cap because resolving a phrase through its
+parts is a weaker claim than an edge someone wrote down on purpose, and the tier is a
+`max()` on top of the first two: **it can only ever raise coverage, never lower it**, so
+an exact hit is untouched and a genuine gap (`mlops` with no MLOps evidence) still
+scores 0. Pinned by `tests/test_skill_graph.py` — the guard is *"a multi-word capability
+must not score zero"* in both directions, including *"the fix must not turn every phrase
+into a pass"*.
+
+Any change to this resolver invalidates every earlier shadow row: they score a function
+that no longer exists. Re-read and re-fit with the seam excluded —
+`card_match_report.py --since` and `build_calibration.py --since`.
+
 ### 9.3 Evidence-strength candidate model
 
 The UserCard compile (still the one existing signup call) scores every skill:

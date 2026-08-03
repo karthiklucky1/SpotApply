@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -55,6 +56,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=10,
                     help="how many worst disagreements to print (default 10)")
     ap.add_argument("--job", type=int, help="show every shadow row for one job id")
+    ap.add_argument("--since", metavar="YYYY-MM-DD",
+                    help="only rows from this date on. After a change to g() or "
+                         "the skill graph, the older rows score a function that "
+                         "no longer exists — this is how you read the new one.")
     args = ap.parse_args()
 
     bar = settings.shortlist_score_threshold
@@ -62,6 +67,13 @@ def main() -> int:
         q = select(CardMatchShadow)
         if args.job:
             q = q.where(CardMatchShadow.job_id == args.job)
+        if args.since:
+            try:
+                q = q.where(CardMatchShadow.created_at
+                            >= datetime.strptime(args.since, "%Y-%m-%d"))
+            except ValueError:
+                print(f"--since {args.since!r} is not YYYY-MM-DD")
+                return 2
         rows = list(s.exec(q).all())
 
     if not rows:
@@ -80,7 +92,10 @@ def main() -> int:
             print(f"    g() exp : {r.expanded_score:5.1f}   {_fmt_breakdown(r.breakdown)}")
             print(f"    spread  : {r.spread:5.2f}  (share of the score resting on"
                   f" skill-graph inference rather than stated evidence)")
-            print(f"    band    : {r.band}   calibrated={r.calibrated:.1f}")
+            # calibrated is NULL until data/calibration.json exists — the
+            # fail-safe state, not an error, so print it as one.
+            cal = f"{r.calibrated:.1f}" if r.calibrated is not None else "— (uncalibrated)"
+            print(f"    band    : {r.band}   calibrated={cal}")
             print()
         return 0
 

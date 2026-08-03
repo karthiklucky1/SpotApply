@@ -91,16 +91,31 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default=settings.card_calibration_path)
+    ap.add_argument("--since", metavar="YYYY-MM-DD",
+                    help="ignore shadow rows written before this date. Use it "
+                         "after any change to g() or the skill graph: rows from "
+                         "the old scorer describe a function that no longer "
+                         "exists, and fitting across the seam calibrates noise.")
     args = ap.parse_args()
 
     init_db()
     bar = float(settings.shortlist_score_threshold)
     with get_session() as session:
-        rows = session.exec(select(CardMatchShadow)).all()
+        q = select(CardMatchShadow)
+        if args.since:
+            try:
+                cutoff = datetime.strptime(args.since, "%Y-%m-%d")
+            except ValueError:
+                print(f"--since {args.since!r} is not YYYY-MM-DD")
+                return 2
+            q = q.where(CardMatchShadow.created_at >= cutoff)
+        rows = session.exec(q).all()
 
     if not rows:
         print("No shadow rows yet — enable CARD_MATCH_SHADOW and let the scoring "
-              "lane run beside real Claude finals first.")
+              "lane run beside real Claude finals first."
+              + (f" (--since {args.since} may have excluded them all.)"
+                 if args.since else ""))
         return 1
     if len(rows) < args.min_rows and not args.force:
         print(f"Only {len(rows)} shadow rows (< {args.min_rows}). The certificates "
