@@ -410,3 +410,69 @@ def test_subsets_and_ablation_exclude_synthesized_rows(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "no rows with a real Claude breakdown" in out
     assert out.count("no rows with a real Claude breakdown") == 2
+
+
+# ── scope + baseline ─────────────────────────────────────────────────────────
+#
+# 48.8% agreement sounds like "half right". It is only interpretable against
+# the majority-class floor: if 70% of rows are below the bar, always answering
+# "no" scores 70% knowing nothing, and 48.8% is then WORSE than a constant.
+# Reporting agreement without that floor is the same class of error as MAE
+# hiding two large cancelling factor gaps.
+
+def test_baseline_is_the_majority_class():
+    rows = [{"llm": 90.0}] * 3 + [{"llm": 10.0}] * 7
+    pct, which = card_match_replay._baseline(rows, 60.0)
+    assert pct == pytest.approx(70.0)
+    assert which == "always REJECT"
+    pct, which = card_match_replay._baseline([{"llm": 90.0}] * 8 + [{"llm": 10.0}] * 2, 60.0)
+    assert pct == pytest.approx(80.0)
+    assert which == "always SHORTLIST"
+    assert card_match_replay._baseline([], 60.0) == (0.0, "—")
+
+
+def test_subsets_flags_scoring_below_a_constant(monkeypatch, capsys):
+    """g() worse than 'always reject' means the factors carry no signal there.
+    That must be stated, not left for the reader to derive."""
+    with get_session() as s:
+        # Four clean rows Claude rejects; g() says yes on three of them.
+        for i, gscore in enumerate((95.0, 95.0, 95.0, 10.0)):
+            _why_seed(s, llm=20.0, llm_bd=_bd(20, 22, 18, 21),
+                      job_id=5001 + i, stored_g=gscore)
+    assert _run(monkeypatch, ["--subsets"]) == 0
+    out = capsys.readouterr().out
+    assert "majority-class baseline" in out
+    assert "BELOW a constant answer" in out
+
+
+def test_ablation_prints_the_baseline_row(monkeypatch, capsys):
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(5, 90, 95, 95), job_id=5101)
+        _why_seed(s, llm=75.0, llm_bd=_bd(70, 80, 85, 90), job_id=5102)
+    assert _run(monkeypatch, ["--ablate"]) == 0
+    out = capsys.readouterr().out
+    assert "majority-class baseline" in out
+    assert "single-factor gains sum to" in out
+
+
+def test_scope_restricts_the_population(monkeypatch, capsys):
+    """The global ceiling is inflated by the blockered subset that already
+    agrees; --scope clean is how you ask about the rows that actually lose."""
+    with get_session() as s:
+        _why_seed(s, llm=0.0, llm_bd=_bd(70, 25, 0, 100), job_id=5201)   # blockered
+        _why_seed(s, llm=72.0, llm_bd=_bd(60, 80, 85, 85), job_id=5202)  # clean
+    assert _run(monkeypatch, ["--ablate", "--scope", "clean"]) == 0
+    out = capsys.readouterr().out
+    assert "--scope clean: 1 of 2 rows" in out
+    assert _run(monkeypatch, ["--ablate", "--scope", "blockered"]) == 0
+    assert "--scope blockered: 1 of 2 rows" in capsys.readouterr().out
+
+
+def test_scope_all_is_the_default_and_filters_nothing(monkeypatch, capsys):
+    with get_session() as s:
+        _why_seed(s, llm=0.0, llm_bd=_bd(70, 25, 0, 100), job_id=5301)
+        _why_seed(s, llm=72.0, llm_bd=_bd(60, 80, 85, 85), job_id=5302)
+    assert _run(monkeypatch, ["--ablate"]) == 0
+    out = capsys.readouterr().out
+    assert "--scope" not in out
+    assert "2 rows" in out

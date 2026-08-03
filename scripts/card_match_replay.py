@@ -198,6 +198,23 @@ def _claude_blocked(p: dict, margin: float = 15.0) -> bool:
     return p["llm"] < _blend(p["llm_bd"], apply_blocker=False) - margin
 
 
+def _baseline(rows: list[dict], bar: float) -> tuple[float, str]:
+    """Agreement a CONSTANT answer would score, and which constant.
+
+    Decision agreement without this is unreadable. If 70% of rows are below the
+    bar, always answering "no" scores 70% while knowing nothing — so a matcher
+    at 63% is not "mostly right", it is worse than a coin that always says no.
+    Reporting the metric without its floor is how a broken subset hides inside
+    a healthy-looking aggregate.
+    """
+    if not rows:
+        return 0.0, "—"
+    good = sum(1 for r in rows if r["llm"] >= bar)
+    p = good / len(rows)
+    return (100.0 * max(p, 1 - p),
+            "always SHORTLIST" if p >= 0.5 else "always REJECT")
+
+
 def _subsets(rows: list[dict], bar: float) -> None:
     """Split the factor gaps by whether CLAUDE blockered the row.
 
@@ -231,8 +248,13 @@ def _subsets(rows: list[dict], bar: float) -> None:
         if not grp:
             continue
         ok = sum(1 for p in grp if (p["g"] >= bar) == (p["llm"] >= bar))
+        base, which = _baseline(grp, bar)
         print(f"\n  g() decision agreement on {label:10} {_pct(ok, len(grp))}  "
               f"({len(grp)} rows, {_pct(len(grp), len(usable))} of the ledger)")
+        print(f"    majority-class baseline           {base:5.1f}%  ({which})")
+        if 100.0 * ok / len(grp) < base:
+            print("    ** g() scores BELOW a constant answer on this subset — the")
+            print("       factors carry no usable decision signal here at all. **")
 
     if blocked and clean:
         sk_b = _mean([(p["g_bd"].get("skills") or {}).get("score", 0.0)
@@ -273,8 +295,10 @@ def _ablate(rows: list[dict], bar: float) -> None:
         return sum(1 for p in usable if (score_of(p) >= bar) == (p["llm"] >= bar))
 
     base = agree(lambda p: p["g"])
+    floor, which = _baseline(usable, bar)
     print(f"  {'substitution':34} {'agreement':>10}  {'gain':>7}")
     print(f"  {'-' * 34} {'-' * 10}  {'-' * 7}")
+    print(f"  {'majority-class baseline':34} {floor:9.1f}%  {'—':>7}   ({which})")
     print(f"  {'none (today)':34} {_pct(base, len(usable)):>10}  {'—':>7}")
 
     for k in FACTORS:
@@ -298,8 +322,32 @@ def _ablate(rows: list[dict], bar: float) -> None:
     both = agree(lambda p: 0.0 if _claude_blocked(p) else _blend(p["llm_bd"]))
     print(f"  {'oracle blocker + ALL FOUR':34} {_pct(both, len(usable)):>10}  "
           f"{100.0 * (both - base) / len(usable):+7.1f}")
+
+    # Do the repairs add up, or do they only pay off together? A blend lets
+    # three wrong factors outvote one corrected one, so fixing them one at a
+    # time can read as no progress right up until the last one lands.
+    singles = 0.0
+    for k in FACTORS:
+        def sub(p, k=k):
+            bd = dict(p["g_bd"])
+            bd[k] = {"score": (p["llm_bd"].get(k) or {}).get("score", 0.0)}
+            return _blend(bd)
+        singles += 100.0 * (agree(sub) - base) / len(usable)
+    joint = 100.0 * (all4 - base) / len(usable)
+    print(f"\n  single-factor gains sum to {singles:+.1f}; all four together {joint:+.1f}")
+    if joint > 2.0 * max(singles, 0.1):
+        print("  => strongly SUPERADDITIVE. Repairing one factor and re-measuring")
+        print("     would read as noise, because the other three still outvote it.")
+        print("     Treat the four as ONE unit of work, and do not judge a partial")
+        print("     repair by the aggregate number.")
+
     print("\n  Every row above is an ORACLE: it uses Claude's own answer, which g()")
     print("  will never have. They are upper bounds on each repair, not forecasts.")
+    print(f"  A full oracle reaches {_pct(both, len(usable)).strip()}, not 100%. The")
+    print("  remainder is Claude decision content these four columns cannot express")
+    print("  at any coefficients. Hold the calibration plan against that number, not")
+    print("  against 100%: certification needs regions of near-perfect agreement, so")
+    print("  the AUTO-IN/AUTO-OUT bands can stay empty even after a perfect repair.")
 
 
 def _sweep(rows: list[dict], bar: float) -> None:
@@ -424,6 +472,12 @@ def main() -> int:
                     help="run --why over every replayed row, not just the flips "
                          "(the flip set is selected for sitting near the bar, so "
                          "it is a biased sample by construction).")
+    ap.add_argument("--scope", choices=("all", "clean", "blockered"), default="all",
+                    help="restrict --why/--ablate/--sweep to a subset. 'clean' = "
+                         "rows Claude did NOT blocker, where the loss actually "
+                         "lives; the global ceiling is inflated by the blockered "
+                         "third that already agrees. Does not affect --subsets, "
+                         "whose whole job is the comparison.")
     ap.add_argument("--subsets", action="store_true",
                     help="split the factor gaps by whether CLAUDE blockered the "
                          "row — separates genuine skills under-crediting from "
@@ -588,16 +642,29 @@ def main() -> int:
         _autopsy(flips, bar)
     if args.why or args.why_all:
         pool = allrows if args.why_all else [r for r in allrows if r.get("verdict")]
+        if args.scope != "all":
+            want = args.scope == "blockered"
+            pool = [p for p in pool if not _synthesized(p["llm_bd"], p["llm"])
+                    and _claude_blocked(p) == want]
         if pool:
             _why(pool, bar)
         else:
             print("\n=== why — no rows in scope (no decisions flipped) ===")
     if args.subsets:
         _subsets(allrows, bar)
+
+    scoped = allrows
+    if args.scope != "all":
+        want = args.scope == "blockered"
+        scoped = [p for p in allrows
+                  if not _synthesized(p["llm_bd"], p["llm"])
+                  and _claude_blocked(p) == want]
+        print(f"\n  --scope {args.scope}: {len(scoped)} of {len(allrows)} rows "
+              f"(rows with no real Claude breakdown are excluded either way)")
     if args.ablate:
-        _ablate(allrows, bar)
+        _ablate(scoped, bar)
     if args.sweep:
-        _sweep(allrows, bar)
+        _sweep(scoped, bar)
 
     show = sorted(moved, reverse=True)[:args.limit] if not args.verbose else moved
     print(f"\n=== {len(show)} largest movements ===")

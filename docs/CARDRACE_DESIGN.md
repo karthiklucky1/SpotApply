@@ -328,6 +328,57 @@ factor at a time and re-blend: ranks the four repairs by payoff, and prints the 
 for fixing factors versus fixing blockers). Both are oracles — upper bounds on each
 repair, never forecasts.
 
+### 9.2.2 The aggregate was hiding two populations (1,087 rows)
+
+`--subsets` splits the ledger by whether **Claude** blockered the row. The two halves are
+not variations of one problem:
+
+| subset | n | share | g() agreement |
+|---|---|---|---|
+| Claude blockered | 363 | 33.4% | **92.6%** |
+| clean | 724 | 66.6% | **48.8%** |
+
+The 63.4% aggregate is a nearly-solved third averaged with a broken two-thirds. **48.8%
+is below the majority-class baseline** — on the rows where no blocker fires, the four
+factors carry no usable decision signal at all. Every global number in this investigation
+averaged those populations together, so `--subsets` now prints the majority-class floor
+beside every agreement figure, and `--scope clean|blockered` restricts `--why`,
+`--ablate` and `--sweep` to one population. Measure factor work on the **clean** subset;
+the aggregate is dominated by rows that already agree.
+
+The skills gap is *not* an artefact of the split — −46.9 blockered vs −45.3 clean. It is
+real under-crediting, and §9.2's resolver fix made the graph reachable without making
+coverage correct.
+
+**The four repairs are superadditive, which invalidates incremental measurement.**
+
+| oracle substitution | agreement | gain |
+|---|---|---|
+| none (today) | 63.4% | — |
+| skills | 63.7% | +0.3 |
+| experience | 63.8% | +0.4 |
+| location | 65.1% | +1.7 |
+| work_auth | 64.4% | +1.0 |
+| **ALL FOUR** | **82.2%** | **+18.8** |
+| blocker only | 65.0% | +1.7 |
+| blocker + ALL FOUR | 90.9% | +27.5 |
+
+Single-factor gains sum to +3.4 against +18.8 jointly: in a blend, one corrected factor
+is outvoted by three wrong ones. Repairing skills first and re-measuring would have read
++0.3 — indistinguishable from noise, and easily mistaken for the repair having failed.
+**Treat the four factor computations as one unit of work**, and never judge a partial
+repair by the aggregate. `--ablate` computes and prints this superadditivity check.
+
+Blockers are settled in the other direction: +1.7 available and the blockered subset
+already at 92.6%. Not the place to start.
+
+**The architectural bound.** A full oracle — Claude's own values for all four factors
+*and* its blocker decision — reaches **90.9%, not 100%**; factors alone cap at **82.2%**.
+Roughly nine points of Claude's decision are not representable in this feature set at any
+coefficients. Since §3.4 certification needs regions of near-perfect agreement rather
+than a good global average, hold the calibration plan against 82.2%, and expect AUTO-IN /
+AUTO-OUT to stay empty even after a perfect factor repair.
+
 ### 9.3 Evidence-strength candidate model
 
 The UserCard compile (still the one existing signup call) scores every skill:
