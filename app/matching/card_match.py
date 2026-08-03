@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from app.matching.skill_graph import SkillGraph, load_graph
+from app.matching.skill_graph import SkillGraph, embed_prewarm, load_graph
 
 # Factor weights mirror the Claude rubric's implied emphasis. Named numbers on
 # purpose — calibration reads them, humans can audit them.
@@ -236,8 +236,37 @@ def _evidence_map(user_card: dict) -> Dict[str, float]:
     return out
 
 
+def _claim_map(user_card: dict) -> Dict[str, float]:
+    """UserCard v2 ``evidence``: résumé claims in requirement register.
+
+    v1 cards carried skills only — 27 tech nouns — and every point of skills
+    credit was a string comparison against that list, so "cross-functional
+    collaboration" scored 0 against a candidate whose résumé says so in as many
+    words. The claims are what the semantic route compares against; absent (a v1
+    card, or a mint that returned none) this is empty and g() behaves exactly as
+    it did. Tolerates a bare string as well as {"claim","strength"}."""
+    out: Dict[str, float] = {}
+    for c in user_card.get("evidence") or []:
+        if isinstance(c, str):
+            text, ev = c.strip(), 0.6
+        elif isinstance(c, dict):
+            text = str(c.get("claim") or c.get("text") or "").strip()
+            ev = _num(c.get("strength"), _num(c.get("evidence"), 0.6))
+        else:
+            continue
+        # Long enough to carry context, short enough to embed as one idea.
+        if len(text) < 8:
+            continue
+        text = text[:200]
+        if ev > out.get(text, 0.0):
+            out[text] = ev
+    return out
+
+
 def _capability_coverage(evidence: Dict[str, float], cap: dict, graph: SkillGraph,
-                         use_inference: bool) -> Tuple[float, Optional[str]]:
+                         use_inference: bool,
+                         claims: Optional[Dict[str, float]] = None
+                         ) -> Tuple[float, Optional[str]]:
     """Coverage of ONE capability: 0.7 x best proof + 0.3 x mean over its proofs.
     ``evidence_needed`` entries are alternative concrete proofs of the capability;
     the capability name itself also counts as a proof target."""
@@ -249,7 +278,8 @@ def _capability_coverage(evidence: Dict[str, float], cap: dict, graph: SkillGrap
         return 0.0, None
     covs, best_via, best_cov = [], None, 0.0
     for w in wants:
-        cov, via = graph.coverage(evidence, w, use_inference=use_inference)
+        cov, via = graph.coverage(evidence, w, use_inference=use_inference,
+                                  phrases=claims)
         covs.append(cov)
         if cov > best_cov:
             best_cov, best_via = cov, via
@@ -258,14 +288,16 @@ def _capability_coverage(evidence: Dict[str, float], cap: dict, graph: SkillGrap
 
 
 def _skills_factor(user_card: dict, job_card: dict, graph: SkillGraph,
-                   use_inference: bool) -> Tuple[float, str, bool]:
+                   use_inference: bool,
+                   claims: Optional[Dict[str, float]] = None) -> Tuple[float, str, bool]:
     """Returns (score, note, judged) — judged=False when the card gave us nothing
     to judge with (caller marks the field low-confidence)."""
     caps = [c for c in (job_card.get("capabilities") or []) if isinstance(c, dict)]
     evidence = _evidence_map(user_card)
+    claims = _claim_map(user_card) if claims is None else claims
     if not caps:
         return 50.0, "posting yielded no capability profile", False
-    if not evidence:
+    if not evidence and not claims:
         return 20.0, "candidate card lists no skills", True
 
     total_w, acc = 0.0, 0.0
@@ -274,12 +306,14 @@ def _skills_factor(user_card: dict, job_card: dict, graph: SkillGraph,
     for cap in caps:
         w = _num(cap.get("importance"), 0.5)
         w = max(0.05, min(1.0, w))
-        cov, via = _capability_coverage(evidence, cap, graph, use_inference)
+        cov, via = _capability_coverage(evidence, cap, graph, use_inference, claims)
         total_w += w
         acc += w * cov
         cname = str(cap.get("name") or "?")
         if cov >= 0.55 and via and graph.canon(via) != graph.canon(cname):
-            notes.append(f"{cname}: covered via {via}")
+            # `via` may now be a whole résumé claim, not a one-word skill — the
+            # note is a UI surface, so keep it to a readable stub.
+            notes.append(f"{cname}: covered via {via[:60]}")
         if cov < worst[0]:
             worst = (cov, cname)
     score = 100.0 * acc / total_w if total_w else 0.0
@@ -287,7 +321,8 @@ def _skills_factor(user_card: dict, job_card: dict, graph: SkillGraph,
     nice = [str(n) for n in (job_card.get("nice_to_have") or []) if str(n).strip()]
     bonus = 0.0
     for n in nice[:6]:
-        cov, _ = graph.coverage(evidence, n, use_inference=use_inference)
+        cov, _ = graph.coverage(evidence, n, use_inference=use_inference,
+                                phrases=claims)
         if cov >= 0.6:
             bonus += 3.0
     score = _clamp(score + min(bonus, 9.0))
@@ -295,6 +330,20 @@ def _skills_factor(user_card: dict, job_card: dict, graph: SkillGraph,
     if worst[0] < 0.4 and worst[1]:
         notes.append(f"gap: {worst[1]}")
     return score, ("; ".join(notes) if notes else "scored on direct skill overlap"), True
+
+
+def _want_strings(job_card: dict) -> List[str]:
+    """Every string the skills factor will ask coverage() about — the batch the
+    semantic route needs encoded up front."""
+    out: List[str] = []
+    for cap in (job_card.get("capabilities") or []):
+        if not isinstance(cap, dict):
+            continue
+        if str(cap.get("name") or "").strip():
+            out.append(str(cap["name"]))
+        out += [str(w) for w in (cap.get("evidence_needed") or []) if str(w).strip()]
+    out += [str(n) for n in (job_card.get("nice_to_have") or [])[:6] if str(n).strip()]
+    return out
 
 
 # ── overall ──────────────────────────────────────────────────────────────────
@@ -312,11 +361,22 @@ def match_cards(user_card: dict, job_card: dict,
     """The pair judgment. Deterministic; same inputs → same outputs, always."""
     g = graph if graph is not None else load_graph()
 
+    # One batch encode per pair, before either skills pass: coverage() is called
+    # once per want per capability, so warming the cache here keeps the model
+    # call out of that loop entirely (skill_graph.embed_prewarm). No-ops when
+    # there are no claims, when the setting is off, or when the ML stack is
+    # absent — the CI configuration.
+    claims = _claim_map(user_card)
+    if claims:
+        embed_prewarm(list(claims) + _want_strings(job_card))
+
     wa = _work_auth_factor(user_card, job_card)
     loc = _location_factor(user_card, job_card)
     exp = _experience_factor(user_card, job_card)
-    sk_dir, sk_dir_note, judged = _skills_factor(user_card, job_card, g, use_inference=False)
-    sk_exp, sk_exp_note, _ = _skills_factor(user_card, job_card, g, use_inference=True)
+    sk_dir, sk_dir_note, judged = _skills_factor(user_card, job_card, g,
+                                                 use_inference=False, claims=claims)
+    sk_exp, sk_exp_note, _ = _skills_factor(user_card, job_card, g,
+                                            use_inference=True, claims=claims)
 
     fx_direct = {"skills": (sk_dir, sk_dir_note), "experience": exp,
                  "location": loc, "work_auth": wa}

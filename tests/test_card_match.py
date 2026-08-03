@@ -306,3 +306,66 @@ def test_result_shape_matches_reranker_contract():
     for v in r.breakdown.values():
         assert set(v) == {"score", "note"}
         assert 0 <= v["score"] <= 100
+
+
+# ── UserCard v2 claims ───────────────────────────────────────────────────────
+#
+# v1 cards carried skills only, so every point of skills credit was a string
+# comparison against ~27 tech nouns and a capability like "cross-functional
+# collaboration" scored 0 against a résumé that says exactly that. These pin the
+# plumbing that carries claims to the semantic route; the route's own arithmetic
+# is pinned in tests/test_skill_graph.py against a deterministic encoder.
+
+
+def test_claim_map_reads_both_shapes_and_drops_junk():
+    from app.matching.card_match import _claim_map
+    m = _claim_map({"evidence": [
+        {"claim": "managed kubernetes workloads on gcp", "strength": 0.85},
+        {"text": "mentored two junior engineers through code review", "evidence": 0.7},
+        "built and deployed fastapi backends on aws ecs",   # bare string -> default
+        {"claim": "python"},                                # too short to embed
+        {"claim": ""}, 42, None,                            # unusable
+    ]})
+    assert m["managed kubernetes workloads on gcp"] == pytest.approx(0.85)
+    assert m["mentored two junior engineers through code review"] == pytest.approx(0.7)
+    assert m["built and deployed fastapi backends on aws ecs"] == pytest.approx(0.6)
+    assert "python" not in m and "" not in m
+    assert len(m) == 3
+
+
+def test_v1_cards_without_claims_score_exactly_as_before():
+    """The bump must not move a single v1 row: the ledger's earlier rows have to
+    stay comparable except across the documented seam."""
+    from app.matching.card_match import _claim_map
+    uc = user_card()
+    assert _claim_map(uc) == {}
+    assert match_cards(uc, job_card(), graph=GRAPH) == match_cards(
+        uc, job_card(), graph=GRAPH)
+
+
+def test_claims_are_prewarmed_in_one_batch_per_pair(monkeypatch):
+    """coverage() is called per want per capability; the encode must not be in
+    that loop. Also proves the want strings ride along in the same batch."""
+    from app.matching import card_match as cm
+    seen = []
+    monkeypatch.setattr(cm, "embed_prewarm", lambda ts: seen.append(list(ts)))
+    jc = job_card(capabilities=[
+        {"name": "ml deployment", "importance": 0.9,
+         "evidence_needed": ["pytorch", "model serving"]}],
+        nice_to_have=["cuda"])
+    match_cards(user_card(evidence=[
+        {"claim": "shipped a pytorch model behind a serving API", "strength": 0.8}]),
+        jc, graph=GRAPH)
+    assert len(seen) == 1, "prewarm ran per skills pass instead of once per pair"
+    batch = seen[0]
+    assert "shipped a pytorch model behind a serving API" in batch
+    for want in ("ml deployment", "pytorch", "model serving", "cuda"):
+        assert want in batch, f"{want!r} missing from the prewarm batch"
+
+
+def test_claims_alone_are_enough_to_be_judged():
+    """A card with claims but no parsed skills is not 'lists no skills'."""
+    uc = user_card(skills=[], evidence=[
+        {"claim": "built and deployed fastapi backends on aws ecs", "strength": 0.9}])
+    res = match_cards(uc, job_card(), graph=EMPTY_GRAPH)
+    assert "skills" not in res.low_confidence

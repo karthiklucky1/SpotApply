@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.matching.skill_graph import (INFERRED_CAP, MAX_DEPTH, PHRASE_CAP, SkillGraph,
+from app.matching import skill_graph as sg
+from app.matching.skill_graph import (EMBED_CAP, EMBED_FLOOR, EMBED_FULL, INFERRED_CAP,
+                                      MAX_DEPTH, PHRASE_CAP, SkillGraph,
                                       _content_tokens, load_graph)
 
 
@@ -170,3 +172,167 @@ def test_phrase_tier_respects_the_inference_switch():
     direct, _ = g.coverage(ev, "Python backend engineering", use_inference=False)
     expanded, _ = g.coverage(ev, "Python backend engineering", use_inference=True)
     assert expanded > direct, "phrase tier is ignoring use_inference=False"
+
+
+# ── semantic route (the missing-information bug) ─────────────────────────────
+#
+# The three string routes above can only credit a want whose WORDS the candidate
+# wrote down. On the 732-row clean subset of the shadow ledger that left g()
+# scoring skills 20/100 against Claude's 65/100 and dropping 49% of the jobs
+# Claude accepted. The fourth route compares meaning instead — but only against
+# résumé CLAIMS, because similarity against the 27 skill TOKENS measured 54.5%,
+# below the 57.1% majority-class floor (docs/CARDRACE_DESIGN.md §9.2.3).
+#
+# These pin that asymmetry, the caps, and — the expensive direction — that a
+# fuzzy route cannot quietly become a rubber stamp.
+
+
+class _FakeEncoder:
+    """Deterministic stand-in for MiniLM, so these run without the ML stack (CI
+    strips torch/sentence-transformers). Each text is placed on the unit circle
+    at ``acos(declared similarity to the want)``, so the cosine the route
+    computes is exactly the number the test asked for."""
+
+    def __init__(self, sims: dict):
+        self.sims = sims
+        self.calls = 0
+        self.encoded = []
+
+    def encode(self, texts, convert_to_numpy=True, show_progress_bar=False):
+        import math
+        import numpy as np
+        self.calls += 1
+        self.encoded += list(texts)
+        rows = []
+        for t in texts:
+            # Unknown text -> orthogonal (similarity 0) to everything declared.
+            sim = self.sims.get(sg._norm(t), 0.0)
+            ang = math.acos(max(-1.0, min(1.0, sim)))
+            rows.append([math.cos(ang), math.sin(ang)])
+        return np.array(rows, dtype="float32")
+
+
+@pytest.fixture
+def fake_embed(monkeypatch):
+    """Installs a controllable encoder and guarantees a clean cache per test —
+    the cache is process-wide by design, so leaking it across tests would make
+    the call-count assertions depend on file order (the suite runs reversed)."""
+    def _install(sims: dict):
+        enc = _FakeEncoder({sg._norm(k): v for k, v in sims.items()})
+        sg._EMB_CACHE.clear()
+        sg._EMB_STATE["unavailable"] = False
+        monkeypatch.setattr(sg, "_encoder", lambda: enc)
+        return enc
+    yield _install
+    sg._EMB_CACHE.clear()
+    sg._EMB_STATE["unavailable"] = False
+
+
+WANT = "container orchestration"
+CLAIM = "managed kubernetes workloads and ci/cd pipelines on gcp"
+
+
+def test_semantic_route_needs_claims_and_is_otherwise_inert(fake_embed):
+    """No claims -> not one encode, and the answer is the pre-existing one.
+
+    This is what lets every test above keep passing unchanged: `phrases=None`
+    is byte-for-byte the old function."""
+    enc = fake_embed({WANT: 1.0, CLAIM: 0.9})
+    g = SkillGraph({}, {})
+    assert g.coverage({"python": 0.9}, WANT)[0] == 0.0
+    assert g.coverage({"python": 0.9}, WANT, phrases=None)[0] == 0.0
+    assert enc.calls == 0, "semantic route encoded something with no claims"
+
+
+def test_claim_covers_a_want_with_no_shared_token(fake_embed):
+    """The bug, in one assertion: zero string overlap, real evidence."""
+    fake_embed({WANT: 1.0, CLAIM: EMBED_FULL})
+    g = SkillGraph({}, {})
+    assert g.coverage({"python": 0.9}, WANT)[0] == 0.0          # string routes: nothing
+    cov, via = g.coverage({"python": 0.9}, WANT, phrases={CLAIM: 0.9})
+    assert cov == pytest.approx(0.9 * EMBED_CAP)                # ev x full ramp x cap
+    assert via == CLAIM, "the explanation must name the claim that carried it"
+
+
+def test_semantic_credit_is_ranked_below_the_written_routes():
+    """A cosine is the weakest of the four claims, and the constants say so."""
+    assert EMBED_CAP < PHRASE_CAP < INFERRED_CAP
+    assert 0.0 < EMBED_FLOOR < EMBED_FULL <= 1.0
+
+
+def test_below_floor_earns_nothing_and_near_floor_earns_almost_nothing(fake_embed):
+    """The rubber-stamp guard. A fuzzy route that credits weak similarity turns
+    every posting into a match — which is worse than the gap it fixes."""
+    fake_embed({WANT: 1.0, "unrelated claim": EMBED_FLOOR - 0.05,
+                "near miss claim": 0.40})
+    g = SkillGraph({}, {})
+    assert g.coverage({}, WANT, phrases={"unrelated claim": 1.0})[0] == 0.0
+    near = g.coverage({}, WANT, phrases={"near miss claim": 1.0})[0]
+    assert 0.0 < near < 0.15, f"a 0.40 cosine paid {near}, that is proof-grade credit"
+
+
+def test_semantic_route_can_only_raise_never_lower(fake_embed):
+    """Same contract as the phrase tier: it is a max(), so a stated skill is
+    never diluted by a weaker semantic match."""
+    fake_embed({"kubernetes": 1.0, "vaguely related claim": 0.5})
+    g = SkillGraph({}, {})
+    ev = {"kubernetes": 0.95}
+    direct = g.coverage(ev, "kubernetes")[0]
+    with_claims = g.coverage(ev, "kubernetes", phrases={"vaguely related claim": 1.0})
+    assert with_claims[0] == pytest.approx(direct) == pytest.approx(0.95)
+    assert with_claims[1] == "kubernetes"
+
+
+def test_semantic_route_respects_the_inference_switch(fake_embed):
+    """A cosine hit is assumption by construction, so it must land in `spread`
+    (expanded - direct), never in the direct score."""
+    fake_embed({WANT: 1.0, CLAIM: EMBED_FULL})
+    g = SkillGraph({}, {})
+    ph = {CLAIM: 0.9}
+    assert g.coverage({}, WANT, use_inference=False, phrases=ph)[0] == 0.0
+    assert g.coverage({}, WANT, use_inference=True, phrases=ph)[0] > 0.0
+
+
+def test_strength_scales_the_credit(fake_embed):
+    """A claim from a side project must not count like production ownership."""
+    fake_embed({WANT: 1.0, CLAIM: EMBED_FULL})
+    g = SkillGraph({}, {})
+    weak = g.coverage({}, WANT, phrases={CLAIM: 0.4})[0]
+    strong = g.coverage({}, WANT, phrases={CLAIM: 1.0})[0]
+    assert weak == pytest.approx(0.4 * EMBED_CAP)
+    assert strong == pytest.approx(EMBED_CAP)
+    assert weak < strong
+
+
+def test_prewarm_is_one_batch_and_coverage_then_costs_nothing(fake_embed):
+    """coverage() runs per want per capability per pair; an encode inside that
+    loop is the difference between one forward pass and dozens."""
+    enc = fake_embed({WANT: 1.0, CLAIM: 0.8, "another want": 0.2})
+    sg.embed_prewarm([CLAIM, WANT, "another want", CLAIM])
+    assert enc.calls == 1
+    assert sorted(enc.encoded) == sorted({sg._norm(CLAIM), sg._norm(WANT),
+                                          sg._norm("another want")})
+    g = SkillGraph({}, {})
+    g.coverage({}, WANT, phrases={CLAIM: 0.9})
+    g.coverage({}, "another want", phrases={CLAIM: 0.9})
+    assert enc.calls == 1, "coverage() re-encoded a string prewarm already had"
+
+
+def test_absent_model_degrades_to_the_string_routes(monkeypatch):
+    """CI has no torch/sentence-transformers, and prod must survive a model that
+    fails to load — neither may raise on the scoring path."""
+    sg._EMB_CACHE.clear()
+    sg._EMB_STATE["unavailable"] = False
+    monkeypatch.setattr(sg, "_encoder", lambda: None)
+    g = SkillGraph({}, {})
+    assert g.coverage({"kubernetes": 0.9}, "kubernetes", phrases={CLAIM: 0.9})[0] == 0.9
+    assert g.coverage({}, WANT, phrases={CLAIM: 0.9})[0] == 0.0
+    sg._EMB_STATE["unavailable"] = False
+
+
+def test_setting_switches_the_route_off(fake_embed, monkeypatch):
+    enc = fake_embed({WANT: 1.0, CLAIM: EMBED_FULL})
+    monkeypatch.setattr(sg.settings, "card_embed_enabled", False)
+    g = SkillGraph({}, {})
+    assert g.coverage({}, WANT, phrases={CLAIM: 0.9})[0] == 0.0
+    assert enc.calls == 0

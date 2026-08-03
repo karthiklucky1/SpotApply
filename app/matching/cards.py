@@ -30,7 +30,12 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 JOB_CARD_VERSION = 1
-USER_CARD_VERSION = 1
+# v2 adds the `evidence` claim list. v1 cards carried skills only — 27 tech
+# nouns — which is what every string route had to score against; the semantic
+# route in skill_graph has nothing to compare until a card carries claims. The
+# bump forces a recompile per user (8 rows at ~$0.005, the cheap side of the
+# ledger) and leaves all ~30-40k JobCards untouched.
+USER_CARD_VERSION = 2
 
 # ── Mint-cap accounting (process-local, mirrors reranker budget style) ───────
 _mint_lock = threading.Lock()
@@ -210,6 +215,11 @@ JSON object, no prose, exactly this shape:
      "evidence": <0.0-1.0>,
      "basis": "<skills-list | project | production | recent-production>"}
   ],
+  "evidence": [
+    {"claim": "<what the candidate has DONE, one capability per line>",
+     "strength": <0.0-1.0>,
+     "basis": "<project | production | recent-production>"}
+  ],
   "years_experience": <int>,
   "effective_level": "<junior | mid | senior | staff+>",
   "effective_level_confidence": <0.0-1.0>,
@@ -217,11 +227,26 @@ JSON object, no prose, exactly this shape:
   "role_families": ["<target role family>", ...],
   "domains": ["<domain tag>", ...]
 }
-Evidence rubric (Layer 3 — depth, not presence):
+Evidence rubric (Layer 3 — depth, not presence), for BOTH lists:
 - 0.3-0.45: named only in a skills list
 - 0.5-0.7: used in a real project
 - 0.75-0.9: production use
 - 0.9-1.0: recent production use with stated scale/impact
+
+"evidence" is the important list: 10-20 claims that a job requirement could be
+matched AGAINST. Write each one the way a posting words a requirement — a verb,
+the thing done, the technology, the scale where the résumé states it:
+  GOOD: "built and deployed FastAPI backends on AWS ECS serving production traffic"
+  GOOD: "managed Kubernetes workloads and CI/CD pipelines on GCP"
+  GOOD: "translated requirements across product, compliance and business teams"
+  BAD:  "python"          <- that is a skill, it belongs in "skills"
+  BAD:  "strong engineer" <- no capability, nothing to match against
+Cover NON-technical capabilities too (collaboration, mentoring, ownership,
+stakeholder communication, on-call) whenever the résumé shows them: those are
+real requirements in postings and a skills list can never carry them.
+Every claim must be supported by the material — do not invent scale, seniority
+or technologies the résumé does not state.
+
 effective_level weighs impact + scale + ownership, not just years — a 2-year
 engineer who built and owned a system serving real users can be "mid"; never
 inflate past what the evidence shows."""

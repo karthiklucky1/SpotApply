@@ -379,6 +379,69 @@ coefficients. Since §3.4 certification needs regions of near-perfect agreement 
 than a good global average, hold the calibration plan against 82.2%, and expect AUTO-IN /
 AUTO-OUT to stay empty even after a perfect factor repair.
 
+### 9.2.3 The scorer was not wrong, it was underinformed (built 2026-08-03)
+
+§9.2.2 ordered the four factor repairs as one unit and named skills the largest gap
+(−45.9 against Claude). Reading the skills path end to end says the gap is not in the
+arithmetic at all:
+
+- every point of skills credit flows through `SkillGraph.coverage()`, which had three
+  routes and all three are **string** routes — they can only credit a want whose *words*
+  the candidate wrote down;
+- the candidate side was `user_card["skills"]`, **27 bare technology nouns**
+  (`{"name": "python", "evidence": 0.85}`);
+- the job side asks about success-profile phrases — "cross-functional collaboration",
+  "container orchestration". The résumé says both in plain English. The UserCard mint
+  threw that text away and kept the nouns, so `kubernetes` scored **0.00** while sitting
+  in the résumé.
+
+The measured shape of the fix, on the 732-row clean subset (`--scope clean`):
+
+| evidence side compared against | agreement | false drops | contaminated admits | skills score |
+|---|---|---|---|---|
+| today (string routes only) | 48.6% | 49.0% | 2.3% | 20.0 |
+| embeddings vs the 27 skill tokens | 54.5% | 40.7% | 4.8% | 26.0 |
+| embeddings vs résumé claim sentences | **62.4%** | **28.1%** | 9.4% | 34.9 |
+| majority-class floor (always SHORTLIST) | 57.1% | — | — | Claude: 65.4 |
+
+**Which side gets embedded is the whole finding.** Similarity against the skill tokens
+lands *below* the majority-class floor — worse than answering SHORTLIST every time. Tech
+nouns are not what a requirement sentence is similar to. So the change is two halves that
+only work together, exactly the superadditivity §9.2.2 warned about:
+
+1. **UserCard v2** (`cards.py`, `USER_CARD_VERSION = 2`) emits an `evidence` list of
+   10–20 résumé CLAIMS written in requirement register ("managed Kubernetes workloads and
+   CI/CD pipelines on GCP"), including the non-technical capabilities a skills list can
+   never carry. 8 rows at ~$0.005; all ~30–40k JobCards untouched.
+2. **A fourth, semantic route** in `coverage()` — cosine between want and claim over the
+   MiniLM already resident for FAISS retrieval (`matcher._get_embed_model`; no new model,
+   no API spend, no extra RSS). It fires **only when claims are supplied**, so `phrases=
+   None` is byte-for-byte the old function and every earlier guard test still holds.
+
+Ranked below the written routes on purpose: `EMBED_CAP` 0.70 < `PHRASE_CAP` 0.75 <
+`INFERRED_CAP` 0.85 — a cosine is a weaker claim than a phrase resolved through its parts,
+which is weaker than an edge a human wrote down. Credit ramps linearly from
+`EMBED_FLOOR` 0.35 to `EMBED_FULL` 0.75 and is scaled by claim strength, and the route is
+gated on `use_inference` so a cosine lands in `spread`, never in the direct score. The
+ramp is the real guard, not the floor: the observed false friend ("mentoring junior
+engineers" ≈ "master of engineering aug 2026", 0.40) is admitted at 12% of the cap rather
+than as proof. `EMBED_FLOOR` 0.30 measured +1.7 more and was **not** taken — agreement is
+monotone in that number, so loosening it buys agreement with generosity.
+
+**What is not yet verified, and how to verify it.** The thresholds above were picked by
+hand across five variants on the same 732 rows, so 62.4% is in-sample, and the constants
+as shipped are a re-derivation of that mapping rather than the identical one. Worse for
+convenience: **`card_match_replay.py` cannot measure this change on the existing ledger** —
+every stored UserCard is v1 and carries no claims, so the replay scores the same
+`coverage()` it always did and prints "no change". Measuring it means spending: re-mint
+the UserCards at v2, let shadow accumulate, then `card_match_report.py --since <date>` and
+`build_calibration.py --since <date>`. Treat the seam the same way §9.2 does — earlier
+rows score a function that no longer exists.
+
+Unchanged on purpose, because the ablation and the sweep both returned ~+0.0: blockers,
+the shortlist gate, the factor weights, and the `0.7*max + 0.3*mean` inner aggregation.
+`CARD_MATCH_ENABLED` remains 0; `CARD_EMBED_ENABLED` turns the route off without a deploy.
+
 ### 9.3 Evidence-strength candidate model
 
 The UserCard compile (still the one existing signup call) scores every skill:
@@ -391,6 +454,12 @@ AWS:     skills-section line only                        → evidence 40
 
 Same single call, richer output. This mirrors what Claude actually does when it reasons,
 and it is what separates "lists Python" from "ships Python".
+
+That scoring is necessary and was not sufficient: a depth number on the word "python"
+still leaves the card unable to answer "cross-functional collaboration". Since v2 the same
+call also emits the `evidence` claim list (§9.2.3) — what the candidate has *done*, in the
+register a posting words a requirement — which is the surface the semantic route matches
+against. Depth for the skills that are named, claims for the capabilities that are not.
 
 ### 9.4 Two brains + effective_level
 
