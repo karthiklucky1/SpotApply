@@ -79,15 +79,23 @@ def assess_profile(profile) -> WorkAuthFraming:
             "Authorized to work permanently with no employer sponsorship.",
         )
 
-    # STEM OPT — the strongest "no cost to employer now" story
+    # STEM OPT — strong "no petition, no lottery" story, but NOT a no-paperwork
+    # one. STEM OPT has two hard employer obligations we must not paper over:
+    # the employer must be enrolled in E-Verify, and it must sign a Form I-983
+    # training plan. Claiming "zero cost or filing required" (as this did) is
+    # false, and the user pastes this line straight to employers — so it set
+    # them up to be corrected by the first recruiter who knows the rule.
+    # See docs/research/hiring-machine-2026-08.md §1.7.
     if has("stem opt", "stem-opt"):
         return WorkAuthFraming(
             True, "F-1 STEM OPT", False, True,
-            "✅ Authorized via STEM OPT for up to 3 years — zero cost or filing "
-            "required from the employer right now (H-1B sponsorship needed later).",
+            "✅ Authorized via STEM OPT for up to 3 years — no petition, no filing "
+            "fee and no lottery. The employer must be enrolled in E-Verify and "
+            "sign a Form I-983 training plan (H-1B sponsorship needed later).",
             "Yes", "Yes — in the future, after my OPT period", True,
-            "I can start immediately and work up to 3 years on STEM OPT — "
-            "no paperwork, cost, or sponsorship required from you now.",
+            "I can start immediately and work up to 3 years on STEM OPT — no "
+            "H-1B petition, filing fee or lottery involved. It does need an "
+            "E-Verify-enrolled employer and a signed I-983 training plan.",
         )
     if has("opt", "f-1", "f1"):
         return WorkAuthFraming(

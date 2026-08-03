@@ -1,16 +1,36 @@
-"""ATS exact-phrase keyword matching.
+"""ATS phrase coverage — making a resume FINDABLE, not "beating a scanner".
 
-Real ATS systems (Greenhouse, Lever, Workday, Taleo) score a resume by how
-many of the job description's *exact* terms appear verbatim. A resume that
-says "built REST APIs" when the JD asks for "RESTful API design" can score
-lower than expected because the parser looks for the literal phrase.
+What this module is NOT for. It does not defeat an auto-rejecter, because no
+such thing rejects on resume keywords. Greenhouse's own documentation states
+that applications "are reviewed by real people, one by one, in the order
+received", that "AI doesn't score or rank applications, nor does it make any
+decisions", and that auto-reject filters are "set and controlled directly by
+recruiters". In Greenhouse and Ashby, auto-reject fires exclusively on custom
+application questions of type yes/no, single-select or multi-select — the
+knockout questions (work authorisation, sponsorship, location, clearance,
+minimum years). The widely-repeated "75% of resumes are auto-rejected by the
+ATS" traces to a defunct resume company around 2012 and has no verifiable
+source. (docs/research/hiring-machine-2026-08.md §1.3.)
+
+What the real mechanic is, and why phrase coverage still matters. The ATS is a
+database that recruiters query with boolean strings, and resumes are parsed
+into structured fields by third-party parsers that pattern-match rather than
+comprehend. You are not rejected — you are *unsearchable*, and then unread.
+With ~244 applications per requisition, a resume that never surfaces for the
+recruiter's query is never opened. Greenhouse notes its search expands to
+synonyms, so exact-string matching is not required, but relevance is.
+
+So: cover the terms a recruiter would actually search for. Do not stuff.
 
 This module:
   1. Extracts the top N high-signal phrases from a JD (1-3 word n-grams,
      weighted toward technical terms and requirement language).
-  2. Checks which of those phrases appear *verbatim* in the resume.
+  2. Checks which of those phrases appear in the resume.
   3. Reports the missing ones so the tailoring step can target them
      specifically — and so the Doctor can score real phrase coverage.
+
+Coverage is a findability signal, not a pass/fail gate — and it never licenses
+adding a skill the candidate does not have (see tailoring/grounding.py).
 
 No LLM / network calls — fully deterministic and fast.
 """
@@ -39,8 +59,9 @@ _STOP = {
     "responsibilities", "qualifications", "skills", "knowledge",
 }
 
-# Curated multi-word and single tech terms that should always be captured
-# verbatim when present in the JD (these are exactly what ATS parsers index).
+# Curated multi-word and single tech terms that should always be captured when
+# present in the JD — these are the terms a recruiter actually types into the
+# ATS boolean search, which is what makes a parsed resume surface at all.
 _TECH_PHRASES = [
     # Languages / core
     "python", "typescript", "javascript", "golang", "java", "c++", "rust", "sql",

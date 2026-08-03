@@ -8,8 +8,16 @@ identity:
   linkedin: "https://www.linkedin.com/in/amruthaluri/"
 
 work_authorization:
-  authorized_to_work_us: true
-  requires_sponsorship: false        # Defaulting to false (answering "No" to sponsorship questions to avoid auto-filtering)
+  authorized_to_work_us: true        # True today on OPT — safe to auto-answer "Yes".
+  # NOTE: this value is recorded for display/context only. The resolver NEVER
+  # auto-answers the "will you now or in the future require sponsorship?"
+  # question from it — that question is routed to the human every time. It was
+  # previously set to false "to avoid auto-filtering", which contradicted
+  # visa_type/sponsorship_timeline directly below and would have submitted a
+  # false answer to the one question that actually auto-rejects. Answering it
+  # falsely is wilful misrepresentation under INA 212(a)(6)(C)(i) — a permanent
+  # bar. Keep it truthful. See docs/research/hiring-machine-2026-08.md §1.3.
+  requires_sponsorship: true
   visa_type: "OPT"
   sponsorship_timeline: "OPT/STEM-OPT eligible, requires future H-1B sponsorship"
 

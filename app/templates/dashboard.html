@@ -4304,9 +4304,10 @@
                 <span class="text-2xl">🕐</span>
                 <div><p class="text-[9px] font-black uppercase tracking-widest" style="color:${color}">OPT Clock — ${oc.zone.toUpperCase()} zone</p>
                 <p class="text-lg font-black text-white">${oc.unemployment_days_left} unemployment days left <span class="text-[11px] text-slate-500 font-normal">of ${oc.unemployment_budget}${oc.stem_opt ? ' (STEM)' : ''}</span></p>
-                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}</div>
+                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}
+                ${oc.h1b ? `<p class="text-[11px] text-slate-400 mt-1" title="${_esc(oc.h1b.message)}">🗓 ${_esc(oc.h1b.label)} · earliest cap-subject start ${_esc(oc.h1b.next_employment_start)}</p>` : ''}</div>
                 <div class="flex-1"></div>
-                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}</p>
+                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}${oc.h1b ? ' H-1B dates are the typical schedule — confirm on uscis.gov.' : ''}</p>
               </div>`;
             renderOptStrip(oc);
         }
@@ -6227,6 +6228,33 @@
     }
 
     // Sponsorship Reality — detailed card on the right stack.
+    // Who is actually hiring you. A staffing-vendor posting is legitimate and is
+    // NOT presented as a scam — the harsher `red_flags` axis is separate. The
+    // point is that the candidate is the only party who cannot see the chain.
+    function renderVendorBlock(v) {
+        if (!v) return '';
+        const e = (s) => (s || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+        const danger = (v.red_flags || []).length > 0;
+        const accent = danger ? '#C2410C' : '#92600A';
+        const bg = danger ? 'rgba(244,63,94,0.05)' : 'rgba(251,191,36,0.07)';
+        const border = danger ? 'rgba(244,63,94,0.25)' : 'rgba(251,191,36,0.3)';
+        const notes = (v.red_flag_notes || []).map((n) =>
+            `<li style="margin-top:4px;">${e(n)}</li>`).join('');
+        const checks = (v.checklist || []).map((c) =>
+            `<li style="margin-top:4px;">${e(c)}</li>`).join('');
+        return `
+            <div style="border-radius:18px;padding:15px 17px;margin-top:9px;background:${bg};border:1px solid ${border};">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:15px;">${danger ? '⚠️' : '🔗'}</span>
+                <div style="font-size:13.5px;font-weight:800;color:${accent};">${e(v.label)}</div>
+              </div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:5px;">${e(v.summary)}</div>
+              ${notes ? `<ul style="font-size:11.5px;color:${accent};line-height:1.5;margin-top:8px;padding-left:16px;font-weight:600;">${notes}</ul>` : ''}
+              ${v.work_auth_caution ? `<div style="font-size:11.5px;color:var(--ink);line-height:1.55;margin-top:9px;padding:9px 11px;border-radius:11px;background:rgba(255,255,255,0.55);border:1px solid var(--border);"><b>Because you are on OPT:</b> ${e(v.work_auth_caution)}</div>` : ''}
+              ${checks ? `<details style="margin-top:9px;"><summary style="font-size:11.5px;font-weight:700;color:var(--ink);cursor:pointer;">Establish these before you send your resume</summary><ul style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:6px;padding-left:16px;">${checks}</ul></details>` : ''}
+            </div>`;
+    }
+
     async function loadSponsorship(appId, slot) {
         if (!slot) return;
         try {
@@ -6237,8 +6265,8 @@
                 return;
             }
             const d = await r.json();
-            const h = d.h1b, a = d.assessment;
-            if (!h && !a) {
+            const h = d.h1b, a = d.assessment, v = d.vendor;
+            if (!h && !a && !v) {
                 slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No sponsorship details available.</div>`;
                 return;
             }
@@ -6249,9 +6277,19 @@
             if (tone === 'good') {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;">✓</span>';
                 headline = a && a.cap_exempt ? 'Sponsors visas — no lottery needed' : 'This employer sponsors work visas';
-                sub = a && a.cap_exempt
-                    ? 'Cap-exempt: they can sponsor H-1B year-round, no lottery. Their public filing record backs it up.'
-                    : 'Their public H-1B filing record shows they sponsor — apply with confidence.';
+                // Only claim a filing record when we actually have one. Cap-exempt
+                // status is inferred from the employer TYPE (INA 214(g)(5)), often
+                // with no filings consulted at all, and the H-1B stats block below
+                // renders only when `h` is present. Saying "their public filing
+                // record backs it up" without `h` asserted a source we never read.
+                if (a && a.cap_exempt) {
+                    sub = 'Cap-exempt employer (university, non-profit research or hospital) under INA 214(g)(5) — they can file H-1B year-round with no lottery.'
+                        + (h ? ' Their public filing record is below.' : ' We infer this from the employer type, not from filing data.');
+                } else {
+                    sub = h
+                        ? 'Their public H-1B filing record shows they sponsor — apply with confidence.'
+                        : 'Signals point to a sponsoring employer. We have no public filing record for them, so confirm before you count on it.';
+                }
                 cardStyle = 'background:linear-gradient(180deg,var(--sage-tint),rgba(var(--sage-rgb),0.03));border:1px solid rgba(var(--sage-rgb),0.4);';
             } else if (tone === 'bad') {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FCE9E2;color:#C2410C;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">✕</span>';
@@ -6274,7 +6312,7 @@
                     + `</div>`;
             }
             slot.innerHTML = `
-                <div style="border-radius:18px;padding:15px 17px;margin-top:2px;${cardStyle}"> <div style="display:flex;align-items:center;gap:12px;"> ${mark} <div style="min-width:0;"> <div style="font-size:14.5px;font-weight:800;color:var(--ink);line-height:1.3;">${headline}</div> <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:2px;">${sub}</div> </div> </div> ${statsHtml} </div>`;
+                <div style="border-radius:18px;padding:15px 17px;margin-top:2px;${cardStyle}"> <div style="display:flex;align-items:center;gap:12px;"> ${mark} <div style="min-width:0;"> <div style="font-size:14.5px;font-weight:800;color:var(--ink);line-height:1.3;">${headline}</div> <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:2px;">${sub}</div> </div> </div> ${statsHtml} </div>${renderVendorBlock(v)}`;
         } catch (e) {
             slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-rose-500">Failed to load sponsorship data.</div>`;
         }
