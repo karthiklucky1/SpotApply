@@ -159,3 +159,74 @@ def test_recompiled_user_card_is_flagged_as_drift(monkeypatch, capsys):
     assert _run(monkeypatch, []) == 0
     out = capsys.readouterr().out
     assert "CAVEAT" in out and "recompiled after" in out
+
+
+# ── flip autopsy ─────────────────────────────────────────────────────────────
+#
+# The summary cannot tell two mechanisms apart, and they need opposite fixes:
+# a row can cross the bar because the resolver over-credits skills, or because
+# skills<=BLOCKER_FLOOR was tripping the hard-blocker cap and nothing about the
+# row was ever really evaluated. Acting on the wrong one suppresses the good
+# flips along with the bad, so --flips has to name the mechanism, not guess it.
+
+def _flip_seed(session, *, stored_g, stored_skills, llm, job_id=2001):
+    session.add(JobCardRow(card_key="hash:flip", version=1,
+                           payload=json.dumps(JOB_CARD)))
+    session.add(UserCardRow(user_id=USER, version=1, resume_hash="h",
+                            payload=json.dumps(USER_CARD),
+                            updated_at=datetime(2026, 1, 1)))
+    session.add(CardMatchShadow(
+        job_id=job_id, user_id=USER, llm_score=llm,
+        direct_score=stored_g, expanded_score=stored_g, spread=0.0,
+        band="band", card_key="hash:flip",
+        breakdown=json.dumps({"skills": {"score": stored_skills, "note": ""},
+                              "experience": {"score": 80.0, "note": ""},
+                              "location": {"score": 90.0, "note": ""},
+                              "work_auth": {"score": 90.0, "note": ""}}),
+        created_at=datetime(2026, 7, 30)))
+    session.commit()
+
+
+def test_autopsy_names_blocker_release(monkeypatch, capsys):
+    """Stored g() sitting exactly on the cap with skills under the floor is the
+    signature of a row the cap rejected, not a row g() judged."""
+    with get_session() as s:
+        _flip_seed(s, stored_g=25.0, stored_skills=0.0, llm=20.0)
+    assert _run(monkeypatch, ["--flips"]) == 0
+    out = capsys.readouterr().out
+    assert "flip autopsy" in out
+    assert "BROKE (away from Claude)" in out
+    assert "blocker-release" in out
+    assert "skills-over-credit" not in out.split("BROKE")[1].split("FIXED")[0]
+
+
+def test_autopsy_names_skills_over_credit(monkeypatch, capsys):
+    """A row that was scored on its merits and still moved over the bar is the
+    other mechanism, and must not be filed under blocker-release."""
+    with get_session() as s:
+        _flip_seed(s, stored_g=48.0, stored_skills=30.0, llm=20.0)
+    assert _run(monkeypatch, ["--flips"]) == 0
+    out = capsys.readouterr().out
+    assert "skills-over-credit" in out
+    assert "blocker-release" not in out
+
+
+def test_autopsy_is_opt_in(monkeypatch, capsys):
+    with get_session() as s:
+        _flip_seed(s, stored_g=25.0, stored_skills=0.0, llm=20.0)
+    assert _run(monkeypatch, []) == 0
+    assert "flip autopsy" not in capsys.readouterr().out
+
+
+def test_autopsy_survives_a_missing_breakdown(monkeypatch, capsys):
+    """Older rows may have no breakdown JSON — that must not crash the autopsy."""
+    with get_session() as s:
+        _flip_seed(s, stored_g=25.0, stored_skills=0.0, llm=20.0)
+        row = s.exec(select(CardMatchShadow)).first()
+        row.breakdown = None
+        s.add(row)
+        s.commit()
+    assert _run(monkeypatch, ["--flips"]) == 0
+    out = capsys.readouterr().out
+    assert "flip autopsy" in out
+    assert "—" in out                      # missing factors render, not explode

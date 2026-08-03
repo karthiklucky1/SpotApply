@@ -44,6 +44,21 @@ def _pct(n: int, d: int) -> str:
     return f"{100.0 * n / d:5.1f}%" if d else "    —"
 
 
+FACTORS = ("skills", "experience", "location", "work_auth")
+# card_match._overall: any factor at/below BLOCKER_FLOOR caps the overall here.
+BLOCKER_FLOOR, BLOCKER_CAP = 15.0, 25.0
+
+
+def _factors(raw: str | None) -> dict:
+    """Per-factor scores out of a stored breakdown JSON."""
+    try:
+        b = json.loads(raw or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return {k: v for k, v in b.items()
+            if isinstance(v, dict) and isinstance(v.get("score"), (int, float))}
+
+
 def _delta(old: float, new: float, better: str = "up") -> str:
     """Sign the movement so the direction is unmissable in the table."""
     d = new - old
@@ -82,6 +97,70 @@ class Stats:
         return self.abs_err / self.n if self.n else 0.0
 
 
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _autopsy(flips: list[dict], bar: float) -> None:
+    """Why did each decision flip? Two mechanisms, opposite fixes.
+
+    (A) SKILLS OVER-CREDIT — the new skills score alone carries the row over the
+        bar. The resolver is too generous; tighten what decomposition can earn.
+    (B) BLOCKER RELEASE — the old row sat at exactly BLOCKER_CAP because
+        skills<=BLOCKER_FLOOR tripped the hard-blocker cap. Nothing about the
+        row's merits was ever evaluated; the cap was rejecting it, and the cap
+        fired because skills was broken. Tightening decomposition does NOT
+        address these, and would suppress the good flips along with them.
+    """
+    broke = [f for f in flips if f["verdict"] == "broke"]
+    fixed = [f for f in flips if f["verdict"] == "fixed"]
+
+    def _mech(f: dict) -> str:
+        old_sk = (f["old_bd"].get("skills") or {}).get("score")
+        was_capped = (abs(f["old"] - BLOCKER_CAP) < 0.05
+                      and old_sk is not None and old_sk <= BLOCKER_FLOOR)
+        return "blocker-release" if was_capped else "skills-over-credit"
+
+    print("\n=== flip autopsy — what actually moved these rows ===")
+    for label, group in (("BROKE (away from Claude)", broke),
+                         ("FIXED (toward Claude)", fixed)):
+        if not group:
+            continue
+        mechs: dict[str, int] = {}
+        for f in group:
+            mechs[_mech(f)] = mechs.get(_mech(f), 0) + 1
+        print(f"\n  {label}: {len(group)}")
+        for m, c in sorted(mechs.items(), key=lambda kv: -kv[1]):
+            print(f"    {m:20} {c:4d}  {_pct(c, len(group))}")
+        for k in FACTORS:
+            vals = [(f["new_bd"].get(k) or {}).get("score") for f in group]
+            vals = [v for v in vals if isinstance(v, (int, float))]
+            print(f"      mean NEW {k:11} {_mean(vals):5.1f}")
+
+    if broke:
+        print("\n  BROKE rows in full (old -> new per factor):")
+        print(f"  {'job':>8} {'Claude':>7} {'old':>6} {'new':>6}  "
+              + " ".join(f"{k[:5]:>13}" for k in FACTORS) + "   mechanism")
+        for f in sorted(broke, key=lambda f: f["llm"]):
+            cells = []
+            for k in FACTORS:
+                o = (f["old_bd"].get(k) or {}).get("score")
+                n = (f["new_bd"].get(k) or {}).get("score")
+                cells.append(f"{'—' if o is None else f'{o:.0f}':>5}->{'—' if n is None else f'{n:.0f}':<6}")
+            print(f"  {f['job']:>8} {f['llm']:7.1f} {f['old']:6.1f} {f['new']:6.1f}  "
+                  + " ".join(cells) + f"   {_mech(f)}")
+        # The discriminator: is skills alone carrying them over, or is it the
+        # other three factors holding a row up once the cap lets go?
+        solo = [f for f in broke
+                if isinstance((f["new_bd"].get("skills") or {}).get("score"), (int, float))
+                and (f["new_bd"]["skills"]["score"] >= bar)]
+        print(f"\n    of {len(broke)} broke rows, skills alone is over the bar in "
+              f"{len(solo)} ({_pct(len(solo), len(broke))})")
+        print("    high share => the resolver over-credits; low share => the other")
+        print("    three factors carry them once the blocker cap releases, and the")
+        print("    fix belongs in weighting or a skills gate, not in decomposition.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -90,6 +169,12 @@ def main() -> int:
                     help="how many largest movements to print (default 15)")
     ap.add_argument("--verbose", action="store_true",
                     help="print every replayed row, not just the movers")
+    ap.add_argument("--flips", action="store_true",
+                    help="per-factor autopsy of every row whose SHORTLIST DECISION "
+                         "changed. This is the diagnostic view: it separates 'g() "
+                         "now over-credits skills' from 'the blocker cap was the "
+                         "only thing rejecting this row', which look identical in "
+                         "the summary and need opposite fixes.")
     args = ap.parse_args()
 
     bar = float(settings.shortlist_score_threshold)
@@ -117,6 +202,7 @@ def main() -> int:
     graph = load_graph() if settings.card_graph_enabled else None
     old, new = Stats(bar), Stats(bar)
     moved: list[tuple] = []
+    flips: list[dict] = []
     skipped = {"no job card": 0, "no user card": 0, "unparseable payload": 0,
                "match_cards raised": 0}
     bands: dict[str, int] = {}
@@ -160,6 +246,11 @@ def main() -> int:
                    "broke" if was != now and now != truth else "")
         moved.append((abs(res.expanded - r.expanded_score), r.job_id, r.llm_score,
                       r.expanded_score, res.expanded, r.spread, res.spread, verdict))
+        if verdict:
+            flips.append({"job": r.job_id, "llm": r.llm_score, "verdict": verdict,
+                          "old": r.expanded_score, "new": res.expanded,
+                          "old_bd": _factors(r.breakdown), "new_bd": res.breakdown,
+                          "blockers": res.blockers, "low_conf": res.low_confidence})
 
     replayed = old.n
     if not replayed:
@@ -226,6 +317,9 @@ def main() -> int:
               f"{'...' if len(drifted) > 3 else ''}).")
         print("  Those rows were replayed against a NEWER candidate than Claude saw,")
         print("  so part of any movement is the résumé changing, not the resolver.")
+
+    if args.flips and flips:
+        _autopsy(flips, bar)
 
     show = sorted(moved, reverse=True)[:args.limit] if not args.verbose else moved
     print(f"\n=== {len(show)} largest movements ===")
