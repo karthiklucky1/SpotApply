@@ -230,3 +230,116 @@ def test_autopsy_survives_a_missing_breakdown(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "flip autopsy" in out
     assert "—" in out                      # missing factors render, not explode
+
+
+# ── why / sweep ──────────────────────────────────────────────────────────────
+#
+# Both answer "is the obvious fix worth writing?" before it is written, so both
+# have to be honest about the data they rest on. --why's specific hazard is
+# reranker._clean_breakdown, which fills a MISSING factor with the overall
+# score: those rows look like perfect per-factor agreement and are actually
+# absent data. That is the same shape as the MAE=0.0 telemetry from the credits
+# outage, and it must be excluded, visibly.
+
+def _why_seed(session, *, llm, llm_bd, job_id=3001, stored_g=25.0):
+    # card_key and user_id are unique — seeding a second row must reuse them,
+    # exactly as production does (one card, many shadow rows against it).
+    if not session.exec(select(JobCardRow)
+                        .where(JobCardRow.card_key == "hash:why")).first():
+        session.add(JobCardRow(card_key="hash:why", version=1,
+                               payload=json.dumps(JOB_CARD)))
+    if not session.exec(select(UserCardRow)
+                        .where(UserCardRow.user_id == USER)).first():
+        session.add(UserCardRow(user_id=USER, version=1, resume_hash="h",
+                                payload=json.dumps(USER_CARD),
+                                updated_at=datetime(2026, 1, 1)))
+    session.add(CardMatchShadow(
+        job_id=job_id, user_id=USER, llm_score=llm,
+        llm_breakdown=json.dumps(llm_bd) if llm_bd else None,
+        direct_score=stored_g, expanded_score=stored_g, spread=0.0,
+        band="band", card_key="hash:why",
+        breakdown=json.dumps({"skills": {"score": 0.0, "note": ""}}),
+        created_at=datetime(2026, 7, 30)))
+    session.commit()
+
+
+def _bd(sk, ex, lo, wa, note=""):
+    return {"skills": {"score": sk, "note": note},
+            "experience": {"score": ex, "note": note},
+            "location": {"score": lo, "note": note},
+            "work_auth": {"score": wa, "note": note}}
+
+
+def test_why_excludes_synthesized_breakdowns(monkeypatch, capsys):
+    """All four factors equal to the overall is _clean_breakdown's fill, not
+    Claude's judgement — counting it would invent agreement from nothing."""
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(20, 20, 20, 20))
+    assert _run(monkeypatch, ["--why"]) == 0
+    out = capsys.readouterr().out
+    assert "0 of 1 rows" in out
+    assert "excluded" in out
+
+
+def test_why_keeps_a_real_breakdown(monkeypatch, capsys):
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(5, 90, 95, 95))
+    assert _run(monkeypatch, ["--why"]) == 0
+    out = capsys.readouterr().out
+    assert "1 of 1 rows" in out
+    assert "excluded" not in out
+
+
+def test_why_detects_a_nonlinear_override(monkeypatch, capsys):
+    """Claude scoring 20 while its own factors blend to ~72 is the hard-blocker
+    rule — the finding that kills reweighting as an approach."""
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(5, 90, 95, 95), job_id=3001)
+        _why_seed(s, llm=22.0, llm_bd=_bd(8, 88, 92, 96), job_id=3002)
+    assert _run(monkeypatch, ["--why"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT linear" in out
+    assert "reweighting of these four columns can reproduce it" in out
+
+
+def test_why_reports_consistency_when_claude_is_linear(monkeypatch, capsys):
+    """The opposite verdict must be reachable, or the test proves nothing."""
+    with get_session() as s:
+        _why_seed(s, llm=72.0, llm_bd=_bd(60, 80, 85, 85), job_id=3003)
+    assert _run(monkeypatch, ["--why"]) == 0
+    out = capsys.readouterr().out
+    assert "broadly consistent" in out
+
+
+def test_why_is_scoped_to_flips_unless_why_all(monkeypatch, capsys):
+    with get_session() as s:
+        _seed(s, n=2, stored_g=95.0)          # Claude 78, g() 95 -> no flip
+    assert _run(monkeypatch, ["--why"]) == 0
+    assert "no rows in scope" in capsys.readouterr().out
+    assert _run(monkeypatch, ["--why-all"]) == 0
+    assert "Claude's own factors vs g()" in capsys.readouterr().out
+
+
+def test_sweep_reports_a_ceiling_and_says_it_is_in_sample(monkeypatch, capsys):
+    with get_session() as s:
+        _seed(s, n=4, stored_g=25.0)
+    assert _run(monkeypatch, ["--sweep"]) == 0
+    out = capsys.readouterr().out
+    assert "skills-gate sweep" in out
+    assert "no gate (today)" in out
+    assert "ceiling" in out
+    assert "out-of-sample number is lower" in out
+
+
+def test_sweep_ceiling_is_never_below_no_gate(monkeypatch, capsys):
+    """slope=0/floor=0 is in the grid but a gate can only lower scores, so the
+    ceiling must at minimum tie the ungated baseline — if it prints below it,
+    the search or the baseline is wrong."""
+    with get_session() as s:
+        _seed(s, n=5, stored_g=25.0)
+    assert _run(monkeypatch, ["--sweep"]) == 0
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines() if "ceiling" in ln][0]
+    nums = [float(t.rstrip("%")) for t in line.replace("=", " ").split()
+            if t.rstrip("%").replace(".", "").replace("+", "").replace("-", "").isdigit()]
+    assert nums[0] >= nums[1], line

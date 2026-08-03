@@ -45,6 +45,8 @@ def _pct(n: int, d: int) -> str:
 
 
 FACTORS = ("skills", "experience", "location", "work_auth")
+# card_match.WEIGHTS — the linear blend g() applies to those same four factors.
+WEIGHTS = {"skills": 0.45, "experience": 0.25, "location": 0.15, "work_auth": 0.15}
 # card_match._overall: any factor at/below BLOCKER_FLOOR caps the overall here.
 BLOCKER_FLOOR, BLOCKER_CAP = 15.0, 25.0
 
@@ -99,6 +101,116 @@ class Stats:
 
 def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
+
+
+def _synthesized(bd: dict, overall: float) -> bool:
+    """reranker._clean_breakdown fills a MISSING factor with the overall score.
+
+    Such a row carries no per-factor information at all — every factor equals
+    the overall by construction — and averaging it in would manufacture perfect
+    agreement out of absent data. Exactly the failure that produced the
+    MAE=0.0 distillation telemetry during the credits outage.
+    """
+    vals = [(bd.get(k) or {}).get("score") for k in FACTORS]
+    if any(not isinstance(v, (int, float)) for v in vals):
+        return True
+    return all(abs(v - overall) < 0.51 for v in vals)
+
+
+def _why(pairs: list[dict], bar: float) -> None:
+    """Compare Claude's OWN four factors against g()'s, on the same rows.
+
+    Claude returns the same four factors g() computes (reranker._JSON_CONTRACT),
+    captured in the same call that produced llm_score — so unlike
+    Job.rerank_reasoning it cannot have been overwritten by a later re-rank.
+
+    The decisive question is not "which factor does g() get wrong". It is
+    whether Claude's own overall is even reachable from Claude's own factors
+    under a linear blend. The contract tells Claude that "a hard blocker caps
+    the overall regardless of the other factors", so if its overall sits far
+    BELOW the blend of its own factors, it is applying a non-linear rule that
+    no reweighting of those four columns can express — and the ceiling on
+    fixing this by tuning weights is low, provably, before anyone tunes them.
+    """
+    usable = [p for p in pairs if not _synthesized(p["llm_bd"], p["llm"])]
+    print(f"\n=== why — Claude's own factors vs g(), {len(usable)} of {len(pairs)} rows ===")
+    dropped = len(pairs) - len(usable)
+    if dropped:
+        print(f"  {dropped} row(s) excluded: Claude returned no per-factor breakdown,")
+        print("  so _clean_breakdown filled every factor with the overall. Averaging")
+        print("  those in would invent agreement from missing data.")
+    if not usable:
+        return
+
+    print(f"\n  {'factor':12} {'Claude':>8} {'g()':>8} {'gap':>8}   g() reads this factor")
+    for k in FACTORS:
+        c = _mean([(p["llm_bd"][k] or {}).get("score", 0.0) for p in usable])
+        g = _mean([(p["g_bd"].get(k) or {}).get("score", 0.0) for p in usable])
+        print(f"  {k:12} {c:8.1f} {g:8.1f} {g - c:+8.1f}   "
+              f"{'too generously' if g - c > 5 else 'too harshly' if g - c < -5 else 'about right'}")
+
+    # Is Claude's overall reachable from Claude's own factors, linearly?
+    resid = [p["llm"] - sum(WEIGHTS[k] * (p["llm_bd"][k] or {}).get("score", 0.0)
+                            for k in FACTORS) for p in usable]
+    below = sum(1 for r in resid if r < -10)
+    print("\n  Claude overall MINUS the blend of Claude's own factors:")
+    print(f"    mean {_mean(resid):+.1f} points, "
+          f"{below} of {len(usable)} rows more than 10 points BELOW their own blend")
+    if below >= 0.5 * len(usable):
+        print("    => Claude is overriding its own factors downward on most of these.")
+        print("       That is the contract's hard-blocker rule, and it is NOT linear.")
+        print("       No reweighting of these four columns can reproduce it; the fix")
+        print("       is a gate/override, or a factor g() does not have.")
+    else:
+        print("    => Claude's overall is broadly consistent with its own factors,")
+        print("       so a reweighting of the four IS expressive enough to chase.")
+
+    print(f"\n  {'job':>8} {'Claude':>7} {'g()':>7}   "
+          + " ".join(f"{k[:5]:>13}" for k in FACTORS))
+    for p in sorted(usable, key=lambda p: p["llm"])[:20]:
+        cells = [f"{(p['llm_bd'][k] or {}).get('score', 0):>5.0f}/"
+                 f"{(p['g_bd'].get(k) or {}).get('score', 0):<7.0f}" for k in FACTORS]
+        print(f"  {p['job']:>8} {p['llm']:7.1f} {p['g']:7.1f}   " + " ".join(cells))
+    print("    (cells are Claude/g())")
+
+
+def _sweep(rows: list[dict], bar: float) -> None:
+    """Best decision agreement any skills-gate of the form
+    ``overall' = min(overall, floor + slope*skills)`` can reach on this ledger.
+
+    A gate is the obvious replacement for the binary blocker cap. Rather than
+    pick coefficients and hope, fit the whole family and report the ceiling —
+    if the best achievable is barely above today's number, the approach is
+    answered before it is written.
+    """
+    base = sum(1 for r in rows if (r["g"] >= bar) == (r["llm"] >= bar))
+    print(f"\n=== skills-gate sweep over {len(rows)} rows ===")
+    print(f"  no gate (today)        {_pct(base, len(rows))}")
+
+    best: list[tuple] = []
+    for floor10 in range(0, 61, 5):
+        for slope10 in range(0, 21):
+            floor, slope = float(floor10), slope10 / 10.0
+            ok = sum(1 for r in rows
+                     if (min(r["g"], floor + slope * r["skills"]) >= bar)
+                     == (r["llm"] >= bar))
+            best.append((ok, floor, slope))
+    best.sort(reverse=True)
+    print(f"  {'agreement':>10}  {'floor':>6} {'slope':>6}   overall' = min(overall, floor + slope*skills)")
+    seen = set()
+    for ok, floor, slope in best:
+        if len(seen) >= 5:
+            break
+        if ok in seen:
+            continue
+        seen.add(ok)
+        print(f"  {_pct(ok, len(rows)):>10}  {floor:6.0f} {slope:6.1f}")
+    ceiling = best[0][0]
+    print(f"\n  ceiling {_pct(ceiling, len(rows))} vs {_pct(base, len(rows))} today "
+          f"= {100.0 * (ceiling - base) / len(rows):+.1f} points available")
+    print("  This is the BEST case: coefficients fitted on the same rows they are")
+    print("  scored on, so the honest out-of-sample number is lower. If the number")
+    print("  above is not worth having in-sample, it is not worth having at all.")
 
 
 def _autopsy(flips: list[dict], bar: float) -> None:
@@ -175,6 +287,18 @@ def main() -> int:
                          "now over-credits skills' from 'the blocker cap was the "
                          "only thing rejecting this row', which look identical in "
                          "the summary and need opposite fixes.")
+    ap.add_argument("--why", action="store_true",
+                    help="compare Claude's OWN four factors against g()'s on the "
+                         "same rows, and test whether Claude's overall is even "
+                         "reachable from its own factors linearly. Restricted to "
+                         "flipped rows unless --why-all.")
+    ap.add_argument("--why-all", action="store_true",
+                    help="run --why over every replayed row, not just the flips "
+                         "(the flip set is selected for sitting near the bar, so "
+                         "it is a biased sample by construction).")
+    ap.add_argument("--sweep", action="store_true",
+                    help="best decision agreement any skills-gate can reach on "
+                         "this ledger — bounds the fix before it is written.")
     args = ap.parse_args()
 
     bar = float(settings.shortlist_score_threshold)
@@ -203,6 +327,7 @@ def main() -> int:
     old, new = Stats(bar), Stats(bar)
     moved: list[tuple] = []
     flips: list[dict] = []
+    allrows: list[dict] = []
     skipped = {"no job card": 0, "no user card": 0, "unparseable payload": 0,
                "match_cards raised": 0}
     bands: dict[str, int] = {}
@@ -235,6 +360,10 @@ def main() -> int:
 
         old.add(r.llm_score, r.expanded_score, r.spread)
         new.add(r.llm_score, res.expanded, res.spread)
+        sk = (res.breakdown.get("skills") or {}).get("score", 0.0)
+        rec = {"job": r.job_id, "llm": r.llm_score, "g": res.expanded, "skills": sk,
+               "llm_bd": _factors(r.llm_breakdown), "g_bd": res.breakdown}
+        allrows.append(rec)
         d = assign_band(res.direct, res.expanded, res.spread, res.low_confidence)
         bands[d.band] = bands.get(d.band, 0) + 1
 
@@ -247,7 +376,8 @@ def main() -> int:
         moved.append((abs(res.expanded - r.expanded_score), r.job_id, r.llm_score,
                       r.expanded_score, res.expanded, r.spread, res.spread, verdict))
         if verdict:
-            flips.append({"job": r.job_id, "llm": r.llm_score, "verdict": verdict,
+            rec["verdict"] = verdict
+            flips.append({**rec, "verdict": verdict,
                           "old": r.expanded_score, "new": res.expanded,
                           "old_bd": _factors(r.breakdown), "new_bd": res.breakdown,
                           "blockers": res.blockers, "low_conf": res.low_confidence})
@@ -320,6 +450,14 @@ def main() -> int:
 
     if args.flips and flips:
         _autopsy(flips, bar)
+    if args.why or args.why_all:
+        pool = allrows if args.why_all else [r for r in allrows if r.get("verdict")]
+        if pool:
+            _why(pool, bar)
+        else:
+            print("\n=== why — no rows in scope (no decisions flipped) ===")
+    if args.sweep:
+        _sweep(allrows, bar)
 
     show = sorted(moved, reverse=True)[:args.limit] if not args.verbose else moved
     print(f"\n=== {len(show)} largest movements ===")
