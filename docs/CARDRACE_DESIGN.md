@@ -281,6 +281,53 @@ Any change to this resolver invalidates every earlier shadow row: they score a f
 that no longer exists. Re-read and re-fit with the seam excluded —
 `card_match_report.py --since` and `build_calibration.py --since`.
 
+### 9.2.1 g() blends where Claude gates (measured 2026-08-03, 1,079 rows)
+
+Fixing the resolver moved decision agreement 61.9% → 63.7% and exposed why the rest is
+not a tuning problem. Three measurements, all offline over the existing ledger
+(`scripts/card_match_replay.py`, no LLM calls):
+
+**A skills gate buys nothing.** `--sweep` fits every
+`overall' = min(overall, floor + slope*skills)` on the ledger: best achievable **63.5%
+against 63.5% today, +0.0 points** — in-sample, coefficients fitted on the rows they are
+scored on. The obvious replacement for the binary blocker is dead on arrival.
+
+**Claude is not averaging.** `--why-all` compares Claude's own per-factor scores
+(`CardMatchShadow.llm_breakdown`, captured in the same call as `llm_score`, so unlike
+`Job.rerank_reasoning` it cannot have been overwritten by a later re-rank) against g()'s:
+
+| factor | Claude | g() | gap |
+|---|---|---|---|
+| skills | 65.7 | 19.8 | **−45.9** too harsh |
+| experience | 46.0 | 71.9 | +25.9 too generous |
+| location | 57.4 | 62.8 | +5.5 |
+| work_auth | 69.4 | 88.0 | +18.6 too generous |
+
+On **567 of 1,079 rows Claude's overall sits >10 points BELOW the blend of its own
+factors** — it is applying `_JSON_CONTRACT`'s rule that "a hard blocker caps the overall
+regardless of the other factors". Job 836881: Claude scores skills 70, work_auth 100,
+location 0 — and returns an **overall of 0**. g() returns 25. No reweighting of four
+columns can express that, at any coefficients.
+
+**The near-bar sample says the opposite.** On the 67 flipped rows alone the verdict is
+"broadly consistent, reweighting is expressive enough" (42% below blend); over all 1,079
+it is 53% and non-linear. The flip set is selected for sitting near the bar and
+*understates* the non-linearity — read `--why` without `--why-all` and the conclusion
+inverts.
+
+Two consequences for the architecture. g() must become **hard checks → soft ranking**,
+not one weighted average with a `BLOCKER_OVERALL_CAP` bolted on: its blocker fires on
+different inputs than Claude's and floors at 25 where Claude goes to 0, so the two
+disagree on *when* to block and on *what a blocked score means*. And MAE is a misleading
+health metric here — a −45.9 skills error and a +25.9 experience error largely cancel in
+the blend, which is why MAE improved to 17.2 while decision agreement stayed pinned.
+
+Order the remaining work with `--subsets` (is the skills gap concentrated in rows Claude
+blockered for an unrelated reason?) and `--ablate` (substitute Claude's own value for one
+factor at a time and re-blend: ranks the four repairs by payoff, and prints the ceiling
+for fixing factors versus fixing blockers). Both are oracles — upper bounds on each
+repair, never forecasts.
+
 ### 9.3 Evidence-strength candidate model
 
 The UserCard compile (still the one existing signup call) scores every skill:

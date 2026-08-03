@@ -343,3 +343,70 @@ def test_sweep_ceiling_is_never_below_no_gate(monkeypatch, capsys):
     nums = [float(t.rstrip("%")) for t in line.replace("=", " ").split()
             if t.rstrip("%").replace(".", "").replace("+", "").replace("-", "").isdigit()]
     assert nums[0] >= nums[1], line
+
+
+# ── subsets / ablation ───────────────────────────────────────────────────────
+#
+# These rank the remaining repairs, so a wrong ranking sends the next session
+# at the wrong subsystem. The two hazards: an ablation that silently measures
+# its own reconstruction error rather than the substitution, and a "blockered"
+# split that mislabels rows and so attributes the skills gap to the wrong side.
+
+def test_blend_reproduces_the_real_score():
+    """Ablation swaps one factor and re-blends. If the re-blend does not match
+    match_cards() when NOTHING is swapped, every ablation number is noise."""
+    from app.matching.card_match import match_cards
+    from app.matching.skill_graph import load_graph
+    res = match_cards(USER_CARD, JOB_CARD, graph=load_graph())
+    assert abs(card_match_replay._blend(res.breakdown) - res.expanded) < 0.6
+
+
+def test_blend_reproduces_the_blocker_cap():
+    bd = {"skills": {"score": 5.0}, "experience": {"score": 90.0},
+          "location": {"score": 95.0}, "work_auth": {"score": 95.0}}
+    assert card_match_replay._blend(bd) == card_match_replay.BLOCKER_CAP
+    # 0.45*5 + 0.25*90 + 0.15*95 + 0.15*95 = 53.25 — the cap is what drags it
+    # to 25, and that is the whole distortion the blocker introduces.
+    assert card_match_replay._blend(bd, apply_blocker=False) == pytest.approx(53.25)
+
+
+def test_claude_blocked_detects_the_override():
+    """Skills 70, work_auth 100, overall 0 — the row that proved Claude is not
+    averaging. It must be labelled blockered."""
+    p = {"llm": 0.0, "llm_bd": _bd(70, 25, 0, 100)}
+    assert card_match_replay._claude_blocked(p)
+    ok = {"llm": 72.0, "llm_bd": _bd(60, 80, 85, 85)}
+    assert not card_match_replay._claude_blocked(ok)
+
+
+def test_ablation_prints_fidelity_and_both_ceilings(monkeypatch, capsys):
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(5, 90, 95, 95), job_id=4001)
+        _why_seed(s, llm=75.0, llm_bd=_bd(70, 80, 85, 90), job_id=4002)
+    assert _run(monkeypatch, ["--ablate"]) == 0
+    out = capsys.readouterr().out
+    assert "reconstruction check" in out
+    assert "ceiling on fixing factors" in out
+    assert "ceiling on fixing blockers" in out
+    assert "upper bounds on each repair, not forecasts" in out
+
+
+def test_subsets_splits_and_attributes_the_skills_gap(monkeypatch, capsys):
+    with get_session() as s:
+        _why_seed(s, llm=0.0, llm_bd=_bd(70, 25, 0, 100), job_id=4101)
+        _why_seed(s, llm=72.0, llm_bd=_bd(60, 80, 85, 85), job_id=4102)
+    assert _run(monkeypatch, ["--subsets"]) == 0
+    out = capsys.readouterr().out
+    assert "BLOCKERED" in out and "CLEAN" in out
+    assert "skills gap:" in out
+    assert "decision agreement on" in out
+
+
+def test_subsets_and_ablation_exclude_synthesized_rows(monkeypatch, capsys):
+    """The _clean_breakdown trap applies here too — same fill, same fake signal."""
+    with get_session() as s:
+        _why_seed(s, llm=20.0, llm_bd=_bd(20, 20, 20, 20), job_id=4201)
+    assert _run(monkeypatch, ["--subsets", "--ablate"]) == 0
+    out = capsys.readouterr().out
+    assert "no rows with a real Claude breakdown" in out
+    assert out.count("no rows with a real Claude breakdown") == 2

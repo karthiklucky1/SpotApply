@@ -174,6 +174,134 @@ def _why(pairs: list[dict], bar: float) -> None:
     print("    (cells are Claude/g())")
 
 
+def _blend(bd: dict, apply_blocker: bool = True) -> float:
+    """Reproduce card_match._overall from a factor table.
+
+    Ablation is only meaningful if swapping a factor and re-blending reproduces
+    the real score when nothing is swapped, so the caller prints the
+    reconstruction error before trusting any of it.
+    """
+    vals = {k: float((bd.get(k) or {}).get("score", 0.0)) for k in FACTORS}
+    out = sum(WEIGHTS[k] * vals[k] for k in FACTORS)
+    if apply_blocker and any(v <= BLOCKER_FLOOR for v in vals.values()):
+        out = min(out, BLOCKER_CAP)
+    return max(0.0, min(100.0, out))
+
+
+def _claude_blocked(p: dict, margin: float = 15.0) -> bool:
+    """Did Claude override its own factors downward on this row?
+
+    The contract's words are "a hard blocker caps the overall score low
+    regardless of the other factors", so the signature is an overall that sits
+    well below the blend of the factors Claude itself reported.
+    """
+    return p["llm"] < _blend(p["llm_bd"], apply_blocker=False) - margin
+
+
+def _subsets(rows: list[dict], bar: float) -> None:
+    """Split the factor gaps by whether CLAUDE blockered the row.
+
+    The question this answers: is g()'s skills error a real per-capability
+    under-crediting problem, or an artefact of rows Claude threw out for a
+    reason that has nothing to do with skills? Those need different work, and
+    the pooled -45.9 cannot distinguish them.
+    """
+    usable = [p for p in rows if not _synthesized(p["llm_bd"], p["llm"])]
+    if not usable:
+        print("\n=== subsets — no rows with a real Claude breakdown ===")
+        return
+    blocked = [p for p in usable if _claude_blocked(p)]
+    clean = [p for p in usable if not _claude_blocked(p)]
+
+    print(f"\n=== factor gaps by subset — {len(usable)} rows with a real breakdown ===")
+    print("  'blockered' = Claude's overall sits >15 points below the blend of its")
+    print("  own factors, i.e. it overrode them downward.\n")
+    print(f"  {'':12} {'BLOCKERED n=' + str(len(blocked)):>24}   {'CLEAN n=' + str(len(clean)):>24}")
+    print(f"  {'factor':12} {'Claude':>7} {'g()':>7} {'gap':>7}   "
+          f"{'Claude':>7} {'g()':>7} {'gap':>7}")
+    for k in FACTORS:
+        cells = []
+        for grp in (blocked, clean):
+            c = _mean([(p["llm_bd"].get(k) or {}).get("score", 0.0) for p in grp])
+            g = _mean([(p["g_bd"].get(k) or {}).get("score", 0.0) for p in grp])
+            cells.append(f"{c:7.1f} {g:7.1f} {g - c:+7.1f}")
+        print(f"  {k:12} {cells[0]}   {cells[1]}")
+
+    for label, grp in (("blockered", blocked), ("clean", clean)):
+        if not grp:
+            continue
+        ok = sum(1 for p in grp if (p["g"] >= bar) == (p["llm"] >= bar))
+        print(f"\n  g() decision agreement on {label:10} {_pct(ok, len(grp))}  "
+              f"({len(grp)} rows, {_pct(len(grp), len(usable))} of the ledger)")
+
+    if blocked and clean:
+        sk_b = _mean([(p["g_bd"].get("skills") or {}).get("score", 0.0)
+                      - (p["llm_bd"].get("skills") or {}).get("score", 0.0) for p in blocked])
+        sk_c = _mean([(p["g_bd"].get("skills") or {}).get("score", 0.0)
+                      - (p["llm_bd"].get("skills") or {}).get("score", 0.0) for p in clean])
+        print(f"\n  skills gap: blockered {sk_b:+.1f}   clean {sk_c:+.1f}")
+        if abs(sk_c) < 0.5 * abs(sk_b):
+            print("  => the skills error concentrates in rows Claude threw out for")
+            print("     other reasons. Fix blocker semantics first; the resolver is")
+            print("     closer to right than the pooled number suggests.")
+        else:
+            print("  => the skills error persists on rows Claude did NOT blocker, so")
+            print("     it is genuine under-crediting, not an artefact of the split.")
+
+
+def _ablate(rows: list[dict], bar: float) -> None:
+    """If g() got ONE factor exactly right, what would agreement be?
+
+    Substitutes Claude's own value for each factor in turn and re-blends. This
+    ranks the four repairs by payoff instead of by which one is most annoying,
+    and the all-four row is the hard ceiling on fixing factors at all while the
+    blend stays linear — the number that says whether blocker semantics or
+    factor accuracy is the real work.
+    """
+    usable = [p for p in rows if not _synthesized(p["llm_bd"], p["llm"])]
+    if not usable:
+        print("\n=== ablation — no rows with a real Claude breakdown ===")
+        return
+
+    fidelity = _mean([abs(_blend(p["g_bd"]) - p["g"]) for p in usable])
+    print(f"\n=== per-factor oracle ablation — {len(usable)} rows ===")
+    print("  reconstruction check: re-blending g()'s own factors reproduces its")
+    print(f"  score to {fidelity:.2f} points. Anything large here means the ablation")
+    print("  below is measuring the reconstruction, not the substitution.\n")
+
+    def agree(score_of) -> int:
+        return sum(1 for p in usable if (score_of(p) >= bar) == (p["llm"] >= bar))
+
+    base = agree(lambda p: p["g"])
+    print(f"  {'substitution':34} {'agreement':>10}  {'gain':>7}")
+    print(f"  {'-' * 34} {'-' * 10}  {'-' * 7}")
+    print(f"  {'none (today)':34} {_pct(base, len(usable)):>10}  {'—':>7}")
+
+    for k in FACTORS:
+        def sub(p, k=k):
+            bd = dict(p["g_bd"])
+            bd[k] = {"score": (p["llm_bd"].get(k) or {}).get("score", 0.0)}
+            return _blend(bd)
+        ok = agree(sub)
+        print(f"  {'oracle ' + k:34} {_pct(ok, len(usable)):>10}  "
+              f"{100.0 * (ok - base) / len(usable):+7.1f}")
+
+    all4 = agree(lambda p: _blend(p["llm_bd"]))
+    print(f"  {'oracle ALL FOUR factors':34} {_pct(all4, len(usable)):>10}  "
+          f"{100.0 * (all4 - base) / len(usable):+7.1f}   <- ceiling on fixing factors")
+
+    # And the other half of the architecture: reproduce Claude's OVERRIDE only,
+    # leaving every factor exactly as g() computes it today.
+    blk = agree(lambda p: 0.0 if _claude_blocked(p) else p["g"])
+    print(f"  {'oracle blocker only':34} {_pct(blk, len(usable)):>10}  "
+          f"{100.0 * (blk - base) / len(usable):+7.1f}   <- ceiling on fixing blockers")
+    both = agree(lambda p: 0.0 if _claude_blocked(p) else _blend(p["llm_bd"]))
+    print(f"  {'oracle blocker + ALL FOUR':34} {_pct(both, len(usable)):>10}  "
+          f"{100.0 * (both - base) / len(usable):+7.1f}")
+    print("\n  Every row above is an ORACLE: it uses Claude's own answer, which g()")
+    print("  will never have. They are upper bounds on each repair, not forecasts.")
+
+
 def _sweep(rows: list[dict], bar: float) -> None:
     """Best decision agreement any skills-gate of the form
     ``overall' = min(overall, floor + slope*skills)`` can reach on this ledger.
@@ -296,6 +424,14 @@ def main() -> int:
                     help="run --why over every replayed row, not just the flips "
                          "(the flip set is selected for sitting near the bar, so "
                          "it is a biased sample by construction).")
+    ap.add_argument("--subsets", action="store_true",
+                    help="split the factor gaps by whether CLAUDE blockered the "
+                         "row — separates genuine skills under-crediting from "
+                         "rows thrown out for an unrelated reason.")
+    ap.add_argument("--ablate", action="store_true",
+                    help="substitute Claude's own value for each factor in turn "
+                         "and re-blend: ranks the four repairs by payoff, and "
+                         "prints the ceiling for fixing factors vs blockers.")
     ap.add_argument("--sweep", action="store_true",
                     help="best decision agreement any skills-gate can reach on "
                          "this ledger — bounds the fix before it is written.")
@@ -456,6 +592,10 @@ def main() -> int:
             _why(pool, bar)
         else:
             print("\n=== why — no rows in scope (no decisions flipped) ===")
+    if args.subsets:
+        _subsets(allrows, bar)
+    if args.ablate:
+        _ablate(allrows, bar)
     if args.sweep:
         _sweep(allrows, bar)
 
