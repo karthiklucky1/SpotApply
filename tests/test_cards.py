@@ -301,3 +301,123 @@ def test_a_none_profile_is_tolerated():
     assert cards.profile_facts(None) == {}
     assert cards.resume_hash(None, "abc") == cards.resume_hash(None, "abc")
     assert cards.resume_hash(None, "abc") != cards.resume_hash(None, "abd")
+
+
+# ── the thundering herd (audit B1) ───────────────────────────────────────────
+#
+# Both getters were read -> miss -> LLM -> write with no coordination, running
+# inside the scoring lane's 20-thread pool. Bumping a card VERSION invalidates
+# every row at the same instant, so the first tick after a bump was measured at
+# 20 of 20 workers minting the SAME card: 20x the spend, IntegrityErrors
+# swallowed by the shadow hook's blanket except, and lost ledger rows. These
+# pin the fix in the two directions that matter — one mint, and nobody starved.
+
+import threading  # noqa: E402
+
+
+def _race(fn, workers=20):
+    """Run fn() on `workers` threads released simultaneously; collect results."""
+    start, out, lock = threading.Event(), [], threading.Lock()
+
+    def go():
+        start.wait(5)
+        try:
+            r = fn()
+            with lock:
+                out.append(("ok", r))
+        except Exception as e:                       # noqa: BLE001
+            with lock:
+                out.append(("err", type(e).__name__))
+    ts = [threading.Thread(target=go) for _ in range(workers)]
+    for t in ts:
+        t.start()
+    start.set()
+    for t in ts:
+        t.join(20)
+    return out
+
+
+@pytest.fixture
+def slow_llm(monkeypatch):
+    """A mint takes real time — that window is the whole bug. Without a delay
+    the threads serialise by luck and the race never reproduces."""
+    calls = {"n": 0}
+    lock = threading.Lock()
+
+    def _fake(system, user, max_tokens=900):
+        with lock:
+            calls["n"] += 1
+        threading.Event().wait(0.05)
+        return dict(_USER_PAYLOAD if "UserCard" in system else _JOB_PAYLOAD)
+
+    monkeypatch.setattr(cards, "_haiku_json", _fake)
+    monkeypatch.setattr("app.matching.reranker.llm_budget_exhausted", lambda: False)
+    monkeypatch.setattr(settings, "card_mint_daily_cap", 10_000, raising=False)
+    return calls
+
+
+def test_concurrent_user_card_compiles_pay_for_exactly_one(slow_llm, monkeypatch):
+    _set_supabase(monkeypatch, True)
+    prof, resume = _profile(), "Python, Postgres, six years."
+    out = _race(lambda: cards.get_or_compile_user_card("u-race", prof, resume))
+
+    assert slow_llm["n"] == 1, f"paid for {slow_llm['n']} compiles, expected 1"
+    assert not [o for o in out if o[0] == "err"], f"workers died: {out}"
+    assert all(r is not None for _, r in out), "a waiter was starved of a card"
+    with get_session() as s:
+        assert len(s.exec(select(UserCardRow)).all()) == 1
+
+
+def test_concurrent_job_card_mints_pay_for_exactly_one(slow_llm):
+    """Same posting adopted by many tenants, all scored in one tick."""
+    job = _job(cross_source_slug="acme-backend-remote")
+    out = _race(lambda: cards.get_or_mint_job_card(job))
+
+    assert slow_llm["n"] == 1, f"paid for {slow_llm['n']} mints, expected 1"
+    assert not [o for o in out if o[0] == "err"], f"workers died: {out}"
+    assert all(r is not None for _, r in out), "a tenant got no card"
+    with get_session() as s:
+        assert len(s.exec(select(JobCardRow)).all()) == 1
+
+
+def test_losers_read_the_winners_card_not_a_second_one(slow_llm, monkeypatch):
+    """The losers must WAIT and re-read. Claim-and-skip would return None and
+    write no shadow row — the same lost-ledger-row bug by another route."""
+    _set_supabase(monkeypatch, True)
+    out = _race(lambda: cards.get_or_compile_user_card(
+        "u-same", _profile(), "resume text"), workers=8)
+    cards_returned = [r for _, r in out]
+    assert len(cards_returned) == 8
+    assert all(c == cards_returned[0] for c in cards_returned)
+
+
+def test_the_cap_is_a_reservation_not_a_receipt(slow_llm, monkeypatch):
+    """Checking the cap before the call and incrementing after let every worker
+    pass before any of them incremented, so the cap overshot by the pool size."""
+    monkeypatch.setattr(settings, "card_mint_daily_cap", 3, raising=False)
+    cards._mints_today["day"], cards._mints_today["count"] = "", 0
+    out = _race(lambda: cards.mint_job_card(_job()), workers=20)
+    minted = [r for k, r in out if k == "ok" and r is not None]
+    assert slow_llm["n"] <= 3, f"cap of 3 overshot to {slow_llm['n']} LLM calls"
+    assert len(minted) <= 3
+    assert cards._mints_today["count"] <= 3
+
+
+def test_a_slower_worker_never_clobbers_a_fresher_card(stub_llm, monkeypatch):
+    """The temporal hazard: a worker holding OLD material finishing last would
+    overwrite a newer card and stamp its own stale hash, leaving the row
+    claiming to be current for material that is not."""
+    _set_supabase(monkeypatch, True)
+    from datetime import datetime, timedelta
+    cards.get_or_compile_user_card("u-stale", _profile(), "OLD resume")
+    with get_session() as s:
+        row = s.exec(select(UserCardRow).where(UserCardRow.user_id == "u-stale")).first()
+        row.updated_at = datetime.utcnow() + timedelta(minutes=5)   # "written later"
+        row.resume_hash = "fresher-hash"
+        s.add(row)
+        s.commit()
+
+    cards.get_or_compile_user_card("u-stale", _profile(), "STALE resume")
+    with get_session() as s:
+        row = s.exec(select(UserCardRow).where(UserCardRow.user_id == "u-stale")).first()
+        assert row.resume_hash == "fresher-hash", "a stale writer clobbered a fresher card"

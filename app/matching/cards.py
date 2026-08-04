@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -42,26 +43,101 @@ _mint_lock = threading.Lock()
 _mints_today = {"day": "", "count": 0}
 
 
+def _roll_day() -> None:
+    """Caller must hold _mint_lock."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if _mints_today["day"] != today:
+        _mints_today["day"], _mints_today["count"] = today, 0
+
+
 def _mint_allowed() -> bool:
+    """Read-only predicate: would a mint be permitted right now? Callers that
+    are about to spend use _reserve_mint() instead — checking here and
+    incrementing after the call let 20 workers all pass before any of them
+    incremented, so the cap overshot by the whole pool size."""
     from app.matching.reranker import llm_budget_exhausted
     if llm_budget_exhausted():
         return False
     cap = int(getattr(settings, "card_mint_daily_cap", 0) or 0)
     if cap <= 0:
         return True
-    today = datetime.utcnow().strftime("%Y-%m-%d")
     with _mint_lock:
-        if _mints_today["day"] != today:
-            _mints_today["day"], _mints_today["count"] = today, 0
+        _roll_day()
         return _mints_today["count"] < cap
 
 
-def _register_mint() -> None:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+def _reserve_mint() -> bool:
+    """Take a slot BEFORE the LLM call — check-and-increment under one lock, so
+    the cap is a reservation rather than a receipt. Released again by
+    _release_mint() when the call fails or the response is unusable, so a
+    rejected card still never consumes the cap."""
+    from app.matching.reranker import llm_budget_exhausted
+    if llm_budget_exhausted():
+        return False
+    cap = int(getattr(settings, "card_mint_daily_cap", 0) or 0)
     with _mint_lock:
-        if _mints_today["day"] != today:
-            _mints_today["day"], _mints_today["count"] = today, 0
+        _roll_day()
+        if cap > 0 and _mints_today["count"] >= cap:
+            return False
         _mints_today["count"] += 1
+        return True
+
+
+def _release_mint() -> None:
+    with _mint_lock:
+        _mints_today["count"] = max(0, _mints_today["count"] - 1)
+
+
+def _register_mint() -> None:
+    """Kept for callers that mint outside _reserve_mint()'s flow."""
+    with _mint_lock:
+        _roll_day()
+        _mints_today["count"] += 1
+
+
+# ── Per-key compile locks (the thundering herd) ──────────────────────────────
+#
+# Both getters are read -> miss -> LLM -> write with no coordination, and they
+# run inside the scoring lane's worker pool (scoring_lane.py:435, 20 threads).
+# Bumping a card VERSION invalidates every row at the same instant, so the first
+# tick after a bump is the worst case: measured 20 of 20 workers minting the
+# same user's card, 6 of them dying on IntegrityError inside the shadow hook's
+# blanket except — one mint's worth of value, twenty mints' worth of spend, and
+# six lost ledger rows.
+#
+# A claim-and-skip (app/common/inflight) is wrong here: the 19 losers would
+# return None and write no shadow row. They must WAIT and then re-read what the
+# winner wrote — double-checked locking, one mint, every caller served.
+_MINT_LOCK_TIMEOUT = 45.0        # a mint is ~2-5s; past this, stop pinning threads
+_MAX_KEY_LOCKS = 512
+_key_locks: dict = {}
+_key_locks_guard = threading.Lock()
+
+
+def _key_lock(key: str) -> threading.Lock:
+    with _key_locks_guard:
+        lk = _key_locks.get(key)
+        if lk is None:
+            if len(_key_locks) >= _MAX_KEY_LOCKS:
+                # Only drop locks nobody holds — evicting a held one would let a
+                # second waiter mint in parallel, which is the bug this fixes.
+                for k in [k for k, v in _key_locks.items() if not v.locked()]:
+                    del _key_locks[k]
+            lk = _key_locks[key] = threading.Lock()
+        return lk
+
+
+@contextmanager
+def _minting(key: str):
+    """``with _minting(key) as owned:`` — owned=False means the wait timed out;
+    the caller re-reads the cache and gives up rather than minting anyway."""
+    lk = _key_lock(key)
+    owned = lk.acquire(timeout=_MINT_LOCK_TIMEOUT)
+    try:
+        yield owned
+    finally:
+        if owned:
+            lk.release()
 
 
 # ── JSON plumbing ─────────────────────────────────────────────────────────────
@@ -151,7 +227,7 @@ def job_card_key(job) -> str:
 
 def mint_job_card(job) -> Optional[dict]:
     """One LLM read of the posting → JobCard dict (no persistence)."""
-    if not _mint_allowed():
+    if not _reserve_mint():
         return None
     desc = (getattr(job, "description", "") or "")[:6000]
     user = (f"Title: {job.title}\nCompany: {job.company}\n"
@@ -160,11 +236,32 @@ def mint_job_card(job) -> Optional[dict]:
             f"Posting:\n{desc}")
     card = _haiku_json(_JOB_CARD_SYSTEM, user)
     if not card or not isinstance(card.get("capabilities"), list):
+        _release_mint()          # a rejected card must not consume the cap
         return None
-    _register_mint()
     card["_version"] = JOB_CARD_VERSION
     card["_model"] = settings.card_mint_model
     return card
+
+
+def _read_job_card(key: str) -> Optional[dict]:
+    """Cached card for this posting, or None. A stored card is only reusable if
+    it was minted by the CURRENT schema — without the version check, bumping
+    JOB_CARD_VERSION (which you do precisely when the card shape changes) kept
+    serving old-shape payloads to match_cards() forever, so the constant did
+    nothing and the agreement data feeding the calibration gates was silently
+    mixed-schema."""
+    from app.db.init_db import get_session
+    from app.db.models import JobCardRow
+    from sqlmodel import select
+
+    with get_session() as session:
+        row = session.exec(select(JobCardRow).where(JobCardRow.card_key == key)).first()
+        if row is not None and row.version == JOB_CARD_VERSION:
+            try:
+                return json.loads(row.payload)
+            except Exception:
+                return None      # corrupt payload → re-mint
+    return None
 
 
 def get_or_mint_job_card(job, allow_mint: bool = True) -> Optional[dict]:
@@ -174,34 +271,44 @@ def get_or_mint_job_card(job, allow_mint: bool = True) -> Optional[dict]:
     from sqlmodel import select
 
     key = job_card_key(job)
-    with get_session() as session:
-        row = session.exec(select(JobCardRow).where(JobCardRow.card_key == key)).first()
-        # A stored card is only reusable if it was minted by the CURRENT schema.
-        # Without this, bumping JOB_CARD_VERSION — which you do precisely when the
-        # card shape changes — kept serving old-shape payloads to match_cards()
-        # forever, so the version constant did nothing and the shadow agreement
-        # data feeding the calibration gates would be silently mixed-schema.
-        if row is not None and row.version == JOB_CARD_VERSION:
-            try:
-                return json.loads(row.payload)
-            except Exception:
-                pass  # corrupt payload → re-mint below
-    if not allow_mint:
-        return None
-    card = mint_job_card(job)
-    if card is None:
-        return None
-    with get_session() as session:
-        row = session.exec(select(JobCardRow).where(JobCardRow.card_key == key)).first()
-        if row is None:
-            row = JobCardRow(card_key=key)
-        row.version = JOB_CARD_VERSION
-        row.model = settings.card_mint_model
-        row.payload = json.dumps(card)
-        row.updated_at = datetime.utcnow()
-        session.add(row)
-        session.commit()
-    return card
+    card = _read_job_card(key)
+    if card is not None or not allow_mint:
+        return card
+
+    # One mint per posting per process, even with 20 tenants scoring the same
+    # job in the same tick. Losers wait, then re-read what the winner wrote —
+    # they must NOT skip, or they write no shadow row.
+    with _minting(f"job:{key}") as owned:
+        card = _read_job_card(key)
+        if card is not None:
+            return card
+        if not owned:
+            log.debug("job card mint lock timed out for %s", key)
+            return None
+        card = mint_job_card(job)
+        if card is None:
+            return None
+        started = datetime.utcnow()
+        try:
+            with get_session() as session:
+                row = session.exec(
+                    select(JobCardRow).where(JobCardRow.card_key == key)).first()
+                if row is None:
+                    row = JobCardRow(card_key=key)
+                elif row.updated_at > started:
+                    return card  # a fresher writer won; don't clobber it
+                row.version = JOB_CARD_VERSION
+                row.model = settings.card_mint_model
+                row.payload = json.dumps(card)
+                row.updated_at = datetime.utcnow()
+                session.add(row)
+                session.commit()
+        except Exception as e:
+            # Another PROCESS (or replica) inserted the same key first. The card
+            # in hand is still valid — return it rather than losing the mint we
+            # already paid for and the ledger row that depends on it.
+            log.debug("job card write lost a race for %s: %s", key, e)
+        return card
 
 
 # ── UserCard ──────────────────────────────────────────────────────────────────
@@ -300,13 +407,13 @@ def resume_hash(profile, resume_text: str) -> str:
 
 
 def compile_user_card(profile, resume_text: str) -> Optional[dict]:
-    if not _mint_allowed():
+    if not _reserve_mint():
         return None
     card = _haiku_json(_USER_CARD_SYSTEM, user_card_material(profile, resume_text),
-                       max_tokens=1200)
+                       max_tokens=1600)
     if not card or not isinstance(card.get("skills"), list):
+        _release_mint()          # a rejected card must not consume the cap
         return None
-    _register_mint()
     card["_version"] = USER_CARD_VERSION
     card["_model"] = settings.card_mint_model
     # Deterministic profile facts ride along verbatim — the LLM never decides
@@ -336,29 +443,57 @@ def get_or_compile_user_card(user_id: Optional[str], profile, resume_text: str,
                     "refusing (would read/write the 'local' identity's card).")
         return None
     want_hash = resume_hash(profile, resume_text)
-    with get_session() as session:
-        row = session.exec(select(UserCardRow).where(UserCardRow.user_id == uid)).first()
-        # Version AND material must both match — see get_or_mint_job_card.
-        if (row is not None and row.resume_hash == want_hash
-                and row.version == USER_CARD_VERSION):
-            try:
-                return json.loads(row.payload)
-            except Exception:
-                pass
-    if not allow_mint:
+
+    def _read() -> Optional[dict]:
+        # Version AND material must both match — see _read_job_card.
+        with get_session() as session:
+            row = session.exec(
+                select(UserCardRow).where(UserCardRow.user_id == uid)).first()
+            if (row is not None and row.resume_hash == want_hash
+                    and row.version == USER_CARD_VERSION):
+                try:
+                    return json.loads(row.payload)
+                except Exception:
+                    return None
         return None
-    card = compile_user_card(profile, resume_text)
-    if card is None:
-        return None
-    with get_session() as session:
-        row = session.exec(select(UserCardRow).where(UserCardRow.user_id == uid)).first()
-        if row is None:
-            row = UserCardRow(user_id=uid)
-        row.version = USER_CARD_VERSION
-        row.model = settings.card_mint_model
-        row.resume_hash = want_hash
-        row.payload = json.dumps(card)
-        row.updated_at = datetime.utcnow()
-        session.add(row)
-        session.commit()
-    return card
+
+    card = _read()
+    if card is not None or not allow_mint:
+        return card
+
+    # One compile per user per process. A version bump invalidates every user's
+    # card simultaneously, so without this the first tick after a bump costs
+    # `scoring_workers` compiles per user instead of one.
+    with _minting(f"user:{uid}") as owned:
+        card = _read()
+        if card is not None:
+            return card
+        if not owned:
+            log.debug("user card compile lock timed out for %s", uid)
+            return None
+        card = compile_user_card(profile, resume_text)
+        if card is None:
+            return None
+        started = datetime.utcnow()
+        try:
+            with get_session() as session:
+                row = session.exec(
+                    select(UserCardRow).where(UserCardRow.user_id == uid)).first()
+                if row is None:
+                    row = UserCardRow(user_id=uid)
+                elif row.updated_at > started:
+                    # Someone wrote AFTER we began, so their material is at least
+                    # as fresh as ours. Overwriting would leave the row claiming
+                    # to be current for material that is stale — the user then
+                    # stays gated on old facts with nothing to trigger a redo.
+                    return card
+                row.version = USER_CARD_VERSION
+                row.model = settings.card_mint_model
+                row.resume_hash = want_hash
+                row.payload = json.dumps(card)
+                row.updated_at = datetime.utcnow()
+                session.add(row)
+                session.commit()
+        except Exception as e:
+            log.debug("user card write lost a race for %s: %s", uid, e)
+        return card

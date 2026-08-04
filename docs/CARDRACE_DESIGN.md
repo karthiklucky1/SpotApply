@@ -442,6 +442,45 @@ Unchanged on purpose, because the ablation and the sweep both returned ~+0.0: bl
 the shortlist gate, the factor weights, and the `0.7*max + 0.3*mean` inner aggregation.
 `CARD_MATCH_ENABLED` remains 0; `CARD_EMBED_ENABLED` turns the route off without a deploy.
 
+### 9.2.4 The semantic route's premise is wrong, not its tuning (measured 2026-08-04)
+
+§9.2.3 shipped `EMBED_FLOOR` 0.35 / `EMBED_FULL` 0.75 with a code comment asserting that
+genuine claim/requirement cosines "land ~0.65–0.75". That was an assumption stated as a
+fact, and it had never been checked — the tests use a deterministic fake encoder. Measured
+on the real MiniLM in the production container, 24 hand-labelled pairs:
+
+| | n | median | mean | max | ≥ 0.35 | ≥ 0.75 |
+|---|---|---|---|---|---|---|
+| genuine (claim proves requirement) | 12 | **0.344** | 0.383 | 0.748 | 5/12 | **0/12** |
+| negation / direction / adjacency | 12 | ~0.66 | — | **0.814** | 11/12 | 1/12 |
+
+**The two distributions are inverted.** `"mentoring junior engineers"` ← *"was mentored by*
+senior engineers" scores **0.814** and is paid the full `EMBED_CAP`, while
+`"inference optimization"` ← "built an llm inference serving engine with vllm and custom
+cuda kernels" scores **0.329** and is paid nothing. `"security clearance"` ← "*no* security
+clearance is required" scores 0.725 — a hard-disqualifier class. `"kubernetes"` ← "*removed*
+kubernetes from our stack" scores 0.663.
+
+No threshold fixes this, and that is the point: the wrong answers score **higher** than the
+right ones, so lowering the floor admits more genuine pairs *and* more false friends, while
+raising it starves the genuine ones first. A symmetric sentence embedding is blind to
+direction, negation and aspiration ("attended a kubernetes conference", 0.695). The
+question the route needs to ask is asymmetric — *does this claim entail this requirement*
+— which is a cross-encoder's job, not a cosine's; `matcher._get_cross_encoder()` already
+exists.
+
+So `CARD_EMBED_ENABLED` now defaults to **0**. The plumbing stays: claims on the card, one
+batch encode per pair, the cap ordering, the `use_inference` gate, the LRU cache. Only the
+metric is wrong, and all of that is reusable by the rebuild. Re-enable only after the
+comparison is asymmetric AND re-measured against this same 24-pair set.
+
+Two lessons worth keeping. **The architecture absorbed the error** — credit lands only in
+`expanded`, and `assign_band` refuses AUTO-IN on wide spread and decides AUTO-OUT on the
+optimistic score, so a false friend pushes a pair *toward* Claude, never toward a wrong
+auto-decision. That is containment working as designed, not correctness. And a guard test
+built on a fake encoder pins the arithmetic while proving **nothing** about the metric; the
+constants were the load-bearing part and they went unmeasured for a day.
+
 ### 9.3 Evidence-strength candidate model
 
 The UserCard compile (still the one existing signup call) scores every skill:

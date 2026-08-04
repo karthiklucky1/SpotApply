@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import threading
+from collections import OrderedDict
 from typing import Dict, Optional, Tuple
 
 from app.config import settings
@@ -37,6 +38,7 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 MAX_DEPTH = 2          # hops of inference allowed
+_INFER_CACHE_MAX = 200_000   # (have, want) pairs; ~tens of MB at worst, bounded
 INFERRED_CAP = 0.85    # inferred evidence can never exceed 85% of direct
 # A phrase resolved through its parts is a weaker claim than a graph edge
 # someone wrote down on purpose, so it sits below INFERRED_CAP. Measured need:
@@ -62,23 +64,44 @@ TOKEN_IN_SKILL = 0.8
 # requirement sentence is similar to. So the route fires only when claim phrases
 # are supplied; with ``phrases=None`` coverage() is byte-for-byte what it was,
 # which is also why every pre-existing guard test still holds.
-EMBED_FLOOR = 0.35     # below this, no credit at all. Agreement is MONOTONE in
-                       # this number (0.30 measured +1.7 more), which means
-                       # loosening it buys agreement with generosity rather than
-                       # accuracy — so it holds at the value min_embedding_score
-                       # already uses elsewhere in the matcher.
-EMBED_FULL = 0.75      # cosine at/above which a claim counts in full; between
-                       # the two it ramps LINEARLY, and the ramp is what defuses
-                       # the near-floor false friends ("mentoring junior
-                       # engineers" hit "master of engineering aug 2026" at
-                       # 0.40 — admitted, but at 12% of the cap, not as proof).
-                       # Real cosines for a genuine claim/requirement pair land
-                       # ~0.65-0.75, so ramping to 1.0 instead would score every
-                       # true match as partial.
+#
+# OFF BY DEFAULT since the audit measured it (card_embed_enabled, 2026-08-04).
+# The constants below were set from an assumption about where genuine cosines
+# land. That assumption was wrong, and measuring it on the real MiniLM broke the
+# route's premise rather than its tuning — 24 hand-labelled pairs:
+#
+#   genuine claim proves requirement   median 0.344   (5 of 12 clear 0.35)
+#   negation / direction / adjacency   median ~0.66   (up to 0.814)
+#
+# The distributions are INVERTED. "mentoring junior engineers" <- "*was mentored
+# by* senior engineers" scores 0.814 and is paid the full cap, while "inference
+# optimization" <- "built an llm inference serving engine with vllm and custom
+# cuda kernels" scores 0.329 and is paid nothing. No floor separates them,
+# because the wrong answers score HIGHER than the right ones: a symmetric
+# sentence embedding is blind to direction, negation and aspiration ("attended a
+# kubernetes conference", 0.695). Re-placing these numbers cannot fix that; the
+# comparison has to become asymmetric — does the claim ENTAIL the requirement —
+# which is a cross-encoder's question, not a cosine's.
+#
+# Left in place, not deleted: the plumbing (claims on the card, one batch encode
+# per pair, the cap ordering, the use_inference gate) is all reusable by that
+# rebuild. Only the metric is wrong. See docs/CARDRACE_DESIGN.md §9.2.4.
+EMBED_FLOOR = 0.35     # measured: sits at the MEDIAN of the genuine distribution,
+                       # so it zeroes half of all true matches. Lowering it does
+                       # not help — it admits more true matches AND more false
+                       # friends, which already score above it.
+EMBED_FULL = 0.75      # measured: effectively unreachable by genuine pairs
+                       # (0 of 12), so the ramp never saturates and a true match
+                       # is typically paid ~0.17 of a possible 0.70.
 EMBED_CAP = 0.70       # < PHRASE_CAP < INFERRED_CAP, deliberately: a similarity
                        # hit is a weaker claim than a phrase resolved through its
                        # parts, which is weaker than an edge a human wrote down.
-_EMB_CACHE_MAX = 10_000  # ~1.5 KB/vector (384 x float32) => ~15 MB ceiling
+# ~1.5 KB/vector (384 x float32). Measured working set: 21,220 distinct want
+# strings across just 957 stored JobCards, against a 30-40k design target — so
+# 10k guaranteed repeated eviction, and the old wholesale clear() threw away
+# every warm vector each time it tripped.
+_EMB_CACHE_MAX = 40_000        # ~60 MB ceiling
+_EMB_EVICT_FRACTION = 0.25     # evict the oldest quarter, LRU, not everything
 
 # Role-prose filler. These words carry no skill signal on their own; leaving
 # them in means "python backend engineering" can only match a candidate who
@@ -113,7 +136,9 @@ def _content_tokens(term: str) -> list[str]:
 
 # ── Semantic route: the ONE MiniLM, a bounded cache, one batch per pair ──────
 _EMB_LOCK = threading.Lock()
-_EMB_CACHE: Dict[str, "object"] = {}      # normalized text -> L2-normed float32 vec
+# OrderedDict so eviction is LRU rather than "drop everything": insertion order
+# is the recency order, and _embed_vec moves a hit to the end.
+_EMB_CACHE: "OrderedDict[str, object]" = OrderedDict()  # norm text -> L2-normed vec
 _EMB_STATE = {"unavailable": False}
 
 
@@ -183,11 +208,15 @@ def embed_prewarm(texts) -> None:
         log.debug("skill embedding failed (%d strings): %s", len(pending), e)
         return
     with _EMB_LOCK:
-        if len(_EMB_CACHE) + len(pending) > _EMB_CACHE_MAX:
-            # Drop the whole map instead of tracking an LRU: refilling costs one
-            # batch encode, and an unbounded dict in this process is how the
-            # memory budget gets spent silently.
-            _EMB_CACHE.clear()
+        over = len(_EMB_CACHE) + len(pending) - _EMB_CACHE_MAX
+        if over > 0:
+            # Evict the oldest quarter (at least `over`), never the whole map:
+            # the working set exceeds any cap we would set, so a wholesale clear
+            # meant re-encoding warm strings on every trip.
+            for _ in range(max(over, int(_EMB_CACHE_MAX * _EMB_EVICT_FRACTION))):
+                if not _EMB_CACHE:
+                    break
+                _EMB_CACHE.popitem(last=False)
         for k, v in zip(pending, vecs):
             _EMB_CACHE[k] = v
 
@@ -199,6 +228,8 @@ def _embed_vec(text: str):
         return None
     with _EMB_LOCK:
         v = _EMB_CACHE.get(k)
+        if v is not None:
+            _EMB_CACHE.move_to_end(k)      # recency, for the LRU eviction above
     if v is not None:
         return v
     embed_prewarm([k])
@@ -260,7 +291,13 @@ class SkillGraph:
             for t in raw:
                 if t not in _GENERIC:
                     self._tok_nodes.setdefault(t, set()).add(n)
-        self._infer_cache: Dict[Tuple[str, str], float] = {}
+        # Bounded: keys are (held skill, wanted term) and wants are LLM-authored
+        # free text — 21,220 distinct strings from 957 JobCards, plus a
+        # per-token query on top from _token_coverage. The graph instance lives
+        # for the whole process (invalidated only by the file's mtime), so an
+        # unbounded map here grows monotonically in a container docs/MEMORY.md
+        # records as having been OOM-killed.
+        self._infer_cache: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
 
     def canon(self, term: str) -> str:
         t = _norm(term)
@@ -296,6 +333,11 @@ class SkillGraph:
             frontier = nxt
             if not frontier:
                 break
+        if len(self._infer_cache) >= _INFER_CACHE_MAX:
+            for _ in range(int(_INFER_CACHE_MAX * 0.25)):
+                if not self._infer_cache:
+                    break
+                self._infer_cache.popitem(last=False)
         self._infer_cache[ck] = best
         return best
 

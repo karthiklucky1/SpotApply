@@ -1,9 +1,17 @@
 """CardRace v2 shadow harness — Phase 3 of docs/CARDRACE_DESIGN.md §5.
 
-Runs BESIDE every real Claude final (never instead of one): mints/loads the two
+Runs beside a real Claude final (never instead of one): mints/loads the two
 cards, runs the deterministic matcher, assigns the would-be band, and records
 one CardMatchShadow row. Zero effect on any user-visible decision — the live
 cascade stays authoritative until the recorded agreement clears the §3.4 gates.
+
+WIRED TO THE SCORING LANE ONLY (strategy/scoring_lane.py). The other two finals
+paths — strategy/pulse_lane.py and matching/pipeline.py — call reranker.score()
+without this hook, so the ledger is a sample of one lane, not a census of all
+finals. It used to say "every real Claude final", which is what a reader
+computing agreement from the ledger needs NOT to believe: pulse-lane postings
+are exactly the fresh population the fan-out design case rests on, and they are
+absent. Widening the wiring is a spend decision, not a docstring fix.
 
 Spend: card mints only happen for jobs Claude is scoring anyway, so shadow's
 extra cost tracks finals volume (~$0.005/scored job), bounded further by
@@ -14,16 +22,34 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from typing import Optional
+from typing import Dict, Optional
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
 _stats_lock = threading.Lock()
-_stats = {"n": 0, "abs_err_sum": 0.0, "within10": 0, "decision_agree": 0,
-          "auto_in": 0, "auto_out": 0, "band": 0}
+# `n` counts SUCCESSES. Without `attempted` beside it there is no denominator,
+# so a systematic mint failure just makes the ledger fill slowly and every
+# agreement number computed from it is silently biased by whatever the failures
+# correlate with. `failed` names the reason, because "no row" has four causes
+# and they call for entirely different fixes.
+_stats = {"n": 0, "attempted": 0, "abs_err_sum": 0.0, "within10": 0,
+          "decision_agree": 0, "auto_in": 0, "auto_out": 0, "band": 0}
+_failed: Dict[str, int] = {}
 _LOG_EVERY = 20
+
+
+def _fail(reason: str) -> None:
+    with _stats_lock:
+        _failed[reason] = _failed.get(reason, 0) + 1
+
+
+def shadow_stats() -> dict:
+    """Snapshot for tests and the debug endpoint: how many finals tried to write
+    a ledger row, how many did, and why the rest did not."""
+    with _stats_lock:
+        return {**_stats, "failed": dict(_failed)}
 
 
 def shadow_card_match(jid: int, resume_text: str, llm_score: float,
@@ -31,9 +57,12 @@ def shadow_card_match(jid: int, resume_text: str, llm_score: float,
     """Best-effort; swallows every failure — shadow must never break scoring."""
     if not settings.card_match_shadow:
         return
+    with _stats_lock:
+        _stats["attempted"] += 1
     try:
         _run(jid, resume_text, llm_score, llm_breakdown)
     except Exception as e:
+        _fail(type(e).__name__)
         log.debug("card shadow failed for %s: %s", jid, e)
 
 
@@ -52,6 +81,7 @@ def _run(jid: int, resume_text: str, llm_score: float,
     with get_session() as session:
         job = session.get(Job, jid)
         if job is None:
+            _fail("job_missing")
             return
         uid = job.user_id
         profile = session.exec(
@@ -60,9 +90,11 @@ def _run(jid: int, resume_text: str, llm_score: float,
 
     job_card = get_or_mint_job_card(job)
     if job_card is None:
+        _fail("job_card_none")
         return
     user_card = get_or_compile_user_card(uid, profile, resume_text)
     if user_card is None:
+        _fail("user_card_none")
         return
 
     graph = load_graph() if settings.card_graph_enabled else None
@@ -101,10 +133,13 @@ def _record(llm_score: float, g_score: float, band: str) -> None:
         _stats[band] = _stats.get(band, 0) + 1
         if _stats["n"] % _LOG_EVERY:
             return
-        s = dict(_stats)
-    log.info("CardRace shadow (n=%d): MAE=%.1f within10=%.0f%% decision-agree@%.0f=%.0f%% "
-             "bands in/band/out=%d/%d/%d",
-             s["n"], s["abs_err_sum"] / max(1, s["n"]),
+        s, f = dict(_stats), dict(_failed)
+    att = max(1, s.get("attempted", s["n"]))
+    log.info("CardRace shadow (n=%d/%d finals, %.0f%% filled): MAE=%.1f within10=%.0f%% "
+             "decision-agree@%.0f=%.0f%% bands in/band/out=%d/%d/%d%s",
+             s["n"], s.get("attempted", s["n"]), 100.0 * s["n"] / att,
+             s["abs_err_sum"] / max(1, s["n"]),
              100.0 * s["within10"] / max(1, s["n"]), bar,
              100.0 * s["decision_agree"] / max(1, s["n"]),
-             s.get("auto_in", 0), s.get("band", 0), s.get("auto_out", 0))
+             s.get("auto_in", 0), s.get("band", 0), s.get("auto_out", 0),
+             (" misses=" + ",".join(f"{k}:{v}" for k, v in sorted(f.items()))) if f else "")

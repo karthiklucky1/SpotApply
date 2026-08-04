@@ -766,7 +766,15 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         if kind == "scored":
             stats["scored"] += 1
             scored_by_user[uid].append((jid, score))
-            if provider == "anthropic":
+            # `provider` is the REQUESTED provider, and _pick_provider returns
+            # None whenever dual mode is off — which it is in production. So the
+            # old `== "anthropic"` test never matched the normal path and
+            # score_final was recorded ONCE in the table's entire history, while
+            # 1,300+ finals actually ran: /api/admin/spend reported the single
+            # most expensive call type as zero. None = default priority order =
+            # the Tier-2 final; the local fallback sets provider="local"
+            # explicitly above, so it cannot be miscounted here.
+            if provider in (None, "anthropic"):
                 stats["by_claude"] += 1
                 spend_by_user[(uid, "score_final")] += 1
             elif provider == "openai":

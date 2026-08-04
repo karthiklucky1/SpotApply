@@ -221,6 +221,9 @@ def fake_embed(monkeypatch):
         enc = _FakeEncoder({sg._norm(k): v for k, v in sims.items()})
         sg._EMB_CACHE.clear()
         sg._EMB_STATE["unavailable"] = False
+        # The route ships OFF (see test_semantic_route_ships_disabled); these
+        # tests pin its ARITHMETIC, so they switch it on explicitly.
+        monkeypatch.setattr(sg.settings, "card_embed_enabled", True)
         monkeypatch.setattr(sg, "_encoder", lambda: enc)
         return enc
     yield _install
@@ -336,3 +339,43 @@ def test_setting_switches_the_route_off(fake_embed, monkeypatch):
     g = SkillGraph({}, {})
     assert g.coverage({}, WANT, phrases={CLAIM: 0.9})[0] == 0.0
     assert enc.calls == 0
+
+
+def test_semantic_route_ships_disabled():
+    """Measured on the real MiniLM, the cosine ranks negated and adjacent claims
+    ABOVE genuine proof — "was mentored by senior engineers" 0.814 against a real
+    vLLM/CUDA claim at 0.329. The distributions are inverted, so no floor
+    separates them and this cannot ship on by default. Re-enabling requires an
+    ASYMMETRIC comparison (does the claim entail the requirement) plus a fresh
+    measurement — docs/CARDRACE_DESIGN.md §9.2.4, not a threshold tweak."""
+    from app.config import settings as live
+    assert live.card_embed_enabled is False
+
+
+def test_embed_cache_evicts_lru_and_keeps_recent_entries(fake_embed, monkeypatch):
+    """The old code called _EMB_CACHE.clear() on overflow. The measured working
+    set is 21,220 want strings from 957 JobCards against a 30-40k target, so the
+    cap is crossed routinely and a wholesale clear threw away every warm vector
+    each time."""
+    fake_embed({f"t{i}": 0.5 for i in range(40)})
+    monkeypatch.setattr(sg, "_EMB_CACHE_MAX", 20)
+    monkeypatch.setattr(sg, "_EMB_EVICT_FRACTION", 0.25)
+    sg.embed_prewarm([f"t{i}" for i in range(16)])
+    assert len(sg._EMB_CACHE) == 16
+    sg._embed_vec("t0")                       # touch the oldest -> now newest
+    sg.embed_prewarm([f"t{i}" for i in range(16, 24)])
+    assert 0 < len(sg._EMB_CACHE) <= 20, "cache is unbounded"
+    assert len(sg._EMB_CACHE) > 8, "evicted far more than the oldest quarter"
+    assert "t0" in sg._EMB_CACHE, "LRU ignored the touch — this is still a clear()"
+    assert "t23" in sg._EMB_CACHE, "the newest write was evicted"
+
+
+def test_infer_cache_is_bounded(monkeypatch):
+    """Keys are (held skill, wanted term) over LLM-authored free text, and the
+    graph instance lives for the whole process — unbounded growth in a container
+    docs/MEMORY.md records as OOM-killed."""
+    monkeypatch.setattr(sg, "_INFER_CACHE_MAX", 100)
+    g = SkillGraph({}, {"a": {"b": 0.5}})
+    for i in range(500):
+        g.infer_strength(f"skill{i}", f"want{i}")
+    assert len(g._infer_cache) <= 100, "infer cache grows without limit"

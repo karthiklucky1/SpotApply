@@ -176,10 +176,13 @@ def _ledger(since: str | None) -> None:
               f"{sum(sk) / len(sk):5.1f}")
 
     if cut:
-        stats([r for r in rows if r.created_at < cut], "before seam")
-        stats([r for r in rows if r.created_at >= cut], "after seam")
-        print("  Compare ONLY across the seam you passed — rows on either side "
-              "score different functions (docs/CARDRACE_DESIGN.md §9.2.3).")
+        stats([r for r in rows if r.created_at < cut], "before cutoff")
+        stats([r for r in rows if r.created_at >= cut], "after cutoff")
+        print("  Rows either side of a cutoff may score different functions "
+              "(docs/CARDRACE_DESIGN.md §9.2, §9.2.3) — compare only deliberately.")
+        print("  NOT a UserCard v2 seam unless the 'user cards' section above "
+              "shows v2 rows: a jump here with every card still v1 is the "
+              "Aug-3 phrase-resolver fix, not the semantic route.")
     else:
         stats(rows, "all rows")
         print("  Pass --since <deploy date> to split this at the v2 seam.")

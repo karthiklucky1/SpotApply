@@ -235,10 +235,13 @@ class Settings(BaseSettings):
     card_graph_enabled: bool = True       # CARD_GRAPH_ENABLED — skill-graph inference in g()
     card_graph_path: str = "data/skill_graph.json"       # CARD_GRAPH_PATH
     # Semantic skill route: cosine between a JobCard want and a UserCard v2
-    # résumé claim, over the MiniLM already resident for FAISS retrieval (no new
-    # model, no API spend). Fires only where claims exist, so it is inert on v1
-    # cards and wherever the ML stack is absent.
-    card_embed_enabled: bool = True       # CARD_EMBED_ENABLED
+    # résumé claim, over the MiniLM already resident for FAISS retrieval.
+    # OFF: measured on the real model, the cosine ranks negated and adjacent
+    # claims ABOVE genuine proof ("was mentored by senior engineers" 0.814 vs a
+    # real vLLM/CUDA claim 0.329), so no threshold separates them. Do not turn
+    # this on until the comparison is asymmetric (entailment, not similarity)
+    # and re-measured — docs/CARDRACE_DESIGN.md §9.2.4.
+    card_embed_enabled: bool = False      # CARD_EMBED_ENABLED
     card_calibration_path: str = "data/calibration.json" # CARD_CALIBRATION_PATH — written by scripts/build_calibration.py
     card_max_auto_in_spread: float = 12.0 # CARD_MAX_AUTO_IN_SPREAD — wider direct-vs-expanded spread never auto-admits
     # ── Payments (Stripe + manual bank transfer) ──────────────────────────────
