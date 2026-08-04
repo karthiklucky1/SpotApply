@@ -29,7 +29,6 @@ this file is the working map for editing the code.
    prescore so they exit the unscored corpus — draining the backlog instead of
    re-reading it every pass. Toggle with `PRESCORE_ENABLED`.
 6. Hire probability — blends fit + hiring-intent signals (`hire_probability.py`)
-7. Senior review — independent "senior engineer" verdict + score (`intelligence/senior_reviewer.py`)
 
 ## Stack
 Python 3.11 · FastAPI/Uvicorn · SQLModel. **Supabase Postgres + Auth in prod; local
@@ -52,7 +51,7 @@ app/
   matching/         # matcher, filters/, reranker, hire_probability, pipeline
   tailoring/        # tailor, ats_keywords, grounding (anti-hallucination), doctor
   autofill/         # Playwright filler + answer_pack
-  intelligence/     # sponsorship/H1B, work_auth, senior_reviewer, urgency, referral,
+  intelligence/     # sponsorship/H1B, work_auth, urgency, referral,
                     # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
   strategy/         # daily_engine (apply scoring/limits)
   analytics/        # funnel, cost_dashboard, crm, reporter
@@ -71,8 +70,8 @@ data/               # résumé master, FAISS index, generated docs, local SQLite
 `UserPersonalMemory`, `H1BSponsor`, `UserNotification`, referrals/coupons.
 
 UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_reasoning`,
-`blended_score` (priority), `hire_probability_signals` (JSON), `senior_fit_score`,
-`senior_verdict`, `ghost_score`/`ghost_flags`, `custom_highlight_block`.
+`blended_score` (priority), `hire_probability_signals` (JSON), `ghost_score`/`ghost_flags`,
+`custom_highlight_block`.
 
 ## Conventions & decisions
 - **Multi-tenancy:** every query is scoped by `user_id` from the Supabase JWT
