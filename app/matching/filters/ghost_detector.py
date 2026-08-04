@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List
 
-from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db.models import Job
@@ -124,19 +123,61 @@ def score_ghost(job: Job, session: Session) -> GhostResult:
         flags.append("no_salary")
 
     try:
-        duplicate_count = session.exec(
-            select(func.count(Job.id)).where(
+        # Repost signal, scoped to THIS job's own pool. Cross-tenant counting was
+        # doubly wrong: every adopting user's copy of the SAME posting counted as
+        # a "duplicate" (false ghost flags on popular jobs), and the unscoped
+        # (company, title) filter had no usable index — a full scan of the job
+        # table per scored job that was measured at 93% of ALL database time
+        # (373k calls, 3-5s each). Within one user's pool each distinct posting
+        # exists once, so the count means what the signal intends. LIMIT bounds
+        # the read even where the index hasn't been built yet; backed by
+        # ix_job_user_company_title (models.py).
+        duplicate_ids = session.exec(
+            select(Job.id).where(
+                Job.user_id == job.user_id,
                 Job.company == job.company,
                 Job.title == job.title,
-                Job.is_closed == False,
+                Job.is_closed == False,  # noqa: E712
                 Job.id != job.id,
-            )
-        ).one()
+            ).limit(10)
+        ).all()
+        duplicate_count = len(duplicate_ids)
         if duplicate_count >= 2:
             score += 0.20
             flags.append(f"duplicate_postings_{duplicate_count}")
     except Exception as exc:
         log.debug("Ghost detector: duplicate-count query failed: %s", exc)
+
+    # Guide ghost-test 3, the agency-duplicate tell: the SAME job text posted
+    # under DIFFERENT company names. One client requisition fans out to a prime
+    # vendor and its sub-vendors, and each of them posts it, so the pool shows
+    # five openings where one exists. The check above only catches repeats of
+    # (company, title) — by construction it cannot see this, because the whole
+    # point is that the company name differs.
+    #
+    # content_hash is sha256(description) and is indexed, so this is a keyed
+    # lookup, not a scan; scoped to this user's own pool for the same reason the
+    # query above is (each tenant holds its own copy of a posting, so an
+    # unscoped count would flag every popular job).
+    try:
+        if job.content_hash:
+            same_text_companies = session.exec(
+                select(Job.company).where(
+                    Job.user_id == job.user_id,
+                    Job.content_hash == job.content_hash,
+                    Job.company != job.company,
+                    Job.is_closed == False,  # noqa: E712
+                ).limit(10)
+            ).all()
+            distinct_others = {c for c in same_text_companies if c}
+            if distinct_others:
+                # Deliberately modest: this means the req is real but multiplied,
+                # not that it is fake. It de-duplicates a flooded pool rather
+                # than condemning the posting.
+                score += 0.25
+                flags.append(f"same_text_other_companies_{len(distinct_others)}")
+    except Exception as exc:
+        log.debug("Ghost detector: cross-company duplicate query failed: %s", exc)
 
     score = min(score, 1.0)
     flags_json = json.dumps(flags)

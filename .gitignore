@@ -6,6 +6,7 @@ __pycache__/
 data/*.db
 data/*.faiss
 data/*.npy
+data/compiler_replay_report.json
 data/tailored/
 data/resume_master.md
 data/resume_master.docx

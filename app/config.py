@@ -215,6 +215,35 @@ class Settings(BaseSettings):
     # calibration. Scores are labeled as local estimates in the reasoning.
     # Set to 0 to restore the old wait-for-a-provider behavior.
     local_score_fallback: bool = True     # LOCAL_SCORE_FALLBACK
+    # ── CardRace v2 (docs/CARDRACE_DESIGN.md) ─────────────────────────────────
+    # Understand-once matching: JobCard per distinct posting (shared by every
+    # tenant) x UserCard per user -> deterministic g() pair arithmetic; Claude
+    # only for the certified-uncertain band. Rollout is two independent flags:
+    #   card_match_shadow  — Phase 3: mint cards + score g() BESIDE every real
+    #     Claude final and record agreement (card_match_shadow table). Zero
+    #     effect on user-visible decisions; extra spend ~= one ~$0.005 card
+    #     mint per Claude-scored job, bounded by card_mint_daily_cap.
+    #   card_match_enabled — Phase 4 cutover: g() + conformal bands become
+    #     authoritative and Claude becomes the band escalator. NEVER flip this
+    #     before scripts/build_calibration.py has fitted a calibration AND its
+    #     holdout gates pass (docs/CARDRACE_DESIGN.md §3.4) — without a
+    #     calibration file every pair is BAND (= Claude decides) by design.
+    card_match_enabled: bool = False      # CARD_MATCH_ENABLED
+    card_match_shadow: bool = True        # CARD_MATCH_SHADOW
+    card_mint_model: str = "claude-haiku-4-5-20251001"  # CARD_MINT_MODEL
+    card_mint_daily_cap: int = 300        # CARD_MINT_DAILY_CAP — mints/day backstop (~$1.5/day max)
+    card_graph_enabled: bool = True       # CARD_GRAPH_ENABLED — skill-graph inference in g()
+    card_graph_path: str = "data/skill_graph.json"       # CARD_GRAPH_PATH
+    # Semantic skill route: cosine between a JobCard want and a UserCard v2
+    # résumé claim, over the MiniLM already resident for FAISS retrieval.
+    # OFF: measured on the real model, the cosine ranks negated and adjacent
+    # claims ABOVE genuine proof ("was mentored by senior engineers" 0.814 vs a
+    # real vLLM/CUDA claim 0.329), so no threshold separates them. Do not turn
+    # this on until the comparison is asymmetric (entailment, not similarity)
+    # and re-measured — docs/CARDRACE_DESIGN.md §9.2.4.
+    card_embed_enabled: bool = False      # CARD_EMBED_ENABLED
+    card_calibration_path: str = "data/calibration.json" # CARD_CALIBRATION_PATH — written by scripts/build_calibration.py
+    card_max_auto_in_spread: float = 12.0 # CARD_MAX_AUTO_IN_SPREAD — wider direct-vs-expanded spread never auto-admits
     # ── Payments (Stripe + manual bank transfer) ──────────────────────────────
     # All empty by default = payments OFF: every user resolves to PRO free of
     # charge (pre-revenue mode). After the LLC + Stripe account exist, set the
@@ -226,6 +255,28 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
     payment_contact_email: str = "karthiklucky899@gmail.com"  # PAYMENT_CONTACT_EMAIL
+    # Turning payments ON is a cliff: no existing user has a user_subscription row,
+    # so the instant the STRIPE_* vars are set they ALL drop PRO → FREE (50 → 15
+    # finals/day, unlimited → 5 tailors/day, unlimited → 2 autofills/week) with no
+    # warning. Set this to an ISO date (e.g. "2026-08-01") to keep everyone who
+    # signed up before then on PRO. Empty (default) = that cliff, unchanged.
+    plan_grandfather_until: str = ""       # PLAN_GRANDFATHER_UNTIL
+    # How long a TAILORED / autofill-review application keeps its place on the
+    # board. Longer than SHORTLIST_MAX_AGE_DAYS because the user put work into
+    # it, but NOT unlimited: these used to be exempt outright, and the board
+    # accumulated 25 tailored applications aged 32-52 days that buried the
+    # current week's matches under postings that are certainly filled by now.
+    # 0 restores the old never-hide behaviour.
+    tailored_max_age_days: int = 14        # TAILORED_MAX_AGE_DAYS
+    # Recruiter verification unlocks /api/recruiter/search, which returns every
+    # pooled candidate's full name, work authorization and sponsorship need. The
+    # old auto-verify compared work_email's domain to company_domain — but BOTH
+    # arrive in the same request body, so a match proved only that the caller typed
+    # two consistent strings, never that they control the mailbox. Off by default:
+    # a domain match is recorded as a signal and an admin promotes
+    # (POST /api/admin/recruiter/verify). Turn on only once email ownership is
+    # actually proven (verification link / SSO).
+    recruiter_autoverify_on_domain_match: bool = False
     llm_request_timeout: float = 45.0     # per-request LLM timeout (s). Bounds a matching pass so a slow API can't freeze it while it holds the matching lock. SDK default is 600s.
     max_liveness_checks_per_run: int = 25 # cap on serial link-liveness network calls per matching pass (each ~2.5s, lock-held) so one pass can't starve other lanes
     matching_lane_interval_minutes: int = 5  # INDEPENDENT matching loop cadence (env MATCHING_LANE_INTERVAL_MINUTES; 0 disables). Decouples scoring from discovery so a stalled discovery can't starve matching.
@@ -275,8 +326,10 @@ class Settings(BaseSettings):
     tailor_abuse_daily_cap: int = 25     # TAILOR_ABUSE_DAILY_CAP — per-user hard ceiling on tailors/day that applies even to "unlimited" plans (and to everyone in pre-revenue mode, when all users ride PRO). Tailoring is user-triggered Sonnet spend and the single largest uncapped cost line: at ~$0.045-0.17 per tailor, the old default of 150 permitted $6.75-25.50 PER USER PER DAY — one account outspending the entire platform scoring budget several times over. 25 is still well past real human use (nobody tailors 25 résumés in a day) while capping the worst case near $4. Raise deliberately, per plan, not by default. 0 disables.
     dormant_user_grace_days: int = 21    # DORMANT_USER_GRACE_DAYS — users with no authenticated request for this many days are skipped by adoption/matching/scoring/alerts (their pool stops refilling, so no LLM money is spent on them); the next visit re-activates them within one lane tick. Profiles that predate activity tracking (last_active_at NULL) are grandfathered as active. 0 disables the gate.
     shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
-    shortlist_max_age_days: int = 7      # SHORTLIST_MAX_AGE_DAYS — a posting older than this is likely filled/ghosted, so a job that has sat SHORTLISTED (never tailored/applied) this long is auto-removed from the board (→ SKIPPED, which also frees the per-company slot). Keeps the shortlist to fresh, applyable roles (was 14 — at 200/day that allowed a 2,800-card board). 0 disables the prune.
+    shortlist_max_age_days: int = 5      # SHORTLIST_MAX_AGE_DAYS — a posting older than this is likely filled/ghosted, so a job that has sat SHORTLISTED (never tailored/applied) this long is auto-removed from the board (→ SKIPPED, which also frees the per-company slot). Keeps the shortlist to fresh, applyable roles. Founder-set to 5 in lockstep with SCORING_MAX_JOB_AGE_DAYS=5: the whole funnel is fresh-only — score nothing older than 5d, show nothing older than 5d. 0 disables the prune.
     job_purge_max_age_days: int = 60     # JOB_PURGE_MAX_AGE_DAYS — hard-DELETE closed jobs older than this that have no Application attached, so the job table (and every scan's DB egress) stays bounded. Applied jobs are never deleted. 0 disables.
+    user_job_close_age_days: int = 45    # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application (a 45-day-old posting is filled/ghost; SHORTLIST_MAX_AGE_DAYS is 5). Shared-pool rows have their own 45d close; per-user rows previously NEVER closed by age, so the table grew forever (the 3.8 GB job-table finding). Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
+    scoring_max_job_age_days: int = 5    # SCORING_MAX_JOB_AGE_DAYS — unscored jobs older than this are bulk-stamped out of the queue (score 8) instead of paying prescores/finals: 'be first to apply' is the product, and a posting that sat unscored this long (outage backlog) is going stale. One indexed UPDATE per scoring cycle replaces thousands of LLM calls during a backlog drain. Founder-set to 5 (fresh-only feed); raise if discovery volume ever outpaces scoring at 5d. 0 disables.
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     # When a company is at the cap and a NEW job scores clearly higher than a
     # cap-holding application that is still just SHORTLISTED (untouched — not
@@ -371,6 +424,17 @@ class Settings(BaseSettings):
     min_embedding_score: float = 0.28    # lowered from 0.35 — was too aggressive
     qa_confidence_threshold: float = 0.7
     grounding_similarity_threshold: float = 0.5
+    # What to do when the grounding check cannot RUN at all (grounding.py imports
+    # sentence_transformers at module level, so a broken/absent ML stack or an
+    # unreachable model download raises before any bullet is examined).
+    #   False (default) — deliver the résumé, but report grounding_status as
+    #     "unverified" rather than "passed" and put a warning on the application.
+    #     The human review + Submit step is the backstop. Chosen as the default
+    #     because failing closed here turns a transient ML hiccup into a total
+    #     outage of the core tailoring feature.
+    #   True — treat "could not verify" as a failure and block at ERROR.
+    # Either way the check never reports "passed" for a résumé it did not read.
+    grounding_required: bool = False
 
     # score_hire_probability is a hot, in-DB step (called per reranked job while a
     # pooled DB connection + the matching lock are held). Its GitHub/Crunchbase

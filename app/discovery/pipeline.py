@@ -198,6 +198,41 @@ def scraper_for(ats, slug: str, career_url: str | None = None):
     return factory() if factory else None
 
 
+def _insert_job_returning_id(session, job: "Job") -> int | None:
+    """INSERT the job, doing nothing on a unique-constraint collision.
+
+    Returns the new row's id, or None when another worker already inserted the
+    same (user_id, source, external_id). Dialect-aware because both Postgres
+    (prod) and SQLite (local dev + tests) support ON CONFLICT, but via separate
+    constructs. Falls back to a plain ORM add on any other dialect so this can
+    never be the thing that stops discovery.
+    """
+    values = {c.name: getattr(job, c.name)
+              for c in Job.__table__.columns if c.name != "id"}
+    dialect = session.get_bind().dialect.name
+    try:
+        if dialect.startswith("postgres"):
+            from sqlalchemy.dialects.postgresql import insert as _ins
+        elif dialect == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as _ins
+        else:
+            session.add(job)
+            session.flush()
+            return job.id
+        stmt = (_ins(Job.__table__).values(**values)
+                .on_conflict_do_nothing()
+                .returning(Job.__table__.c.id))
+        row = session.execute(stmt).first()
+        return row[0] if row else None
+    except Exception:
+        # Never let an optimisation break ingestion; the caller's IntegrityError
+        # handler still covers the race on this path.
+        session.rollback()
+        session.add(job)
+        session.flush()
+        return job.id
+
+
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             preferred_country: str | None = None, remote_ok: bool = True,
             user_keywords: List[str] | None = None,
@@ -363,12 +398,32 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     )
                 ).first()
                 if existing_cross:
+                    # Every ATS we scrape DIRECTLY belongs here. The list used to
+                    # name only the first five, so a Workable/Recruitee/BambooHR
+                    # (etc.) posting could never upgrade an aggregator row — we
+                    # held the aggregator's link even though we had the
+                    # employer's own. The careers page is a strict superset and
+                    # aggregator applications route in with degraded field
+                    # mapping, so the direct link is always the better one.
+                    # See docs/research/hiring-machine-2026-08.md §1.1.
                     direct_ats_sources = {
                         JobSource.GREENHOUSE,
                         JobSource.LEVER,
                         JobSource.ASHBY,
                         JobSource.WORKDAY,
-                        JobSource.SMARTRECRUITERS
+                        JobSource.SMARTRECRUITERS,
+                        JobSource.WORKABLE,
+                        JobSource.RECRUITEE,
+                        JobSource.PERSONIO,
+                        JobSource.BAMBOOHR,
+                        JobSource.ICIMS,
+                        JobSource.JOBVITE,
+                        JobSource.COMEET,
+                        JobSource.TEAMTAILOR,
+                        JobSource.RIPPLING,
+                        JobSource.BREEZY,
+                        JobSource.PINPOINT,
+                        JobSource.JOIN,
                     }
                     # Upgrade to direct ATS version if existing was from a manual/aggregator source
                     if existing_cross.source not in direct_ats_sources and JobSource(r.source) in direct_ats_sources:
@@ -382,6 +437,13 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         existing_cross.description = r.description
                         existing_cross.content_hash = content_hash
                         existing_cross.embedding_id = None  # force re-embed
+                        # Take the ATS's posting date too. Aggregators reset the
+                        # visible date on a repost; the ATS timestamp does not,
+                        # so keeping the aggregator's date here would discard the
+                        # only unfalsifiable one at the exact moment we finally
+                        # have it — and freshness is what the whole feed ranks on.
+                        if r.posted_at:
+                            existing_cross.posted_at = r.posted_at
                         existing_cross.last_seen = datetime.utcnow()
                         session.add(existing_cross)
                         
@@ -412,10 +474,23 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     cross_source_slug=slug,
                     user_id=user_id,
                 )
-                session.add(job)
+                # Let Postgres resolve the race instead of raising into it.
+                #
+                # The duplicate checks above run in a DIFFERENT transaction from
+                # this insert, so two lanes (discovery, pulse, fresh) polling the
+                # same board can both see "no row" and both insert. The
+                # IntegrityError below caught that and behaviour was correct — but
+                # each collision still cost a failed round trip, a transaction
+                # abort, and a Postgres ERROR line. Production logged 6,099 of
+                # them in 24h, 100% of all database errors, which buried anything
+                # real. ON CONFLICT DO NOTHING makes the collision a no-op that
+                # returns no row, so the loser simply skips.
+                new_id = _insert_job_returning_id(session, job)
+                if new_id is None:
+                    continue          # another worker won the race — nothing to do
                 session.commit()
-                session.refresh(job)
-                FunnelTracker.record(job.id, "discovered", True)
+                job.id = new_id
+                FunnelTracker.record(new_id, "discovered", True)
                 inserted += 1
                 if prefetched:
                     # Keep the snapshot current so later items in THIS batch that
@@ -430,6 +505,23 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
 
 # Consecutive failed polls before a non-404 board is retired from rotation.
 BOARD_DEACTIVATE_AFTER_FAILURES = 5
+
+# How long to stop polling a board that answered 429. Upstream throttling is a
+# statement about our request RATE, not about the board — retiring it would
+# silently shrink job coverage for a company that is perfectly alive.
+THROTTLED_BOARD_BACKOFF_HOURS = 6
+
+
+def _is_throttled(error: str) -> bool:
+    """True when the board asked us to slow down rather than reporting a fault.
+
+    Workday in particular 429s under the pulse lane's polling cadence. Counting
+    that toward BOARD_DEACTIVATE_AFTER_FAILURES meant five throttled polls in a
+    row permanently deactivated a healthy board with reason "unreachable x5" —
+    a quiet, cumulative loss of discovery coverage that nothing alerts on.
+    """
+    e = (error or "").lower()
+    return "429" in e or "too many requests" in e or "rate limit" in e
 
 
 def record_board_failure(source_name: str, slug: str | None, error: str) -> None:
@@ -451,8 +543,20 @@ def record_board_failure(source_name: str, slug: str | None, error: str) -> None
             ).first()
             if not row:
                 return
-            row.failure_count = (row.failure_count or 0) + 1
             row.last_error = (error or "")[:300]
+            if _is_throttled(error):
+                # Back off, don't retire. failure_count is deliberately NOT
+                # incremented: a throttled board is healthy, and letting 429s
+                # accumulate toward the retirement threshold deletes it.
+                from datetime import datetime as _dt, timedelta as _td
+                row.next_poll_at = _dt.utcnow() + _td(
+                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                log.info("Board %s/%s throttled (429) — backing off %dh, not retiring",
+                         source_name, slug, THROTTLED_BOARD_BACKOFF_HOURS)
+                session.add(row)
+                session.commit()
+                return
+            row.failure_count = (row.failure_count or 0) + 1
             is_404 = "404" in (error or "")
             if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
                 row.is_active = False
@@ -491,8 +595,15 @@ def record_board_failures_bulk(failures: list) -> int:
                 ).first()
                 if not row or not row.is_active:
                     continue
-                row.failure_count = (row.failure_count or 0) + 1
                 row.last_error = (error or "")[:300]
+                if _is_throttled(error):
+                    # Same policy as record_board_failure: back off, never retire.
+                    from datetime import datetime as _dt, timedelta as _td
+                    row.next_poll_at = _dt.utcnow() + _td(
+                        hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                    session.add(row)
+                    continue
+                row.failure_count = (row.failure_count or 0) + 1
                 is_404 = "404" in (error or "")
                 if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
                     row.is_active = False
@@ -514,41 +625,48 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
     Scoped to a single user — jobs are per-user, so one user's discovery run must
     never close another tenant's jobs.
     """
-    from datetime import datetime
     # Safety: an empty active list means we have nothing to compare against —
     # never close every job for the company on an empty/failed fetch.
     if not active_external_ids:
         log.debug("mark_ghost_jobs: empty active_external_ids for %s (%s) — skipping", company, source)
         return
+    active = set(active_external_ids)
     with get_session() as session:
-        # Find all open jobs for this source and company (this user only)
-        q = select(Job).where(
+        # Runs once PER BOARD, so it must stay cheap: project only (id,
+        # external_id) instead of streaming full rows (the old select(Job) here
+        # pulled every open row's multi-KB description and, with no index on
+        # source/company, was a recurring Supabase statement-timeout + egress
+        # hit). Full rows are loaded below only for the few jobs actually
+        # being closed. Backed by ix_job_user_source_company (models.py).
+        q = select(Job.id, Job.external_id).where(
             Job.source == JobSource(source),
             Job.company == company,
-            Job.is_closed == False,
+            Job.is_closed == False,  # noqa: E712
         )
         if user_id is not None:
             q = q.where(Job.user_id == user_id)
-        jobs = session.exec(q).all()
-        
+        to_close = [jid for jid, ext in session.exec(q).all() if ext not in active]
+
         closed_count = 0
-        for job in jobs:
-            if job.external_id not in active_external_ids:
-                job.is_closed = True
-                source_name = source.value if hasattr(source, "value") else str(source)
-                job.closed_reason = f"Removed from company {source_name} ATS board"
-                session.add(job)
-                closed_count += 1
-                
-                # Update any active applications associated with this job
-                app_model = session.exec(
-                    select(Application).where(Application.job_id == job.id)
-                ).first()
-                if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
-                    app_model.status = ApplicationStatus.SKIPPED
-                    app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
-                    session.add(app_model)
-                    
+        source_name = source.value if hasattr(source, "value") else str(source)
+        for jid in to_close:
+            job = session.get(Job, jid)
+            if job is None or job.is_closed:
+                continue
+            job.is_closed = True
+            job.closed_reason = f"Removed from company {source_name} ATS board"
+            session.add(job)
+            closed_count += 1
+
+            # Update any active applications associated with this job
+            app_model = session.exec(
+                select(Application).where(Application.job_id == jid)
+            ).first()
+            if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
+                app_model.status = ApplicationStatus.SKIPPED
+                app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
+                session.add(app_model)
+
         session.commit()
         if closed_count > 0:
             log.info("Closed %d ghost jobs for %s (%s)", closed_count, company, source)
@@ -854,6 +972,16 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             # Failed fetches (raw is None) were already retired in bulk above.
         except Exception as e:
             log.exception("Scraper %s processing failed: %s", scraper.name, e)
+        finally:
+            # Release this board's postings NOW. Holding all ~400 boards' full
+            # fetches until the end of the run kept 300-650MB resident for the
+            # whole pass (up to board_phase_budget_minutes) — the big post-boot
+            # RSS step in the OOM crash.
+            fetched_boards[_bi] = None
+
+    # A budget break above leaves deferred boards' postings in the list — drop
+    # them too before the aggregator phase allocates its own buffer on top.
+    fetched_boards = []
 
     # E.5 HN "Who is hiring?" monthly thread — pre-posting intelligence.
     # Postings here often predate the big boards. We upsert them directly
@@ -1049,6 +1177,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             asyncio.run(feed_companies_from_aggregators(_direct_raw_holder))
         except Exception as e:
             log.warning("Aggregator company feeder failed (non-fatal): %s", e)
+        _direct_raw_holder = []  # release the aggregator postings
     try:
         ats_upgraded = run_ats_upgrade_for_shortlisted()
         log.info("ATS upgrade: registered %d boards from shortlisted companies", ats_upgraded)

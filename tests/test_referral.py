@@ -49,11 +49,16 @@ def test_generate_referral_drafts_extensions():
         ]
         mock_github_repos = ["cli", "desktop"]
 
+        import app.matching.reranker as rr
         with patch("app.intelligence.linkedin_xray.find_champions", return_value={"ok": True, "people": mock_people}), \
              patch("app.intelligence.referral.get_company_github_repos", return_value=mock_github_repos), \
              patch("app.config.settings.anthropic_api_key", "dummy_key"), \
              patch("anthropic.Anthropic") as mock_anthropic:
-             
+
+            # Referral drafts go through the process-wide shared client pair —
+            # force a cold build under the patch (reset again in _cleanup-safe
+            # finally below so the mock never leaks into other tests).
+            rr._CLIENTS = None
             mock_client = MagicMock()
             mock_anthropic.return_value = mock_client
             mock_message = MagicMock()
@@ -75,4 +80,44 @@ def test_generate_referral_drafts_extensions():
             univ_draft = next(d for d in res["drafts"] if d["type"] == "university_alumni")
             assert "Cincinnati" in univ_draft["body"]
     finally:
+        import app.matching.reranker as rr
+        rr._CLIENTS = None   # drop the mock-built shared clients
         _cleanup()
+
+
+def test_referral_asks_follow_the_ats_mechanics():
+    """Guard: the ask ladder, the req link, and no resume on first contact.
+
+    Two mechanical facts drive this. A referrer must select a SPECIFIC LIVE JOB
+    (so every draft carries the req link), and must describe their RELATIONSHIP
+    to you in writing on the record (so a cold "will you refer me?" gets silence
+    and must never be the lead ask). Offering a resume on first contact is the
+    other measured mistake. See docs/research/hiring-machine-2026-08.md §1.8.
+    """
+    from app.intelligence.referral import _fallback_drafts
+
+    drafts = _fallback_drafts(
+        name="Ada Lovelace", title="Data Engineer", company="Globex", role="Analytics Engineer",
+        skills="python, sql, dbt", selling="", needs_sponsorship=False,
+        job_url="https://boards.example.com/globex/jobs/42",
+    )
+    by_type = {d["type"]: d["body"] for d in drafts}
+
+    # The ladder exists, in descending order of yes.
+    for t in ("referral_request", "referral_intro_call", "referral_who_owns"):
+        assert t in by_type, f"missing ask: {t}"
+
+    # The lead ask is forward-the-req, which needs no relationship claim.
+    assert "forward the req" in by_type["referral_request"].lower()
+
+    # Every referral ask carries the specific requisition link.
+    for t in ("referral_request", "referral_intro_call", "referral_who_owns"):
+        assert "https://boards.example.com/globex/jobs/42" in by_type[t], f"{t} lost the req link"
+
+    # No resume offered or mentioned on first contact, in any draft.
+    for t, body in by_type.items():
+        assert "resume" not in body.lower(), f"{t} mentions a resume on first contact"
+
+    # A low-cost ask with concrete windows, not an open-ended one.
+    assert "15 minutes" in by_type["referral_intro_call"]
+    assert "Wednesday" in by_type["referral_intro_call"]

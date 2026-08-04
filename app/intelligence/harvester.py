@@ -131,10 +131,10 @@ def _llm_brief(profile, gh: dict) -> tuple[str, str]:
 
     try:
         from app.config import settings
-        from anthropic import Anthropic
+        from app.common.llm import shared_anthropic
         if not settings.anthropic_api_key or not repos:
             return fallback, json.dumps(parsed)
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        client = shared_anthropic()
         prompt = (
             "You are a technical recruiter reviewing a candidate's recent GitHub "
             "activity. Write a concise weekly brief (<140 words, markdown bullets) "
@@ -238,9 +238,9 @@ def ingest_linkedin_text(user_id: str | None, text: str) -> dict:
     )
     try:
         from app.config import settings
-        from anthropic import Anthropic
+        from app.common.llm import shared_anthropic
         if settings.anthropic_api_key:
-            client = Anthropic(api_key=settings.anthropic_api_key)
+            client = shared_anthropic()
             resp = client.messages.create(
                 model=settings.cover_letter_model, max_tokens=400,
                 messages=[{"role": "user", "content": (
@@ -321,7 +321,6 @@ def check_cross_profile_alignment(user_id: str | None = None) -> None:
     from app.matching.pipeline import _load_resume
     from sqlmodel import select
     import json
-    import anthropic
     from app.config import settings
 
     user_id_db = user_id if user_id and user_id != "local" else None
@@ -394,7 +393,8 @@ If everything is perfectly aligned, return an empty list [].
 Return only valid JSON, no markdown, no explanation."""
 
     try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        from app.common.llm import shared_anthropic
+        client = shared_anthropic()
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1000,

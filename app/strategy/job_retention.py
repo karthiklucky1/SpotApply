@@ -21,6 +21,55 @@ from sqlmodel import select
 log = logging.getLogger(__name__)
 
 
+def close_stale_user_jobs(days: int = 45, batch: int = 2000, max_batches: int = 100) -> int:
+    """Age-close OPEN per-user rows older than ``days`` that have no Application.
+
+    The missing half of retention (CAPACITY.md §5.1): shared-pool rows are
+    closed at 45d, but per-user adopted copies were never age-closed, so they
+    accumulated forever and could never reach the purge. A 45-day-old posting
+    is filled or ghost; anything a user acted on has an Application and is
+    never touched. Batched id-select → targeted UPDATE, mirroring the purge,
+    so no single statement can hit the statement timeout.
+    """
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+    from app.discovery.pipeline import SHARED_POOL_USER
+    from sqlalchemy import update
+
+    if days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    closed = 0
+    for _ in range(max_batches):
+        with get_session() as session:
+            ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.id)
+                .where(
+                    Job.is_closed == False,          # noqa: E712
+                    Job.user_id != SHARED_POOL_USER,  # shared pool has its own close
+                    Job.user_id.is_not(None),
+                    Job.first_seen < cutoff,
+                    Job.id.not_in(select(Application.job_id)),  # user-touched rows keep their lifecycle
+                )
+                .limit(batch)
+            ).all()]
+            if not ids:
+                break
+            session.exec(
+                update(Job)
+                .where(Job.id.in_(ids))
+                .values(is_closed=True,
+                        closed_reason=f"per-user retention ({days}d, no application)")
+            )
+            session.commit()
+            closed += len(ids)
+        if len(ids) < batch:
+            break
+    if closed:
+        log.info("Job retention: age-closed %d stale per-user job(s) older than %dd", closed, days)
+    return closed
+
+
 def purge_old_closed_jobs(days: int = 60, batch: int = 2000, max_batches: int = 100) -> int:
     """Delete CLOSED jobs older than ``days`` that have no Application attached.
 

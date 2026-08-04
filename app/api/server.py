@@ -619,6 +619,14 @@ async def _registry_maintenance_once(cycle: int) -> None:
                 _log.info("Shared-pool retention: closed %d old postings", res.rowcount)
     except Exception as e:
         _log.warning("Shared-pool retention failed: %s", e)
+    # Per-user retention: age-close open per-user rows nobody acted on — the
+    # missing half of retention (shared rows closed above; per-user copies
+    # previously never closed by age, so the job table grew unbounded).
+    try:
+        from app.strategy.job_retention import close_stale_user_jobs
+        close_stale_user_jobs(days=settings.user_job_close_age_days)
+    except Exception as e:
+        _log.warning("Per-user job retention failed: %s", e)
     # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
     # egress) stays bounded — closed rows were accumulating forever.
     try:
@@ -1668,7 +1676,14 @@ async def upload_resume(request: Request):
             return {"success": True, "path": local_path}
 
     import anyio
-    return await anyio.to_thread.run_sync(_store)
+    result = await anyio.to_thread.run_sync(_store)
+    # New résumé → drop the cached copy so the next scoring cycle reads it.
+    try:
+        from app.matching.pipeline import invalidate_resume_cache
+        invalidate_resume_cache(uid)
+    except Exception:
+        pass
+    return result
 
 
 @app.post("/api/resume/extract-profile")
@@ -1737,8 +1752,8 @@ Return only valid JSON, no markdown, no explanation."""
     method = "llm"
     if _settings.anthropic_api_key:
         try:
-            import anthropic as _anthropic
-            client = _anthropic.Anthropic(api_key=_settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic as _shared_anthropic
+            client = _shared_anthropic(max_retries=1)
             msg = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=2500,
@@ -1910,7 +1925,9 @@ Return only valid JSON, no markdown, no explanation."""
 @app.get("/api/resume/status")
 def resume_status(request: Request) -> dict:
     """Whether the current user has a resume on file. Drives the Discover gate."""
-    uid = _get_user_id(request)
+    # _user_has_resume(None) falls back to the local ./data glob, so anonymously
+    # this reported the founder's résumé as the caller's own.
+    uid = _require_user(request)
     return {"has_resume": _user_has_resume(uid)}
 
 
@@ -1985,6 +2002,7 @@ def analyze_resume_text(text: str, uid: str) -> dict:
 
 
 @app.get("/api/resume/analysis")
+@_rate_limit("6/minute")  # full-resume LLM analysis
 def resume_analysis(request: Request) -> dict:
     """General ATS-readiness analysis of the user's résumé — no specific job needed.
 
@@ -2017,8 +2035,8 @@ def _resume_llm_json(prompt: str, max_tokens: int = 1200) -> dict:
     if not _s.anthropic_api_key:
         return {}
     try:
-        import anthropic as _a
-        client = _a.Anthropic(api_key=_s.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+        from app.common.llm import shared_anthropic as _shared_anthropic
+        client = _shared_anthropic(max_retries=1)
         msg = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
@@ -2033,6 +2051,7 @@ def _resume_llm_json(prompt: str, max_tokens: int = 1200) -> dict:
 
 
 @app.get("/api/resume/recruiter-read")
+@_rate_limit("6/minute")  # LLM recruiter read of the whole resume
 def resume_recruiter_read(request: Request) -> dict:
     """A recruiter's-eye read of the master résumé — the 10-second scan plus an
     honest 'how do I rank against hundreds' assessment. DIAGNOSTIC ONLY: it never
@@ -2074,6 +2093,7 @@ def resume_recruiter_read(request: Request) -> dict:
 
 
 @app.get("/api/resume/metric-gaps")
+@_rate_limit("6/minute")  # LLM pass over every bullet
 def resume_metric_gaps(request: Request) -> dict:
     """Find experience bullets that lack a concrete, measurable outcome and return
     a targeted follow-up QUESTION for each — so we can ground real numbers from the
@@ -2109,6 +2129,7 @@ class MetricAnswersRequest(BaseModel):
 
 
 @app.post("/api/resume/metric-answers")
+@_rate_limit("6/minute")  # LLM rewrite per answered gap
 def resume_metric_answers(request: Request, body: MetricAnswersRequest) -> dict:
     """Store the candidate's real answers to metric-gap questions as
     candidate-confirmed achievements. _load_resume appends these so every future
@@ -2155,7 +2176,9 @@ def discovery_last_run(request: Request) -> dict:
     """Return the most recent discovery run's per-source summary for this user."""
     import json
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    # Must refuse anonymous callers: the `if uid and uid != "local"` scoping below
+    # fails OPEN, so uid=None returned the newest DiscoveryRun of ANY tenant.
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -2209,9 +2232,20 @@ def view_resume(request: Request) -> dict:
 
 @app.get("/api/resume/file")
 def resume_file(request: Request):
-    """Serve the locally-stored resume (local/dev mode only)."""
+    """Serve the locally-stored resume (local/dev mode only).
+
+    SECURITY: "local/dev mode only" was documentation, not enforcement — this
+    route had no auth and no mode gate, so in production an anonymous GET
+    returned whatever ./data/resume_master.* happened to be on the container
+    (the founder's master résumé: real name, phone, email, full history). That
+    is the docs/ARCHITECTURE.md §7.1 incident class as a public endpoint. Now
+    both are enforced.
+    """
     from fastapi.responses import FileResponse
     import glob
+    if settings.use_supabase:
+        raise HTTPException(status_code=404, detail="Not available")
+    _require_user(request)
     matches = glob.glob("./data/resume_master.*")
     if not matches:
         raise HTTPException(status_code=404, detail="No resume on file")
@@ -2236,6 +2270,7 @@ def resume_text_view(request: Request) -> dict:
 
 
 @app.post("/api/resume/synthesize")
+@_rate_limit("3/minute")  # builds a whole resume from the profile
 def synthesize_resume(request: Request) -> dict:
     """Build a minimal markdown resume from the user's profile fields.
 
@@ -2272,6 +2307,11 @@ def synthesize_resume(request: Request) -> dict:
         os.makedirs("./data", exist_ok=True)
         with open("./data/resume_master.md", "w", encoding="utf-8") as f:
             f.write(md)
+    try:
+        from app.matching.pipeline import invalidate_resume_cache
+        invalidate_resume_cache(uid)
+    except Exception:
+        pass
     return {"success": True}
 
 
@@ -2572,6 +2612,13 @@ def api_stats(request: Request) -> dict:
         # Job row was deleted) are excluded; otherwise counts here disagree with
         # the dashboard kanban, which inner-joins Job and never shows orphans.
         app_counts = {}
+        # The freshness window is applied HERE too. /api/stats feeds the header
+        # pill and the section badge, while the dashboard render and
+        # /api/pipeline/live both filter — so without this the badge said N and
+        # the board showed fewer, with no way for the user to find the missing
+        # ones by scrolling. Every surface that COUNTS the shortlist has to use
+        # the same predicate as the surface that LISTS it.
+        _stats_fresh = _shortlist_fresh_clause()
         for status in ApplicationStatus:
             aq = (
                 select(func.count(Application.id))
@@ -2581,6 +2628,8 @@ def api_stats(request: Request) -> dict:
                     Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
                 )
             )
+            if _stats_fresh is not None:
+                aq = aq.where(_stats_fresh)
             if _uid_filter:
                 aq = aq.where(Application.user_id == uid)
             count = session.exec(aq).first() or 0
@@ -2904,6 +2953,11 @@ def dashboard(request: Request, all_submitted: bool = False):
             # so 61 jobs never appeared and the "new matches" banner looped forever.
             # Order by FIT (blended_score) so if the cap ever does truncate, it keeps
             # the best-fit ones. Recency stays as the tiebreak.
+            # Freshness is enforced AT RENDER TIME too (not only by the hygiene
+            # lane, which doesn't run when LANES_ENABLED=0): plain SHORTLISTED
+            # postings older than shortlist_max_age_days never render. Jobs the
+            # user invested in (TAILORED / autofill review) are never hidden.
+            _fresh_ok = _shortlist_fresh_clause()
             q_short = select(Application, Job).join(Job).where(
                 Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
             ).where(
@@ -2913,6 +2967,8 @@ def dashboard(request: Request, all_submitted: bool = False):
                 nullslast(desc(Job.rerank_score)),
                 Application.updated_at.desc(),
             ).limit(settings.shortlist_render_cap)
+            if _fresh_ok is not None:
+                q_short = q_short.where(_fresh_ok)
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
             shortlisted = list(session.exec(q_short).all())
@@ -2926,6 +2982,8 @@ def dashboard(request: Request, all_submitted: bool = False):
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
+            if _fresh_ok is not None:
+                q_short_total = q_short_total.where(_fresh_ok)
             if _uid_filter:
                 q_short_total = q_short_total.where(Application.user_id == uid)
             total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
@@ -3182,6 +3240,12 @@ def pipeline_live(request: Request) -> dict:
         ).join(Job).where(
             Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
         ).order_by(Job.rerank_score.desc())
+        # Same freshness window the board renders with — otherwise this endpoint
+        # reports shortlisted jobs the page cannot show, and the dashboard's
+        # auto-reloader loops.
+        _live_fresh = _shortlist_fresh_clause()
+        if _live_fresh is not None:
+            q = q.where(_live_fresh)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         for (app_id, st, apply_track, apply_url,
@@ -3461,7 +3525,11 @@ def application_match(application_id: int, request: Request) -> dict:
 
 
 # In-process cache for LLM company briefs — one call per company per process.
+# Capped: the registry holds ~56K companies, and an uncapped dict keyed by
+# every company ever viewed is one of the small-but-real unbounded growths
+# behind the RSS climb. FIFO eviction (dicts preserve insertion order).
 _COMPANY_BRIEF_CACHE: dict = {}
+_COMPANY_BRIEF_CACHE_MAX = 2000
 
 
 @app.get("/application/{application_id}/company")
@@ -3509,8 +3577,8 @@ def application_company(application_id: int, request: Request) -> dict:
     profile = _COMPANY_BRIEF_CACHE.get(company.lower()) if company else None
     if company and profile is None and settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic(max_retries=1)
             resp = client.messages.create(
                 model=settings.scoring_model,
                 max_tokens=350,
@@ -3531,6 +3599,8 @@ def application_company(application_id: int, request: Request) -> dict:
                     text = text.strip("`").lstrip("json").strip()
                 parsed = _json.loads(text)
                 profile = parsed if isinstance(parsed, dict) else {}
+            if len(_COMPANY_BRIEF_CACHE) >= _COMPANY_BRIEF_CACHE_MAX:
+                _COMPANY_BRIEF_CACHE.pop(next(iter(_COMPANY_BRIEF_CACHE)))
             _COMPANY_BRIEF_CACHE[company.lower()] = profile
         except Exception as _be:
             log.debug("company brief LLM call failed for %s: %s", company, _be)
@@ -4111,6 +4181,7 @@ def public_freshness() -> dict:
 
 
 @app.get("/api/skill-gap")
+@_rate_limit("10/minute")  # LLM JD-vs-resume advice
 def skill_gap_api(request: Request, refresh: bool = False) -> dict:
     """Skill-gap analysis across the user's top matches: what the JDs demand,
     classified by the user's strongest evidence (résumé / GitHub / LinkedIn).
@@ -4152,12 +4223,22 @@ def _opt_clock_payload(profile) -> Optional[dict]:
         zone = "green" if days_left > 45 else ("amber" if days_left > 15 else "red")
         if days_to_ead is not None and days_to_ead < 60:
             zone = "red" if days_to_ead < 30 else ("amber" if zone == "green" else zone)
+        # The OPT clock only tells half the story: the other half is where the
+        # H-1B cap year sits, because registration is a once-a-year March door.
+        # An offer in April cannot reach cap-subject status until Oct of the
+        # NEXT year — worth knowing while there is still runway to act on it.
+        try:
+            from app.intelligence.h1b_calendar import phase as _h1b_phase
+            h1b = _h1b_phase().as_dict()
+        except Exception:
+            h1b = None
         return {
             "unemployment_budget": budget, "unemployment_used": used,
             "unemployment_days_left": days_left,
             "ead_end_date": ead or None, "days_to_ead_end": days_to_ead,
             "stem_opt": bool(getattr(profile, "stem_opt", False)),
             "zone": zone,
+            "h1b": h1b,
             "note": "Counts come from your own dates in Profile → Work authorization. Not legal advice.",
         }
     except Exception:
@@ -4328,6 +4409,7 @@ class AskQuestionBody(BaseModel):
 
 
 @app.post("/api/answer-question")
+@_rate_limit("20/minute")  # ~$0.002 per cache miss; the extension calls it per textarea
 def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     """Generate (or retrieve cached) answer for a single essay question.
 
@@ -4655,7 +4737,12 @@ def _discover_then_match_locked(user_id) -> None:
 @app.post("/run/discovery")
 @_rate_limit("10/minute")
 def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
-    uid = _get_user_id(request)
+    # Authentication first: every gate below is a no-op for an anonymous caller.
+    # _user_has_resume(None) falls through to glob("./data/resume_master.*") —
+    # the founder's own file — so an unauthenticated POST cleared the resume gate
+    # and launched a full discovery + match run against the NULL-owner pool,
+    # burning scraper quota and LLM budget. Rate limiting alone only slows that.
+    uid = _require_user(request)
     # Gate: no resume → no discovery. Without a resume there is nothing to match
     # against, so scraping jobs into the user's pool would only show noise.
     if not _user_has_resume(uid):
@@ -4683,9 +4770,16 @@ def trigger_discovery(request: Request, bg: BackgroundTasks) -> dict:
 
 @app.delete("/run/discovery")
 def cancel_discovery(request: Request) -> dict:
-    """Mark the active discovery run as cancelled so the poller stops tracking it."""
+    """Mark the active discovery run as cancelled so the poller stops tracking it.
+
+    SECURITY: this used to call _get_user_id, which returns None when
+    unauthenticated — and the `if uid and uid != "local"` scoping below was then
+    skipped entirely, so an anonymous DELETE cancelled the newest run belonging
+    to ANY tenant, including the global shared-pool runs that refill everyone's
+    feed. _require_user makes the scoping unconditional.
+    """
     from app.db.models import DiscoveryRun
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     with get_session() as session:
         q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
@@ -4698,6 +4792,55 @@ def cancel_discovery(request: Request) -> dict:
             session.commit()
             return {"cancelled": True}
     return {"cancelled": False}
+
+
+def _shortlist_fresh_clause():
+    """SQL predicate: hide plain-SHORTLISTED postings past the freshness window.
+
+    MUST be applied by EVERY surface that counts or lists the shortlist. When
+    the dashboard render applied it but /api/pipeline/live did not, SSR rendered
+    0 cards while the live poll reported N — and dashboard.html's auto-reloader
+    (rendered === 0 && server > 0) reloaded the page every 30s forever. Returns
+    None when the window is disabled.
+
+    Work the user invested in (TAILORED / autofill review) gets a LONGER window,
+    not an unlimited one. It was exempt entirely, which sounded protective and
+    was not: a board check on 2026-08-02 found 25 TAILORED applications aged 32
+    to 52 days still occupying the shortlist. Every one of those postings is long
+    filled, so the exemption was not preserving the user's work — it was burying
+    this week's matches under two months of dead listings. A tailored résumé the
+    user never submitted still deserves time to act on; it does not deserve
+    forever.
+
+    coalesce(posted_at, first_seen, discovered_at): first_seen reached prod via a
+    bare ALTER TABLE with no backfill, so it is NULL on the oldest rows, and
+    `NULL < cutoff` is NULL — without discovered_at as the final fallback those
+    rows would evade the window entirely.
+    """
+    days = settings.shortlist_max_age_days
+    if not days or days <= 0:
+        return None
+    from datetime import datetime as _fdt, timedelta as _ftd
+    now = _fdt.utcnow()
+    freshness = func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    fresh_cut = now - _ftd(days=days)
+
+    invested_days = int(getattr(settings, "tailored_max_age_days", 0) or 0)
+    if invested_days <= 0:
+        # Explicitly opted back into "never hide invested work".
+        return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= fresh_cut)
+    invested_cut = now - _ftd(days=invested_days)
+    invested = [ApplicationStatus.TAILORED,
+                ApplicationStatus.AUTOFILLED,
+                ApplicationStatus.AWAITING_USER,
+                ApplicationStatus.READY_TO_SUBMIT]
+    return (
+        # Anything past the shortlist board (submitted, interviewing, rejected…)
+        # is pipeline history, not a match feed — the window must not touch it.
+        (~Application.status.in_([ApplicationStatus.SHORTLISTED] + invested))
+        | (Application.status.in_(invested) & (freshness >= invested_cut))
+        | (freshness >= fresh_cut)
+    )
 
 
 def _has_active_paid_plan(uid) -> bool:
@@ -5356,6 +5499,51 @@ def _scalar(v) -> int:
     return int(v if not isinstance(v, (list, tuple)) else v[0])
 
 
+@app.post("/api/admin/recruiter/verify")
+def admin_verify_recruiter(request: Request, body: dict) -> dict:
+    """Promote (or demote) a recruiter account by hand — admin only.
+
+    This is the promotion path now that a corporate-domain match no longer grants
+    verification on its own (see _verify_recruiter): both sides of that comparison
+    arrive in the same request body, so it proved nothing about mailbox ownership,
+    and verification unlocks every pooled candidate's name, work authorization and
+    sponsorship need. Until there is a real ownership proof (verification link or
+    SSO), a human decides.
+
+    Body: {"user_id" | "work_email": str, "verified": bool (default true),
+           "note": str (optional)}
+    """
+    from app.db.models import RecruiterProfile
+    admin = _require_admin_user(request)
+    uid = (body.get("user_id") or "").strip()
+    email = (body.get("work_email") or "").strip().lower()
+    if not uid and not email:
+        raise HTTPException(status_code=400, detail="user_id or work_email required")
+    want = bool(body.get("verified", True))
+    with get_session() as session:
+        q = select(RecruiterProfile)
+        q = q.where(RecruiterProfile.user_id == uid) if uid else \
+            q.where(func.lower(RecruiterProfile.work_email) == email)
+        rp = session.exec(q).first()
+        if not rp:
+            raise HTTPException(status_code=404, detail="Recruiter profile not found")
+        if want and rp.banned:
+            raise HTTPException(
+                status_code=409,
+                detail="Account is banned (indicated charging candidates) — "
+                       "clear the ban before verifying.")
+        rp.verified = want
+        stamp = f"{'verified' if want else 'unverified'} by {admin}"
+        if body.get("note"):
+            stamp += f": {str(body['note'])[:200]}"
+        rp.verification_notes = (f"{rp.verification_notes} · {stamp}").strip(" ·")
+        session.add(rp)
+        session.commit()
+        log.info("Recruiter %s %s", rp.user_id, stamp)
+        return {"user_id": rp.user_id, "verified": rp.verified,
+                "notes": rp.verification_notes}
+
+
 @app.post("/api/admin/seed-registry")
 def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
     """Trigger the open-dataset registry seed on demand (admin-only). Lets the
@@ -5368,6 +5556,134 @@ def admin_seed_registry(request: Request, bg: BackgroundTasks) -> dict:
             "note": "Seeding ~62K companies across all ATSes in the background. "
                     "New boards appear in the registry over the next few minutes; "
                     "jobs follow as the crawlers validate them."}
+
+
+# ── Compiler replay (admin) ──────────────────────────────────────────────────
+# Browser wrapper around scripts/compiler_replay.py so the replay experiment
+# runs with zero local setup: the first visit starts ONE background run
+# (single-flight — the state+lock make a second thread impossible), the page
+# auto-refreshes while it works, and the finished report renders as a table.
+# Read-only against the DB; the JSON also lands in data/ for later analysis.
+_replay_state: dict = {"status": "idle"}
+_replay_lock = None
+
+
+def _replay_page(body: str, refresh: bool = False) -> str:
+    meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
+    return f"""<!doctype html><html><head><title>Compiler replay</title>{meta}
+<style>body{{font:14px/1.5 -apple-system,system-ui,sans-serif;background:#0b1020;color:#dbe2f0;
+max-width:900px;margin:40px auto;padding:0 16px}}table{{border-collapse:collapse;width:100%;margin:16px 0}}
+td,th{{padding:6px 10px;border-bottom:1px solid #24304d;text-align:left}}th{{color:#8fa3c8}}
+.ok{{color:#5dd39e}}.mid{{color:#e8c468}}.bad{{color:#e87a68}}code{{color:#9ecbff}}a{{color:#9ecbff}}
+p.note{{color:#8fa3c8}}</style></head><body>
+<h2>Compiler replay — is our job volume compilable?</h2>{body}</body></html>"""
+
+
+@app.get("/api/admin/compiler-replay", response_class=HTMLResponse)
+def admin_compiler_replay(request: Request, restart: int = 0) -> HTMLResponse:
+    """Fit per-family scoring programs against the Claude finals already in the
+    DB and report agreement — the go/no-go gate for the compiler-layer plan.
+    Zero LLM calls. Admin only. `?restart=1` reruns after new finals accrue."""
+    import html as _html
+    import threading
+    import time as _time
+    global _replay_lock
+    _require_admin_user(request)
+    if _replay_lock is None:
+        _replay_lock = threading.Lock()
+
+    def _worker():
+        try:
+            from scripts.compiler_replay import collect_rows, run_report
+            families, stats = collect_rows()
+            summary = run_report(families, stats, min_samples=15,
+                                 shortlist_threshold=float(settings.shortlist_score_threshold),
+                                 out_path="data/compiler_replay_report.json")
+            _replay_state.update(status="done", summary=summary)
+        except Exception as e:
+            log.exception("compiler replay failed")
+            _replay_state.update(status="error", error=str(e)[:500])
+
+    with _replay_lock:
+        st = _replay_state.get("status")
+        if st == "running":
+            elapsed = int(_time.time() - _replay_state.get("started_at", _time.time()))
+            return HTMLResponse(_replay_page(
+                f"<p>Running for {elapsed}s — reading every stored Claude final and "
+                "fitting per-family programs. A full run takes a few minutes; this "
+                "page refreshes itself.</p>", refresh=True))
+        if st == "idle" or (restart and st in ("done", "error")):
+            _replay_state.clear()
+            _replay_state.update(status="running", started_at=_time.time())
+            threading.Thread(target=_worker, daemon=True, name="compiler-replay").start()
+            return HTMLResponse(_replay_page(
+                "<p>Started — reading stored Claude finals. A full run takes a few "
+                "minutes; this page refreshes itself.</p>", refresh=True))
+        if st == "error":
+            return HTMLResponse(_replay_page(
+                f"<p class=bad>Run failed: <code>{_html.escape(_replay_state.get('error', ''))}</code></p>"
+                "<p><a href='?restart=1'>Try again</a></p>"))
+
+    summary = _replay_state.get("summary") or {}
+    fams = summary.get("families") or {}
+    vol = summary.get("volume") or {}
+    stats = summary.get("stats") or {}
+    buckets = (summary.get("disagreements") or {}).get("buckets") or {}
+    rows = []
+    for fam, r in sorted(fams.items(), key=lambda kv: -kv[1]["n"]):
+        cls = {"COMPILABLE": "ok", "BORDERLINE": "mid"}.get(r["verdict"], "bad")
+        rho_v1 = r.get("rho_v1")
+        rho_cell = (f"{rho_v1:.2f} → {r['rho']:.2f}" if rho_v1 is not None
+                    else f"{r['rho']:.2f}")
+        rows.append(
+            f"<tr><td>{_html.escape(fam)}</td><td>{r['n']}</td><td>{r['users']}</td>"
+            f"<td>{rho_cell}</td><td>{r['r2_loo']:.2f}</td>"
+            f"<td>{r['decision_agreement'] * 100:.0f}%</td>"
+            f"<td class={cls}>{r['verdict']}</td></tr>")
+    fitted, comp = vol.get("fitted", 0), vol.get("compilable", 0)
+    bord = vol.get("borderline", 0)
+    if fitted:
+        pct = 100 * comp / fitted
+        headline = (f"<p><b>{pct:.0f}% of fitted volume is COMPILABLE</b> "
+                    f"({comp} of {fitted} finals; borderline {bord}). "
+                    "Rule of thumb: build the compiler layer only if this is well "
+                    "over half — otherwise the distillation path wins.</p>")
+    else:
+        headline = ("<p class=bad>No family had enough genuine Claude finals to fit "
+                    "(min 15). The counters below say why rows were skipped.</p>")
+    bucket_html = ""
+    if buckets:
+        holistic_pct = (buckets.get("holistic/other") or {}).get("weighted_pct", 0)
+        ranked = sorted(buckets.items(), key=lambda kv: -kv[1]["weighted_pct"])
+        brows = "".join(
+            f"<tr><td>{_html.escape(b)}</td><td>{d['count']}</td>"
+            f"<td>{d['weighted_pct']:.1f}%</td></tr>" for b, d in ranked)
+        if holistic_pct >= 50:
+            guidance = ("Holistic reasoning dominates — feature engineering is "
+                        "done; the distilled apprentice model is the path.")
+        else:
+            top = ranked[0][0] if ranked else ""
+            guidance = (f"Deterministic causes dominate (top: {_html.escape(top)}) — "
+                        "those are worth engineering as cheap features/gates.")
+        bucket_html = (
+            "<h3>Why the compiled score still disagrees with Claude (≥15 pts)</h3>"
+            "<table><tr><th>reason (from Claude's stored reasoning)</th>"
+            "<th>pairs</th><th>share of weighted disagreement</th></tr>"
+            + brows + f"</table><p><b>{guidance}</b></p>")
+    stat_lines = "".join(f"<li><code>{_html.escape(str(k))}</code>: {v}</li>"
+                         for k, v in sorted(stats.items()))
+    table = ("<table><tr><th>family</th><th>finals</th><th>users</th>"
+             "<th>rank ρ v1 → v2</th><th>held-out R²</th><th>decision agree</th>"
+             "<th>verdict</th></tr>" + "".join(rows) + "</table>") if rows else ""
+    body = (headline + table + bucket_html
+            + f"<ul>{stat_lines}</ul>"
+            + "<p class=note>ρ v1 = skills-only program, ρ v2 = adds visa/country/"
+              "seniority/domain features (1.0 = identical order to Claude). "
+              "held-out R² = predictions on jobs the fit never saw, decision agree "
+              "= same shortlist call at the "
+              f"{settings.shortlist_score_threshold:.0f} threshold. "
+              "<a href='?restart=1'>Re-run</a> after more finals accumulate.</p>")
+    return HTMLResponse(_replay_page(body))
 
 
 @app.get("/api/admin/spend")
@@ -5616,6 +5932,32 @@ def admin_page(request: Request):
     return HTMLResponse(_ADMIN_HTML)
 
 
+def _is_grandfathered(uid: str) -> bool:
+    """True when this user signed up before settings.plan_grandfather_until.
+
+    Exists so turning on payments is not a silent downgrade for the people who
+    were already using the product for free. Fails CLOSED (not grandfathered) if
+    the date is unset or the profile has no created_at — never hand out PRO by
+    accident.
+    """
+    raw = (getattr(settings, "plan_grandfather_until", "") or "").strip()
+    if not raw:
+        return False
+    from datetime import datetime as _dt
+
+    from app.db.models import UserProfile
+    try:
+        cutoff = _dt.fromisoformat(raw)
+    except ValueError:
+        log.warning("PLAN_GRANDFATHER_UNTIL=%r is not an ISO date — ignoring", raw)
+        return False
+    with get_session() as session:
+        prof = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)).first()
+    created = getattr(prof, "created_at", None) if prof else None
+    return bool(created and created < cutoff)
+
+
 def _get_user_plan(uid: str) -> PlanTier:
     """The user's current plan tier.
 
@@ -5635,6 +5977,14 @@ def _get_user_plan(uid: str) -> PlanTier:
             select(UserSubscription).where(UserSubscription.user_id == uid)
         ).first()
     if not row:
+        # SWITCHING STRIPE ON IS A CLIFF: every existing user has no subscription
+        # row, so the instant STRIPE_SECRET_KEY + STRIPE_PRICE_ID_PRO are set they
+        # all drop PRO → FREE (50 → 15 finals/day, unlimited → 5 tailors/day,
+        # unlimited → 2 autofills/week) with no warning and no action on their part.
+        # Set PLAN_GRANDFATHER_UNTIL to an ISO date to keep users who signed up
+        # before then on PRO. Unset (default) = the cliff, i.e. current behaviour.
+        if _is_grandfathered(uid):
+            return PlanTier.PRO
         return PlanTier.FREE
     if row.current_period_end and \
             row.current_period_end + timedelta(days=3) < datetime.utcnow():
@@ -6310,8 +6660,25 @@ def _verify_recruiter(rp) -> None:
         rp.verification_notes = "Banned: indicated charging candidates (prohibited)."
         return
     if domain and email_domain and email_domain == domain and domain not in _free:
-        rp.verified = True
+        # SELF-VERIFICATION HOLE: work_email and company_domain both arrive in the
+        # same request body, so "they match" proves only that the caller typed two
+        # consistent strings — not that they control either. Verification unlocks
+        # /api/recruiter/search, which returns every pooled candidate's full name,
+        # work authorization, and sponsorship need. Handing that to an unverified
+        # stranger is the exposure; needing sponsorship is precisely the attribute
+        # a discriminating actor would filter on.
+        #
+        # So a domain match is now a SIGNAL, not a grant. Promotion to verified
+        # goes through the admin path (POST /api/admin/recruiter/verify) unless
+        # RECRUITER_AUTOVERIFY_ON_DOMAIN_MATCH is explicitly turned on. Fails
+        # closed: a new registration is unverified until a human says otherwise.
         notes.append(f"Corporate email matches {domain}")
+        if settings.recruiter_autoverify_on_domain_match:
+            rp.verified = True
+        else:
+            rp.verified = False
+            notes.append("Pending manual review (domain match alone is not proof "
+                         "of email ownership)")
     elif email_domain in _free:
         notes.append("Free email — corporate domain required to verify")
     else:
@@ -6387,6 +6754,7 @@ def get_account_type(request: Request) -> dict:
 
 
 @app.post("/api/recruiter/search")
+@_rate_limit("6/minute")  # LLM-ranks the candidate pool
 def recruiter_search(request: Request, body: dict) -> dict:
     """Reverse search — a verified recruiter pastes a job description and gets an
     AI-ranked list of VERIFIED candidates from the pool. The pull model: demand
@@ -6807,13 +7175,30 @@ def application_sponsorship(application_id: int, request: Request) -> dict:
     self-reported claims). Combines the employer's USCIS filing record with a
     legal, explainable sponsorship assessment of the posting."""
     _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    from app.db.models import UserProfile
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+        # Needed for the STEM OPT caution below, which is only shown to F-1
+        # users — read inside the same session, before any of the work below.
+        profile = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)
+        ).first() if uid else None
     company = (job.company if job else "") or ""
-    out = {"company": company, "h1b": None, "assessment": None}
+    out = {"company": company, "h1b": None, "assessment": None, "vendor": None}
+    # Who is actually hiring you. A staffing-vendor posting is legitimate but is
+    # a different transaction than applying direct, and for an F-1 user a
+    # client-site placement collides with the I-983 training requirement.
+    try:
+        from app.intelligence.vendor_posting import assess as _vendor_assess
+        v = _vendor_assess(job, profile)
+        if v.is_vendor_posting or v.red_flags:
+            out["vendor"] = v.as_dict()
+    except Exception as e:
+        log.debug("vendor posting assess failed: %s", e)
     try:
         from app.intelligence.h1b_data import lookup
         rec = lookup(company)
@@ -7571,7 +7956,7 @@ def _sign_avatar(bucket, path: str) -> str | None:
 def get_avatar(request: Request) -> dict:
     """Return the signed URL for the user's profile avatar, or null."""
     from app.config import settings
-    uid = _get_user_id(request)
+    uid = _require_user(request)
     if settings.use_supabase and uid and uid != "local":
         try:
             from app.db.supabase_client import service_client
@@ -7601,7 +7986,9 @@ def get_avatar(request: Request) -> dict:
 async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
     """Upload a profile photo and store in Supabase storage (avatars bucket)."""
     from app.config import settings
-    uid = _get_user_id(request)
+    # Refuse before reading the body — an anonymous caller could otherwise push
+    # 3 MB per request and get a 200 back.
+    uid = _require_user(request)
     ext = (file.filename or "avatar.jpg").rsplit(".", 1)[-1].lower()
     if ext not in {"jpg", "jpeg", "png", "webp", "gif"}:
         raise HTTPException(status_code=400, detail="Unsupported image type")
@@ -7765,6 +8152,7 @@ class AskCopilotRequest(BaseModel):
 
 
 @app.post("/application/{application_id}/ask")
+@_rate_limit("10/minute")  # one Claude call per question
 def ask_copilot(application_id: int, req: AskCopilotRequest, request: Request) -> dict:
     # sync on purpose: runs a Claude call — FastAPI threadpool, not the event loop
     """Ask custom question grounded in the JD and resume context."""
@@ -7820,8 +8208,8 @@ Do NOT use markdown headers or introduction/conversational prefix. Return only t
     answer = ""
     if settings.anthropic_api_key:
         try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_request_timeout, max_retries=1)
+            from app.common.llm import shared_anthropic
+            client = shared_anthropic(max_retries=1)
             resp = client.messages.create(
                 model=settings.cover_letter_model,
                 max_tokens=500,
@@ -7834,8 +8222,8 @@ Do NOT use markdown headers or introduction/conversational prefix. Return only t
             
     if not answer and settings.openai_api_key:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+            from app.common.llm import shared_openai
+            client = shared_openai(max_retries=1)
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=500,
@@ -7887,37 +8275,68 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
 
 # ── GDPR / Account deletion ──────────────────────────────────────────────────
 
+# Tables that own user data under a column OTHER than `user_id`. Everything with
+# a plain `user_id` column is found from the schema instead of being listed, so a
+# new table cannot silently escape deletion (see tests/test_account_deletion.py).
+_EXTRA_OWNER_COLUMNS = {
+    "candidateintro": ("candidate_user_id", "recruiter_user_id"),
+    "intromessage": ("sender_user_id",),
+    "introrating": ("rater_user_id", "ratee_user_id"),
+}
+
+
 @app.delete("/api/account")
 def delete_account(request: Request) -> dict:
-    """Permanently delete all data for the authenticated user."""
-    uid = _require_user(request)
-    from app.db.models import (
-        UserProfile, PendingQuestion, AnswerMemory, DiscoveryRun,
-        UserSubscription, UserUsage,
-    )
-    from app.db.init_db import get_session
-    from sqlmodel import select, delete as sql_delete
+    """Permanently delete all data for the authenticated user.
 
+    Schema-driven ON PURPOSE. The hand-written list this replaced named 7 tables
+    and the schema had 18 with a `user_id` column, because tables kept being added
+    after the route was written — the CardRace tables (user_card,
+    card_match_shadow) were the most recent. An enumeration cannot fall behind
+    that way, and the accompanying test fails the moment a new user-scoped table
+    appears without a deletion story.
+    """
+    uid = _require_user(request)
+    from sqlmodel import SQLModel, delete as sql_delete, select
+
+    from app.db.init_db import get_session
+    from app.db.models import PendingQuestion
+
+    # Never let a sentinel identity through: SHARED_POOL_USER owns the pool every
+    # tenant is served from, so "delete my account" for it would wipe the corpus.
+    from app.discovery.pipeline import SHARED_POOL_USER
+    if uid in (SHARED_POOL_USER, "shared", ""):
+        raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
+
+    deleted: dict[str, int] = {}
     with get_session() as session:
-        # Collect application IDs for this user
         if uid != "local":
-            app_ids = [
-                a.id for a in session.exec(
-                    select(Application).where(Application.user_id == uid)
-                ).all()
-            ]
-            # Delete pending questions linked to those applications
+            # PendingQuestion hangs off the application, not the user.
+            app_ids = list(session.exec(
+                select(Application.id).where(Application.user_id == uid)).all())
             if app_ids:
-                session.exec(sql_delete(PendingQuestion).where(PendingQuestion.application_id.in_(app_ids)))
-            # Delete every user-scoped row so no orphaned data remains (GDPR).
-            session.exec(sql_delete(Application).where(Application.user_id == uid))
-            session.exec(sql_delete(Job).where(Job.user_id == uid))
-            session.exec(sql_delete(UserProfile).where(UserProfile.user_id == uid))
-            session.exec(sql_delete(AnswerMemory).where(AnswerMemory.user_id == uid))
-            session.exec(sql_delete(DiscoveryRun).where(DiscoveryRun.user_id == uid))
-            session.exec(sql_delete(UserSubscription).where(UserSubscription.user_id == uid))
-            session.exec(sql_delete(UserUsage).where(UserUsage.user_id == uid))
+                r = session.exec(sql_delete(PendingQuestion).where(
+                    PendingQuestion.application_id.in_(app_ids)))
+                deleted["pendingquestion"] = r.rowcount or 0
+
+            for name, table in SQLModel.metadata.tables.items():
+                cols = table.columns
+                owner_cols = [cols[c] for c in ("user_id",) if c in cols]
+                owner_cols += [cols[c] for c in _EXTRA_OWNER_COLUMNS.get(name, ())
+                               if c in cols]
+                if not owner_cols:
+                    continue
+                for col in owner_cols:
+                    try:
+                        r = session.exec(sql_delete(table).where(col == uid))
+                        deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
+                    except Exception as e:
+                        # One undeletable table must not abandon the rest half-done.
+                        log.exception("Account deletion: %s.%s failed for %s: %s",
+                                      name, col.name, uid, e)
             session.commit()
+    log.info("Account deletion for %s removed: %s", uid,
+             {k: v for k, v in sorted(deleted.items()) if v})
 
     # Delete resume files from Supabase Storage
     from app.config import settings

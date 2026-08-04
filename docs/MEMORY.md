@@ -43,12 +43,43 @@ built a *third on every tailor request* — a fresh model load, concurrent with
 whatever else was resident, on a user-triggered path. All three now share the
 matcher's single cached instance.
 
+## The second OOM — the Python-side climb (Jul 2026)
+
+A later OOM had the opposite signature: `non-python` flat at ~100MB while
+**rss itself** climbed 850MB → 7GB over hours, in steps, never shrinking.
+Three compounding causes, all fixed:
+
+1. **glibc arena fragmentation.** The scoring lane built a fresh 20-thread
+   pool every 90s and the pulse lane a 24-thread pool every 60s, abandoned
+   with `shutdown(wait=False)` — every new thread can pin a 64MB malloc arena
+   whose high-water mark never shrinks, and glibc ratchets its trim threshold
+   upward on torch's large frees. Fixes: both lanes reuse ONE persistent pool
+   for the life of the process (`scoring_lane._worker_pool`,
+   `pulse_lane._fetch_pool`) and cancel queued work at deadline; the
+   Dockerfile pins `MALLOC_ARENA_MAX=2` + trim/mmap thresholds + single-thread
+   OpenBLAS/numexpr/tokenizers. Those MUST be process env — glibc reads them
+   before Python starts, so setting them in `app/__init__.py` does nothing.
+2. **Leaked LLM SDK clients.** 20+ call sites built a throwaway
+   `Anthropic()`/`OpenAI()` per call — each an httpx pool + SSL context that
+   is never returned to the OS. Every call site now goes through the shared
+   process-wide pair in `app/common/llm.py` (`with_options()` for per-path
+   timeout/retry — it reuses the same connection pool). Never construct an
+   SDK client directly.
+3. **Whole-pass buffers.** Discovery held all ~400 boards' postings
+   (~300–650MB) for the entire run and the pulse lane all 300 per tick — both
+   now release each board as it is processed. The per-user FAISS index grew
+   without bound (purged jobs' vectors were never removed) and was re-read
+   into RAM every pass — it compacts via full rebuild past 3× REBUILD_MAX_JOBS.
+
 ## What to do when it happens again
 
 1. **Look at the numbers first.** `GET /health` includes a memory snapshot, and
-   `GET /api/debug/memory` (admin) has the full picture. The field that matters is
+   `GET /api/debug/memory` (admin) has the full picture. Start with
    `non_python_mb` — container usage minus our RSS. If it is large, it is
-   browsers, not the Python heap, and no amount of heap tuning will help.
+   browsers, and no amount of heap tuning will help. If it is SMALL while
+   `rss_mb` climbs and never falls, it is the Python-side pattern above —
+   check `env_summary()` still shows `MALLOC_ARENA_MAX=2` and look for new
+   per-call SDK clients or per-tick thread pools before anything else.
 2. **Read the log trail.** The memory watcher logs every
    `MEMORY_WATCH_INTERVAL_SECONDS` (120s) and flips to `MEMORY HIGH` at
    `MEMORY_WARN_PCT` (85%) of the cgroup limit. An OOM kill leaves no traceback,

@@ -804,8 +804,8 @@
       border: 1px solid rgba(var(--sage-rgb),0.35); padding: 2px 10px; border-radius: 9999px; }
     .ref-text { font-size: 12.5px; line-height: 1.55; color: var(--muted); margin-top: 8px; }
     /* ── Pipeline stage tabs ────────────────────────────────────────────── */
-    .pipe-tab { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 800;
-      padding: 9px 18px; border-radius: 9999px; color: var(--muted); background: var(--surface);
+    .pipe-tab { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800;
+      padding: 6px 14px; border-radius: 9999px; color: var(--muted); background: var(--surface);
       border: 1px solid var(--border); transition: all .15s ease; cursor: pointer; }
     .pipe-tab:hover { color: var(--sage-700); border-color: rgba(var(--sage-rgb),0.45); }
     .pipe-tab.active { background: linear-gradient(135deg, var(--sage), var(--sage-600)); color: #fff;
@@ -1110,7 +1110,15 @@
   .ic-lg { width:22px; height:22px; }
   /* ── Branded header band (structure 2) ── */
   header.hp-band { background: linear-gradient(120deg,#0D3A37 0%, var(--sage-700) 60%, var(--sage-600) 100%);
-    border-radius: 22px; padding: 16px 18px 18px; box-shadow: 0 16px 36px rgba(13,58,55,.25); }
+    border-radius: 18px; padding: 10px 14px 12px; box-shadow: 0 12px 28px rgba(13,58,55,.22); }
+  /* Main view tabs (Pipeline / All Jobs / Ghost Jobs / …) — one size down */
+  [id^="view-tab-"] { padding: 7px 14px !important; font-size: 12px !important; }
+  /* Inside the hero band the generic hp-band overrides paint the nav white AND
+     its slate text white — restore dark text for the INACTIVE tabs only (the
+     active tab keeps its white-on-sage pill). */
+  .hp-band #tab-nav-bar { background: #FAF8F3 !important; border-color: transparent !important; }
+  .hp-band #tab-nav-bar button.text-slate-400 { color: #52606F !important; }
+  .hp-band #tab-nav-bar button.text-slate-400:hover { color: #0F172A !important; }
   .hp-band .glass { background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.16) !important; box-shadow: none !important; }
   .hp-band .text-white { color:#fff !important; }
   .hp-band .gradient-text { background:none !important; -webkit-background-clip:initial !important; background-clip:initial !important; -webkit-text-fill-color:#fff !important; color:#fff !important; }
@@ -1132,17 +1140,19 @@
   .hp-band .hp-pill.hp-accent, .hp-band .hp-pill.hp-accent span { color: var(--ink) !important; font-weight:800; }
   .hp-band .btn-sync-emails { background:#FAF8F3 !important; color: var(--ink) !important; font-size:0.875rem !important;
     border:1px solid rgba(13,58,55,.08) !important; box-shadow:0 6px 16px rgba(9,38,36,.16) !important; }
-</style> <!-- Mobile menu button (hidden on desktop) --> <button id="mobile-menu-btn" onclick="toggleSidebar()" aria-label="Open menu"> <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg> </button> <!-- Overlay to close sidebar on mobile --> <div id="sidebar-overlay" onclick="toggleSidebar()"></div> <!-- ── Sidebar Navigation ─────────────────────────────────────── --> <nav id="app-sidebar"> <!-- Brand --> <div class="sb-brand-row"> <div class="sb-logo" id="sb-logo-btn" onclick="animateLogo()" title="SpotApply"> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"> <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" fill="rgba(255,255,255,0.08)"/> <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/> <circle cx="8" cy="12" r="1.5" fill="rgba(167,139,250,0.9)"/> </svg> </div> <span class="sb-brand-name">SpotApply</span> </div> <!-- Prominent resume upload — first thing every new user needs --> <button class="sb-resume-btn" onclick="openResumeUpload()" title="Upload or update your resume"> <span>Upload / update resume</span> <span id="sb-resume-status" class="sb-resume-status" title="Resume status"></span> </button> <!-- Usage meter — loadUsage() targeted these four IDs but they never existed, so free users only discovered limits via surprise 429s --> <div id="sb-usage" style="margin:2px 10px 8px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);"> <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:8.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.45)">Tailors</span><span id="usage-tailor-text" style="font-size:9px;font-weight:700;color:rgba(255,255,255,.75)">—</span></div> <div style="height:3px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;margin:3px 0 7px"><div id="usage-tailor-bar" style="height:100%;width:0%;background:var(--sage,#2FB4A6);border-radius:99px;transition:width .4s"></div></div> <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:8.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.45)">Auto-fills</span><span id="usage-autofill-text" style="font-size:9px;font-weight:700;color:rgba(255,255,255,.75)">—</span></div> <div style="height:3px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:3px"><div id="usage-autofill-bar" style="height:100%;width:0%;background:var(--sage,#2FB4A6);border-radius:99px;transition:width .4s"></div></div> </div> <!-- Nav items --> <div class="sb-nav"> <div class="sb-section-label">Workspace</div> <button id="sb-nav-kanban" class="sb-btn active" onclick="sbSwitchTab('kanban')" data-tip="Pipeline"> <span class="sb-icon"><svg class="ic"><use href="#i-kanban"/></svg></span> <span class="sb-label">Pipeline</span> </button> <button id="sb-nav-explorer" class="sb-btn" onclick="sbSwitchTab('explorer')" data-tip="All Jobs"> <span class="sb-icon"><svg class="ic"><use href="#i-search"/></svg></span> <span class="sb-label">All Jobs</span> </button> <button id="sb-nav-registry" class="sb-btn" onclick="sbSwitchTab('registry')" data-tip="Job Boards"> <span class="sb-icon"><svg class="ic"><use href="#i-building"/></svg></span> <span class="sb-label">Job Boards</span> </button> <button id="sb-nav-skills" class="sb-btn" onclick="sbSwitchTab('skills')" data-tip="Skill Gap"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Skill Gap</span> </button> <button id="sb-nav-xray" class="sb-btn" onclick="sbSwitchTab('xray')" data-tip="Resume X-Ray"> <span class="sb-icon">🩻</span> <span class="sb-label">Resume X-Ray</span> </button> <div class="sb-section-label">Tools</div> <button class="sb-btn" onclick="openInsightsModal()" data-tip="Insights"> <span class="sb-icon"><svg class="ic"><use href="#i-chart"/></svg></span> <span class="sb-label">Insights</span> </button> <button class="sb-btn" onclick="openRolesModal()" data-tip="Target Roles"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Target Roles</span> </button> <button class="sb-btn" onclick="openAddJobModal()" data-tip="Add Job from Link"> <span class="sb-icon"><svg class="ic"><use href="#i-link"/></svg></span> <span class="sb-label">Add Job Link</span> </button> <div class="sb-section-label">Networking</div> <button class="sb-btn" onclick="window.open('/messages', '_blank')" data-tip="Messages"> <span class="sb-icon"><svg class="ic"><use href="#i-message"/></svg></span> <span class="sb-label">Messages</span> </button> <button class="sb-btn" onclick="window.open('/recruiter', '_blank')" data-tip="Recruiter Portal"> <span class="sb-icon"><svg class="ic"><use href="#i-briefcase"/></svg></span> <span class="sb-label">Recruiter Portal</span> </button> <div class="sb-section-label sb-push-bottom">Account</div> <button class="sb-btn" onclick="openSettings('pricing')" data-tip="Pricing"> <span class="sb-icon"><svg class="ic"><use href="#i-gem"/></svg></span> <span class="sb-label">Plans &amp; Pricing</span> </button> <button id="sb-nav-review" class="sb-btn" onclick="openReviewModal()" data-tip="Write a Review"> <span class="sb-icon text-amber-400"></span> <span class="sb-label">Write a Review</span> </button> <button id="sb-nav-settings" class="sb-btn" onclick="openSettings()" data-tip="Settings"> <span class="sb-icon"><svg class="ic"><use href="#i-sliders"/></svg></span> <span class="sb-label">Settings</span> </button> <button class="sb-btn" onclick="startTour()" data-tip="Take a tour" aria-label="Take a guided tour"> <span class="sb-icon">🎓</span> <span class="sb-label">Take a Tour</span> </button> </div> <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)"> </nav> <!-- Main content wrapper --> <div id="main-wrapper"> <!-- Top Glow Overlay --> <div id="top-glow-overlay" style="position:fixed;top:0;left:190px;right:0;height:350px;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(99,102,241,0.1),transparent);pointer-events:none;z-index:0;"></div> <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8"> <!-- Premium Header -->
-<header class="mb-5 hp-band"> <!-- Top Nav Bar --> <div class="glass rounded-2xl px-5 py-3 mb-6 flex items-center justify-between border border-white/[0.06]" style="box-shadow: 0 1px 0 rgba(255,255,255,0.05) inset, 0 12px 40px rgba(0,0,0,0.35);"> <!-- Brand / Dashboard Greeting --> <div class="flex flex-col leading-tight"> <div class="font-black text-lg sm:text-xl tracking-tight text-white">Dashboard Overview</div> <div class="flex items-center gap-1.5 mt-0.5"> <span class="relative flex h-1.5 w-1.5"> <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500 truth-dot"></span> </span> <span id="measured-status" class="text-[9px] text-emerald-400 font-bold tracking-widest uppercase" title="Measured from our own board polling — not a status light">Checking boards…</span> </div> </div> <!-- Nav Actions --> <div class="flex items-center gap-2"> <button onclick="openNotifications()" title="Notifications" class="hp-pill flex items-center gap-2 px-5 rounded-full text-sm font-bold transition-all duration-200 relative" style="height: 44px;"> <svg class="ic"><use href="#i-bell"/></svg> <span class="hidden sm:inline">Notifications</span> <span id="header-notif-badge" class="notif-badge hidden absolute -top-1 -right-1 text-[9px] font-black rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center border shadow-sm" style="background: var(--sage, #10b981); color: #fff !important; border-color: var(--canvas, #070b14); z-index: 10;"></span> </button> <button id="header-profile-btn" data-tour="profile" onclick="openProfileModal()" title="My Profile" class="hp-pill flex items-center gap-2.5 pl-2 pr-5 rounded-full transition-all duration-200" style="height: 44px;"> <span id="header-avatar-ring" style="width:34px;height:34px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(255,255,255,0.15);flex-shrink:0;"> <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:15px;font-weight:800;color:var(--sage-700);background:linear-gradient(135deg,rgba(var(--sage-rgb),0.22),rgba(var(--sage-rgb),0.10));letter-spacing:-0.5px;">?</span> </span> <span class="hidden sm:inline text-sm font-bold text-slate-200" id="header-profile-label">Profile</span> <!-- Trust check badge positioned inline next to the profile name --> <span id="header-trust-badge" class="hidden text-[10px] font-black rounded-full w-[17px] h-[17px] flex items-center justify-center transition-all duration-300 ml-1 shadow-sm" style="background: var(--sage, #2FB4A6); color: #ffffff; flex-shrink: 0; line-height: 1;" title="Verified Profile">✓</span> </button> </div> </div> <!-- Compact title + live stat chips + Discover (slim — jobs come first) --> <div class="flex flex-wrap items-center justify-between gap-4"> <h1 class="text-2xl sm:text-3xl font-black tracking-tight gradient-text leading-none">Your Job Board</h1> <div class="flex items-center gap-3 flex-wrap"> <!-- Pool Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 50px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-indigo-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#4F46E5"><use href="#i-chart"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-indigo-300 uppercase tracking-widest leading-none">Pool</span> <span id="stat-pool" class="text-base font-black text-white tracking-tight mt-1 leading-none">…</span> </div> </div> <!-- Shortlisted Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 50px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-emerald-500/5 to-teal-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#059669"><use href="#i-check-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-emerald-300 uppercase tracking-widest leading-none">Shortlisted</span> <span id="stat-shortlist" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_shortlisted_count or shortlisted|length }}</span> </div> </div> <!-- Rejected Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 50px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-rose-500/5 to-red-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#DC2626"><use href="#i-x-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-rose-300 uppercase tracking-widest leading-none">Rejected</span> <span id="stat-rejected" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ rejected|length }}</span> </div> </div> <!-- Submitted Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 50px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-cyan-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#0E7490"><use href="#i-send"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-cyan-300 uppercase tracking-widest leading-none">Submitted</span> <span id="stat-submitted" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_submitted_count }}</span> </div> </div> <!-- Discover button --> <button id="discover-hero-banner" onclick="startDiscovery()" class="hp-pill hp-accent ml-1 text-sm font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap transition-all duration-300 hover:scale-[1.02]" style="height: 50px;"> <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Discover Jobs
-            </button> <button class="btn-sync-emails" onclick="openEmailSyncInfo()" title="Sync job emails from Gmail/Outlook"> <svg class="ic"><use href="#i-mail"/></svg> Email Sync
-            </button> </div> </div>
-</header> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div> <div id="tab-nav-bar" class="relative inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-6 gap-1 glass shadow-inner max-w-full overflow-x-auto"> <!-- Sliding active indicator — moves via JS transform (layoutId pattern) --> <span id="tab-indicator"></span> <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="relative z-10 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-kanban"/></svg> Pipeline
+</style> <!-- Mobile menu button (hidden on desktop) --> <button id="mobile-menu-btn" onclick="toggleSidebar()" aria-label="Open menu"> <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg> </button> <!-- Overlay to close sidebar on mobile --> <div id="sidebar-overlay" onclick="toggleSidebar()"></div> <!-- ── Sidebar Navigation ─────────────────────────────────────── --> <nav id="app-sidebar"> <!-- Brand --> <div class="sb-brand-row"> <div class="sb-logo" id="sb-logo-btn" onclick="animateLogo()" title="SpotApply"> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"> <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" fill="rgba(255,255,255,0.08)"/> <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/> <circle cx="8" cy="12" r="1.5" fill="rgba(167,139,250,0.9)"/> </svg> </div> <span class="sb-brand-name">SpotApply</span> </div> <!-- Prominent resume upload — first thing every new user needs --> <button class="sb-resume-btn" onclick="openResumeUpload()" title="Upload or update your resume"> <span>Upload / update resume</span> <span id="sb-resume-status" class="sb-resume-status" title="Resume status"></span> </button> <!-- Usage meter — loadUsage() targeted these four IDs but they never existed, so free users only discovered limits via surprise 429s --> <!-- Usage counters removed from view (founder request) — kept in the DOM,
+      hidden, because loadUsage() still writes these four IDs. -->
+ <div id="sb-usage" style="display:none;"> <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;"><span style="font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#64748B">Tailors</span><span id="usage-tailor-text" style="font-size:9.5px;font-weight:700;color:#475569">—</span></div> <div style="display:none"><div id="usage-tailor-bar"></div></div> <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;"><span style="font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#64748B">Auto-fills</span><span id="usage-autofill-text" style="font-size:9.5px;font-weight:700;color:#475569">—</span></div> <div style="display:none"><div id="usage-autofill-bar"></div></div> </div> <!-- Nav items --> <div class="sb-nav"> <div class="sb-section-label">Workspace</div> <button id="sb-nav-kanban" class="sb-btn active" onclick="sbSwitchTab('kanban')" data-tip="Pipeline"> <span class="sb-icon"><svg class="ic"><use href="#i-kanban"/></svg></span> <span class="sb-label">Pipeline</span> </button> <button id="sb-nav-explorer" class="sb-btn" onclick="sbSwitchTab('explorer')" data-tip="All Jobs"> <span class="sb-icon"><svg class="ic"><use href="#i-search"/></svg></span> <span class="sb-label">All Jobs</span> </button> <button id="sb-nav-registry" class="sb-btn" onclick="sbSwitchTab('registry')" data-tip="Job Boards"> <span class="sb-icon"><svg class="ic"><use href="#i-building"/></svg></span> <span class="sb-label">Job Boards</span> </button> <button id="sb-nav-skills" class="sb-btn" onclick="sbSwitchTab('skills')" data-tip="Skill Gap"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Skill Gap</span> </button> <button id="sb-nav-xray" class="sb-btn" onclick="sbSwitchTab('xray')" data-tip="Resume X-Ray"> <span class="sb-icon">🩻</span> <span class="sb-label">Resume X-Ray</span> </button> <div class="sb-section-label">Tools</div> <button class="sb-btn" onclick="openInsightsModal()" data-tip="Insights"> <span class="sb-icon"><svg class="ic"><use href="#i-chart"/></svg></span> <span class="sb-label">Insights</span> </button> <button class="sb-btn" onclick="openRolesModal()" data-tip="Target Roles"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Target Roles</span> </button> <button class="sb-btn" onclick="openAddJobModal()" data-tip="Add Job from Link"> <span class="sb-icon"><svg class="ic"><use href="#i-link"/></svg></span> <span class="sb-label">Add Job Link</span> </button> <div class="sb-section-label">Networking</div> <button class="sb-btn" onclick="window.open('/messages', '_blank')" data-tip="Messages"> <span class="sb-icon"><svg class="ic"><use href="#i-message"/></svg></span> <span class="sb-label">Messages</span> </button> <button class="sb-btn" onclick="window.open('/recruiter', '_blank')" data-tip="Recruiter Portal"> <span class="sb-icon"><svg class="ic"><use href="#i-briefcase"/></svg></span> <span class="sb-label">Recruiter Portal</span> </button> <div class="sb-section-label sb-push-bottom">Account</div> <button class="sb-btn" onclick="openSettings('pricing')" data-tip="Pricing"> <span class="sb-icon"><svg class="ic"><use href="#i-gem"/></svg></span> <span class="sb-label">Plans &amp; Pricing</span> </button> <button id="sb-nav-review" class="sb-btn" onclick="openReviewModal()" data-tip="Write a Review"> <span class="sb-icon text-amber-400"></span> <span class="sb-label">Write a Review</span> </button> <button id="sb-nav-settings" class="sb-btn" onclick="openSettings()" data-tip="Settings"> <span class="sb-icon"><svg class="ic"><use href="#i-sliders"/></svg></span> <span class="sb-label">Settings</span> </button> </div> <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)"> </nav> <!-- Main content wrapper --> <div id="main-wrapper"> <!-- Top Glow Overlay --> <div id="top-glow-overlay" style="position:fixed;top:0;left:190px;right:0;height:350px;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(99,102,241,0.1),transparent);pointer-events:none;z-index:0;"></div> <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-3"> <!-- Premium Header -->
+<header class="mb-4 hp-band"> <!-- Top Nav Bar --> <div class="glass rounded-2xl px-5 py-2 mb-3 flex items-center justify-between border border-white/[0.06]" style="box-shadow: 0 1px 0 rgba(255,255,255,0.05) inset, 0 12px 40px rgba(0,0,0,0.35);"> <!-- Brand / Dashboard Greeting --> <div class="flex flex-col leading-tight"> <div class="font-black text-lg sm:text-xl tracking-tight text-white">Dashboard Overview</div> <div class="flex items-center gap-1.5 mt-0.5"> <span class="relative flex h-1.5 w-1.5"> <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500 truth-dot"></span> </span> <span id="measured-status" class="text-[9px] text-emerald-400 font-bold tracking-widest uppercase" title="Measured from our own board polling — not a status light">Checking boards…</span> </div> </div> <!-- Nav Actions --> <div class="flex items-center gap-2"> <button onclick="openNotifications()" title="Notifications" class="hp-pill flex items-center gap-2 px-5 rounded-full text-sm font-bold transition-all duration-200 relative" style="height: 44px;"> <svg class="ic"><use href="#i-bell"/></svg> <span class="hidden sm:inline">Notifications</span> <span id="header-notif-badge" class="notif-badge hidden absolute -top-1 -right-1 text-[9px] font-black rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center border shadow-sm" style="background: var(--sage, #10b981); color: #fff !important; border-color: var(--canvas, #070b14); z-index: 10;"></span> </button> <button id="header-profile-btn" data-tour="profile" onclick="openProfileModal()" title="My Profile" class="hp-pill flex items-center gap-2.5 pl-2 pr-5 rounded-full transition-all duration-200" style="height: 44px;"> <span id="header-avatar-ring" style="width:34px;height:34px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(255,255,255,0.15);flex-shrink:0;"> <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:15px;font-weight:800;color:var(--sage-700);background:linear-gradient(135deg,rgba(var(--sage-rgb),0.22),rgba(var(--sage-rgb),0.10));letter-spacing:-0.5px;">?</span> </span> <span class="hidden sm:inline text-sm font-bold text-slate-200" id="header-profile-label">Profile</span> <!-- Trust check badge positioned inline next to the profile name --> <span id="header-trust-badge" class="hidden text-[10px] font-black rounded-full w-[17px] h-[17px] flex items-center justify-center transition-all duration-300 ml-1 shadow-sm" style="background: var(--sage, #2FB4A6); color: #ffffff; flex-shrink: 0; line-height: 1;" title="Verified Profile">✓</span> </button> </div> </div> <!-- Compact title + live stat chips + Discover (slim — jobs come first) --> <div class="flex flex-wrap items-center justify-between gap-4"> <div id="tab-nav-bar" class="relative inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-0 gap-1 glass shadow-inner max-w-full overflow-x-auto"> <!-- Sliding active indicator — moves via JS transform (layoutId pattern) --> <span id="tab-indicator"></span> <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="relative z-10 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-kanban"/></svg> Pipeline
             </button> <button id="view-tab-explorer" onclick="switchViewTab('explorer')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-search"/></svg> All Jobs (<span id="explorer-total-count">...</span>)
             </button> <button id="view-tab-ghost" onclick="switchViewTab('ghost')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-ghost"/></svg> Ghost Jobs (<span id="ghost-total-count">...</span>)
             </button> <button id="view-tab-skills" onclick="switchViewTab('skills')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-target"/></svg> Skill Gap
             </button> <button id="view-tab-xray" onclick="switchViewTab('xray')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> 🩻 Resume X-Ray
             </button> <button id="view-tab-registry" onclick="switchViewTab('registry')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-sliders"/></svg> Boards
-            </button> </div> <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(79,70,229,0.07),rgba(124,58,237,0.03))"> <svg class="ic ic-lg shrink-0" style="color:#4F46E5"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Install the SpotApply Extension to fill any job form</p> <p class="text-[10px] text-slate-400 mt-0.5">Works on LinkedIn, Indeed, Workday, Greenhouse, Lever, Ashby — fills in your browser, you control Submit.</p> </div> <a href="/extension" target="_blank" class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Install →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
+            </button> </div> <div class="flex items-center gap-3 flex-wrap"> <!-- Pool Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-indigo-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#4F46E5"><use href="#i-chart"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-indigo-300 uppercase tracking-widest leading-none">Pool</span> <span id="stat-pool" class="text-base font-black text-white tracking-tight mt-1 leading-none">…</span> </div> </div> <!-- Shortlisted Card — hidden: it duplicated the stage-tab count right below (IDs kept for the stats loader) --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-emerald-500/5 to-teal-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#059669"><use href="#i-check-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-emerald-300 uppercase tracking-widest leading-none">Shortlisted</span> <span id="stat-shortlist" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_shortlisted_count or shortlisted|length }}</span> </div> </div> <!-- Rejected Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-rose-500/5 to-red-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#DC2626"><use href="#i-x-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-rose-300 uppercase tracking-widest leading-none">Rejected</span> <span id="stat-rejected" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ rejected|length }}</span> </div> </div> <!-- Submitted Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-cyan-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#0E7490"><use href="#i-send"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-cyan-300 uppercase tracking-widest leading-none">Submitted</span> <span id="stat-submitted" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_submitted_count }}</span> </div> </div> <!-- Discover button --> <button id="discover-hero-banner" onclick="startDiscovery()" class="hidden hp-pill hp-accent ml-1 text-sm font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap transition-all duration-300 hover:scale-[1.02]" style="height: 42px;"> <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Discover Jobs
+            </button>   <button class="btn-sync-emails" onclick="openEmailSyncInfo()" title="Sync job emails from Gmail/Outlook"> <svg class="ic"><use href="#i-mail"/></svg> Email Sync
+            </button>   </div> </div>
+</header> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div>  <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(79,70,229,0.07),rgba(124,58,237,0.03))"> <svg class="ic ic-lg shrink-0" style="color:#4F46E5"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Install the SpotApply Extension to fill any job form</p> <p class="text-[10px] text-slate-400 mt-0.5">Works on LinkedIn, Indeed, Workday, Greenhouse, Lever, Ashby — fills in your browser, you control Submit.</p> </div> <a href="/extension" target="_blank" class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Install →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
                 inert <template> that the slide-in drawer clones on click, so the
                 list stays short and easy to scroll. Per-column buttons are passed
                 in via {% call %} and rendered through caller(). -#}
@@ -1162,11 +1172,13 @@
                         <!-- Meta: humanized, icon chips -->
                         <div> <div class="flex flex-wrap items-center gap-x-5 gap-y-2"> {% set post_date = job.posted_at or job.discovered_at %}
                                 {% set _dlive = liveness_of(job) %}
-                                {% if _dlive %}<span class="jd-meta-chip jr-truth{{ ' jr-truth-live' if _dlive.tone == 'live' else '' }}" title="Present on the company's own board at our last automatic check"><span class="truth-dot"></span>{{ _dlive.label }}</span>{% endif %}
+                                {#- Plain chip on purpose — the green highlight box read as an alert. -#}
+                                {% if _dlive %}<span class="jd-meta-chip" title="Present on the company's own board at our last automatic check"><span class="truth-dot"></span>{{ _dlive.label }}</span>{% endif %}
                                 {% set _dsal = salary_of(job) %}
                                 {% if _dsal %}<span class="jd-meta-chip" style="color:var(--sage-700);font-weight:800;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v10M15 9.5c0-1.4-1.34-2.5-3-2.5s-3 1.1-3 2.5 1.34 2.5 3 2.5 3 1.1 3 2.5-1.34 2.5-3 2.5-3-1.1-3-2.5"/></svg>{{ _dsal }}</span>{% endif %}
                                 {% if job.remote or job.location %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="11" r="3"/></svg>{{ 'Remote' if job.remote else job.location }}{% if not job.remote and job.location and 'remote' not in job.location|lower %} · On-site{% endif %}</span>{% endif %}
-                                {% if post_date %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
+                                {#- Posted-ago chip removed: the liveness chip above already carries the freshness timestamp — showing both read as the same data twice. -#}
+                                {% if post_date and not _dlive %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
                                 <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>Found on {{ job.source.value|upper }}</span> {% if job.is_closed %}<span class="jd-meta-chip" style="color:#C2410C;">⚠ May be closed</span>{% endif %}
                             </div> {% set hp = (job.hire_probability_score * 100)|int if job.hire_probability_score is not none else None %}
                             <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3.5 w-full border-b border-slate-800/60 pb-3.5"> <div class="flex flex-wrap gap-2 items-center"> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold text-white shadow-sm" style="background: linear-gradient(135deg, var(--sage), var(--sage-600));" title="Apply priority = 65% resume fit + 35% hiring intent"> <span>★ Priority:</span> <span>{% if job.blended_score is not none %}{{ job.blended_score|int }}{% else %}—{% endif %}</span> </div> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold {% if hp is not none and hp >= 60 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% elif hp is not none and hp >= 30 %}bg-amber-500/10 text-amber-400 border border-amber-500/20{% else %}bg-slate-800/40 text-slate-400 border border-slate-700/20{% endif %}" title="How likely this team is actively filling the role right now"> <span>Hiring Intent:</span> <span>{% if hp is not none %}{{ hp }}%{% else %}N/A{% endif %}</span> </div> </div> <div class="top-actions-placeholder flex flex-wrap items-center gap-2 lg:ml-auto"> <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[10.5px] font-bold bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white transition duration-150" title="Open original job posting"> ↗ Open Original
@@ -1177,7 +1189,7 @@
                         </div>
                         {% if not _is_submitted_state %}
                         <!-- AI Match Report — full width, in the flow -->
-                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">how this job was vetted for you</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="insider-intel-placeholder"></div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> <div class="pipeline-trail-placeholder"></div> </div> {% set gflags = job.ghost_flags|fromjson %}
+                        <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">✦ AI Match Report</span> <span class="jd-rh-sub">scored against your actual resume</span> </div> <div class="match-panel-placeholder"> <div class="jd-sec min-h-[120px] flex items-center justify-center"> <span class="text-xs text-slate-500">Analyzing this job against your resume…</span> </div> </div> <div class="insider-intel-placeholder"></div> <div class="sponsorship-signals-placeholder"> <div class="jd-sec flex items-center justify-center"> <span class="text-xs text-slate-500">Loading visa &amp; sponsorship details…</span> </div> </div> </div> {% set gflags = job.ghost_flags|fromjson %}
                         {% if job.ghost_score and job.ghost_score >= 0.5 %}
                         <div class="rounded-2xl border border-rose-500/30 bg-rose-950/20 px-4 py-3"> <span class="font-extrabold text-[9px] uppercase tracking-wider block mb-1 text-rose-400">⚠ Possible ghost posting</span> <p class="text-[11px] leading-relaxed text-rose-200/80">Low activity signals detected{% if gflags %}: {{ gflags|join(', ') }}{% endif %}.</p> </div> {% endif %}
                         {% else %}
@@ -1250,22 +1262,23 @@
             {% set post_date = job.posted_at or job.discovered_at %}
             <div class="jobrow glass rounded-[22px] relative cursor-pointer overflow-hidden" data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" data-source="{{ job.source.value|e }}"{% if score is not none %} data-score="{{ score }}"{% endif %} data-priority="{{ job.blended_score if job.blended_score is not none else (score if score is not none else 0) }}" data-posted="{{ post_date.isoformat() if post_date else '' }}" onclick="openJobDrawer(this)">
                 {% if stage == 'shortlist' %}<button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="jr-remove" aria-label="Remove from shortlist" title="Not interested — remove">&times;</button>{% endif %}
+                {#- Score bar on top (replaces the right-side circle panel AND the
+                    old badge row — freshness lives ONCE, in the meta row below). -#}
+                {% set _cap = sponsorship_of(job) %}
+                {% if score is not none %}
+                <div class="jr-scorebar{% if stage == 'shortlist' %} jr-scorebar-pad{% endif %}" title="AI match score — Claude read the full posting and scored it against your resume">
+                    <div class="jr-scorebar-fill jr-fill-{{ 'strong' if score >= 75 else ('good' if score >= 55 else ('fair' if score >= 40 else 'low')) }}" style="width:{{ score }}%;"></div>
+                    <span class="jr-scorebar-text">{{ score }}% · {% if score >= 75 %}Strong match{% elif score >= 55 %}Good match{% elif score >= 40 %}Fair match{% else %}Low match{% endif %}</span>
+                </div>
+                {% endif %}
                 <div class="jr-flex">
                     <div class="jr-info">
+                        {% if stage != 'shortlist' %}
                         <div class="jr-badges">
-                            {% set _live = liveness_of(job) %}
-                            {% if _live %}<span class="jr-badge jr-truth{{ ' jr-truth-live' if _live.tone == 'live' else '' }}" title="This posting was present on the company's own board at our last automatic check — polled at least hourly for live boards."><span class="truth-dot"></span>{{ _live.label }}</span>{% endif %}
-                            {% if stage != 'shortlist' %}
                             <span class="jr-badge jr-badge-status">{{ app.status.value|capitalize }}</span>
                             {% if app.apply_track == 'email_import' %}<span class="jr-badge jr-badge-hot" title="Detected from your inbox — applied outside SpotApply">From email</span>{% else %}<span class="jr-badge jr-badge-good" title="Applied through SpotApply">✓ Via SpotApply</span>{% endif %}
-                            {% endif %}
-                            {% set _urg = urgency_of(job) %}
-                            {% if post_date and not (_urg and _urg.label) %}<span class="jr-badge jr-badge-time">Posted {{ post_date|days_ago }}</span>{% endif %}
-                            {% if _urg and _urg.label %}<span class="jr-badge jr-badge-hot" title="{{ _urg.reason }}">{{ _urg.label }}</span>{% endif %}
-                            {% set _cap = sponsorship_of(job) %}
-                            {% if _cap and _cap.cap_exempt %}<span class="jr-badge jr-badge-good" title="Cap-exempt employer — can sponsor H-1B year-round with no lottery">No-lottery sponsor</span>
-                            {% elif _cap and _cap.tone == 'good' %}<span class="jr-badge jr-badge-good" title="{{ _cap.reason }}">Likely sponsors visas</span>{% endif %}
                         </div>
+                        {% endif %}
                         <div class="jr-title-row">
                             <span class="co-logo co-logo-lg"><span>{{ ((job.company or '?')|trim)[:1]|upper }}</span>{% set _dom = job.company|company_domain %}{% if _dom %}<img src="/api/favicon?domain={{ _dom }}&name={{ job.company|urlencode }}" alt="" loading="lazy" onload="if(this.naturalWidth<=16)this.remove()" onerror="this.remove()">{% endif %}</span>
                             <div class="min-w-0 flex-1">
@@ -1277,10 +1290,11 @@
                             {% set _sal = salary_of(job) %}
                             {% if _sal %}<span class="jd-meta-chip" style="color:var(--sage-700);font-weight:800;" title="From the job posting"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v10M15 9.5c0-1.4-1.34-2.5-3-2.5s-3 1.1-3 2.5 1.34 2.5 3 2.5 3 1.1 3 2.5-1.34 2.5-3 2.5-3-1.1-3-2.5"/></svg>{{ _sal }}</span>{% endif %}
                             {% if job.remote or job.location %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="11" r="3"/></svg>{{ 'Remote' if job.remote else job.location }}{% if not job.remote and job.location and 'remote' not in job.location|lower %} · On-site{% endif %}</span>{% endif %}
-                            {#- Posted-ago already shows as the card's top time badge;
-                                repeat here ONLY when an urgency label displaced it. -#}
-                            {% if post_date and (_urg and _urg.label) %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
+                            {#- Freshness lives HERE, once — the old top badges (liveness chip,
+                                'Posted today') were the same data shown twice. -#}
+                            {% if post_date %}<span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v5l3 3"/></svg>Posted {{ post_date|days_ago }}</span>{% endif %}
                             {% if job.blended_score is not none %}<span class="jd-meta-chip" title="Apply priority = 65% resume fit + 35% hiring intent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11.05 3.6a1 1 0 011.9 0l1.8 4.4 4.7.4a1 1 0 01.6 1.8l-3.6 3.1 1.1 4.6a1 1 0 01-1.5 1.1L12 16.9 7.95 19a1 1 0 01-1.5-1.1l1.1-4.6-3.6-3.1a1 1 0 01.6-1.8l4.7-.4z"/></svg>Priority {{ job.blended_score|int }}</span>{% endif %}
+                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jd-meta-chip" style="color:var(--sage-700);font-weight:700;" title="{{ _cap.reason|e }}">✓ {{ 'No-lottery sponsor' if _cap.cap_exempt else 'Sponsors visas' }}</span>{% endif %}
                         </div>
                         <div class="jr-actions" onclick="event.stopPropagation()">
                             {% if stage == 'shortlist' %}
@@ -1307,21 +1321,6 @@
                             {% endif %}
                         </div>
                     </div>
-                    <div class="jr-score{% if score is not none %} jr-tier-{{ 'strong' if score >= 75 else ('good' if score >= 55 else ('fair' if score >= 40 else 'low')) }}{% endif %}">
-                        {% if score is not none %}
-                        <div class="jr-score-dial"> <svg viewBox="0 0 36 36" style="width:100%;height:100%;"> <path fill="none" stroke="rgba(var(--sage-rgb),0.18)" stroke-width="3" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> <path fill="none" stroke="var(--tier-c, var(--sage-600))" stroke-width="3" stroke-linecap="round" stroke-dasharray="{{ score }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" /> </svg> <span class="jr-score-num">{{ score }}<small>%</small></span> </div>
-                        <div class="jr-score-label">{% if score >= 75 %}Strong match{% elif score >= 55 %}Good match{% elif score >= 40 %}Fair match{% else %}Low match{% endif %}</div>
-                        <div class="jr-vetted">✦ AI-vetted · 7 checks</div>
-                        {% else %}
-                        <div class="jr-score-label" style="opacity:.7;">Not scored yet</div>
-                        {% endif %}
-                        <div class="jr-sigs">
-                            {% if _cap and (_cap.cap_exempt or _cap.tone == 'good') %}<span class="jr-sig jr-sig-spon" title="{{ _cap.reason|e }}">✓ {{ _cap.badge or 'Sponsors visas' }}{% if _cap.cap_exempt %} · cap-exempt{% endif %}</span>{% elif _cap and _cap.tone == 'bad' %}<span class="jr-sig jr-sig-nospon" title="{{ _cap.reason|e }}">✕ {{ _cap.badge or 'No visa sponsorship' }}</span>{% endif %}
-                            {% set _sigs_all = (job.hire_probability_signals|fromjson) if job.hire_probability_signals else [] %}
-                            {% set _sigs = [] %}{% for s_ in _sigs_all %}{% if not (s_ is string and s_.startswith('fresh_posting')) %}{% set _ = _sigs.append(s_) %}{% endif %}{% endfor %}
-                            {% for s_ in _sigs[:2] %}<span class="jr-sig">✓ {{ s_|humanize_signal }}</span>{% endfor %}
-                        </div>
-                    </div>
                 </div>
                 {{ jobdetail(app, job, visa, shortlist_actions(app) if stage == 'shortlist' else (submitted_actions(app) if stage == 'submitted' else interviewing_actions(app))) }}
             </div>
@@ -1334,32 +1333,57 @@
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-interviewing', this)">Interviewing <span class="pt-count">{{ interviewing|length }}</span></button>
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-rejected', this)">Rejected <span class="pt-count">{{ rejected|length }}</span></button>
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-skipped', this)">Removed <span class="pt-count">{{ skipped|length }}</span></button>
+                {#- Shortlist controls share the stage-chip row (no wasted row);
+                    switchPipeTab hides them on the other panes. -#}
+                <div id="shortlist-controls" class="flex items-center gap-2 ml-auto">
+                    <div id="shortlist-sort" class="flex items-center gap-1 p-0.5 rounded-full" style="background:var(--surface-2, rgba(15,23,42,0.5));border:1px solid var(--border, rgba(148,163,184,0.18));">
+                        <button type="button" data-sort="fresh" onclick="sortShortlist('fresh', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Newest postings first (default)">🕐 Freshest</button>
+                        <button type="button" data-sort="match" onclick="sortShortlist('match', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Highest AI match score first">🎯 Best match</button>
+                    </div>
+                    <div class="relative w-52 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
+                <div id="submitted-controls" class="items-center gap-2 ml-auto" style="display:none;">
+                    <div class="relative w-64 max-w-full"> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
+                <div id="interviewing-controls" class="items-center gap-2 ml-auto" style="display:none;">
+                    <div class="relative w-64 max-w-full"> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
+                </div>
             </div>
             <div id="pipe-shortlist" class="pipe-pane"><!-- Shortlisted — full-width Jobright-style rows -->
-            <div data-tour="shortlist" class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="relative flex h-2 w-2 shrink-0"> <span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span> <span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span> </span>
-                        <h2 class="font-bold text-white text-base">Shortlisted Fits</h2>
-                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">{{ total_shortlisted_count or shortlisted|length }}</span>
-                        <span class="text-[10px] text-slate-500 font-semibold cursor-help" title="Newest postings first — today's jobs lead. Within the same day, Priority (65% AI fit + 35% hiring intent) ranks the best matches on top. Personalized: companies and role types you ✕-dismiss sink, ones you apply to float.">ⓘ fresh first · learns from you{% if total_shortlisted_count and total_shortlisted_count > shortlisted|length %} · top {{ shortlisted|length }} shown (max {{ company_cap or 2 }} per company){% endif %}</span>
-                    </div>
-                    <div class="flex items-center gap-2 flex-wrap">
-                        <!-- Sort toggle: freshest posting vs. best AI match -->
-                        <div id="shortlist-sort" class="flex items-center gap-1 p-0.5 rounded-full" style="background:var(--surface-2, rgba(15,23,42,0.5));border:1px solid var(--border, rgba(148,163,184,0.18));">
-                            <button type="button" data-sort="fresh" onclick="sortShortlist('fresh', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Newest postings first (default)">🕐 Freshest</button>
-                            <button type="button" data-sort="match" onclick="sortShortlist('match', this)" class="sl-sort-btn text-[11px] font-bold px-3 py-1.5 rounded-full transition" title="Highest AI match score first">🎯 Best match</button>
-                        </div>
-                        <!-- Min match-score filter: hide weak matches, focus on the strong ones -->
-                        <div class="flex items-center gap-1.5 text-[11px] font-bold text-slate-400" title="Hide shortlisted jobs below this match score">
-                            <span>Min</span>
-                            <input type="range" id="shortlist-minscore" min="0" max="90" step="5" value="{{ shortlist_strong_threshold or 0 }}" oninput="filterShortlistByScore(this.value)" style="width:84px;accent-color:var(--sage-600);cursor:pointer;">
-                            <span id="shortlist-minscore-val" class="text-slate-300 tabular-nums" style="width:30px;">{{ shortlist_strong_threshold or 0 }}%</span>
-                        </div>
-                        <div class="relative w-56 max-w-full"> <input type="text" placeholder="Search shortlisted jobs..." onkeyup="filterColumn(this, 'shortlisted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                    </div>
-                </div>
-                <div class="flex flex-col gap-4 pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
+            <style>
+                /* Shortlist board: side-by-side cards on wide screens (sketch layout).
+                   align-items stretch + flex-column cards = every card in a row is the
+                   SAME height, actions pinned to the bottom — no ragged grid. */
+                #shortlisted-container, #submitted-container, #interviewing-container { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: stretch; }
+                @media (min-width: 1280px) { #shortlisted-container, #submitted-container, #interviewing-container { grid-template-columns: 1fr 1fr; } }
+                #shortlisted-container > #empty-shortlist-state,
+                #submitted-container > .text-center,
+                #interviewing-container > .text-center { grid-column: 1 / -1; }
+                #shortlisted-container .jobrow, #submitted-container .jobrow, #interviewing-container .jobrow { display: flex; flex-direction: column; height: 100%; }
+                #shortlisted-container .jr-flex, #submitted-container .jr-flex, #interviewing-container .jr-flex { flex: 1; display: flex; }
+                #shortlisted-container .jr-info, #submitted-container .jr-info, #interviewing-container .jr-info { display: flex; flex-direction: column; width: 100%; }
+                #shortlisted-container .jr-actions, #submitted-container .jr-actions, #interviewing-container .jr-actions { margin-top: auto; }
+                /* Score bar — slim and light: soft tinted fill, dark text, no glow */
+                .jr-scorebar { position: relative; height: 20px; border-radius: 7px; background: rgba(15,23,42,0.05); overflow: hidden; margin: 14px 18px 4px; flex-shrink: 0; }
+                .jr-scorebar-pad { margin-right: 44px; } /* clears the ✕ remove button */
+                .jr-scorebar-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 7px; }
+                .jr-fill-strong { background: rgba(var(--sage-rgb), 0.32); }
+                .jr-fill-good   { background: rgba(99,102,241, 0.26); }
+                .jr-fill-fair   { background: rgba(245,158,11, 0.30); }
+                .jr-fill-low    { background: rgba(100,116,139, 0.25); }
+                .jr-scorebar-text { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 9.5px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--ink); white-space: nowrap; }
+                /* Card action buttons: quiet boxes, BLACK text — color only wakes on hover.
+                   !important needed: the theme forces .jbtn-primary * { color:#fff !important }. */
+                #shortlisted-container .jr-actions { padding-top: 12px; }
+                #shortlisted-container .jr-actions .jbtn,
+                #shortlisted-container .jr-actions .jbtn * { background: rgba(255,255,255,0.8); color: #1E293B !important; border-color: var(--border); box-shadow: none; font-weight: 700; }
+                #shortlisted-container .jr-actions .jbtn { border: 1px solid var(--border); padding: 8px 14px; font-size: 11px; }
+                #shortlisted-container .jr-actions .jbtn:hover,
+                #shortlisted-container .jr-actions .jbtn:hover * { background: var(--sage-tint); color: var(--sage-700) !important; }
+                #shortlisted-container .jr-actions .jbtn:hover { border-color: rgba(var(--sage-rgb),0.5); box-shadow: 0 0 0 3px rgba(var(--sage-rgb),0.12); }
+            </style>
+            <div data-tour="shortlist" class="flex flex-col gap-3">
+                <div class="pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
                     {{ jobrow(app, job, visa_framing) }}
                     {% else %}
                     <div id="empty-shortlist-state" class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">🔍 Your AI agent is finding your first matches…</p> <p class="text-slate-600 text-xs mt-1">New jobs are scanned, scored and shortlisted for you automatically — around the clock, no button needed. First matches usually appear within minutes of uploading your resume; “Discover Jobs” just runs an extra pass right now.</p> </div>
@@ -1369,15 +1393,7 @@
             </div>
             <div id="pipe-submitted" class="pipe-pane hidden"><!-- Submitted — full-width rows -->
             <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="relative flex h-2 w-2 shrink-0"> <span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span> </span>
-                        <h2 class="font-bold text-white text-base">Submitted Pipeline</h2>
-                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">{{ total_submitted_count }}</span>
-                    </div>
-                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search submitted..." onkeyup="filterColumn(this, 'submitted-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                </div>
-                <div class="flex flex-col gap-4 pr-1" id="submitted-container"> {% for app, job in submitted %}
+                <div class="pr-1" id="submitted-container"> {% for app, job in submitted %}
                     {{ jobrow(app, job, visa_framing, 'submitted') }}
                     {% else %}
                     <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No submitted roles yet.</p> <p class="text-slate-600 text-xs mt-1">Apply from your shortlist and they will land here.</p> </div>
@@ -1391,15 +1407,7 @@
             </div></div>
             <div id="pipe-interviewing" class="pipe-pane hidden"><!-- Interviewing — full-width rows -->
             <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="relative flex h-2 w-2 shrink-0"> <span class="relative inline-flex rounded-full h-2 w-2" style="background:#3B82F6;"></span> </span>
-                        <h2 class="font-bold text-white text-base">Interview Pipeline</h2>
-                        <span class="text-xs font-black px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20" id="interviewing-count">{{ interviewing|length }}</span>
-                    </div>
-                    <div class="relative w-80 max-w-full"> <input type="text" placeholder="Search interviews..." onkeyup="filterColumn(this, 'interviewing-container')" class="w-full bg-slate-950/40 border border-slate-800/60 rounded-full py-2 pl-4 pr-4 text-xs text-white placeholder-slate-600 focus:outline-none transition duration-150" /> </div>
-                </div>
-                <div class="flex flex-col gap-4 pr-1" id="interviewing-container"> {% for app, job in interviewing %}
+                <div class="pr-1" id="interviewing-container"> {% for app, job in interviewing %}
                     {{ jobrow(app, job, visa_framing, 'interviewing') }}
                     {% else %}
                     <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No interviews scheduled yet.</p> <p class="text-slate-600 text-xs mt-1">Heard back? Mark a submitted job as Interview to track it here.</p> </div>
@@ -1478,7 +1486,7 @@
                     </button> <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Tailoring Studio: watch the resume being written, ATS keywords highlighted, score-checked -->
  <div id="tailor-studio" style="display:none; position:fixed; inset:0; z-index:120;">
    <div onclick="closeTailorStudio()" style="position:absolute; inset:0; background:rgba(2,6,23,0.8); backdrop-filter:blur(6px);"></div>
-   <div class="glass" style="position:relative; max-width:860px; margin:4vh auto; max-height:92vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
+   <div class="glass" style="position:relative; max-width:1080px; margin:3vh auto; max-height:94vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
      <div class="flex items-center justify-between gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
        <div class="min-w-0">
          <div class="text-sm font-black text-white truncate" id="ts-title">✍️ Tailoring…</div>
@@ -1487,7 +1495,7 @@
        <div class="flex items-center gap-2 shrink-0">
          <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
          <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
-         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span>
+         <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span> <span id="ts-grounding" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
          <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
        </div>
      </div>
@@ -1499,10 +1507,10 @@
        <button type="button" id="ts-rebuild" onclick="tsRebuild()" class="hidden text-[10px] font-black px-4 py-1.5 rounded-full" style="background:rgba(244,63,94,0.12);color:#fb7185;border:1px solid rgba(244,63,94,0.35)">↻ Rebuild for a better score</button>
      </div>
      <div class="flex-1 overflow-y-auto px-6 pb-4" id="ts-scroll">
-       <pre id="ts-content" class="text-[11.5px] text-slate-200 leading-relaxed whitespace-pre-wrap bg-slate-950/60 border border-white/5 rounded-2xl p-5 min-h-[300px]" style="font-family:inherit"></pre>
+       <pre id="ts-content" class="text-[13.5px] text-slate-100 leading-[1.75] whitespace-pre-wrap bg-slate-950/60 border border-white/5 rounded-2xl p-6 min-h-[460px]" style="font-family:inherit"></pre>
      </div>
      <div class="px-6 pb-3 text-[10px] text-slate-500 flex flex-wrap items-center gap-3" id="ts-legend" style="display:none">
-       <span><mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
+       <span><mark style="background:none;color:#059669;font-weight:600">highlighted</mark> = exact JD keyword the ATS scans for, now covered</span>
        <span id="ts-missing" class="text-amber-300/90"></span>
      </div>
      <div class="px-6 pb-3 hidden" id="ts-feedback"></div>
@@ -3303,7 +3311,7 @@
                 const pat = _tsEscape(kw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 try {
                     html = html.replace(new RegExp(`(?<![\\w>])(${pat})(?![\\w])`, 'gi'),
-                        '<mark style="background:rgba(16,185,129,0.25);color:#6ee7b7;border-radius:4px;padding:0 3px">$1</mark>');
+                        '<mark style="background:none;color:#059669;font-weight:600">$1</mark>');
                 } catch (e) { /* skip pathological keyword */ }
             });
             return html;
@@ -3355,6 +3363,35 @@
                 const cov = document.getElementById('ts-coverage');
                 cov.textContent = `ATS keywords ${d.ats.coverage_pct}%`;
                 cov.classList.remove('hidden');
+            }
+            // Grounding has three states and the middle one is the point: when the
+            // anti-hallucination check could not RUN, say so instead of implying a
+            // clean pass. The user's own review is the last line of defence, and it
+            // only works if they know the automated one was skipped.
+            const gEl = document.getElementById('ts-grounding');
+            const gStatus = q.grounding_status
+                || (q.grounding_passed === true ? 'passed'
+                    : q.grounding_passed === false ? 'failed' : null);
+            if (gStatus) {
+                const G = {
+                    passed:     ['✓ Grounded in your résumé', 'rgba(16,185,129,0.12)', '#34d399', 'rgba(16,185,129,0.35)',
+                                 'Every bullet was matched back to your master résumé.'],
+                    failed:     ['✕ Grounding failed', 'rgba(244,63,94,0.12)', '#fb7185', 'rgba(244,63,94,0.35)',
+                                 'One or more bullets could not be traced to your master résumé. Rebuild before sending.'],
+                    unverified: ['⚠ Grounding not verified', 'rgba(245,158,11,0.14)', '#fbbf24', 'rgba(245,158,11,0.3)',
+                                 'The automated hallucination check did not run for this draft. Read every bullet against your own résumé before you submit.'],
+                }[gStatus];
+                if (G) {
+                    gEl.textContent = G[0];
+                    gEl.title = G[4];
+                    gEl.style.cssText = `background:${G[1]};color:${G[2]};border:1px solid ${G[3]}`;
+                    gEl.classList.remove('hidden');
+                    if (gStatus !== 'passed') {
+                        document.getElementById('ts-rebuild').classList.remove('hidden');
+                    }
+                }
+            } else {
+                gEl.classList.add('hidden');
             }
             if ((q.attempts || 1) > 1) {
                 const at = document.getElementById('ts-attempts');
@@ -3636,6 +3673,7 @@
                     trackPendingApply(appId, pack.company);
                     setTimeout(maybeAskSubmit, 15000);
                 }
+                loadUsage();   // refresh the sidebar Auto-fills counter right away
                 // Attach refresh credentials so the extension's background worker
                 // can renew the access token mid-autofill (kept out of page scripts).
                 pack.refresh_token = localStorage.getItem('sb_refresh') || null;
@@ -4266,9 +4304,10 @@
                 <span class="text-2xl">🕐</span>
                 <div><p class="text-[9px] font-black uppercase tracking-widest" style="color:${color}">OPT Clock — ${oc.zone.toUpperCase()} zone</p>
                 <p class="text-lg font-black text-white">${oc.unemployment_days_left} unemployment days left <span class="text-[11px] text-slate-500 font-normal">of ${oc.unemployment_budget}${oc.stem_opt ? ' (STEM)' : ''}</span></p>
-                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}</div>
+                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}
+                ${oc.h1b ? `<p class="text-[11px] text-slate-400 mt-1" title="${_esc(oc.h1b.message)}">🗓 ${_esc(oc.h1b.label)} · earliest cap-subject start ${_esc(oc.h1b.next_employment_start)}</p>` : ''}</div>
                 <div class="flex-1"></div>
-                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}</p>
+                <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}${oc.h1b ? ' H-1B dates are the typical schedule — confirm on uscis.gov.' : ''}</p>
               </div>`;
             renderOptStrip(oc);
         }
@@ -5647,7 +5686,7 @@
                             const block = document.createElement('div');
                             block.className = "bg-slate-800/60 rounded-xl p-4 relative transform translate-y-2 opacity-0 transition-all duration-300";
                             block.innerHTML = `
-                                <p class="text-[11px] text-violet-300 font-bold mb-2">${ea.question}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
+                                <p class="text-[11px] text-violet-300 font-bold mb-2">${_esc(ea.question)}</p> <p id="essay-type-${essayIdx}" class="text-sm text-slate-200 leading-relaxed"></p> <button data-copy="${encodeURIComponent(ea.answer)}" onclick="copyText(decodeURIComponent(this.dataset.copy), this)" class="absolute top-3 right-3 text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> `;
                             list.appendChild(block);
                             
                             setTimeout(() => {
@@ -5835,6 +5874,15 @@
     function switchPipeTab(paneId, btn) {
         document.querySelectorAll('.pipe-pane').forEach(pn => pn.classList.toggle('hidden', pn.id !== paneId));
         document.querySelectorAll('.pipe-tab').forEach(t => t.classList.toggle('active', t === btn));
+        // Each pane's search/sort controls live in the shared tab row —
+        // show only the group matching the selected pane.
+        const ctlMap = { 'pipe-shortlist': 'shortlist-controls',
+                         'pipe-submitted': 'submitted-controls',
+                         'pipe-interviewing': 'interviewing-controls' };
+        Object.values(ctlMap).forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = (ctlMap[paneId] === id) ? 'flex' : 'none';
+        });
     }
 
     // Company logo avatar: tries the real logo, falls back to a branded initial.
@@ -6024,13 +6072,11 @@
             const col = d.score >= 75 ? '#10b981' : d.score >= 55 ? '#f59e0b' : '#ef4444';
             const label = d.score >= 80 ? 'Strong' : d.score >= 60 ? 'Good' : d.score >= 40 ? 'Fair' : 'Weak';
 
-            // ── 1. Score header: big dial + priority + hiring intent, explained ──
-            const hpChip = (d.hire_probability != null)
-                ? `<span class="jd-chip jd-chip-info" title="How likely this team is actively filling the role — based on posting freshness, openings, funding and growth signals"> Hiring intent ${d.hire_probability}%</span>` : '';
-            const prChip = (d.blended_score != null)
-                ? `<span class="jd-chip jd-chip-info" title="Apply priority = 65% resume fit + 35% hiring intent — this is what sorts your shortlist">★ Priority ${d.blended_score}</span>` : '';
+            // ── 1. Score header: big dial, explained. (Priority / hiring-intent
+            // chips deliberately NOT repeated here — the drawer header already
+            // shows both; the same data twice on one screen reads as clutter.) ──
             const headerHtml = `
-                <div class="jd-sec"> <div class="flex items-center gap-4"> <div class="w-14 h-14 rounded-full flex items-center justify-center shrink-0 text-white font-extrabold text-lg" style="background:${col}; box-shadow: 0 0 16px ${col}44;">${d.score}</div> <div class="min-w-0 flex-1"> <div class="text-[15px] font-extrabold text-white leading-tight">${label} fit for your resume</div> <div class="text-[11px] text-slate-400 mt-1 leading-relaxed">Claude read the full job description and scored it <b style="color:${col};">${d.score}/100</b> against your actual resume.</div> </div> </div> <div class="mt-3">${prChip}${hpChip}</div> </div>`;
+                <div class="jd-sec"> <div class="flex items-center gap-4"> <div class="w-14 h-14 rounded-full flex items-center justify-center shrink-0 text-white font-extrabold text-lg" style="background:${col}; box-shadow: 0 0 16px ${col}44;">${d.score}</div> <div class="min-w-0 flex-1"> <div class="text-[15px] font-extrabold text-white leading-tight">${label} fit for your resume</div> <div class="text-[11px] text-slate-400 mt-1 leading-relaxed">Claude read the full job description and scored it <b style="color:${col};">${d.score}/100</b> against your actual resume.</div> </div> </div> </div>`;
 
             // ── 2. AI reasoning + concerns ──
             const parts = (d.reason || '').split('\nConcerns:');
@@ -6072,27 +6118,12 @@
                     </div>`;
             }
 
-            // ── 5. Company & hiring signals (funding, growth, freshness, openings) ──
-            let signalsHtml = '';
-            if (d.signals && d.signals.length) {
-                const chips = d.signals.map(s => `<span class="jd-chip jd-chip-info">${_esc(s)}</span>`).join('');
-                signalsHtml = `
-                    <div class="jd-sec"> <div class="jd-sec-title">Company &amp; hiring signals</div> <div>${chips}</div> <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5;">Public signals we found about this company — funding, team growth, posting freshness and open-role velocity all feed the hiring-intent score.</div> </div>`;
-            }
-
-            // ── 6. Vetting trail: every gate this job passed before reaching you ──
-            let pipelineHtml = '';
-            if (d.pipeline && d.pipeline.length) {
-                const steps = d.pipeline.map(st => `
-                    <div class="jd-step"> <span class="jd-step-dot ${st.ok ? 'ok' : 'warn'}">${st.ok ? '✓' : '!'}</span> <div class="min-w-0"> <div class="jd-step-name">${_esc(st.name)}</div> <div class="jd-step-detail">${_esc(st.detail)}</div> </div> </div>`).join('');
-                pipelineHtml = `
-                    <div class="jd-sec"> <div class="jd-sec-title">How this job was selected — ${d.pipeline.length} checks</div> ${steps} </div>`;
-            }
-
-            panel.innerHTML = headerHtml + reasonHtml + barsHtml + skillsHtml + signalsHtml;
-            // The vetting trail belongs at the very bottom of the report, after
-            const trailSlot = panel.parentElement && panel.parentElement.querySelector('.pipeline-trail-placeholder');
-            if (trailSlot) trailSlot.innerHTML = pipelineHtml; else panel.innerHTML += pipelineHtml;
+            // Company & hiring signals live ONLY in the Company snapshot section
+            // (loadCompanyProfile) — they used to render here too, showing the
+            // same chips twice in one drawer. The "How this job was selected"
+            // vetting trail was removed entirely: the score, reasoning and fit
+            // breakdown above already answer it without the checklist noise.
+            panel.innerHTML = headerHtml + reasonHtml + barsHtml + skillsHtml;
         } catch (e) { panel.innerHTML = `<div class="jd-sec min-h-[120px] flex items-center justify-center text-xs text-rose-500">Failed to load match report.</div>`; }
     }
 
@@ -6119,20 +6150,24 @@
             if (payChips.length) payHtml = `<div style="margin-bottom:12px;">${payChips.join('')}</div>`;
 
             const rows = [];
-            if (d.pain_point) rows.push(['Their real headache', d.pain_point, 'The problem they are opening their wallet to solve right now']);
+            if (d.pain_point) rows.push(['🔥', 'Their real headache', d.pain_point, 'The problem they are opening their wallet to solve right now']);
             if (d.reporting_to) {
                 const imp = (d.strategic_importance || '').toLowerCase();
                 const impChip = imp ? ` <span class="jd-chip ${imp === 'high' ? 'jd-chip-ok' : imp === 'low' ? 'jd-chip-gap' : 'jd-chip-info'}" style="margin:0 0 0 6px;">${_esc(d.strategic_importance)} priority team</span>` : '';
-                rows.push(['Reports to', _esc(d.reporting_to) + impChip, 'The reporting line reveals where the budget sits', true]);
+                rows.push(['👤', 'Reports to', _esc(d.reporting_to) + impChip, 'The reporting line reveals where the budget sits', true]);
             }
-            if (d.migration && d.migration.is_migrating && d.migration.details) rows.push(['Tech migration underway', d.migration.details, 'They are moving stacks — migration experience is leverage']);
-            if (d.hidden_strategy) rows.push(['What this hire telegraphs', d.hidden_strategy, 'The 6-12 month direction this role hints at']);
-            const rowsHtml = rows.map(([k, v, tip, raw]) => `<div style="padding:8px 0;border-bottom:1px dashed var(--border);"> <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:3px;" title="${_esc(tip)}">${k}</div> <div style="font-size:13px;color:var(--ink-soft);line-height:1.5;font-weight:600;">${raw ? v : _esc(v)}</div> </div>`).join('');
+            if (d.migration && d.migration.is_migrating && d.migration.details) rows.push(['🔀', 'Tech migration underway', d.migration.details, 'They are moving stacks — migration experience is leverage']);
+            if (d.hidden_strategy) rows.push(['🧭', 'What this hire telegraphs', d.hidden_strategy, 'The 6-12 month direction this role hints at']);
+            // Clean and quiet on purpose: muted labels, normal-weight text, no
+            // colored boxes — the leverage hook below is the only highlighted item.
+            const rowsHtml = rows.map(([ic, k, v, tip, raw]) => `
+                <div style="padding:9px 0;border-bottom:1px solid var(--border);" title="${_esc(tip)}"> <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--sage-700);margin-bottom:3px;">${k}</div> <div style="font-size:13px;color:var(--ink-soft);line-height:1.6;font-weight:500;">${raw ? v : _esc(v)}</div> </div>`).join('');
 
             let cultureHtml = '';
             if (d.culture && d.culture.length) {
-                const items = d.culture.slice(0, 4).map(c => `<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:12.5px;line-height:1.5;"> <span style="font-weight:700;color:var(--ink);white-space:nowrap;">“${_esc(c.phrase)}”</span> <span style="color:var(--muted-2);">→</span> <span style="color:var(--muted);">${_esc(c.meaning)}</span> </div>`).join('');
-                cultureHtml = `<div style="margin-top:10px;"> <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-2);margin-bottom:4px;">Buzzword decoder</div> ${items} </div>`;
+                const items = d.culture.slice(0, 4).map(c => `
+                    <div style="padding:6px 0;font-size:12.5px;line-height:1.6;"> <span style="font-style:italic;color:var(--muted);">“${_esc(c.phrase)}”</span> <span style="color:var(--muted-2);margin:0 4px;">—</span> <span style="color:var(--ink-soft);">${_esc(c.meaning)}</span> </div>`).join('');
+                cultureHtml = `<div style="margin-top:10px;"> <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:var(--sage-700);margin-bottom:2px;">Buzzword decoder</div> ${items} </div>`;
             }
 
             let hookHtml = '';
@@ -6180,8 +6215,9 @@
             if (d.hq) facts.push(['Headquarters', d.hq]);
             if (d.size) facts.push(['Company size', d.size]);
             if (d.industry) facts.push(['Industry', d.industry]);
-            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`]);
-            const factRows = facts.map(([k, v]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${k}</span> <span style="color:var(--ink-soft);font-weight:600;">${v}</span> </div>`).join('');
+            if (d.domain) facts.push(['Website', `<a href="https://${_esc(d.domain)}" target="_blank" rel="noopener noreferrer" style="color:var(--sage-700);font-weight:700;">${_esc(d.domain)} ↗</a>`, true]);
+            {#- XSS: v is LLM output derived from third-party job.company — escape it. -#}
+            const factRows = facts.map(([k, v, raw]) => `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--border);font-size:12.5px;"> <span style="width:120px;flex-shrink:0;font-weight:700;color:var(--muted-2);">${_esc(k)}</span> <span style="color:var(--ink-soft);font-weight:600;">${raw ? v : _esc(v)}</span> </div>`).join('');
             slot.innerHTML = `
                 <div class="jd-report"> <div class="jd-report-head"> <span class="jd-rh-title">🏢 Company Snapshot</span> <span class="jd-rh-sub">${_esc(d.company || '')}</span> </div>
                     ${d.brief ? `<div class="jd-sec"> <div class="jd-sec-title">About ${_esc(d.company || 'the company')}</div> <p class="text-[13px] leading-relaxed" style="color:var(--ink-soft);">${_esc(d.brief)}</p> <div style="font-size:10.5px;color:var(--muted-2);margin-top:6px;">AI-written from public knowledge — verify details on the company site.</div> </div>` : ''}
@@ -6192,6 +6228,33 @@
     }
 
     // Sponsorship Reality — detailed card on the right stack.
+    // Who is actually hiring you. A staffing-vendor posting is legitimate and is
+    // NOT presented as a scam — the harsher `red_flags` axis is separate. The
+    // point is that the candidate is the only party who cannot see the chain.
+    function renderVendorBlock(v) {
+        if (!v) return '';
+        const e = (s) => (s || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+        const danger = (v.red_flags || []).length > 0;
+        const accent = danger ? '#C2410C' : '#92600A';
+        const bg = danger ? 'rgba(244,63,94,0.05)' : 'rgba(251,191,36,0.07)';
+        const border = danger ? 'rgba(244,63,94,0.25)' : 'rgba(251,191,36,0.3)';
+        const notes = (v.red_flag_notes || []).map((n) =>
+            `<li style="margin-top:4px;">${e(n)}</li>`).join('');
+        const checks = (v.checklist || []).map((c) =>
+            `<li style="margin-top:4px;">${e(c)}</li>`).join('');
+        return `
+            <div style="border-radius:18px;padding:15px 17px;margin-top:9px;background:${bg};border:1px solid ${border};">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:15px;">${danger ? '⚠️' : '🔗'}</span>
+                <div style="font-size:13.5px;font-weight:800;color:${accent};">${e(v.label)}</div>
+              </div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:5px;">${e(v.summary)}</div>
+              ${notes ? `<ul style="font-size:11.5px;color:${accent};line-height:1.5;margin-top:8px;padding-left:16px;font-weight:600;">${notes}</ul>` : ''}
+              ${v.work_auth_caution ? `<div style="font-size:11.5px;color:var(--ink);line-height:1.55;margin-top:9px;padding:9px 11px;border-radius:11px;background:rgba(255,255,255,0.55);border:1px solid var(--border);"><b>Because you are on OPT:</b> ${e(v.work_auth_caution)}</div>` : ''}
+              ${checks ? `<details style="margin-top:9px;"><summary style="font-size:11.5px;font-weight:700;color:var(--ink);cursor:pointer;">Establish these before you send your resume</summary><ul style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:6px;padding-left:16px;">${checks}</ul></details>` : ''}
+            </div>`;
+    }
+
     async function loadSponsorship(appId, slot) {
         if (!slot) return;
         try {
@@ -6202,32 +6265,54 @@
                 return;
             }
             const d = await r.json();
-            const h = d.h1b, a = d.assessment;
-            if (!h && !a) {
+            const h = d.h1b, a = d.assessment, v = d.vendor;
+            if (!h && !a && !v) {
                 slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No sponsorship details available.</div>`;
                 return;
             }
             const tone = a ? a.tone : '';
-            const pill = tone === 'good'
-                ? 'background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.45);'
-                : tone === 'bad'
-                ? 'background:#FCE9E2;color:#C2410C;border:1px solid #F2C6B4;'
-                : 'background:#FBF1DC;color:#92600A;border:1px solid #E8D3A4;';
-            let badgeText = a ? a.badge : 'Sponsorship Info';
-            let detailHtml = '';
-            if (a) {
-                detailHtml += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;"> <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800;padding:5px 14px;border-radius:9999px;${pill}">${tone === 'good' ? '✓ ' : tone === 'bad' ? '✕ ' : ''}${(badgeText||'').replace(/</g,'&lt;')}</span> ${a.cap_exempt ? `<span style="font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:99px;background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(var(--sage-rgb),0.35);">No-lottery · Cap-Exempt</span>` : ''}
-                </div>`;
-                if (!h) detailHtml += `<div style="font-size:11px;color:var(--muted);line-height:1.4;">${(a.reason||'').replace(/</g,'&lt;')}</div>`;
+            const esc_ = (s) => (s || '').replace(/</g, '&lt;');
+            // One clear verdict line the user can FEEL, then proof underneath.
+            let headline, sub, cardStyle, mark;
+            if (tone === 'good') {
+                mark = '<span style="width:34px;height:34px;border-radius:9999px;background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;">✓</span>';
+                headline = a && a.cap_exempt ? 'Sponsors visas — no lottery needed' : 'This employer sponsors work visas';
+                // Only claim a filing record when we actually have one. Cap-exempt
+                // status is inferred from the employer TYPE (INA 214(g)(5)), often
+                // with no filings consulted at all, and the H-1B stats block below
+                // renders only when `h` is present. Saying "their public filing
+                // record backs it up" without `h` asserted a source we never read.
+                if (a && a.cap_exempt) {
+                    sub = 'Cap-exempt employer (university, non-profit research or hospital) under INA 214(g)(5) — they can file H-1B year-round with no lottery.'
+                        + (h ? ' Their public filing record is below.' : ' We infer this from the employer type, not from filing data.');
+                } else {
+                    sub = h
+                        ? 'Their public H-1B filing record shows they sponsor — apply with confidence.'
+                        : 'Signals point to a sponsoring employer. We have no public filing record for them, so confirm before you count on it.';
+                }
+                cardStyle = 'background:linear-gradient(180deg,var(--sage-tint),rgba(var(--sage-rgb),0.03));border:1px solid rgba(var(--sage-rgb),0.4);';
+            } else if (tone === 'bad') {
+                mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FCE9E2;color:#C2410C;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">✕</span>';
+                headline = 'No sponsorship for this role';
+                sub = (a && a.reason) ? esc_(a.reason) : 'The posting states it cannot sponsor — better to spend your energy on the sponsors in your list.';
+                cardStyle = 'background:rgba(244,63,94,0.04);border:1px solid rgba(244,63,94,0.18);';
+            } else {
+                mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FBF1DC;color:#92600A;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">?</span>';
+                headline = 'Sponsorship not stated';
+                sub = 'The posting is silent and we found no public filing record — many employers still sponsor case-by-case, so it’s worth a quick ask.';
+                cardStyle = 'background:rgba(15,23,42,0.02);border:1px solid var(--border);';
             }
+            let statsHtml = '';
             if (h) {
-                detailHtml += `<div style="font-size:11px;color:var(--ink-soft,#cbd5e1);line-height:1.55;margin-top:4px;"> <b>${h.total_filings.toLocaleString()}</b> H-1B filings${h.year ? ' (FY'+h.year+')' : ''}<br> <b>${h.approval_rate}%</b> approval rate
-                    ${h.wage_level ? `<br> Wage level: <b>${h.wage_level.replace(/</g,'&lt;')}</b>` : ''}
-                </div>`;
+                const stat = (v, l) => `<div style="background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:10px;padding:8px 12px;text-align:center;"><div style="font-size:15px;font-weight:800;color:var(--sage-700);">${v}</div><div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-2);margin-top:1px;">${l}</div></div>`;
+                statsHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px;margin-top:11px;">`
+                    + stat(h.total_filings.toLocaleString(), 'H-1B filings' + (h.year ? ' · FY' + h.year : ''))
+                    + stat(h.approval_rate + '%', 'approved')
+                    + (h.wage_level ? stat(esc_(h.wage_level), 'wage level') : '')
+                    + `</div>`;
             }
             slot.innerHTML = `
-                <div class="jd-sec"> <div class="jd-sec-title">Visa &amp; sponsorship reality</div> <div> ${detailHtml}
-                    </div> <div style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5;">Based on the employer's public H-1B filing record and the job posting's own language.</div> </div>`;
+                <div style="border-radius:18px;padding:15px 17px;margin-top:2px;${cardStyle}"> <div style="display:flex;align-items:center;gap:12px;"> ${mark} <div style="min-width:0;"> <div style="font-size:14.5px;font-weight:800;color:var(--ink);line-height:1.3;">${headline}</div> <div style="font-size:12px;color:var(--muted);line-height:1.55;margin-top:2px;">${sub}</div> </div> </div> ${statsHtml} </div>${renderVendorBlock(v)}`;
         } catch (e) {
             slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-rose-500">Failed to load sponsorship data.</div>`;
         }
@@ -6235,7 +6320,7 @@
 
     function renderAutopsyButton(appId, slot) {
         if (!slot) return;
-        slot.innerHTML = `<button type="button" class="jbtn text-[12.5px] py-3 w-full font-bold" style="background:linear-gradient(135deg,var(--sage-tint),rgba(var(--sage-rgb),0.16));border:1.5px solid rgba(var(--sage-rgb),0.5);color:var(--sage-700);border-radius:14px;">🚪 Right-door check — do you match who they actually hire?</button><div class="autopsy-result mt-2"></div>`;
+        slot.innerHTML = `<div class="ref-copilot"> <div class="flex items-center justify-between gap-3"> <span class="jd-sec-title" style="margin-bottom:0;">🚪 Right-Door Check</span> <span class="ref-pill">Before you apply</span> </div> <p class="ref-text">Every role has a hidden hiring bar — the seniority, background and skills of the people who <b>actually got hired</b>. This check compares your profile against that bar and tells you if this is a door that can open for you, <b>before</b> you spend a tailored resume on it.</p> <button type="button" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5 mt-3 w-full">Check if this door opens for you</button> <div class="autopsy-result mt-2"></div> </div>`;
         const btn = slot.querySelector('button');
         btn.addEventListener('click', () => runAutopsy(appId, slot, btn));
     }
@@ -6246,12 +6331,12 @@
         try {
             const token = localStorage.getItem('sb_token');
             const r = await fetch('/application/' + appId + '/autopsy', { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
-            if (!r.ok) { btn.disabled = false; btn.textContent = 'Right-door check — does your profile match who they actually hire?'; out.innerHTML = '<div class="text-[12.5px] text-rose-500 mt-1">Could not run the door check.</div>'; return; }
+            if (!r.ok) { btn.disabled = false; btn.textContent = 'Check if this door opens for you'; out.innerHTML = '<div class="text-[12.5px] text-rose-500 mt-1">Could not run the door check.</div>'; return; }
             const d = await r.json();
             btn.style.display = 'none';
             out.innerHTML = renderAutopsyHtml(d);
         } catch (e) {
-            btn.disabled = false; btn.textContent = 'Right-door check — does your profile match who they actually hire?';
+            btn.disabled = false; btn.textContent = 'Check if this door opens for you';
         }
     }
 

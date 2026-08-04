@@ -6,6 +6,11 @@ from app.db.init_db import get_session
 from app.db.models import Job, JobSource, Application, ApplicationStatus, UserProfile
 from app.matching.pipeline import run_matching
 
+# Needs the ML stack (torch via sentence-transformers). It is a real production
+# dependency (requirements.txt) but absent in lightweight envs — skip rather than
+# fail so an environment gap never masquerades as a regression.
+pytest.importorskip("torch", reason="ML stack not installed in this environment")
+
 
 def _seed():
     with get_session() as s:

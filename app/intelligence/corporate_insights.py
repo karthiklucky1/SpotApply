@@ -53,8 +53,8 @@ def analyze(title: str, company: str, description: str) -> dict | None:
     if not settings.anthropic_api_key or not (description or "").strip():
         return None
     try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=settings.anthropic_api_key)
+        from app.common.llm import shared_anthropic
+        client = shared_anthropic()
         jd = f"Role: {title}\nCompany: {company}\n\n{description[:12000]}"
         resp = client.messages.create(
             model=settings.scoring_model,

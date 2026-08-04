@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 from sentence_transformers.util import cos_sim
@@ -24,6 +25,64 @@ def _adds_unbacked_metric(tailored: str, source_bullet: str) -> bool:
         if token and token not in src:
             return True
     return False
+
+_MONTHS = (r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec")
+# A line that is essentially only a date or date range: "May 2022 – Aug 2024",
+# "2020 - Present", "Jan 2020 — Dec 2021", "06/2019 - 08/2021".
+_DATE_ONLY_RE = re.compile(
+    rf"^\W*(?:(?:{_MONTHS})[a-z]*\.?\s*)?[\d/]{{0,7}}\s*\d{{4}}"
+    rf"\s*(?:[-–—]|to|until|through)?\s*"
+    rf"(?:(?:{_MONTHS})[a-z]*\.?\s*)?(?:[\d/]{{0,7}}\s*\d{{4}}|present|current|now|ongoing)?\W*$",
+    re.I,
+)
+# An employer / location header: "Home Depot Cincinnati, OH",
+# "Acme Corp, San Francisco, CA", "Globex — Remote".
+_ORG_LOCATION_RE = re.compile(
+    r"(?:,\s*[A-Z]{2}|,\s*(?:remote|hybrid|onsite|on-site))\s*$", re.I)
+
+
+def _is_not_a_bullet(line: str) -> bool:
+    """True for résumé lines that are structure, not achievement claims.
+
+    Employer/location headers, standalone job titles and date ranges sit inside
+    the EXPERIENCE section and survived the old ``len >= 12 and " " in line``
+    filter — whose comment claimed it "skips dates/company headers" while doing
+    nothing of the sort. They then went through grounding as if they were
+    bullets, could not be semantically supported by any source bullet, got
+    escalated to the LLM, and failed the whole résumé to ERROR.
+
+    That is a false positive that BLOCKS a user's application, so removing these
+    makes grounding more accurate rather than more permissive: a date range is
+    not a claim that can be hallucinated, and real credential facts (degree,
+    school, employment dates) are protected structurally by tailoring/lock.py,
+    which restores them verbatim from the master before this check even runs.
+    """
+    s = (line or "").strip()
+    if not s:
+        return True
+    # A markdown heading that carried a bullet glyph ("- ## PROFESSIONAL
+    # EXPERIENCE"). The section detector checks for "#" BEFORE glyph stripping,
+    # so this reached the bullet list. Seen flagging application 1358.
+    if s.lstrip("-*•·–—‣▪◦●» ").startswith("#"):
+        return True
+    # A label introducing a list, not a claim: "Familiar / Actively Adopting:",
+    # "Systems & Infrastructure:", "Generative AI & LLM Engineering:". These are
+    # skills-section headings that the section detector missed (not ALL-CAPS, no
+    # known section keyword), so they were graded as experience bullets and
+    # failed to ground — blocking applications 1358, 1359 and 1284. A real
+    # achievement bullet is a sentence; it does not end in a colon.
+    if s.endswith(":"):
+        return True
+    if _DATE_ONLY_RE.match(s):
+        return True
+    if _ORG_LOCATION_RE.search(s) and not s.endswith((".", "!", "?")):
+        return True
+    # Standalone titles ("Software Engineer", "Data Analyst"). A real bullet is
+    # an action statement; three words is well below anything that reads as one.
+    if len(s.split()) < 4:
+        return True
+    return False
+
 
 @dataclass
 class GroundingResult:
@@ -90,8 +149,8 @@ class GroundingChecker:
                     cleaned = cleaned[len(pre):]
                     break
             cleaned = cleaned.replace("**", "").replace("*", "").strip()
-            # Keep substantive lines (skips dates/company headers/one-word lines).
-            if len(cleaned) >= 12 and " " in cleaned:
+            # Keep substantive lines — and ONLY lines that are actually bullets.
+            if len(cleaned) >= 12 and " " in cleaned and not _is_not_a_bullet(cleaned):
                 bullets.append(cleaned)
 
         # Safety fallback: if section detection found nothing (e.g. messy PDF
@@ -100,7 +159,7 @@ class GroundingChecker:
         if not bullets:
             for line in resume_md.splitlines():
                 s = line.strip().lstrip("-*•·–—‣▪◦●» ").replace("**", "").strip()
-                if len(s) >= 25 and " " in s:
+                if len(s) >= 25 and " " in s and not _is_not_a_bullet(s):
                     bullets.append(s)
         return bullets
 

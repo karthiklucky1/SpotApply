@@ -7,6 +7,11 @@ import asyncio
 import pytest
 
 import app.discovery.sources.serpapi as sp
+
+# Needs the ML stack (torch via sentence-transformers). It is a real production
+# dependency (requirements.txt) but absent in lightweight envs — skip rather than
+# fail so an environment gap never masquerades as a regression.
+pytest.importorskip("torch", reason="ML stack not installed in this environment")
 from app.config import settings
 
 

@@ -11,11 +11,9 @@ from urllib.parse import urlparse
 # app.common.browser_client, which picks the browser service or a local,
 # gate-limited launch. Keeping the import out means this module no longer drags
 # Playwright in at import time either.
-from anthropic import Anthropic
 import numpy as np
 from sqlmodel import select
 
-from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Job, JobSource, Application, ApplicationStatus
 from app.matching.matcher import Matcher
@@ -120,7 +118,10 @@ async def scrape_job_page(url: str) -> str:
 def parse_job_text_with_llm(text: str) -> Dict[str, Any]:
     """Use Claude to parse the raw text into structured job fields."""
     log.info("Sending job text to Claude for structured parsing...")
-    client = Anthropic(api_key=settings.anthropic_api_key)
+    from app.common.llm import shared_anthropic
+    client = shared_anthropic()
+    if client is None:
+        raise RuntimeError("Anthropic API key not configured — cannot parse job page")
     prompt = f"Scraped Job Page Text:\n---\n{text[:12000]}\n---"
     
     resp = client.messages.create(

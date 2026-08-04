@@ -50,6 +50,27 @@ log = logging.getLogger(__name__)
 
 _LANE_LOCK = threading.Lock()  # one scoring cycle at a time in this process
 
+# One worker pool for the LIFE OF THE PROCESS, not one per cycle. A fresh
+# 20-thread ThreadPoolExecutor every 90s — abandoned with shutdown(wait=False)
+# — was ~19k new OS threads/day; every thread that touches malloc can pin a
+# glibc arena, and arena high-water marks never shrink, so the churn read as an
+# RSS climb that no heap profile could explain (docs/MEMORY.md). A persistent
+# pool keeps a fixed set of threads (and arenas) instead.
+_POOL: Optional[ThreadPoolExecutor] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _worker_pool() -> ThreadPoolExecutor:
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                _POOL = ThreadPoolExecutor(
+                    max_workers=max(1, settings.scoring_workers),
+                    thread_name_prefix="scoring",
+                )
+    return _POOL
+
 # ── Per-job attempt ceiling ───────────────────────────────────────────────────
 # A job whose final score keeps failing (provider outage, poison payload) used
 # to be re-selected EVERY 90s cycle forever — re-paying the prescore each time.
@@ -70,6 +91,10 @@ def _note_score_failure(jid: int) -> None:
             log.warning("Scoring: job %d failed %d attempts — deferred %.1fh",
                         jid, n, settings.scoring_fail_defer_hours)
         else:
+            # Hard bound: a job that fails here but is later scored by another
+            # lane never triggers _note_score_success, so its entry is immortal.
+            if len(_fail_counts) > 50_000:
+                _fail_counts.clear()
             _fail_counts[jid] = n
 
 
@@ -108,21 +133,90 @@ def _transient_llm_stall() -> bool:
     return llm_budget_exhausted() or not any_provider_available()
 
 
+# Loose index scan ("skip scan"): walk the DISTINCT values of an indexed column
+# by repeatedly seeking to the next one, instead of reading every row and
+# deduping. Postgres has no native skip scan, so it is spelled as a recursive CTE.
+#
+# This is the only shape that works here, and the numbers say why. Of 411,916
+# unscored OPEN jobs, 411,915 belong to '__shared__'. Filtering the shared pool
+# out cannot make the query cheap, because the mass IS what has to be scanned to
+# discover it is excluded — measured as a Parallel Seq Scan at 4,527 ms with
+# 434,005 rows removed by filter per worker. Forcing it onto
+# ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL is FIVE TIMES
+# WORSE (25,430 ms, 73,759 blocks): that index's predicate omits is_closed, so
+# every candidate entry needs a heap fetch. The planner was right both times.
+#
+# The skip scan seeks past the entire shared block in a single index descent, so
+# cost tracks the number of DISTINCT owners (~12), not the number of rows.
+# Measured against the same index, same data: 35.6 ms, 85 buffers — ~128x.
+_SKIP_SCAN_OWNERS = """
+WITH RECURSIVE owners AS (
+    -- IS NOT NULL is load-bearing, not decoration: Postgres sorts NULLs LAST in
+    -- ASC, SQLite sorts them FIRST. Without it the anchor picks up the NULL
+    -- owner on SQLite, the recursive term's `o.user_id IS NOT NULL` guard fires
+    -- immediately, and the walk returns exactly one row. NULL owners are probed
+    -- separately by the caller.
+    SELECT (SELECT j.user_id FROM job j
+             WHERE j.rerank_score IS NULL AND j.user_id IS NOT NULL
+             ORDER BY j.user_id LIMIT 1) AS user_id
+    UNION ALL
+    SELECT (SELECT j.user_id FROM job j
+             WHERE j.rerank_score IS NULL AND j.user_id > o.user_id
+             ORDER BY j.user_id LIMIT 1)
+      FROM owners o WHERE o.user_id IS NOT NULL
+)
+SELECT user_id FROM owners WHERE user_id IS NOT NULL
+"""
+
+
+def _unscored_owners_fast(session, limit: int) -> List[str]:
+    """Distinct non-NULL owners having at least one unscored job, via skip scan.
+
+    Returns owners with ANY unscored job; the caller re-checks `is_closed` per
+    owner, because is_closed is not in the partial index and folding it in here
+    would reintroduce the heap fetch that made the index path lose.
+    """
+    from sqlalchemy import text
+    rows = session.execute(text(_SKIP_SCAN_OWNERS)).all()
+    return [r[0] for r in rows if r[0] is not None][:limit]
+
+
 def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
     """Distinct owners that currently have at least one unscored open job.
     The shared pool ('__shared__') is a corpus, not a user — its rows are never
     scored directly (they're adopted into per-user pools first), so it must not
     consume work slots."""
     from app.discovery.pipeline import SHARED_POOL_USER
+    users: List[Optional[str]] = []
     with get_session() as session:
-        rows = session.exec(
-            select(Job.user_id).where(
-                Job.rerank_score == None,  # noqa: E711
-                Job.is_closed == False,    # noqa: E712
-            ).distinct().limit(limit)
-        ).all()
-    users = [r[0] if isinstance(r, tuple) else r for r in rows]
-    users = [u for u in users if u != SHARED_POOL_USER]
+        try:
+            candidates: List[Optional[str]] = list(
+                _unscored_owners_fast(session, limit))
+        except Exception as e:
+            # Never let an optimisation stop the scoring lane. The plain DISTINCT
+            # is slow but correct, so degrade to it rather than returning nothing.
+            log.warning("skip-scan owner enumeration failed, using DISTINCT: %s", e)
+            candidates = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.user_id).where(
+                    Job.rerank_score == None,  # noqa: E711
+                ).distinct().limit(limit)
+            ).all()]
+        # The NULL owner (local/legacy rows) can't be reached by `user_id >` in
+        # the recursion — ORDER BY sorts NULLs last — so probe it explicitly.
+        candidates.append(None)
+
+        for uid in candidates:
+            if uid == SHARED_POOL_USER:
+                continue
+            hit = session.exec(
+                select(Job.id).where(
+                    Job.user_id.is_(None) if uid is None else Job.user_id == uid,
+                    Job.rerank_score == None,  # noqa: E711
+                    Job.is_closed == False,    # noqa: E712
+                ).limit(1)
+            ).first()
+            if hit is not None:
+                users.append(uid)
     # Dormancy gate: even with adoption stopped, a vanished user's existing
     # unscored backlog would keep burning LLM budget (and round-robin slots
     # active users need). Skip them here too; their queue resumes on return.
@@ -337,6 +431,14 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             shadow_score(jid, ctx.resume, job, float(score))
         except Exception:
             pass
+        # CardRace v2 shadow (docs/CARDRACE_DESIGN.md §5 Phase 3): score the
+        # deterministic card engine beside this real final and record agreement.
+        # Best-effort and flag-gated; never touches the authoritative score.
+        try:
+            from app.matching.card_shadow import shadow_card_match
+            shadow_card_match(jid, ctx.resume, float(score), breakdown)
+        except Exception:
+            pass
     return ("scored", jid, float(score), provider)
 
 
@@ -426,6 +528,73 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
         _LANE_LOCK.release()
 
 
+def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> int:
+    """Bulk-stamp unscored per-user jobs older than scoring_max_job_age_days so
+    they exit the queue WITHOUT costing a prescore or final.
+
+    Rationale: 'be first to apply' is the product — a posting that sat unscored
+    for days (credit outage, backlog) is going stale, and paying LLM calls
+    to rank it wastes budget and disk IO exactly when the lane is trying to
+    catch up. One indexed UPDATE per cycle (0 rows in steady state) replaces
+    thousands of per-job LLM calls during a backlog drain. Shared-pool rows are
+    excluded (never scored directly); 0 disables."""
+    days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+    if days <= 0:
+        return 0
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.discovery.pipeline import SHARED_POOL_USER
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    # Age is coalesce(posted_at, first_seen, discovered_at) — the SAME measure the
+    # render filter, hygiene lane and pulse fast path use. Keying off first_seen
+    # alone let an aggregator posting that is 30 days old but adopted today sail
+    # through the gate and buy a prescore + a Claude final, only to be hidden at
+    # render — exactly the spend this gate exists to prevent. discovered_at is the
+    # final fallback because first_seen reached prod via a bare ALTER TABLE with no
+    # backfill, so it is NULL on the oldest rows and `NULL < cutoff` is NULL.
+    from sqlalchemy import func as _func
+    age = _func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    total = 0
+    try:
+        # Batched like close_stale_user_jobs: the first run after deploy can match
+        # six figures of rows on a 764k-row table, and one unbounded UPDATE is the
+        # Supabase statement-timeout / Disk-IO pattern we just spent a day fixing.
+        for _ in range(max_batches):
+            with get_session() as session:
+                ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                    select(Job.id).where(
+                        Job.rerank_score == None,   # noqa: E711
+                        Job.is_closed == False,     # noqa: E712
+                        (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
+                        age < cutoff,
+                    ).limit(batch)
+                ).all()]
+                if not ids:
+                    break
+                session.exec(
+                    update(Job)
+                    .where(Job.id.in_(ids))
+                    .values(rerank_score=8.0,
+                            rerank_reasoning=f"Expired unscored (older than {days}d "
+                                             f"before scoring caught up — too stale to apply)")
+                )
+                session.commit()
+                total += len(ids)
+            if len(ids) < batch:
+                break
+        if total:
+            log.info("Scoring: expired %d stale unscored job(s) older than %dd "
+                     "(drained free, no LLM spend)", total, days)
+        return total
+    except Exception as e:
+        # WARNING not DEBUG: this runs every 90s, so a silent failure means a
+        # repeating unlogged IO burn.
+        log.warning("stale-unscored expiry failed (non-fatal): %s", e)
+        return total
+
+
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     from app.matching.pipeline import _load_resume
     from app.matching.reranker import (
@@ -434,6 +603,10 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
              "by_local": 0}
+
+    # Age gate first: never spend LLM budget (or backlog IO) on postings too
+    # old to be worth applying to.
+    _expire_stale_unscored()
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —
@@ -465,15 +638,32 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # dashboard, so their queue items must survive the global cap and reach the
     # workers earliest. One grouped query identifies owners who already have at
     # least one scored open job; everyone else is "new" for ordering purposes.
+    # This is an EXISTS question per user, so ask it that way. The obvious
+    # spelling — SELECT DISTINCT user_id ... WHERE rerank_score IS NOT NULL AND
+    # user_id IN (...) — has to visit every scored open row across every user and
+    # then dedupe, and no index covers that predicate. Production measured it at
+    # 31-38s per execution, 277 times in a day, on a lane that ticks every 90s:
+    # roughly 40% of the lane's wall clock spent on an ordering nicety, with
+    # per-id UPDATEs queueing behind it at 15-37s each.
+    #
+    # One LIMIT 1 probe per user rides ix_job_user_open (user_id, is_closed) and
+    # stops at the first hit, so each is sub-millisecond and the total scales with
+    # the number of ACTIVE users rather than the size of the job table.
     try:
+        has_scored = set()
         with get_session() as session:
-            has_scored = {r[0] if isinstance(r, tuple) else r for r in session.exec(
-                select(Job.user_id).where(
-                    Job.rerank_score.is_not(None),
-                    Job.is_closed == False,  # noqa: E712
-                    Job.user_id.in_([u for u in users if u]),
-                ).distinct()
-            ).all()}
+            for _u in users:
+                if not _u:
+                    continue
+                hit = session.exec(
+                    select(Job.id).where(
+                        Job.user_id == _u,
+                        Job.is_closed == False,  # noqa: E712
+                        Job.rerank_score.is_not(None),
+                    ).limit(1)
+                ).first()
+                if hit is not None:
+                    has_scored.add(_u)
         users = sorted(users, key=lambda u: (u in has_scored,))
     except Exception as e:
         log.debug("new-user priority ordering skipped: %s", e)
@@ -562,7 +752,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
 
     scored_by_user: dict = defaultdict(list)
     spend_by_user: dict = defaultdict(int)   # (uid, kind) -> calls this cycle
-    pool = ThreadPoolExecutor(max_workers=min(settings.scoring_workers, max(1, len(items))))
+    pool = _worker_pool()
     futures = [pool.submit(_work, it) for it in items]
     for fut in futures:
         remaining = (deadline - time.monotonic()) if deadline else None
@@ -580,7 +770,15 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         if kind == "scored":
             stats["scored"] += 1
             scored_by_user[uid].append((jid, score))
-            if provider == "anthropic":
+            # `provider` is the REQUESTED provider, and _pick_provider returns
+            # None whenever dual mode is off — which it is in production. So the
+            # old `== "anthropic"` test never matched the normal path and
+            # score_final was recorded ONCE in the table's entire history, while
+            # 1,300+ finals actually ran: /api/admin/spend reported the single
+            # most expensive call type as zero. None = default priority order =
+            # the Tier-2 final; the local fallback sets provider="local"
+            # explicitly above, so it cannot be miscounted here.
+            if provider in (None, "anthropic"):
                 stats["by_claude"] += 1
                 spend_by_user[(uid, "score_final")] += 1
             elif provider == "openai":
@@ -592,7 +790,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         elif kind == "drained":
             stats["drained"] += 1
             spend_by_user[(uid, "score_prescore")] += 1
-    pool.shutdown(wait=False)
+    # Cancel whatever is still QUEUED so a deadline-truncated cycle can't drain
+    # its leftovers into the next one (the old per-cycle pool's shutdown(wait=
+    # False) let up to ~200 queued LLM calls keep running while a fresh pool
+    # spawned 90s later — overlapping thread generations). Already-running
+    # calls finish on their own, bounded by llm_request_timeout; their jobs
+    # stay Queued in the DB either way and are simply re-selected next cycle.
+    for fut in futures:
+        fut.cancel()
 
     # Per-user spend attribution (batched: one upsert per user+kind per cycle).
     try:
