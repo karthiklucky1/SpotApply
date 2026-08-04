@@ -411,7 +411,8 @@ def _persist_prescore_rejects(rejects: list[tuple[int, float, str]]) -> None:
     mappings = [
         {"id": int(jid),
          "rerank_score": float(score),
-         "rerank_reasoning": f"Pre-screened (Tier-1 fit {int(score)}): {reason}"[:500]}
+         "rerank_reasoning": f"Pre-screened (Tier-1 fit {int(score)}): {reason}"[:500],
+         "prescore": float(score)}
         for jid, score, reason in rejects
     ]
     for start in range(0, len(mappings), 500):
@@ -678,6 +679,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # could plausibly shortlist always reaches Claude. Fail-open: a None prescore
     # (cheap-model error) advances the job rather than dropping it.
     prescore_rejects: list[tuple[int, float, str]] = []  # (jid, score, reason)
+    prescore_by_jid: dict[int, float] = {}  # jid -> Tier-1 score, for ADVANCED jobs too
     # Tier-1 is cheap, not free, and it is worthless once the budget is gone:
     # every job it advances would immediately fail at the Tier-2 call. The
     # matching lane had no budget pre-check at all, so a tripped cap turned each
@@ -712,6 +714,11 @@ def run_matching(user_id: str | None = None) -> List[int]:
 
         with ThreadPoolExecutor(max_workers=settings.prescore_workers) as ex:
             _pre_by_jid = dict(ex.map(_prescore_one, prescore_pool))
+        # Keep every Tier-1 score, not just the rejects'. An advanced job's
+        # prescore used to be dropped on the floor, which is exactly the pairing
+        # needed to answer "is a stricter gate safe?".
+        prescore_by_jid = {jid: float(pr[0]) for jid, pr in _pre_by_jid.items()
+                           if pr is not None}
 
         advanced: list[tuple[int, float]] = []
         for jid, sim in prescore_pool:  # preserve fresh-first order
@@ -766,6 +773,8 @@ def run_matching(user_id: str | None = None) -> List[int]:
             if not job:
                 continue
             job.rerank_score = score
+            if jid in prescore_by_jid:
+                job.prescore = prescore_by_jid[jid]
             job.rerank_reasoning = reason + (
                 ("\nConcerns: " + "; ".join(concerns)) if concerns else ""
             )

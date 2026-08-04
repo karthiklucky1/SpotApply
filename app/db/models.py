@@ -98,6 +98,13 @@ class Job(SQLModel, table=True):
     similarity_score: Optional[float] = None
     rerank_score: Optional[float] = None
     rerank_reasoning: Optional[str] = None
+    # Tier-1 (cheap model) fit estimate, 0-100. Persisted for EVERY scored job —
+    # drained AND advanced — so the Tier-1 -> Tier-2 relationship is measurable.
+    # Without it the two scores never coexist on a row (drained jobs have only a
+    # prescore, advanced jobs only a final), which makes "is a stricter Tier-1
+    # gate safe?" unanswerable: jobs the gate kills never get a final to compare
+    # against. See scripts/eval_scorers.py.
+    prescore: Optional[float] = Field(default=None)
     # JSON: per-factor breakdown {skills,experience,location,work_auth:{score,note}}
     rerank_breakdown: Optional[str] = Field(default=None)
     corporate_insights: Optional[str] = Field(default=None)  # JSON: pain point, reporting line, culture decode, leverage hook, salary/work model

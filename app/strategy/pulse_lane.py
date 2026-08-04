@@ -272,6 +272,8 @@ def _fast_path_user(uid: str, score_budget: int,
             if use_prescore:
                 pre = reranker.prescore(resume, job)
                 _record_spend(uid, "score_prescore")
+                if pre is not None:
+                    job.prescore = float(pre[0])
                 if pre is not None and pre[0] < gate:
                     job.rerank_score = float(pre[0])
                     job.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]

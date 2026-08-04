@@ -764,3 +764,58 @@ def test_pulse_fast_path_checks_budget_before_spending(monkeypatch):
     monkeypatch.setattr(rr, "llm_budget_exhausted", lambda: True)
     # Exhausted budget → no resume load, no prescore, no Claude call.
     assert pl._fast_path_user("u", 10) == (0, 0, 0)
+
+
+# ── Tier-1 score persistence ─────────────────────────────────────────────────
+# The prescore used to be discarded for jobs that ADVANCE (kept only in a RAM
+# memo for retry), so a row never carried both scores: drained jobs had only a
+# prescore, advanced jobs only a final. That makes "is a stricter Tier-1 gate
+# safe?" unanswerable — the jobs a higher gate would kill never get a final to
+# compare against. Persist it on every path.
+
+def test_stamp_job_persists_the_prescore():
+    with get_session() as session:
+        _clean(session)
+        job = _job()
+        job.user_id = "pre-user"
+        session.add(job)
+        session.commit()
+        jid = job.id
+
+    assert sl._stamp_job(jid, None, 82.0, "strong fit", None, prescore=71.0) is True
+
+    with get_session() as session:
+        row = session.get(Job, jid)
+        assert row.rerank_score == 82.0
+        assert row.prescore == 71.0      # BOTH scores on one row
+        session.exec(delete(Job).where(Job.user_id == "pre-user"))
+        session.commit()
+
+
+def test_stamp_job_without_a_prescore_leaves_it_null():
+    """Ghost-filtered and rule-filtered jobs never reach Tier-1 — they must not
+    get a fabricated prescore."""
+    with get_session() as session:
+        _clean(session)
+        job = _job()
+        job.user_id = "pre-user"
+        session.add(job)
+        session.commit()
+        jid = job.id
+
+    assert sl._stamp_job(jid, None, 5.0, "Ghost filtered", None) is True
+
+    with get_session() as session:
+        row = session.get(Job, jid)
+        assert row.rerank_score == 5.0
+        assert row.prescore is None
+        session.exec(delete(Job).where(Job.user_id == "pre-user"))
+        session.commit()
+
+
+def test_prescore_column_is_migrated_onto_existing_databases():
+    """A new column is useless if init_db doesn't add it to live databases."""
+    import inspect
+    from app.db import init_db
+    src = inspect.getsource(init_db)
+    assert '("prescore", "FLOAT")' in src

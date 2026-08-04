@@ -184,7 +184,8 @@ def _pick_provider(jid: int, ctx: "_Ctx") -> Optional[str]:
 
 def _stamp_job(jid: int, ghost: Optional[Tuple],
                score: float, reasoning: str,
-               extras: Optional[Tuple] = None) -> bool:
+               extras: Optional[Tuple] = None,
+               prescore: Optional[float] = None) -> bool:
     """Short write-back session. Re-checks idempotency (another lane may have
     scored the job while we were on the LLM). Returns False if it lost the race."""
     with get_session() as session:
@@ -195,6 +196,8 @@ def _stamp_job(jid: int, ghost: Optional[Tuple],
             job.ghost_score, job.ghost_flags = ghost
         job.rerank_score = score
         job.rerank_reasoning = reasoning
+        if prescore is not None:
+            job.prescore = float(prescore)
         if extras is not None:
             breakdown, hp_fn = extras
             job.rerank_breakdown = breakdown
@@ -272,7 +275,7 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             pre = ctx.reranker.prescore(ctx.resume, job)
         if pre is not None and pre[0] < ctx.gate:
             reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
-            if _stamp_job(jid, ghost, float(pre[0]), reasoning):
+            if _stamp_job(jid, ghost, float(pre[0]), reasoning, prescore=float(pre[0])):
                 _prescore_memo.pop(jid, None)
                 return ("drained", jid, None, None)
             return None  # lost the race to another lane
@@ -318,7 +321,8 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
 
     reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
     extras = (json.dumps(breakdown) if breakdown else None, _hp)
-    if not _stamp_job(jid, ghost, score, reasoning, extras):
+    if not _stamp_job(jid, ghost, score, reasoning, extras,
+                      prescore=(float(pre[0]) if pre is not None else None)):
         return None  # another lane scored it while we were on the LLM
 
     # Distillation shadow mode: run the local model beside this fresh LLM final

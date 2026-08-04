@@ -187,6 +187,7 @@ def init_db() -> None:
         ("urgency_score", "FLOAT DEFAULT 0.0"),
         ("rerank_breakdown", "TEXT"),
         ("corporate_insights", "TEXT"),
+        ("prescore", "FLOAT"),
     ]:
         add_column_if_missing("job", col, col_type)
         
