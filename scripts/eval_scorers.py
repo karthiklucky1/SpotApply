@@ -200,16 +200,145 @@ def run_ab(jobs: List[Job], resume: str, profile, model_b: str) -> dict:
     }
 
 
+def run_regress(pairs_path: str, tiers: str) -> dict:
+    """Run the fixed regression pairs (tests/regress_pairs.json) through the
+    CURRENT prompts and score band accuracy against ground truth. Turns every
+    prompt edit into a ~$0.10, 5-minute check instead of a paper argument.
+
+    Band mapping — Tier-1: B<=30 (the prompt's stated blocker band), M 31-59,
+    H>=60. Tier-2 reuses the same letters against its own bands (B<=39, M
+    40-59, H>=60). Scoring: correct band 2, adjacent 1, wrong 0."""
+    with open(pairs_path) as f:
+        fixture = json.load(f)
+
+    class _Profile:
+        pass
+    persona = fixture["persona"]
+    prof = _Profile()
+    prof.target_roles = persona["target_roles"]
+    prof.key_skills = persona["key_skills"]
+    prof.years_experience = persona["years_experience"]
+    prof.preferred_country = persona["preferred_country"]
+    prof.requires_sponsorship = persona["requires_sponsorship"]
+    prof.current_title = ""
+    prof.user_id = None
+
+    resume = (
+        f"# Candidate\n\n## Summary\n{persona['target_roles']} with "
+        f"{persona['years_experience']} years of experience.\n\n## Skills\n"
+        f"{persona['key_skills']}\n\n## Experience\nBuilt and operated Python "
+        f"back-end and ML services on AWS: FastAPI APIs, PyTorch training and "
+        f"serving, PostgreSQL data layers. Requires visa sponsorship to work in "
+        f"{persona['preferred_country']}."
+    )
+
+    from app.db.models import Job as JobModel, JobSource
+    from app.matching.reranker import Reranker
+    rk = Reranker(profile=prof)
+
+    def band_t1(score: float) -> str:
+        return "B" if score <= 30 else ("M" if score < 60 else "H")
+
+    def band_t2(score: float) -> str:
+        return "B" if score <= 39 else ("M" if score < 60 else "H")
+
+    _ADJ = {("B", "M"), ("M", "B"), ("M", "H"), ("H", "M")}
+
+    def points(got: Optional[str], want: str) -> int:
+        if got is None:
+            return 0
+        if got == want:
+            return 2
+        return 1 if (got, want) in _ADJ else 0
+
+    rows = []
+    for pair in fixture["pairs"]:
+        job = JobModel(title=pair["title"], company=pair["company"],
+                       location=pair.get("location", ""), remote=pair.get("remote", False),
+                       description=pair["description"], source=JobSource.MANUAL,
+                       external_id=f"regress-{pair['id']}", url="https://example.com/x")
+        job.id = 0
+        row = {"id": pair["id"], "class": pair["class"], "gt": pair["gt_band"],
+               "gt_reason": pair["gt_reason"]}
+        if tiers in ("t1", "both"):
+            try:
+                pre = rk.prescore(resume, job)
+                row["t1_score"] = float(pre[0]) if pre else None
+                row["t1_band"] = band_t1(pre[0]) if pre else None
+                row["t1_reason"] = pre[1][:80] if pre else None
+            except Exception as e:
+                row["t1_score"], row["t1_band"] = None, None
+                print(f"  {pair['id']} T1 failed: {e}", file=sys.stderr)
+            row["t1_points"] = points(row.get("t1_band"), pair["gt_band"])
+        if tiers in ("t2", "both"):
+            try:
+                score, reason, concerns, bd = rk.score(resume, job)
+                row["t2_score"] = float(score)
+                row["t2_band"] = band_t2(score)
+                row["t2_concerns_n"] = len(concerns)
+                row["t2_reason"] = reason[:80]
+            except Exception as e:
+                row["t2_score"], row["t2_band"] = None, None
+                print(f"  {pair['id']} T2 failed: {e}", file=sys.stderr)
+            row["t2_points"] = points(row.get("t2_band"), pair["gt_band"])
+        rows.append(row)
+        print(f"  {pair['id']}: gt={pair['gt_band']}"
+              + (f" t1={row.get('t1_band')}({row.get('t1_score')})" if tiers != 't2' else "")
+              + (f" t2={row.get('t2_band')}({row.get('t2_score')})" if tiers != 't1' else ""),
+              file=sys.stderr)
+
+    out: dict = {"mode": "regress", "pairs": len(rows), "rows": rows}
+    for t in (("t1",) if tiers == "t1" else ("t2",) if tiers == "t2" else ("t1", "t2")):
+        pts = [r.get(f"{t}_points", 0) for r in rows]
+        out[f"{t}_total"] = f"{sum(pts)}/{2 * len(rows)}"
+        by_class: dict = {}
+        for r in rows:
+            c = by_class.setdefault(r["class"], [0, 0])
+            c[0] += r.get(f"{t}_points", 0)
+            c[1] += 2
+        out[f"{t}_by_class"] = {k: f"{v[0]}/{v[1]}" for k, v in by_class.items()}
+        out[f"{t}_wrong_band"] = [
+            {"id": r["id"], "gt": r["gt"], "got": r.get(f"{t}_band"),
+             "score": r.get(f"{t}_score"), "why_gt": r["gt_reason"]}
+            for r in rows if r.get(f"{t}_points", 0) == 0
+        ]
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=("gate", "ab"), required=True)
+    ap.add_argument("--mode", choices=("gate", "ab", "regress"), required=True)
     ap.add_argument("--limit", type=int, default=100, help="jobs to evaluate (default 100)")
     ap.add_argument("--user", default=None, help="restrict to one user_id")
     ap.add_argument("--model-b", default="gpt-4.1", help="Tier-2 model for the B side (ab mode)")
+    ap.add_argument("--pairs", default="tests/regress_pairs.json",
+                    help="regress mode: fixture path")
+    ap.add_argument("--tiers", choices=("t1", "t2", "both"), default="both",
+                    help="regress mode: which tier(s) to run")
     ap.add_argument("--json", default=None, help="write the full result to this path")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     args = ap.parse_args()
+
+    if args.mode == "regress":
+        n_pairs = len(json.load(open(args.pairs))["pairs"])
+        calls = n_pairs * (2 if args.tiers == "both" else 1)
+        est = n_pairs * ((COST["prescore"] if args.tiers != "t2" else 0)
+                         + (COST["final_haiku_warm"] if args.tiers != "t1" else 0))
+        print(f"About to run {calls} calls over {n_pairs} fixed pairs (~${est:.2f}).")
+        if not args.yes and input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+        t0 = time.time()
+        result = run_regress(args.pairs, args.tiers)
+        result["elapsed_sec"] = round(time.time() - t0, 1)
+        printable = {k: v for k, v in result.items() if k != "rows"}
+        print("\n" + json.dumps(printable, indent=2))
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"\nFull result written to {args.json}")
+        return 0
 
     jobs = _fetch_jobs(args.limit, args.user, scored_only=False)
     if not jobs:

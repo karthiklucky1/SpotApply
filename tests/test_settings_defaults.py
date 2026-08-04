@@ -48,16 +48,27 @@ def test_shortlist_thresholds_are_the_calibrated_values():
     assert settings.shortlist_strong_threshold == 65
 
 
-def test_the_tier_one_gate_moves_in_lockstep_with_the_shortlist_bar():
-    """The prescore gate is min(advance, shortlist). If advance drifts ABOVE the
-    shortlist bar, Tier-1 silently rejects jobs that would have been shortlisted;
-    if it drifts far below, the cheap tier stops filtering and every candidate
-    reaches Claude. They are meant to move together."""
-    assert settings.prescore_advance_threshold == settings.shortlist_score_threshold, (
-        f"PRESCORE_ADVANCE_THRESHOLD={settings.prescore_advance_threshold} vs "
-        f"shortlist_score_threshold={settings.shortlist_score_threshold} — raise "
-        f"them together (see CLAUDE.md)"
+def test_the_tier_one_gate_matches_the_banded_prompt():
+    """The prescore gate is min(advance, shortlist), and its value is COUPLED TO
+    THE TIER-1 PROMPT'S BANDS, not to the shortlist bar. The banded prompt
+    (reranker._prescore_system_prompt) scores adjacent-role jobs 40-59; the gate
+    sits at 40 — the bottom of that band — so every adjacent fit still reaches
+    Claude for adjudication. Under the OLD two-band prompt those same jobs
+    scored 60+, which is why the gate used to equal the shortlist bar.
+
+    If you change this number, you are asserting a new prescore DISTRIBUTION:
+    re-run scripts/eval_scorers.py --mode gate at N>=2000 first and cut at
+    p05_prescore_among_strong. A gate above the adjacent band's floor converts
+    Tier-1 false-highs into permanent false-lows — the live eval caught a
+    Claude-72 job prescoring 25."""
+    assert settings.prescore_advance_threshold == 40, (
+        f"PRESCORE_ADVANCE_THRESHOLD={settings.prescore_advance_threshold} — the gate "
+        f"and the Tier-1 prompt bands ship together; re-derive from a gate eval"
     )
+    # The gate must stay BELOW the shortlist bar: min(advance, shortlist) means a
+    # gate above it would be clamped anyway, and equality would drain the whole
+    # adjacent band unseen.
+    assert settings.prescore_advance_threshold < settings.shortlist_score_threshold
 
 
 def test_the_board_default_filter_is_not_stricter_than_the_shortlist_bar():

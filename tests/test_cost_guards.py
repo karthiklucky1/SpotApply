@@ -752,11 +752,13 @@ def test_prewarm_noop_without_anthropic_client():
 
 # ── Tier-1 is not free: don't prescore once the budget is gone ───────────────
 
-def test_prescore_gate_tracks_the_shortlist_bar():
-    """The effective gate is min(advance, shortlist). If the shortlist bar is
-    raised without the advance threshold, Claude keeps scoring jobs that can no
-    longer shortlist — pure waste. Keep them equal."""
-    assert settings.prescore_advance_threshold == settings.shortlist_score_threshold
+def test_prescore_gate_sits_at_the_adjacent_band_floor():
+    """The effective gate is min(advance, shortlist), and 40 is the floor of the
+    banded Tier-1 prompt's adjacent band (40-59): adjacent fits advance to
+    Claude, stated-blocker jobs (<40) drain. See test_settings_defaults for the
+    full rationale; this guard just keeps the pair coherent from the cost side."""
+    assert settings.prescore_advance_threshold == 40
+    assert settings.prescore_advance_threshold < settings.shortlist_score_threshold
 
 
 def test_pulse_fast_path_checks_budget_before_spending(monkeypatch):

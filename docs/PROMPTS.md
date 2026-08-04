@@ -1,5 +1,34 @@
 # Scoring prompts — current, proposed, and why
 
+> **2026-08-04 UPDATE — the audited revisions are now APPLIED in code.** The
+> extension audit (gate eval N=200, A/B eval N=100, both live) confirmed the
+> defects this file predicted and found their live cost: a Claude-72 job
+> prescored 25 under the old two-band Tier-1 prompt; 87/200 prescores piled at
+> 30-39 with zero in 60-69. What shipped, as one change set:
+>
+> - **Tier-1**: banded prompt (0-30 stated blocker / 40-59 adjacent / 60+
+>   genuine), scoped lean-high, "never infer a blocker", authorized-to-work
+>   clause, injection guard — `reranker._prescore_system_prompt`
+> - **Gate**: `PRESCORE_ADVANCE_THRESHOLD` 60 → **40** (bottom of the adjacent
+>   band). The prompt and gate ship TOGETHER: under the old prompt adjacent
+>   jobs scored 60+ and advanced; under the new one they score 40-59, so a 60
+>   gate would have turned false highs into permanent false lows. Re-derive
+>   the gate from `--mode gate` at N≥2000 once the new prompt has traffic.
+> - **Tier-2**: bounded contract (reason≤20w, concerns 0-3×≤8w with
+>   specificity, notes≤8w), deterministic blocker cap (factor ≤15 from an
+>   explicit blocker → overall ≤25), English-always, degenerate-shape rule,
+>   "use 90+" permission — `reranker._JSON_CONTRACT` / `_SCORE_BANDS`
+> - **Pipeline**: `_jd_slice` rescues work-authorization lines the JD `[:5000]`
+>   cut dropped (US postings put them at the end — the truncation was deleting
+>   exactly the work_auth factor's evidence and scoring the silence as
+>   favorable)
+> - **Regression harness**: `python -m scripts.eval_scorers --mode regress`
+>   runs the audit's 20 fixed pairs (tests/regress_pairs.json) through the
+>   LIVE prompts (~$0.10) — run it before and after ANY prompt edit.
+>
+> Sections below this banner describe the PRE-audit state and the reasoning
+> that led here; they are kept as the design record.
+
 This file exists so the scoring prompts can be reviewed and iterated OUTSIDE the
 code (paste into Claude / an extension / an eval harness). The authoritative
 copies live in `app/matching/reranker.py` — if you change one here, change it
