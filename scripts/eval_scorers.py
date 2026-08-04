@@ -200,10 +200,20 @@ def run_ab(jobs: List[Job], resume: str, profile, model_b: str) -> dict:
     }
 
 
-def run_regress(pairs_path: str, tiers: str) -> dict:
+def run_regress(pairs_path: str, tiers: str, samples: int = 1) -> dict:
     """Run the fixed regression pairs (tests/regress_pairs.json) through the
     CURRENT prompts and score band accuracy against ground truth. Turns every
     prompt edit into a ~$0.10, 5-minute check instead of a paper argument.
+
+    Ground truth is PER TIER (gt_t1 / gt_t2): the tiers are asymmetric by
+    design — an empty JD must ADVANCE past a $0.0002 prescreen (cannot reject
+    on nothing) but must NOT be boarded by the authoritative scorer (cannot
+    board what you cannot evidence). The output states which GT column each
+    tier was scored against.
+
+    ``samples`` > 1 scores each pair that many times and takes the MODAL band —
+    single samples make run-to-run variance look like deterministic prompt
+    behavior (the audit's T7 finding). 3 samples ≈ $0.30/run.
 
     Band mapping — Tier-1: B<=30 (the prompt's stated blocker band), M 31-59,
     H>=60. Tier-2 reuses the same letters against its own bands (B<=39, M
@@ -258,36 +268,61 @@ def run_regress(pairs_path: str, tiers: str) -> dict:
                        description=pair["description"], source=JobSource.MANUAL,
                        external_id=f"regress-{pair['id']}", url="https://example.com/x")
         job.id = 0
-        row = {"id": pair["id"], "class": pair["class"], "gt": pair["gt_band"],
+        gt1, gt2 = pair["gt_t1"], pair["gt_t2"]
+        row = {"id": pair["id"], "class": pair["class"], "gt_t1": gt1, "gt_t2": gt2,
                "gt_reason": pair["gt_reason"]}
+
+        def _modal(bands_list):
+            from collections import Counter
+            real = [b for b in bands_list if b is not None]
+            return Counter(real).most_common(1)[0][0] if real else None
+
         if tiers in ("t1", "both"):
-            try:
-                pre = rk.prescore(resume, job)
-                row["t1_score"] = float(pre[0]) if pre else None
-                row["t1_band"] = band_t1(pre[0]) if pre else None
-                row["t1_reason"] = pre[1][:80] if pre else None
-            except Exception as e:
-                row["t1_score"], row["t1_band"] = None, None
-                print(f"  {pair['id']} T1 failed: {e}", file=sys.stderr)
-            row["t1_points"] = points(row.get("t1_band"), pair["gt_band"])
+            bands, scores = [], []
+            for _ in range(samples):
+                try:
+                    pre = rk.prescore(resume, job)
+                    if pre:
+                        scores.append(float(pre[0]))
+                        bands.append(band_t1(pre[0]))
+                        row.setdefault("t1_reason", pre[1][:80])
+                    else:
+                        bands.append(None)
+                except Exception as e:
+                    bands.append(None)
+                    print(f"  {pair['id']} T1 failed: {e}", file=sys.stderr)
+            row["t1_scores"] = scores
+            row["t1_score"] = scores[0] if scores else None
+            row["t1_band"] = _modal(bands)
+            row["t1_band_stable"] = len(set(b for b in bands if b)) <= 1
+            row["t1_points"] = points(row["t1_band"], gt1)
         if tiers in ("t2", "both"):
-            try:
-                score, reason, concerns, bd = rk.score(resume, job)
-                row["t2_score"] = float(score)
-                row["t2_band"] = band_t2(score)
-                row["t2_concerns_n"] = len(concerns)
-                row["t2_reason"] = reason[:80]
-            except Exception as e:
-                row["t2_score"], row["t2_band"] = None, None
-                print(f"  {pair['id']} T2 failed: {e}", file=sys.stderr)
-            row["t2_points"] = points(row.get("t2_band"), pair["gt_band"])
+            bands, scores = [], []
+            for _ in range(samples):
+                try:
+                    score, reason, concerns, bd = rk.score(resume, job)
+                    scores.append(float(score))
+                    bands.append(band_t2(score))
+                    row.setdefault("t2_reason", reason[:80])
+                    row.setdefault("t2_concerns_n", len(concerns))
+                except Exception as e:
+                    bands.append(None)
+                    print(f"  {pair['id']} T2 failed: {e}", file=sys.stderr)
+            row["t2_scores"] = scores
+            row["t2_score"] = scores[0] if scores else None
+            row["t2_band"] = _modal(bands)
+            row["t2_band_stable"] = len(set(b for b in bands if b)) <= 1
+            row["t2_points"] = points(row["t2_band"], gt2)
         rows.append(row)
-        print(f"  {pair['id']}: gt={pair['gt_band']}"
+        print(f"  {pair['id']}: gt_t1={gt1} gt_t2={gt2}"
               + (f" t1={row.get('t1_band')}({row.get('t1_score')})" if tiers != 't2' else "")
               + (f" t2={row.get('t2_band')}({row.get('t2_score')})" if tiers != 't1' else ""),
               file=sys.stderr)
 
-    out: dict = {"mode": "regress", "pairs": len(rows), "rows": rows}
+    out: dict = {"mode": "regress", "pairs": len(rows), "samples_per_pair": samples,
+                 "gt_note": "each tier scored against ITS OWN ground-truth column "
+                            "(gt_t1 / gt_t2) — the tiers are asymmetric by design",
+                 "rows": rows}
     for t in (("t1",) if tiers == "t1" else ("t2",) if tiers == "t2" else ("t1", "t2")):
         pts = [r.get(f"{t}_points", 0) for r in rows]
         out[f"{t}_total"] = f"{sum(pts)}/{2 * len(rows)}"
@@ -298,10 +333,15 @@ def run_regress(pairs_path: str, tiers: str) -> dict:
             c[1] += 2
         out[f"{t}_by_class"] = {k: f"{v[0]}/{v[1]}" for k, v in by_class.items()}
         out[f"{t}_wrong_band"] = [
-            {"id": r["id"], "gt": r["gt"], "got": r.get(f"{t}_band"),
-             "score": r.get(f"{t}_score"), "why_gt": r["gt_reason"]}
+            {"id": r["id"], "gt": r[f"gt_{t}"],
+             "got": r.get(f"{t}_band"), "score": r.get(f"{t}_score"),
+             "why_gt": r.get("gt_reason_t2") if t == "t2" and r.get("gt_reason_t2")
+                       else r["gt_reason"]}
             for r in rows if r.get(f"{t}_points", 0) == 0
         ]
+        if samples > 1:
+            out[f"{t}_unstable_pairs"] = [r["id"] for r in rows
+                                          if not r.get(f"{t}_band_stable", True)]
     return out
 
 
@@ -316,21 +356,24 @@ def main() -> int:
                     help="regress mode: fixture path")
     ap.add_argument("--tiers", choices=("t1", "t2", "both"), default="both",
                     help="regress mode: which tier(s) to run")
+    ap.add_argument("--samples", type=int, default=1,
+                    help="regress mode: score each pair N times, take the modal "
+                         "band (3 recommended — catches run-to-run variance)")
     ap.add_argument("--json", default=None, help="write the full result to this path")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     args = ap.parse_args()
 
     if args.mode == "regress":
         n_pairs = len(json.load(open(args.pairs))["pairs"])
-        calls = n_pairs * (2 if args.tiers == "both" else 1)
-        est = n_pairs * ((COST["prescore"] if args.tiers != "t2" else 0)
-                         + (COST["final_haiku_warm"] if args.tiers != "t1" else 0))
+        calls = n_pairs * (2 if args.tiers == "both" else 1) * args.samples
+        est = n_pairs * args.samples * ((COST["prescore"] if args.tiers != "t2" else 0)
+                                        + (COST["final_haiku_warm"] if args.tiers != "t1" else 0))
         print(f"About to run {calls} calls over {n_pairs} fixed pairs (~${est:.2f}).")
         if not args.yes and input("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
             print("Aborted.")
             return 0
         t0 = time.time()
-        result = run_regress(args.pairs, args.tiers)
+        result = run_regress(args.pairs, args.tiers, samples=max(1, args.samples))
         result["elapsed_sec"] = round(time.time() - t0, 1)
         printable = {k: v for k, v in result.items() if k != "rows"}
         print("\n" + json.dumps(printable, indent=2))

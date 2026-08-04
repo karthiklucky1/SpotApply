@@ -124,7 +124,19 @@ def main() -> int:
 
     train = [r for r in rows if r.job_id % 5 != 0]
     hold = [r for r in rows if r.job_id % 5 == 0]
-    print(f"rows={len(rows)}  train={len(train)}  holdout={len(hold)}  bar={bar:.0f}")
+    dates = sorted(r.created_at for r in rows if r.created_at)
+    span = f"{dates[0]:%Y-%m-%d} .. {dates[-1]:%Y-%m-%d}" if dates else "no dates"
+    print(f"rows={len(rows)}  train={len(train)}  holdout={len(hold)}  bar={bar:.0f}  span={span}")
+    # A certifying tool must always print its denominator AND flag a seam: rows
+    # written before a change to g(), the skill graph, or the Tier-2 CONTRACT
+    # describe a scorer/judge pair that no longer exists, and fitting across
+    # the boundary calibrates noise. We cannot detect prompt changes from the
+    # data, so warn on any multi-day span when --since was not given.
+    if not args.since and dates and (dates[-1] - dates[0]).days >= 2:
+        print(f"WARN: rows span {(dates[-1] - dates[0]).days} days with no --since. "
+              "If g(), the skill graph, or the Tier-2 contract changed inside this "
+              "window (e.g. the 2026-08-04 deterministic-cap revision), pass "
+              "--since <change-date> — mixed-regime rows calibrate noise.")
 
     iso = pav_isotonic([(r.expanded_score, r.llm_score) for r in train])
 
@@ -191,7 +203,9 @@ def main() -> int:
         "mint_model": settings.card_mint_model,
     }
     if args.dry_run:
-        print("--dry-run: nothing written.")
+        print(f"--dry-run: nothing written.  (denominators: n_rows={len(rows)} "
+              f"n_train={len(train)} n_holdout={n}; certification needs both "
+              f"tails to clear Wilson bounds at n>={MIN_CELL} per cell)")
         return 0
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:

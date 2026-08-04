@@ -26,6 +26,17 @@
 >   runs the audit's 20 fixed pairs (tests/regress_pairs.json) through the
 >   LIVE prompts (~$0.10) — run it before and after ANY prompt edit.
 >
+> **2026-08-04 hotfixes after the live regress run (34/40 T1, 32/40 T2):**
+> R1 — "onsite/hybrid outside {country}" pattern-matched the word "hybrid"
+> alone, scoring a clean in-country hybrid job 20; reworded to "a work location
+> outside {country} (onsite or hybrid there)". R2 — an empty JD scored 0;
+> added "a posting with no usable description is not a blocker — score it 60".
+> R3 — the fixture now carries PER-TIER ground truth (gt_t1/gt_t2): an empty
+> JD must advance past the $0.0002 prescreen but must NOT be boarded by the
+> authoritative scorer, so scoring both tiers against one GT column made the
+> tool cry wolf. `--samples 3` scores each pair three times and takes the
+> modal band, so run-to-run variance stops looking deterministic.
+>
 > Sections below this banner describe the PRE-audit state and the reasoning
 > that led here; they are kept as the design record.
 
