@@ -35,11 +35,15 @@ Python 3.11 · FastAPI/Uvicorn · SQLModel. **Supabase Postgres + Auth in prod; 
 SQLite fallback when `SUPABASE_URL` is unset.** Claude (primary LLM) / OpenAI optional ·
 sentence-transformers + FAISS + rank-bm25 · Playwright (Chromium) + MV3 Chrome extension ·
 python-telegram-bot · APScheduler · Jinja + Tailwind + Chart.js (server-rendered).
-**Landing page CSS is compiled** (`app/static/tailwind-landing.css`, committed; AOS
-self-hosted in `app/static/vendor/`) — after editing Tailwind classes in
-`landing.html` run `npm run build` (tests/test_landing_assets.py guards this).
-Dashboard + other authed templates stay on the Tailwind Play CDN (they build
-class strings in JS — do NOT compile them without a safelist).
+**Landing AND dashboard CSS are compiled + committed**, one config per template:
+`landing.html` → `tailwind-landing.css` (`build:css`), `dashboard.html` →
+`tailwind.css` (`build:css:dashboard`); AOS self-hosted in `app/static/vendor/`.
+After editing classes in either run `npm run build` — never hand-edit the output
+(the dashboard's hand-compiled file went stale and silently dropped JS-built
+badge classes). tests/test_landing_assets.py guards both;
+`.claude/hooks/build-tailwind.sh` rebuilds the affected one automatically. All
+OTHER authed/public templates (auth, pricing, extension, messages, privacy,
+terms, recruiter, public_profile) stay on the Tailwind Play CDN.
 
 ## File structure
 ```
@@ -74,9 +78,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 `custom_highlight_block`.
 
 ## Conventions & decisions
-- **Multi-tenancy:** every query is scoped by `user_id` from the Supabase JWT
-  (`_get_user_id`/`_require_user_id` in server.py). `"local"` = SQLite dev user.
-  Never leak data across users; check ownership on per-application routes.
+- **Multi-tenancy:** every query is scoped by `user_id` from the Supabase JWT.
+  `_get_user_id` returns None when anonymous — scoping off it FAILS OPEN, so a
+  non-public route must refuse the anonymous case first via a guard that RAISES:
+  `_require_user` (:258), `_require_owned_application` (:349),
+  `_require_admin_user` (:5487), `_require_admin` (:7732), all in server.py.
+  `"local"` = SQLite dev user. Never leak data across users; check ownership on
+  per-application routes.
 - **Scrape once, serve many:** all scheduled lanes write postings ONCE to the
   shared pool (`Job.user_id == SHARED_POOL_USER`, pipeline.py); per-user pools
   are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also

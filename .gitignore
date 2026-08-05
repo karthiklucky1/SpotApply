@@ -15,7 +15,9 @@ scratch/*.png
 .pytest_cache/
 .ruff_cache/
 .DS_Store
-.claude/
+# Claude Code config is TRACKED (hooks + review subagents are project guards,
+# not personal preference). Only per-developer overrides stay local.
+.claude/settings.local.json
 scratch/
 data/training/
 data/models/
