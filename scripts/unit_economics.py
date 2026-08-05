@@ -11,7 +11,7 @@ Reads the last N days of production data and answers, per user and averaged:
         = rows with Job.prescore). Trustworthy for history.
       ledger — the LlmSpend table. CAVEAT: score_final rows written before
         the 2026-08-04 provider-gating fix under-report ~100x (audit bug #8),
-        so the ledger is only честn for days after that seam. Both numbers
+        so the ledger is only honest for days after that seam. Both numbers
         are printed; when they disagree on old days, believe the reconstruction.
   - unit economics: cost per scored job, cost per DELIVERED job at each bar,
     and a package-pricing table ("N delivered jobs/month costs you $X; at a
@@ -53,6 +53,9 @@ FINAL_COLD = 0.0087      # first call of a burst (cache write) — prewarm makes
 PRESCORE = 0.0002        # gpt-4o-mini (assumed OpenAI rate, flagged in CAPACITY.md)
 CONTRACT_SEAM = "2026-08-04"   # Tier-2 deterministic-cap / 90+ contract change
 LEDGER_SEAM = "2026-08-04"     # LlmSpend provider-gating fix (audit bug #8)
+PRESCORE_BIRTH = "2026-08-04"  # Job.prescore column first persisted (bf678fa) —
+                               # rows scored before this date have prescore NULL
+                               # BY COLUMN AGE, not because Tier-1 skipped them.
 
 BARS = (60, 65, 70, 75, 80)
 
@@ -171,6 +174,11 @@ def main() -> int:
               f"the {CONTRACT_SEAM} Tier-2 contract (old Haiku never exceeded 72, so "
               f">=75 counts are structurally depressed). Price on >=65 until "
               f"new-contract rows dominate, then re-run.")
+        print(f"WARNING: those same {pre_seam_finals} finals also predate the "
+              f"{PRESCORE_BIRTH} birth of the Job.prescore column, so their "
+              f"prescore is NULL by COLUMN AGE. Do NOT read prescored<finals as "
+              f"'most finals skip Tier-1' on windows spanning that date — the "
+              f"prescored/finals funnel is only meaningful from {PRESCORE_BIRTH}.")
 
     print(f"\n=== Package pricing (at {args.margin:.0%} gross margin, matching cost only) ===")
     print("Cost basis: warm-cache reconstruction. Add your infra share "
