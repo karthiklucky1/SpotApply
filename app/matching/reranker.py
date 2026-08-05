@@ -837,6 +837,16 @@ class Reranker:
         pre = self._pre_filter_job(job)
         if pre is not None:
             return pre[0], pre[1]
+        # No-description guard — in CODE because it is not promptable: three
+        # prompt rounds (rescue clause, repositioned clause, its own band-level
+        # bullet with an exact number) all left gpt-4o-mini scoring an empty
+        # JD at exactly 30, stable across samples — the model reads absence of
+        # evidence as failure and anchors on the blocker fence. A $0.0002
+        # prescreen must not reject on nothing: 60 = bottom of the genuine
+        # band = advances to Tier-2, whose contract handles degenerate input
+        # explicitly. Deterministic, free, unfoolable — and it saves the call.
+        if len((job.description or "").strip()) < 40:
+            return 60.0, "no description"
         prompt = _build_prescore_prompt(resume_text, job)
         for name, call_fn in self._prescore_backends():
             # Anthropic Tier-1 draws from the finals budget (see

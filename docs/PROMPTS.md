@@ -50,6 +50,20 @@
 > the rerun: T7 modal >=60, T15 modal =60, Tier-1 >=38/40, blockers stay 8/8
 > (the immunity line must not soften T1-T4/T16).
 >
+> **2026-08-04 FINAL — T15 moved from prompt to code.** v3 fixed T7 (clean
+> 8/8, blockers held 8/8) but the empty-JD rule failed its THIRD prompt
+> attempt — still exactly 30, all samples, even as its own band-level bullet
+> with an exact number. Three tries is the evidence that the rule is not
+> promptable on gpt-4o-mini: it reads absence of evidence as failure and
+> anchors on the blocker fence. The rule is now an `if` in
+> `Reranker.prescore()` (description under 40 stripped chars → (60, "no
+> description"), no API call made) — deterministic, free, unfoolable. The
+> prompt bullet stays as documentation of the band's intent; the code
+> guarantees it. scripts/rescue_stamped_prescores.py re-queues jobs the v2
+> window falsely drained (hybrid-keyword stamps at <=30). The cascade's final
+> shape: deterministic where rules suffice, cheap-model where judgment is
+> bulk, Claude where judgment is authoritative.
+>
 > Sections below this banner describe the PRE-audit state and the reasoning
 > that led here; they are kept as the design record.
 

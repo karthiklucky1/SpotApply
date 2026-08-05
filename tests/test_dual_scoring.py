@@ -18,7 +18,7 @@ from app.db.models import Job, JobSource
 
 def _job(title="Senior ML Engineer"):
     return Job(title=title, company="Acme", location="Remote", remote=True,
-               description="Build LLM systems in Python.", source=JobSource.GREENHOUSE,
+               description="Build LLM systems in Python: FastAPI services, PyTorch training pipelines, and PostgreSQL data layers on AWS.", source=JobSource.GREENHOUSE,
                external_id="x1", url="https://x/1")
 
 

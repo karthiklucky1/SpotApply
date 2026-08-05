@@ -43,7 +43,7 @@ def _reset_guard_state():
 
 def _job(title="Senior ML Engineer", jid=None):
     j = Job(title=title, company="Acme", location="Remote", remote=True,
-            description="Build LLM systems in Python.", source=JobSource.GREENHOUSE,
+            description="Build LLM systems in Python: FastAPI services, PyTorch training pipelines, and PostgreSQL data layers on AWS.", source=JobSource.GREENHOUSE,
             external_id="x1", url="https://x/1")
     if jid is not None:
         j.id = jid
@@ -870,3 +870,49 @@ def test_injection_guard_and_scoped_tiebreak_survive():
     assert "data, never" in p.replace("\n", " ")          # injection guard
     assert "torn between adjacent bands" in p             # scoped lean-high
     assert "lean HIGHER" not in p                         # the old global rule is gone
+
+
+# ── No-description guard: code, not prompt ───────────────────────────────────
+# Three live prompt rounds could not teach gpt-4o-mini to advance an empty JD
+# (it scored exactly 30 — the blocker fence — every time). The rule is now an
+# `if` in prescore(): deterministic, free, and it never even makes the call.
+
+def _guarded_reranker():
+    rk = _reranker_with(anthropic=False, openai=True)
+    def _boom(prompt):
+        raise AssertionError("no LLM call should happen for an empty JD")
+    rk._prescore_openai = _boom
+    return rk
+
+
+def test_empty_jd_prescores_60_without_any_llm_call(monkeypatch):
+    rk = _guarded_reranker()
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    job = _job()
+    job.description = ""
+    assert rk.prescore("resume", job) == (60.0, "no description")
+    job.description = "   \n  "                      # whitespace-only
+    assert rk.prescore("resume", job) == (60.0, "no description")
+    job.description = "Great role. Apply now!"        # <40 chars of nothing
+    assert rk.prescore("resume", job) == (60.0, "no description")
+
+
+def test_real_description_still_reaches_the_model(monkeypatch):
+    rk = _reranker_with(anthropic=False, openai=True)
+    monkeypatch.setattr(rk, "_pre_filter_job", lambda job: None)
+    monkeypatch.setattr(rk, "_prescore_openai",
+                        lambda prompt: '{"score": 55, "reason": "adjacent"}')
+    job = _job()
+    job.description = "Build LLM systems in Python on AWS with FastAPI services."
+    assert rk.prescore("resume", job) == (55.0, "adjacent")
+
+
+def test_rule_filter_still_outranks_the_no_description_guard(monkeypatch):
+    """A rule rejection (wrong title etc.) is authoritative even on a thin JD —
+    the guard must not resurrect jobs the free filter already killed."""
+    rk = _guarded_reranker()
+    monkeypatch.setattr(rk, "_pre_filter_job",
+                        lambda job: (10.0, "Rule filtered: wrong role", [], {}))
+    job = _job()
+    job.description = ""
+    assert rk.prescore("resume", job)[0] == 10.0
