@@ -63,6 +63,8 @@ app/
   telegram_bot/     # async approval/handoff loop
   templates/        # landing, dashboard, pricing, auth, privacy, terms, extension
 extension/          # MV3: background.js, content.js, popup
+mobile/             # Expo React Native app (iOS+Android) — Supabase auth +
+                    # /api/* JSON client only, no backend coupling (own README)
 scripts/            # run_discovery, run_matching, seed_registry, status_check
 tests/              # pytest (matching, tailoring, grounding, autofill, funnel...)
 data/               # résumé master, FAISS index, generated docs, local SQLite
