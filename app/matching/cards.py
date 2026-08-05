@@ -160,21 +160,46 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _haiku_json(system: str, user: str, max_tokens: int = 900) -> Optional[dict]:
-    """One structured-extraction call on the mint model. None on any failure."""
+    """One structured-extraction call on the mint model. None on any failure.
+
+    TRUNCATION IS A FAILURE MODE, NOT AN ERROR: a response cut off at
+    ``max_tokens`` comes back HTTP 200 with stop_reason="max_tokens" and a
+    half-finished JSON object that _extract_json cannot parse. This function
+    used to return None silently in that case — the exact signature of the
+    2026-08-04 recompile outage (0/7 UserCards, "Anthropic POST returns 200,
+    function returns None, no traceback"): the v2 UserCard schema asks for
+    10-20 evidence claims PLUS a full skills list, which overflows a fixed
+    budget on dense resumes. Now: one retry at double the budget when the stop
+    reason says truncation, and every failure logs at WARNING with the stop
+    reason — a mint that returns None must never be invisible."""
     from app.matching.reranker import _shared_llm_clients
     anthropic_client, _openai, _active = _shared_llm_clients()
     if anthropic_client is None:
         return None
-    try:
+
+    def _call(budget: int):
         resp = anthropic_client.messages.create(
             model=settings.card_mint_model,
-            max_tokens=max_tokens,
+            max_tokens=budget,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return _extract_json("".join(b.text for b in resp.content if hasattr(b, "text")))
+        text = "".join(b.text for b in resp.content if hasattr(b, "text"))
+        return getattr(resp, "stop_reason", None), text
+
+    try:
+        stop, text = _call(max_tokens)
+        if stop == "max_tokens":
+            log.warning("card mint truncated at %d tokens — retrying once at %d",
+                        max_tokens, max_tokens * 2)
+            stop, text = _call(max_tokens * 2)
+        card = _extract_json(text)
+        if card is None:
+            log.warning("card mint returned unparseable output "
+                        "(stop_reason=%s, %d chars): %.120s", stop, len(text or ""), text)
+        return card
     except Exception as e:
-        log.debug("card mint call failed: %s", e)
+        log.warning("card mint call failed: %s", e)
         return None
 
 
@@ -295,7 +320,7 @@ def get_or_mint_job_card(job, allow_mint: bool = True) -> Optional[dict]:
                     select(JobCardRow).where(JobCardRow.card_key == key)).first()
                 if row is None:
                     row = JobCardRow(card_key=key)
-                elif row.updated_at > started:
+                elif row.updated_at and row.updated_at.replace(tzinfo=None) > started:
                     return card  # a fresher writer won; don't clobber it
                 row.version = JOB_CARD_VERSION
                 row.model = settings.card_mint_model
@@ -409,8 +434,12 @@ def resume_hash(profile, resume_text: str) -> str:
 def compile_user_card(profile, resume_text: str) -> Optional[dict]:
     if not _reserve_mint():
         return None
+    # 3000, not 1600: the v2 schema (10-20 evidence claims + the full skills
+    # list + level fields) overflowed 1600 output tokens on dense resumes —
+    # every such mint came back truncated and was silently dropped (the
+    # 2026-08-04 0/7 recompile outage). Worst-case headroom cost ~$0.007/mint.
     card = _haiku_json(_USER_CARD_SYSTEM, user_card_material(profile, resume_text),
-                       max_tokens=1600)
+                       max_tokens=3000)
     if not card or not isinstance(card.get("skills"), list):
         _release_mint()          # a rejected card must not consume the cap
         return None
@@ -481,7 +510,7 @@ def get_or_compile_user_card(user_id: Optional[str], profile, resume_text: str,
                     select(UserCardRow).where(UserCardRow.user_id == uid)).first()
                 if row is None:
                     row = UserCardRow(user_id=uid)
-                elif row.updated_at > started:
+                elif row.updated_at and row.updated_at.replace(tzinfo=None) > started:
                     # Someone wrote AFTER we began, so their material is at least
                     # as fresh as ours. Overwriting would leave the row claiming
                     # to be current for material that is stale — the user then
@@ -495,5 +524,9 @@ def get_or_compile_user_card(user_id: Optional[str], profile, resume_text: str,
                 session.add(row)
                 session.commit()
         except Exception as e:
-            log.debug("user card write lost a race for %s: %s", uid, e)
+            # WARNING, not debug: a silently-skipped write leaves the row stale
+            # while the caller holds a fresh card — "success" and "persisted"
+            # quietly diverge, which is how a recompile can report done while
+            # the ledger keeps measuring the old card.
+            log.warning("user card write failed for %s (card NOT persisted): %s", uid, e)
         return card

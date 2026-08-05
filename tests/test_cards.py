@@ -421,3 +421,80 @@ def test_a_slower_worker_never_clobbers_a_fresher_card(stub_llm, monkeypatch):
     with get_session() as s:
         row = s.exec(select(UserCardRow).where(UserCardRow.user_id == "u-stale")).first()
         assert row.resume_hash == "fresher-hash", "a stale writer clobbered a fresher card"
+
+
+# ── Truncation is a failure mode, not an error (the 0/7 recompile outage) ────
+# A response cut at max_tokens is HTTP 200 + stop_reason="max_tokens" + half a
+# JSON object. _haiku_json used to hand that to _extract_json and return None
+# silently — a successful-looking call that produced nothing, with no log above
+# DEBUG. One retry at double the budget recovers it; failures now log WARNING.
+
+class _FakeResp:
+    def __init__(self, text, stop):
+        self.stop_reason = stop
+        self.content = [type("B", (), {"text": text})()]
+
+
+class _TruncatingClient:
+    """First call truncates; the retry (bigger budget) completes."""
+    def __init__(self):
+        self.budgets = []
+        self.messages = self
+
+    def create(self, **kw):
+        self.budgets.append(kw["max_tokens"])
+        if len(self.budgets) == 1:
+            return _FakeResp('{"skills": [{"name": "python"', "max_tokens")
+        return _FakeResp('{"skills": [{"name": "python"}], "evidence": []}', "end_turn")
+
+
+def test_truncated_mint_retries_once_at_double_budget(monkeypatch):
+    client = _TruncatingClient()
+    monkeypatch.setattr("app.matching.reranker._shared_llm_clients",
+                        lambda: (client, None, "anthropic"))
+    card = cards._haiku_json("sys", "user", max_tokens=1600)
+    assert card == {"skills": [{"name": "python"}], "evidence": []}
+    assert client.budgets == [1600, 3200]      # exactly one retry, doubled
+
+
+def test_unparseable_mint_logs_warning_not_silence(monkeypatch, caplog):
+    class _Garbage:
+        messages = None
+        def create(self, **kw):
+            return _FakeResp("I cannot produce JSON today.", "end_turn")
+    g = _Garbage(); g.messages = g
+    monkeypatch.setattr("app.matching.reranker._shared_llm_clients",
+                        lambda: (g, None, "anthropic"))
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING, logger="app.matching.cards"):
+        assert cards._haiku_json("sys", "user") is None
+    assert any("unparseable" in r.message for r in caplog.records)
+
+
+def test_double_truncation_gives_up_visibly(monkeypatch, caplog):
+    """If even the doubled budget truncates, return None — but never silently."""
+    class _AlwaysTruncated:
+        messages = None
+        def __init__(self): self.calls = 0
+        def create(self, **kw):
+            self.calls += 1
+            return _FakeResp('{"skills": [', "max_tokens")
+    t = _AlwaysTruncated(); t.messages = t
+    monkeypatch.setattr("app.matching.reranker._shared_llm_clients",
+                        lambda: (t, None, "anthropic"))
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING, logger="app.matching.cards"):
+        assert cards._haiku_json("sys", "user", max_tokens=100) is None
+    assert t.calls == 2                        # one retry, not an infinite loop
+    assert any("unparseable" in r.message for r in caplog.records)
+
+
+def test_aware_timestamp_row_does_not_break_the_overwrite_check():
+    """Supabase can hand back tz-aware datetimes depending on column DDL;
+    aware > naive raises TypeError inside the write path's blanket except —
+    a silently skipped persist. The comparison now normalizes first."""
+    from datetime import datetime as _dt, timezone
+    aware = _dt.now(timezone.utc)
+    started = _dt.utcnow()
+    # the exact expression both write paths now use:
+    assert isinstance(aware.replace(tzinfo=None) > started, bool)
