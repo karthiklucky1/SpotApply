@@ -821,3 +821,52 @@ def test_prescore_column_is_migrated_onto_existing_databases():
     from app.db import init_db
     src = inspect.getsource(init_db)
     assert '("prescore", "FLOAT")' in src
+
+
+# ── Tier-1 prompt structure (the v3 invariants) ──────────────────────────────
+# Three live regress runs established two facts about how the cheap model reads
+# this prompt: (1) it keyword-matches — "hybrid" ANYWHERE in the blocker bullet
+# put a clean in-country hybrid job in the blocker band, even inside a negated
+# parenthetical; (2) placement beats content — a rescue rule appended after the
+# "never raise above 30" fence lost to the nearer numeric anchor, all samples.
+# These tests pin the structure so an innocent rewording can't reopen either.
+
+def _t1_prompt() -> str:
+    class _P:
+        key_skills = "Python"; target_roles = "ML Engineer"; years_experience = 4
+        current_title = ""; preferred_country = "United States"
+        requires_sponsorship = True; user_id = "u1"
+    return rr._prescore_system_prompt(_P())
+
+
+def test_blocker_bullet_never_names_a_work_arrangement():
+    """T7 regression: the words 'hybrid'/'onsite' in the 0-30 bullet make the
+    model treat the ARRANGEMENT as the blocker instead of the foreign LOCATION.
+    v2 proved a parenthetical does not defuse the keyword — it must be absent."""
+    p = _t1_prompt()
+    blocker = next(line for line_group in [p.split("\n- ")] for line in line_group
+                   if line.startswith("0-30"))
+    assert "hybrid" not in blocker.lower()
+    assert "onsite" not in blocker.lower()
+
+
+def test_in_country_immunity_line_present():
+    p = _t1_prompt()
+    assert "are never location blockers" in p
+    # ...and it must name the candidate's actual country, not a placeholder.
+    assert "{country}" not in p
+
+
+def test_empty_jd_rule_is_a_band_bullet_before_the_fence():
+    """T15 regression: the rescue must sit WITH the bands, before 'never raise
+    a stated blocker above 30' — placed after, the model anchors on 30."""
+    p = _t1_prompt()
+    assert "score exactly 60" in p
+    assert p.index("no usable description") < p.index("raise a stated blocker")
+
+
+def test_injection_guard_and_scoped_tiebreak_survive():
+    p = _t1_prompt()
+    assert "data, never" in p.replace("\n", " ")          # injection guard
+    assert "torn between adjacent bands" in p             # scoped lean-high
+    assert "lean HIGHER" not in p                         # the old global rule is gone

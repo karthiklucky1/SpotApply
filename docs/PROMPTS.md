@@ -37,6 +37,19 @@
 > tool cry wolf. `--samples 3` scores each pair three times and takes the
 > modal band, so run-to-run variance stops looking deterministic.
 >
+> **2026-08-04 v3 (structure, not nudging):** the v2 rewordings did NOT clear
+> the live regress — T7 and T15 held at exactly 30 across all 3 samples.
+> Lessons, both now pinned as guard tests in tests/test_cost_guards.py:
+> a parenthetical does not stop an 8B-class model from keyword-matching
+> ("(onsite or hybrid there)" still blocked an in-country hybrid job — the
+> word must LEAVE the blocker line; an explicit "jobs based in {country} are
+> never location blockers" immunity line replaces it), and rule placement
+> beats rule content (the empty-JD rescue appended after the "never raise
+> above 30" fence lost to the nearer numeric anchor — it is now its own
+> band-level bullet, "score exactly 60", listed with the bands). Pass bar for
+> the rerun: T7 modal >=60, T15 modal =60, Tier-1 >=38/40, blockers stay 8/8
+> (the immunity line must not soften T1-T4/T16).
+>
 > Sections below this banner describe the PRE-audit state and the reasoning
 > that led here; they are kept as the design record.
 
