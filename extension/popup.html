@@ -82,6 +82,20 @@
       <button class="btn btn-outline" id="btn-dash2">Open SpotApply Dashboard</button>
     </div>
 
+    <!-- Voluntary self-identification. Off unless the user turns it on. -->
+    <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px">
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:11px;line-height:1.45;color:#cbd5e1">
+        <input type="checkbox" id="eeo-optin" style="margin-top:2px;flex-shrink:0">
+        <span>
+          Auto-answer <strong>demographic questions</strong> (gender, race, veteran,
+          disability) from my profile.
+          <span style="display:block;color:#64748b;margin-top:2px">
+            Off by default — these are voluntary. SpotApply highlights them for you instead.
+          </span>
+        </span>
+      </label>
+    </div>
+
     <!-- Diagnostics: describes what the copilot sees on the current page.
          Field VALUES are never included — only lengths and a redacted shape. -->
     <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px">

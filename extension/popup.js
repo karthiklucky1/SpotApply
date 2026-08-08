@@ -138,6 +138,19 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
   });
 });
 
+// ── EEO opt-in ───────────────────────────────────────────────────────────────
+// Voluntary self-identification is never answered for the user unless they say
+// so here; the content script reads this key and reacts to changes live.
+const eeoBox = document.getElementById("eeo-optin");
+if (eeoBox) {
+  chrome.storage.local.get(["spotapply_eeo_autofill"], (d) => {
+    eeoBox.checked = d && d.spotapply_eeo_autofill === true;
+  });
+  eeoBox.addEventListener("change", () => {
+    chrome.storage.local.set({ spotapply_eeo_autofill: eeoBox.checked });
+  });
+}
+
 // ── Diagnostics ──────────────────────────────────────────────────────────────
 // One click puts a full picture of THIS page on the clipboard: host, whether
 // it's a recognised ATS, session state, and every form field with the signals

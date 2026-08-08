@@ -120,13 +120,18 @@ def main():
         if not sw:
             print("no service worker"); sys.exit(1)
 
-        # Establish a live copilot session exactly as the dashboard does.
+        # Establish a live copilot session the way clicking "Auto-Fill & Apply"
+        # does — a pack WITH profile data in storage.
+        #
+        # Not via INIT_EXTENSION: that message carries credentials only and no
+        # longer creates a fill session (it used to, which is how a pack with
+        # no profile data ended up driving fills and writing "undefined").
         trigger = ctx.new_page()
         trigger.goto(f"{BASE}/trigger.html")
         trigger.wait_for_timeout(1500)
-        trigger.evaluate("""(pack) => window.postMessage(
-            { type: 'HIREPATH_INIT_EXTENSION', pack }, '*')""", FILL_PACK)
-        trigger.wait_for_timeout(1500)
+        sw.evaluate("""(pack) => new Promise(r => chrome.storage.local.set({
+            spotapply_copilot_pack: pack, spotapply_copilot_ts: Date.now() }, r))""", FILL_PACK)
+        trigger.wait_for_timeout(500)
         session = sw.evaluate("""() => new Promise(r => chrome.storage.local.get(
             ['spotapply_copilot_pack','spotapply_copilot_ts'],
             d => r({ pack: !!d.spotapply_copilot_pack, ts: !!d.spotapply_copilot_ts })))""")

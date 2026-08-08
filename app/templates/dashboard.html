@@ -4321,12 +4321,19 @@
                 <span class="text-2xl">🕐</span>
                 <div><p class="text-[9px] font-black uppercase tracking-widest" style="color:${color}">OPT Clock — ${oc.zone.toUpperCase()} zone</p>
                 <p class="text-lg font-black text-white">${oc.unemployment_days_left} unemployment days left <span class="text-[11px] text-slate-500 font-normal">of ${oc.unemployment_budget}${oc.stem_opt ? ' (STEM)' : ''}</span></p>
-                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">EAD ends in ${oc.days_to_ead_end} days (${_esc(oc.ead_end_date || '')})</p>` : ''}
+                ${oc.days_to_ead_end != null ? `<p class="text-[11px] text-slate-400">${_eadPhrase(oc.days_to_ead_end)} (${_esc(oc.ead_end_date || '')})</p>` : ''}
                 ${oc.h1b ? `<p class="text-[11px] text-slate-400 mt-1" title="${_esc(oc.h1b.message)}">🗓 ${_esc(oc.h1b.label)} · earliest cap-subject start ${_esc(oc.h1b.next_employment_start)}</p>` : ''}</div>
                 <div class="flex-1"></div>
                 <p class="text-[9px] text-slate-600 max-w-[220px]">${_esc(oc.note || '')}${oc.h1b ? ' H-1B dates are the typical schedule — confirm on uscis.gov.' : ''}</p>
               </div>`;
             renderOptStrip(oc);
+        }
+        // A past EAD date yields a NEGATIVE day count, which read as
+        // "EAD ends in -51 days". Say what actually happened instead.
+        function _eadPhrase(days) {
+            if (days < 0) return `EAD expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago`;
+            if (days === 0) return 'EAD expires today';
+            return `EAD ends in ${days} day${days === 1 ? '' : 's'}`;
         }
         function renderOptStrip(oc) {
             const strip = document.getElementById('opt-strip');
@@ -4334,7 +4341,7 @@
             if (oc.zone === 'green') { strip.classList.add('hidden'); return; }
             const color = _optZoneColor(oc.zone);
             strip.innerHTML = `<button onclick="sbSwitchTab('xray')" class="w-full text-left glass rounded-2xl px-4 py-2.5 flex items-center gap-3" style="border:1px solid ${color}55">
-                <span>🕐</span><span class="text-xs font-bold" style="color:${color}">OPT Clock: ${oc.unemployment_days_left} unemployment days left${oc.days_to_ead_end != null ? ` · EAD ends in ${oc.days_to_ead_end} days` : ''}</span>
+                <span>🕐</span><span class="text-xs font-bold" style="color:${color}">OPT Clock: ${oc.unemployment_days_left} unemployment days left${oc.days_to_ead_end != null ? ` · ${_eadPhrase(oc.days_to_ead_end)}` : ''}</span>
                 <span class="text-[10px] text-slate-500 ml-auto">plan with the X-Ray →</span></button>`;
             strip.classList.remove('hidden');
         }

@@ -186,9 +186,13 @@ def main():
         check("G7 github", pack["github_url"] in (val("#gh_github") or ""), val("#gh_github"))
         check("G8 cover letter textarea", len(val("#cover_letter_text") or "") > 10,
               (val("#cover_letter_text") or "")[:40])
-        check("G9 gender select", val("#gender") == "Decline to self-identify", val("#gender"))
-        check("G10 veteran select", "not a protected veteran" in (val("#veteran_status") or ""),
-              val("#veteran_status"))
+        # Demographic self-ID is voluntary and legally protected: SpotApply
+        # leaves it to the user unless they explicitly opt in. The opt-in path
+        # is covered by P6/P7 in test_extension_payload.py.
+        check("G9 gender NOT auto-answered (voluntary self-ID)", val("#gender") == "",
+              repr(val("#gender")))
+        check("G10 veteran NOT auto-answered (voluntary self-ID)",
+              val("#veteran_status") == "", repr(val("#veteran_status")))
         check("G11 sponsorship = No", val("#sponsorship") == "No", val("#sponsorship"))
         check("G12 work auth = Yes", val("#work_auth") == "Yes", val("#work_auth"))
         n_files = page.eval_on_selector("#resume", "el => el.files.length")

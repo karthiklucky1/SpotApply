@@ -11,6 +11,7 @@ folder recursively, so anything inside it ships to every user.
 pip install playwright && playwright install chromium   # once
 python3 extension-tests/test_extension_live.py          # 13 checks — plumbing
 python3 extension-tests/test_extension_forms.py         # 34 checks — real fills
+python3 extension-tests/test_extension_payload.py       # 12 checks — payload + EEO
 python3 extension-tests/test_extension_security.py      #  7 checks — gates
 ```
 
@@ -45,6 +46,21 @@ Real bugs this file caught that static review missed:
 - No site filler handled a single **"Full name"** field, and the advance
   observer only watched `childList` + total field count — so on a tabbed form
   the name was never filled, before OR after revealing the panel.
+
+**test_extension_payload.py** — the payload-handoff class of bug, found by a
+live run across Greenhouse, Ashby and Lever that reported *"13 fields filled"*
+over a completely empty form and wrote the literal string `undefined undefined`
+into name fields. The dashboard's `INIT_EXTENSION` pack is credentials-only and
+was being stored as the copilot's FILL pack, so every profile lookup on it was
+`undefined`. Pins the whole chain: an auth pack never becomes a fill pack, an
+unfillable pack writes nothing and says why, `undefined` never reaches a field,
+a real pack still fills, and demographic questions stay untouched unless the
+user opts in.
+
+**Demographic questions are never auto-answered by default.** Gender, race,
+veteran and disability are voluntary, legally-protected self-identification;
+answering them unattended — even with "decline" — is the applicant's call, not
+ours. The extension highlights them instead. The popup has an explicit opt-in.
 
 ## Reproducing a real posting
 

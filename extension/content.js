@@ -55,6 +55,67 @@ function packBase(pack) {
   return (pack && (pack.spotapply_url || pack.hirepath_url)) || '';
 }
 
+// A pack can only drive a fill if it actually carries the applicant. The
+// dashboard's init pack is credentials-only, so without this check the filler
+// happily wrote `undefined` into every field it matched.
+function packIsFillable(pack) {
+  if (!pack || typeof pack !== 'object') return false;
+  return Boolean(
+    (pack.first_name && String(pack.first_name).trim()) ||
+    (pack.last_name && String(pack.last_name).trim()) ||
+    (pack.email && String(pack.email).trim())
+  );
+}
+
+function _packSummary(pack) {
+  if (!pack || typeof pack !== 'object') return String(pack);
+  return JSON.stringify({
+    keys: Object.keys(pack).length,
+    app_id: pack.app_id ?? null,
+    job_title: pack.job_title ?? null,
+    hasName: !!(pack.first_name || pack.last_name),
+    hasEmail: !!pack.email,
+    hasToken: !!pack.auth_token,
+  });
+}
+
+// ── EEO / demographic self-identification ────────────────────────────────────
+// Gender, race/ethnicity, veteran and disability questions are VOLUNTARY,
+// legally-protected self-identification. Answering them on someone's behalf —
+// even with "Decline to self-identify" — is a decision only the applicant can
+// make, so it is strictly opt-in and OFF by default. The fields are still
+// highlighted for the user to complete; we just never write them unattended.
+let _eeoAutofillEnabled = false;
+try {
+  chrome.storage.local.get(['spotapply_eeo_autofill'], (d) => {
+    _eeoAutofillEnabled = d && d.spotapply_eeo_autofill === true;
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.spotapply_eeo_autofill) {
+      _eeoAutofillEnabled = changes.spotapply_eeo_autofill.newValue === true;
+    }
+  });
+} catch (_) {}
+
+/** Write an EEO answer only with explicit consent. Returns true if written. */
+function fillEEOField(el, value) {
+  if (!_eeoAutofillEnabled) {
+    console.log('[SpotApply] Leaving demographic question for you (EEO autofill is off):',
+                (el && (el.name || el.id)) || 'field');
+    return false;
+  }
+  if (!value) return false;
+  return el && el.tagName === 'SELECT' ? selectOption(el, value) : fillInput(el, value);
+}
+
+/** Full name with no "undefined" leakage — "" when we know neither part. */
+function fullNameOf(pack) {
+  return [pack && pack.first_name, pack && pack.last_name]
+    .map((p) => (p == null ? '' : String(p).trim()))
+    .filter(Boolean)
+    .join(' ');
+}
+
 // Fire-and-forget event report so autofill failures are visible on the server
 // (FunnelEvent) instead of dying in the browser console.
 function reportTelemetry(pack, event, meta) {
@@ -189,22 +250,36 @@ function handleFormSubmitted() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Write a value into a field. Returns TRUE only if the value is actually in
+ * the element afterwards — React and friends routinely discard a write, and a
+ * counter that trusts the attempt reported "13 filled" on an empty form.
+ */
 function fillInput(el, value) {
-  if (!el || value === undefined || value === null || value === "") return;
+  if (!el || value === undefined || value === null || value === "") return false;
+  // Belt and braces: a template literal over a missing profile field yields
+  // the literal string "undefined", which is worse than leaving it blank
+  // because it looks filled and gets submitted.
+  const _s = String(value);
+  if (!_s.trim() || /^(undefined|null)(\s+(undefined|null))*$/i.test(_s.trim())) {
+    console.warn('[SpotApply] Refusing to write placeholder value:', JSON.stringify(_s),
+                 'into', el.name || el.id || el.tagName);
+    return false;
+  }
 
   // Never treat a file input as a text field. Browsers forbid setting .value on
   // <input type="file"> (it throws "accepts a filename"), and the résumé is
   // handled separately by attachResume.
-  if (el.tagName === 'INPUT' && el.type === 'file') return;
+  if (el.tagName === 'INPUT' && el.type === 'file') return false;
 
   // Respect manual user edits — do not overwrite
   if (el.dataset.spotapplyUserModified === 'true') {
     console.log('[SpotApply] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
-    return;
+    return false;
   }
   
   // Skip if value is already the same
-  if (el.value === value) return;
+  if (el.value === value) return true; // already correct
 
   // Guard: only operate on actual form elements — prevents "Illegal invocation"
   // when called on DIVs/spans (e.g. Workday data-automation-id containers)
@@ -214,16 +289,17 @@ function fillInput(el, value) {
     const isSelectBtn = el.getAttribute('data-automation-id') === 'select-button' || el.getAttribute('aria-haspopup') === 'listbox';
     if (isWorkday || isSelectBtn) {
       selectWorkdayDropdown(el, value);
+      return true;   // async widget — treated as attempted+applied
     }
-    return;
+    return false;
   }
   if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
     // Try to find an input inside the element (common with Workday containers)
     const inner = el.querySelector('input, textarea');
     if (inner) return fillInput(inner, value);
-    return;
+    return false;
   }
-  if (tag === "SELECT") { selectOption(el, value); return; }
+  if (tag === "SELECT") return selectOption(el, value);
 
   // Set the value using native prototype setter (bypasses React/framework intercepts)
   // Wrapped in try/catch because Workday/custom elements can throw "Illegal invocation"
@@ -255,6 +331,15 @@ function fillInput(el, value) {
       el.dispatchEvent(new Event(ev, { bubbles: true }))
     );
   } catch (_) {}
+
+  // Read back: a controlled component can reject the write outright. Only a
+  // value that survived counts as filled.
+  const landed = String(el.value || "") === _s;
+  if (!landed) {
+    console.warn('[SpotApply] Write did not stick on', el.name || el.id || el.tagName,
+                 '— field is controlled or read-only');
+  }
+  return landed;
 }
 
 // ── Work authorization vs sponsorship ────────────────────────────────────────
@@ -562,7 +647,7 @@ async function fillGreenhouse(pack) {
     // use one instead of first/last. Missing here, so on those forms the name
     // was the one required field the copilot never filled.
     else if (/full.?name|candidate.?name|^\s*name\s*\*?\s*$/i.test(lbl))
-      fillInput(inp, `${pack.first_name || ""} ${pack.last_name || ""}`.trim());
+      fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillInput(inp, pack.phone);
     else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
@@ -575,10 +660,10 @@ async function fillGreenhouse(pack) {
     else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
     else if (/pronouns/i.test(lbl)) fillInput(inp, "");
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
+      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
       else if (/sponsor|visa|authoriz/i.test(lbl)) answerWorkAuthField(inp, pack, lbl);
       else if (/country/i.test(lbl)) selectOption(inp, "United States");
     }
@@ -590,10 +675,10 @@ async function fillGreenhouse(pack) {
   )) {
     if (!el.value || el.value === "") {
       const id = el.id.toLowerCase();
-      if (id.includes("gender")) selectOption(el, pack.gender || "decline");
-      else if (id.includes("race") || id.includes("ethnicity")) selectOption(el, pack.ethnicity || "decline");
-      else if (id.includes("veteran")) selectOption(el, pack.veteran_status || "decline");
-      else if (id.includes("disability")) selectOption(el, pack.disability_status || "decline");
+      if (id.includes("gender")) fillEEOField(el, pack.gender || "decline");
+      else if (id.includes("race") || id.includes("ethnicity")) fillEEOField(el, pack.ethnicity || "decline");
+      else if (id.includes("veteran")) fillEEOField(el, pack.veteran_status || "decline");
+      else if (id.includes("disability")) fillEEOField(el, pack.disability_status || "decline");
     }
   }
 
@@ -628,7 +713,7 @@ async function fillLever(pack) {
   }
 
   const map = {
-    "input[name='name']": `${pack.first_name} ${pack.last_name}`.trim(),
+    "input[name='name']": fullNameOf(pack),
     "input[name='email']": pack.email,
     "input[name='phone']": pack.phone,
     "input[name='org']": pack.current_title || "",
@@ -689,7 +774,7 @@ async function fillAshby(pack) {
     // forename into "When did you first hear about us?". Require the word.
     if (/first\s*_?\s*name|given\s*name|forename/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last\s*_?\s*name|surname|family\s*name/i.test(lbl)) fillInput(inp, pack.last_name);
-    else if (/^name$/i.test(lbl)) fillInput(inp, `${pack.first_name} ${pack.last_name}`.trim());
+    else if (/^name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/email/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile/i.test(lbl)) fillInput(inp, pack.phone);
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
@@ -1248,7 +1333,7 @@ async function fillAvature(pack) {
 
     if (/first.?name|given.?name|forename/.test(ctx)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/.test(ctx)) fillInput(inp, pack.last_name);
-    else if (/full.?name|^name$|candidate.?name/.test(ctx)) fillInput(inp, `${pack.first_name} ${pack.last_name}`);
+    else if (/full.?name|^name$|candidate.?name/.test(ctx)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b|e-?mail/.test(ctx)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone|contact.?number/.test(ctx)) fillInput(inp, pack.phone);
     else if (/city|town|location|address|where.*based/.test(ctx)) fillInput(inp, pack.location || "");
@@ -1265,10 +1350,10 @@ async function fillAvature(pack) {
   for (const sel of document.querySelectorAll("select")) {
     if (sel.value && sel.value !== "") continue;
     const ctx = (labelText(sel) + " " + (sel.getAttribute("name") || "") + " " + (sel.id || "")).toLowerCase();
-    if (/gender/i.test(ctx)) selectOption(sel, pack.gender || "decline");
-    else if (/race|ethnic/i.test(ctx)) selectOption(sel, pack.ethnicity || "decline");
-    else if (/veteran/i.test(ctx)) selectOption(sel, pack.veteran_status || "decline");
-    else if (/disability/i.test(ctx)) selectOption(sel, pack.disability_status || "decline");
+    if (/gender/i.test(ctx)) fillEEOField(sel, pack.gender || "decline");
+    else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || "decline");
+    else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || "decline");
+    else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || "decline");
     else if (/country/.test(ctx)) selectOption(sel, "United States");
     else if (/sponsor|visa|authoriz/.test(ctx)) answerWorkAuthField(sel, pack, ctx);
   }
@@ -1277,6 +1362,8 @@ async function fillAvature(pack) {
   for (const combo of document.querySelectorAll("[role='combobox'], .avature-select, .dropdown-trigger")) {
     const ctx = (labelText(combo) + " " + (combo.getAttribute("aria-label") || "")).toLowerCase();
     let want = null;
+    const _isEEO = /gender|race|ethnic|veteran|disability/i.test(ctx);
+    if (_isEEO && !_eeoAutofillEnabled) continue;   // voluntary self-ID — user's call
     if (/gender/i.test(ctx)) want = pack.gender || "decline";
     else if (/race|ethnic/i.test(ctx)) want = pack.ethnicity || "decline";
     else if (/veteran/i.test(ctx)) want = pack.veteran_status || "decline";
@@ -1330,7 +1417,7 @@ async function fillGeneric(pack) {
     const lbl = labelText(inp);
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
-    else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, `${pack.first_name} ${pack.last_name}`);
+    else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|tel/i.test(lbl)) fillInput(inp, pack.phone);
     else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
@@ -1340,10 +1427,10 @@ async function fillGeneric(pack) {
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) selectOption(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
+      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
     }
   }
 
@@ -1359,7 +1446,7 @@ async function fillUniversal(pack) {
   const inputs = document.querySelectorAll(
     "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='image']), textarea, select, button[data-automation-id='select-button'], button[aria-haspopup='listbox']"
   );
-  let filled = 0;
+  let filled = 0, attempted = 0;
   const loc = parseLocation(pack.location);
 
   for (const inp of inputs) {
@@ -1389,6 +1476,11 @@ async function fillUniversal(pack) {
     if (!signals.trim()) continue;
 
     // Match against canonical field types with broad regex
+    // Snapshot before the branch runs so we can tell a real write from a
+    // no-op (see the verified count at the bottom of the loop).
+    const before = inp.tagName === 'BUTTON'
+      ? (inp.textContent || '').trim()
+      : String(inp.value || '').trim();
     let matched = true;
 
     // ── Name ──
@@ -1397,7 +1489,7 @@ async function fillUniversal(pack) {
     } else if (/last.?name|legal.?last|family.?name|surname|\blname\b/i.test(signals)) {
       fillInput(inp, pack.last_name);
     } else if (/full.?name|candidate.?name|^name$/i.test(signals)) {
-      fillInput(inp, `${pack.first_name} ${pack.last_name}`);
+      fillInput(inp, fullNameOf(pack));
 
     // ── Email (not confirm/verify fields) ──
     } else if (/\bemail\b|e.?mail/i.test(signals) && !/confirm|verify|re.?enter/i.test(signals)) {
@@ -1467,21 +1559,13 @@ async function fillUniversal(pack) {
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
       selectOption(inp, 'United States');
     } else if (/gender/i.test(signals)) {
-      const val = pack.gender || 'decline';
-      if (inp.tagName === 'SELECT') selectOption(inp, val);
-      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+      matched = fillEEOField(inp, pack.gender || 'decline');
     } else if (/race|ethnic/i.test(signals)) {
-      const val = pack.ethnicity || 'decline';
-      if (inp.tagName === 'SELECT') selectOption(inp, val);
-      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+      matched = fillEEOField(inp, pack.ethnicity || 'decline');
     } else if (/veteran/i.test(signals)) {
-      const val = pack.veteran_status || 'decline';
-      if (inp.tagName === 'SELECT') selectOption(inp, val);
-      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+      matched = fillEEOField(inp, pack.veteran_status || 'decline');
     } else if (/disability/i.test(signals)) {
-      const val = pack.disability_status || 'decline';
-      if (inp.tagName === 'SELECT') selectOption(inp, val);
-      else if (inp.tagName === 'BUTTON') fillInput(inp, val);
+      matched = fillEEOField(inp, pack.disability_status || 'decline');
     } else if (/sponsor|visa|authoriz/i.test(signals)) {
       matched = answerWorkAuthField(inp, pack, signals);
     } else if (/postal|zip.?code/i.test(signals)) {
@@ -1490,12 +1574,27 @@ async function fillUniversal(pack) {
       matched = false;
     }
 
+    // Count only what LANDED. This used to be `if (matched) filled++`, i.e. a
+    // count of branches that ran — so a pack full of undefined reported
+    // "filled 13 additional fields" over a completely empty form.
     if (matched) {
-      filled++;
-      console.log('[SpotApply] Universal filled:', signals.slice(0, 60));
+      const after = inp.tagName === 'BUTTON'
+        ? (inp.textContent || '').trim()
+        : String(inp.value || '').trim();
+      if (after && after !== before) {
+        filled++;
+        console.log('[SpotApply] Universal filled:', signals.slice(0, 60));
+      } else {
+        attempted++;
+        console.warn('[SpotApply] Matched but nothing landed:', signals.slice(0, 60));
+      }
     }
   }
 
+  if (attempted > 0) {
+    console.warn(`[SpotApply] ${attempted} field(s) matched a rule but stayed empty ` +
+                 '(missing profile data, or the site rejected the write)');
+  }
   return filled;
 }
 
@@ -1977,6 +2076,25 @@ async function fillForm(fillPack) {
     }
   }
 
+  // HARD STOP on a pack with no profile data. Filling from one wrote the string
+  // "undefined undefined" into name fields and left everything else blank while
+  // still reporting success — the worst outcome for an apply tool, because a
+  // user trusting the green badge submits a blank application. Say what is
+  // wrong instead of writing garbage.
+  if (!packIsFillable(pack)) {
+    console.warn('[SpotApply] Fill aborted — pack carries no profile data:', _packSummary(pack));
+    try {
+      showOverlay(
+        '⚠️ <b>SpotApply isn\'t connected to this job</b><br>' +
+        '<small>No profile data reached the extension, so nothing was filled. ' +
+        'Open this job from your SpotApply dashboard and click <b>Auto-Fill &amp; Apply</b> ' +
+        '(or use <b>Fill This Form Now</b> in the extension popup).</small>',
+        [], true
+      );
+    } catch (e) {}
+    return;
+  }
+
   _copilotPack = pack;
   _copilotActive = true;
   _lastUrl = location.href;
@@ -2117,11 +2235,35 @@ async function fillCurrentPage(pack) {
 
   let filled = 0, needUser = 0, skipped = 0;
   const needUserEls = [];
+  const seenChoiceGroups = new Set();
 
   for (const el of allInputs) {
-    if (el.type === 'file') { skipped++; continue; }
-    if (el.type === 'checkbox' || el.type === 'radio') { skipped++; continue; }
-    
+    // File and choice inputs used to be dropped from BOTH counts, so a form
+    // with a required résumé upload and unanswered radios reported far fewer
+    // outstanding fields than it had. Count them honestly instead.
+    if (el.type === 'file') {
+      if (el.files && el.files.length) { filled++; highlightField(el, 'green'); }
+      else if (isFieldRequired(el)) {
+        needUser++; needUserEls.push(el); highlightField(el, 'red');
+      } else { skipped++; }
+      continue;
+    }
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      // A radio group is ONE question: count it once, and treat it as answered
+      // if any member is checked.
+      const key = el.type + ':' + (el.name || el.id || '');
+      if (el.name && seenChoiceGroups.has(key)) { continue; }
+      if (el.name) seenChoiceGroups.add(key);
+      const group = el.name
+        ? document.querySelectorAll(`input[type="${el.type}"][name="${CSS.escape(el.name)}"]`)
+        : [el];
+      if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
+      if (isFieldRequired(el)) {
+        needUser++; needUserEls.push(el); highlightField(el, 'red');
+      } else { skipped++; }
+      continue;
+    }
+
     let val = el.value ? el.value.trim() : '';
     if (el.tagName === 'BUTTON') {
       const txt = el.textContent ? el.textContent.trim() : '';
@@ -2231,31 +2373,62 @@ function showStepOverlay(result, pack) {
 
 function showOverlay(html, _unused, dismissable) {
   removeOverlay();
-  const div = document.createElement('div');
-  div.id = 'hp-copilot-overlay';
-  div.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px">
-      <span style="font-size:20px;flex-shrink:0">⚡</span>
-      <div style="flex:1;line-height:1.5">${html}</div>
-      ${dismissable ? `<button data-hp-close style="background:none;border:none;color:#64748b;cursor:pointer;font-size:16px;padding:0 4px;line-height:1" title="Dismiss">✕</button>` : ''}
-    </div>`;
-  Object.assign(div.style, {
+  // Rendered inside a SHADOW ROOT. Injected straight into the page it inherited
+  // the site's CSS — an aggressive global line-height or `* { position }` rule
+  // collapsed the lines on top of each other ("Next" printed over "Fill the
+  // yellow fields above, then click"). A shadow root is the only reliable way
+  // to keep our own UI readable on an arbitrary site.
+  const host = document.createElement('div');
+  host.id = 'hp-copilot-overlay';
+  // `all: initial` FIRST — it resets every property, so anything set before it
+  // would be wiped. The host carries only positioning; all visual style lives
+  // inside the shadow root, out of reach of the page's CSS.
+  Object.assign(host.style, {
+    all: 'initial',
     position: 'fixed', bottom: '20px', right: '20px', zIndex: '2147483647',
-    background: 'linear-gradient(135deg,rgba(15,23,42,0.97),rgba(30,41,59,0.97))',
-    border: '1px solid rgba(99,102,241,0.4)', borderRadius: '16px',
-    padding: '14px 16px', maxWidth: '320px', minWidth: '220px',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(99,102,241,0.1)',
-    fontFamily: 'system-ui,sans-serif', fontSize: '13px', color: '#e2e8f0',
-    backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-    transition: 'opacity 0.3s ease',
   });
-  document.body.appendChild(div);
+
+  let root;
+  try {
+    root = host.attachShadow({ mode: 'open' });
+  } catch (_) {
+    root = host;   // very old engines — degrade to the previous behaviour
+  }
+  root.innerHTML = `
+    <style>
+      :host, * { box-sizing: border-box; }
+      .card {
+        display: flex; align-items: flex-start; gap: 10px;
+        background: linear-gradient(135deg,rgba(15,23,42,0.97),rgba(30,41,59,0.97));
+        border: 1px solid rgba(99,102,241,0.4); border-radius: 16px;
+        padding: 14px 16px; max-width: 320px; min-width: 220px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(99,102,241,0.1);
+        font-family: system-ui, sans-serif; font-size: 13px; line-height: 1.5;
+        color: #e2e8f0; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      }
+      .bolt { font-size: 20px; flex-shrink: 0; line-height: 1.2; }
+      .body { flex: 1; line-height: 1.5; min-width: 0; }
+      .body b, .body strong { color: #f1f5f9; }
+      .body small { display: block; margin-top: 4px; line-height: 1.5; color: #cbd5e1; }
+      .close {
+        background: none; border: none; color: #64748b; cursor: pointer;
+        font-size: 16px; padding: 0 4px; line-height: 1; flex-shrink: 0;
+      }
+      .close:hover { color: #e2e8f0; }
+    </style>
+    <div class="card">
+      <span class="bolt">⚡</span>
+      <div class="body">${html}</div>
+      ${dismissable ? '<button data-hp-close class="close" title="Dismiss">✕</button>' : ''}
+    </div>`;
+
+  document.body.appendChild(host);
   // Attach the dismiss handler via addEventListener — inline onclick="" is
   // blocked by strict CSP on sites like LinkedIn, which is why the ✕ used to
   // do nothing there.
   if (dismissable) {
-    div.querySelector('[data-hp-close]')?.addEventListener('click', () => div.remove());
-    setTimeout(() => div?.remove(), 30000);  // auto-hide
+    root.querySelector('[data-hp-close]')?.addEventListener('click', () => host.remove());
+    setTimeout(() => host?.remove(), 30000);  // auto-hide
   }
 }
 
@@ -2266,9 +2439,19 @@ function removeOverlay() {
 // ── Detect step text (e.g. "Step 2 of 4") ────────────────────────────────────
 
 function detectStepText() {
+  // The bare "N / M" form used to be matched anywhere on the page, so the
+  // widget cheerfully reported a follower count or a date as the wizard step
+  // ("831/58783", "04/30"). Keep it, but only as a plausible step counter:
+  // the text node must be essentially just the counter, and N <= M <= 30.
+  const plausibleRatio = (txt) => {
+    // No leading zeros: "04/30" is a date, "4/30" would be step 4 of 30.
+    const m = txt.match(/^\D{0,6}?([1-9]\d?)\s*\/\s*([1-9]\d?)\D{0,6}$/);
+    if (!m) return null;
+    const a = +m[1], b = +m[2];
+    return b >= 2 && b <= 20 && a <= b ? `${a}/${b}` : null;
+  };
   const patterns = [
     /step\s+\d+\s+of\s+\d+/i,
-    /\d+\s*\/\s*\d+/,
     /page\s+\d+\s+of\s+\d+/i,
     /\d+\s+of\s+\d+\s+steps/i,
   ];
@@ -2283,6 +2466,8 @@ function detectStepText() {
           const m = txt.match(p);
           if (m) return m[0];
         }
+        const r = plausibleRatio(txt);
+        if (r) return r;
       }
     }
   } catch (e) {}
@@ -2294,13 +2479,14 @@ function detectStepText() {
     let node;
     while ((node = walker.nextNode())) {
       const t = node.textContent.trim();
+      if (t.length > 60) continue;   // prose, not a step indicator
+      let hit = null;
       for (const p of patterns) {
         const m = t.match(p);
-        if (m) {
-          matches.push({ text: t.slice(0, 50), matchedPattern: m[0] });
-          break;
-        }
+        if (m) { hit = m[0]; break; }
       }
+      if (!hit) hit = plausibleRatio(t);
+      if (hit) matches.push({ text: t.slice(0, 50), matchedPattern: hit });
     }
   } catch (e) {}
 

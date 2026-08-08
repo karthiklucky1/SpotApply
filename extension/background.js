@@ -193,8 +193,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       spotapply_copilot_pack: pack,
       spotapply_copilot_ts: Date.now(),
     }, () => {
-      chrome.tabs.create({ url: pack.apply_url }, (tab) => {
+      // Open the job NEXT TO the dashboard tab, and inside the same tab group
+      // if there is one. A bare tabs.create() lands the tab at the end of the
+      // strip outside the group, where it is easy to lose entirely.
+      const opener = sender && sender.tab;
+      const createOpts = { url: pack.apply_url };
+      if (opener) {
+        createOpts.index = opener.index + 1;
+        createOpts.openerTabId = opener.id;
+        if (opener.windowId != null) createOpts.windowId = opener.windowId;
+      }
+      chrome.tabs.create(createOpts, (tab) => {
+        if (chrome.runtime.lastError || !tab) {
+          const msg = chrome.runtime.lastError?.message || "tab creation failed";
+          console.warn("[SpotApply BG] Could not open apply tab:", msg);
+          sendResponse({ ok: false, error: msg });
+          return;
+        }
         console.log("[SpotApply BG] Opened tab", tab.id, "for", pack.apply_url);
+        // -1 is TAB_GROUP_ID_NONE; grouping is best-effort.
+        if (opener && opener.groupId != null && opener.groupId !== -1 && chrome.tabs.group) {
+          try {
+            chrome.tabs.group({ groupId: opener.groupId, tabIds: [tab.id] }, () => {
+              void chrome.runtime.lastError;   // grouping is a nicety, never fatal
+            });
+          } catch (e) {
+            console.debug("[SpotApply BG] tab grouping unavailable:", e.message);
+          }
+        }
         sendResponse({ ok: true, tabId: tab.id });
       });
     });
@@ -202,15 +228,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "INIT_EXTENSION") {
-    const pack = msg.payload;
-    console.log("[SpotApply BG] INIT_EXTENSION received");
-    stashAuth(pack);
-    chrome.storage.local.set({
-      spotapply_copilot_pack: pack,
-      spotapply_copilot_ts: Date.now()
-    }, () => {
-      sendResponse({ ok: true });
-    });
+    // The dashboard's init pack is CREDENTIALS ONLY — {url, auth_token,
+    // refresh_token, supabase_*} — and stashAuth strips the secrets out of it.
+    // It must never become the copilot's fill pack: it has no first_name,
+    // email or app_id, so filling from it wrote "undefined undefined" into
+    // every name field and nothing anywhere else. Worse, the dashboard
+    // re-broadcasts this every 15s, so it used to overwrite the REAL pack of
+    // an application already in progress. Stash the auth, touch nothing else.
+    console.log("[SpotApply BG] INIT_EXTENSION received (auth only)");
+    stashAuth(msg.payload);
+    sendResponse({ ok: true });
     return true;
   }
 
