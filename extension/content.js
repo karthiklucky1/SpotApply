@@ -10,6 +10,29 @@ const HP_IS_TOP = (() => { try { return window === window.top; } catch (_) { ret
 const HP_ATS_FRAME_RE = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|breezy\.hr|applytojob\.com|jazz\.co|personio|paylocity\.com|dayforce\.com|oraclecloud\.com|eightfold\.ai|greenhouse|ashby/i;
 const HP_FRAME_ACTIVE = HP_IS_TOP || HP_ATS_FRAME_RE.test(location.hostname);
 
+// Gate for the always-on document listeners below (submit tracking, dropdown
+// learning). They were registered unconditionally, so on EVERY site: submitting
+// any form (a site login, a search box) marked the pending application
+// SUBMITTED and killed the fill session, and picking any ARIA dropdown option
+// POSTed the choice + label to /api/save-answer with the user's token.
+//
+// Both only mean anything while an application is actually being filled ON THIS
+// PAGE, so that is exactly the gate: the copilot is running here (set by
+// fillForm, covering manual Fill and auto-resume alike), or this is a known ATS
+// host. Note "page has a form" is NOT sufficient — hasApplicationForm() accepts
+// a lone input[type=email], i.e. any newsletter box on the web.
+// isKnownATS/isBlockedHost are hoisted function declarations defined further
+// down; they are only called at event time.
+function hpCopilotSurface() {
+  if (!HP_FRAME_ACTIVE) return false;
+  try {
+    if (isBlockedHost()) return false;
+    return _copilotActive || isKnownATS();
+  } catch (_) {
+    return false;
+  }
+}
+
 // Query matching elements including inside open shadow roots (some ATS widgets
 // hide their <input type="file"> in a shadow DOM where querySelectorAll can't
 // see it). Depth-first, open roots only.
@@ -51,10 +74,12 @@ document.addEventListener('change', (e) => {
   }
 }, { capture: true, passive: true });
 
-// Learn custom dropdown selections manually made by the user
+// Learn custom dropdown selections manually made by the user.
+// Gated: without hpCopilotSurface() this shipped the user's menu choices from
+// unrelated sites (any page with an expanded ARIA dropdown) to /api/save-answer.
 document.addEventListener('click', (e) => {
   const opt = e.target.closest('[role="option"], [data-automation-id*="option" i], .wd-Dropdown-Option, li, [role="menuitem"]');
-  if (opt) {
+  if (opt && hpCopilotSurface()) {
     const activeBtn = document.querySelector('button[aria-expanded="true"], button[data-automation-id="select-button"]:focus, button[aria-haspopup="listbox"]:focus');
     if (activeBtn) {
       const val = opt.textContent?.trim();
@@ -103,7 +128,7 @@ document.addEventListener('click', (e) => {
       const hasFields = form
         ? form.querySelectorAll('input, textarea, select').length > 1
         : document.querySelectorAll('input[type="file"], textarea').length > 0;
-      if (hasFields) {
+      if (hasFields && hpCopilotSurface()) {
         console.log('[SpotApply] Submit button click detected:', txt);
         handleFormSubmitted();
       }
@@ -111,8 +136,12 @@ document.addEventListener('click', (e) => {
   }
 }, { capture: true, passive: true });
 
-// Also detect form submit events
+// Also detect form submit events. Same gate: an ungated submit listener
+// reported ANY form submission anywhere (including the ATS's own login form)
+// as "application submitted", which both lied to the pipeline and deleted the
+// pack mid-fill so the copilot could never resume.
 document.addEventListener('submit', (e) => {
+  if (!hpCopilotSurface()) return;
   console.log('[SpotApply] Form submit event detected');
   handleFormSubmitted();
 }, { capture: true, passive: true });
@@ -574,8 +603,11 @@ async function fillAshby(pack) {
   const inputs = document.querySelectorAll("input:not([type='file']), textarea");
   for (const inp of inputs) {
     const lbl = labelText(inp);
-    if (/first.*(name)?/i.test(lbl)) fillInput(inp, pack.first_name);
-    else if (/last.*(name)?/i.test(lbl)) fillInput(inp, pack.last_name);
+    // "(name)?" is optional, so /first.*(name)?/ reduced to /first/ — it typed
+    // the user's surname into "What was your last compensation?" and their
+    // forename into "When did you first hear about us?". Require the word.
+    if (/first\s*_?\s*name|given\s*name|forename/i.test(lbl)) fillInput(inp, pack.first_name);
+    else if (/last\s*_?\s*name|surname|family\s*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^name$/i.test(lbl)) fillInput(inp, `${pack.first_name} ${pack.last_name}`.trim());
     else if (/email/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile/i.test(lbl)) fillInput(inp, pack.phone);
@@ -2531,11 +2563,19 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
 // runs on every site, so without these checks ANY page could post
 // HIREPATH_INIT_EXTENSION with attacker-controlled auth endpoints or force
 // tabs open via HIREPATH_LOAD_PACK.
-const _DASHBOARD_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)?hirepath\.dev$|^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const _DASHBOARD_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)?(hirepath\.dev|spotapply\.ai)$|^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
 
 window.addEventListener('message', (e) => {
   if (e.source !== window) return;
   if (!_DASHBOARD_ORIGIN_RE.test(e.origin || '')) return;
+  // Dashboard liveness probe: reply so the "install the extension" banner hides
+  // and the Fill buttons know the extension is alive (dashboard pings every 20s).
+  if (e.data?.type === 'HIREPATH_EXT_PING') {
+    let alive = false;
+    try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); alive = true; } catch (_) {}
+    if (alive) window.postMessage({ type: 'HIREPATH_EXT_PING_OK' }, '*');
+    return;
+  }
   if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
     console.log('[SpotApply] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
     // Test extension context first with a PING
@@ -2580,7 +2620,7 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
   ['hirepath_fill_pack', 'hirepath_auto_fill', 'hirepath_copilot_pack', 'hirepath_copilot_ts'],
   (data) => {
     const host = window.location.hostname;
-    const onDashboard = /hirepath\.dev$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
+    const onDashboard = /(hirepath\.dev|spotapply\.ai)$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
     if (onDashboard) { console.log('[SpotApply] On dashboard — skipping auto-fill'); return; }
 
     // LinkedIn + Indeed: hands-off on EVERY page. Their native apply flows
@@ -2635,8 +2675,16 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
       return;
     }
 
-    // Persistent copilot session — survives cross-domain hops and page reloads
-    if (freshSession || hasPackOnATS) {
+    // Persistent copilot session — survives cross-domain hops and page reloads.
+    // UNATTENDED fill requires a known ATS host, matching what background.js
+    // already enforces (`freshSession && ATS_HOSTS.test(tabHost)`). Gating on
+    // freshSession alone meant that for 30 minutes after any dashboard visit,
+    // ANY page isActionablePage() accepted — and that accepts a lone
+    // input[type=email] or input[type=file], i.e. a newsletter box or a file
+    // uploader — got the user's name, phone, address and EEO answers typed in
+    // without them asking. A non-ATS page still gets the manual Fill button
+    // below, which is user-initiated.
+    if (hasPackOnATS) {
       console.log('[SpotApply] ▶ Copilot session active, checking page…');
 
       // On login/auth pages, skip straight to watching for form appearance.

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head><title>Totally Unrelated Blog — Newsletter</title></head>
+<body>
+  <h1>My Cooking Blog</h1>
+  <!-- A lone email input: hasApplicationForm() returns true for this, which is
+       why the old freshSession-only auto-resume filled PII into pages like this. -->
+  <form id="newsletter">
+    <label for="nl-email">Subscribe to my newsletter</label>
+    <input type="email" id="nl-email" name="email">
+    <button type="submit">Subscribe</button>
+  </form>
+
+  <!-- An ARIA dropdown, the ubiquitous pattern the click-learner keyed on -->
+  <button id="menu-btn" aria-expanded="true" aria-haspopup="listbox" aria-label="Choose a category">Category</button>
+  <ul role="listbox">
+    <li role="option" id="opt-secret">My Private Medical Category</li>
+  </ul>
+</body>
+</html>
