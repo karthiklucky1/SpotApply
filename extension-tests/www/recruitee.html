@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><title>AI Forward Deployed Engineer — Recruitee-style application</title></head>
+<body>
+  <!-- Mirrors the real hardrockdigital.recruitee.com form: a tabbed page where
+       the application panel is hidden until the "Application" tab is clicked,
+       and a single "Full name" field rather than first/last. -->
+  <nav>
+    <button id="tab-details" onclick="showTab('details')">Job details</button>
+    <button id="tab-application" onclick="showTab('application')">Application</button>
+  </nav>
+
+  <section id="panel-details">
+    <h1>Job details</h1>
+    <p>Remote, Hybrid — United States, Florida</p>
+  </section>
+
+  <section id="panel-application" style="display:none">
+    <h2>My information</h2>
+    <form id="recruitee-form">
+      <label for="full_name">Full name *</label>
+      <input type="text" id="full_name" name="candidate[name]" placeholder="Full name" required>
+
+      <label for="cand_email">Email address *</label>
+      <input type="email" id="cand_email" name="candidate[email]" required>
+
+      <label for="cand_phone">Phone number *</label>
+      <input type="tel" id="cand_phone" name="candidate[phone]" required>
+
+      <label for="cand_cv">CV or resume *</label>
+      <input type="file" id="cand_cv" name="candidate[cv]" required>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </section>
+
+  <script>
+    function showTab(which) {
+      document.getElementById('panel-details').style.display = which === 'details' ? '' : 'none';
+      document.getElementById('panel-application').style.display = which === 'application' ? '' : 'none';
+    }
+  </script>
+</body>
+</html>

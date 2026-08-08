@@ -236,6 +236,30 @@ def main():
         check("R3 phone survives React revert", v("#rf-phone") == pack["phone"], v("#rf-phone"))
         page.close()
 
+        # ── T: Recruitee — tabbed form, panel hidden at fill time ───────────
+        # Reproduces a real hardrockdigital.recruitee.com run: the application
+        # panel is display:none when auto-fill fires, so every field is
+        # invisible (offsetParent null) and gets skipped.
+        print("\nRecruitee layout (application panel hidden when fill fires)")
+        pack = base_pack(f"{BASE}/recruitee.html")
+        page, _ = drive_fill(ctx, f"{BASE}/recruitee.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        hidden_full = v("#full_name")
+        check("T1 fields skipped while the panel is hidden (expected)",
+              hidden_full == "", f"full_name={hidden_full!r}")
+        # Now the user clicks through to the Application tab, as they would.
+        page.click("#tab-application")
+        page.wait_for_timeout(6000)  # copilot re-runs on DOM change
+        check("T2 full name fills once the panel is revealed",
+              pack["first_name"] in (v("#full_name") or "")
+              and pack["last_name"] in (v("#full_name") or ""), v("#full_name"))
+        check("T3 email fills after reveal", v("#cand_email") == pack["email"], v("#cand_email"))
+        check("T4 phone fills after reveal", v("#cand_phone") == pack["phone"], v("#cand_phone"))
+        marked = page.eval_on_selector(
+            "#cand_email", "el => el.dataset.spotapplyFilled === 'true'")
+        check("T5 filled fields are marked as ours (diagnostics)", marked)
+        page.close()
+
         # ── API surface actually exercised ──────────────────────────────────
         print("\nBackend calls made by the extension during these fills")
         paths = sorted({p for _, p in REQUESTS if p.startswith("/api") or "resume" in p})

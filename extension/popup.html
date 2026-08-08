@@ -82,6 +82,15 @@
       <button class="btn btn-outline" id="btn-dash2">Open SpotApply Dashboard</button>
     </div>
 
+    <!-- Diagnostics: describes what the copilot sees on the current page.
+         Field VALUES are never included — only lengths and a redacted shape. -->
+    <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px">
+      <button class="btn btn-outline" id="btn-diag" style="font-size:11px;opacity:.85">
+        🩺 Copy diagnostic report
+      </button>
+      <div class="status" id="diag-status"></div>
+    </div>
+
   </div>
   <script src="popup.js"></script>
 </body>

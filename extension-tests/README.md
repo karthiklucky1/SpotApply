@@ -10,7 +10,7 @@ folder recursively, so anything inside it ships to every user.
 ```bash
 pip install playwright && playwright install chromium   # once
 python3 extension-tests/test_extension_live.py          # 13 checks — plumbing
-python3 extension-tests/test_extension_forms.py         # 29 checks — real fills
+python3 extension-tests/test_extension_forms.py         # 34 checks — real fills
 python3 extension-tests/test_extension_security.py      #  7 checks — gates
 ```
 
@@ -34,11 +34,26 @@ with a stub backend serving the résumé so the attach path runs for real:
 | Lever | single "Full name" field, bare `name=` attributes |
 | Workday | `data-automation-id` only, no usable labels, country dropdown |
 | React | controlled inputs that revert any value written without a native setter |
+| Recruitee | tabbed form whose application panel is hidden when auto-fill fires |
 
-Two real bugs came out of this file that static review missed: `/unit/` matching
-"**Unit**ed States" (so *"Are you legally authorized to work in the United
-States?"* was silently classified as an address-line-2 field and skipped), and
-the work-auth status string being fed to Yes/No sponsorship dropdowns.
+Real bugs this file caught that static review missed:
+
+- `/unit/` matched "**Unit**ed States", so *"Are you legally authorized to work
+  in the United States?"* was classified as an address-line-2 field and skipped.
+- The work-auth status string was fed to Yes/No sponsorship dropdowns, matching
+  no option and leaving both required fields blank.
+- No site filler handled a single **"Full name"** field, and the advance
+  observer only watched `childList` + total field count — so on a tabbed form
+  the name was never filled, before OR after revealing the panel.
+
+## Reproducing a real posting
+
+When a live application misbehaves, don't guess from a screenshot: open the
+extension popup on that page and hit **🩺 Copy diagnostic report**. It puts the
+host, whether the host is a recognised ATS, the session state, and every field
+(with the signals the matcher saw and who filled it) on the clipboard —
+values are redacted to lengths and shapes, so it is safe to paste anywhere.
+Turn the interesting part into a fixture in `www/` and add a block here.
 
 **test_extension_security.py** — the gates that keep a live copilot session from
 acting on unrelated sites. It records every HTTP request the extension makes, so

@@ -244,6 +244,11 @@ function fillInput(el, value) {
     console.warn('[SpotApply] fillInput fallback for:', el.tagName, el.name || el.id || '', e.message);
   }
 
+  // Mark what WE wrote. Without this a diagnostic can't tell a SpotApply fill
+  // from Chrome's own autofill or the site restoring a draft — which is the
+  // first question to answer when a field comes out wrong or empty.
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+
   // Dispatch events to notify React/Angular/Vue of the change
   try {
     ["input", "change", "blur"].forEach(ev =>
@@ -333,6 +338,7 @@ function selectOption(el, value) {
   const match = exact || starts || contains;
   if (match) {
     el.value = match.value;
+    try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
   }
@@ -552,6 +558,11 @@ async function fillGreenhouse(pack) {
 
     if (/first.?name|given.?name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
+    // Single "Full name" field — Recruitee, Lever and most lightweight boards
+    // use one instead of first/last. Missing here, so on those forms the name
+    // was the one required field the copilot never filled.
+    else if (/full.?name|candidate.?name|^\s*name\s*\*?\s*$/i.test(lbl))
+      fillInput(inp, `${pack.first_name || ""} ${pack.last_name || ""}`.trim());
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillInput(inp, pack.phone);
     else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
@@ -2370,7 +2381,15 @@ function watchForPageAdvance(pack) {
   // Take the snapshot AFTER a short delay so our own fill doesn't get
   // included in the baseline count.
   let mutationTimer = null;
-  const snapshot = document.querySelectorAll('input, textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]').length;
+  const _FIELD_SEL = 'input, textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]';
+  const _countVisible = () =>
+    Array.from(document.querySelectorAll(_FIELD_SEL)).filter((e) => e.offsetParent).length;
+  const snapshot = document.querySelectorAll(_FIELD_SEL).length;
+  // Track VISIBLE fields too. A tabbed form (Recruitee, and any "Job details /
+  // Application" split) has the whole application panel in the DOM but hidden,
+  // so revealing it changes nothing about the total count — the copilot never
+  // re-ran and every field skipped for invisibility stayed empty forever.
+  let visibleSnapshot = _countVisible();
   const stepAtStart = detectStepText();
   _advanceObserver = new MutationObserver(() => {
     // Skip if we're in the middle of filling
@@ -2400,9 +2419,14 @@ function watchForPageAdvance(pack) {
     // Cooldown check for fieldsChanged only, to prevent feedback loop during autofill
     if (Date.now() - _lastFillTimestamp < 1500) return;
 
-    const now = document.querySelectorAll('input, textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]').length;
+    const now = document.querySelectorAll(_FIELD_SEL).length;
     const fieldsChanged = now !== snapshot && Math.abs(now - snapshot) >= 4;
-    if (fieldsChanged) {
+    // A reveal (tab switch, accordion, "show more") adds visible fields without
+    // adding nodes. Re-baseline either way so one reveal fires one re-run.
+    const nowVisible = _countVisible();
+    const revealed = nowVisible - visibleSnapshot >= 2;
+    if (revealed) visibleSnapshot = nowVisible;
+    if (fieldsChanged || revealed) {
       clearTimeout(mutationTimer);
       mutationTimer = setTimeout(() => {
         if (!_copilotActive) return;
@@ -2417,7 +2441,15 @@ function watchForPageAdvance(pack) {
       }, 1200);
     }
   });
-  _advanceObserver.observe(document.body, { childList: true, subtree: true });
+  // attributeFilter, not blanket attributes: a reveal is a style/class/hidden
+  // flip, and watching those keeps the callback off our own data-spotapply-*
+  // writes (which would feed back into the fill loop).
+  _advanceObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class', 'hidden', 'aria-hidden'],
+  });
 }
 
 // ── Watch for form appearance (after login / captcha) ─────────────────────────
@@ -2620,6 +2652,14 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
     fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
     return true;
   }
+  // Popup "Copy diagnostic report" — describe what the copilot can see on THIS
+  // page and what it actually wrote, so a failed fill on a real posting can be
+  // diagnosed from the report alone instead of guessed at from a screenshot.
+  if (msg.type === 'DIAGNOSTIC_REPORT') {
+    try { sendResponse(buildDiagnosticReport()); }
+    catch (e) { sendResponse({ error: String(e && e.message || e) }); }
+    return true;
+  }
   if (msg.type === 'DASHBOARD_REFRESH') {
     console.log('[SpotApply] DASHBOARD_REFRESH received, clearing pending apply and reloading dashboard page');
     try {
@@ -2630,6 +2670,64 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
     return true;
   }
 }));
+
+// ── Diagnostic report ────────────────────────────────────────────────────────
+// Everything needed to explain a fill on a real posting: whether the host is
+// recognised, whether a session was live, and — per field — the signals the
+// matcher saw, whether the field was visible when we ran, and whether the value
+// in it came from US or from the browser/site. Values themselves are NEVER
+// included (this gets pasted into chat/issues): only lengths and a redacted
+// shape, so a wrong-value bug is still visible without leaking PII.
+function _redactShape(v) {
+  return String(v || '')
+    .replace(/[A-Za-z]/g, 'a').replace(/\d/g, '9')
+    .slice(0, 24);
+}
+
+function buildDiagnosticReport() {
+  const fields = [];
+  const nodes = document.querySelectorAll(
+    "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='image']), textarea, select, [role='combobox']");
+  for (const el of nodes) {
+    const signals = [
+      (typeof labelText === 'function' ? labelText(el) : ''),
+      el.getAttribute && (el.getAttribute('aria-label') || ''),
+      el.getAttribute && (el.getAttribute('name') || ''),
+      el.id || '',
+      el.getAttribute && (el.getAttribute('data-automation-id') || ''),
+      el.getAttribute && (el.getAttribute('placeholder') || ''),
+    ].filter(Boolean).join(' ').trim().slice(0, 140);
+    const isFile = el.tagName === 'INPUT' && el.type === 'file';
+    fields.push({
+      tag: el.tagName.toLowerCase(),
+      type: el.getAttribute ? (el.getAttribute('type') || '') : '',
+      id: (el.id || '').slice(0, 60),
+      name: (el.getAttribute && (el.getAttribute('name') || '') || '').slice(0, 80),
+      signals: signals,
+      visible: !!el.offsetParent,
+      required: !!(el.required || el.getAttribute?.('aria-required') === 'true'),
+      filledBySpotApply: el.dataset ? el.dataset.spotapplyFilled === 'true' : false,
+      userModified: el.dataset ? el.dataset.spotapplyUserModified === 'true' : false,
+      valueLen: isFile ? (el.files ? el.files.length : 0) : String(el.value || '').length,
+      shape: isFile ? (el.files && el.files[0] ? 'file:' + el.files[0].name.slice(-12) : 'file:none')
+                    : _redactShape(el.value),
+      options: el.tagName === 'SELECT'
+        ? Array.from(el.options || []).slice(0, 8).map(o => (o.text || '').slice(0, 40)) : undefined,
+    });
+  }
+  return {
+    generated: new Date().toISOString(),
+    url: location.href.split('?')[0],
+    host: location.hostname,
+    isKnownATS: typeof isKnownATS === 'function' ? isKnownATS() : null,
+    frame: window.top === window ? 'top' : 'iframe',
+    frameActive: typeof HP_FRAME_ACTIVE !== 'undefined' ? HP_FRAME_ACTIVE : null,
+    fieldCount: fields.length,
+    filledCount: fields.filter(f => f.filledBySpotApply).length,
+    emptyRequired: fields.filter(f => f.required && !f.valueLen).map(f => f.signals.slice(0, 60)),
+    fields,
+  };
+}
 
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
 // Only the SpotApply dashboard may drive the extension. This content script
@@ -2926,7 +3024,8 @@ function _renderFillButton(host) {
 
 function isKnownATS() {
   const h = window.location.hostname;
-  return /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com/i.test(h)
+  // Mirror of ATS_HOSTS in background.js — keep both in lockstep.
+  return /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|personio\.(de|com)|pinpointhq\.com|breezy\.hr|join\.com|rippling\.com|dover\.com|paylocity\.com|ultipro\.com|myworkdaysite\.com/i.test(h)
     || isAvaturePage();
 }
 

@@ -138,6 +138,61 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
   });
 });
 
+// ── Diagnostics ──────────────────────────────────────────────────────────────
+// One click puts a full picture of THIS page on the clipboard: host, whether
+// it's a recognised ATS, session state, and every form field with the signals
+// the matcher saw and who filled it. No field values — only lengths and a
+// redacted shape — so it's safe to paste into a chat or a bug report.
+document.getElementById("btn-diag")?.addEventListener("click", () => {
+  const btn = document.getElementById("btn-diag");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "⏳ Collecting…";
+  const done = (msg, type) => {
+    const el = document.getElementById("diag-status");
+    el.textContent = msg;
+    el.className = "status " + type;
+    el.style.display = "block";
+    btn.disabled = false;
+    btn.textContent = label;
+  };
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs && tabs[0];
+    if (!tab) return done("No active tab.", "err");
+    chrome.storage.local.get(
+      ["spotapply_fill_pack", "spotapply_copilot_pack", "spotapply_copilot_ts", "spotapply_auto_fill"],
+      (store) => {
+        chrome.tabs.sendMessage(tab.id, { type: "DIAGNOSTIC_REPORT" }, (page) => {
+          if (chrome.runtime.lastError || !page) {
+            return done("No content script on this tab — open the job form first.", "err");
+          }
+          const pack = store.spotapply_fill_pack || store.spotapply_copilot_pack || null;
+          const ts = store.spotapply_copilot_ts || 0;
+          const report = {
+            extensionVersion: chrome.runtime.getManifest().version,
+            session: {
+              hasPack: !!pack,
+              job: pack ? `${pack.job_title || "?"} @ ${pack.company || "?"}` : null,
+              appId: pack ? pack.app_id : null,
+              autoFillFlag: !!store.spotapply_auto_fill,
+              sessionAgeSec: ts ? Math.round((Date.now() - ts) / 1000) : null,
+              packHasResumeFields: pack ? { app_id: !!pack.app_id, token: !!pack.auth_token } : null,
+            },
+            page,
+          };
+          const text = JSON.stringify(report, null, 2);
+          navigator.clipboard.writeText(text).then(
+            () => done(`✅ Copied (${page.fieldCount} fields, ${page.filledCount} filled by SpotApply).`, "ok"),
+            () => done("Couldn't copy — see the console for the report.", "err"),
+          );
+          console.log("[SpotApply] Diagnostic report:\n" + text);
+        });
+      },
+    );
+  });
+});
+
 // ── LinkedIn profile import ──────────────────────────────────────────────────
 // Show the import card only when the active tab is the user's own LinkedIn
 // profile (linkedin.com/in/...). Clicking it asks the content script to read the

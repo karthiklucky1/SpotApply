@@ -269,7 +269,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // violates their terms (the USER'S account carries the ban risk). SpotApply
 // opens those jobs and tracks them hands-off; when a posting redirects to a
 // company ATS (greenhouse/workday/…) the copilot fills there as normal.
-const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com/i;
+// Keep in lockstep with isKnownATS() in content.js, and with the discovery
+// sources in app/discovery/ — every board we FIND jobs on is a board the
+// copilot has to recognise. The second row was missing, so on those hosts
+// isKnownATS was false: the fill only worked on the tab we opened ourselves
+// (exact host match) and the session could not resume across a multi-step
+// form or a cross-domain hop.
+const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|personio\.(de|com)|pinpointhq\.com|breezy\.hr|join\.com|rippling\.com|dover\.com|paylocity\.com|ultipro\.com|myworkdaysite\.com/i;
 
 // When a tab finishes loading, check if we should auto-fill it
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
