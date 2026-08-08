@@ -121,21 +121,24 @@ def main():
         check("T2a popup renders 'no job loaded' state", no_job_visible)
         check("T2b popup console clean", not popup_errors, "; ".join(popup_errors[:3]))
 
-        # T3: content script injected + PING/PING_OK liveness bridge
+        # T3: content script injected + PING/PING_OK liveness bridge.
+        # Run BOTH dialects: the dashboard now sends SPOTAPPLY_*, but a cached
+        # older dashboard page still sends HIREPATH_* and must keep working.
         trigger = ctx.new_page()
         trigger.goto(f"{BASE}/trigger.html")
         trigger.wait_for_timeout(1500)  # content.js runs at document_idle
-        ping_ok = trigger.evaluate(
-            """() => new Promise((resolve) => {
-                const t = setTimeout(() => resolve(false), 4000);
-                window.addEventListener('message', (e) => {
-                    if (e.data && e.data.type === 'HIREPATH_EXT_PING_OK') {
-                        clearTimeout(t); resolve(true);
-                    }
-                });
-                window.postMessage({ type: 'HIREPATH_EXT_PING' }, '*');
-            })""")
-        check("T3 dashboard liveness bridge PING -> PING_OK", ping_ok)
+        for dialect in ("SPOTAPPLY", "HIREPATH"):
+            ping_ok = trigger.evaluate(
+                """(prefix) => new Promise((resolve) => {
+                    const t = setTimeout(() => resolve(false), 4000);
+                    window.addEventListener('message', (e) => {
+                        if (e.data && /^(SPOTAPPLY|HIREPATH)_EXT_PING_OK$/.test(e.data.type || '')) {
+                            clearTimeout(t); resolve(true);
+                        }
+                    });
+                    window.postMessage({ type: prefix + '_EXT_PING' }, '*');
+                })""", dialect)
+            check(f"T3 liveness bridge {dialect}_EXT_PING -> PING_OK", ping_ok)
 
         # T4: full production flow — LOAD_PACK -> ACK -> new tab -> auto-fill
         with ctx.expect_page(timeout=15000) as new_page_info:
@@ -143,10 +146,12 @@ def main():
                 """(pack) => new Promise((resolve) => {
                     const t = setTimeout(() => resolve('timeout'), 8000);
                     window.addEventListener('message', (e) => {
-                        if (e.data && e.data.type === 'HIREPATH_EXT_ACK') { clearTimeout(t); resolve('ack'); }
-                        if (e.data && e.data.type === 'HIREPATH_EXT_RELOAD') { clearTimeout(t); resolve('reload'); }
+                        const ty = e.data && e.data.type || '';
+                        if (/^(SPOTAPPLY|HIREPATH)_EXT_ACK$/.test(ty)) { clearTimeout(t); resolve('ack'); }
+                        if (/^(SPOTAPPLY|HIREPATH)_EXT_RELOAD$/.test(ty)) { clearTimeout(t); resolve('reload'); }
                     });
-                    window.postMessage({ type: 'HIREPATH_LOAD_PACK', pack }, '*');
+                    // Current protocol name — what the dashboard sends today.
+                    window.postMessage({ type: 'SPOTAPPLY_LOAD_PACK', pack }, '*');
                 })""", FILL_PACK)
         check("T4a bridge ACKs LOAD_PACK", ack == "ack", f"got: {ack}")
         apply_page = new_page_info.value

@@ -47,12 +47,20 @@ function queryAllDeep(selector, root = document) {
   return out;
 }
 
+// Backend base URL for a fill pack. The server deploys independently of
+// installed extensions, so accept both the current key and the legacy
+// hirepath_url one — an old server must keep working with a new install and
+// vice versa. Everything else in this file goes through this helper.
+function packBase(pack) {
+  return (pack && (pack.spotapply_url || pack.hirepath_url)) || '';
+}
+
 // Fire-and-forget event report so autofill failures are visible on the server
 // (FunnelEvent) instead of dying in the browser console.
 function reportTelemetry(pack, event, meta) {
   try {
-    if (!pack || !pack.hirepath_url || !pack.auth_token) return;
-    apiFetch(`${pack.hirepath_url}/api/extension/telemetry`, 'POST', pack.auth_token, {
+    if (!pack || !packBase(pack) || !pack.auth_token) return;
+    apiFetch(`${packBase(pack)}/api/extension/telemetry`, 'POST', pack.auth_token, {
       event,
       app_id: pack.app_id || null,
       host: location.hostname,
@@ -64,13 +72,13 @@ function reportTelemetry(pack, event, meta) {
 // Track user manual changes to prevent autofill overwrites
 document.addEventListener('input', (e) => {
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
-    e.target.dataset.hirepathUserModified = 'true';
+    e.target.dataset.spotapplyUserModified = 'true';
   }
 }, { capture: true, passive: true });
 
 document.addEventListener('change', (e) => {
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
-    e.target.dataset.hirepathUserModified = 'true';
+    e.target.dataset.spotapplyUserModified = 'true';
   }
 }, { capture: true, passive: true });
 
@@ -86,10 +94,10 @@ document.addEventListener('click', (e) => {
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
         console.log('[SpotApply] Learning dropdown field:', label, '->', val);
-        chromeCall(() => chrome.storage.local.get(['hirepath_copilot_pack', 'hirepath_fill_pack'], (data) => {
-          const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
-          if (pack && pack.hirepath_url && pack.auth_token) {
-            apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
+        chromeCall(() => chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'], (data) => {
+          const pack = data.spotapply_copilot_pack || data.spotapply_fill_pack;
+          if (pack && packBase(pack) && pack.auth_token) {
+            apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
               question: label,
               answer: val,
               app_id: pack.app_id || null,
@@ -151,8 +159,8 @@ document.addEventListener('submit', (e) => {
 let _submitReportedApps = new Set();
 
 function handleFormSubmitted() {
-  chromeCall(() => chrome.storage.local.get(['hirepath_copilot_pack', 'hirepath_fill_pack'], (data) => {
-    const pack = data.hirepath_copilot_pack || data.hirepath_fill_pack;
+  chromeCall(() => chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'], (data) => {
+    const pack = data.spotapply_copilot_pack || data.spotapply_fill_pack;
     if (pack && pack.app_id) {
       if (_submitReportedApps.has(pack.app_id)) {
         console.log('[SpotApply] Submission already reported for app:', pack.app_id);
@@ -174,7 +182,7 @@ function handleFormSubmitted() {
       // The application is done — end the copilot session so this pack can
       // never leak into a DIFFERENT job's form days later.
       chromeCall(() => chrome.storage.local.remove(
-        ['hirepath_copilot_pack', 'hirepath_copilot_ts', 'hirepath_fill_pack']));
+        ['spotapply_copilot_pack', 'spotapply_copilot_ts', 'spotapply_fill_pack']));
     }
   }));
 }
@@ -190,7 +198,7 @@ function fillInput(el, value) {
   if (el.tagName === 'INPUT' && el.type === 'file') return;
 
   // Respect manual user edits — do not overwrite
-  if (el.dataset.hirepathUserModified === 'true') {
+  if (el.dataset.spotapplyUserModified === 'true') {
     console.log('[SpotApply] Skipping fill for user-modified field:', el.name || el.id || el.tagName);
     return;
   }
@@ -242,6 +250,70 @@ function fillInput(el, value) {
       el.dispatchEvent(new Event(ev, { bubbles: true }))
     );
   } catch (_) {}
+}
+
+// ── Work authorization vs sponsorship ────────────────────────────────────────
+// Two DIFFERENT questions that ATS forms both phrase around "sponsor/authoriz":
+//   "Are you legally authorized to work in the US?"      -> yes for most profiles
+//   "Will you now or in the future require sponsorship?" -> pack.requires_sponsorship
+// They usually render as Yes/No dropdowns, so feeding either one the
+// work_authorization STATUS string ("US Citizen") matches no option and leaves
+// a required field blank — and answering the sponsorship question with the
+// authorization answer is worse than blank, since a wrong "Yes" here is an
+// instant filter-out. Decide from the question text, answer Yes/No when the
+// options are boolean, and only fall back to the status string otherwise.
+
+function _yesNoOptions(el) {
+  // Real choices, ignoring the "Please select" placeholder.
+  const opts = Array.from(el.options || []).filter(
+    (o) => o.value !== "" && !/^\s*(please\s+)?select/i.test(o.text || ""));
+  if (opts.length < 2 || opts.length > 3) return null;
+  const yes = opts.find((o) => /^\s*yes\b/i.test(o.text) || /^yes$/i.test(o.value));
+  const no = opts.find((o) => /^\s*no\b/i.test(o.text) || /^no$/i.test(o.value));
+  return yes && no ? { yes, no } : null;
+}
+
+// True unless the profile explicitly says the user is NOT authorized. Returns
+// null when there's nothing to go on, so we leave the field for the human.
+function _isAuthorized(pack) {
+  const wa = String(pack.work_authorization || "").trim();
+  if (!wa) return null;
+  if (/^no\b|not\s+authoriz|unauthoriz/i.test(wa)) return false;
+  return true;
+}
+
+/** Answer a sponsorship/work-authorization field. Returns true if handled. */
+function answerWorkAuthField(el, pack, label) {
+  const l = String(label || "").toLowerCase();
+  if (!/sponsor|authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l)) return false;
+
+  const requires = pack.requires_sponsorship === true;
+  const authorized = _isAuthorized(pack);
+  const asksAuth = /authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l);
+  const asksSponsor = /sponsor/.test(l);
+  // "...authorized to work without sponsorship?" is a single combined question.
+  const combined = asksAuth && asksSponsor &&
+    /without\s+(visa\s+)?sponsor|not\s+requir\w*\s+sponsor|no\s+sponsor/.test(l);
+
+  let answer = null;
+  if (combined) answer = authorized === null ? null : (authorized && !requires);
+  else if (asksSponsor) answer = requires;          // "do you require sponsorship?"
+  else if (asksAuth) answer = authorized;           // "are you authorized to work?"
+
+  const yn = el.tagName === "SELECT" ? _yesNoOptions(el) : null;
+  if (yn) {
+    if (answer === null) return false;              // unknown — leave for the user
+    el.value = (answer ? yn.yes : yn.no).value;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+  // Non-boolean options (e.g. a visa-status list) — match the status string.
+  if (pack.work_authorization) {
+    if (el.tagName === "SELECT") return selectOption(el, pack.work_authorization);
+    fillInput(el, pack.work_authorization);
+    return true;
+  }
+  return false;
 }
 
 function selectOption(el, value) {
@@ -496,9 +568,7 @@ async function fillGreenhouse(pack) {
       else if (/race|ethnic/i.test(lbl)) selectOption(inp, pack.ethnicity || "decline");
       else if (/veteran/i.test(lbl)) selectOption(inp, pack.veteran_status || "decline");
       else if (/disability/i.test(lbl)) selectOption(inp, pack.disability_status || "decline");
-      else if (/sponsor|visa|authoriz/i.test(lbl)) {
-        if (pack.work_authorization) selectOption(inp, pack.work_authorization);
-      }
+      else if (/sponsor|visa|authoriz/i.test(lbl)) answerWorkAuthField(inp, pack, lbl);
       else if (/country/i.test(lbl)) selectOption(inp, "United States");
     }
   }
@@ -783,7 +853,7 @@ async function setWorkdayDateSection(wrap, kind, value) {
   if (!target) return false;
 
   // Respect manual user edits on the date target
-  if (target.dataset.hirepathUserModified === 'true') {
+  if (target.dataset.spotapplyUserModified === 'true') {
     return false;
   }
 
@@ -1189,7 +1259,7 @@ async function fillAvature(pack) {
     else if (/veteran/i.test(ctx)) selectOption(sel, pack.veteran_status || "decline");
     else if (/disability/i.test(ctx)) selectOption(sel, pack.disability_status || "decline");
     else if (/country/.test(ctx)) selectOption(sel, "United States");
-    else if (/sponsor|visa|authoriz/.test(ctx) && pack.work_authorization) selectOption(sel, pack.work_authorization);
+    else if (/sponsor|visa|authoriz/.test(ctx)) answerWorkAuthField(sel, pack, ctx);
   }
 
   // 3. Avature custom dropdowns (div-based, role=combobox/listbox)
@@ -1362,7 +1432,11 @@ async function fillUniversal(pack) {
     } else if (/address.?line.?1|street.?address|mailing.?address/i.test(signals)) {
       if (pack.address) fillInput(inp, pack.address);
       else matched = false; // don't put city in address field
-    } else if (/address.?line.?2|apt|suite|unit/i.test(signals)) {
+    // Word-bounded on purpose: bare /unit/ matched "United States", so
+    // "Are you legally authorized to work in the United States?" — the most
+    // common work-auth phrasing there is — was classified as address-line-2
+    // and skipped on every form. Same trap for /apt/ in "adapt".
+    } else if (/address.?line.?2|\bapt\b|\bapartment\b|\bsuite\b|\bunit\b/i.test(signals)) {
       matched = false; // never auto-fill address line 2
 
     // ── Other fields ──
@@ -1397,9 +1471,8 @@ async function fillUniversal(pack) {
       const val = pack.disability_status || 'decline';
       if (inp.tagName === 'SELECT') selectOption(inp, val);
       else if (inp.tagName === 'BUTTON') fillInput(inp, val);
-    } else if (/sponsor|visa|authoriz/i.test(signals) && pack.work_authorization) {
-      if (inp.tagName === 'SELECT') selectOption(inp, pack.work_authorization);
-      else fillInput(inp, pack.work_authorization);
+    } else if (/sponsor|visa|authoriz/i.test(signals)) {
+      matched = answerWorkAuthField(inp, pack, signals);
     } else if (/postal|zip.?code/i.test(signals)) {
       fillInput(inp, pack.zip_code || '');
     } else {
@@ -1421,9 +1494,9 @@ async function fillUniversal(pack) {
 // On the NEXT form, recallFromMemory() retrieves past answers and auto-fills.
 
 function observeField(el, pack) {
-  if (!pack.hirepath_url || !pack.auth_token) return;
-  if (el.dataset.hirepathObserved) return; // already watching
-  el.dataset.hirepathObserved = 'true';
+  if (!packBase(pack) || !pack.auth_token) return;
+  if (el.dataset.spotapplyObserved) return; // already watching
+  el.dataset.spotapplyObserved = 'true';
 
   const save = () => {
     const val = el.value?.trim();
@@ -1437,7 +1510,7 @@ function observeField(el, pack) {
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
 
     console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
-    apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token, {
+    apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
       question: label,
       answer: val,
       app_id: pack.app_id || null,
@@ -1461,7 +1534,7 @@ function getFieldSignature(el) {
 }
 
 async function recallFromMemory(root, pack) {
-  if (!pack.hirepath_url || !pack.auth_token) return 0;
+  if (!packBase(pack) || !pack.auth_token) return 0;
 
   // Collect labels of all empty visible fields
   const emptyFields = Array.from(root.querySelectorAll(
@@ -1482,7 +1555,7 @@ async function recallFromMemory(root, pack) {
 
   // Ask the backend for any previously learned answers
   const res = await apiFetch(
-    `${pack.hirepath_url}/api/recall-answers`,
+    `${packBase(pack)}/api/recall-answers`,
     'POST', pack.auth_token,
     { labels: fieldLabels }
   );
@@ -1647,9 +1720,9 @@ async function fillEssayQuestions(root, pack) {
     }
 
     // 2. If not cached, call /api/answer-question on-demand (~$0.002, cached after)
-    if (!answer && pack.hirepath_url && pack.auth_token && pack.app_id) {
+    if (!answer && packBase(pack) && pack.auth_token && pack.app_id) {
       const res = await apiFetch(
-        `${pack.hirepath_url}/api/answer-question`,
+        `${packBase(pack)}/api/answer-question`,
         "POST",
         pack.auth_token,
         { question: q, app_id: pack.app_id }
@@ -1680,7 +1753,7 @@ function keywordOverlap(a, b) {
 }
 
 function observeAnswer(ta, pack) {
-  if (!pack.hirepath_url || !pack.auth_token) return;
+  if (!packBase(pack) || !pack.auth_token) return;
   const origValue = ta.value;
   ta.addEventListener('blur', function handler() {
     const newVal = ta.value.trim();
@@ -1688,7 +1761,7 @@ function observeAnswer(ta, pack) {
     const q = labelText(ta);
     if (!q) return;
     ta.removeEventListener('blur', handler);
-    apiFetch(`${pack.hirepath_url}/api/save-answer`, 'POST', pack.auth_token,
+    apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token,
       { question: q, answer: newVal, app_id: pack.app_id });
     console.log('[SpotApply] Saved answer for:', q);
   });
@@ -1701,7 +1774,7 @@ function observeAnswer(ta, pack) {
 // false when we tried and couldn't — so the caller retries on a later pass
 // instead of wrongly marking it "done".
 async function attachResume(root, pack) {
-  if (!pack.hirepath_url || !pack.auth_token || !pack.app_id) return false;
+  if (!packBase(pack) || !pack.auth_token || !pack.app_id) return false;
 
   // Include shadow-DOM inputs — some ATS widgets bury the real <input> there.
   const allFileInputs = queryAllDeep('input[type="file"]', root);
@@ -1747,7 +1820,7 @@ async function attachResume(root, pack) {
   if (!targets.length) return allFileInputs.some(isUploaded);
 
   const res = await apiFetch(
-    `${pack.hirepath_url}/api/fill-pack/${pack.app_id}/resume`,
+    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume`,
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
@@ -1883,9 +1956,9 @@ async function fillForm(fillPack) {
   }
 
   // Try to fetch the latest pack from the API to pick up any profile/db changes
-  if (pack && pack.hirepath_url && pack.auth_token && pack.app_id) {
+  if (pack && packBase(pack) && pack.auth_token && pack.app_id) {
     const res = await apiFetch(
-      `${pack.hirepath_url}/api/fill-pack/${pack.app_id}`,
+      `${packBase(pack)}/api/fill-pack/${pack.app_id}`,
       "GET", pack.auth_token, null
     );
     if (res.ok && res.data) {
@@ -1900,8 +1973,8 @@ async function fillForm(fillPack) {
   // Persist the session so copilot survives page navigations (e.g. clicking
   // Apply sends you to a new URL / domain). Resumed by the load handler below.
   chromeCall(() => chrome.storage.local.set({
-    hirepath_copilot_pack: pack,
-    hirepath_copilot_ts: Date.now(),
+    spotapply_copilot_pack: pack,
+    spotapply_copilot_ts: Date.now(),
   }));
 
   // Decide: are we on a real application FORM, or just a job description page?
@@ -2101,14 +2174,14 @@ function highlightField(el, color) {
   } else if (color === 'red') {
     el.style.boxShadow = '0 0 0 2px rgba(239,68,68,0.7)';
     el.style.borderColor = 'rgba(239,68,68,0.9)';
-    el.dataset.hirepath = 'needs-fill-required';
+    el.dataset.spotapply = 'needs-fill-required';
     el.addEventListener('input', () => {
       if (el.value.trim()) highlightField(el, 'green');
     }, { once: true });
   } else {
     el.style.boxShadow = '0 0 0 2px rgba(245,158,11,0.6)';
     el.style.borderColor = 'rgba(245,158,11,0.8)';
-    el.dataset.hirepath = 'needs-fill';
+    el.dataset.spotapply = 'needs-fill';
     el.addEventListener('input', () => {
       if (el.value.trim()) highlightField(el, 'green');
     }, { once: true });
@@ -2116,10 +2189,10 @@ function highlightField(el, color) {
 }
 
 function clearHighlights() {
-  document.querySelectorAll('[data-hirepath]').forEach(el => {
+  document.querySelectorAll('[data-spotapply]').forEach(el => {
     el.style.boxShadow = '';
     el.style.borderColor = '';
-    delete el.dataset.hirepath;
+    delete el.dataset.spotapply;
   });
 }
 
@@ -2362,9 +2435,9 @@ function watchForFormAppearance() {
       console.log('[SpotApply] URL changed during login watch:', location.href);
       // Re-read fresh pack from storage (timestamp was refreshed on load)
       chromeCall(() => chrome.storage.local.get(
-        ['hirepath_fill_pack', 'hirepath_copilot_pack'],
+        ['spotapply_fill_pack', 'spotapply_copilot_pack'],
         (data) => {
-          const freshPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || _copilotPack;
+          const freshPack = data.spotapply_copilot_pack || data.spotapply_fill_pack || _copilotPack;
           if (freshPack) {
             _copilotPack = freshPack;
             setTimeout(() => runCopilotStep(), 1500);
@@ -2443,10 +2516,10 @@ function findAndClickApply(pack) {
 // ── Banner (legacy, used only if copilot not active) ─────────────────────────
 
 function showBanner(msg) {
-  const existing = document.getElementById('hirepath-ext-banner');
+  const existing = document.getElementById('spotapply-ext-banner');
   if (existing) existing.remove();
   const banner = document.createElement('div');
-  banner.id = 'hirepath-ext-banner';
+  banner.id = 'spotapply-ext-banner';
   banner.style.cssText = [
     'position:fixed','top:0','left:0','right:0','z-index:2147483647',
     'padding:12px 20px','display:flex','align-items:center','gap:12px',
@@ -2561,49 +2634,70 @@ chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendRespons
 // ── Bridge: dashboard postMessage → background.js → new tab ──────────────────
 // Only the SpotApply dashboard may drive the extension. This content script
 // runs on every site, so without these checks ANY page could post
-// HIREPATH_INIT_EXTENSION with attacker-controlled auth endpoints or force
-// tabs open via HIREPATH_LOAD_PACK.
-const _DASHBOARD_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)?(hirepath\.dev|spotapply\.ai)$|^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+// SPOTAPPLY_INIT_EXTENSION with attacker-controlled auth endpoints or force
+// tabs open via SPOTAPPLY_LOAD_PACK.
+//
+// hirepath.dev is deliberately NOT trusted: the product moved to spotapply.ai
+// and an expired domain that can drive the extension is a real hijack risk.
+const _DASHBOARD_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)?spotapply\.ai$|^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+
+// Message names were HIREPATH_*; the dashboard now sends SPOTAPPLY_*. Accept
+// both so a cached older dashboard page still drives a fresh install, and
+// answer in the same dialect the caller used.
+const _MSG = {
+  ping: ['SPOTAPPLY_EXT_PING', 'HIREPATH_EXT_PING'],
+  loadPack: ['SPOTAPPLY_LOAD_PACK', 'HIREPATH_LOAD_PACK'],
+  init: ['SPOTAPPLY_INIT_EXTENSION', 'HIREPATH_INIT_EXTENSION'],
+};
+const _isMsg = (type, kind) => _MSG[kind].includes(type);
+// Replies go out under both names: the listener on the other side belongs to
+// whichever dashboard build is loaded, and duplicate replies are idempotent
+// (they only set a flag / hide a banner).
+function _replyToDashboard(suffix) {
+  window.postMessage({ type: `SPOTAPPLY_EXT_${suffix}` }, '*');
+  window.postMessage({ type: `HIREPATH_EXT_${suffix}` }, '*');
+}
 
 window.addEventListener('message', (e) => {
   if (e.source !== window) return;
   if (!_DASHBOARD_ORIGIN_RE.test(e.origin || '')) return;
+  const _type = e.data?.type;
   // Dashboard liveness probe: reply so the "install the extension" banner hides
   // and the Fill buttons know the extension is alive (dashboard pings every 20s).
-  if (e.data?.type === 'HIREPATH_EXT_PING') {
+  if (_isMsg(_type, 'ping')) {
     let alive = false;
     try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); alive = true; } catch (_) {}
-    if (alive) window.postMessage({ type: 'HIREPATH_EXT_PING_OK' }, '*');
+    if (alive) _replyToDashboard('PING_OK');
     return;
   }
-  if (e.data?.type === 'HIREPATH_LOAD_PACK' && e.data?.pack) {
-    console.log('[SpotApply] Received HIREPATH_LOAD_PACK from dashboard, forwarding to background');
+  if (_isMsg(_type, 'loadPack') && e.data?.pack) {
+    console.log('[SpotApply] Received LOAD_PACK from dashboard, forwarding to background');
     // Test extension context first with a PING
     let ctxOk = false;
     try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
     if (!ctxOk) {
       console.warn('[SpotApply] Extension context invalidated');
-      window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
+      _replyToDashboard('RELOAD');
       return;
     }
     try {
       chrome.runtime.sendMessage({ type: 'OPEN_AND_FILL', payload: e.data.pack }, (res) => {
         if (chrome.runtime.lastError) {
           console.warn('[SpotApply] Background error:', chrome.runtime.lastError.message);
-          window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
+          _replyToDashboard('RELOAD');
         } else {
           console.log('[SpotApply] Background opened tab, sending ACK to dashboard');
-          window.postMessage({ type: 'HIREPATH_EXT_ACK' }, '*');
+          _replyToDashboard('ACK');
         }
       });
     } catch (err) {
       console.warn('[SpotApply] Extension context error:', err.message);
-      window.postMessage({ type: 'HIREPATH_EXT_RELOAD' }, '*');
+      _replyToDashboard('RELOAD');
     }
   }
 
-  if (e.data?.type === 'HIREPATH_INIT_EXTENSION' && e.data?.pack) {
-    console.log('[SpotApply] Received HIREPATH_INIT_EXTENSION from dashboard, initializing background');
+  if (_isMsg(_type, 'init') && e.data?.pack) {
+    console.log('[SpotApply] Received INIT_EXTENSION from dashboard, initializing background');
     let ctxOk = false;
     try { chrome.runtime.sendMessage({ type: 'PING' }, () => {}); ctxOk = true; } catch (_) {}
     if (!ctxOk) return;
@@ -2617,10 +2711,10 @@ window.addEventListener('message', (e) => {
 
 // ── Auto-fill on page load ────────────────────────────────────────────────────
 chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
-  ['hirepath_fill_pack', 'hirepath_auto_fill', 'hirepath_copilot_pack', 'hirepath_copilot_ts'],
+  ['spotapply_fill_pack', 'spotapply_auto_fill', 'spotapply_copilot_pack', 'spotapply_copilot_ts'],
   (data) => {
     const host = window.location.hostname;
-    const onDashboard = /(hirepath\.dev|spotapply\.ai)$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
+    const onDashboard = /spotapply\.ai$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
     if (onDashboard) { console.log('[SpotApply] On dashboard — skipping auto-fill'); return; }
 
     // LinkedIn + Indeed: hands-off on EVERY page. Their native apply flows
@@ -2633,8 +2727,8 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
     }
 
     const SESSION_MS = 30 * 60 * 1000;
-    const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack || null;
-    const ts = data.hirepath_copilot_ts || 0;
+    const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack || null;
+    const ts = data.spotapply_copilot_ts || 0;
     const sessionAge = ts ? (Date.now() - ts) : Infinity;
     const freshSession = pack && sessionAge < SESSION_MS;
     const atsMatch = isKnownATS();
@@ -2645,9 +2739,9 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
 
     // ── Diagnostic dump ──
     console.log('[SpotApply] === Storage state on', host, '===');
-    console.log('[SpotApply]   auto_fill:', data.hirepath_auto_fill);
-    console.log('[SpotApply]   fill_pack:', data.hirepath_fill_pack ? 'YES (' + (data.hirepath_fill_pack.job_title || 'no title') + ')' : 'null');
-    console.log('[SpotApply]   copilot_pack:', data.hirepath_copilot_pack ? 'YES (' + (data.hirepath_copilot_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[SpotApply]   auto_fill:', data.spotapply_auto_fill);
+    console.log('[SpotApply]   fill_pack:', data.spotapply_fill_pack ? 'YES (' + (data.spotapply_fill_pack.job_title || 'no title') + ')' : 'null');
+    console.log('[SpotApply]   copilot_pack:', data.spotapply_copilot_pack ? 'YES (' + (data.spotapply_copilot_pack.job_title || 'no title') + ')' : 'null');
     console.log('[SpotApply]   copilot_ts:', ts, ts ? '(age: ' + Math.round(sessionAge/1000) + 's)' : '(none)');
     console.log('[SpotApply]   freshSession:', freshSession, '| isKnownATS:', atsMatch, '| hasPackOnATS:', hasPackOnATS);
 
@@ -2656,21 +2750,21 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
     // is still fresh. An expired session must stay expired, or the pack would
     // effectively live forever.
     if (pack && atsMatch && freshSession) {
-      chromeCall(() => chrome.storage.local.set({ hirepath_copilot_ts: Date.now() }));
-    } else if (pack && ts && sessionAge >= SESSION_MS && !data.hirepath_auto_fill) {
+      chromeCall(() => chrome.storage.local.set({ spotapply_copilot_ts: Date.now() }));
+    } else if (pack && ts && sessionAge >= SESSION_MS && !data.spotapply_auto_fill) {
       // A session that HAD a timestamp and expired — drop the stale pack so it
       // can't fill a different job. (A freshly opened tab carries the one-shot
       // auto_fill flag and possibly no timestamp yet; leave that alone.)
       console.log('[SpotApply] Copilot session expired — clearing stale pack');
       chromeCall(() => chrome.storage.local.remove(
-        ['hirepath_copilot_pack', 'hirepath_copilot_ts', 'hirepath_fill_pack']));
+        ['spotapply_copilot_pack', 'spotapply_copilot_ts', 'spotapply_fill_pack']));
       return;
     }
 
     // One-shot auto_fill flag (set by background when opening a new tab)
-    if (data.hirepath_auto_fill && pack) {
+    if (data.spotapply_auto_fill && pack) {
       console.log('[SpotApply] ▶ Auto-fill flag — starting copilot');
-      chrome.storage.local.set({ hirepath_auto_fill: false });
+      chrome.storage.local.set({ spotapply_auto_fill: false });
       setTimeout(() => fillForm(pack), 800);
       return;
     }
@@ -2751,8 +2845,8 @@ function injectFillButton() {
   if (_h === 'mail.google.com' || _h === 'outlook.live.com' || _h === 'outlook.office.com') return;
   // Respect a previous dismissal: once the user closes the button on this host,
   // don't show it again — persists across page reloads.
-  chromeCall(() => chrome.storage.local.get(['hirepath_dismissed'], (d) => {
-    const dismissed = d.hirepath_dismissed || {};
+  chromeCall(() => chrome.storage.local.get(['spotapply_dismissed'], (d) => {
+    const dismissed = d.spotapply_dismissed || {};
     if (dismissed[_h]) {
       console.log('[SpotApply] Fill button dismissed for', _h, '— not showing');
       return;
@@ -2791,10 +2885,10 @@ function _renderFillButton(host) {
   close.addEventListener('click', (e) => {
     e.stopPropagation();
     wrap.remove();
-    chromeCall(() => chrome.storage.local.get(['hirepath_dismissed'], (d) => {
-      const dismissed = d.hirepath_dismissed || {};
+    chromeCall(() => chrome.storage.local.get(['spotapply_dismissed'], (d) => {
+      const dismissed = d.spotapply_dismissed || {};
       dismissed[host] = Date.now();
-      chrome.storage.local.set({ hirepath_dismissed: dismissed });
+      chrome.storage.local.set({ spotapply_dismissed: dismissed });
     }));
   });
 
@@ -2803,13 +2897,13 @@ function _renderFillButton(host) {
     fill.disabled = true;
     // Always read FRESH data from chrome.storage.local on click.
     chromeCall(() => chrome.storage.local.get(
-      ['hirepath_fill_pack', 'hirepath_copilot_pack'],
+      ['spotapply_fill_pack', 'spotapply_copilot_pack'],
       (data) => {
         wrap.remove();
-        const freshPack = data.hirepath_copilot_pack || data.hirepath_fill_pack || null;
+        const freshPack = data.spotapply_copilot_pack || data.spotapply_fill_pack || null;
         if (freshPack) {
           document.querySelectorAll('input, textarea, select').forEach(el => {
-            delete el.dataset.hirepathUserModified;
+            delete el.dataset.spotapplyUserModified;
           });
           console.log('[SpotApply] Fill button clicked — starting copilot with fresh pack');
           fillForm(freshPack);
@@ -2861,7 +2955,7 @@ function isActionablePage() {
 // Self-contained IIFE: only activates on mail.google.com, outlook.live.com, or
 // outlook.office.com. Inert on every other hostname.
 
-(function hirepathEmailScanner() {
+(function spotapplyEmailScanner() {
   const _host = window.location.hostname;
   const _isGmail = _host === 'mail.google.com';
   const _isOutlook = _host === 'outlook.live.com' || _host === 'outlook.office.com'
@@ -3388,11 +3482,11 @@ function isActionablePage() {
       chromeCall(() => {
         console.log('[SpotApply] executeScan: calling chrome.storage.local.get');
         chrome.storage.local.get(
-          ['hirepath_copilot_pack', 'hirepath_fill_pack'],
+          ['spotapply_copilot_pack', 'spotapply_fill_pack'],
           async (data) => {
             console.log('[SpotApply] executeScan: storage data received:', data);
-            const pack = data?.hirepath_copilot_pack || data?.hirepath_fill_pack;
-            if (!pack || !pack.hirepath_url) {
+            const pack = data?.spotapply_copilot_pack || data?.spotapply_fill_pack;
+            if (!pack || !packBase(pack)) {
               console.log('[SpotApply] executeScan: no active pack/connection found in storage.');
               showScannerToast(
                 '<span style="color:#ef4444;font-weight:700">⚠️ Not connected</span>' +
@@ -3403,11 +3497,11 @@ function isActionablePage() {
               return;
             }
 
-            console.log('[SpotApply] executeScan: active pack found, URL:', pack.hirepath_url);
+            console.log('[SpotApply] executeScan: active pack found, URL:', packBase(pack));
             try {
               console.log('[SpotApply] executeScan: sending apiFetch POST to /api/sync-emails');
               const res = await apiFetch(
-                `${pack.hirepath_url}/api/sync-emails`,
+                `${packBase(pack)}/api/sync-emails`,
                 'POST',
                 pack.auth_token,
                 { emails, source: _isGmail ? 'gmail' : 'outlook', day_range: dayRange }
@@ -3546,7 +3640,7 @@ function isActionablePage() {
 // it to the legal endpoint (/api/profile/memory/linkedin) — the same paste path
 // the dashboard already uses. This is a manual, self-serve import of the user's
 // OWN profile: no automation, no third-party profiles, no bulk scraping.
-(function hirepathLinkedInImport() {
+(function spotapplyLinkedInImport() {
   const _host = window.location.hostname;
   if (!_host.includes('linkedin.com')) return; // inert everywhere else
 
@@ -3572,16 +3666,16 @@ function isActionablePage() {
         return;
       }
       chromeCall(() => chrome.storage.local.get(
-        ['hirepath_copilot_pack', 'hirepath_fill_pack'],
+        ['spotapply_copilot_pack', 'spotapply_fill_pack'],
         async (data) => {
-          const pack = data?.hirepath_copilot_pack || data?.hirepath_fill_pack;
-          if (!pack || !pack.hirepath_url) {
+          const pack = data?.spotapply_copilot_pack || data?.spotapply_fill_pack;
+          if (!pack || !packBase(pack)) {
             resolve({ ok: false, error: 'Not connected. Open your SpotApply dashboard first, then try again.' });
             return;
           }
           try {
             const res = await apiFetch(
-              `${pack.hirepath_url}/api/profile/memory/linkedin`,
+              `${packBase(pack)}/api/profile/memory/linkedin`,
               'POST',
               pack.auth_token,
               { text: text.slice(0, 20000) }

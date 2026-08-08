@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html><head><title>Backend Engineer — Lever-style application</title></head>
+<body>
+  <h1>Apply — Lever layout</h1>
+  <!-- Lever uses a single full-name field and bare name= attributes -->
+  <form id="application-form" class="application-form">
+    <div class="application-field">
+      <label>Full name<input type="text" name="name" required></label>
+    </div>
+    <div class="application-field">
+      <label>Email<input type="email" name="email" required></label>
+    </div>
+    <div class="application-field">
+      <label>Phone<input type="tel" name="phone"></label>
+    </div>
+    <div class="application-field">
+      <label>Current company<input type="text" name="org"></label>
+    </div>
+    <div class="application-field">
+      <label>LinkedIn URL<input type="text" name="urls[LinkedIn]"></label>
+    </div>
+    <div class="application-field">
+      <label>GitHub URL<input type="text" name="urls[GitHub]"></label>
+    </div>
+    <div class="application-field">
+      <label>Portfolio<input type="text" name="urls[Portfolio]"></label>
+    </div>
+    <div class="application-field">
+      <label>Resume<input type="file" name="resume"></label>
+    </div>
+    <button type="submit">Submit application</button>
+  </form>
+</body>
+</html>

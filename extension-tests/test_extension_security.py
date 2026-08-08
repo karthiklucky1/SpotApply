@@ -71,7 +71,7 @@ FILL_PACK = {
     "email": "alexandra.nguyen@example.com", "phone": "+1 415 555 0199",
     "location": "San Francisco, CA",
     "linkedin_url": "https://linkedin.com/in/alexnguyen-test",
-    "hirepath_url": BASE, "auth_token": "harness-test-token",
+    "spotapply_url": BASE, "auth_token": "harness-test-token",
     "ai_answers": {},
 }
 
@@ -128,8 +128,8 @@ def main():
             { type: 'HIREPATH_INIT_EXTENSION', pack }, '*')""", FILL_PACK)
         trigger.wait_for_timeout(1500)
         session = sw.evaluate("""() => new Promise(r => chrome.storage.local.get(
-            ['hirepath_copilot_pack','hirepath_copilot_ts'],
-            d => r({ pack: !!d.hirepath_copilot_pack, ts: !!d.hirepath_copilot_ts })))""")
+            ['spotapply_copilot_pack','spotapply_copilot_ts'],
+            d => r({ pack: !!d.spotapply_copilot_pack, ts: !!d.spotapply_copilot_ts })))""")
         check("S0 live copilot session established (precondition)",
               session["pack"] and session["ts"], json.dumps(session))
 
@@ -159,7 +159,7 @@ def main():
               not submits, json.dumps(submits)[:200])
 
         still_live = sw.evaluate("""() => new Promise(r => chrome.storage.local.get(
-            ['hirepath_copilot_pack'], d => r(!!d.hirepath_copilot_pack)))""")
+            ['spotapply_copilot_pack'], d => r(!!d.spotapply_copilot_pack)))""")
         check("S4 fill session survived (pack not destroyed by the stray submit)",
               still_live)
 
@@ -168,7 +168,7 @@ def main():
         apply_page.goto(f"{BASE}/apply.html")
         apply_page.wait_for_timeout(1200)
         sw.evaluate("""(pack) => new Promise(r => chrome.storage.local.set(
-            { hirepath_fill_pack: pack, hirepath_auto_fill: true }, r))""", FILL_PACK)
+            { spotapply_fill_pack: pack, spotapply_auto_fill: true }, r))""", FILL_PACK)
         apply_page.reload()
         apply_page.wait_for_timeout(9000)
         first = apply_page.eval_on_selector("#first_name", "el => el.value")

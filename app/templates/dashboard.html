@@ -3705,11 +3705,13 @@
                 await new Promise(r => {
                     const t = setTimeout(r, 800);
                     const msgHandler = (e) => {
-                        if (e.data?.type === 'HIREPATH_EXT_ACK') { extHandled = true; clearTimeout(t); r(); }
-                        if (e.data?.type === 'HIREPATH_EXT_RELOAD') { extReload = true; clearTimeout(t); r(); }
+                        // Accept both dialects: an already-installed older
+                        // extension still answers HIREPATH_*.
+                        if (/^(SPOTAPPLY|HIREPATH)_EXT_ACK$/.test(e.data?.type || '')) { extHandled = true; clearTimeout(t); r(); }
+                        if (/^(SPOTAPPLY|HIREPATH)_EXT_RELOAD$/.test(e.data?.type || '')) { extReload = true; clearTimeout(t); r(); }
                     };
                     window.addEventListener('message', msgHandler);
-                    window.postMessage({ type: 'HIREPATH_LOAD_PACK', pack }, '*');
+                    window.postMessage({ type: 'SPOTAPPLY_LOAD_PACK', pack }, '*');
                     // Cleanup listener after resolution
                     Promise.resolve().then(() => setTimeout(() => window.removeEventListener('message', msgHandler), 900));
                 });
@@ -5755,8 +5757,8 @@
     }
   } catch (e) {}
   window.addEventListener('message', (e) => {
-    if (e.data?.type === 'HIREPATH_EXT_PING_OK') { lastOk = true; hideInstallBanner(); }
-    if (e.data?.type === 'HIREPATH_EXT_RELOAD' && lastOk) {
+    if (/^(SPOTAPPLY|HIREPATH)_EXT_PING_OK$/.test(e.data?.type || '')) { lastOk = true; hideInstallBanner(); }
+    if (/^(SPOTAPPLY|HIREPATH)_EXT_RELOAD$/.test(e.data?.type || '') && lastOk) {
       // Context just died — reload once to reconnect
       lastOk = false;
       showToast(' Extension reconnecting — reloading page…', 'info');
@@ -5764,9 +5766,9 @@
     }
   });
   // Ping the extension every 20s; content.js replies HIREPATH_EXT_PING_OK if alive
-  setInterval(() => window.postMessage({ type: 'HIREPATH_EXT_PING' }, '*'), 20000);
+  setInterval(() => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*'), 20000);
   // Ping once shortly after load so an installed extension hides the banner fast.
-  setTimeout(() => window.postMessage({ type: 'HIREPATH_EXT_PING' }, '*'), 800);
+  setTimeout(() => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*'), 800);
 })();
 </script> <!-- ── Guided product tour ─────────────────────────────────────────────── -->
 <style> #tour-dim { position:fixed; inset:0; z-index:99998; pointer-events:none; opacity:0; transition:opacity .25s ease; }
@@ -6828,7 +6830,7 @@
                     supabase_url: localStorage.getItem('sb_url'),
                     supabase_anon_key: localStorage.getItem('sb_anon'),
                 };
-                window.postMessage({ type: 'HIREPATH_INIT_EXTENSION', pack: initPack }, '*');
+                window.postMessage({ type: 'SPOTAPPLY_INIT_EXTENSION', pack: initPack }, '*');
             } catch (e) {
                 console.error('[SpotApply] Failed to broadcast extension init pack:', e);
             }

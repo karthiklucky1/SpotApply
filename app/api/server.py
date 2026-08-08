@@ -3795,11 +3795,27 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         log.warning("Failed to generate essay answers for app %d: %s", application_id, e)
         pack["ai_answers"] = {}
 
-    # Add hirepath_url and auth_token so extension can save answers back
+    # Base URL + auth token so the extension can call back (save answers,
+    # fetch the tailored résumé, report submission).
     from app.config import settings
-    # Use request.base_url so local dev hits 127.0.0.1:8000, prod hits app.spotapply.ai
+    # request.base_url keeps local dev on 127.0.0.1:8000, but behind the
+    # TLS-terminating proxy it reports http:// — and an http:// base makes every
+    # extension call either blocked as mixed content or redirected, and a
+    # cross-scheme redirect drops the Authorization header, so authed calls 401.
+    # Trust X-Forwarded-Proto, and never hand out http:// for a remote host.
     _base = str(request.base_url).rstrip("/")
-    pack["hirepath_url"] = getattr(settings, "hirepath_url", None) or _base
+    _fwd_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if _fwd_proto == "https" and _base.startswith("http://"):
+        _base = "https://" + _base[len("http://"):]
+    elif _base.startswith("http://"):
+        from urllib.parse import urlparse as _up
+        _host = _up(_base).hostname or ""
+        if _host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+            _base = "https://" + _base[len("http://"):]
+    pack["spotapply_url"] = _base
+    # Legacy alias: extensions installed before the rename read hirepath_url.
+    # Installs update independently of deploys, so keep sending both.
+    pack["hirepath_url"] = _base
     token = request.headers.get("Authorization", "").split(" ", 1)[-1]
     pack["auth_token"] = token
 

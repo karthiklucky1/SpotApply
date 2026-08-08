@@ -1,6 +1,6 @@
 // popup.js — SpotApply Extension Popup
 
-const HIREPATH_URL = "https://app.spotapply.ai";
+const SPOTAPPLY_URL = "https://app.spotapply.ai";
 
 function showStatus(msg, type) {
   const el = document.getElementById("status");
@@ -10,9 +10,9 @@ function showStatus(msg, type) {
 }
 
 // Load stored job pack
-chrome.storage.local.get(["hirepath_fill_pack"], (data) => {
-  if (data.hirepath_fill_pack) {
-    const pack = data.hirepath_fill_pack;
+chrome.storage.local.get(["spotapply_fill_pack"], (data) => {
+  if (data.spotapply_fill_pack) {
+    const pack = data.spotapply_fill_pack;
     document.getElementById("job-section").style.display = "block";
     document.getElementById("job-title").textContent =
       (pack.job_title || "Unknown Role") + (pack.company ? ` @ ${pack.company}` : "");
@@ -32,15 +32,15 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
   btn.disabled = true;
   btn.textContent = "⏳ Filling...";
 
-  chrome.storage.local.get(["hirepath_fill_pack"], (data) => {
-    if (!data.hirepath_fill_pack) {
+  chrome.storage.local.get(["spotapply_fill_pack"], (data) => {
+    if (!data.spotapply_fill_pack) {
       showStatus("No job loaded. Go to SpotApply and click Fill with Extension.", "err");
       btn.disabled = false;
       btn.textContent = "⚡ Fill This Form Now";
       return;
     }
     chrome.runtime.sendMessage(
-      { type: "FILL_JOB", payload: data.hirepath_fill_pack },
+      { type: "FILL_JOB", payload: data.spotapply_fill_pack },
       (res) => {
         if (chrome.runtime.lastError || !res?.ok) {
           showStatus("Could not reach the form tab. Make sure the job form tab is active and open.", "err");
@@ -57,7 +57,7 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
 // Dashboard links
 ["btn-dash", "btn-dash2"].forEach((id) => {
   document.getElementById(id)?.addEventListener("click", () => {
-    chrome.tabs.create({ url: HIREPATH_URL + "/dashboard" });
+    chrome.tabs.create({ url: SPOTAPPLY_URL + "/dashboard" });
   });
 });
 
@@ -86,10 +86,10 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
       btn.textContent = "🔍 Is this job real? Check it";
       return;
     }
-    chrome.storage.local.get(["hirepath_fill_pack", "hirepath_copilot_pack", "hirepath_auth"], async (data) => {
-      const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack || {};
-      const base = pack.hirepath_url || HIREPATH_URL;
-      const token = pack.auth_token || (data.hirepath_auth && data.hirepath_auth.access_token) || null;
+    chrome.storage.local.get(["spotapply_fill_pack", "spotapply_copilot_pack", "spotapply_auth"], async (data) => {
+      const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack || {};
+      const base = pack.spotapply_url || pack.hirepath_url || SPOTAPPLY_URL;
+      const token = pack.auth_token || (data.spotapply_auth && data.spotapply_auth.access_token) || null;
       try {
         const res = await fetch(`${base}/api/public/job-check`, {
           method: "POST",

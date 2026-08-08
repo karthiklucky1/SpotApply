@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><title>Platform Engineer — Workday-style application</title></head>
+<body>
+  <h1>My Information</h1>
+  <!-- Workday keys everything off data-automation-id, not labels/ids -->
+  <div data-automation-id="legalNameSection">
+    <label for="wd-first">First Name</label>
+    <input type="text" id="wd-first" data-automation-id="legalNameSection_firstName">
+
+    <label for="wd-last">Last Name</label>
+    <input type="text" id="wd-last" data-automation-id="legalNameSection_lastName">
+  </div>
+
+  <div data-automation-id="contactInformationSection">
+    <label for="wd-email">Email Address</label>
+    <input type="email" id="wd-email" data-automation-id="email">
+
+    <label for="wd-phone">Phone Number</label>
+    <input type="tel" id="wd-phone" data-automation-id="phone-number">
+
+    <label for="wd-city">City</label>
+    <input type="text" id="wd-city" data-automation-id="addressSection_city">
+  </div>
+
+  <div data-automation-id="sourceSection">
+    <label for="wd-country">Country</label>
+    <select id="wd-country" data-automation-id="countryDropdown">
+      <option value="">Select One</option>
+      <option>United States of America</option>
+      <option>United Kingdom</option>
+      <option>India</option>
+      <option>Canada</option>
+    </select>
+  </div>
+
+  <div data-automation-id="resumeSection">
+    <label for="wd-resume">Resume/CV</label>
+    <input type="file" id="wd-resume" data-automation-id="file-upload-input-ref">
+  </div>
+
+  <button type="button" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html><head><title>Senior Engineer — Greenhouse-style application</title></head>
+<body>
+  <h1>Apply for Senior Engineer at HarnessCo</h1>
+  <form id="application_form">
+    <label for="first_name">First Name *</label>
+    <input type="text" id="first_name" name="job_application[first_name]">
+
+    <label for="last_name">Last Name *</label>
+    <input type="text" id="last_name" name="job_application[last_name]">
+
+    <label for="email">Email *</label>
+    <input type="email" id="email" name="job_application[email]">
+
+    <label for="phone">Phone</label>
+    <input type="tel" id="phone" name="job_application[phone]">
+
+    <label for="job_application_location">Location (City)</label>
+    <input type="text" id="job_application_location" name="job_application[location]">
+
+    <label for="gh_linkedin">LinkedIn Profile</label>
+    <input type="text" id="gh_linkedin" name="job_application[answers_attributes][0][text_value]">
+
+    <label for="gh_website">Website</label>
+    <input type="text" id="gh_website" name="job_application[answers_attributes][1][text_value]">
+
+    <label for="gh_github">GitHub URL</label>
+    <input type="text" id="gh_github" name="job_application[answers_attributes][2][text_value]">
+
+    <label for="resume">Resume/CV *</label>
+    <input type="file" id="resume" name="job_application[resume]">
+
+    <label for="cover_letter_text">Cover Letter</label>
+    <textarea id="cover_letter_text" name="job_application[cover_letter_text]"></textarea>
+
+    <!-- EEO / demographic selects -->
+    <label for="gender">Gender</label>
+    <select id="gender" name="job_application[demographic_answers][gender]">
+      <option value="">Please select</option>
+      <option>Male</option><option>Female</option>
+      <option>Decline to self-identify</option>
+    </select>
+
+    <label for="veteran_status">Veteran Status</label>
+    <select id="veteran_status" name="job_application[demographic_answers][veteran]">
+      <option value="">Please select</option>
+      <option>I identify as one or more of the classifications of a protected veteran</option>
+      <option>I am not a protected veteran</option>
+      <option>I decline to self-identify</option>
+    </select>
+
+    <label for="sponsorship">Will you now or in the future require sponsorship?</label>
+    <select id="sponsorship" name="job_application[answers_attributes][3][text_value]">
+      <option value="">Please select</option>
+      <option>Yes</option><option>No</option>
+    </select>
+
+    <label for="work_auth">Are you legally authorized to work in the United States?</label>
+    <select id="work_auth" name="job_application[answers_attributes][4][text_value]">
+      <option value="">Please select</option>
+      <option>Yes</option><option>No</option>
+    </select>
+
+    <input type="submit" value="Submit Application">
+  </form>
+</body>
+</html>

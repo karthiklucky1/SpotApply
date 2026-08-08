@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html><head><title>React-controlled application form</title></head>
+<body>
+  <h1>Apply (React-controlled inputs)</h1>
+  <!-- Mimics a React controlled input: the component owns the value and
+       reverts anything written without a proper native setter + input event.
+       This is the case that breaks naive `el.value = x` autofill. -->
+  <form id="react-form">
+    <label for="rf-first">First Name</label>
+    <input type="text" id="rf-first" name="firstName">
+    <label for="rf-email">Email</label>
+    <input type="email" id="rf-email" name="email">
+    <label for="rf-phone">Phone</label>
+    <input type="tel" id="rf-phone" name="phone">
+    <button type="submit">Submit</button>
+  </form>
+
+  <script>
+  // Simulate React's value tracker: any assignment NOT accompanied by a
+  // dispatched 'input' event gets reverted on the next tick.
+  ['rf-first', 'rf-email', 'rf-phone'].forEach((id) => {
+    const el = document.getElementById(id);
+    let committed = '';
+    let sawInputEvent = false;
+    el.addEventListener('input', () => { sawInputEvent = true; });
+    setInterval(() => {
+      if (el.value !== committed) {
+        if (sawInputEvent) {
+          committed = el.value;      // React would setState here
+          sawInputEvent = false;
+        } else {
+          el.value = committed;      // silent write -> reverted
+        }
+      }
+    }, 60);
+  });
+  </script>
+</body>
+</html>

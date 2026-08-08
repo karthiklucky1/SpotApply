@@ -515,7 +515,7 @@ class Settings(BaseSettings):
         return [b.strip() for b in self.ashby_boards.split(",") if b.strip()]
 
     # CORS configuration
-    cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000,https://app.spotapply.ai,https://spotapply.ai,https://hirepath.dev"
+    cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000,https://app.spotapply.ai,https://spotapply.ai"
 
     # Canonical-host redirect: requests hitting these hosts get a 301 to the
     # canonical host (path preserved). The bare domain spotapply.ai is the

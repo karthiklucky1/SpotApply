@@ -1,5 +1,34 @@
 // SpotApply Extension — Background Service Worker
 
+// ── One-time storage migration (hirepath_* → spotapply_*) ────────────────────
+// Storage survives an extension update, so a user mid-application when the
+// update lands would otherwise lose their pack and the copilot would go quiet.
+// Copy any legacy keys forward once, then drop them.
+const _LEGACY_KEYS = {
+  hirepath_fill_pack: "spotapply_fill_pack",
+  hirepath_copilot_pack: "spotapply_copilot_pack",
+  hirepath_copilot_ts: "spotapply_copilot_ts",
+  hirepath_auto_fill: "spotapply_auto_fill",
+  hirepath_auth: "spotapply_auth",
+  hirepath_dismissed: "spotapply_dismissed",
+};
+
+function migrateLegacyStorage() {
+  chrome.storage.local.get(Object.keys(_LEGACY_KEYS), (old) => {
+    const present = Object.keys(_LEGACY_KEYS).filter((k) => old[k] !== undefined);
+    if (!present.length) return;
+    const moved = {};
+    present.forEach((k) => { moved[_LEGACY_KEYS[k]] = old[k]; });
+    chrome.storage.local.set(moved, () => {
+      chrome.storage.local.remove(present);
+      console.log("[SpotApply BG] Migrated legacy storage keys:", present.join(", "));
+    });
+  });
+}
+
+chrome.runtime.onInstalled.addListener(migrateLegacyStorage);
+chrome.runtime.onStartup.addListener(migrateLegacyStorage);
+
 // ── Session auth (token refresh) ─────────────────────────────────────────────
 // The fill pack carries a short-lived Supabase access token plus (from the
 // dashboard) a refresh token and Supabase credentials. We pull those secrets
@@ -33,8 +62,8 @@ function stashAuth(pack) {
   if (!Object.keys(auth).length) return;
   // Merge over any previously stored creds (e.g. keep a rotated refresh token
   // if this pack didn't carry one).
-  chrome.storage.local.get(["hirepath_auth"], (s) => {
-    chrome.storage.local.set({ hirepath_auth: Object.assign({}, s.hirepath_auth || {}, auth) });
+  chrome.storage.local.get(["spotapply_auth"], (s) => {
+    chrome.storage.local.set({ spotapply_auth: Object.assign({}, s.spotapply_auth || {}, auth) });
   });
 }
 
@@ -86,7 +115,7 @@ async function refreshAccessTokenOnce(auth) {
         const token = await refreshAccessToken(auth);
         if (token) {
           auth.access_token = token;
-          await chrome.storage.local.set({ hirepath_auth: auth });
+          await chrome.storage.local.set({ spotapply_auth: auth });
         }
         return token;
       } finally {
@@ -98,8 +127,8 @@ async function refreshAccessTokenOnce(auth) {
 }
 
 async function handleApiFetch(payload) {
-  const store = await chrome.storage.local.get(["hirepath_auth"]);
-  const auth = store.hirepath_auth || {};
+  const store = await chrome.storage.local.get(["spotapply_auth"]);
+  const auth = store.spotapply_auth || {};
   // Prefer the freshest access token the worker holds over the (possibly stale)
   // one the content script sent from its cached pack.
   const token = auth.access_token || payload.token;
@@ -115,8 +144,8 @@ async function handleApiFetch(payload) {
       if (!newToken) {
         // A concurrent caller may have just refreshed and rotated the token —
         // re-read storage before declaring the session dead.
-        const again = await chrome.storage.local.get(["hirepath_auth"]);
-        newToken = (again.hirepath_auth || {}).access_token;
+        const again = await chrome.storage.local.get(["spotapply_auth"]);
+        newToken = (again.spotapply_auth || {}).access_token;
         if (newToken === token) newToken = null; // nothing actually changed
       }
       if (newToken) {
@@ -138,7 +167,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "FILL_JOB") {
     console.log("[SpotApply BG] FILL_JOB received from popup");
     stashAuth(msg.payload);
-    chrome.storage.local.set({ hirepath_fill_pack: msg.payload, hirepath_auto_fill: false }, () => {
+    chrome.storage.local.set({ spotapply_fill_pack: msg.payload, spotapply_auto_fill: false }, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0]) { sendResponse({ ok: false, error: "No active tab" }); return; }
         console.log("[SpotApply BG] Sending DO_FILL to tab", tabs[0].id, tabs[0].url);
@@ -159,10 +188,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // The copilot session (30-min window) lets autofill survive cross-domain
     // navigations — e.g. accenture.com → myworkdayjobs.com after clicking Apply.
     chrome.storage.local.set({
-      hirepath_fill_pack: pack,
-      hirepath_auto_fill: true,
-      hirepath_copilot_pack: pack,
-      hirepath_copilot_ts: Date.now(),
+      spotapply_fill_pack: pack,
+      spotapply_auto_fill: true,
+      spotapply_copilot_pack: pack,
+      spotapply_copilot_ts: Date.now(),
     }, () => {
       chrome.tabs.create({ url: pack.apply_url }, (tab) => {
         console.log("[SpotApply BG] Opened tab", tab.id, "for", pack.apply_url);
@@ -177,8 +206,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     console.log("[SpotApply BG] INIT_EXTENSION received");
     stashAuth(pack);
     chrome.storage.local.set({
-      hirepath_copilot_pack: pack,
-      hirepath_copilot_ts: Date.now()
+      spotapply_copilot_pack: pack,
+      spotapply_copilot_ts: Date.now()
     }, () => {
       sendResponse({ ok: true });
     });
@@ -191,7 +220,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     console.log("[SpotApply BG] FORM_SUBMITTED received for app:", appId);
     
     // 1. Send submit API call to the backend
-    const url = `${pack.hirepath_url || 'https://app.spotapply.ai'}/application/${appId}/submit`;
+    // spotapply_url is the current key; hirepath_url is the legacy one an
+    // older server still sends (installs update independently of deploys).
+    const base = pack.spotapply_url || pack.hirepath_url || 'https://app.spotapply.ai';
+    const url = `${base}/application/${appId}/submit`;
     handleApiFetch({
       url: url,
       method: 'POST',
@@ -245,9 +277,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!tab.url || tab.url.startsWith("chrome")) return;
 
   chrome.storage.local.get(
-    ["hirepath_fill_pack", "hirepath_auto_fill", "hirepath_copilot_pack", "hirepath_copilot_ts"],
+    ["spotapply_fill_pack", "spotapply_auto_fill", "spotapply_copilot_pack", "spotapply_copilot_ts"],
     (data) => {
-      const pack = data.hirepath_fill_pack || data.hirepath_copilot_pack;
+      const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack;
       if (!pack) {
         console.log("[SpotApply BG] Tab", tabId, "loaded but no pack in storage — skipping");
         return;
@@ -268,22 +300,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
       // Diagnostic dump
       console.log("[SpotApply BG] === Tab loaded:", tabId, tabHost, "===");
-      console.log("[SpotApply BG]   auto_fill:", data.hirepath_auto_fill);
-      console.log("[SpotApply BG]   copilot_pack:", !!data.hirepath_copilot_pack);
-      console.log("[SpotApply BG]   copilot_ts:", data.hirepath_copilot_ts);
+      console.log("[SpotApply BG]   auto_fill:", data.spotapply_auto_fill);
+      console.log("[SpotApply BG]   copilot_pack:", !!data.spotapply_copilot_pack);
+      console.log("[SpotApply BG]   copilot_ts:", data.spotapply_copilot_ts);
       console.log("[SpotApply BG]   ATS match:", ATS_HOSTS.test(tabHost));
 
       // Determine if this tab should receive DO_FILL:
       // 1. One-shot flag set when we opened the tab (exact host match OR known ATS)
       // 2. Persistent copilot session active (30-min window) on any ATS/actionable page
       const SESSION_MS = 30 * 60 * 1000;
-      const sessionAge = data.hirepath_copilot_ts ? (Date.now() - data.hirepath_copilot_ts) : Infinity;
+      const sessionAge = data.spotapply_copilot_ts ? (Date.now() - data.spotapply_copilot_ts) : Infinity;
       const freshSession = sessionAge < SESSION_MS;
       // NOTE: a pack sitting on an ATS host is NOT enough — the session must
       // be fresh, or last week's pack would fill an unrelated application.
 
       let shouldFill = false;
-      if (data.hirepath_auto_fill) {
+      if (data.spotapply_auto_fill) {
         try {
           const jobHost = new URL(pack.apply_url || "").hostname;
           // Same host OR tab is a known ATS (handles accenture → workday cross-domain)
@@ -301,7 +333,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!shouldFill) return;
 
       console.log("[SpotApply BG] ▶ Tab", tabId, "matched — sending DO_FILL in 2s");
-      if (data.hirepath_auto_fill) chrome.storage.local.set({ hirepath_auto_fill: false });
+      if (data.spotapply_auto_fill) chrome.storage.local.set({ spotapply_auto_fill: false });
 
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
