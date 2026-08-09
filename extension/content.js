@@ -108,6 +108,24 @@ function fillEEOField(el, value) {
   return el && el.tagName === 'SELECT' ? selectOption(el, value) : fillInput(el, value);
 }
 
+// ── Essay prompts vs field labels ────────────────────────────────────────────
+// Field matching is substring-based, so a 40-word prompt like "Our team
+// operates like an AI transformation startup within a larger company… share one
+// example…" hit the /company/ rule and got the user's employer name written
+// into it — a verified, non-empty, green-highlighted write of the WRONG thing.
+// Read-back verification cannot catch this: the value landed, it just doesn't
+// belong. The shape of the LABEL is the signal — a real field label is a short
+// noun phrase; an essay prompt is a sentence.
+function looksLikeEssayPrompt(labelText, el) {
+  const t = String(labelText || '').trim();
+  if (!t) return false;
+  const words = t.split(/\s+/).length;
+  if (words >= 12) return true;
+  // A textarea asking anything conversational is a prompt, not a field.
+  if (el && el.tagName === 'TEXTAREA' && words >= 6) return true;
+  return /\b(describe|tell us|share (?:an?|one|your)|give (?:an?|us)|walk us|explain why|in your own words)\b/i.test(t);
+}
+
 /** Full name with no "undefined" leakage — "" when we know neither part. */
 function fullNameOf(pack) {
   return [pack && pack.first_name, pack && pack.last_name]
@@ -1475,6 +1493,12 @@ async function fillUniversal(pack) {
 
     if (!signals.trim()) continue;
 
+    // An essay prompt is not a field label. Short profile scalars (company,
+    // title, salary, location…) must never be written into one — the AI essay
+    // path in fillEssayQuestions owns these.
+    const labelOnly = labelText(inp) || '';
+    const essayPrompt = looksLikeEssayPrompt(labelOnly, inp);
+
     // Match against canonical field types with broad regex
     // Snapshot before the branch runs so we can tell a real write from a
     // no-op (see the verified count at the bottom of the loop).
@@ -1488,7 +1512,12 @@ async function fillUniversal(pack) {
       fillInput(inp, pack.first_name);
     } else if (/last.?name|legal.?last|family.?name|surname|\blname\b/i.test(signals)) {
       fillInput(inp, pack.last_name);
-    } else if (/full.?name|candidate.?name|^name$/i.test(signals)) {
+    // `^name$` anchors the whole signal blob, so it never fired for a field
+    // labelled just "Name" (Ashby's _systemfield_name). Check the LABEL alone
+    // too — a bare "Name" label is one of the most common single-name fields.
+    } else if (/full.?name|candidate.?name|^name$/i.test(signals)
+               || /^\s*(full\s+)?name\s*\*?\s*$/i.test(labelOnly)
+               || /(^|_)name$/i.test(inp.getAttribute('name') || '')) {
       fillInput(inp, fullNameOf(pack));
 
     // ── Email (not confirm/verify fields) ──
@@ -1517,10 +1546,10 @@ async function fillUniversal(pack) {
       fillInput(inp, pack.portfolio_url || '');
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
-    } else if (/\bcity\b|\btown\b/i.test(signals) && !/country/i.test(signals)) {
+    } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
       fillInput(inp, loc.city);
     // Location/where-based fields get the full location
-    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !/country/i.test(signals)) {
+    } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
       fillInput(inp, pack.location || '');
 
     // ── State (parsed from location) ──
@@ -1548,13 +1577,13 @@ async function fillUniversal(pack) {
     } else if (/years?.*(of\s+)?experience|how.*(many|much).*experience|experience.*years?/i.test(signals)
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
       fillInput(inp, String(pack.years_experience || ''));
-    } else if (/current.?title|job.?title|current.?position|current.?role/i.test(signals)) {
+    } else if (/current.?title|job.?title|current.?position|current.?role/i.test(signals) && !essayPrompt) {
       fillInput(inp, pack.current_title || '');
-    } else if (/company|employer|organization/i.test(signals)
+    } else if (/company|employer|organization/i.test(signals) && !essayPrompt
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
       const currentCompany = (pack.work_experience && pack.work_experience[0]) ? pack.work_experience[0].company : '';
       fillInput(inp, currentCompany);
-    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals)) {
+    } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals) && !essayPrompt) {
       fillInput(inp, String(pack.salary_min || ''));
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
       selectOption(inp, 'United States');
@@ -1915,8 +1944,24 @@ async function attachResume(root, pack) {
   };
   const isUploaded = (fi) => (fi.files && fi.files.length) || hasUploadedMarker(fi);
 
-  const targets = allFileInputs.filter(fi => {
+  // "Autofill from résumé" widgets are a TRAP. Ashby (and others) put an
+  // optional parser upload next to the real Resume field; its container also
+  // says "resume", so it matched, we attached to both, and the parser then
+  // re-read the .docx and OVERWROTE the identity we had just filled — same
+  // form, two runs, two different applicants. Never feed the parser.
+  const isParserWidget = (fi) => {
+    const scope = fi.closest('div, section, fieldset, form');
+    const text = ((labelText(fi) || '') + ' ' + (fi.getAttribute('aria-label') || '') + ' ' +
+                  (scope ? (scope.textContent || '').slice(0, 400) : '')).toLowerCase();
+    return /autofill|auto-fill|fill (?:it |this |the form )?(?:in |out )?(?:from|with)|parse|prefill|pre-fill|populate (?:the )?(?:form|fields)/.test(text);
+  };
+
+  const candidates = allFileInputs.filter((fi) => {
     if (isUploaded(fi)) return false;
+    if (isParserWidget(fi)) {
+      console.log('[SpotApply] Skipping autofill-from-résumé widget — it would overwrite the filled fields');
+      return false;
+    }
     const container = fi.closest('div, section, fieldset');
     const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
                  (fi.getAttribute("data-automation-id") || "")).toLowerCase();
@@ -1925,6 +1970,18 @@ async function attachResume(root, pack) {
     if (allFileInputs.length === 1) return true; // single file input = the résumé
     return false;
   });
+
+  // Attach to exactly ONE input — the best candidate. Spraying the file at
+  // every match is what fed the parser in the first place. Prefer a required
+  // field, then one whose own attributes (not just its container) say résumé.
+  const score = (fi) => {
+    const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
+                 (fi.getAttribute("data-automation-id") || "")).toLowerCase();
+    return (isFieldRequired(fi) ? 2 : 0) + (/resume|cv|résumé/.test(ctx) ? 1 : 0);
+  };
+  const targets = candidates.length
+    ? [candidates.slice().sort((a, b) => score(b) - score(a))[0]]
+    : [];
 
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);
@@ -2182,8 +2239,39 @@ async function runCopilotStep() {
     _lastFillTimestamp = Date.now();
   }
 
+  // The résumé attach and the AI essay answers finish AFTER the first overlay
+  // render, so recount now that everything has landed — and keep it live while
+  // the user works through the yellow fields.
+  refreshStepOverlay(pack);
+  startStatusRefresh(pack);
+
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
+}
+
+// Re-audit and re-render the status widget. Cheap (one querySelectorAll pass),
+// and it never re-fills anything — it only recounts what is already there.
+function refreshStepOverlay(pack) {
+  if (!_copilotActive || _fillingInProgress) return;
+  try {
+    showStepOverlay(auditPageFields(pack, false), pack);
+  } catch (e) {
+    console.debug('[SpotApply] status refresh skipped:', e.message);
+  }
+}
+
+let _statusRefreshBound = false;
+function startStatusRefresh(pack) {
+  if (_statusRefreshBound) return;
+  _statusRefreshBound = true;
+  let t = null;
+  const debounced = () => {
+    clearTimeout(t);
+    t = setTimeout(() => refreshStepOverlay(pack), 700);
+  };
+  // A user typing into a yellow field should see the count move.
+  ['input', 'change'].forEach((ev) =>
+    document.addEventListener(ev, debounced, { capture: true, passive: true }));
 }
 
 // ── Fill current page ─────────────────────────────────────────────────────────
@@ -2228,10 +2316,36 @@ async function fillCurrentPage(pack) {
   await fillEssayQuestions(document, pack);
 
   // Step 5: Audit all form fields — classify as filled / unfilled / unknown
+  return auditPageFields(pack, platformFilled);
+}
+
+/**
+ * Count and highlight what is filled vs outstanding. Split out of the fill
+ * so it can be re-run: the overlay used to be rendered before the résumé
+ * attach and the AI essay answers landed, so it went stale the moment those
+ * completed ("5 filled" while seven fields held values).
+ */
+function auditPageFields(pack, platformFilled) {
+  // Visibility, but not naively. A résumé file input and custom-styled radios
+  // are almost always the real input hidden behind a styled label, so
+  // `offsetParent !== null` dropped them from BOTH sides of the tally — which
+  // is why two required radio questions and the résumé stayed invisible to the
+  // count. For those, fall back to whether their LABEL or container is visible.
+  const shownVia = (el) => {
+    if (el.offsetParent !== null) return true;
+    const id = el.id;
+    const lbl = (id && document.querySelector(`label[for="${CSS.escape(id)}"]`)) || el.closest('label');
+    if (lbl && lbl.offsetParent !== null) return true;
+    const scope = el.closest('div, fieldset, section');
+    return !!(scope && scope.offsetParent !== null && scope.getClientRects().length);
+  };
   const allInputs = Array.from(document.querySelectorAll(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
     'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
-  )).filter(el => el.offsetParent !== null); // visible only
+  )).filter((el) => {
+    const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
+    return proxied ? shownVia(el) : el.offsetParent !== null;
+  });
 
   let filled = 0, needUser = 0, skipped = 0;
   const needUserEls = [];

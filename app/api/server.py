@@ -2940,12 +2940,8 @@ def dashboard(request: Request, all_submitted: bool = False):
     total_shortlisted_count = 0
 
     if not (settings.use_supabase and not uid):
-        _AUTOFILL_REVIEW_STATUSES = [
-            ApplicationStatus.AUTOFILLED,
-            ApplicationStatus.AWAITING_USER,
-            ApplicationStatus.READY_TO_SUBMIT,
-        ]
-        
+        _AUTOFILL_REVIEW_STATUSES = list(_AUTOFILL_REVIEW_STATUSES_CONST)
+
         with get_session() as session:
             # 1. Fetch Shortlisted. Render cap covers a full day's shortlisting
             # (settings.shortlist_render_cap) — the old hard 100 HID jobs: with 161
@@ -2959,7 +2955,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             # user invested in (TAILORED / autofill review) are never hidden.
             _fresh_ok = _shortlist_fresh_clause()
             q_short = select(Application, Job).join(Job).where(
-                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
+                Application.status.in_(_SHORTLIST_BOARD_STATUSES)
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             ).order_by(
@@ -2978,7 +2974,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             # banner compares against so it fires ONLY for jobs added after load
             # (never for a render-cap gap, which is what caused the endless "61 new").
             q_short_total = select(func.count(Application.id)).join(Job).where(
-                Application.status.in_([ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED] + _AUTOFILL_REVIEW_STATUSES)
+                Application.status.in_(_SHORTLIST_BOARD_STATUSES)
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
             )
@@ -3208,9 +3204,11 @@ def pipeline_live(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     _uid_filter = uid and uid != "local"
 
-    _SHORTLIST = {ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED}
-    _INPROGRESS = {ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
-                   ApplicationStatus.READY_TO_SUBMIT}
+    # DERIVED from the SSR board's status list, not restated — a disagreement
+    # between the two is what makes dashboard.html reload in a loop, so make it
+    # structurally impossible rather than a comment asking someone to remember.
+    _INPROGRESS = set(_AUTOFILL_REVIEW_STATUSES_CONST)
+    _SHORTLIST = set(_SHORTLIST_BOARD_STATUSES) - _INPROGRESS
     # SUBMITTED only — INTERVIEWING has its own tab/count; folding it in here
     # made the header tile disagree with the Submitted tab by exactly the
     # number of interviewing applications (58 vs 57 in prod).
@@ -4808,6 +4806,30 @@ def cancel_discovery(request: Request) -> dict:
             session.commit()
             return {"cancelled": True}
     return {"cancelled": False}
+
+
+_AUTOFILL_REVIEW_STATUSES_CONST = (
+    ApplicationStatus.AUTOFILLED,
+    ApplicationStatus.AWAITING_USER,
+    ApplicationStatus.READY_TO_SUBMIT,
+)
+
+# The statuses the Shortlisted board shows. ONE definition: the SSR render, its
+# count and /api/pipeline/live must agree, or dashboard.html's auto-reloader
+# (rendered === 0 && server > 0) reloads the page forever.
+#
+# ERROR is on the board deliberately. Clicking "Auto-Fill & Apply" starts
+# background tailoring, and tailoring BLOCKS at ERROR when the grounding check
+# fails — rightly, since that résumé may carry unverified claims. But ERROR was
+# not a board status, so the card silently vanished from Shortlisted while the
+# user was mid-application on that posting: the count dropped by one, nothing
+# was submitted, and nothing said why. Keep it visible with its notes.
+_SHORTLIST_BOARD_STATUSES = [
+    ApplicationStatus.SHORTLISTED,
+    ApplicationStatus.TAILORED,
+    ApplicationStatus.ERROR,
+    *_AUTOFILL_REVIEW_STATUSES_CONST,
+]
 
 
 def _shortlist_fresh_clause():

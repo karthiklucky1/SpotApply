@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><title>AI Engineer — Ashby-style application</title></head>
+<body>
+  <h1>Apply — Ashby layout</h1>
+
+  <!-- The trap: an OPTIONAL "autofill from resume" parser sitting above the
+       real form. Its container mentions "resume", so a naive résumé-target
+       filter matches it, the parser re-reads the file and overwrites every
+       field that was just filled. -->
+  <div id="autofill-block">
+    <h3>Autofill from your resume</h3>
+    <p>Upload a resume to automatically fill in the fields below.</p>
+    <input type="file" id="autofill-parser" name="autofill_resume">
+  </div>
+
+  <form id="ashby-form">
+    <label for="ash-name">Name *</label>
+    <input type="text" id="ash-name" name="_systemfield_name" required>
+
+    <label for="ash-email">Email *</label>
+    <input type="email" id="ash-email" name="_systemfield_email" required>
+
+    <label for="ash-company">Current company</label>
+    <input type="text" id="ash-company" name="current_company">
+
+    <!-- The essay prompt that got the employer name written into it. The word
+         "company" appears mid-sentence; the field is NOT a company field. -->
+    <label for="ash-essay">Our team operates like an AI transformation startup within a larger
+      company, and we care a lot about how people work together. Please share one example that
+      shows the working environment, culture, or leadership style that helps you stay motivated.</label>
+    <textarea id="ash-essay" name="question_68444493" rows="5"></textarea>
+
+    <label for="ash-resume">Resume *</label>
+    <input type="file" id="ash-resume" name="_systemfield_resume" required>
+
+    <!-- Required non-EEO radio question: must be counted as outstanding. -->
+    <fieldset id="office-question">
+      <legend>Are you able to work from our office three days a week? *</legend>
+      <label><input type="radio" name="office_days" value="yes" required style="position:absolute;opacity:0"> Yes</label>
+      <label><input type="radio" name="office_days" value="no" required style="position:absolute;opacity:0"> No</label>
+    </fieldset>
+
+    <button type="submit">Submit application</button>
+  </form>
+</body>
+</html>

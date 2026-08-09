@@ -66,6 +66,8 @@ def base_pack(apply_url: str) -> dict:
         "cover_letter": "Dear Hiring Team, I am excited to apply to HarnessCo.",
         "resume_text": "Alexandra Nguyen - Senior Software Engineer",
         "ai_answers": {},
+        # Present in the real fill pack; the "current company" rule reads it.
+        "work_experience": [{"company": "Globali20 India", "title": "ML Engineer"}],
         # Current key; the extension also accepts the legacy hirepath_url.
         "spotapply_url": BASE,
         "auth_token": "harness-test-token",
@@ -262,6 +264,38 @@ def main():
         marked = page.eval_on_selector(
             "#cand_email", "el => el.dataset.spotapplyFilled === 'true'")
         check("T5 filled fields are marked as ours (diagnostics)", marked)
+        page.close()
+
+        # ── A: Ashby — essay prompt, parser widget, required radios ─────────
+        # All three reproduced from a live Gen Digital Ashby req.
+        print("\nAshby layout (essay prompt · autofill-from-résumé trap · radios)")
+        pack = base_pack(f"{BASE}/ashby.html")
+        pack["work_experience"] = [{"company": "Globali20 India", "title": "ML Engineer"}]
+        page, _ = drive_fill(ctx, f"{BASE}/ashby.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("A1 name filled", pack["first_name"] in (v("#ash-name") or ""), v("#ash-name"))
+        check("A2 email filled", v("#ash-email") == pack["email"], v("#ash-email"))
+        check("A3 real 'Current company' field IS filled",
+              v("#ash-company") == "Globali20 India", v("#ash-company"))
+        # The bug: /company/ matched mid-sentence and the employer name was
+        # written into a 40-word essay prompt — verified, counted, green.
+        essay = v("#ash-essay") or ""
+        check("A4 essay prompt NOT filled with the company name",
+              "Globali20" not in essay, repr(essay[:60]))
+        # The parser widget must stay empty or it re-parses and overwrites.
+        parser_files = page.eval_on_selector("#autofill-parser", "el => el.files.length")
+        resume_files = page.eval_on_selector("#ash-resume", "el => el.files.length")
+        check("A5 résumé attached to the REAL resume field", resume_files == 1, f"files={resume_files}")
+        check("A6 autofill-from-résumé parser left empty", parser_files == 0, f"files={parser_files}")
+        # Required radios and the résumé must be visible to the counter.
+        counts = page.evaluate(
+            """() => { const h = document.getElementById('hp-copilot-overlay');
+                       if (!h) return '';
+                       const r = h.shadowRoot || h;
+                       const b = r.querySelector('.body');
+                       return (b ? b.textContent : '').replace(/\\s+/g, ' ').trim(); }""")
+        check("A7 unanswered required radio counted as outstanding",
+              "need you" in counts, counts[:80])
         page.close()
 
         # ── API surface actually exercised ──────────────────────────────────
