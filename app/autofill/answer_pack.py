@@ -376,7 +376,54 @@ def get_essay_answers(application_id: int, user_id: str | None = None) -> dict:
     return result
 
 
+def _history_from_profile(profile: UserProfile) -> dict:
+    """Work/education history the USER entered in Settings, in pack shape.
+
+    This is authoritative: it is curated data the user can edit, and unlike the
+    résumé-text extraction it is always available. It was not consulted at all,
+    so a profile with two jobs and two degrees still produced
+    work_experience=[] / education=[] in the fill pack — which in turn made the
+    résumé generator 503 ("Could not generate resume") and left the extension
+    with nothing to write into "current company".
+    """
+    import json as _json
+
+    def _rows(attr: str) -> list:
+        raw = getattr(profile, attr, None)
+        if not raw:
+            return []
+        try:
+            val = _json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return [r for r in val if isinstance(r, dict)] if isinstance(val, list) else []
+
+    try:
+        from app.intelligence.resume_basic_extract import to_answer_pack_shape
+        # Same key mapping the résumé extractor uses, so downstream consumers
+        # see one shape regardless of where the history came from.
+        return to_answer_pack_shape({
+            "experience": _rows("experience_json"),
+            "education": _rows("education_json"),
+        })
+    except Exception:
+        return {"work_experience": [], "education": []}
+
+
 def _get_or_extract_experience_education(application: Application, profile: UserProfile, user_id: str | None = None) -> dict:
+    """Best available history: the user's own profile entries first, with
+    résumé extraction filling in whichever list the profile leaves empty."""
+    from_profile = _history_from_profile(profile)
+    if from_profile["work_experience"] and from_profile["education"]:
+        return from_profile
+    extracted = _extract_history_from_resume(application, profile, user_id)
+    return {
+        "work_experience": from_profile["work_experience"] or extracted.get("work_experience") or [],
+        "education": from_profile["education"] or extracted.get("education") or [],
+    }
+
+
+def _extract_history_from_resume(application: Application, profile: UserProfile, user_id: str | None = None) -> dict:
     from app.matching.pipeline import _load_resume
     import json
 

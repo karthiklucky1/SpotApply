@@ -126,6 +126,205 @@ function looksLikeEssayPrompt(labelText, el) {
   return /\b(describe|tell us|share (?:an?|one|your)|give (?:an?|us)|walk us|explain why|in your own words)\b/i.test(t);
 }
 
+// ── Phone fields wrapped in an international-telephone widget ────────────────
+// Recruitee (and intl-tel-input generally) renders a country selector beside
+// the number and re-parses whatever is typed. Writing "+1 (513) 276-3950" made
+// the widget eat "51" as the country code: the field became "+51 32763950" and
+// the country flipped to Peru. That is a silent data-integrity failure — the
+// application submits with a number that cannot receive a call.
+function isIntlTelField(el) {
+  if (!el) return false;
+  const scope = el.closest('.iti, .intl-tel-input, .PhoneInput, [class*="phone-input" i], [class*="phoneinput" i]');
+  if (scope) return true;
+  // Generic shape: a country <select>/<button> sitting next to the number.
+  const parent = el.parentElement;
+  if (!parent) return false;
+  return !!parent.querySelector(
+    'select[class*="country" i], button[class*="country" i], [class*="country-code" i], ' +
+    '.iti__selected-flag, [class*="flag" i]');
+}
+
+/** Digits only, in E.164 when we can tell the country. */
+function toE164(raw, defaultCc = '1') {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const digits = s.replace(/\D/g, '');
+  if (!digits) return '';
+  if (s.startsWith('+')) return '+' + digits;
+  // A bare 10-digit number is North American; 11 starting with 1 already has it.
+  if (digits.length === 10) return `+${defaultCc}${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return `+${digits}`;
+}
+
+/**
+ * Write a phone number without letting a country widget re-interpret it.
+ * Returns true only if the value stuck AND the country did not change.
+ */
+function fillPhoneField(el, raw) {
+  const before = intlTelCountry(el);
+  if (!isIntlTelField(el)) return fillInput(el, raw);
+
+  // E.164 is unambiguous to every intl-tel implementation: the leading "+1"
+  // sets the country explicitly instead of being consumed from the digits.
+  const e164 = toE164(raw);
+  let ok = fillInput(el, e164);
+  if (!ok) ok = fillInput(el, raw);   // widget rejected E.164 — try as given
+
+  const after = intlTelCountry(el);
+  if (before && after && before !== after) {
+    console.warn('[SpotApply] Phone widget changed country', before, '->', after,
+                 '— clearing the field rather than submitting a wrong number');
+    try {
+      const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      proto.set.call(el, '');
+      ['input', 'change'].forEach((ev) => el.dispatchEvent(new Event(ev, { bubbles: true })));
+      delete el.dataset.spotapplyFilled;
+    } catch (_) {}
+    return false;   // leave it highlighted for the user
+  }
+  return ok;
+}
+
+/** Best-effort read of the widget's currently selected country. */
+function intlTelCountry(el) {
+  const scope = el && el.closest('.iti, .intl-tel-input, .PhoneInput, div');
+  if (!scope) return null;
+  const sel = scope.querySelector('select[class*="country" i]');
+  if (sel) return sel.value || null;
+  const flag = scope.querySelector('.iti__selected-flag, [class*="country" i][aria-label], button[class*="country" i]');
+  if (flag) {
+    return (flag.getAttribute('aria-label') || flag.getAttribute('title') ||
+            flag.textContent || '').trim().slice(0, 40) || null;
+  }
+  return null;
+}
+
+// ── Yes/No screening questions ───────────────────────────────────────────────
+// A screening-heavy board (14 required radios on one Recruitee form) left every
+// one unanswered, because these were routed to the LLM's ai_answers and that
+// came back empty. They don't need a model: the answers are already in the
+// profile. An unanswered REQUIRED radio is worse than a debatable one — the
+// user cannot submit at all.
+//
+// Only questions the profile actually PROVES are answered. Citizenship, W2 vs
+// C2C, relocation, criminal history and anything demographic are deliberately
+// left blank: guessing those is harmful, and the user reviews the yellow
+// fields anyway.
+function classifyScreeningQuestion(q, pack) {
+  const t = String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+
+  // Never auto-answer these — a wrong answer here is damaging, and the profile
+  // does not actually establish any of them.
+  const NEVER = /citizen|green ?card|permanent resident|felony|convicted|criminal|background check|drug (test|screen)|w-?2\b|c2c|corp.to.corp|1099|relocat|willing to move|salary|compensation|notice period/;
+  if (NEVER.test(t)) return null;
+  if (/gender|race|ethnic|veteran|disab|hispanic|latino/.test(t)) return null;
+
+  // Sponsorship — "will you now or in the future require sponsorship?"
+  if (/sponsor/.test(t)) {
+    if (typeof pack.requires_sponsorship !== 'boolean') return null;
+    // "...without requiring sponsorship?" inverts the answer.
+    const inverted = /without\s+(visa\s+)?sponsor|not\s+requir\w*\s+sponsor/.test(t);
+    return inverted ? !pack.requires_sponsorship : pack.requires_sponsorship;
+  }
+
+  // Work authorization — "are you legally authorized to work in the US?"
+  if (/authoriz|eligible to work|right to work|legally able to work/.test(t)) {
+    const auth = _isAuthorized(pack);
+    return auth === null ? null : auth;
+  }
+
+  // "Do you have N+ years of …?" — answerable straight from the profile.
+  const yrs = t.match(/(\d{1,2})\s*\+?\s*(?:or more\s*)?years?/);
+  if (yrs && /experience|working|hands.?on/.test(t)) {
+    const have = Number(pack.years_experience || 0);
+    if (!have) return null;
+    return have >= Number(yrs[1]);
+  }
+
+  // "Do you have experience with X?" — only YES, and only when X is a listed
+  // skill. Absence from the list is not evidence of absence.
+  if (/experience (with|in|using)|proficien|familiar with|worked with|comfortable with/.test(t)) {
+    const skills = String(pack.key_skills || '').toLowerCase();
+    if (!skills) return null;
+    const terms = skills.split(/[,;|]/).map((x) => x.trim()).filter((x) => x.length > 2);
+    if (terms.some((term) => t.includes(term))) return true;
+    return null;
+  }
+  return null;
+}
+
+/** Text of the question a radio group belongs to. */
+function radioGroupQuestion(el) {
+  const fs = el.closest('fieldset');
+  const legend = fs && fs.querySelector('legend');
+  if (legend && legend.textContent.trim()) return legend.textContent.trim();
+  const labelledby = el.getAttribute('aria-labelledby');
+  if (labelledby) {
+    const src = document.getElementById(labelledby);
+    if (src && src.textContent.trim()) return src.textContent.trim();
+  }
+  const group = el.closest('[role="radiogroup"], .form-group, .field, div');
+  if (group) {
+    // The question is the group's text minus the option captions.
+    const optionText = Array.from(group.querySelectorAll('label')).map((l) => l.textContent.trim());
+    let text = (group.textContent || '').trim();
+    optionText.forEach((o) => { if (o && o.length < 25) text = text.replace(o, ' '); });
+    return text.replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+  return '';
+}
+
+/** Answer Yes/No screening radios from profile data. Returns count answered. */
+function answerScreeningRadios(pack) {
+  const radios = queryAllDeep('input[type="radio"]');
+  const byGroup = new Map();
+  for (const r of radios) {
+    const key = r.name || (r.closest('fieldset, [role="radiogroup"]') || {}).id || '';
+    if (!key) continue;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(r);
+  }
+
+  let answered = 0;
+  for (const [, group] of byGroup) {
+    if (group.some((r) => r.checked)) continue;              // already answered
+    if (group.some((r) => r.dataset.spotapplyUserModified === 'true')) continue;
+    const question = radioGroupQuestion(group[0]);
+    const want = classifyScreeningQuestion(question, pack);
+    if (want === null) continue;
+
+    const optionLabel = (r) => {
+      const lbl = (r.id && document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.closest('label');
+      return ((lbl && lbl.textContent) || r.value || '').trim().toLowerCase();
+    };
+    const target = group.find((r) => {
+      const cap = optionLabel(r);
+      return want ? /^\s*yes\b/.test(cap) || cap === 'true' : /^\s*no\b/.test(cap) || cap === 'false';
+    });
+    if (!target) continue;
+
+    try {
+      target.click();          // click, not .checked — frameworks listen for it
+      if (!target.checked) {
+        target.checked = true;
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (target.checked) {
+        target.dataset.spotapplyFilled = 'true';
+        answered++;
+        console.log('[SpotApply] Screening answered:', want ? 'Yes' : 'No', '—',
+                    question.slice(0, 70));
+      }
+    } catch (e) {
+      console.debug('[SpotApply] radio click failed:', e.message);
+    }
+  }
+  if (answered) console.log(`[SpotApply] Answered ${answered} screening question(s) from your profile`);
+  return answered;
+}
+
 /** Full name with no "undefined" leakage — "" when we know neither part. */
 function fullNameOf(pack) {
   return [pack && pack.first_name, pack && pack.last_name]
@@ -148,18 +347,25 @@ function reportTelemetry(pack, event, meta) {
   } catch (_) {}
 }
 
-// Track user manual changes to prevent autofill overwrites
-document.addEventListener('input', (e) => {
-  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
-    e.target.dataset.spotapplyUserModified = 'true';
-  }
-}, { capture: true, passive: true });
-
-document.addEventListener('change', (e) => {
-  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
-    e.target.dataset.spotapplyUserModified = 'true';
-  }
-}, { capture: true, passive: true });
+// Track user manual changes to prevent autofill overwrites.
+//
+// isTrusted is the whole point: fillInput dispatches input/change to notify
+// React, and these listeners used to treat OUR OWN events as a manual edit.
+// Every field we filled was instantly flagged user-modified, so no later pass
+// could correct it — nothing self-healed when the résumé or ai_answers finally
+// arrived. Only a real user gesture sets the flag.
+const _markUserModified = (e) => {
+  if (!e.isTrusted) return;                    // synthetic = ours, not the user
+  const t = e.target;
+  if (!t || !t.tagName) return;
+  if (!['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(t.tagName)) return;
+  // Editing a field back to exactly what we wrote is not a divergence.
+  if (t.dataset && t.dataset.spotapplyLastWrite !== undefined &&
+      String(t.value || '') === t.dataset.spotapplyLastWrite) return;
+  t.dataset.spotapplyUserModified = 'true';
+};
+document.addEventListener('input', _markUserModified, { capture: true, passive: true });
+document.addEventListener('change', _markUserModified, { capture: true, passive: true });
 
 // Learn custom dropdown selections manually made by the user.
 // Gated: without hpCopilotSurface() this shipped the user's menu choices from
@@ -341,7 +547,10 @@ function fillInput(el, value) {
   // Mark what WE wrote. Without this a diagnostic can't tell a SpotApply fill
   // from Chrome's own autofill or the site restoring a draft — which is the
   // first question to answer when a field comes out wrong or empty.
-  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  try {
+    el.dataset.spotapplyFilled = 'true';
+    el.dataset.spotapplyLastWrite = _s;
+  } catch (_) {}
 
   // Dispatch events to notify React/Angular/Vue of the change
   try {
@@ -667,7 +876,7 @@ async function fillGreenhouse(pack) {
     else if (/full.?name|candidate.?name|^\s*name\s*\*?\s*$/i.test(lbl))
       fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
-    else if (/phone|mobile|telephone/i.test(lbl)) fillInput(inp, pack.phone);
+    else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
     else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
@@ -794,7 +1003,7 @@ async function fillAshby(pack) {
     else if (/last\s*_?\s*name|surname|family\s*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/email/i.test(lbl)) fillInput(inp, pack.email);
-    else if (/phone|mobile/i.test(lbl)) fillInput(inp, pack.phone);
+    else if (/phone|mobile/i.test(lbl)) fillPhoneField(inp, pack.phone);
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -1288,7 +1497,7 @@ async function fillWorkday(pack) {
     // ── Email ──
     else if (/email/i.test(aid) && !/confirm|verify/i.test(aid)) fillInput(el, pack.email);
     // ── Phone (ONLY the actual number, NOT extension/device/country code) ──
-    else if (/phoneNumber|phone-number/i.test(aid) && !/extension|device|type|code/i.test(aid)) fillInput(el, pack.phone);
+    else if (/phoneNumber|phone-number/i.test(aid) && !/extension|device|type|code/i.test(aid)) fillPhoneField(el, pack.phone);
     // ── Address ──
     else if (/addressSection_addressLine1|addressLine1/i.test(aid)) {
       if (pack.address) fillInput(el, pack.address);
@@ -1313,7 +1522,7 @@ async function fillWorkday(pack) {
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/\bemail\b/i.test(lbl) && !/confirm/i.test(lbl)) fillInput(inp, pack.email);
-    else if (/phone.*number/i.test(lbl) && !/extension|device|country/i.test(lbl)) fillInput(inp, pack.phone);
+    else if (/phone.*number/i.test(lbl) && !/extension|device|country/i.test(lbl)) fillPhoneField(inp, pack.phone);
     else if (/\bcity\b/i.test(lbl) && !/country/i.test(lbl)) fillInput(inp, loc.city);
   }
   return true;
@@ -1353,7 +1562,7 @@ async function fillAvature(pack) {
     else if (/last.?name|family.?name|surname/.test(ctx)) fillInput(inp, pack.last_name);
     else if (/full.?name|^name$|candidate.?name/.test(ctx)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b|e-?mail/.test(ctx)) fillInput(inp, pack.email);
-    else if (/phone|mobile|telephone|contact.?number/.test(ctx)) fillInput(inp, pack.phone);
+    else if (/phone|mobile|telephone|contact.?number/.test(ctx)) fillPhoneField(inp, pack.phone);
     else if (/city|town|location|address|where.*based/.test(ctx)) fillInput(inp, pack.location || "");
     else if (/linkedin/.test(ctx)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/.test(ctx)) fillInput(inp, pack.github_url || "");
@@ -1437,7 +1646,7 @@ async function fillGeneric(pack) {
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
-    else if (/phone|mobile|tel/i.test(lbl)) fillInput(inp, pack.phone);
+    else if (/phone|mobile|tel/i.test(lbl)) fillPhoneField(inp, pack.phone);
     else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
@@ -1461,7 +1670,10 @@ async function fillGeneric(pack) {
 // Runs AFTER platform-specific handlers to catch anything they missed.
 
 async function fillUniversal(pack) {
-  const inputs = document.querySelectorAll(
+  // queryAllDeep, not querySelectorAll: a modern ATS (careers-page.com and
+  // friends) puts the whole form inside a shadow root, where querySelectorAll
+  // finds nothing — the copilot saw a page with one input and gave up.
+  const inputs = queryAllDeep(
     "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='image']), textarea, select, button[data-automation-id='select-button'], button[aria-haspopup='listbox']"
   );
   let filled = 0, attempted = 0;
@@ -1528,12 +1740,12 @@ async function fillUniversal(pack) {
     // Exclude: extension, device type, country code, phone type
     } else if (/phone.?number|mobile.?number|\btel\b|telephone.?number|contact.?number|cell.?number/i.test(signals)
                && !/extension|ext\b|device|type|country.*code|phone.*code/i.test(signals)) {
-      fillInput(inp, pack.phone);
+      fillPhoneField(inp, pack.phone);
     // Broader phone match but still exclude extension/device/code
     } else if (/\bphone\b|\bmobile\b|\btelephone\b/i.test(signals)
                && !/extension|ext\b|device|type|country.*code|phone.*code|phone.*type/i.test(signals)
                && inp.tagName !== 'SELECT') {
-      fillInput(inp, pack.phone);
+      fillPhoneField(inp, pack.phone);
 
     // ── URLs ──
     } else if (/linkedin/i.test(signals)) {
@@ -1915,6 +2127,16 @@ function observeAnswer(ta, pack) {
 async function attachResume(root, pack) {
   if (!packBase(pack) || !pack.auth_token || !pack.app_id) return false;
 
+  // The server already told us the résumé cannot be built until the user fixes
+  // something. Hammering the endpoint three times a page and then failing
+  // silently is exactly what made "resume never attaches" so hard to see.
+  if (_resumeBlockedReason) {
+    showOverlay(
+      `📎 <b>Résumé not attached</b><br><small style="color:#c4b5fd;font-weight:400">${_resumeBlockedReason}</small>`,
+      [], true);
+    return false;
+  }
+
   // Include shadow-DOM inputs — some ATS widgets bury the real <input> there.
   const allFileInputs = queryAllDeep('input[type="file"]', root);
   if (!allFileInputs.length) return false; // form may render the field later
@@ -1956,11 +2178,24 @@ async function attachResume(root, pack) {
     return /autofill|auto-fill|fill (?:it |this |the form )?(?:in |out )?(?:from|with)|parse|prefill|pre-fill|populate (?:the )?(?:form|fields)/.test(text);
   };
 
+  // Only skip a parser widget when there is a REAL résumé input to use
+  // instead. On Rippling the dropzone IS the résumé field (and it renders two
+  // inputs for the one dropzone), so blanket-skipping parsers meant the
+  // required résumé never attached at all — trading one failure for another.
+  const nonParserExists = allFileInputs.some((fi) => !isParserWidget(fi) && !isUploaded(fi));
+
   const candidates = allFileInputs.filter((fi) => {
     if (isUploaded(fi)) return false;
     if (isParserWidget(fi)) {
-      console.log('[SpotApply] Skipping autofill-from-résumé widget — it would overwrite the filled fields');
-      return false;
+      if (nonParserExists) {
+        console.log('[SpotApply] Skipping autofill-from-résumé widget — a real résumé field exists');
+        return false;
+      }
+      if (!isFieldRequired(fi)) {
+        console.log('[SpotApply] Skipping optional autofill-from-résumé widget');
+        return false;
+      }
+      console.log('[SpotApply] Parser-looking input is the only résumé field — using it');
     }
     const container = fi.closest('div, section, fieldset');
     const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
@@ -1998,6 +2233,13 @@ async function attachResume(root, pack) {
     if (status === 401) {
       reason = 'auth_expired';
       hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
+    } else if (status === 422) {
+      // Not transient — the server is telling us exactly what the profile is
+      // missing. Show that instead of retrying into the void, and stop trying.
+      reason = 'profile_incomplete';
+      hint = (res.data && res.data.detail) ||
+             "Your profile is missing information needed to build a résumé.";
+      _resumeBlockedReason = hint;
     } else if (status === 503) {
       reason = 'tailoring_failed';
       hint = "Your tailored résumé isn't generated yet. Open this application on the SpotApply dashboard, generate the résumé, then return here.";
@@ -2089,6 +2331,9 @@ let _copilotActive = false;
 let _copilotPack = null;
 let _fillingInProgress = false;
 let _resumeAttachedOnPage = null;
+// Set when the server says the résumé can't be built for a reason the user must
+// fix (422). Retrying is pointless until they do, so we stop and keep saying why.
+let _resumeBlockedReason = null;
 let _lastFillTimestamp = 0;
 
 async function fillForm(fillPack) {
@@ -2175,17 +2420,17 @@ async function fillForm(fillPack) {
 
 // True only if the page looks like an actual application form (not a JD page).
 function hasApplicationForm() {
-  // Strong signals: email input, resume file input, or name fields
-  if (document.querySelector("input[type='email'], input[type='file']")) return true;
-  const named = document.querySelectorAll(
+  // Shadow-DOM aware throughout — a form rendered inside a shadow root is
+  // still an application form, and querySelectorAll cannot see it.
+  if (queryAllDeep("input[type='email'], input[type='file']").length) return true;
+  const named = queryAllDeep(
     "input[name*='first' i], input[name*='last' i], input[name*='name' i]," +
     "input[id*='first' i], input[id*='last' i], textarea"
   );
   if (named.length >= 2) return true;
   // Fallback: many visible text inputs usually means a form
-  const visibleText = Array.from(
-    document.querySelectorAll("input[type='text'], input:not([type])")
-  ).filter(el => el.offsetParent !== null);
+  const visibleText = queryAllDeep("input[type='text'], input:not([type])")
+    .filter(el => el.offsetParent !== null || (el.getClientRects && el.getClientRects().length));
   return visibleText.length >= 3;
 }
 
@@ -2312,6 +2557,16 @@ async function fillCurrentPage(pack) {
     console.warn('[SpotApply] recall error:', e.message);
   }
 
+  // Step 3b: Yes/No screening radios, straight from the profile. Deliberately
+  // BEFORE the AI step: these are deterministic facts, not something to spend
+  // a model call on, and they were the single largest gap (14 unanswered
+  // required radios on one form).
+  try {
+    answerScreeningRadios(pack);
+  } catch (e) {
+    console.warn('[SpotApply] screening radio error:', e.message);
+  }
+
   // Step 4: Fill essay questions via AI
   await fillEssayQuestions(document, pack);
 
@@ -2331,18 +2586,31 @@ function auditPageFields(pack, platformFilled) {
   // `offsetParent !== null` dropped them from BOTH sides of the tally — which
   // is why two required radio questions and the résumé stayed invisible to the
   // count. For those, fall back to whether their LABEL or container is visible.
+  // Rippling proved the label-visibility fallback was not enough: its real
+  // file and radio inputs sit OUTSIDE the styled label's subtree, so they
+  // still reported offsetParent === null and vanished from the tally — on a
+  // form where the browser itself does not block submit, leaving this widget
+  // as the user's only pre-submit signal. For proxied input types, ask whether
+  // anything the user can actually click is rendered nearby.
   const shownVia = (el) => {
     if (el.offsetParent !== null) return true;
+    const doc = el.getRootNode() || document;
     const id = el.id;
-    const lbl = (id && document.querySelector(`label[for="${CSS.escape(id)}"]`)) || el.closest('label');
-    if (lbl && lbl.offsetParent !== null) return true;
-    const scope = el.closest('div, fieldset, section');
-    return !!(scope && scope.offsetParent !== null && scope.getClientRects().length);
+    const lbl = (id && doc.querySelector && doc.querySelector(`label[for="${CSS.escape(id)}"]`))
+      || el.closest('label');
+    if (lbl && lbl.getClientRects && lbl.getClientRects().length) return true;
+    // Walk up until something has a box. A visually-hidden input inside a
+    // rendered dropzone/fieldset is present to the user even though it is not.
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      if (node.getClientRects && node.getClientRects().length) return true;
+    }
+    return false;
   };
-  const allInputs = Array.from(document.querySelectorAll(
+  const allInputs = queryAllDeep(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
     'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
-  )).filter((el) => {
+  ).filter((el) => {
     const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });

@@ -203,7 +203,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         createOpts.openerTabId = opener.id;
         if (opener.windowId != null) createOpts.windowId = opener.windowId;
       }
+      // Remember WHICH tab the user launched. The one-shot auto_fill flag is
+      // consumed by the first "complete" event, so a job board that redirects
+      // (board → careers-page.com) burned it on the intermediate page and the
+      // real form was never filled — with no error, since the destination host
+      // is not on the ATS allow-list either. An explicit click is explicit
+      // intent: fill THIS tab whatever it lands on.
       chrome.tabs.create(createOpts, (tab) => {
+        if (tab && tab.id != null) {
+          chrome.storage.local.set({
+            spotapply_pending_tab: { tabId: tab.id, ts: Date.now() },
+          });
+        }
         if (chrome.runtime.lastError || !tab) {
           const msg = chrome.runtime.lastError?.message || "tab creation failed";
           console.warn("[SpotApply BG] Could not open apply tab:", msg);
@@ -310,7 +321,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!tab.url || tab.url.startsWith("chrome")) return;
 
   chrome.storage.local.get(
-    ["spotapply_fill_pack", "spotapply_auto_fill", "spotapply_copilot_pack", "spotapply_copilot_ts"],
+    ["spotapply_fill_pack", "spotapply_auto_fill", "spotapply_copilot_pack",
+     "spotapply_copilot_ts", "spotapply_pending_tab"],
     (data) => {
       const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack;
       if (!pack) {
@@ -347,7 +359,17 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       // NOTE: a pack sitting on an ATS host is NOT enough — the session must
       // be fresh, or last week's pack would fill an unrelated application.
 
-      let shouldFill = false;
+      // A tab the user explicitly launched from "Auto-Fill & Apply" is filled
+      // wherever it ends up, allow-list or not, for a bounded window.
+      const pendingTab = data.spotapply_pending_tab;
+      const PENDING_MS = 10 * 60 * 1000;
+      const userLaunched = !!(pendingTab && pendingTab.tabId === tabId &&
+                              (Date.now() - (pendingTab.ts || 0)) < PENDING_MS);
+
+      let shouldFill = userLaunched;
+      if (userLaunched) {
+        console.log("[SpotApply BG]   user-launched tab — filling regardless of host");
+      }
       if (data.spotapply_auto_fill) {
         try {
           const jobHost = new URL(pack.apply_url || "").hostname;
@@ -371,9 +393,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
           if (chrome.runtime.lastError) {
+            // Keep the pending marker: the content script was not there yet
+            // (mid-redirect), so the next "complete" on this tab retries.
             console.warn("[SpotApply BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
           } else {
             console.log("[SpotApply BG] DO_FILL sent, response:", res);
+            if (userLaunched) chrome.storage.local.remove("spotapply_pending_tab");
           }
         });
       }, 2000);

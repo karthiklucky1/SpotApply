@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html><head><title>Data Scientist — screening-heavy application</title></head>
+<body>
+  <h1>Apply — screening questions, intl-tel phone, single dropzone</h1>
+  <form id="screening-form">
+    <label for="sc-name">Full name *</label>
+    <input type="text" id="sc-name" name="candidate[name]" required>
+
+    <label for="sc-email">Email address *</label>
+    <input type="email" id="sc-email" name="candidate[email]" required>
+
+    <!-- Recruitee-style intl-tel widget: a country selector beside the number.
+         Typing "+1 (513) 276-3950" made the widget read "51" as the country
+         code and flip to Peru. -->
+    <label for="sc-phone">Phone number *</label>
+    <div class="iti">
+      <select class="iti__country-select" id="sc-country">
+        <option value="us" selected>United States</option>
+        <option value="pe">Peru</option>
+        <option value="in">India</option>
+      </select>
+      <input type="tel" id="sc-phone" name="candidate[phone]" required>
+    </div>
+
+    <!-- Rippling-style: the dropzone IS the résumé field and its copy mentions
+         autofill, so a blanket parser-skip left the required field empty. -->
+    <div id="dropzone">
+      <label for="sc-resume">Résumé *</label>
+      <p>Upload your resume and we'll autofill the form for you.</p>
+      <input type="file" id="sc-resume" name="resume" required style="display:none">
+    </div>
+
+    <fieldset id="q-sponsor">
+      <legend>Will you now or in the future require visa sponsorship? *</legend>
+      <label><input type="radio" name="q_sponsor" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_sponsor" value="no" required> No</label>
+    </fieldset>
+
+    <fieldset id="q-auth">
+      <legend>Are you legally authorized to work in the United States? *</legend>
+      <label><input type="radio" name="q_auth" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_auth" value="no" required> No</label>
+    </fieldset>
+
+    <fieldset id="q-years">
+      <legend>Do you have 3+ years of Data Science experience? *</legend>
+      <label><input type="radio" name="q_years" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_years" value="no" required> No</label>
+    </fieldset>
+
+    <fieldset id="q-python">
+      <legend>Do you have experience with Python? *</legend>
+      <label><input type="radio" name="q_python" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_python" value="no" required> No</label>
+    </fieldset>
+
+    <!-- Must be LEFT ALONE: the profile does not establish these. -->
+    <fieldset id="q-citizen">
+      <legend>Are you a US citizen or green card holder? *</legend>
+      <label><input type="radio" name="q_citizen" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_citizen" value="no" required> No</label>
+    </fieldset>
+
+    <fieldset id="q-onsite">
+      <legend>Are you able to work onsite in Cincinnati three days a week? *</legend>
+      <label><input type="radio" name="q_onsite" value="yes" required> Yes</label>
+      <label><input type="radio" name="q_onsite" value="no" required> No</label>
+    </fieldset>
+
+    <button type="submit">Send</button>
+  </form>
+</body>
+</html>

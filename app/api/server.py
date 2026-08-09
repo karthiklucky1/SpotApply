@@ -3851,6 +3851,36 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             path = str(resume_path)
         except Exception as e:
             log.warning("Resume tailoring failed for app %d: %s", application_id, e)
+            # A bare 503 told the extension only "try again", so it retried
+            # three times and gave up silently on a form where the résumé is
+            # required. When the cause is missing profile data, that is not a
+            # transient failure — it is 422 with something the user can act on.
+            uid = _get_user_id(request)
+            try:
+                from app.autofill.answer_pack import _get_or_create_profile, _history_from_profile
+                prof = _get_or_create_profile(user_id=uid if uid != "local" else None)
+                hist = _history_from_profile(prof)
+                missing = []
+                if not hist["work_experience"]:
+                    missing.append("work experience")
+                if not hist["education"]:
+                    missing.append("education")
+                if missing and not _user_has_resume(uid):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(f"Add your {' and '.join(missing)} in Settings → Profile "
+                                "(or upload a résumé) so SpotApply can build a tailored résumé."),
+                    )
+                if missing:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(f"Your profile has no {' and '.join(missing)}. Add it in "
+                                "Settings → Profile so the tailored résumé can be generated."),
+                    )
+            except HTTPException:
+                raise
+            except Exception as diag_err:
+                log.debug("resume 503 diagnosis failed for app %d: %s", application_id, diag_err)
             raise HTTPException(status_code=503, detail="Could not generate resume")
 
     p = _P(path)

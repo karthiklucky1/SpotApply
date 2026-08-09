@@ -39,6 +39,11 @@ RESUME_BYTES = b"PK\x03\x04" + b"harness-resume-docx-payload" * 8
 
 REQUESTS: list[tuple[str, str]] = []
 
+# The content script re-fetches /api/fill-pack/{id} to pick up profile edits, so
+# the stub must serve the pack the current scenario is testing — otherwise every
+# per-scenario override (phone, skills, sponsorship) is silently reverted.
+CURRENT_PACK: dict = {}
+
 
 def base_pack(apply_url: str) -> dict:
     return {
@@ -99,7 +104,7 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 "base64": base64.b64encode(RESUME_BYTES).decode(),
             })
         if "/api/fill-pack/" in self.path:
-            return self._json(base_pack(f"{BASE}/greenhouse.html"))
+            return self._json(CURRENT_PACK or base_pack(f"{BASE}/greenhouse.html"))
         return super().do_GET()
 
     def do_POST(self):
@@ -122,6 +127,8 @@ def check(name, ok, detail=""):
 
 def drive_fill(ctx, page_url, pack):
     """Run the production path: seed a copilot session, open the form, DO_FILL."""
+    global CURRENT_PACK
+    CURRENT_PACK = pack          # the re-fetch must agree with what we seeded
     sw = ctx.service_workers[0]
     sw.evaluate(
         """(pack) => new Promise((resolve) => {
@@ -296,6 +303,47 @@ def main():
                        return (b ? b.textContent : '').replace(/\\s+/g, ' ').trim(); }""")
         check("A7 unanswered required radio counted as outstanding",
               "need you" in counts, counts[:80])
+        page.close()
+
+        # ── S: screening radios · intl-tel phone · single dropzone ──────────
+        # All reproduced from live Recruitee and Rippling applications.
+        print("\nScreening form (radios · intl-tel phone · dropzone résumé)")
+        pack = base_pack(f"{BASE}/screening.html")
+        pack.update({
+            "phone": "513-276-3950",
+            "requires_sponsorship": True,
+            "work_authorization": "F-1 OPT",
+            "years_experience": 4,
+            "key_skills": "Python, SQL, Git, causal inference",
+        })
+        page, _ = drive_fill(ctx, f"{BASE}/screening.html", pack)
+        checked = lambda name: page.evaluate(
+            """(n) => { const el = document.querySelector(`input[name="${n}"]:checked`);
+                        return el ? el.value : null; }""", name)
+        # Phone must not be re-interpreted by the country widget.
+        phone = page.eval_on_selector("#sc-phone", "el => el.value")
+        country = page.eval_on_selector("#sc-country", "el => el.value")
+        check("S1 phone written in E.164 (not eaten by the country widget)",
+              phone.replace(" ", "").startswith("+1"), repr(phone))
+        check("S2 country still United States", country == "us", country)
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        check("S3 phone digits intact (no country-code cannibalisation)",
+              digits.endswith("5132763950"), repr(phone))
+        # Deterministic screening answers.
+        check("S4 sponsorship answered Yes (profile requires it)", checked("q_sponsor") == "yes",
+              str(checked("q_sponsor")))
+        check("S5 work authorization answered Yes", checked("q_auth") == "yes", str(checked("q_auth")))
+        check("S6 '3+ years' answered Yes (profile has 4)", checked("q_years") == "yes",
+              str(checked("q_years")))
+        check("S7 'experience with Python' answered Yes (listed skill)",
+              checked("q_python") == "yes", str(checked("q_python")))
+        # Left alone on purpose — the profile does not establish these.
+        check("S8 citizenship NOT guessed", checked("q_citizen") is None, str(checked("q_citizen")))
+        check("S9 onsite NOT guessed", checked("q_onsite") is None, str(checked("q_onsite")))
+        # The dropzone mentions autofill but IS the only résumé field.
+        check("S10 résumé attached to the only (parser-worded) dropzone",
+              page.eval_on_selector("#sc-resume", "el => el.files.length") == 1,
+              str(page.eval_on_selector("#sc-resume", "el => el.files.length")))
         page.close()
 
         # ── API surface actually exercised ──────────────────────────────────
