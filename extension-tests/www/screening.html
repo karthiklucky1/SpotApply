@@ -83,13 +83,23 @@
       const v = input.value;
       if (!v) return;
       if (/^\+\d{11,}$/.test(v.replace(/\s/g, ''))) {
-        // Strict E.164 — read the country code properly.
+        // Strict E.164 — read the country code properly AND reformat, exactly
+        // as intl-tel-input does. The reformat is the point: it makes a strict
+        // string read-back fail, which is what used to trigger the fallback
+        // that re-wrote the loose value and handed Peru the leading digits.
         const digits = v.replace(/\D/g, '');
         const iso = CC[digits.slice(0, 1)] || CC[digits.slice(0, 2)];
-        if (iso) { country.value = iso; }
+        if (iso) {
+          country.value = iso;
+          const nat = digits.slice(1);
+          const pretty = '+1 ' + nat.slice(0, 3) + ' ' + nat.slice(3, 6) + ' ' + nat.slice(6);
+          if (input.value !== pretty) input.value = pretty;
+        }
         return;
       }
-      if (v.trim().startsWith('+')) {
+      // Recruitee mangles a PLAINLY FORMATTED number too, not just one with a
+      // "+": "(513) 276-3950" became "+51 32763950" / Peru in the real report.
+      {
         // Loose "+1 (513) …" — the buggy path: drop the +, drop the trunk
         // digit, then take the next two digits as the country code.
         const digits = v.replace(/\D/g, '').replace(/^1/, '');

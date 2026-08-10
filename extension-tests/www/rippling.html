@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html><head><title>Software Engineer AI Platform — Rippling-style application</title></head>
+<body>
+  <h1>Apply — Rippling layout</h1>
+  <form id="rippling-form">
+    <label for="rp-first">First name *</label>
+    <input type="text" id="rp-first" name="firstName" required>
+
+    <label for="rp-last">Last name *</label>
+    <input type="text" id="rp-last" name="lastName" required>
+
+    <label for="rp-email">Email *</label>
+    <input type="email" id="rp-email" name="email" required>
+
+    <label for="rp-phone">Phone *</label>
+    <input type="tel" id="rp-phone" name="phone" required>
+
+    <label for="rp-website">Website link</label>
+    <input type="text" id="rp-website" name="websiteUrl">
+
+    <!-- The exact shape that broke: ONE dropzone rendering TWO file inputs.
+         The "Résumé *" label is two levels above them, neither input's own
+         name/id says résumé, and the helper copy mentions autofill — so the
+         parser guard skipped one and the résumé tests rejected the other,
+         leaving a required upload silently unfilled. -->
+    <div class="field-block">
+      <span class="field-label">Résumé *</span>
+      <div class="dropzone">
+        <p>Drag and drop, or upload a file — we'll autofill the form from it.</p>
+        <input type="file" id="rp-file-a" name="fileUpload" accept=".pdf,.doc,.docx">
+        <input type="file" id="rp-file-b" name="fileUploadFallback" accept=".pdf,.doc,.docx">
+      </div>
+    </div>
+
+    <!-- A genuinely different document: must never receive the résumé. -->
+    <div class="field-block">
+      <span class="field-label">Cover letter (optional)</span>
+      <input type="file" id="rp-cover" name="coverLetter">
+    </div>
+
+    <button type="submit">Apply</button>
+  </form>
+</body>
+</html>

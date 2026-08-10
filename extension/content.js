@@ -165,7 +165,17 @@ function fillPhoneField(el, raw) {
   // ("+1 513-276-3950", "(513) 276-3950"), so a strict compare always reported
   // "write did not stick" — and the old fallback then re-wrote the raw string,
   // which is exactly what let the widget eat "51" as a country code.
-  const landed = () => String(el.value || '').replace(/\D/g, '').endsWith(wantDigits);
+  // Trailing digits alone are NOT enough. "+51 32763950" contains the very
+  // same ten digits as "(513) 276-3950" — the widget just re-partitioned them,
+  // stealing "51" as Peru's country code. When the field carries a "+", the
+  // WHOLE number must match, country code included.
+  const wantE164Digits = toE164(want).replace(/\D/g, '');
+  const landed = () => {
+    const v = String(el.value || '');
+    const digits = v.replace(/\D/g, '');
+    if (v.includes('+')) return digits === wantE164Digits;
+    return digits.endsWith(wantDigits) && digits.length <= wantE164Digits.length;
+  };
 
   const write = (value) => {
     try {
@@ -215,7 +225,12 @@ function markPhoneFilled(el, want) {
 
 function countryChanged(el, before) {
   const after = intlTelCountry(el);
-  return !!(before && after && before !== after);
+  if (!after) return false;                 // nothing readable — landed() decides
+  // A FAILED "before" read must not mean "nothing changed": on Recruitee the
+  // country control sits outside the input's immediate wrapper, so `before`
+  // came back null and a flip to Peru sailed through this guard.
+  if (!before) return !/united states|\bus\b|^us$/i.test(after);
+  return before !== after;
 }
 
 /** Point an intl-tel country selector at `iso` (best effort). */
@@ -238,14 +253,31 @@ function setIntlTelCountry(el, iso) {
 
 /** Best-effort read of the widget's currently selected country. */
 function intlTelCountry(el) {
-  const scope = el && el.closest('.iti, .intl-tel-input, .PhoneInput, div');
-  if (!scope) return null;
-  const sel = scope.querySelector('select[class*="country" i]');
-  if (sel) return sel.value || null;
-  const flag = scope.querySelector('.iti__selected-flag, [class*="country" i][aria-label], button[class*="country" i]');
-  if (flag) {
-    return (flag.getAttribute('aria-label') || flag.getAttribute('title') ||
-            flag.textContent || '').trim().slice(0, 40) || null;
+  if (!el) return null;
+  // Widen the search: Recruitee renders the country control as a sibling of
+  // the input's WRAPPER, not of the input, so a single closest('div') missed it
+  // entirely and every country check silently passed.
+  const scopes = [el.closest('.iti, .intl-tel-input, .PhoneInput')];
+  let node = el.parentElement;
+  for (let i = 0; node && i < 4; i++, node = node.parentElement) scopes.push(node);
+
+  for (const scope of scopes) {
+    if (!scope || !scope.querySelector) continue;
+    const sel = scope.querySelector('select[class*="country" i], select[name*="country" i]');
+    if (sel && sel.value) return sel.value;
+    // aria-label is how the accessible ones expose it, e.g.
+    // "Select country calling code: Peru".
+    const btn = Array.from(scope.querySelectorAll('button, [role="combobox"], [aria-label]'))
+      .find((b) => /country|calling code|dial code/i.test(
+        (b.getAttribute('aria-label') || b.getAttribute('title') || '')));
+    if (btn) {
+      const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').trim();
+      // Keep just the country part of "…calling code: Peru".
+      const m = label.match(/:\s*(.+)$/);
+      return (m ? m[1] : label).trim().slice(0, 40) || null;
+    }
+    const flag = scope.querySelector('.iti__selected-flag');
+    if (flag) return (flag.getAttribute('title') || flag.textContent || '').trim().slice(0, 40) || null;
   }
   return null;
 }
@@ -401,6 +433,23 @@ function answerScreeningRadios(pack) {
   }
   if (answered) console.log(`[SpotApply] Answered ${answered} screening question(s) from your profile`);
   return answered;
+}
+
+// Some ATS templates write "Résumé" with a DECOMPOSED accent (e + U+0301),
+// which a precomposed /résumé/ literal never matches. Strip diacritics before
+// matching so both spellings — and "RESUME", "Resume/CV", "Curriculum Vitae" —
+// are recognised the same way.
+function deaccent(text) {
+  try {
+    return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  } catch (_) {
+    return String(text || '');
+  }
+}
+
+/** True when the text names a résumé/CV, however it is accented or cased. */
+function saysResume(text) {
+  return /resume|\bcv\b|curriculum\s*vitae/i.test(deaccent(text));
 }
 
 /** Full name with no "undefined" leakage — "" when we know neither part. */
@@ -2271,41 +2320,61 @@ async function attachResume(root, pack) {
   // instead. On Rippling the dropzone IS the résumé field (and it renders two
   // inputs for the one dropzone), so blanket-skipping parsers meant the
   // required résumé never attached at all — trading one failure for another.
-  const nonParserExists = allFileInputs.some((fi) => !isParserWidget(fi) && !isUploaded(fi));
+  // Pick exactly ONE input to attach to, by SCORING every unattached file
+  // input rather than filtering first. The filter-then-pick version could
+  // eliminate everything and return silently: on Rippling the dropzone renders
+  // two inputs, one looked like a parser so it was skipped, and the other had a
+  // generic name and a wrapper div with no "Résumé" text — so it matched none
+  // of the résumé tests, candidates came back empty, and the required upload
+  // never happened with no log line either way.
+  const resumeCtx = (fi) => (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
+                             (fi.getAttribute("aria-label") || "") + " " +
+                             (fi.getAttribute("data-automation-id") || "")).toLowerCase();
 
-  const candidates = allFileInputs.filter((fi) => {
-    if (isUploaded(fi)) return false;
-    if (isParserWidget(fi)) {
-      if (nonParserExists) {
-        console.log('[SpotApply] Skipping autofill-from-résumé widget — a real résumé field exists');
-        return false;
-      }
-      if (!isFieldRequired(fi)) {
-        console.log('[SpotApply] Skipping optional autofill-from-résumé widget');
-        return false;
-      }
-      console.log('[SpotApply] Parser-looking input is the only résumé field — using it');
+  // Walk several ancestors, not just the immediate div — the "Résumé *" label
+  // usually sits a couple of levels above the input inside a dropzone.
+  const scopeSaysResume = (fi) => {
+    let node = fi.parentElement;
+    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+      if (saysResume((node.textContent || '').slice(0, 400))) return true;
     }
-    const container = fi.closest('div, section, fieldset');
-    const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
-                 (fi.getAttribute("data-automation-id") || "")).toLowerCase();
-    if (/resume|cv|résumé/.test(ctx)) return true;
-    if (container && /resume|cv|résumé/i.test(container.textContent.slice(0, 800))) return true;
-    if (allFileInputs.length === 1) return true; // single file input = the résumé
     return false;
-  });
-
-  // Attach to exactly ONE input — the best candidate. Spraying the file at
-  // every match is what fed the parser in the first place. Prefer a required
-  // field, then one whose own attributes (not just its container) say résumé.
-  const score = (fi) => {
-    const ctx = (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
-                 (fi.getAttribute("data-automation-id") || "")).toLowerCase();
-    return (isFieldRequired(fi) ? 2 : 0) + (/resume|cv|résumé/.test(ctx) ? 1 : 0);
   };
-  const targets = candidates.length
-    ? [candidates.slice().sort((a, b) => score(b) - score(a))[0]]
-    : [];
+
+  const available = allFileInputs.filter((fi) => !isUploaded(fi));
+  const scored = available.map((fi) => {
+    let s = 0;
+    if (saysResume(resumeCtx(fi))) s += 4;
+    else if (scopeSaysResume(fi)) s += 3;
+    if (isFieldRequired(fi)) s += 2;
+    // A parser upload is a poor choice, never an impossible one — on Rippling
+    // the dropzone IS the résumé field and its copy mentions autofill. The
+    // penalty must stay SMALLER than the résumé signal, or it cancels it out
+    // exactly and the required upload is skipped (which is what happened).
+    if (isParserWidget(fi)) s -= 2;
+    // Clearly a different document — never the résumé.
+    if (/cover.?letter|portfolio|transcript|writing sample/i.test(resumeCtx(fi))) s -= 10;
+    return { fi, s };
+  }).sort((a, b) => b.s - a.s);
+
+  let targets = [];
+  if (!scored.length) {
+    console.log('[SpotApply] No unattached file input on this page');
+  } else if (scored[0].s > 0) {
+    targets = [scored[0].fi];
+    if (scored.length > 1) {
+      console.log(`[SpotApply] Résumé target chosen (score ${scored[0].s}) from ` +
+                  `${scored.length} file inputs`);
+    }
+  } else if (available.length === 1) {
+    targets = [available[0]];
+    console.log('[SpotApply] Single unlabelled file input — treating it as the résumé');
+  } else {
+    // Never fail silently: say which inputs were seen and why none was used.
+    console.warn('[SpotApply] Could not identify the résumé field among',
+                 available.length, 'file inputs —',
+                 available.map((fi) => fi.name || fi.id || '(unnamed)').join(', '));
+  }
 
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);

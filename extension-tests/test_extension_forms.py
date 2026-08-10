@@ -85,6 +85,18 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):  # keep output readable
         pass
 
+    def guess_type(self, path):
+        """Serve HTML as UTF-8.
+
+        Without an explicit charset Chromium falls back to windows-1252 and
+        "Résumé" arrives as "RÃ©sumÃ©" — which made a fixture fail for a reason
+        that has nothing to do with the extension.
+        """
+        base = super().guess_type(path)
+        if str(path).endswith((".html", ".htm")):
+            return "text/html; charset=utf-8"
+        return base
+
     def _json(self, payload, code=200):
         body = json.dumps(payload).encode()
         self.send_response(code)
@@ -348,6 +360,21 @@ def main():
         check("S10 résumé attached to the only (parser-worded) dropzone",
               page.eval_on_selector("#sc-resume", "el => el.files.length") == 1,
               str(page.eval_on_selector("#sc-resume", "el => el.files.length")))
+        page.close()
+
+        # ── R2: Rippling — one dropzone, two file inputs, label two levels up ─
+        print("\nRippling layout (dual-input dropzone · parser-worded copy)")
+        pack = base_pack(f"{BASE}/rippling.html")
+        page, _ = drive_fill(ctx, f"{BASE}/rippling.html", pack)
+        files = lambda sel: page.eval_on_selector(sel, "el => el.files.length")
+        attached = files("#rp-file-a") + files("#rp-file-b")
+        check("R2a résumé attached despite the autofill wording", attached == 1,
+              f"a={files('#rp-file-a')} b={files('#rp-file-b')}")
+        check("R2b cover-letter input left alone", files("#rp-cover") == 0,
+              str(files("#rp-cover")))
+        check("R2c identity fields still filled",
+              page.eval_on_selector("#rp-first", "el => el.value") == pack["first_name"],
+              page.eval_on_selector("#rp-first", "el => el.value"))
         page.close()
 
         # ── API surface actually exercised ──────────────────────────────────
