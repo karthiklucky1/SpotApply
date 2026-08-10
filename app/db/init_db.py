@@ -166,6 +166,10 @@ def init_db() -> None:
         ("profile_variant", "VARCHAR"),
         ("custom_highlight_block", "TEXT"),
         ("rejection_analysis", "TEXT"),
+        # Shortlisted from a LOCAL score while the LLM was unavailable, so it
+        # has never had a real AI review. The recheck pass re-scores exactly
+        # these once credits return, and clears the flag either way.
+        ("provisional", "BOOLEAN DEFAULT 0"),
     ]:
         add_column_if_missing("application", col, col_type)
 

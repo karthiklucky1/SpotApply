@@ -486,9 +486,21 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             else q.where(Application.user_id.is_(None))
         today_count = len(session.exec(q).all())
 
+    # Which of these scores came from the local fallback (no AI review). Those
+    # are held to the degraded bar and flagged provisional — see strategy/degraded.py.
+    from app.matching.reranker import LOCAL_REASON_PREFIX
+    from app.strategy.degraded import shortlist_threshold
+    local_jids: set = set()
+    with get_session() as session:
+        for jid, _s in scored:
+            j = session.get(Job, jid)
+            if j and (j.rerank_reasoning or "").startswith(LOCAL_REASON_PREFIX):
+                local_jids.add(jid)
+
     shortlisted: List[int] = []
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
-        if score < settings.shortlist_score_threshold:
+        is_local = jid in local_jids
+        if score < shortlist_threshold(is_local):
             continue
         if today_count >= settings.daily_shortlist_limit:
             break
@@ -505,6 +517,7 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             session.add(Application(
                 job_id=jid, status=ApplicationStatus.SHORTLISTED,
                 apply_url=job.url, apply_track=track, user_id=uid_arg,
+                provisional=is_local,
             ))
             session.commit()
             shortlisted.append(jid)
@@ -813,6 +826,22 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             _shortlist_user(uid, results, stats)
         except Exception as e:
             log.warning("scoring lane shortlist failed for %s: %s", uid, e)
+
+    # ── Degraded-mode bookkeeping ────────────────────────────────────────────
+    # A cycle that produced ONLY local scores means no provider answered: the
+    # board is being filled without AI review. Record the outage; when a real
+    # final lands again, re-check exactly what was shortlisted during it.
+    try:
+        from app.strategy import degraded
+        real_finals = stats["by_claude"] + stats["by_gpt"]
+        if stats["scored"] > 0 and real_finals == 0 and stats["by_local"] > 0:
+            degraded.note_degraded()
+        elif real_finals > 0:
+            window = degraded.note_healthy()
+            if window:
+                stats["recheck"] = degraded.recheck_provisional(window, users)
+    except Exception as e:
+        log.warning("degraded-mode bookkeeping failed: %s", e)
 
     try:
         with get_session() as session:

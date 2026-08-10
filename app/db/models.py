@@ -171,6 +171,11 @@ class Application(SQLModel, table=True):
     custom_highlight_block: Optional[str] = None  # 3-bullet markdown framing missing JD gaps
     response_type: str = Field(default="none")  # none, auto_rejected, screening, phone_screen, interview, offer
     rejection_analysis: Optional[str] = None  # JSON string containing forensic analysis (reason, gaps, tip)
+    # True when this was shortlisted from a LOCAL score during an LLM outage —
+    # it cleared the higher degraded bar but has never had a real AI review.
+    # strategy/degraded.py re-scores exactly these once credits return and
+    # drops the ones that don't hold up.
+    provisional: bool = Field(default=False, index=True)
 
 
 class PendingQuestion(SQLModel, table=True):

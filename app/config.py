@@ -320,6 +320,19 @@ class Settings(BaseSettings):
     heartbeat_matching_url: str = ""       # HEARTBEAT_MATCHING_URL — healthchecks.io ping URL for the matching lane
     daily_apply_limit: int = 25          # cap on actual auto-submissions per day (autofill)
     daily_shortlist_limit: int = 200     # cap on how many jobs get shortlisted onto the board per day
+
+    # ── Degraded mode (LLM credits exhausted / all providers cooling down) ────
+    # The local cross-encoder keeps the funnel moving, but its judgement is
+    # weaker than Claude's, and at the normal 60 bar it filled the board with
+    # mediocre matches. Hold local-only scores to a much higher bar: fewer
+    # jobs, but still worth the user's attention. Every one is marked
+    # provisional and re-scored for real once credits return.
+    degraded_shortlist_threshold: int = 75   # DEGRADED_SHORTLIST_THRESHOLD
+    # Look-back for the recovery recheck: the OUTAGE's own duration, hard-capped
+    # here. A 2-hour gap rechecks 2 hours; a week-long gap still only rechecks
+    # 2 days, because older postings are stale anyway.
+    degraded_recheck_max_hours: int = 48     # DEGRADED_RECHECK_MAX_HOURS
+    degraded_recheck_max_jobs: int = 20      # per user, per recovery — DEGRADED_RECHECK_MAX_JOBS
     shortlist_score_threshold: int = 60  # SHORTLIST_SCORE_THRESHOLD — min LLM rerank score (0-100) to shortlist. Raised 35 -> 60 on production evidence: of 57,309 real Claude finals, 44.5% cleared 35 but only 11.6% cleared 65 — so the old bar shortlisted ~1,800 jobs PER USER, which nobody applies to. Those 35-64 rows were pure cost: the board's default filter is shortlist_strong_threshold=65, so they were created, given a company-cap slot, and then hidden. 60 sits just under that filter so a narrow tail is still one slider-drag away. This ALSO clamps the Tier-1 advance gate (see prescore_advance_threshold) — the two must be raised together.
     shortlist_strong_threshold: int = 65 # SHORTLIST_STRONG_THRESHOLD — default min-score filter on the board so it OPENS on strong fits; the 35-64 tail stays shortlisted and is one slider-drag away
     fresh_alert_min_score: int = 65      # FRESH_ALERT_MIN_SCORE — min fit (rerank or blended) to push a "Fresh match" notification. Shortlisting stays at shortlist_score_threshold; this only gates the apply-now alert, so users aren't pushed to jobs the model itself calls a weak fit.
