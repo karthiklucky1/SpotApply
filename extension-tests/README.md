@@ -10,7 +10,7 @@ folder recursively, so anything inside it ships to every user.
 ```bash
 pip install playwright && playwright install chromium   # once
 python3 extension-tests/test_extension_live.py          # 13 checks — plumbing
-python3 extension-tests/test_extension_forms.py         # 34 checks — real fills
+python3 extension-tests/test_extension_forms.py         # 51 checks — real fills
 python3 extension-tests/test_extension_payload.py       # 12 checks — payload + EEO
 python3 extension-tests/test_extension_security.py      #  7 checks — gates
 ```
@@ -36,6 +36,8 @@ with a stub backend serving the résumé so the attach path runs for real:
 | Workday | `data-automation-id` only, no usable labels, country dropdown |
 | React | controlled inputs that revert any value written without a native setter |
 | Recruitee | tabbed form whose application panel is hidden when auto-fill fires |
+| Ashby | essay prompt containing "company"; an autofill-from-résumé parser trap |
+| Screening | 6 Yes/No radios, an intl-tel widget that mangles the number, a lone dropzone |
 
 Real bugs this file caught that static review missed:
 

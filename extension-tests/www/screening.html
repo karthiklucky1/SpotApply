@@ -69,5 +69,38 @@
 
     <button type="submit">Send</button>
   </form>
+
+  <script>
+  // Faithful intl-tel simulation of the real Recruitee failure: a loosely
+  // formatted "+1 (513) 276-3950" gets re-parsed and the widget carves a
+  // country code out of the digits (513... -> "51" -> Peru), exactly as
+  // observed. Strict E.164 ("+15132763950") is understood correctly.
+  (function () {
+    const input = document.getElementById('sc-phone');
+    const country = document.getElementById('sc-country');
+    const CC = { '1': 'us', '51': 'pe', '91': 'in' };
+    input.addEventListener('input', () => {
+      const v = input.value;
+      if (!v) return;
+      if (/^\+\d{11,}$/.test(v.replace(/\s/g, ''))) {
+        // Strict E.164 — read the country code properly.
+        const digits = v.replace(/\D/g, '');
+        const iso = CC[digits.slice(0, 1)] || CC[digits.slice(0, 2)];
+        if (iso) { country.value = iso; }
+        return;
+      }
+      if (v.trim().startsWith('+')) {
+        // Loose "+1 (513) …" — the buggy path: drop the +, drop the trunk
+        // digit, then take the next two digits as the country code.
+        const digits = v.replace(/\D/g, '').replace(/^1/, '');
+        const cc = digits.slice(0, 2);
+        if (CC[cc]) {
+          country.value = CC[cc];
+          input.value = '+' + cc + ' ' + digits.slice(2);
+        }
+      }
+    });
+  })();
+  </script>
 </body>
 </html>

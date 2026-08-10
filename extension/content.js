@@ -130,19 +130,12 @@ function looksLikeEssayPrompt(labelText, el) {
 // Recruitee (and intl-tel-input generally) renders a country selector beside
 // the number and re-parses whatever is typed. Writing "+1 (513) 276-3950" made
 // the widget eat "51" as the country code: the field became "+51 32763950" and
-// the country flipped to Peru. That is a silent data-integrity failure — the
-// application submits with a number that cannot receive a call.
-function isIntlTelField(el) {
-  if (!el) return false;
-  const scope = el.closest('.iti, .intl-tel-input, .PhoneInput, [class*="phone-input" i], [class*="phoneinput" i]');
-  if (scope) return true;
-  // Generic shape: a country <select>/<button> sitting next to the number.
-  const parent = el.parentElement;
-  if (!parent) return false;
-  return !!parent.querySelector(
-    'select[class*="country" i], button[class*="country" i], [class*="country-code" i], ' +
-    '.iti__selected-flag, [class*="flag" i]');
-}
+// the country flipped to Peru — an application submitted with a number that
+// cannot receive a call.
+//
+// Detection is EMPIRICAL, not markup-based: sniffing for .iti/country-button
+// markup missed Recruitee entirely. We write, then check the digits — if they
+// survived, there was no widget to worry about.
 
 /** Digits only, in E.164 when we can tell the country. */
 function toE164(raw, defaultCc = '1') {
@@ -162,28 +155,85 @@ function toE164(raw, defaultCc = '1') {
  * Returns true only if the value stuck AND the country did not change.
  */
 function fillPhoneField(el, raw) {
-  const before = intlTelCountry(el);
-  if (!isIntlTelField(el)) return fillInput(el, raw);
+  const want = String(raw || '').trim();
+  if (!want) return false;
+  const wantDigits = want.replace(/\D/g, '').slice(-10);   // national significant digits
+  if (!wantDigits) return false;
 
-  // E.164 is unambiguous to every intl-tel implementation: the leading "+1"
-  // sets the country explicitly instead of being consumed from the digits.
-  const e164 = toE164(raw);
-  let ok = fillInput(el, e164);
-  if (!ok) ok = fillInput(el, raw);   // widget rejected E.164 — try as given
+  const beforeCountry = intlTelCountry(el);
+  // Verify by DIGITS, never by string equality: every phone widget reformats
+  // ("+1 513-276-3950", "(513) 276-3950"), so a strict compare always reported
+  // "write did not stick" — and the old fallback then re-wrote the raw string,
+  // which is exactly what let the widget eat "51" as a country code.
+  const landed = () => String(el.value || '').replace(/\D/g, '').endsWith(wantDigits);
 
-  const after = intlTelCountry(el);
-  if (before && after && before !== after) {
-    console.warn('[SpotApply] Phone widget changed country', before, '->', after,
-                 '— clearing the field rather than submitting a wrong number');
+  const write = (value) => {
     try {
-      const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-      proto.set.call(el, '');
-      ['input', 'change'].forEach((ev) => el.dispatchEvent(new Event(ev, { bubbles: true })));
-      delete el.dataset.spotapplyFilled;
-    } catch (_) {}
-    return false;   // leave it highlighted for the user
+      const proto = Object.getOwnPropertyDescriptor(
+        (el.ownerDocument?.defaultView || window).HTMLInputElement.prototype, 'value');
+      if (proto && proto.set) proto.set.call(el, value); else el.value = value;
+      ['input', 'change', 'blur'].forEach((ev) =>
+        el.dispatchEvent(new Event(ev, { bubbles: true })));
+    } catch (_) { try { el.value = value; } catch (__) {} }
+  };
+
+  // 1. Write it as given. Markup-sniffing for intl-tel missed Recruitee, so
+  //    detect the widget EMPIRICALLY instead: if the digits survive and the
+  //    country didn't move, there was no widget to worry about and the form
+  //    keeps its own formatting.
+  write(want);
+  if (landed() && !countryChanged(el, beforeCountry)) return markPhoneFilled(el, want);
+
+  // 2. Something re-parsed it. E.164 states the country explicitly instead of
+  //    letting the widget carve a country code out of the leading digits.
+  write(toE164(want));
+  if (landed() && !countryChanged(el, beforeCountry)) return markPhoneFilled(el, want);
+
+  // 3. Some widgets own the "+" and reject it in the text box. Set the country
+  //    selector explicitly, then write only the national digits.
+  const set = setIntlTelCountry(el, 'us');
+  write(wantDigits);
+  if (landed() && (set || !countryChanged(el, beforeCountry))) return markPhoneFilled(el, want);
+
+  // 4. Still wrong — do NOT leave a mangled number in a field that gets
+  //    submitted. Clear it and let the user type it.
+  console.warn('[SpotApply] Phone widget rejected the number (value now',
+               JSON.stringify(el.value), ', country', intlTelCountry(el),
+               ') — clearing it rather than submitting something unreachable');
+  write('');
+  try { delete el.dataset.spotapplyFilled; } catch (_) {}
+  return false;
+}
+
+function markPhoneFilled(el, want) {
+  try {
+    el.dataset.spotapplyFilled = 'true';
+    el.dataset.spotapplyLastWrite = String(el.value || '');
+  } catch (_) {}
+  return true;
+}
+
+function countryChanged(el, before) {
+  const after = intlTelCountry(el);
+  return !!(before && after && before !== after);
+}
+
+/** Point an intl-tel country selector at `iso` (best effort). */
+function setIntlTelCountry(el, iso) {
+  const scope = el.closest('.iti, .intl-tel-input, .PhoneInput, div');
+  if (!scope) return false;
+  const sel = scope.querySelector('select[class*="country" i], select[name*="country" i]');
+  if (sel) {
+    const opt = Array.from(sel.options).find(
+      (o) => (o.value || '').toLowerCase() === iso ||
+             /united states|usa/i.test(o.text || ''));
+    if (opt) {
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
   }
-  return ok;
+  return false;
 }
 
 /** Best-effort read of the widget's currently selected country. */
@@ -243,14 +293,42 @@ function classifyScreeningQuestion(q, pack) {
     return have >= Number(yrs[1]);
   }
 
+  // "Do you hold a Bachelor's degree or higher?" — comparable from the profile.
+  if (/\b(bachelor|master|phd|doctorate|associate|degree)\b/.test(t)) {
+    const RANK = { associate: 1, bachelor: 2, master: 3, mba: 3, phd: 4, doctor: 4 };
+    const rankOf = (s) => {
+      const l = String(s || '').toLowerCase();
+      let best = 0;
+      for (const [k, v] of Object.entries(RANK)) if (l.includes(k)) best = Math.max(best, v);
+      // "B.S." / "M.S." / "M.Eng" abbreviations.
+      if (/\bb\.?\s?(s|a|e|tech)\b/.test(l)) best = Math.max(best, 2);
+      if (/\bm\.?\s?(s|a|eng|tech)\b/.test(l)) best = Math.max(best, 3);
+      return best;
+    };
+    const have = Math.max(
+      rankOf(pack.degree),
+      ...(Array.isArray(pack.education) ? pack.education.map((e) => rankOf(e && e.degree)) : [0]),
+    );
+    const asked = rankOf(t);
+    if (!have || !asked) return null;
+    // "or higher" / "or above" is the usual phrasing; treat a bare mention the
+    // same way, since these questions are always a minimum bar.
+    return have >= asked;
+  }
+
   // "Do you have experience with X?" — only YES, and only when X is a listed
   // skill. Absence from the list is not evidence of absence.
-  if (/experience (with|in|using)|proficien|familiar with|worked with|comfortable with/.test(t)) {
+  if (/experience (with|in|using)|experience using|proficien|familiar with|worked with|comfortable with|skilled (in|with)|knowledge of/.test(t)) {
     const skills = String(pack.key_skills || '').toLowerCase();
     if (!skills) return null;
-    const terms = skills.split(/[,;|]/).map((x) => x.trim()).filter((x) => x.length > 2);
-    if (terms.some((term) => t.includes(term))) return true;
-    return null;
+    const terms = skills.split(/[,;|/]/).map((x) => x.trim()).filter((x) => x.length > 1);
+    // Word-boundary match so "R" or "Go" can't match inside another word, and
+    // "SQL" still matches "Are you proficient in SQL?".
+    const hit = terms.some((term) => {
+      const esc = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(t);
+    });
+    return hit ? true : null;
   }
   return null;
 }
@@ -486,10 +564,18 @@ function fillInput(el, value) {
   // because it looks filled and gets submitted.
   const _s = String(value);
   if (!_s.trim() || /^(undefined|null)(\s+(undefined|null))*$/i.test(_s.trim())) {
-    console.warn('[SpotApply] Refusing to write placeholder value:', JSON.stringify(_s),
-                 'into', el.name || el.id || el.tagName);
+    // Nothing to write is not a failure — an empty portfolio_url produced
+    // "Write did not stick" + "Matched but nothing landed" log noise for a
+    // field that was simply blank in the profile. Flag it so the caller can
+    // tell "we had no value" from "the site rejected our value".
+    _lastWriteSkippedEmpty = true;
+    if (_s.trim()) {
+      console.warn('[SpotApply] Refusing to write placeholder value:', JSON.stringify(_s),
+                   'into', el.name || el.id || el.tagName);
+    }
     return false;
   }
+  _lastWriteSkippedEmpty = false;
 
   // Never treat a file input as a text field. Browsers forbid setting .value on
   // <input type="file"> (it throws "accepts a filename"), and the résumé is
@@ -1825,6 +1911,9 @@ async function fillUniversal(pack) {
       if (after && after !== before) {
         filled++;
         console.log('[SpotApply] Universal filled:', signals.slice(0, 60));
+      } else if (_lastWriteSkippedEmpty) {
+        // Matched a rule, but the profile has nothing for it. Expected, quiet.
+        console.debug('[SpotApply] No profile value for:', signals.slice(0, 60));
       } else {
         attempted++;
         console.warn('[SpotApply] Matched but nothing landed:', signals.slice(0, 60));
@@ -2331,6 +2420,8 @@ let _copilotActive = false;
 let _copilotPack = null;
 let _fillingInProgress = false;
 let _resumeAttachedOnPage = null;
+// True when the last fillInput bailed because the pack had no value for it.
+let _lastWriteSkippedEmpty = false;
 // Set when the server says the résumé can't be built for a reason the user must
 // fix (422). Retrying is pointless until they do, so we stop and keep saying why.
 let _resumeBlockedReason = null;
@@ -2740,13 +2831,18 @@ function showStepOverlay(result, pack) {
   let statusHtml = '';
   if (filled > 0) statusHtml += `<span style="color:#10b981;font-weight:700">✅ ${filled} filled</span>`;
   if (needUser > 0) statusHtml += `${filled > 0 ? ' &nbsp;·&nbsp; ' : ''}<span style="color:#f59e0b;font-weight:700">⚠️ ${needUser} need you</span>`;
-  if (filled === 0 && needUser === 0) statusHtml = '<span style="color:#94a3b8">No fields found on this page</span>';
+  const nothingHere = filled === 0 && needUser === 0;
+  if (nothingHere) statusHtml = '<span style="color:#94a3b8">No fields to fill on this page</span>';
 
   const stepLabel = stepText ? `<div style="color:#94a3b8;font-size:11px;margin-bottom:6px">${stepText}</div>` : '';
 
-  const instructions = needUser > 0
-    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
-    : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled! Review and click Next.</div>`;
+  // "No fields found" + "All fields filled!" used to render together, which
+  // read as a contradiction in one toast. Three distinct states now.
+  const instructions = nothingHere
+    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here — I'll pick up on the application form.</div>`
+    : needUser > 0
+      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
+      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled — review, then click Next.</div>`;
 
   showOverlay(`${stepLabel}${statusHtml}${instructions}`, [], true);
 }

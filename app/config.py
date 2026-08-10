@@ -254,7 +254,9 @@ class Settings(BaseSettings):
     stripe_price_id_pro: str = ""         # STRIPE_PRICE_ID_PRO — $10/mo recurring Price id
     stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
-    payment_contact_email: str = "karthiklucky899@gmail.com"  # PAYMENT_CONTACT_EMAIL
+    # A branded address on customer-facing surfaces (receipts, billing help) —
+    # a personal gmail on a payment screen reads as a scam.
+    payment_contact_email: str = "support@spotapply.ai"  # PAYMENT_CONTACT_EMAIL
     # Turning payments ON is a cliff: no existing user has a user_subscription row,
     # so the instant the STRIPE_* vars are set they ALL drop PRO → FREE (50 → 15
     # finals/day, unlimited → 5 tailors/day, unlimited → 2 autofills/week) with no
@@ -416,7 +418,12 @@ class Settings(BaseSettings):
 
     # Models
     scoring_model: str = "claude-haiku-4-5-20251001"
-    tailoring_model: str = "claude-sonnet-4-6"        # resume tailoring — Sonnet for quality
+    # Résumé tailoring reorders and re-words existing bullets against a JD — it
+    # does not write new content (grounding forbids that), so it does not need a
+    # frontier model. Haiku does the keyword/emphasis work at a fraction of the
+    # cost, which matters because tailoring is per-application. Set
+    # TAILORING_MODEL=claude-sonnet-4-6 to go back to Sonnet.
+    tailoring_model: str = "claude-haiku-4-5-20251001"
     cover_letter_model: str = "claude-haiku-4-5-20251001"  # cover letter — Haiku saves ~$0.012/app
     doctor_model: str = "claude-haiku-4-5-20251001"   # resume doctor quality check
 

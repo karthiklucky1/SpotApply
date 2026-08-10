@@ -32,6 +32,24 @@ _SALARY_CONTEXT_RE = re.compile(
 )
 
 
+def _country_mention_re(country: str) -> str:
+    """Regex matching an explicit mention of `country` in a location string.
+
+    Used to rescue a remote posting that lists several regions ("Remote —
+    US / EU"): the first detected country may be foreign while the user's own
+    is also named, and that job is still open to them.
+    """
+    c = (country or "").strip().lower()
+    aliases = {
+        "united states": r"\b(u\.?s\.?a?\.?|united states|usa|us[- ]based|americas?)\b",
+        "united kingdom": r"\b(u\.?k\.?|united kingdom|england|britain)\b",
+        "canada": r"\bcanada\b",
+        "india": r"\bindia\b",
+        "germany": r"\bgermany|deutschland\b",
+    }
+    return aliases.get(c, r"\b" + re.escape(c) + r"\b")
+
+
 def _extract_salary_range(text: str) -> Optional[Tuple[float, float, str]]:
     """Return (min, max, currency) from an explicit salary range like
     $80k–$120k, £60k–£80k, or ₹20,00,000–₹30,00,000.
@@ -190,15 +208,36 @@ class RuleFilter:
         #    preferred one are dropped. Skipped entirely for remote jobs since
         #    "US/Canada Remote" or "Remote (EU)" are still valid remote roles, and
         #    ambiguous/unknown locations are KEPT rather than over-filtered.
+        # If location is empty, fall back to the title for explicit country tags.
+        haystack = loc_low if loc_low else title_low
+        detected = detect_country(haystack)
         if not job.remote:
-            # If location is empty, fall back to the title for explicit country tags.
-            haystack = loc_low if loc_low else title_low
-            detected = detect_country(haystack)
             if self.preferred_country and detected and detected != self.preferred_country:
                 return FilterResult(
                     passed=False,
                     reason=(
                         f"Location pre-filtered: '{job.location or job.title}' is in "
+                        f"{detected.title()}, user targets {self.preferred_country.title()}"
+                    ),
+                    score_override=10
+                )
+        elif self.preferred_country and detected and detected != self.preferred_country:
+            # REMOTE, but the posting names a specific OTHER country. "Remote"
+            # was skipping the country gate entirely, which is how a US-targeting
+            # user got "Remote · Europe, €80,000" roles they cannot take. Only an
+            # EXPLICIT foreign country drops the job: a bare "Remote", or one
+            # that also mentions the user's own country ("Remote — US/EU"), is
+            # kept, so genuinely open roles still come through.
+            mentions_preferred = bool(
+                self.preferred_country
+                and detect_country(f" {self.preferred_country} ") == self.preferred_country
+                and re.search(_country_mention_re(self.preferred_country), haystack)
+            )
+            if not mentions_preferred:
+                return FilterResult(
+                    passed=False,
+                    reason=(
+                        f"Remote pre-filtered: '{job.location or job.title}' is remote in "
                         f"{detected.title()}, user targets {self.preferred_country.title()}"
                     ),
                     score_override=10

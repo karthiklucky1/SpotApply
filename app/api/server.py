@@ -3782,6 +3782,19 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "disability_status": p.disability_status if p else "No, I do not have a disability, or history/record of having a disability",
         "cover_letter": cover_text,
         "resume_text": resume_text,
+        # Screening answers are derived from these. They were absent, so the
+        # extension's skill and degree rules could never fire — "Are you
+        # proficient in Python?" stayed blank with Python listed in the profile.
+        "key_skills": (p.key_skills if p else "") or "",
+        "degree": (p.degree if p else "") or "",
+        "university": (p.university if p else "") or "",
+        "visa_status": (getattr(p, "visa_status", "") if p else "") or "",
+        "work_auth_status": (getattr(p, "work_auth_status", "") if p else "") or "",
+        "professional_summary": (p.professional_summary if p else "") or "",
+        "salary_max": (p.salary_max if p else 0) or 0,
+        "salary_currency": (getattr(p, "salary_currency", "") if p else "") or "USD",
+        "preferred_country": (getattr(p, "preferred_country", "") if p else "") or "",
+        "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
     }
 
     # Add AI-generated essay answers
@@ -3829,6 +3842,46 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         pack["education"] = []
 
     return pack
+
+
+def _base_resume_bytes(uid: str | None):
+    """The user's uploaded master résumé as (filename, mime, bytes), or None.
+
+    The fallback for every path that wants *a* résumé when the tailored one
+    can't be produced — an LLM outage or an out-of-credits account must not
+    leave a required upload field empty.
+    """
+    _MIMES = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+    }
+    try:
+        if settings.use_supabase and uid and uid != "local":
+            from app.db.supabase_client import service_client
+            sb = service_client()
+            files = sb.storage.from_("resume").list(uid) or []
+            names = [f.get("name", "") for f in files if (f.get("name") or "").startswith("resume.")]
+            if not names:
+                return None
+            name = names[0]
+            blob = sb.storage.from_("resume").download(f"{uid}/{name}")
+            if not blob:
+                return None
+            ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            return name, _MIMES.get(ext, "application/octet-stream"), blob
+        import glob
+        from pathlib import Path as _PP
+        matches = glob.glob("./data/resume_master.*")
+        if not matches:
+            return None
+        p = _PP(matches[0])
+        return p.name, _MIMES.get(p.suffix.lower(), "application/octet-stream"), p.read_bytes()
+    except Exception as e:
+        log.warning("Base résumé fetch failed for %s: %s", uid, e)
+        return None
 
 
 @app.get("/api/fill-pack/{application_id}/resume")
@@ -3881,7 +3934,28 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                 raise
             except Exception as diag_err:
                 log.debug("resume 503 diagnosis failed for app %d: %s", application_id, diag_err)
-            raise HTTPException(status_code=503, detail="Could not generate resume")
+
+            # Tailoring failed for a reason the user can't fix right now — an
+            # LLM outage or an exhausted credit balance. Their BASE résumé is
+            # still a perfectly good application document, and an untailored
+            # résumé attached beats a required field left empty on every form.
+            base = _base_resume_bytes(uid)
+            if base:
+                filename, mime, blob = base
+                log.info("Serving base résumé for app %d (tailoring unavailable)", application_id)
+                return {
+                    "filename": filename,
+                    "mime": mime,
+                    "base64": base64.b64encode(blob).decode(),
+                    "tailored": False,
+                    "notice": ("Tailoring is unavailable right now, so this is your base "
+                               "résumé — review it before submitting."),
+                }
+            raise HTTPException(
+                status_code=422,
+                detail=("No résumé available. Upload one in Settings → Résumé so SpotApply "
+                        "can attach it to applications."),
+            )
 
     p = _P(path)
     if not p.exists():

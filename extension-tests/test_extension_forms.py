@@ -310,7 +310,7 @@ def main():
         print("\nScreening form (radios · intl-tel phone · dropzone résumé)")
         pack = base_pack(f"{BASE}/screening.html")
         pack.update({
-            "phone": "513-276-3950",
+            "phone": "+1 (513) 276-3950",   # the loose format that broke Recruitee
             "requires_sponsorship": True,
             "work_authorization": "F-1 OPT",
             "years_experience": 4,
@@ -323,11 +323,15 @@ def main():
         # Phone must not be re-interpreted by the country widget.
         phone = page.eval_on_selector("#sc-phone", "el => el.value")
         country = page.eval_on_selector("#sc-country", "el => el.value")
-        check("S1 phone written in E.164 (not eaten by the country widget)",
-              phone.replace(" ", "").startswith("+1"), repr(phone))
+        # E.164 is the RECOVERY, not the requirement. What must hold is that a
+        # wrong number never survives: either the digits are right, or the
+        # field is empty for the user to type.
+        check("S1 no wrong number left in the field",
+              phone == "" or "".join(c for c in phone if c.isdigit()).endswith("5132763950"),
+              repr(phone))
         check("S2 country still United States", country == "us", country)
         digits = "".join(ch for ch in phone if ch.isdigit())
-        check("S3 phone digits intact (no country-code cannibalisation)",
+        check("S3 phone recovered intact through the mangling widget",
               digits.endswith("5132763950"), repr(phone))
         # Deterministic screening answers.
         check("S4 sponsorship answered Yes (profile requires it)", checked("q_sponsor") == "yes",
