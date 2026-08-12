@@ -205,3 +205,86 @@ def test_the_schema_enumeration_is_not_empty():
     for expected in ("job", "application", "user_card", "card_match_shadow",
                      "llm_spend", "user_notifications", "userpersonalmemory"):
         assert expected in tables, f"{expected} missing from the enumeration"
+
+
+# ── Supabase storage + auth cleanup ──────────────────────────────────────────
+# These two used to share one `except Exception: pass`, so a storage failure
+# skipped the AUTH deletion silently and the route still answered success — the
+# rows were gone but the login still worked, which reads as "it didn't delete".
+
+class _FakeStorageBucket:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.removed = None
+
+    def list(self, uid):
+        if self.fail:
+            raise RuntimeError("storage listing exploded")
+        return [{"name": "resume.pdf"}]
+
+    def remove(self, paths):
+        self.removed = paths
+
+
+class _FakeAdmin:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.deleted = None
+
+    def delete_user(self, uid):
+        if self.fail:
+            raise RuntimeError("auth delete refused")
+        self.deleted = uid
+
+
+class _FakeSupabase:
+    def __init__(self, storage_fail=False, auth_fail=False):
+        self._bucket = _FakeStorageBucket(storage_fail)
+        self.auth = type("A", (), {"admin": _FakeAdmin(auth_fail)})()
+
+    def storage(self):  # pragma: no cover - attribute style below
+        raise NotImplementedError
+
+    def from_(self, _name):
+        return self._bucket
+
+
+def _run_delete_with(monkeypatch, storage_fail=False, auth_fail=False):
+    fake = _FakeSupabase(storage_fail, auth_fail)
+    fake.storage = type("S", (), {"from_": staticmethod(lambda n: fake._bucket)})()
+    monkeypatch.setattr(server, "_require_user", lambda request: _GONE)
+    # use_supabase is a computed property, so it has to be patched on the CLASS.
+    from app.config import Settings, settings as _settings
+    monkeypatch.setattr(Settings, "use_supabase", property(lambda self: True))
+    import app.db.supabase_client as sc
+    monkeypatch.setattr(sc, "service_client", lambda: fake)
+    assert _settings.use_supabase is True
+    return server.delete_account(request=None), fake
+
+
+def test_auth_user_is_deleted_even_when_storage_cleanup_fails(monkeypatch):
+    """The bug: a storage error skipped the auth delete, so the login survived."""
+    result, fake = _run_delete_with(monkeypatch, storage_fail=True)
+    assert fake.auth.admin.deleted == _GONE, (
+        "the Supabase Auth user MUST still be deleted when résumé storage "
+        "cleanup fails — otherwise the user can still sign in"
+    )
+    assert result["storage_deleted"] is False
+    assert result["auth_deleted"] is True
+    assert result["success"] is True
+
+
+def test_a_failed_auth_delete_is_reported_not_swallowed(monkeypatch):
+    """Data gone but sign-in alive is a PARTIAL deletion — never 'success'."""
+    result, _ = _run_delete_with(monkeypatch, auth_fail=True)
+    assert result["success"] is False
+    assert result["partial"] is True
+    assert result["auth_deleted"] is False
+    assert "support@spotapply.ai" in result["message"]
+
+
+def test_happy_path_removes_storage_and_auth(monkeypatch):
+    result, fake = _run_delete_with(monkeypatch)
+    assert fake._bucket.removed == [f"{_GONE}/resume.pdf"]
+    assert fake.auth.admin.deleted == _GONE
+    assert result["success"] is True and result["auth_deleted"] is True
