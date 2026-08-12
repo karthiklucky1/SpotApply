@@ -627,6 +627,14 @@ async def _registry_maintenance_once(cycle: int) -> None:
         close_stale_user_jobs(days=settings.user_job_close_age_days)
     except Exception as e:
         _log.warning("Per-user job retention failed: %s", e)
+    # Blank the JD text on stale rows nobody acted on. Runs BEFORE the purge:
+    # the description is the bulk of the disk (3.3 GB of a 5.76 GB table) and
+    # goes dead long before the row itself is safe to delete.
+    try:
+        from app.strategy.job_retention import strip_dead_descriptions
+        strip_dead_descriptions(days=settings.job_description_strip_age_days)
+    except Exception as e:
+        _log.warning("Job description strip failed: %s", e)
     # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
     # egress) stays bounded — closed rows were accumulating forever.
     try:

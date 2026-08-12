@@ -104,3 +104,65 @@ def purge_old_closed_jobs(days: int = 60, batch: int = 2000, max_batches: int = 
     if deleted:
         log.info("Job retention: purged %d closed job(s) older than %dd with no application", deleted, days)
     return deleted
+
+
+def strip_dead_descriptions(days: int = 14, batch: int = 2000, max_batches: int = 100) -> int:
+    """Blank the JD text on old rows that will never be read again.
+
+    ``description`` averages ~5.8 KB per row and is by far the largest thing in
+    the database — 3.3 GB of TOAST across 1.1M rows, i.e. more than half the
+    disk. It is also, for most of those rows, dead weight: the whole funnel is
+    fresh-only (``scoring_max_job_age_days`` / ``shortlist_max_age_days`` = 5),
+    so a two-week-old posting is never scored, never retrieved and never shown.
+
+    Deliberately narrower than the purge, because the row itself is worth
+    keeping — the dedupe key stops discovery re-inserting the posting and
+    paying to score it all over again. Only the text goes.
+
+    THREE carve-outs, all load-bearing:
+
+    * a job with an Application is never touched — the user acted on it, and
+      skill-gap, autopsy and re-tailoring all read the JD back;
+    * a job with a REAL score keeps its text: (description, rerank_score) pairs
+      are the distillation training set (docs/DISTILLATION.md), which is what
+      keeps scoring alive when LLM credits run out;
+    * jobs stamped "Expired unscored" by the scoring lane are fair game — that
+      score is a placeholder, not a judgement, so there is nothing to learn
+      from them.
+    """
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+    from sqlalchemy import func as _func, or_, update
+
+    if days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    age = _func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    stripped = 0
+    for _ in range(max_batches):
+        with get_session() as session:
+            ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.id)
+                .where(
+                    age < cutoff,
+                    Job.description != "",
+                    Job.description.is_not(None),
+                    # Never a job the user engaged with.
+                    Job.id.not_in(select(Application.job_id)),
+                    # Unscored, or scored only by the staleness stamp.
+                    or_(Job.rerank_score.is_(None),
+                        Job.rerank_reasoning.like("Expired unscored%")),
+                )
+                .limit(batch)
+            ).all()]
+            if not ids:
+                break
+            session.exec(update(Job).where(Job.id.in_(ids)).values(description=""))
+            session.commit()
+            stripped += len(ids)
+        if len(ids) < batch:
+            break
+    if stripped:
+        log.info("Job retention: blanked description on %d stale unscored job(s) older than %dd",
+                 stripped, days)
+    return stripped
