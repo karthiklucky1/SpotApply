@@ -93,34 +93,27 @@ _main_loop: asyncio.AbstractEventLoop | None = None
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
 
-# Memory state for CAPTCHA/Review confirmations
-_pending_events: dict[str, asyncio.Event] = {}
-_pending_event_loops: dict[str, asyncio.AbstractEventLoop] = {}
-_event_data: dict[str, str] = {}
+def _notify_owner(user_id: str | None, title: str, message: str,
+                  type_: str = "autofill", link: str = "/dashboard") -> None:
+    """Tell the owning user something, in the app.
 
-async def _send_telegram_photo(caption: str, photo_path: str, reply_markup: dict | None = None) -> bool:
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        log.warning("Telegram credentials missing, cannot send photo.")
-        return False
+    Every alert this module raises used to go to one hardcoded Telegram chat,
+    which only ever reached the founder. The dashboard bell is per-tenant, so
+    it reaches whoever the run actually belongs to. Never fatal: a notification
+    that cannot be written must not fail the fill.
+    """
     try:
-        import httpx
-        import json
-        url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendPhoto"
-        async with httpx.AsyncClient() as client:
-            with open(photo_path, "rb") as f:
-                files = {"photo": f}
-                data = {
-                    "chat_id": settings.telegram_chat_id,
-                    "caption": caption,
-                    "parse_mode": "Markdown",
-                }
-                if reply_markup:
-                    data["reply_markup"] = json.dumps(reply_markup)
-                resp = await client.post(url, data=data, files=files, timeout=20)
-                return resp.status_code == 200
+        from app.db.models import UserNotification
+        owner = None if (not user_id or user_id == "local") else user_id
+        with get_session() as session:
+            session.add(UserNotification(
+                user_id=owner, title=title, message=message,
+                type=type_, link=link,
+            ))
+            session.commit()
     except Exception as e:
-        log.warning("Failed to send Telegram photo: %s", e)
-        return False
+        log.warning("Could not write notification (%s): %s", title, e)
+
 
 async def _detect_captcha(page: Page) -> bool:
     captcha_selectors = [
@@ -155,121 +148,24 @@ async def _detect_captcha(page: Page) -> bool:
     return False
 
 async def _handle_captcha(page: Page, application_id: int, job: Job) -> bool:
-    """Detect CAPTCHA, take screenshot, notify via Telegram, and raise CaptchaDetectedError to abort headless run."""
+    """Detect a CAPTCHA, tell the user, and abort the headless run.
+
+    A CAPTCHA is exactly the case a human has to finish in their own browser,
+    so the notification points at the dashboard rather than trying to hand the
+    page back over a chat app.
+    """
     if not await _detect_captcha(page):
         return False
-        
-    log.warning("CAPTCHA detected on page for %s", job.company)
-    screenshot_path = f"./data/captcha_{application_id}.png"
-    import os
-    os.makedirs("./data", exist_ok=True)
-    try:
-        await page.screenshot(path=screenshot_path)
-    except Exception as e:
-        log.warning("Failed to take CAPTCHA screenshot: %s", e)
-        screenshot_path = None
-        
-    caption = (
-        f"🔒 *CAPTCHA detected* for *{job.company}* — *{job.title}*.\n\n"
-        f"Headless autofill was blocked by a CAPTCHA. I've moved this application to *Awaiting Review*.\n\n"
-        f"Please click **Open & Submit in Browser** on your dashboard or use the button below to solve the CAPTCHA and complete the form."
-    )
-    
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "🔓 Solve CAPTCHA / Open Browser", "callback_data": f"captcha:solve:{application_id}"}
-            ]
-        ]
-    }
-    
-    if screenshot_path:
-        await _send_telegram_photo(caption, screenshot_path, reply_markup)
-    else:
-        try:
-            import httpx
-            await httpx.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": settings.telegram_chat_id,
-                    "text": caption,
-                    "parse_mode": "Markdown",
-                    "reply_markup": reply_markup,
-                },
-                timeout=10
-            )
-        except Exception as e:
-            log.warning("Failed to send CAPTCHA text message: %s", e)
-            
-    raise CaptchaDetectedError(f"CAPTCHA detected on page for {job.company}")
 
-async def _handle_pre_submit_review(page: Page, application_id: int, job: Job, verify_note: str = "") -> str:
-    """Take full page screenshot of the filled form, send to Telegram, and wait for human approval."""
-    screenshot_path = f"./data/pre_submit_{application_id}.png"
-    import os
-    os.makedirs("./data", exist_ok=True)
-    try:
-        await page.screenshot(path=screenshot_path, full_page=True)
-    except Exception as e:
-        log.warning("Failed to take pre-submit screenshot: %s", e)
-        screenshot_path = None
-        
-    event_id = f"review_{application_id}"
-    event = asyncio.Event()
-    _pending_events[event_id] = event
-    _pending_event_loops[event_id] = asyncio.get_event_loop()
-    
-    caption = (
-        f"📋 *Ready to submit* to *{job.company}* for *{job.title}*.\n"
-        f"Please review the filled application screenshot. Select Approve to submit, or Reject to abort."
+    log.warning("CAPTCHA detected on page for %s", job.company)
+    _notify_owner(
+        _autofill_owner.get(),
+        title=f"CAPTCHA blocked autofill — {job.company}",
+        message=(f"{job.title} could not be filled automatically: the form asks for a "
+                 f"CAPTCHA. Open it in your browser to finish and submit."),
+        type_="captcha",
     )
-    if verify_note:
-        caption += f"\n\n🔎 {verify_note}"
-    
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "Approve ✅", "callback_data": f"review:approve:{application_id}"},
-                {"text": "Reject ❌", "callback_data": f"review:reject:{application_id}"}
-            ]
-        ]
-    }
-    
-    if screenshot_path:
-        await _send_telegram_photo(caption, screenshot_path, reply_markup)
-    else:
-        try:
-            import httpx
-            await httpx.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": settings.telegram_chat_id,
-                    "text": caption,
-                    "parse_mode": "Markdown",
-                    "reply_markup": reply_markup
-                },
-                timeout=10
-            )
-        except Exception as e:
-            log.warning("Failed to send review text message: %s", e)
-            
-    try:
-        log.info("Waiting for user pre-submit review...")
-        await asyncio.wait_for(event.wait(), timeout=600.0)
-        res = _event_data.get(event_id, "timeout")
-        return res
-    except asyncio.TimeoutError:
-        log.warning("Pre-submit review timeout.")
-        return "timeout"
-    finally:
-        _pending_events.pop(event_id, None)
-        _pending_event_loops.pop(event_id, None)
-        _event_data.pop(event_id, None)
-        if screenshot_path and os.path.exists(screenshot_path):
-            try:
-                os.remove(screenshot_path)
-            except Exception:
-                pass
+    raise CaptchaDetectedError(f"CAPTCHA detected on page for {job.company}")
 
 async def _click_submit(page: Page) -> bool:
     submit_selectors = [
@@ -567,8 +463,8 @@ _EEOC_DEFAULTS: dict[str, str] = {
 # _check_memory and the memory-write sites live inside deeply-nested Playwright
 # fill functions, so the owning user_id is threaded via a ContextVar set once at
 # the top of autofill()/_autofill_one() rather than through every signature.
-# Reads/writes are then scoped exactly like the Telegram bot + answer_pack, so
-# one tenant's cached answers can never fill (or overwrite) another's form.
+# Reads/writes are then scoped exactly like answer_pack, so one tenant's cached
+# answers can never fill (or overwrite) another's form.
 _autofill_owner: contextvars.ContextVar = contextvars.ContextVar("autofill_owner", default=None)
 
 
@@ -2182,78 +2078,22 @@ async def _autofill_one(application_id: int) -> List[UnknownField]:
                 else:
                     miss = ", ".join(m.field for m in verify_report.mismatches)
                     verify_note = f"⚠️ Field check FAILED — could not confirm: {miss}. {verify_report.summary()}"
-            review_res = await _handle_pre_submit_review(page, application_id, job, verify_note=verify_note)
-            if review_res == "approve":
-                log.info("Submission approved. Clicking submit...")
-                clicked = await _click_submit(page)
-                if clicked:
-                    await page.wait_for_timeout(5000)
-                    is_submitted = False
-                    success_keywords = ["/thanks", "/thank", "success", "confirmation", "submitted"]
-                    if any(kw in page.url.lower() for kw in success_keywords):
-                        is_submitted = True
-                    else:
-                        try:
-                            body_text = await page.locator("body").inner_text()
-                            body_text_lower = body_text.lower()
-                            success_texts = [
-                                "thank you for applying",
-                                "successfully submitted",
-                                "application submitted",
-                                "received your application",
-                                "thanks for applying",
-                                "we have received your application"
-                            ]
-                            if any(st in body_text_lower for st in success_texts):
-                                is_submitted = True
-                        except Exception:
-                            pass
-                            
-                    if is_submitted:
-                        from datetime import datetime
-                        from app.analytics.funnel import FunnelTracker
-                        with get_session() as session:
-                            app_db = session.get(Application, application_id)
-                            if app_db:
-                                app_db.status = ApplicationStatus.SUBMITTED
-                                app_db.submitted_at = datetime.utcnow()
-                                app_db.updated_at = datetime.utcnow()
-                                session.add(app_db)
-                                session.commit()
-                        FunnelTracker.record(job.id, "applied", True, metadata={"method": "headless_approved"})
-                        try:
-                            import httpx
-                            msg = f"🚀 *Application successfully submitted* to *{job.company}* for *{job.title}*!"
-                            httpx.post(
-                                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                                json={"chat_id": settings.telegram_chat_id, "text": msg, "parse_mode": "Markdown"},
-                                timeout=10,
-                            )
-                        except Exception as e:
-                            log.warning("Failed to send submission success notification: %s", e)
-                    else:
-                        log.warning("Submit button clicked, but success page/text not detected.")
-                else:
-                    log.error("Could not find submit button to click.")
-            elif review_res == "reject":
-                with get_session() as session:
-                    app_db = session.get(Application, application_id)
-                    if app_db:
-                        from datetime import datetime
-                        app_db.status = ApplicationStatus.SKIPPED
-                        app_db.updated_at = datetime.utcnow()
-                        session.add(app_db)
-                        session.commit()
-                try:
-                    import httpx
-                    msg = f"❌ *Application aborted* for *{job.company}* — *{job.title}* (marked as skipped)."
-                    httpx.post(
-                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                        json={"chat_id": settings.telegram_chat_id, "text": msg, "parse_mode": "Markdown"},
-                        timeout=10,
-                    )
-                except Exception as e:
-                    log.warning("Failed to send abort notification: %s", e)
+            # The form is filled and parked at READY_TO_SUBMIT. Nothing here
+            # presses Submit: the human does that, in their own browser, via
+            # "Open & Submit in Browser" or the extension. (This used to sit
+            # and wait for an Approve/Reject tap in Telegram, which was the
+            # single-user build's remote control; the app is multi-tenant now
+            # and the dashboard is the review surface for everyone.)
+            _notify_owner(
+                _autofill_owner.get(),
+                title=f"Ready to submit — {job.company}",
+                message=(f"{job.title} is filled in and waiting for you. "
+                         f"Open it to review the answers and press Submit."
+                         + (f" {verify_note}" if verify_note else "")),
+                type_="ready_to_submit",
+            )
+            log.info("Application %d filled and left at READY_TO_SUBMIT for human review.",
+                     application_id)
 
         return unknown
 
@@ -2578,11 +2418,11 @@ def _todays_submission_count(session, user_id: str | None) -> int:
 
 
 def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownField]:
-    """Sync wrapper — fills form, saves pending questions, updates status, and notifies via Telegram."""
+    """Sync wrapper — fills the form, saves pending questions, updates status,
+    and notifies the owning user in the app."""
     from datetime import datetime
     import time as time_module
     import random
-    import httpx
 
     # 1. Daily limit check
     with get_session() as session:
@@ -2597,19 +2437,16 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         today_count = _todays_submission_count(session, app.user_id)
         
         if today_count >= settings.daily_apply_limit:
-            msg = (
-                f"⚠️ *Daily Apply Limit Reached* ({today_count}/{settings.daily_apply_limit})\n"
-                f"Skipping autofill for *{job_company}* — _{job_title}_ to pace submissions."
+            log.warning("Daily apply limit reached (%d/%d) — skipping autofill for %s / %s",
+                        today_count, settings.daily_apply_limit, job_company, job_title)
+            _notify_owner(
+                _owner_uid,
+                title="Daily apply limit reached",
+                message=(f"You've hit today's limit of {settings.daily_apply_limit} applications, "
+                         f"so {job_title} at {job_company} wasn't filled. It stays on your board "
+                         f"for tomorrow."),
+                type_="apply_limit",
             )
-            log.warning(msg)
-            try:
-                httpx.post(
-                    f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                    json={"chat_id": settings.telegram_chat_id, "text": msg, "parse_mode": "Markdown"},
-                    timeout=10,
-                )
-            except Exception as e:
-                log.warning("Telegram notification failed: %s", e)
             return []
 
     # Scope identity + AnswerMemory to the owner, and refuse to fill a
@@ -2626,7 +2463,6 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
             apply_url = app.apply_url or job.url
             job_title = job.title
             job_company = job.company
-            job_source = job.source.value if job.source else "unknown"
 
     if app and app.apply_track == "manual":
         # Ensure materials are tailored first
@@ -2650,28 +2486,14 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
                 session.add(app)
                 session.commit()
 
-        try:
-            import httpx
-            msg = (
-                f"📌 *Manual Apply Ready* [{job_source.upper()}]\n"
-                f"*{job_company}* — _{job_title}_\n\n"
-                f"✅ Tailored resume + cover letter prepared.\n\n"
-                f"👉 [Open & Apply]({apply_url})\n\n"
-                f"Send /skip to dismiss or /manual to see all pending manual jobs."
-            )
-            httpx.post(
-                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                json={
-                    "chat_id": settings.telegram_chat_id,
-                    "text": msg,
-                    "parse_mode": "Markdown",
-                    "disable_web_page_preview": False,
-                },
-                timeout=10,
-            )
-        except Exception as e:
-            log.warning("Manual-track Telegram notification failed: %s", e)
-
+        _notify_owner(
+            _owner_uid,
+            title=f"Ready to apply — {job_company}",
+            message=(f"Your tailored résumé and cover letter for {job_title} are ready. "
+                     f"This one is applied to on the company's own site."),
+            type_="manual_ready",
+            link=apply_url or "/dashboard",
+        )
         log.info("Manual-track app %d: materials ready, user notified.", application_id)
         return []
 
@@ -2679,16 +2501,8 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
     if not bypass_delay:
         delay = random.uniform(settings.submission_jitter_min, settings.submission_jitter_max)
         if delay > 0:
-            msg = f"⏳ *Submission Pacing:* Waiting {delay:.0f} seconds before autofilling form for *{job_company}*..."
-            log.info(msg)
-            try:
-                httpx.post(
-                    f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-                    json={"chat_id": settings.telegram_chat_id, "text": msg, "parse_mode": "Markdown"},
-                    timeout=10,
-                )
-            except Exception as e:
-                log.warning("Telegram notification failed: %s", e)
+            # Internal pacing only — not worth a notification.
+            log.info("Submission pacing: waiting %.0fs before autofilling %s", delay, job_company)
             time_module.sleep(delay)
     else:
         log.info("Pacing delay bypassed for manual/interactive trigger.")
@@ -2770,37 +2584,35 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         job_title = job.title
         job_company = job.company
 
-    # Proactively ping Telegram with the first question
-    try:
-        import httpx
-        if unknown:
-            first = unknown[0]
-            msg = (
-                f"🤖 *JobAgent* — Form filled for *{job_company}*\n"
-                f"📋 Role: _{job_title}_\n\n"
-                f"Found *{len(unknown)} question(s)* I couldn't answer automatically.\n\n"
-                f"*Question 1 of {len(unknown)}:*\n{first.label}\n\n"
-                f"Reply with your answer, or send /next to see this again."
-            )
-        else:
-            msg = (
-                f"✅ *{job_company}* — Form fully filled!\n"
-                f"_{job_title}_\n\nNo custom questions needed. *Launching browser for final verification...*"
-            )
-        httpx.post(
-            f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-            json={"chat_id": settings.telegram_chat_id, "text": msg, "parse_mode": "Markdown"},
-            timeout=10,
+    # Tell the owner what happened. Unanswered questions are stored as
+    # PendingQuestion rows and answered on the dashboard, so the notification
+    # only has to get them there.
+    if unknown:
+        _notify_owner(
+            _autofill_owner.get(),
+            title=f"{len(unknown)} question(s) need you — {job_company}",
+            message=(f"The form for {job_title} is filled except for "
+                     f"{len(unknown)} question(s) only you can answer, starting with: "
+                     f"“{unknown[0].label}”."),
+            type_="pending_question",
         )
-        log.info("Telegram notified: %d pending questions for app %d", len(unknown), application_id)
-        
-        # If fully filled, automatically launch preview so the user can "check full form"
-        if not unknown:
+    else:
+        _notify_owner(
+            _autofill_owner.get(),
+            title=f"Form filled — {job_company}",
+            message=(f"{job_title} is filled in with no open questions. "
+                     f"Open it to review and submit."),
+            type_="ready_to_submit",
+        )
+    log.info("Autofill finished for app %d: %d pending question(s)", application_id, len(unknown))
+
+    # If fully filled, open the preview so the user can check the whole form.
+    if not unknown:
+        try:
             log.info("Launching automatic preview for app %d", application_id)
             preview(application_id)
-            
-    except Exception as e:
-        log.warning("Telegram notification or auto-preview failed: %s", e)
+        except Exception as e:
+            log.warning("Auto-preview failed for app %d: %s", application_id, e)
 
     return unknown
 

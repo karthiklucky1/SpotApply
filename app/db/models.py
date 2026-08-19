@@ -53,7 +53,7 @@ class ApplicationStatus(str, Enum):
     SHORTLISTED = "shortlisted"          # passed Claude rerank
     TAILORED = "tailored"                # resume + cover letter generated
     AUTOFILLED = "autofilled"            # form filled, awaiting user
-    AWAITING_USER = "awaiting_user"      # Telegram prompt pending
+    AWAITING_USER = "awaiting_user"      # waiting on the user to answer a question
     READY_TO_SUBMIT = "ready_to_submit"  # all fields filled, preview link sent
     SUBMITTED = "submitted"              # applicant clicked submit
     REJECTED = "rejected"                # heard back: no
@@ -179,7 +179,7 @@ class Application(SQLModel, table=True):
 
 
 class PendingQuestion(SQLModel, table=True):
-    """A question the autofill agent needs answered via Telegram."""
+    """A question the autofill agent could not answer — the user answers it on the dashboard."""
     id: Optional[int] = Field(default=None, primary_key=True)
     application_id: int = Field(foreign_key="application.id", index=True)
     field_label: str            # e.g. "Years of experience with PyTorch"
@@ -293,6 +293,12 @@ class UserProfile(SQLModel, table=True):
     # Separate from current_title: a user can target roles different from their
     # current one (e.g. an analyst targeting "Data Scientist"). Drives discovery.
     target_roles: str = ""              # comma-separated
+    # True while target_roles are still whatever we derived from the résumé, so
+    # uploading a NEW résumé re-derives them: someone whose CV moves from "AI
+    # Engineer" to "Software Developer" should not keep being fed the old roles.
+    # Editing roles in the UI flips this to False and their list is then left
+    # alone by every later upload.
+    target_roles_auto: bool = True
     # Companies the user follows ("My Companies") — comma-separated. Boards for
     # these companies are polled on the pulse lane's fast (minutes) cadence.
     target_companies: str = ""          # comma-separated

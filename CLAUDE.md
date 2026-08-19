@@ -34,7 +34,7 @@ this file is the working map for editing the code.
 Python 3.11 · FastAPI/Uvicorn · SQLModel. **Supabase Postgres + Auth in prod; local
 SQLite fallback when `SUPABASE_URL` is unset.** Claude (primary LLM) / OpenAI optional ·
 sentence-transformers + FAISS + rank-bm25 · Playwright (Chromium) + MV3 Chrome extension ·
-python-telegram-bot · APScheduler · Jinja + Tailwind + Chart.js (server-rendered).
+APScheduler · Jinja + Tailwind + Chart.js (server-rendered).
 **Landing AND dashboard CSS are compiled + committed**, one config per template:
 `landing.html` → `tailwind-landing.css` (`build:css`), `dashboard.html` →
 `tailwind.css` (`build:css:dashboard`); AOS self-hosted in `app/static/vendor/`.
@@ -60,7 +60,6 @@ app/
   strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, degraded, hygiene
   analytics/        # funnel, reporter
   qa_store/         # canonical answers (answers.yaml) + resolver
-  telegram_bot/     # async approval/handoff loop
   templates/        # landing, dashboard, pricing, auth, privacy, terms, extension
 extension/          # MV3: background.js, content.js, popup
 mobile/             # Expo React Native app (iOS+Android) — Supabase auth +
@@ -104,7 +103,7 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   prescore cascade → Claude → shortlist → fresh alert). Set PULSE_LANE_ENABLED=0
   to fall back to the legacy 20-min "hot lane" (`strategy/hot_lane.py`) — only
   one of the two runs. Do NOT also schedule those in
-  `app/main.py` (it only adds the Telegram bot + harvester/validator/report jobs)
+  `app/main.py` (it only adds the harvester/validator/report jobs)
   — double-runs otherwise.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score

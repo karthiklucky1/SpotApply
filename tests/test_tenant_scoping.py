@@ -67,22 +67,27 @@ def test_daily_apply_limit_is_per_user(_clean):
         assert _todays_submission_count(s, None) == 0
 
 
-def test_telegram_answer_memory_scoped_to_owner(_clean):
-    from app.telegram_bot.bot import _save_answer
+def test_saved_answers_are_scoped_to_the_answering_user(_clean, monkeypatch):
+    """Answering a screening question must write to THAT user's memory only.
 
-    with get_session() as s:
-        app_a = _mk_submitted_app(s, _mk_job(s, "ten-qa", "user-a"))
-        app_b = _mk_submitted_app(s, _mk_job(s, "ten-qb", "user-b"))
-        pq_a = PendingQuestion(application_id=app_a.id, field_label="ten-visa?",
-                               field_selector="#v", field_type="text")
-        pq_b = PendingQuestion(application_id=app_b.id, field_label="ten-visa?",
-                               field_selector="#v", field_type="text")
-        s.add(pq_a); s.add(pq_b); s.commit()
-        s.refresh(pq_a); s.refresh(pq_b)
-        pq_a_id, pq_b_id = pq_a.id, pq_b.id
+    The answering surface used to be the Telegram bot (one chat, one owner);
+    it is the dashboard now, so this guards the route every tenant actually
+    uses. The invariant is unchanged: never one shared/global answer row.
+    """
+    from app.api import server as srv
 
-    asyncio.run(_save_answer(pq_a_id, "Answer from A"))
-    asyncio.run(_save_answer(pq_b_id, "Answer from B"))
+    class _Body:
+        def __init__(self, q, a):
+            self.question, self.answer = q, a
+
+    class _Req:
+        pass
+
+    for owner, answer in (("user-a", "Answer from A"), ("user-b", "Answer from B")):
+        # monkeypatch, not direct assignment: a leaked _require_user would
+        # silently re-scope every later test in the session.
+        monkeypatch.setattr(srv, "_require_user", lambda request, _o=owner: _o)
+        srv.save_answer(request=_Req(), body=_Body("ten-visa?", answer))
 
     with get_session() as s:
         rows = s.exec(select(AnswerMemory).where(AnswerMemory.label_normalized == "ten-visa?")).all()

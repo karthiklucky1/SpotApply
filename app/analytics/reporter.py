@@ -1,6 +1,4 @@
 import logging
-import httpx
-from app.config import settings
 from app.analytics.funnel import FunnelTracker
 
 log = logging.getLogger(__name__)
@@ -57,26 +55,14 @@ class FunnelReporter:
 
     @staticmethod
     def send_daily_report() -> None:
-        """Fetch statistics and send the report to the Telegram chat."""
+        """Write the daily funnel report to the application log.
+
+        This used to push the report into one hardcoded Telegram chat. The
+        numbers it reports are owner analytics, and the admin dashboard is
+        where they live now — logging keeps the daily snapshot in the deploy
+        logs without a second delivery channel to maintain.
+        """
         try:
-            msg = FunnelReporter.generate_daily_report()
-            if not settings.telegram_bot_token or not settings.telegram_chat_id:
-                log.warning("Telegram credentials missing. Skipping report sending.")
-                return
-            
-            url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-            resp = httpx.post(
-                url, 
-                json={
-                    "chat_id": settings.telegram_chat_id, 
-                    "text": msg, 
-                    "parse_mode": "Markdown"
-                }, 
-                timeout=10
-            )
-            if resp.status_code == 200:
-                log.info("Daily funnel report sent successfully.")
-            else:
-                log.error("Failed to send daily funnel report: %s", resp.text)
+            log.info("Daily funnel report:\n%s", FunnelReporter.generate_daily_report())
         except Exception as e:
-            log.error("Error generating/sending daily funnel report: %s", e)
+            log.error("Error generating daily funnel report: %s", e)

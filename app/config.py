@@ -63,11 +63,6 @@ class Settings(BaseSettings):
     # needs the top productive boards.
     keyword_search_max_slugs: int = 250
 
-    # Telegram
-    telegram_enabled: bool = False
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
-
     # GitHub harvester (optional token lifts the public API rate limit)
     github_token: str = ""
 
@@ -554,8 +549,4 @@ class Settings(BaseSettings):
     canonical_redirect_hosts: str = "www.spotapply.ai"
 
 settings = Settings()
-
-if not settings.telegram_enabled:
-    settings.telegram_bot_token = ""
-    settings.telegram_chat_id = ""
 

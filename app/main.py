@@ -1,24 +1,21 @@
-"""Single-process orchestrator: FastAPI + Telegram bot (local dev only).
+"""Single-process orchestrator (local dev only).
 
 Production (Railway) runs: uvicorn app.api.server:app
 The FastAPI server has its own built-in asyncio scheduler that handles
 discovery + matching every 6h, so we don't duplicate those jobs here.
 
-This file is only used locally (python -m app.main) to also start the
-Telegram bot and the registry harvester/validator on a schedule.
+This file is only used locally (python -m app.main) to also run the registry
+harvester/validator and the profile harvest on a schedule.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-import threading
 
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.api.server import app as fastapi_app
 from app.config import settings
-from app.telegram_bot.bot import build_app as build_tg
 from app.analytics.reporter import FunnelReporter
 
 log = logging.getLogger(__name__)
@@ -72,20 +69,9 @@ def start_api() -> None:
     uvicorn.run(fastapi_app, host=settings.api_host, port=settings.api_port, log_level="info")
 
 
-def start_bot() -> None:
-    """python-telegram-bot needs its own event loop on a non-main thread."""
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    tg = build_tg()
-    tg.run_polling(close_loop=False, stop_signals=())
-
-
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     start_scheduler()
-    if settings.telegram_enabled:
-        threading.Thread(target=start_bot, daemon=True, name="tg-bot").start()
-    else:
-        log.info("Telegram bot is disabled (telegram_enabled is False).")
     start_api()
 
 

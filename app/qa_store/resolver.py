@@ -85,7 +85,7 @@ class QAResolver:
         
         Returns:
             (answer_text, confidence)
-            If confidence < 0.7, the caller should prompt the user (Telegram).
+            If confidence < 0.7, the caller should ask the user.
         """
         low = question_text.lower().strip()
 
@@ -350,7 +350,7 @@ class QAResolver:
                 return "Yes" if has_noncomp else "No", 0.95
 
             # Remove blanket "Yes" default.
-            # Instead, return None with 0.0 confidence so we prompt the user via Telegram.
+            # Instead, return None with 0.0 confidence so we ask the user.
             log.info("QAResolver: Unknown Yes/No question '%s' — routing to human", question_text)
             return None, 0.0
 

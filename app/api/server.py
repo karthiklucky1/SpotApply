@@ -1634,6 +1634,30 @@ def logout():
 # before validating anything, so the cap is what stands between a single request
 # and the container's memory budget.
 _MAX_RESUME_BYTES = 5 * 1024 * 1024    # dashboard says "max 5MB"
+_ROLE_WORDS = ("engineer", "developer", "scientist", "manager", "analyst",
+               "designer", "architect", "lead", "consultant", "specialist",
+               "administrator", "researcher", "programmer")
+
+
+def _clean_seeded_role(raw: str) -> str:
+    """Reduce a résumé line to the role inside it.
+
+    The free fallback parser (used whenever the LLM is unavailable) reports
+    current_title as the whole experience line, so a target role would come out
+    as "Acme - Software Developer ( )" — which then drives discovery and, now
+    that roles re-derive on every upload, could overwrite a good list with that.
+    """
+    import re as _r
+    r = _r.sub(r"\([^)]*\)", " ", raw or "")          # drop "(2021-2025)" and "( )"
+    r = _r.sub(r"\s+", " ", r).strip(" -–—|,·").strip()
+    # A "Company - Title" (or "Title - Company") line: keep the half that names
+    # a role. Single-segment titles are left exactly as they are.
+    parts = [p.strip() for p in _r.split(r"\s[-–—|@]\s|,\s", r) if p.strip()]
+    if len(parts) > 1:
+        named = [p for p in parts if any(w in p.lower() for w in _ROLE_WORDS)]
+        if named:
+            r = named[0]
+    return r[:60].strip()
 _MAX_LINKEDIN_PDF_BYTES = 10 * 1024 * 1024
 
 
@@ -1850,8 +1874,12 @@ Return only valid JSON, no markdown, no explanation."""
         harvest_github_url = db_profile.github_url
         harvest_linkedin_url = db_profile.linkedin_url
 
-    # Auto-seed target_roles from the extracted data — only when the user
-    # hasn't already set any roles (so we never overwrite deliberate choices).
+    # Derive target_roles from the résumé we just read. This RE-derives them on
+    # every upload while the roles are still ours (target_roles_auto), so a CV
+    # that moves from "AI Engineer" to "Software Developer" moves the feed with
+    # it instead of matching against the roles of a résumé the user replaced.
+    # Roles the user edited by hand are never touched — that flag is cleared by
+    # PUT /api/target-roles.
     user_id_arg = uid if uid != "local" else None
     seeded_roles: list[str] = []
     with get_session() as session:
@@ -1859,10 +1887,10 @@ Return only valid JSON, no markdown, no explanation."""
         if user_id_arg:
             q = q.where(UserProfile.user_id == user_id_arg)
         p = session.exec(q).first()
-        if p and not (p.target_roles or "").strip():
+        if p and (not (p.target_roles or "").strip() or p.target_roles_auto):
             seen_r: set[str] = set()
             def _add_role(r: str):
-                r = (r or "").strip()
+                r = _clean_seeded_role(r)
                 if r and r.lower() not in seen_r and len(seeded_roles) < 6:
                     seen_r.add(r.lower())
                     seeded_roles.append(r)
@@ -1884,10 +1912,15 @@ Return only valid JSON, no markdown, no explanation."""
                     if s and any(tok in s.lower() for tok in _role_tokens):
                         _add_role(s)
             if seeded_roles:
+                _previous_roles = (p.target_roles or "").strip()
                 p.target_roles = ", ".join(seeded_roles)
+                p.target_roles_auto = True   # still ours; the next upload may re-derive
                 p.updated_at = _datetime.datetime.utcnow()
                 session.add(p)
                 session.commit()
+                if _previous_roles and _previous_roles != p.target_roles:
+                    log.info("Target roles re-derived from the new résumé for %s: %r → %r",
+                             uid, _previous_roles, ", ".join(seeded_roles))
 
         # Instant feed — Jobright-style onboarding: fill the board from the
         # already-scraped shared pool (pure DB copy, no HTTP) and score it, so
@@ -1907,7 +1940,6 @@ Return only valid JSON, no markdown, no explanation."""
             background_tasks.add_task(
                 run_harvest,
                 user_id=(uid if uid != "local" else None),
-                notify=False
             )
 
         # Trigger background LinkedIn/Resume alignment review
@@ -6584,11 +6616,19 @@ _USERPROFILE_COLUMNS = [
     ("professional_summary", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
     ("key_skills", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
     ("target_roles", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+    ("target_roles_auto", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
+    ("target_companies", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
     ("job_type_preference", "VARCHAR DEFAULT 'full_time'", "VARCHAR DEFAULT 'full_time'"),
     ("work_auth_status", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("include_internships_in_discovery", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("industry", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
-    ("preferred_country", "VARCHAR DEFAULT 'United States'", "VARCHAR DEFAULT 'United States'"),
+    # Default '' to match the model: never silently assume the US for a user
+    # who may be in Berlin (a repair-added column backfills every row).
+    ("preferred_country", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("ead_end_date", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("opt_unemployment_days_used", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
+    ("stem_opt", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("last_active_at", "TIMESTAMP", "TIMESTAMP"),
     ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
@@ -6972,7 +7012,6 @@ def recruiter_search(request: Request, body: dict) -> dict:
     AI-ranked list of VERIFIED candidates from the pool. The pull model: demand
     finds supply. Candidate contact details are NOT exposed (intro-gated)."""
     from app.db.models import RecruiterProfile, UserProfile
-    import json as _json
     uid = _get_user_id(request)
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -7685,6 +7724,9 @@ def update_target_roles(request: Request, body: TargetRolesUpdate,
             session.add(db_profile)
             session.flush()
         db_profile.target_roles = ", ".join(cleaned)
+        # The user has taken these over: stop re-deriving them from the résumé
+        # on future uploads. Clearing the list hands them back to the résumé.
+        db_profile.target_roles_auto = not cleaned
         db_profile.updated_at = _dt.utcnow()
         session.add(db_profile)
         session.commit()
@@ -7854,7 +7896,7 @@ def refresh_profile_memory(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.intelligence.harvester import run_harvest
     try:
-        return run_harvest(user_id=uid if uid and uid != "local" else None, notify=False)
+        return run_harvest(user_id=uid if uid and uid != "local" else None)
     except Exception as e:
         log.exception("Profile memory refresh failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

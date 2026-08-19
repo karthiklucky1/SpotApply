@@ -40,9 +40,6 @@ beautifulsoup4>=4.12
 playwright>=1.42
 feedparser>=6.0  # for RSS feeds
 
-# Telegram
-python-telegram-bot[job-queue]>=21.0
-
 slowapi>=0.1.9          # Rate limiting for FastAPI
 
 # Dev

@@ -8,7 +8,7 @@ partial board fetch mass-closing live jobs.
 from __future__ import annotations
 
 import pytest
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 
 from app.api import server
 
@@ -116,3 +116,129 @@ def test_every_user_scoped_table_is_reachable_in_reverse_fk_order():
               if "user_id" in t.columns
               or any(c in t.columns for c in server._EXTRA_OWNER_COLUMNS.get(name, ()))}
     assert scoped <= reachable
+
+
+# ── Target roles follow the résumé ───────────────────────────────────────────
+
+def _run_extract_profile(monkeypatch, uid, resume_text, extracted):
+    """Drive the real /api/resume/extract-profile route with the LLM switched off."""
+    from app.config import Settings, settings as _settings
+    monkeypatch.setattr(Settings, "use_supabase", property(lambda self: False))
+    monkeypatch.setattr(_settings, "anthropic_api_key", "", raising=False)
+    monkeypatch.setattr(server, "_require_user", lambda request: uid)
+    monkeypatch.setattr("app.matching.pipeline._load_resume",
+                        lambda user_id=None: resume_text)
+    monkeypatch.setattr("app.intelligence.resume_basic_extract.basic_extract_profile",
+                        lambda text: extracted)
+    monkeypatch.setattr(server, "analyze_resume_text",
+                        lambda text, uid_: {"findings": []}, raising=False)
+
+    class _BG:
+        def add_task(self, *a, **k):
+            pass
+
+    # A real Request: the route is wrapped by slowapi's rate limiter, which
+    # rejects anything else.
+    from starlette.requests import Request as _Request
+    req = _Request({"type": "http", "method": "POST", "path": "/api/resume/extract-profile",
+                    "headers": [], "query_string": b"", "client": ("test", 1),
+                    "app": server.app})
+    return server.extract_profile_from_resume(request=req, background_tasks=_BG())
+
+
+def test_target_roles_are_re_derived_when_a_new_resume_is_uploaded(monkeypatch):
+    """Uploading a new résumé must move the target roles with it.
+
+    Someone whose CV goes from "AI Engineer" to "Software Developer" was left
+    matching against the roles of the résumé they replaced, because roles were
+    seeded ONLY when the list was empty.
+    """
+    from app.db.init_db import get_session
+    from app.db.models import UserProfile
+
+    uid = "roles-refresh-user"
+    with get_session() as s:
+        s.add(UserProfile(user_id=uid, target_roles="AI Engineer",
+                          target_roles_auto=True))
+        s.commit()
+
+    _run_extract_profile(monkeypatch, uid, "Software Developer, 5 years of Java.", {
+        "current_title": "Software Developer",
+        "suggested_target_roles": ["Software Developer", "Backend Engineer"],
+    })
+
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        assert "AI Engineer" not in p.target_roles, (
+            "the roles of the REPLACED résumé must not survive the new upload")
+        assert "Software Developer" in p.target_roles
+        assert p.target_roles_auto is True
+
+
+def test_a_new_resume_does_not_touch_roles_the_user_typed(monkeypatch):
+    """The other half: hand-edited roles survive every later upload."""
+    from app.db.init_db import get_session
+    from app.db.models import UserProfile
+
+    uid = "roles-protected-user"
+    with get_session() as s:
+        s.add(UserProfile(user_id=uid, target_roles="Developer Advocate",
+                          target_roles_auto=False))
+        s.commit()
+
+    _run_extract_profile(monkeypatch, uid, "Software Developer, 5 years of Java.", {
+        "current_title": "Software Developer",
+        "suggested_target_roles": ["Software Developer"],
+    })
+
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        assert p.target_roles == "Developer Advocate"
+        assert p.target_roles_auto is False
+
+
+def test_manually_edited_roles_are_not_overwritten_by_a_later_upload(monkeypatch):
+    """PUT /api/target-roles hands the list to the user for good."""
+    from app.db.init_db import get_session
+    from app.db.models import UserProfile
+
+    uid = "roles-manual-user"
+    with get_session() as s:
+        s.add(UserProfile(user_id=uid, target_roles="AI Engineer",
+                          target_roles_auto=True))
+        s.commit()
+
+    monkeypatch.setattr(server, "_get_user_id", lambda request: uid)
+
+    class _Body:
+        roles = ["Staff Platform Engineer"]
+
+    server.update_target_roles(request=None, body=_Body(), background_tasks=None)
+
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        assert p.target_roles == "Staff Platform Engineer"
+        assert p.target_roles_auto is False, (
+            "a hand-edited list must survive the next résumé upload")
+
+
+def test_clearing_roles_hands_them_back_to_the_resume(monkeypatch):
+    from app.db.init_db import get_session
+    from app.db.models import UserProfile
+
+    uid = "roles-cleared-user"
+    with get_session() as s:
+        s.add(UserProfile(user_id=uid, target_roles="Something",
+                          target_roles_auto=False))
+        s.commit()
+
+    monkeypatch.setattr(server, "_get_user_id", lambda request: uid)
+
+    class _Body:
+        roles = []
+
+    server.update_target_roles(request=None, body=_Body(), background_tasks=None)
+
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        assert p.target_roles_auto is True

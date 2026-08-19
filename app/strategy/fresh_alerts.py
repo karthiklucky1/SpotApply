@@ -2,8 +2,7 @@
 
 After each matching pass, alert the user about newly shortlisted jobs that are
 young enough that applying now means being among the first applicants. Alerts
-land on the dashboard bell (UserNotification) for every tenant, plus Telegram
-when a bot is configured (single-user/local mode).
+land on the dashboard bell (UserNotification) for every tenant.
 
 Honesty guards:
   - Greenhouse's public list only exposes ``updated_at`` (moves on every edit),
@@ -67,20 +66,6 @@ def _verify_greenhouse_first_published(job: Job) -> Optional[datetime]:
     except Exception as e:
         log.debug("greenhouse first_published check skipped: %s", e)
         return None
-
-
-def _send_telegram(text: str) -> None:
-    if not (settings.telegram_bot_token and settings.telegram_chat_id):
-        return
-    try:
-        import httpx
-        httpx.post(
-            f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-            json={"chat_id": settings.telegram_chat_id, "text": text},
-            timeout=10,
-        )
-    except Exception as e:
-        log.debug("fresh-alert telegram send failed: %s", e)
 
 
 def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]) -> int:
@@ -168,7 +153,6 @@ def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]
                                           "source": job.source.value}),
             ))
             sent += 1
-            _send_telegram("⚡ Fresh match\n" + msg)
 
         session.commit()
     if sent:

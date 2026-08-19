@@ -156,22 +156,7 @@ def _llm_brief(profile, gh: dict) -> tuple[str, str]:
         return fallback, json.dumps(parsed)
 
 
-def _notify_telegram(text: str) -> None:
-    try:
-        import httpx
-        from app.config import settings
-        if not (settings.telegram_bot_token and settings.telegram_chat_id):
-            return
-        httpx.post(
-            f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-            json={"chat_id": settings.telegram_chat_id, "text": text[:3500]},
-            timeout=10,
-        )
-    except Exception as e:
-        log.debug("telegram notify skipped: %s", e)
-
-
-def run_harvest(user_id: str | None = None, notify: bool = False) -> dict:
+def run_harvest(user_id: str | None = None) -> dict:
     """Harvest one user's GitHub, write an LLM recruiter brief, store it."""
     from app.db.init_db import get_session
     from app.db.models import UserPersonalMemory
@@ -218,8 +203,6 @@ def run_harvest(user_id: str | None = None, notify: bool = False) -> dict:
         except Exception as ne:
             log.warning("Failed to create profile suggestion notification: %s", ne)
 
-    if notify and recommendations:
-        _notify_telegram("🧠 JobAgent weekly profile brief:\n\n" + recommendations)
     return out
 
 
@@ -306,7 +289,7 @@ def run_harvest_all_users() -> int:
         if not (getattr(p, "github_url", "") or "").strip():
             continue
         try:
-            run_harvest(user_id=p.user_id, notify=False)
+            run_harvest(user_id=p.user_id)
             n += 1
         except Exception as e:
             log.warning("harvest failed for user %s: %s", p.user_id, e)

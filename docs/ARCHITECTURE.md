@@ -69,7 +69,7 @@ CRITICAL if `WEB_CONCURRENCY > 1` (`server.py:398-409`). Extra *web* replicas ar
 ## 2. The six background lanes
 
 All started as asyncio tasks in `startup_event` (`server.py:391`). `app/main.py` adds only
-the Telegram bot and registry cron — never these, or they double-run.
+the registry cron — never these, or they double-run.
 
 | Lane | Cadence | Does | Lock | Where |
 |---|---|---|---|---|
@@ -332,7 +332,7 @@ moving *autofill* to the browser service would have been the wrong call — see 
 | Tailoring LLM | `claude-sonnet-4-6` |
 | Browser | Playwright Chromium — gated (`common/browser.py`) or remote (`browser-service/`) |
 | Scheduling | asyncio tasks in-process; APScheduler only in `app/main.py` |
-| Notifications | python-telegram-bot, in-app `UserNotification` |
+| Notifications | in-app `UserNotification` (dashboard bell) |
 
 ---
 

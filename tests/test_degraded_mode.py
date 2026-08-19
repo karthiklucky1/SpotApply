@@ -23,6 +23,19 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(degraded, "_STATE_PATH", tmp_path / "degraded_state.json")
 
 
+@pytest.fixture(autouse=True)
+def _stub_resume(monkeypatch):
+    """The recheck loads the user's résumé before scoring anything.
+
+    Stub it: depending on a real ./data/resume_master.md made these tests pass
+    or fail on whether a file happened to be sitting on the developer's disk —
+    and it is never there in CI, where the recheck would silently skip every
+    user and the assertions below would read 0.
+    """
+    import app.matching.pipeline as _pipeline
+    monkeypatch.setattr(_pipeline, "_load_resume", lambda user_id=None: "resume text")
+
+
 # ── The bar ──────────────────────────────────────────────────────────────────
 
 def test_local_scores_are_held_to_the_degraded_bar():
