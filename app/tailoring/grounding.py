@@ -1,11 +1,9 @@
 import logging
-import os
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from dataclasses import dataclass
 from sentence_transformers.util import cos_sim
 from app.config import settings
-from app.db.init_db import get_session
 from app.tailoring.doctor import _METRIC_RE
 
 log = logging.getLogger(__name__)

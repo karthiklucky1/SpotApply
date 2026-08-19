@@ -238,7 +238,6 @@ def generate_referral_drafts(application_id: int, user_id: str | None = None) ->
     except Exception:
         pass
 
-    repo_mention = f"the {repos[0]}" if repos else "open-source projects"
     drafts.append({
         "type": "github_outreach",
         "label": "GitHub outreach note",
@@ -246,7 +245,7 @@ def generate_referral_drafts(application_id: int, user_id: str | None = None) ->
         "body": (
             f"Hi {{name}}, I noticed your profile and also saw {company}'s active open-source contributions on GitHub"
             + (f", particularly the {repos[0]} repository." if repos else ".")
-            + f" As a developer working with similar tech, I'd love to connect and follow your work."
+            + " As a developer working with similar tech, I'd love to connect and follow your work."
         )
     })
 

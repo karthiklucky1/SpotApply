@@ -34,7 +34,7 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 # it's active before the background lanes start.
 from app.common.logging_setup import setup_logging
 setup_logging()
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import select
@@ -48,7 +48,6 @@ from app.db.models import (
 )
 from app.discovery.pipeline import run_discovery
 from app.matching.pipeline import run_matching
-from app.tailoring.tailor import tailor_all_shortlisted
 from app.api.demo import PublicDemoRequest
 
 # ── Error tracking (Sentry) — dormant until SENTRY_DSN is set ──────────────────
@@ -1570,7 +1569,7 @@ async def public_demo_match(
     file: Optional[UploadFile] = File(None)
 ):
     """Public unauthenticated endpoint to run a mock matching cascade and outreach generation."""
-    from app.api.demo import run_demo_match, extract_text_from_file, PublicDemoRequest
+    from app.api.demo import run_demo_match, extract_text_from_file
     try:
         text = resume_text or ""
         if file:
@@ -1631,10 +1630,16 @@ def logout():
 
 # ── Resume upload ─────────────────────────────────────────────────────────────
 
+# Upload ceilings. Every one of these routes reads the whole body into memory
+# before validating anything, so the cap is what stands between a single request
+# and the container's memory budget.
+_MAX_RESUME_BYTES = 5 * 1024 * 1024    # dashboard says "max 5MB"
+_MAX_LINKEDIN_PDF_BYTES = 10 * 1024 * 1024
+
+
 @app.post("/api/resume/upload")
 async def upload_resume(request: Request):
     """Upload resume file. Stores in Supabase Storage (production) or local disk (dev)."""
-    from fastapi import UploadFile, File
     uid = _require_user(request)
     form = await request.form()
     file: UploadFile = form.get("file")
@@ -1642,10 +1647,19 @@ async def upload_resume(request: Request):
         raise HTTPException(status_code=400, detail="No file provided")
 
     content = await file.read()
-    filename = file.filename
+    # `or ""` — a form field that is not a file has no .filename, and
+    # None.rsplit() 500'd instead of returning the 400 below.
+    filename = file.filename or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
     if ext not in ("pdf", "docx", "md", "txt"):
         raise HTTPException(status_code=400, detail="Only PDF, DOCX, MD, TXT allowed")
+    # Match the 5 MB the upload UI promises. The whole file is held in memory
+    # (and copied again on the way to Storage) in a container that has already
+    # been OOM-killed once — an unbounded upload was a free way to do it again.
+    if len(content) > _MAX_RESUME_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Résumé too large — max {_MAX_RESUME_BYTES // (1024 * 1024)} MB.")
     content_type = file.content_type
 
     def _store() -> dict:
@@ -1829,6 +1843,12 @@ Return only valid JSON, no markdown, no explanation."""
         db_profile.updated_at = _datetime.datetime.utcnow()
         session.add(db_profile)
         session.commit()
+        # Read the two URLs we need AFTER the request while the row is still
+        # attached. commit() expires every attribute, so touching db_profile
+        # once the session closes raises DetachedInstanceError — which 500'd
+        # this route for every user finishing résumé upload.
+        harvest_github_url = db_profile.github_url
+        harvest_linkedin_url = db_profile.linkedin_url
 
     # Auto-seed target_roles from the extracted data — only when the user
     # hasn't already set any roles (so we never overwrite deliberate choices).
@@ -1882,7 +1902,7 @@ Return only valid JSON, no markdown, no explanation."""
             log.debug("instant feed not scheduled: %s", _ie)
 
         # Trigger background memory harvesting if GitHub/LinkedIn urls are present
-        if db_profile.github_url or db_profile.linkedin_url:
+        if harvest_github_url or harvest_linkedin_url:
             from app.intelligence.harvester import run_harvest
             background_tasks.add_task(
                 run_harvest,
@@ -2734,6 +2754,11 @@ def api_jobs(
     max_age_days: int = None,      # only jobs posted within N days
     roles_only: str = None,        # "1" = only titles matching the user's target roles
 ) -> dict:
+    # Clamp before anything uses them: limit=0 divided by zero when computing
+    # `pages`, and a negative page produced a negative OFFSET that Postgres
+    # rejects outright. Both are reachable by hand-editing the query string.
+    page = max(1, page or 1)
+    limit = max(1, min(limit or 50, 200))
     uid = _get_user_id(request)
     # Fail closed: an unresolved uid must never return the unscoped
     # (all-tenants) job list.
@@ -2822,6 +2847,12 @@ def api_jobs(
             count_query = count_query.where(Job.title.like(search_pattern) | Job.company.like(search_pattern) | Job.location.like(search_pattern))
         if company:
             count_query = count_query.where(Job.company == company)
+        # The page query filters by track; the count must too, or the Job
+        # Explorer reports an inflated total and pages into empty results.
+        if track == "autofill":
+            count_query = count_query.where(Job.source.in_(list(_AUTOFILL_SOURCES)))
+        elif track == "manual":
+            count_query = count_query.where(Job.source.not_in(list(_AUTOFILL_SOURCES)))
         if status:
             if status == "unprocessed":
                 count_query = count_query.select_from(Job).outerjoin(Application, Application.job_id == Job.id).where(Application.id.is_(None))
@@ -3723,7 +3754,6 @@ def application_autopsy(application_id: int, request: Request) -> dict:
 @app.get("/api/fill-pack/{application_id}")
 def get_fill_pack(application_id: int, request: Request) -> dict:
     """Returns all data the browser extension needs to fill a job application form."""
-    import io, zipfile as _zf
     from pathlib import Path as _P
     _require_owned_application(request, application_id)
     uid = _get_user_id(request)
@@ -3816,7 +3846,6 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
 
     # Base URL + auth token so the extension can call back (save answers,
     # fetch the tailored résumé, report submission).
-    from app.config import settings
     # request.base_url keeps local dev on 127.0.0.1:8000, but behind the
     # TLS-terminating proxy it reports http:// — and an http:// base makes every
     # extension call either blocked as mixed content or redirected, and a
@@ -5066,14 +5095,23 @@ def trigger_matching(request: Request, bg: BackgroundTasks) -> dict:
 
 # ── Usage / Plan helpers ─────────────────────────────────────────────────────
 
-# ── Founding-user trial ──────────────────────────────────────────────────────
+# ── Founding-user trial (DORMANT) ────────────────────────────────────────────
+# The whole feature is switched off at ONE point: _get_trial returns None, so
+# every quota branch that consults it is inert and everybody gets unlimited
+# access. The helpers below are the dormant other half — kept intact so the
+# feature can be switched back on by restoring _get_trial, not left half-wired.
+# /api/usage deliberately does NOT call _grant_trial_if_eligible: doing so wrote
+# TrialGrant rows on a GET and reported a trial that never counted down.
 def _get_trial(uid):
     """Return this user's TrialGrant row, or None. Always return None to grant unlimited access."""
     return None
 
 
 def _grant_trial_if_eligible(uid):
-    """Grant a trial to the first N users (idempotent). Returns the grant or None."""
+    """Grant a trial to the first N users (idempotent). Returns the grant or None.
+
+    Currently uncalled — see the dormancy note above.
+    """
     if not uid or uid == "local":
         return None
     from app.db.models import TrialGrant
@@ -5331,7 +5369,7 @@ def redeem_coupon(request: Request, body: CouponRedeemBody) -> dict:
         session.add(coupon)
         session.add(CouponRedemption(coupon_id=coupon.id, user_id=uid))
         session.add(UserNotification(
-            user_id=uid, title=f"Promo code applied! 🎉", type="coupon_reward",
+            user_id=uid, title="Promo code applied! 🎉", type="coupon_reward",
             message=(f"Code {code} unlocked {coupon.reward_days} days of "
                      f"{plan.value.upper()}. {coupon.description}"),
             read=False,
@@ -6341,8 +6379,6 @@ def get_usage(request: Request) -> dict:
     if uid == "local":
         return {"plan": "local", "tailor_used": 0, "tailor_daily_limit": None,
                 "autofill_used_week": 0, "autofill_weekly_limit": None, "trial": None}
-    # Founding-user trial: grant on first sight (first N users), then report it.
-    trial_grant = _grant_trial_if_eligible(uid)
     plan = _get_user_plan(uid)
     limits = PLAN_LIMITS[plan]
     today = date.today()
@@ -6352,14 +6388,13 @@ def get_usage(request: Request) -> dict:
         tailor_used = row.tailor_count
         autofill_used = _get_week_autofill_count(session, uid)
         session.commit()
+    # The founding-user trial is switched OFF: _get_trial returns None so that
+    # everyone gets unlimited access, and nothing increments jobs_used any more.
+    # This block used to mint a TrialGrant row (a write on a GET) and then report
+    # active=True forever, because used stayed 0 against the quota — the mobile
+    # app rendered "Founding trial: N of N boosted jobs left" permanently. Report
+    # the truth instead; re-populate this only if the trial is ever switched back on.
     trial = None
-    if trial_grant is not None:
-        trial = {
-            "jobs_used": trial_grant.jobs_used,
-            "jobs_quota": trial_grant.jobs_quota,
-            "remaining": max(0, trial_grant.jobs_quota - trial_grant.jobs_used),
-            "active": trial_grant.jobs_used < trial_grant.jobs_quota,
-        }
     return {
         "plan": plan,
         "tailor_used": tailor_used,
@@ -6465,10 +6500,35 @@ def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundT
     return {"started": "tailoring", "application_id": application_id, "usage": usage}
 
 
+def _require_server_autofill_allowed(uid: str | None) -> None:
+    """Refuse server-side autofill/preview for users the filler will not serve.
+
+    Mirrors app.autofill.agent._set_fill_owner: only the founder (or the local
+    dev user) may drive a server-side browser fill unless multi-user autofill is
+    explicitly enabled, because the filler otherwise falls back to the founder's
+    identity. Raising here turns a silent no-op into an answer the UI can show.
+    """
+    from app.autofill.agent import _is_autofill_founder
+    if _is_autofill_founder(uid) or settings.autofill_multi_user_enabled:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail="Server-side autofill isn't enabled for your account. "
+               "Install the SpotApply browser extension to fill this form — "
+               "it fills in your own browser and you stay in control of Submit.",
+    )
+
+
 @app.post("/run/autofill/{application_id}")
 @_rate_limit("20/minute")
 def trigger_autofill(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
     uid = _require_owned_application(request, application_id)
+    # Refuse up front what the agent would refuse silently. Server-side autofill
+    # is founder-only unless AUTOFILL_MULTI_USER_ENABLED is set: _set_fill_owner
+    # returns False for everyone else and autofill() returns immediately. This
+    # route still answered {"started": "autofill"} and burned one of the user's
+    # weekly credits for a run that never touched a form.
+    _require_server_autofill_allowed(uid)
     allowed, detail, usage = _check_autofill_limit(uid)
     if not allowed:
         raise HTTPException(status_code=429, detail=detail)
@@ -6480,7 +6540,10 @@ def trigger_autofill(application_id: int, request: Request, bg: BackgroundTasks)
 @app.post("/run/preview/{application_id}")
 def trigger_preview(application_id: int, request: Request, bg: BackgroundTasks) -> dict:
     """Re-open the filled form in a visible Playwright browser for user review."""
-    _require_owned_application(request, application_id)
+    uid = _require_owned_application(request, application_id)
+    # Preview drives the same filler as autofill, so it needs the same gate —
+    # without it a non-founder's preview filled their form with founder PII.
+    _require_server_autofill_allowed(uid)
     bg.add_task(preview, application_id)
     return {"started": "preview", "application_id": application_id}
 
@@ -6798,7 +6861,6 @@ class RecruiterRegister(BaseModel):
 def _verify_recruiter(rp) -> None:
     """Auto-verify on corporate-domain match; attach public H-1B filing cred.
     Sets banned if they ever indicate charging candidates (illegal)."""
-    import re as _re
     notes = []
     domain = (rp.company_domain or "").lower().strip().lstrip("@")
     email_domain = (rp.work_email or "").split("@")[-1].lower().strip()
@@ -6941,7 +7003,6 @@ def recruiter_search(request: Request, body: dict) -> dict:
     # Rank by embedding similarity of the JD vs each candidate's profile text.
     try:
         from app.matching.matcher import _get_embed_model
-        import numpy as np
         model = _get_embed_model()
         def _ctext(p):
             return f"{p.current_title}\n{p.key_skills}\n{p.professional_summary}"[:1500]
@@ -6957,12 +7018,9 @@ def recruiter_search(request: Request, body: dict) -> dict:
     results = []
     with get_session() as rsession:
       for p, sim in ranked:
-        evidence = {}
-        if p.trust_evidence:
-            try:
-                evidence = _json.loads(p.trust_evidence)
-            except (ValueError, TypeError):
-                evidence = {}
+        # NOTE: trust_evidence is deliberately NOT returned here — the recruiter
+        # payload exposes only the derived tier/score. (It used to be parsed into
+        # a local that was then dropped on the floor.)
         results.append({
             "candidate_user_id": p.user_id,
             "handle": p.public_handle,
@@ -8041,6 +8099,10 @@ async def ingest_linkedin_pdf(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="No file provided")
 
     data = await file.read()
+    if len(data) > _MAX_LINKEDIN_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large — max {_MAX_LINKEDIN_PDF_BYTES // (1024 * 1024)} MB.")
     filename = file.filename or "profile.pdf"
 
     def _parse_and_ingest() -> dict:
@@ -8279,7 +8341,19 @@ def download_tailored_resume(application_id: int, request: Request):
             raise HTTPException(status_code=404, detail="Application not found")
         if not application.tailored_resume_path:
             raise HTTPException(status_code=400, detail="No tailored resume found for this application")
-            
+        # Never hand over a résumé the anti-hallucination check rejected. Tailoring
+        # still records the file path when grounding fails (it parks the app at
+        # ERROR with the reason in notes), so serving purely on "the path exists"
+        # delivered exactly the document grounding refused to approve.
+        if application.status == ApplicationStatus.ERROR:
+            raise HTTPException(
+                status_code=409,
+                detail=(application.notes
+                        or "This résumé did not pass the grounding check and cannot be downloaded. "
+                           "Re-run tailoring for this application."),
+            )
+
+
         import os
         from fastapi.responses import FileResponse
         path = application.tailored_resume_path
@@ -8469,7 +8543,13 @@ def delete_account(request: Request) -> dict:
                     PendingQuestion.application_id.in_(app_ids)))
                 deleted["pendingquestion"] = r.rowcount or 0
 
-            for name, table in SQLModel.metadata.tables.items():
+            # CHILDREN FIRST. sorted_tables is FK-dependency order (parents
+            # first), so deleting in reverse removes referencing rows before the
+            # rows they point at. Plain declaration order put `job` ahead of
+            # `application`, and on Postgres (which actually enforces the FK,
+            # unlike the SQLite used in tests) that raised — see below.
+            for table in reversed(SQLModel.metadata.sorted_tables):
+                name = table.name
                 cols = table.columns
                 owner_cols = [cols[c] for c in ("user_id",) if c in cols]
                 owner_cols += [cols[c] for c in _EXTRA_OWNER_COLUMNS.get(name, ())
@@ -8477,9 +8557,15 @@ def delete_account(request: Request) -> dict:
                 if not owner_cols:
                     continue
                 for col in owner_cols:
+                    # SAVEPOINT per statement: on Postgres a failed statement
+                    # poisons the whole transaction, so without this the first
+                    # error made every later delete AND the final commit fail —
+                    # the route 500'd and nothing at all was deleted, while the
+                    # except below quietly logged "one table failed".
                     try:
-                        r = session.exec(sql_delete(table).where(col == uid))
-                        deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
+                        with session.begin_nested():
+                            r = session.exec(sql_delete(table).where(col == uid))
+                            deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
                     except Exception as e:
                         # One undeletable table must not abandon the rest half-done.
                         log.exception("Account deletion: %s.%s failed for %s: %s",
@@ -8675,7 +8761,6 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
     """Ingest emails from the browser extension, match to applications,
     and auto-detect rejections / interview invitations."""
     from datetime import datetime
-    import json as _json
 
     uid = _require_user(request)
     _uid_filter = uid and uid != "local"
@@ -8887,7 +8972,7 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
                 elif is_interview:
                     interviews += 1
             except Exception as e:
-                print(f"[sync-emails] failed to import email '{title}': {e}")
+                log.warning("sync-emails: failed to import email %r: %s", title, e)
                 unmatched_list.append({
                     "subject": email.get("subject"),
                     "sender": email.get("sender"),

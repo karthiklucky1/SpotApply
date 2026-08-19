@@ -109,16 +109,20 @@ def test_cap_is_two_days_and_per_user_volume_is_bounded():
 # ── The recheck, against the database ────────────────────────────────────────
 
 class _FakeReranker:
-    """Stands in for the LLM: returns a canned score per job title."""
+    """Stands in for the LLM: returns a canned score per job title.
 
-    def __init__(self, scores, user_id=None):
+    Mirrors the REAL Reranker surface — built with profile=, and score()
+    returning the (score, reason, concerns, breakdown) 4-tuple. The earlier
+    stand-in invented a user_id= kwarg, a resume_text() method and a bare-float
+    score(), so these tests passed against an interface that does not exist
+    while the production recheck raised on every single job.
+    """
+
+    def __init__(self, scores, profile=None):
         self._scores = scores
 
-    def resume_text(self):
-        return "resume"
-
     def score(self, resume_text, job):
-        return self._scores[job.external_id]
+        return self._scores[job.external_id], "reason", [], {}
 
 
 def _seed(session, ext, score, provisional, age_hours, status=None):
@@ -166,7 +170,7 @@ def test_recheck_keeps_good_and_removes_weak(monkeypatch, _clean_deg):
 
     scores = {"deg-good": 88.0, "deg-weak": 41.0, "deg-real": 5.0}
     monkeypatch.setattr("app.matching.reranker.Reranker",
-                        lambda user_id=None: _FakeReranker(scores))
+                        lambda profile=None: _FakeReranker(scores))
 
     end = datetime.utcnow()
     stats = degraded.recheck_provisional((end - timedelta(hours=2), end), [None])
@@ -195,7 +199,7 @@ def test_recheck_ignores_jobs_older_than_the_window(monkeypatch, _clean_deg):
         _seed(s, "deg-old", 80, provisional=True, age_hours=30)
 
     monkeypatch.setattr("app.matching.reranker.Reranker",
-                        lambda user_id=None: _FakeReranker({"deg-old": 10.0}))
+                        lambda profile=None: _FakeReranker({"deg-old": 10.0}))
     end = datetime.utcnow()
     # Outage lasted 2 hours — a 30-hour-old job is outside it.
     stats = degraded.recheck_provisional((end - timedelta(hours=2), end), [None])
@@ -212,7 +216,7 @@ def test_recheck_is_capped_per_user(monkeypatch, _clean_deg):
 
     scores = {f"deg-{i}": 90.0 for i in range(6)}
     monkeypatch.setattr("app.matching.reranker.Reranker",
-                        lambda user_id=None: _FakeReranker(scores))
+                        lambda profile=None: _FakeReranker(scores))
     end = datetime.utcnow()
     stats = degraded.recheck_provisional((end - timedelta(hours=2), end), [None])
     assert stats["checked"] == 3

@@ -592,7 +592,20 @@ def _parse_response(text: str) -> Tuple[float, str, List[str], dict]:
         raise ValueError(f"Reranker LLM returned invalid JSON: {e}") from e
     score = max(0.0, min(100.0, float(data["score"])))
     breakdown = _clean_breakdown(data.get("breakdown"), score)
-    return score, data.get("reason", ""), data.get("concerns", []), breakdown
+    # Coerce the free-text fields: the model occasionally answers with null, a
+    # number, or a bare string where a list belongs. Callers concatenate reason
+    # and "; ".join(concerns), so an unexpected type raised mid-pass and cost
+    # the whole batch a Claude call that had already been paid for.
+    reason = data.get("reason") or ""
+    if not isinstance(reason, str):
+        reason = str(reason)
+    concerns = data.get("concerns") or []
+    if isinstance(concerns, str):
+        concerns = [concerns]
+    elif not isinstance(concerns, list):
+        concerns = [str(concerns)]
+    concerns = [c if isinstance(c, str) else str(c) for c in concerns]
+    return score, reason, concerns, breakdown
 
 
 # ── Process-wide LLM clients ────────────────────────────────────────────────

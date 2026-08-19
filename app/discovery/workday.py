@@ -106,7 +106,12 @@ class WorkdayScraper:
         offset = 0
         limit = 20
         max_total = 100  # Cap total jobs fetched per company run to avoid timeouts
-        
+        # A PARTIAL result must never be treated as "the whole board". The
+        # pipeline ghost-closes every stored job missing from a fetch, so a
+        # mid-pagination failure (or hitting max_total on a big board) would
+        # permanently close live postings and SKIP their applications.
+        self.fetch_complete = True
+
         try:
             while len(jobs) < max_total:
                 payload = {
@@ -119,6 +124,7 @@ class WorkdayScraper:
                 if r.status_code != 200:
                     log.warning("Workday fetch failed for %s: HTTP %d", tenant, r.status_code)
                     # If offset is 0, this is a fatal run error
+                    self.fetch_complete = False
                     return None if offset == 0 else jobs
                     
                 data = r.json()
@@ -150,7 +156,10 @@ class WorkdayScraper:
                     info = detail_data.get("jobPostingInfo", {})
                     description = _strip_html(info.get("jobDescription", ""))
                     
-                    req_id = info.get("jobReqId") or p.get("bulletFields", [None])[0] or ext_path.split("_")[-1]
+                    # `or [None]` — bulletFields can come back as an EMPTY list
+                    # (not just missing), and [] [0] raised IndexError, failing
+                    # the whole board over one malformed posting.
+                    req_id = info.get("jobReqId") or (p.get("bulletFields") or [None])[0] or ext_path.split("_")[-1]
                     location = info.get("location") or p.get("locationsText") or ""  # coerce null → ""
                     remote = "remote" in location.lower()
                     
@@ -179,6 +188,8 @@ class WorkdayScraper:
                     )
                     
                     if len(jobs) >= max_total:
+                        # Truncated at the cap — the board may hold more.
+                        self.fetch_complete = False
                         break
                         
                 # Next page
@@ -189,6 +200,7 @@ class WorkdayScraper:
                     
         except httpx.HTTPError as e:
             log.warning("Workday connection failed for %s: %s", tenant, e)
+            self.fetch_complete = False
             return None if offset == 0 else jobs
             
         log.info("Workday[%s]: %d tech jobs parsed successfully", tenant, len(jobs))

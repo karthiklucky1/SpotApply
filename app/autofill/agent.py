@@ -188,7 +188,6 @@ async def _handle_captcha(page: Page, application_id: int, job: Job) -> bool:
     else:
         try:
             import httpx
-            import json
             await httpx.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
                 json={
@@ -703,7 +702,6 @@ def _get_system_question_answerer_prompt() -> str:
     
     uni = edu.get("university", "University of Cincinnati")
     degree = edu.get("degree", "Master of Engineering")
-    grad_year = edu.get("graduation_year", 2026)
     grad_date = edu.get("graduation_date", "April 30, 2026")
     grad_status = edu.get("graduation_status", "Graduated")
     
@@ -2278,14 +2276,34 @@ async def _preview_one(application_id: int) -> None:
         if not app:
             raise ValueError(f"Application {application_id} not found")
         job = session.get(Job, app.job_id)
-        apply_url = app.apply_url or job.url
+        # job can be gone (retention prunes closed rows); fall back to the
+        # application's own apply_url instead of an AttributeError on None.
+        apply_url = app.apply_url or (job.url if job else None)
+        if not apply_url:
+            raise ValueError(f"Application {application_id} has no apply URL to preview")
         resume_path = app.tailored_resume_path
         cover_path = app.cover_letter_path
+
+    # Establish the identity scope BEFORE filling anything. Without this the
+    # preview inherited whatever the last run set — in practice the founder's
+    # qa_resolver/applicant_* globals — and typed those details into another
+    # user's application form.
+    if not _set_fill_owner(app.user_id):
+        log.warning("Preview refused for application %d — autofill is not enabled "
+                    "for user %s", application_id, app.user_id)
+        return
 
     cover_text = ""
     if cover_path:
         from pathlib import Path
-        cover_text = Path(cover_path).read_text(encoding="utf-8")
+        # Tailored docs live on ephemeral disk and are wiped by every redeploy;
+        # a missing file must not abort the preview the user just asked for.
+        try:
+            cover_text = Path(cover_path).read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("Cover letter unreadable for app %d (%s) — previewing without it",
+                        application_id, e)
+            cover_text = ""
         if "---COVER---" in cover_text:
             cover_text = cover_text.split("---COVER---", 1)[-1].strip()
 

@@ -247,12 +247,3 @@ def assess(company: str = "", description: str = "", url: str = "",
         "No public sponsorship record found — worth a quick check before applying.",
         "Sponsorship unknown",
     )
-
-
-# ── Backward-compatible facade ───────────────────────────────────────────────
-class SponsorshipChecker:
-    def __init__(self):
-        log.info("SponsorshipChecker initialized (curated public-record lists).")
-
-    def check_company(self, company_name: str) -> SponsorshipLikelihood:
-        return assess(company=company_name).likelihood

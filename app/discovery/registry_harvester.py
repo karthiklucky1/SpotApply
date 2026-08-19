@@ -6,8 +6,6 @@ Lever, Ashby) via CareerResolver, and registers active boards in CompanyRegistry
 from __future__ import annotations
 
 import logging
-import asyncio
-from typing import List
 
 from sqlmodel import select
 

@@ -71,7 +71,6 @@ class JobicySource:
                                     continue
 
                                 # Keyword match on title
-                                title_lower = title.lower()
                                 if not matches_title(title, self.keywords):
                                     continue
 

@@ -808,7 +808,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
         if res is None:
             continue
         score, reason, concerns, breakdown = res
-        new_app_id: int | None = None
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
@@ -880,8 +879,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                             user_id=user_id,
                         )
                         session.add(new_app)
-                        session.flush()  # populate new_app.id before commit
-                        new_app_id = new_app.id
+                        session.flush()
                         shortlisted.append(job.id)
                         today_count += 1
 

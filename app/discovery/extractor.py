@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 from urllib.parse import urlparse
 
 # No direct Playwright import: page rendering goes through
@@ -207,7 +207,9 @@ async def extract_and_rank_job(url: str, user_id: str | None = None) -> int:
         location=(parsed.get("location") or "Remote").strip(),
         url=url,
         description=description,
-        remote="remote" in parsed.get("location", "").lower(),
+        # `or ""` — the model can return "location": null, and None.lower()
+        # 500'd the paste-a-job-link route.
+        remote="remote" in (parsed.get("location") or "").lower(),
         user_id=user_id,
     )
 

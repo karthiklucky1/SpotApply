@@ -288,3 +288,80 @@ def test_happy_path_removes_storage_and_auth(monkeypatch):
     assert fake._bucket.removed == [f"{_GONE}/resume.pdf"]
     assert fake.auth.admin.deleted == _GONE
     assert result["success"] is True and result["auth_deleted"] is True
+
+
+# ── Deletion ORDER (the Postgres-only failure) ───────────────────────────────
+# The route iterated SQLModel.metadata.tables, i.e. DECLARATION order, which puts
+# `job` before `application` — and application.job_id is a FK to job.id. SQLite
+# does not enforce foreign keys by default, so the suite above stayed green while
+# production (Postgres) raised on the first delete, aborted the whole transaction,
+# and failed the final commit: the route 500'd and deleted NOTHING.
+
+def test_child_tables_are_deleted_before_their_parents():
+    """Any table with a FK must be deleted before the table it points at."""
+    order = [t.name for t in reversed(SQLModel.metadata.sorted_tables)]
+    position = {name: i for i, name in enumerate(order)}
+    for table in SQLModel.metadata.tables.values():
+        for fk in table.foreign_keys:
+            parent = fk.column.table.name
+            if parent == table.name or parent not in position:
+                continue
+            assert position[table.name] < position[parent], (
+                f"{table.name} references {parent} but is deleted after it — "
+                f"Postgres will reject the {parent} delete and abort the transaction"
+            )
+
+
+
+def test_delete_account_works_with_foreign_keys_enforced(monkeypatch):
+    """Run the real route with SQLite enforcing FKs, the way Postgres does.
+
+    This is the guard that would have caught the outage: with PRAGMA
+    foreign_keys=ON, deleting `job` while the user's `application` rows still
+    point at it raises, and — without the per-statement SAVEPOINT — poisons the
+    transaction so nothing is deleted at all.
+    """
+    from sqlalchemy import event, text
+    import app.api.server as srv
+    from app.db.init_db import engine
+
+    def _fk_on(dbapi_conn, _rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    if engine.dialect.name != "sqlite":
+        pytest.skip("FK-enforcement rehearsal is SQLite-specific")
+
+    event.listen(engine, "connect", _fk_on)
+    try:
+        with get_session() as s:
+            s.exec(text("PRAGMA foreign_keys=ON"))
+            job = Job(source="greenhouse", external_id="del-fk-1", company="FKCo",
+                      title="T", url="http://x/fk1", description="d", user_id=_GONE)
+            s.add(job)
+            s.commit()
+            s.refresh(job)
+            s.add(Application(job_id=job.id, status=ApplicationStatus.SHORTLISTED,
+                              apply_track="manual", user_id=_GONE))
+            s.commit()
+
+        monkeypatch.setattr(srv, "_require_user", lambda request: _GONE)
+        from app.config import Settings
+        monkeypatch.setattr(Settings, "use_supabase", property(lambda self: False))
+
+        srv.delete_account(request=None)
+
+        with get_session() as s:
+            assert not s.exec(select(Application).where(
+                Application.user_id == _GONE)).all(), "applications survived deletion"
+            assert not s.exec(select(Job).where(
+                Job.user_id == _GONE)).all(), (
+                "jobs survived deletion — the FK-ordered delete aborted the "
+                "transaction and rolled the whole account deletion back")
+    finally:
+        event.remove(engine, "connect", _fk_on)
+        # Removing the listener does NOT un-set the pragma on connections that
+        # are already pooled — they would hand FK enforcement to every later
+        # test in the session. Drop them so the pool refills without it.
+        engine.dispose()

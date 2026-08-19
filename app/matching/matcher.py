@@ -582,7 +582,9 @@ class Matcher:
             scores_norm = np.asarray(backend_scores, dtype="float32")
         else:
             pairs = [(prof_short, d) for d in ce_docs]
-            logits = _get_cross_encoder().predict(pairs, show_progress_bar=True, batch_size=64)
+            # No progress bar in a server process: tqdm writes escape codes to
+            # stderr on every batch, which just shreds the deployment logs.
+            logits = _get_cross_encoder().predict(pairs, show_progress_bar=False, batch_size=64)
             # Sigmoid to normalize logits to a 0-1 probability score
             scores_norm = 1.0 / (1.0 + np.exp(-logits))
 

@@ -70,10 +70,22 @@ def _owner_chat_id() -> int | None:
 
 
 async def _reject_if_not_owner(update: Update) -> bool:
-    """Return True when this update should be ignored."""
+    """Return True when this update should be ignored.
+
+    Fails CLOSED. An unset or malformed TELEGRAM_CHAT_ID used to return False
+    here — "no owner configured" was read as "everyone is the owner", so anyone
+    who found the bot could answer screening questions and trigger autofill.
+    """
     owner = _owner_chat_id()
     chat = update.effective_chat
-    if owner is None or chat is None or chat.id == owner:
+    if owner is None:
+        log.warning("Telegram update ignored — TELEGRAM_CHAT_ID is not set or not "
+                    "an integer, so no owner can be verified.")
+        return True
+    if chat is None:
+        log.warning("Telegram update ignored — no chat on the update to verify.")
+        return True
+    if chat.id == owner:
         return False
 
     log.warning("Rejected Telegram update from non-owner chat_id=%s", chat.id)

@@ -60,7 +60,22 @@ def _days_ago(iso: str) -> Optional[int]:
 
 
 def _check_ats_api(url: str, client: httpx.Client) -> Optional[dict]:
-    """Authoritative live-check via the posting's own public ATS API."""
+    """Authoritative live-check via the posting's own public ATS API.
+
+    Returns None when the ATS cannot be reached or answers with something
+    unparseable — the caller already treats None as "no authoritative answer"
+    and falls back to page heuristics. Without this the public, unauthenticated
+    /api/public/job-check turned any third-party timeout, DNS blip or malformed
+    JSON into a 500 for the visitor.
+    """
+    try:
+        return _check_ats_api_inner(url, client)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        log.debug("ATS live-check unavailable for %s: %s", url, e)
+        return None
+
+
+def _check_ats_api_inner(url: str, client: httpx.Client) -> Optional[dict]:
     m = _GREENHOUSE_RE.search(url)
     if m:
         board, job_id = m.group(1), m.group(2)

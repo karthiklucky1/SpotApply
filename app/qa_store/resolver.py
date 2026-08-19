@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 from pathlib import Path
 import yaml
@@ -164,9 +163,13 @@ class QAResolver:
 
         reloc_pref_kws = ["where in the united states will you be working from", "working location preference"]
         if any(kw in low for kw in reloc_pref_kws):
-            reloc_details = self._get_nested(["preferences", "relocation_details"], "Open to relocation")
-            # Fallback to current hardcoded answer if we want:
-            return "I do not currently live in New York, San Francisco - but I am willing to relocate within 6 months", 0.95
+            # Answer from THIS user's stored preference. The resolved value was
+            # previously computed and then discarded in favour of a sentence
+            # hardcoded from the single-user era ("I do not currently live in
+            # New York, San Francisco…"), which every tenant's form received
+            # regardless of where they actually live.
+            return self._get_nested(["preferences", "relocation_details"],
+                                    "Open to relocation"), 0.95
 
         # 5. Salary expectation
         salary_kws = ["salary expectation", "desired salary", "salary requirement", "compensation expectation", "target salary", "salary requirements"]

@@ -248,75 +248,100 @@ def _fast_path_user(uid: str, score_budget: int,
             break  # out of tick budget — the matching lane scores the rest
         if llm_budget_exhausted():
             break  # hourly/daily cap tripped mid-loop — stop before paying Tier-1
-        with claim(jid) as _owned, get_session() as session:
+        # NEVER hold a session across an LLM call (CLAUDE.md; the documented
+        # cause of the "QueuePool limit reached" starvation). One job is three
+        # phases: a short read+ghost session, the LLM calls with NO session
+        # held, then a short idempotent write-back. The claim() lock spans all
+        # three so another lane still cannot score this job concurrently.
+        with claim(jid) as _owned:
             if not _owned:
                 continue  # another lane is scoring this job right now
-            job = session.get(Job, jid)
-            if not job or job.rerank_score is not None or job.is_closed:
-                continue
-            # Ghost gate (cheap, DB+text) before any LLM spend.
-            try:
-                g = score_ghost(job, session)
-                job.ghost_score = g.ghost_score
-                job.ghost_flags = g.flags_json
-                if g.is_ghost:
-                    job.rerank_score = 5.0
-                    job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
+
+            # ── Phase 1: read + ghost gate (short session) ──────────────────
+            with get_session() as session:
+                job = session.get(Job, jid)
+                if not job or job.rerank_score is not None or job.is_closed:
+                    continue
+                try:
+                    g = score_ghost(job, session)
+                    job.ghost_score = g.ghost_score
+                    job.ghost_flags = g.flags_json
+                    if g.is_ghost:
+                        job.rerank_score = 5.0
+                        job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
+                        session.add(job)
+                        session.commit()
+                        continue
                     session.add(job)
                     session.commit()
-                    continue
-            except Exception as e:
-                log.debug("pulse fast-path ghost check failed for %d: %s", jid, e)
+                except Exception as e:
+                    log.debug("pulse fast-path ghost check failed for %d: %s", jid, e)
+                # Detach a fully-loaded copy for the LLM phase — the scorers
+                # only read fields, and the connection goes back to the pool now.
+                session.refresh(job)
+                session.expunge(job)
 
-            # Cascade Tier-1: drain clear misfits without touching Claude.
+            # ── Phase 2: LLM calls, no DB connection held ───────────────────
+            prescore_val = None
             if use_prescore:
                 pre = reranker.prescore(resume, job)
                 _record_spend(uid, "score_prescore")
                 if pre is not None:
-                    job.prescore = float(pre[0])
+                    prescore_val = float(pre[0])
                 if pre is not None and pre[0] < gate:
-                    job.rerank_score = float(pre[0])
-                    job.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
-                    session.add(job)
-                    session.commit()
+                    # Tier-1 rejection — stamp it and move on.
+                    with get_session() as session:
+                        fresh = session.get(Job, jid)
+                        if fresh is not None:
+                            fresh.prescore = prescore_val
+                            fresh.rerank_score = prescore_val
+                            fresh.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
+                            session.add(fresh)
+                            session.commit()
                     scored += 1
                     continue
 
-            # Tier-2: authoritative score (includes the rule pre-filter).
             try:
                 score, reason, concerns, breakdown = reranker.score(resume, job)
             except Exception as e:
                 log.debug("pulse fast-path score failed for %d (left for matching lane): %s", jid, e)
-                session.rollback()
                 continue
             _record_spend(uid, "score_final")
             scored += 1
-            job.rerank_score = score
-            job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
-            job.rerank_breakdown = json.dumps(breakdown) if breakdown else None
-            try:
-                hp = score_hire_probability(job, session)
-                job.hire_probability_score = hp.score
-                job.hire_probability_signals = json.dumps(hp.signals)
-                job.blended_score = compute_blended(score, hp.score)
-            except Exception:
-                pass
-            session.add(job)
 
-            if score >= settings.shortlist_score_threshold \
-                    and today_count < settings.daily_shortlist_limit:
-                existing = session.exec(
-                    select(Application).where(Application.job_id == job.id)
-                ).first()
-                if not existing and _check_and_enforce_company_cap(session, job, score):
-                    track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-                    session.add(Application(
-                        job_id=job.id, status=ApplicationStatus.SHORTLISTED,
-                        apply_url=job.url, apply_track=track, user_id=uid_arg,
-                    ))
-                    shortlisted.append(job.id)
-                    today_count += 1
-            session.commit()
+            # ── Phase 3: write back (short session) ─────────────────────────
+            with get_session() as session:
+                job = session.get(Job, jid)
+                if job is None:
+                    continue
+                if prescore_val is not None:
+                    job.prescore = prescore_val
+                job.rerank_score = score
+                job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
+                job.rerank_breakdown = json.dumps(breakdown) if breakdown else None
+                try:
+                    hp = score_hire_probability(job, session)
+                    job.hire_probability_score = hp.score
+                    job.hire_probability_signals = json.dumps(hp.signals)
+                    job.blended_score = compute_blended(score, hp.score)
+                except Exception:
+                    pass
+                session.add(job)
+
+                if score >= settings.shortlist_score_threshold \
+                        and today_count < settings.daily_shortlist_limit:
+                    existing = session.exec(
+                        select(Application).where(Application.job_id == job.id)
+                    ).first()
+                    if not existing and _check_and_enforce_company_cap(session, job, score):
+                        track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
+                        session.add(Application(
+                            job_id=job.id, status=ApplicationStatus.SHORTLISTED,
+                            apply_url=job.url, apply_track=track, user_id=uid_arg,
+                        ))
+                        shortlisted.append(job.id)
+                        today_count += 1
+                session.commit()
 
     alerts = 0
     if shortlisted:

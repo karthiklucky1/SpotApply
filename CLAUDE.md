@@ -57,9 +57,9 @@ app/
   autofill/         # Playwright filler + answer_pack
   intelligence/     # sponsorship/H1B, work_auth, urgency, referral,
                     # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
-  strategy/         # daily_engine (apply scoring/limits)
-  analytics/        # funnel, cost_dashboard, crm, reporter
-  qa_store/         # canonical answers (answers.yaml) + memory resolver
+  strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, degraded, hygiene
+  analytics/        # funnel, reporter
+  qa_store/         # canonical answers (answers.yaml) + resolver
   telegram_bot/     # async approval/handoff loop
   templates/        # landing, dashboard, pricing, auth, privacy, terms, extension
 extension/          # MV3: background.js, content.js, popup

@@ -1,0 +1,45 @@
+# The Dockerfile does `COPY . .`, which without this file copies the ENTIRE
+# build context into the image: git history, local databases, the developer's
+# own résumé — and, on any machine where one exists, .env with live keys, baked
+# into a layer. Keep this list in step with .gitignore.
+
+# Secrets — never in an image layer
+.env
+.env.*
+!.env.example
+
+# VCS + tooling
+.git
+.gitignore
+.github
+.claude
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.DS_Store
+
+# Local data: SQLite DBs, FAISS indexes, generated docs, the master résumé
+data/*.db
+data/*.faiss
+data/*.npy
+data/*.png
+data/tailored/
+data/training/
+data/models/
+data/resume_master.md
+data/resume_master.docx
+data/compiler_replay_report.json
+
+# Not needed at runtime. NOTE: no blanket "*.md" — data/profiles/*.md are read
+# at runtime by the founder's tailoring path, and scripts/ is imported by the
+# admin compiler-replay route, so neither may be excluded.
+node_modules
+scratch/
+tests/
+extension-tests/
+mobile/
+docs/
+CLAUDE.md

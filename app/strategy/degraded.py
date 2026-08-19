@@ -145,9 +145,20 @@ def recheck_provisional(window: tuple[datetime, datetime], user_ids: list[str | 
         if not pending:
             continue
 
+        # Build the scorer exactly the way the scoring lane does. This block
+        # used to call Reranker(user_id=...) and .resume_text(), neither of
+        # which exists — every recheck raised here, was swallowed as "reranker
+        # unavailable", and no provisional shortlist was ever re-reviewed.
         try:
-            reranker = Reranker(user_id=uid_arg)
-            resume_text = reranker.resume_text()
+            from app.matching.pipeline import _load_resume
+            resume_text = _load_resume(user_id=uid_arg)
+            profile = None
+            try:
+                from app.autofill.answer_pack import _get_or_create_profile
+                profile = _get_or_create_profile(user_id=uid_arg)
+            except Exception:
+                pass
+            reranker = Reranker(profile=profile)
         except Exception as e:
             log.warning("Recheck skipped for %s — reranker unavailable: %s", uid, e)
             stats["errors"] += 1
@@ -159,8 +170,11 @@ def recheck_provisional(window: tuple[datetime, datetime], user_ids: list[str | 
                 if not job:
                     continue
             try:
-                result = reranker.score(resume_text, job)
-                score = float(getattr(result, "score", result) or 0)
+                # score() returns (score, reason, concerns, breakdown) — the old
+                # float(getattr(result, "score", result)) coerced the 4-tuple and
+                # raised TypeError on every job.
+                score, _reason, _concerns, _breakdown = reranker.score(resume_text, job)
+                score = float(score or 0)
             except Exception as e:
                 # Still no usable LLM — leave it provisional for the next
                 # recovery rather than dropping a job on a transient failure.

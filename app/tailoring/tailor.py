@@ -335,8 +335,6 @@ def _set_ats_safe_styles(doc) -> None:
     - Tight margins to maximize content density without overflow
     """
     from docx.shared import Pt, Inches, RGBColor
-    from docx.oxml.ns import qn
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     # Margins: 0.75in all sides — tight but readable, avoids truncation
     sec = doc.sections[0]

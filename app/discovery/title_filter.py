@@ -138,7 +138,6 @@ def _try_init_semantic():
         # OOM-killed for it.
         from app.matching.matcher import _get_embed_model
         _model = _get_embed_model()
-        import numpy as np
         _anchor_embeddings = _model.encode(_ANCHORS, convert_to_numpy=True, normalize_embeddings=True)
         _semantic_available = True
         log.info("TitleFilter: semantic stage initialized (all-MiniLM-L6-v2)")
@@ -153,7 +152,6 @@ def _semantic_matches(title: str) -> bool:
     if not _try_init_semantic():
         return True   # can't check → allow through
     try:
-        import numpy as np
         emb = _model.encode([title], convert_to_numpy=True, normalize_embeddings=True)
         sims = (_anchor_embeddings @ emb.T).flatten()
         return float(sims.max()) >= _SEMANTIC_THRESHOLD

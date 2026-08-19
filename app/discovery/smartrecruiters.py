@@ -70,11 +70,20 @@ class SmartRecruitersScraper:
 
         payload = r.json()
         jobs: List[RawJob] = []
-        
+
         # Iterate over all posting summaries
         postings = payload.get("content", [])
+        # The API pages at 100; we request one page, so a bigger board arrives
+        # TRUNCATED. Flag it so the pipeline does not ghost-close the postings
+        # we simply never saw. Same flag is set below if a detail fetch fails.
+        total_found = payload.get("totalFound")
+        self.fetch_complete = not (
+            isinstance(total_found, int) and total_found > len(postings))
+        if not self.fetch_complete:
+            log.info("SmartRecruiters[%s]: board truncated (%d of %d) — ghost-close disabled",
+                     self.company_slug, len(postings), total_found)
         log.info("SmartRecruiters[%s]: found %d total job postings", self.company_slug, len(postings))
-        
+
         for p in postings:
             title = p.get("name", "")
             
@@ -95,14 +104,18 @@ class SmartRecruitersScraper:
                 d = dr.json()
             except Exception as e:
                 log.debug("SmartRecruiters: failed to fetch details for job %s: %s", posting_id, e)
+                # This posting is live but missing from our result — treat the
+                # board as partial so it is not ghost-closed on the way out.
+                self.fetch_complete = False
                 continue
-                
-            # Extract description
-            job_ad = d.get("jobAd", {})
-            sections = job_ad.get("sections", {})
+
+            # Extract description. `or {}` everywhere: these keys can be present
+            # and JSON-null, and None.get() would fail the entire board.
+            job_ad = d.get("jobAd") or {}
+            sections = job_ad.get("sections") or {}
             desc_parts = []
             for sect_name in ["companyDescription", "jobDescription", "qualifications", "additionalInformation"]:
-                sect = sections.get(sect_name, {})
+                sect = sections.get(sect_name) or {}
                 text = sect.get("text")
                 if text:
                     title_text = sect.get("title") or sect_name.capitalize()
@@ -111,7 +124,8 @@ class SmartRecruitersScraper:
             
             # Parse location
             loc = p.get("location") or {}
-            full_loc = loc.get("fullLocation") or loc.get("city", "")
+            # `or ""` — city can be JSON-null, and None.lower() crashed the board.
+            full_loc = loc.get("fullLocation") or loc.get("city") or ""
             remote = loc.get("remote", False) or "remote" in full_loc.lower()
             
             # Parse date
@@ -129,7 +143,7 @@ class SmartRecruitersScraper:
                 RawJob(
                     source="smartrecruiters",
                     external_id=str(posting_id),
-                    company=p.get("company", {}).get("name") or self.company_slug.replace("-", " ").replace("_", " ").title(),
+                    company=(p.get("company") or {}).get("name") or self.company_slug.replace("-", " ").replace("_", " ").title(),
                     title=title,
                     location=full_loc,
                     remote=remote,

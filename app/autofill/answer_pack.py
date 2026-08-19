@@ -425,7 +425,6 @@ def _get_or_extract_experience_education(application: Application, profile: User
 
 def _extract_history_from_resume(application: Application, profile: UserProfile, user_id: str | None = None) -> dict:
     from app.matching.pipeline import _load_resume
-    import json
 
     # 1. Check memory first
     cache_key = "__resume_extracted_experience_education"

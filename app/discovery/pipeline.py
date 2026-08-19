@@ -964,11 +964,19 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 # result is indistinguishable from a soft failure (rate-limit /
                 # transient empty response), and ghost-closing on it would wrongly
                 # close every job for the company and SKIP their applications.
-                if raw and len(raw) > 0:
+                # A scraper that truncated or failed mid-pagination sets
+                # fetch_complete=False: its list is a SUBSET of the board, and
+                # closing everything absent from a subset permanently kills live
+                # postings (and SKIPs their applications). Absent attribute →
+                # True, so scrapers that always return whole boards are unaffected.
+                if raw and len(raw) > 0 and getattr(scraper, "fetch_complete", True):
                     active_ids = [r.external_id for r in raw]
                     company_name = raw[0].company
                     if company_name:
                         mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
+                elif raw and not getattr(scraper, "fetch_complete", True):
+                    log.info("Ghost-close skipped for %s — partial/truncated fetch (%d jobs)",
+                             scraper.name, len(raw))
             # Failed fetches (raw is None) were already retired in bulk above.
         except Exception as e:
             log.exception("Scraper %s processing failed: %s", scraper.name, e)

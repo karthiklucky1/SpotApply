@@ -89,7 +89,6 @@ def check_github_hiring(company_name: str) -> Tuple[float, str]:
 
         # 2. Check each hiring-file path
         for path in _GH_HIRING_FILES:
-            url = f"https://api.github.com/repos/{slug}/{path.replace('.github/', '')}"
             # Try the top-level repo first (some companies have a .github meta-repo)
             candidates = [
                 f"https://api.github.com/repos/{slug}/.github/contents/{path}",
@@ -105,7 +104,7 @@ def check_github_hiring(company_name: str) -> Tuple[float, str]:
                         days = _days_since(pushed_at) if pushed_at else _GH_STALE_DAYS + 1
                         if days is not None and days <= _GH_RECENT_DAYS:
                             return _GH_BOOST_FRESH, f"github_hiring_file_fresh_{days}d"
-                        return _GH_BOOST_STALE, f"github_hiring_file_stale"
+                        return _GH_BOOST_STALE, "github_hiring_file_stale"
                 except Exception:
                     continue
     except Exception as exc:

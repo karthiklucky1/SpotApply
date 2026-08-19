@@ -148,7 +148,7 @@ def classify_door(cand: "CandidateProfile", bar: "RoleBar",
                              f"This position requires a **{bar.axis}** background, but your profile is **{cand.axis}** — "
                              f"tailoring your resume won't bridge an axis mismatch."))
     elif bar.axis:
-        f.append(DoorFinding("ROLE FIT", "MATCH", f"Your target role focus matches perfectly."))
+        f.append(DoorFinding("ROLE FIT", "MATCH", "Your target role focus matches perfectly."))
 
     if bar.years is not None:
         gap = bar.years - cand.years
