@@ -162,20 +162,20 @@ def test_unscored_on_role_jobs_are_left_on_the_queue():
 def test_jobs_matching_neither_role_list_are_left_completely_alone():
     """The conservative rule that protects relevant work.
 
-    role_title_match keys off distinctive domain tokens, so plenty of genuinely
-    relevant titles ("Backend Developer" for a Software Developer user) match
-    NEITHER list. Parking those would hide real jobs, so they are not touched:
+    role_title_match is a routing gate, not a classifier: plenty of real titles
+    ("Staff Engineer", "Solutions Architect") name no domain at all and so match
+    NEITHER list. Parking those would hide real jobs, so they are not touched —
     a wrong park costs the user a job they never see, a wrong keep costs one
     cheap score.
     """
     from app.discovery.title_filter import role_title_match
-    assert not role_title_match("Backend Developer", ["Software Developer"])
-    assert not role_title_match("Backend Developer", ["AI Engineer"])
+    assert not role_title_match("Staff Engineer", ["Software Developer"])
+    assert not role_title_match("Staff Engineer", ["AI Engineer"])
 
     with get_session() as s:
-        _mk(s, "ra-amb", "Backend Developer", score=77.0,
+        _mk(s, "ra-amb", "Staff Engineer", score=77.0,
             status=ApplicationStatus.SHORTLISTED)
-        _mk(s, "ra-amb2", "Backend Developer", score=None)
+        _mk(s, "ra-amb2", "Staff Engineer", score=None)
 
     stats = realign_pool_to_roles(_UID, ["Software Developer"],
                                   old_roles=["AI Engineer"])
@@ -189,7 +189,7 @@ def test_jobs_matching_neither_role_list_are_left_completely_alone():
         assert unscored.rerank_score is None, "and stay on the scoring queue"
         assert app.status == ApplicationStatus.SHORTLISTED, "and stay on the board"
     assert stats == {"rescore": 0, "parked": 0, "unshortlisted": 0,
-                     "unparked": 0, "protected": 0, "capped": 0}
+                     "unparked": 0, "kept_score": 0, "protected": 0, "capped": 0}
 
 
 # ── What it must never touch ─────────────────────────────────────────────────
@@ -235,7 +235,7 @@ def test_an_empty_role_list_never_blanks_a_board():
             Job.external_id == "ra-empty")).first()
         assert app.status == ApplicationStatus.SHORTLISTED
     assert stats == {"rescore": 0, "parked": 0, "unshortlisted": 0,
-                     "unparked": 0, "protected": 0, "capped": 0}
+                     "unparked": 0, "kept_score": 0, "protected": 0, "capped": 0}
 
 
 def test_roles_changing_back_re_judges_the_parked_jobs():
@@ -282,7 +282,9 @@ def test_a_parked_job_can_return_to_the_board_when_roles_change_back():
         assert app is None, (
             "our own park must be undone, or the re-shortlist backstop will "
             "never put this job back on the board")
-        assert job.rerank_score is None, "and it is re-judged on the new résumé"
+        assert job.rerank_score == 88.0, (
+            "it was genuinely judged under these roles before, so the score "
+            "stands — re-earning it would cost a final for nothing")
     assert stats["unparked"] == 1
 
 
@@ -310,10 +312,88 @@ def test_rescore_volume_is_capped(monkeypatch):
     monkeypatch.setattr(settings, "realign_max_rescore", 2)
     with get_session() as s:
         for i in range(5):
-            _mk(s, f"ra-cap-{i}", "Software Developer", score=70.0 + i)
+            _mk(s, f"ra-cap-{i}", "Software Developer", score=70.0 + i,
+                status=ApplicationStatus.SHORTLISTED)
 
     stats = realign_pool_to_roles(_UID, ["Software Developer"],
                                   old_roles=["AI Engineer"])
 
     assert stats["rescore"] == 2
     assert stats["capped"] == 3, "the rest keep their score and are reported"
+
+
+# ── Re-scoring is deliberately narrow (this is the whole spend story) ────────
+
+def test_only_recent_shortlisted_jobs_are_rescored():
+    """Re-scoring is the only part that costs money.
+
+    Re-judging a whole pool would burn days of the per-plan finals cap to
+    re-rank postings nobody is looking at, so it is limited to what is actually
+    on the board: shortlisted AND recent.
+    """
+    from datetime import datetime, timedelta
+    with get_session() as s:
+        _mk(s, "rs-fresh", "Software Developer", score=70.0,
+            status=ApplicationStatus.SHORTLISTED)                 # rescore
+        _mk(s, "rs-nolist", "Software Developer", score=70.0)     # not on the board
+        old, _ = _mk(s, "rs-old", "Software Developer", score=70.0,
+                     status=ApplicationStatus.SHORTLISTED)        # too old
+        old.first_seen = datetime.utcnow() - timedelta(days=9)
+        s.add(old); s.commit()
+
+    stats = realign_pool_to_roles(_UID, ["Software Developer"],
+                                  old_roles=["AI Engineer"])
+
+    with get_session() as s:
+        def score(ext):
+            return s.exec(select(Job).where(Job.external_id == ext)).first().rerank_score
+        assert score("rs-fresh") is None, "the board's recent jobs are re-judged"
+        assert score("rs-nolist") == 70.0, "a job not on the board is not worth a final"
+        assert score("rs-old") == 70.0, "and neither is a stale one"
+    assert stats["rescore"] == 1
+    assert stats["kept_score"] == 2
+
+
+def test_the_recency_window_is_configurable(monkeypatch):
+    from app.config import settings
+    from datetime import datetime, timedelta
+    with get_session() as s:
+        j, _ = _mk(s, "rs-window", "Software Developer", score=70.0,
+                   status=ApplicationStatus.SHORTLISTED)
+        j.first_seen = datetime.utcnow() - timedelta(days=5)
+        s.add(j); s.commit()
+
+    monkeypatch.setattr(settings, "realign_rescore_days", 2)
+    assert realign_pool_to_roles(_UID, ["Software Developer"],
+                                 old_roles=["AI Engineer"])["rescore"] == 0
+
+    monkeypatch.setattr(settings, "realign_rescore_days", 30)
+    assert realign_pool_to_roles(_UID, ["Software Developer"],
+                                 old_roles=["AI Engineer"])["rescore"] == 1
+
+
+def test_a_parked_job_is_always_requeued_even_though_rescoring_is_narrow():
+    """The one case the narrowing must NOT swallow.
+
+    A parked job carries a marker score it never earned. If the narrowing kept
+    that, the job would sit at the marker value for ever and could never be
+    shortlisted again — dead, not merely un-rescored.
+    """
+    with get_session() as s:
+        _mk(s, "rs-parked", "AI Engineer", score=None)   # no application at all
+
+    realign_pool_to_roles(_UID, ["Software Developer"], old_roles=["AI Engineer"])
+    with get_session() as s:
+        job = s.exec(select(Job).where(Job.external_id == "rs-parked")).first()
+        assert job.rerank_reasoning.startswith(OFF_ROLE_PREFIX)
+
+    stats = realign_pool_to_roles(_UID, ["AI Engineer"],
+                                  old_roles=["Software Developer"])
+
+    with get_session() as s:
+        job = s.exec(select(Job).where(Job.external_id == "rs-parked")).first()
+        assert job.rerank_score is None, (
+            "a job we parked was never judged — it must go back on the queue "
+            "when it is on-role again, or it is dead for ever")
+        assert job.rerank_reasoning is None
+    assert stats["unparked"] == 1

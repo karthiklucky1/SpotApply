@@ -93,14 +93,22 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   ONE global pass with the union of all users' roles — never per-user.
 - **Roles re-point the pool** (`strategy/realign.py`): `target_roles` are re-derived
   on every résumé upload (`target_roles_auto`; a hand edit pins them). On a real
-  role change, on-role jobs get `rerank_score` cleared so the lane re-judges them
-  on the new résumé; jobs the OLD roles brought in that don't fit the new ones
-  leave the board and are stamped `Off-role` — leaving the `rerank_score IS NULL`
-  queue with NO LLM call. Jobs matching NEITHER list are left alone on purpose:
-  `role_title_match` is precision-oriented (misses "Backend Developer" for a
-  "Software Developer" user), so parking on "not on-role" would bury real work.
-  TAILORED-and-beyond untouched; parks reverse on the way back (`[roles-realign]`).
-  Cap: `REALIGN_MAX_RESCORE`.
+  role change: on-role jobs are re-scored ONLY when RECENT + SHORTLISTED
+  (`REALIGN_RESCORE_DAYS`=2) — re-judging a whole pool would burn days of the
+  finals cap on postings nobody is looking at, so everything else keeps its
+  score. Jobs the OLD roles brought in that don't fit the new ones leave the
+  board and are stamped `Off-role`, leaving the `rerank_score IS NULL` queue
+  with NO LLM call. Jobs matching NEITHER list are left alone — the gate names
+  domains, not every real title. TAILORED-and-beyond untouched; parks reverse on
+  the way back (`[roles-realign]`, and a parked job is ALWAYS requeued when
+  on-role again or its marker score would strand it). Cap: `REALIGN_MAX_RESCORE`.
+- **Role families** (`discovery/title_filter.py` `_ROLE_FAMILIES`): the alias table
+  is directional and missed neighbours — "Software Developer" expanded to only
+  {software developer, software} ("developer" is generic), so Backend/Frontend/SDE
+  postings were rejected, as was "Machine Learning Engineer" for an "AI Engineer"
+  user. Families are SYMMETRIC: matching any member pulls in all of them. The gate
+  is meant to be permissive (a false positive gets scored and ranked; a false
+  negative is a job the user never sees).
 - **Scheduler:** `server.py`'s asyncio scheduler runs global discovery→adopt→match
   ~every `DISCOVERY_INTERVAL_HOURS` in BOTH local and prod, plus a "fresh lane"
   every 2h (`_global_fresh_scan`, phase="fresh" = registry boards + free keyless

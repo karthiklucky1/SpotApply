@@ -258,9 +258,47 @@ _ROLE_TERM_ALIASES = {
 }
 
 
+# Role FAMILIES — symmetric, unlike the directional alias table above. Matching
+# ANY member pulls in the WHOLE family, which is what "show me similar roles"
+# actually means to a user.
+#
+# The alias table alone was too narrow to do this. Terms for "Software
+# Developer" came out as just {"software developer", "software"} — no alias key
+# appears in the phrase, and "developer" is a generic token — so a "Backend
+# Developer" posting was rejected for a Software Developer user. Same for
+# "Machine Learning Engineer" against an "AI Engineer" user. Those are exactly
+# the postings people most want to see.
+#
+# The gate is deliberately permissive by design (a false positive just gets
+# scored and ranked; a false negative is a job the user never sees at all), and
+# the per-plan daily finals cap still bounds what the extra breadth can cost.
+_ROLE_FAMILIES = (
+    # Software engineering: one flavour implies the neighbouring ones.
+    ("software engineer", "software developer", "software development engineer",
+     "swe", "sde", "programmer", "application developer", "web developer",
+     "python developer",
+     "backend", "back end", "back-end", "backend developer",
+     "frontend", "front end", "front-end",
+     "full stack", "fullstack", "full-stack"),
+    # AI / ML: an "AI Engineer" and an "ML Engineer" are shopping the same market.
+    ("ai engineer", "ai", "artificial intelligence", "machine learning", "ml",
+     "ml engineer", "mlops", "ml ops", "deep learning",
+     "genai", "gen ai", "generative ai", "llm"),
+)
+
+
 def _term_pattern(term: str) -> "re.Pattern":
     # Letter/digit boundaries (not \b) so "ai" matches "AI/ML" but not "chair".
     return re.compile(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])")
+
+
+def _family_terms(role_phrase: str) -> set:
+    """Every term in any family this role phrase belongs to."""
+    out: set = set()
+    for family in _ROLE_FAMILIES:
+        if any(_term_pattern(member).search(role_phrase) for member in family):
+            out.update(family)
+    return out
 
 
 @lru_cache(maxsize=256)
@@ -280,6 +318,9 @@ def _role_matchers(roles_key: tuple) -> tuple:
             if _term_pattern(key).search(r):
                 terms.add(key)
                 terms.update(aliases)
+        # Whole-family expansion (backend/frontend/SDE for a software user,
+        # ML for an AI user) — the alias table is directional and misses these.
+        terms.update(_family_terms(r))
         # Distinctive tokens ("python", "backend", "designer") — generic role
         # words (engineer, senior, …) never match on their own.
         for tok in r.split():
@@ -313,6 +354,7 @@ def role_match_terms(roles: List[str] | None, min_len: int = 4) -> List[str]:
                 if len(akey) >= min_len:
                     terms.add(akey)
                 terms.update(a for a in aliases if len(a) >= min_len)
+        terms.update(t for t in _family_terms(r) if len(t) >= min_len)
         for tok in r.split():
             if len(tok) >= min_len and tok not in _GENERIC_TOKENS:
                 terms.add(tok)

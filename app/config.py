@@ -374,6 +374,10 @@ class Settings(BaseSettings):
     # This caps how many re-scores one change may queue — the lane still paces
     # the spend by the per-plan daily finals cap, this just bounds the backlog.
     realign_max_rescore: int = 500            # REALIGN_MAX_RESCORE
+    # Re-scoring on a role change is limited to jobs first seen within this many
+    # days AND currently shortlisted — the board the user is actually looking at.
+    # 0 disables the age limit (still shortlisted-only).
+    realign_rescore_days: int = 2             # REALIGN_RESCORE_DAYS
     # "My roles" relevance filter (All Jobs). Title matching alone misses jobs
     # whose title is worded differently but is the same work ("Applied Scientist"
     # ≈ "ML Engineer"). We DON'T need a separate semantic cache for this — the AI

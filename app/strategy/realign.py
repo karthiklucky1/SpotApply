@@ -9,8 +9,10 @@ Software Developer keeps a board ranked against a CV they no longer use.
 This module runs only when the target roles ACTUALLY change, and it does the
 cheapest correct thing for each job the user has not already acted on:
 
-  on-role   → clear the score so the scoring lane re-judges it against the new
-              résumé (the lane's per-plan daily cap paces the spend)
+  on-role   → if it is RECENT and SHORTLISTED (i.e. actually on the board),
+              clear the score so the lane re-judges it against the new résumé;
+              anything older or not shortlisted keeps the score it has, because
+              re-judging a whole pool would burn days of the finals cap
   off-role  → take it off the board and make sure it is never scored: an
               unscored one is stamped with an off-role marker so it leaves the
               ``rerank_score IS NULL`` queue without an LLM call, and an
@@ -24,6 +26,7 @@ them instead of re-scraping them.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from sqlmodel import select
@@ -89,7 +92,7 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
     is.
     """
     stats = {"rescore": 0, "parked": 0, "unshortlisted": 0, "unparked": 0,
-             "protected": 0, "capped": 0}
+             "kept_score": 0, "protected": 0, "capped": 0}
     if not new_roles:
         # No roles = no opinion about what belongs. Never blank a whole board
         # on an empty list.
@@ -99,10 +102,14 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
     uid_arg = None if (not user_id or user_id == "local") else user_id
     cap = max(0, int(getattr(settings, "realign_max_rescore", 500) or 0))
 
+    rescore_days = max(0, int(getattr(settings, "realign_rescore_days", 2) or 0))
+    fresh_cutoff = datetime.utcnow() - timedelta(days=rescore_days)
+
     with get_session() as session:
         cond = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
         jobs = session.exec(
-            select(Job.id, Job.title, Job.rerank_score)
+            select(Job.id, Job.title, Job.rerank_score, Job.first_seen,
+                   Job.rerank_reasoning)
             .where(cond, Job.is_closed == False)  # noqa: E712
         ).all()
         if not jobs:
@@ -116,7 +123,7 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
         ).all():
             apps[app.job_id] = app
 
-        for job_id, title, score in jobs:
+        for job_id, title, score, first_seen, reasoning in jobs:
             app = apps.get(job_id)
             if app is not None and app.status in _COMMITTED_STATUSES:
                 stats["protected"] += 1
@@ -140,9 +147,33 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
                     session.delete(app)
                     stats["unparked"] += 1
 
-                # Re-judge against the new résumé. Already-unscored jobs are in
-                # the queue anyway; only stamped/scored ones need clearing.
+                # A job WE parked was never actually judged — it carries a
+                # marker score purely to stay out of the scoring queue. That has
+                # to go the moment it is on-role again, or it sits at the marker
+                # value for ever and can never be shortlisted. This is undoing
+                # our own bookkeeping, so it ignores the narrowing below.
+                if (reasoning or "").startswith(OFF_ROLE_PREFIX):
+                    job = session.get(Job, job_id)
+                    job.rerank_score = None
+                    job.rerank_reasoning = None
+                    session.add(job)
+                    stats["unparked"] += 1
+                    continue
+
+                # Already-unscored jobs are in the queue anyway.
                 if score is None:
+                    continue
+                # Re-scoring is the only part of this that costs money, so it is
+                # deliberately narrow: the RECENT, SHORTLISTED jobs — the ones
+                # actually on the board in front of the user. Re-judging a whole
+                # pool would burn days of the per-plan finals cap to re-rank
+                # postings nobody is looking at. Everything else keeps the score
+                # it has; off-role ones are taken off the board below regardless.
+                if app is None or app.status != ApplicationStatus.SHORTLISTED:
+                    stats["kept_score"] += 1
+                    continue
+                if rescore_days and (first_seen is None or first_seen < fresh_cutoff):
+                    stats["kept_score"] += 1
                     continue
                 if cap and stats["rescore"] >= cap:
                     stats["capped"] += 1
