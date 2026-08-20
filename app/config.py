@@ -367,6 +367,13 @@ class Settings(BaseSettings):
     # next 6h global pass — their domain fills within minutes. 0 disables the scrape.
     onboarding_active_discovery: bool = True  # ONBOARDING_ACTIVE_DISCOVERY
     onboarding_min_jobs: int = 25             # ONBOARDING_MIN_JOBS — adopt-count floor below which onboarding actively scrapes the user's domain
+
+    # When a user's target roles change (new résumé or a manual edit), the pool
+    # is re-pointed at the new roles: on-role jobs lose their old-résumé score
+    # so the scoring lane re-judges them, off-role jobs are parked unscored.
+    # This caps how many re-scores one change may queue — the lane still paces
+    # the spend by the per-plan daily finals cap, this just bounds the backlog.
+    realign_max_rescore: int = 500            # REALIGN_MAX_RESCORE
     # "My roles" relevance filter (All Jobs). Title matching alone misses jobs
     # whose title is worded differently but is the same work ("Applied Scientist"
     # ≈ "ML Engineer"). We DON'T need a separate semantic cache for this — the AI

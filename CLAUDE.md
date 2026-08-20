@@ -57,7 +57,7 @@ app/
   autofill/         # Playwright filler + answer_pack
   intelligence/     # sponsorship/H1B, work_auth, urgency, referral,
                     # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
-  strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, degraded, hygiene
+  strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, realign, degraded, hygiene
   analytics/        # funnel, reporter
   qa_store/         # canonical answers (answers.yaml) + resolver
   templates/        # landing, dashboard, pricing, auth, privacy, terms, extension
@@ -91,6 +91,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also
   runs on resume upload + role edits = instant feeds). Scheduled discovery is
   ONE global pass with the union of all users' roles — never per-user.
+- **Roles re-point the pool** (`strategy/realign.py`): `target_roles` are re-derived
+  on every résumé upload (`target_roles_auto`; a hand edit pins them). On a real
+  role change, on-role jobs get `rerank_score` cleared so the lane re-judges them
+  on the new résumé; jobs the OLD roles brought in that don't fit the new ones
+  leave the board and are stamped `Off-role` — leaving the `rerank_score IS NULL`
+  queue with NO LLM call. Jobs matching NEITHER list are left alone on purpose:
+  `role_title_match` is precision-oriented (misses "Backend Developer" for a
+  "Software Developer" user), so parking on "not on-role" would bury real work.
+  TAILORED-and-beyond untouched; parks reverse on the way back (`[roles-realign]`).
+  Cap: `REALIGN_MAX_RESCORE`.
 - **Scheduler:** `server.py`'s asyncio scheduler runs global discovery→adopt→match
   ~every `DISCOVERY_INTERVAL_HOURS` in BOTH local and prod, plus a "fresh lane"
   every 2h (`_global_fresh_scan`, phase="fresh" = registry boards + free keyless

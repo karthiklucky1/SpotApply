@@ -1882,6 +1882,8 @@ Return only valid JSON, no markdown, no explanation."""
     # PUT /api/target-roles.
     user_id_arg = uid if uid != "local" else None
     seeded_roles: list[str] = []
+    _roles_before: list[str] = []
+    _roles_after: list[str] = []
     with get_session() as session:
         q = select(UserProfile)
         if user_id_arg:
@@ -1921,6 +1923,22 @@ Return only valid JSON, no markdown, no explanation."""
                 if _previous_roles and _previous_roles != p.target_roles:
                     log.info("Target roles re-derived from the new résumé for %s: %r → %r",
                              uid, _previous_roles, ", ".join(seeded_roles))
+                _roles_before = [r.strip() for r in _previous_roles.split(",") if r.strip()]
+                _roles_after = list(seeded_roles)
+
+        # A résumé that only gained a line derives the SAME roles, so this is a
+        # no-op and the user's board is left completely alone. A résumé that
+        # moved the user to another kind of job re-points the pool at it: on-role
+        # jobs lose their old-résumé score and get re-judged, off-role jobs come
+        # off the board and are parked without ever being scored.
+        if _roles_after and background_tasks is not None:
+            try:
+                from app.strategy.realign import realign_if_roles_changed
+                background_tasks.add_task(
+                    realign_if_roles_changed,
+                    uid if uid != "local" else None, _roles_before, _roles_after)
+            except Exception as _re_err:
+                log.debug("pool realign not scheduled: %s", _re_err)
 
         # Instant feed — Jobright-style onboarding: fill the board from the
         # already-scraped shared pool (pure DB copy, no HTTP) and score it, so
@@ -7723,6 +7741,8 @@ def update_target_roles(request: Request, body: TargetRolesUpdate,
             db_profile = UserProfile(user_id=user_id_arg)
             session.add(db_profile)
             session.flush()
+        roles_before = [r.strip() for r in (db_profile.target_roles or "").split(",")
+                        if r.strip()]
         db_profile.target_roles = ", ".join(cleaned)
         # The user has taken these over: stop re-deriving them from the résumé
         # on future uploads. Clearing the list hands them back to the résumé.
@@ -7730,6 +7750,16 @@ def update_target_roles(request: Request, body: TargetRolesUpdate,
         db_profile.updated_at = _dt.utcnow()
         session.add(db_profile)
         session.commit()
+
+    # Editing roles by hand is the most deliberate role change there is, so the
+    # pool follows it the same way it follows a new résumé.
+    if cleaned and background_tasks is not None:
+        try:
+            from app.strategy.realign import realign_if_roles_changed
+            background_tasks.add_task(realign_if_roles_changed,
+                                      user_id_arg, roles_before, cleaned)
+        except Exception as _re_err:
+            log.debug("role-edit realign not scheduled: %s", _re_err)
 
     # New roles take effect NOW: adopt matching jobs already in the shared pool
     # and score them, and — if that leaves the feed thin because the new roles
