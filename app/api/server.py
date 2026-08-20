@@ -6685,8 +6685,14 @@ def _repair_userprofile_schema() -> None:
     no IF NOT EXISTS for columns — is guarded by an inspector lookup.
     """
     from sqlalchemy import text as _text, inspect as _inspect
-    from app.db.init_db import engine as _engine
+    from app.db.init_db import engine as _engine, ensure_model_columns
     from app.config import settings as _settings
+
+    # Schema-driven first: whatever the models declare gets added, so this can
+    # never again be limited to what somebody remembered to put in the list
+    # below. (`target_roles_auto` was missing from it and from init_db's
+    # migrations, and took the scoring lanes down in production.)
+    ensure_model_columns()
 
     if _settings.use_supabase:
         with _engine.begin() as conn:

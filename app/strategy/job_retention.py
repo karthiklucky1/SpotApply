@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete
-from sqlmodel import select
+from sqlmodel import select, update
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ def purge_old_closed_jobs(days: int = 60, batch: int = 2000, max_batches: int = 
     backlog drains across several small statements instead of one giant DELETE.
     """
     from app.db.init_db import get_session
-    from app.db.models import Application, Job
+    from app.db.models import Application, FunnelEvent, Job
 
     if days <= 0:
         return 0
@@ -96,6 +96,17 @@ def purge_old_closed_jobs(days: int = 60, batch: int = 2000, max_batches: int = 
             ).all()]
             if not ids:
                 break
+            # Release the funnel's FK first. funnel_events.job_id references
+            # job.id, so deleting a job it still points at raises
+            # funnel_events_job_id_fkey and the whole purge batch rolls back —
+            # which is why the retention job had stopped reclaiming anything.
+            # The column is nullable and the events are counted by STAGE, so
+            # detaching keeps the analytics and frees the row.
+            session.exec(
+                update(FunnelEvent)
+                .where(FunnelEvent.job_id.in_(ids))
+                .values(job_id=None)
+            )
             session.exec(delete(Job).where(Job.id.in_(ids)))
             session.commit()
             deleted += len(ids)

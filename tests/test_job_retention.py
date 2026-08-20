@@ -61,3 +61,58 @@ def test_purge_deletes_only_dead_jobs(scenario):
 def test_purge_disabled_when_days_zero(scenario):
     assert purge_old_closed_jobs(days=0) == 0
     assert _exists(scenario["closed_old"])           # nothing deleted
+
+
+# ── The funnel's FK blocked every purge ──────────────────────────────────────
+
+def test_purge_releases_funnel_events_before_deleting(monkeypatch):
+    """funnel_events.job_id references job.id.
+
+    Deleting a job the funnel still points at raises
+    `funnel_events_job_id_fkey` on Postgres and rolls back the WHOLE batch, so
+    retention silently reclaimed nothing while the table kept growing. SQLite
+    does not enforce FKs by default, which is why the suite never saw it — this
+    test turns enforcement on.
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import event
+    from sqlmodel import select
+    from app.db.init_db import engine, get_session
+    from app.db.models import FunnelEvent, Job, JobSource
+    from app.strategy.job_retention import purge_old_closed_jobs
+
+    if engine.dialect.name != "sqlite":
+        pytest.skip("FK-enforcement rehearsal is SQLite-specific")
+
+    def _fk_on(dbapi_conn, _rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    event.listen(engine, "connect", _fk_on)
+    engine.dispose()
+    try:
+        old = datetime.utcnow() - timedelta(days=120)
+        with get_session() as s:
+            j = Job(source=JobSource.GREENHOUSE, external_id="fk-purge-1",
+                    company="C", title="T", url="http://x/fk1", description="d",
+                    is_closed=True, first_seen=old)
+            s.add(j); s.commit(); s.refresh(j)
+            s.add(FunnelEvent(job_id=j.id, stage="fk-purge-stage", passed=True))
+            s.commit()
+            jid = j.id
+
+        assert purge_old_closed_jobs(days=60) >= 1
+
+        with get_session() as s:
+            assert s.exec(select(Job).where(Job.id == jid)).first() is None, (
+                "the job must actually be deleted — the FK violation used to "
+                "roll the whole batch back")
+            ev = s.exec(select(FunnelEvent).where(
+                FunnelEvent.stage == "fk-purge-stage")).first()
+            assert ev is not None, "the funnel event is kept (counted by stage)"
+            assert ev.job_id is None, "it is merely detached from the dead job"
+            s.delete(ev); s.commit()
+    finally:
+        event.remove(engine, "connect", _fk_on)
+        engine.dispose()

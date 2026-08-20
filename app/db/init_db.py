@@ -6,12 +6,15 @@ Supports two backends:
 """
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Iterator
 
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
+
+log = logging.getLogger(__name__)
 
 if settings.use_supabase:
     # PostgreSQL — no check_same_thread, use connection pooling.
@@ -86,6 +89,91 @@ def _create_all_with_retry(attempts: int = 5) -> None:
             _t.sleep(delay)
 
 
+def _ddl_default(col) -> str:
+    """A DDL DEFAULT clause for a model column, or '' when it has no scalar one.
+
+    Existing rows need a value, and the column is always added NULLable, so a
+    default is the difference between a usable column and one full of NULLs.
+    """
+    default = getattr(col, "default", None)
+    arg = getattr(default, "arg", None)
+    if default is None or arg is None or callable(arg):
+        return ""                      # default_factory (utcnow, …) — leave to the ORM
+    if isinstance(arg, bool):
+        return " DEFAULT TRUE" if arg else " DEFAULT FALSE"
+    if isinstance(arg, (int, float)):
+        return f" DEFAULT {arg}"
+    if isinstance(arg, str):
+        return " DEFAULT '{}'".format(arg.replace("'", "''"))
+    return ""
+
+
+def ensure_model_columns() -> int:
+    """Add every column the models declare that its live table is missing.
+
+    ``create_all()`` creates missing TABLES; it never alters one that already
+    exists. So each new model field needs an ALTER, and the hand-written lists
+    that used to do that inevitably drifted — `target_roles_auto` shipped
+    without one and took the scoring and pulse lanes down in production with
+    `UndefinedColumn` every ~40 seconds, because those lanes read UserProfile
+    and never hit the API route that lazily repaired the schema.
+
+    Driving this off ``SQLModel.metadata`` means a field can never be forgotten:
+    whatever the models declare, the database gets. Columns are always added
+    NULLable (existing rows cannot satisfy NOT NULL) with the model's default
+    where it has a scalar one. Never fatal — one bad column must not stop the
+    app from booting — but every failure is logged loudly.
+
+    Returns the number of columns added.
+    """
+    from sqlalchemy import inspect as _inspect, text as _text
+    from sqlmodel import SQLModel as _SQLModel
+    from app.db import models  # noqa: F401  (registers the tables)
+
+    added = 0
+    try:
+        insp = _inspect(engine)
+        table_names = set(insp.get_table_names())
+    except Exception as e:
+        log.warning("Column migration skipped — cannot inspect the database: %s", e)
+        return 0
+
+    for table in _SQLModel.metadata.sorted_tables:
+        if table.name not in table_names:
+            continue                    # create_all will build it complete
+        try:
+            existing = {c["name"].lower() for c in insp.get_columns(table.name)}
+        except Exception as e:
+            log.warning("Column migration skipped for %s: %s", table.name, e)
+            continue
+        for col in table.columns:
+            if col.name.lower() in existing:
+                continue
+            try:
+                ddl_type = col.type.compile(dialect=engine.dialect)
+            except Exception as e:
+                log.error("Cannot render a type for %s.%s (%s) — add it by hand",
+                          table.name, col.name, e)
+                continue
+            stmt = (f'ALTER TABLE {table.name} '
+                    f'ADD COLUMN {col.name} {ddl_type}{_ddl_default(col)}')
+            try:
+                with engine.begin() as conn:
+                    if settings.use_supabase:
+                        conn.execute(_text("SET statement_timeout = 60000"))
+                        conn.execute(_text("SET lock_timeout = 30000"))
+                    conn.execute(_text(stmt))
+                added += 1
+                log.warning("Schema migration: added %s.%s", table.name, col.name)
+            except Exception as e:
+                # A racing replica may have just added it — that is fine and
+                # idempotent. Anything else needs to be visible.
+                log.error("Schema migration FAILED (%s): %s", stmt, e)
+    if added:
+        log.warning("Schema migration added %d column(s)", added)
+    return added
+
+
 def init_db() -> None:
     """Create tables if they don't exist."""
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +181,15 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
     from sqlalchemy import text, inspect
     _create_all_with_retry()
+
+    # Schema-driven column migration, BEFORE anything reads a table. The
+    # hand-written per-table lists further down predate this and are now only a
+    # backstop for the few columns that need a non-default DDL; anything the
+    # models declare is added here whether or not somebody remembered to list it.
+    try:
+        ensure_model_columns()
+    except Exception as e:
+        log.error("Column migration failed (continuing): %s", e)
 
     # Migrations: Add missing pg enum values if using Supabase.
     # IMPORTANT: SQLAlchemy persists/compares Enum columns by the member NAME
@@ -362,6 +459,13 @@ _PERF_INDEXES = [
     # Pulse lane selects due boards by next_poll_at every tick. The column is
     # declared index=True but was added by bare ALTER in prod, so no index exists.
     ("ix_registry_next_poll", "companyregistry", "(next_poll_at)"),
+    # _reshortlist_scored_jobs runs EVERY matching pass: user_id + is_closed +
+    # rerank_score >= threshold, ordered by rerank_score. Nothing covered it, so
+    # it was a Seq Scan over the whole job table — measured at 10.2s on ~92k
+    # rows in production, on the same process that serves the API. The partial
+    # index matches the filter and serves the ORDER BY.
+    ("ix_job_user_rerank", "job",
+     "(user_id, rerank_score DESC) WHERE is_closed = false"),
 ]
 
 
