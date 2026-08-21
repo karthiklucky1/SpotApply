@@ -356,6 +356,36 @@ def _stamp_job(jid: int, ghost: Optional[Tuple],
 _prescore_memo: dict = {}
 
 
+def _keep_prescore(jid: int, pre: Tuple[float, str]) -> None:
+    """A prescored job is STAYING in the queue: memoize it AND persist it.
+
+    The memo makes the retry free. The database write is what makes the
+    promise-ordered queue real. `_user_queue` sorts the freshest slice by
+    `Job.prescore`, but every other writer of that column (`_stamp_job`, the
+    matching lane's final stamp, the pulse fast path) sets it TOGETHER with
+    `rerank_score` — i.e. as the job LEAVES the queue. A job kept in the queue
+    (waiting in the burst band, or whose final failed) therefore read NULL —
+    "unknown", sorts first — so it re-entered the freshest slice every cycle
+    and the ordering never saw a real number in production.
+
+    Idempotent and best-effort: a lost write costs one cheap re-prescore.
+    """
+    if len(_prescore_memo) > 10000:      # pathological pile-up guard
+        _prescore_memo.clear()
+    _prescore_memo[jid] = pre
+    try:
+        with get_session() as session:
+            job = session.get(Job, jid)
+            if job is None or job.rerank_score is not None:
+                return               # scored by another lane meanwhile
+            if job.prescore != float(pre[0]):
+                job.prescore = float(pre[0])
+                session.add(job)
+                session.commit()
+    except Exception as e:
+        log.debug("prescore persist skipped for %d: %s", jid, e)
+
+
 def _score_job(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[float], Optional[str]]]:
     """Score one queued job. Returns ("scored"|"drained", jid, score, provider)
     or None. ``provider`` is which backend produced the final score (for the
@@ -421,10 +451,9 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
         if pre is not None and pre[0] < ctx.spend_gate:
             # Burst money only buys finals on strong candidates. This job is not
             # a misfit — do NOT stamp it — it simply waits for the soft budget,
-            # where the everyday gate applies. Memoize so the wait is free.
-            if len(_prescore_memo) > 10000:
-                _prescore_memo.clear()
-            _prescore_memo[jid] = pre
+            # where the everyday gate applies. Keep the prescore (memo AND row)
+            # so the wait is free and the queue can sort it by what it is worth.
+            _keep_prescore(jid, pre)
             return None
     else:
         pre = None
@@ -437,9 +466,7 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     except Exception as e:
         log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
         if pre is not None:
-            if len(_prescore_memo) > 10000:  # pathological pile-up guard
-                _prescore_memo.clear()
-            _prescore_memo[jid] = pre  # retry skips Tier-1
+            _keep_prescore(jid, pre)   # retry skips Tier-1; the queue sorts on it
         # Transient, non-job-specific failures — the hourly/daily budget cap
         # tripping mid-cycle (the LLM_HOURLY_FINAL_CAP smoother firing) or every
         # provider being in circuit-breaker cooldown — must NOT count against

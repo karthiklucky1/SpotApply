@@ -133,29 +133,45 @@ def _write(user_id: str, day: date, finals: int = 0, hits: int = 0) -> None:
     already paid for.
     """
     from sqlalchemy import text as _text
+    from sqlalchemy.exc import IntegrityError
     from app.db.init_db import get_session
     from app.db.models import UserUsage
-    try:
-        with get_session() as session:
-            res = session.execute(
-                # COALESCE, not a bare +: a row that predates these columns can
-                # hold NULL if the ALTER ever lands without its DEFAULT, and
-                # NULL + 1 is NULL — a counter that silently never counts is
-                # unlimited spend.
-                _text("UPDATE user_usage SET "
-                      "finals_count = COALESCE(finals_count, 0) + :f, "
-                      "finals_hits = COALESCE(finals_hits, 0) + :h "
-                      "WHERE user_id = :u AND usage_date = :d"),
-                {"f": finals, "h": hits, "u": user_id, "d": day},
-            )
-            if not res.rowcount:
-                session.add(UserUsage(
-                    user_id=user_id, usage_date=day, week_start=_week_start(day),
-                    finals_count=finals, finals_hits=hits))
-            session.commit()
-    except Exception as e:
-        log.debug("finals ledger write failed for %s (%+d finals, %+d hits): %s",
-                  user_id, finals, hits, e)
+    # TWO attempts, because of the first final of a user's day: there is no row
+    # to UPDATE, so several workers finishing together all see rowcount 0 and
+    # all INSERT. uq_user_usage_date lets exactly one win, and a loser that
+    # simply swallowed the IntegrityError would DROP its increment — on the
+    # 00:00 UTC burst, every day, in the overspend direction. The loser retries
+    # the UPDATE against the row the winner just created.
+    for attempt in range(2):
+        try:
+            with get_session() as session:
+                res = session.execute(
+                    # COALESCE, not a bare +: a row that predates these columns
+                    # can hold NULL if the ALTER ever lands without its DEFAULT,
+                    # and NULL + 1 is NULL — a counter that silently never
+                    # counts is unlimited spend.
+                    _text("UPDATE user_usage SET "
+                          "finals_count = COALESCE(finals_count, 0) + :f, "
+                          "finals_hits = COALESCE(finals_hits, 0) + :h "
+                          "WHERE user_id = :u AND usage_date = :d"),
+                    {"f": finals, "h": hits, "u": user_id, "d": day},
+                )
+                if not res.rowcount:
+                    session.add(UserUsage(
+                        user_id=user_id, usage_date=day, week_start=_week_start(day),
+                        finals_count=finals, finals_hits=hits))
+                session.commit()
+            return
+        except IntegrityError:
+            if attempt == 0:
+                continue          # another worker created today's row — UPDATE it
+            log.warning("finals ledger write LOST for %s (%+d finals, %+d hits): the "
+                        "insert race did not settle — spend is under-counted by that "
+                        "much", user_id, finals, hits)
+        except Exception as e:
+            log.debug("finals ledger write failed for %s (%+d finals, %+d hits): %s",
+                      user_id, finals, hits, e)
+            return
 
 
 def day_counts(user_id: Optional[str]) -> Tuple[int, int]:

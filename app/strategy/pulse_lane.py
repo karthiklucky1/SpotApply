@@ -161,7 +161,7 @@ def _fast_path_user(uid: str, score_budget: int,
     )
     from app.matching.reranker import Reranker, llm_budget_exhausted
     from app.matching.filters import score_ghost
-    from app.strategy.scoring_lane import _remaining_finals_today
+    from app.strategy.scoring_lane import _finals_allowance
 
     # Budget gate BEFORE any spend. The fast path had no cycle-level check at
     # all: it paid for a Tier-1 prescore per job and only then discovered the
@@ -170,8 +170,12 @@ def _fast_path_user(uid: str, score_budget: int,
     if llm_budget_exhausted():
         return 0, 0, 0
     # And this user's own plan allowance — the fast path spends the same budget
-    # as the scoring lane, so it has to respect the same per-plan ceiling.
-    score_budget = _remaining_finals_today(uid, score_budget)
+    # as the scoring lane, so it has to respect the same ceiling AND the same
+    # promise bar. Taking only the slice size would let burst money be spent
+    # here under the everyday gate, which is exactly the spend the adaptive
+    # budget's Test A exists to prevent (app/matching/finals_budget.py).
+    allow = _finals_allowance(uid, score_budget)
+    score_budget = allow.n
     if score_budget <= 0:
         return 0, 0, 0
     from app.matching.hire_probability import (
@@ -239,7 +243,12 @@ def _fast_path_user(uid: str, score_budget: int,
         return 0, 0, 0
 
     use_prescore = settings.prescore_enabled and reranker.has_prescore_backend()
+    # Two thresholds, same split as the scoring lane's _Ctx: below `gate` a job
+    # is a misfit and is stamped out of the queue; between `gate` and
+    # `spend_gate` it is KEPT for the soft budget — never stamped, or an
+    # identical job's fate would depend on the time of day it was picked up.
     gate = min(settings.prescore_advance_threshold, settings.shortlist_score_threshold)
+    spend_gate = max(gate, int(allow.gate))
     scored = 0
     shortlisted: list[int] = []
     from app.common.inflight import claim
@@ -299,6 +308,17 @@ def _fast_path_user(uid: str, score_budget: int,
                             session.add(fresh)
                             session.commit()
                     scored += 1
+                    continue
+                if pre is not None and pre[0] < spend_gate:
+                    # Not a misfit, not strong enough for burst money: leave it
+                    # Queued with its prescore ON THE ROW, so the scoring lane
+                    # sorts it by promise once the soft budget reopens.
+                    with get_session() as session:
+                        fresh = session.get(Job, jid)
+                        if fresh is not None and fresh.rerank_score is None:
+                            fresh.prescore = prescore_val
+                            session.add(fresh)
+                            session.commit()
                     continue
 
             try:
