@@ -297,7 +297,7 @@ def _run_hot_lane_cycle() -> dict:
                 continue
             routed_ids.update(r.external_id for r in relevant)
             try:
-                new = _upsert(relevant, user_id=u["user_id"])
+                new = _upsert(relevant, user_id=u["user_id"], user_keywords=u["roles"] or None)
                 inserted_jobs += new
                 board_new += new
                 if new:

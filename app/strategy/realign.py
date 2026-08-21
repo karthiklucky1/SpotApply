@@ -115,6 +115,11 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
         if not jobs:
             return stats
 
+        # Every job's fresh on_role verdict, stamped in one bulk pass after the
+        # loop (not per row — this can be the user's whole pool).
+        _on_role_ids: list = []
+        _on_role_values: list = []
+
         # One query for the applications rather than one per job.
         apps = {}
         for app in session.exec(
@@ -130,6 +135,12 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
                 continue
 
             on_role = role_title_match(title or "", new_roles)
+            # The board's "my roles" filter reads this off the row rather than
+            # re-deriving it with ~20 ILIKEs per request (app/strategy/on_role.py).
+            # A role change is exactly when it goes stale, and this loop has
+            # already computed the answer — persist it.
+            _on_role_ids.append(job_id)
+            _on_role_values.append(bool(on_role))
             # Only a posting the OLD roles brought in is a candidate for
             # parking; see the docstring on why this is not simply "not on_role".
             was_old_role = bool(old_roles) and role_title_match(title or "", old_roles)
@@ -207,6 +218,19 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
                     stats["parked"] += 1
 
         session.commit()
+
+    # After the session closes: the board's role filter reads on_role, and it is
+    # now stale for every job in this pool. Best-effort — a failure here costs a
+    # too-permissive filter (NULL/old value = shown), never a hidden job.
+    # (Logged, not added to `stats` — that dict is a fixed, asserted shape.)
+    try:
+        from app.strategy.on_role import stamp as _stamp_on_role
+        _stamped = _stamp_on_role(_on_role_ids, _on_role_values)
+        if _stamped:
+            log.info("Realign for %s: re-stamped on_role on %d job(s)",
+                     user_id or "local", _stamped)
+    except Exception as e:
+        log.warning("on_role stamp after realign failed (non-fatal): %s", e)
 
     if stats["capped"]:
         log.warning(

@@ -257,6 +257,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     """
     from app.analytics.funnel import FunnelTracker
     from app.discovery.title_filter import keyword_hit, matches_title
+    from app.strategy.on_role import compute as _on_role_for
     from datetime import datetime
     inserted = 0
 
@@ -473,6 +474,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     content_hash=content_hash,
                     cross_source_slug=slug,
                     user_id=user_id,
+                    # Answer the board's "my roles" question once, here, instead
+                    # of with ~20 unindexable ILIKEs on every keystroke (twice —
+                    # page and count). None when the owner has no roles set.
+                    on_role=_on_role_for(r.title, user_keywords),
                 )
                 # Let Postgres resolve the race instead of raising into it.
                 #

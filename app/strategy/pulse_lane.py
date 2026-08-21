@@ -520,7 +520,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             if not relevant:
                 continue
             try:
-                n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]))
+                n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]),
+                            user_keywords=u["roles"] or None)
                 if n:
                     users_touched.add(u["user_id"])
                     new_here += n

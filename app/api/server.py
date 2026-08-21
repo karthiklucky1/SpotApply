@@ -451,6 +451,21 @@ async def startup_event():
         except Exception as _ie:
             log.warning("Performance index build failed (non-fatal): %s", _ie)
     asyncio.create_task(_build_indexes())
+    # Stamp Job.on_role on rows written before the column existed. The board's
+    # "my roles" filter reads it instead of running ~20 unindexable ILIKEs per
+    # request; until a row is stamped the filter keeps it (NULL = permissive),
+    # so this is a progressive speed-up, never a correctness gate. One pass per
+    # boot, off the startup path, and a no-op once the pool is stamped.
+    async def _backfill_on_role():
+        try:
+            from app.strategy.on_role import backfill
+            for uid in await asyncio.to_thread(_lane_user_ids):
+                roles = await asyncio.to_thread(_get_target_roles, uid)
+                if roles:
+                    await asyncio.to_thread(backfill, uid, roles)
+        except Exception as e:
+            log.warning("on_role backfill skipped (non-fatal): %s", e)
+    asyncio.create_task(_backfill_on_role())
     # Memory watcher — an OOM kill leaves no traceback, so the only record of
     # what was resident is the one we wrote on the way up. Runs in EVERY process
     # (web-only replicas included), before the lanes_enabled early-return.
@@ -2893,10 +2908,30 @@ def api_jobs(
         _roles_cond = None
         if roles_only == "1":
             from sqlalchemy import or_ as _or
-            from app.discovery.title_filter import role_match_terms
-            _terms = role_match_terms(_get_target_roles(uid) or [])
-            if _terms:
-                _parts = [_or(*[Job.title.ilike(f"%{t}%") for t in _terms])]
+            _roles = _get_target_roles(uid) or []
+            if _roles:
+                # Read the precomputed verdict off the row. This used to expand
+                # the roles into ~20 terms and OR a `title ILIKE '%term%'` for
+                # each — unindexable (leading wildcard) and run TWICE per
+                # request, since the pagination count repeats the predicate. It
+                # is checked by default, so every keystroke paid for it: 1.6-1.9s
+                # against 665ms without. See app/strategy/on_role.py.
+                #
+                # A row whose verdict has not been stamped yet (written before
+                # the column, or awaiting the boot backfill) still gets the OLD
+                # title test — under an `on_role IS NULL` guard, so a stamped row
+                # never evaluates it. Results are therefore identical to before,
+                # and the cost falls away as the pool gets stamped rather than
+                # the filter changing what it shows.
+                from sqlalchemy import and_ as _and
+                from app.discovery.title_filter import role_match_terms
+                _parts = [Job.on_role.is_(True)]
+                _terms = role_match_terms(_roles)
+                if _terms:
+                    _parts.append(_and(
+                        Job.on_role.is_(None),
+                        _or(*[Job.title.ilike(f"%{t}%") for t in _terms]),
+                    ))
                 if settings.roles_filter_score_floor > 0:
                     _parts.append(Job.rerank_score >= settings.roles_filter_score_floor)
                 _roles_cond = _or(*_parts)

@@ -134,6 +134,15 @@ class Job(SQLModel, table=True):
     # Blended final score combining rerank fit + hire probability
     blended_score: Optional[float] = Field(default=None)
 
+    # Does this posting's TITLE match its owner's target roles? Precomputed at
+    # write time (`role_title_match`, the boundary-aware gate) because the board
+    # filter used to answer it live with ~20 `title ILIKE '%term%'` predicates —
+    # OR'd, run twice per request (page + count), on by default, and unindexable
+    # because of the leading wildcard: 1.6-1.9s per keystroke against 665ms
+    # without it. NULL = not computed yet (pre-backfill rows), and the filter
+    # treats NULL as "keep" — the role gate is deliberately permissive: a false
+    # positive gets scored and ranked, a false negative is a job never seen.
+    on_role: Optional[bool] = Field(default=None)
     # Classified job type: "full_time" | "internship" (set during matching).
     job_type: str = Field(default="full_time")
     # Visa intelligence (persisted so we can filter/query, not just display).
