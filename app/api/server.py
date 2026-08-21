@@ -2786,6 +2786,22 @@ def api_stats(request: Request) -> dict:
 
 _AUTOFILL_SOURCES = {"greenhouse", "lever", "ashby", "workday", "smartrecruiters"}
 
+# Exactly the columns /api/jobs returns — see the projection note in the query
+# below. Application columns are labelled because `id`, `created_at` and
+# `updated_at` collide with the Job ones in a joined row.
+_JOB_LIST_COLS = (
+    Job.id, Job.source, Job.company, Job.title, Job.location, Job.remote, Job.url,
+    Job.posted_at, Job.first_seen, Job.discovered_at,
+    Job.similarity_score, Job.rerank_score, Job.hire_probability_score,
+    Job.blended_score, Job.rerank_reasoning, Job.is_closed, Job.closed_reason,
+    Application.id.label("app_id"),
+    Application.status.label("app_status"),
+    Application.apply_track.label("app_track"),
+    Application.created_at.label("app_created"),
+    Application.updated_at.label("app_updated"),
+)
+
+
 @app.get("/api/jobs")
 def api_jobs(
     request: Request,
@@ -2819,8 +2835,16 @@ def api_jobs(
     is_closed_filter = (closed == "true")
 
     with get_session() as session:
-        # Base query
-        query = select(Job, Application).outerjoin(Application, Application.job_id == Job.id).where(Job.is_closed == is_closed_filter)
+        # Base query — PROJECTED, never `select(Job, Application)`. The response
+        # below returns 17 scalar fields and never touches `description`, but a
+        # whole-entity select ships it on every row of every page: it is the
+        # biggest column in the table (retention exists to blank it) and
+        # unprojected reads of it are what put Supabase at 205% of its egress
+        # quota on 2 MB of stored data (docs/CAPACITY.md). This runs on every
+        # filter keystroke, so it is the hottest read in the app.
+        query = select(*_JOB_LIST_COLS).outerjoin(
+            Application, Application.job_id == Job.id
+        ).where(Job.is_closed == is_closed_filter)
         if _uid_filter:
             query = query.where(Job.user_id == uid)
 
@@ -2964,34 +2988,39 @@ def api_jobs(
             return dt.replace(tzinfo=None) if dt is not None and dt.tzinfo else dt
 
         jobs_list = []
-        for job, app in results:
-            _posted = job.posted_at or job.first_seen
-            _seen = _tz_naive(job.first_seen or job.discovered_at)
+        for row in results:
+            (jid, jsource, jcompany, jtitle, jlocation, jremote, jurl,
+             jposted_at, jfirst_seen, jdiscovered_at,
+             jsimilarity, jrerank, jhire_prob, jblended, jreason,
+             jis_closed, jclosed_reason,
+             app_id, app_status, app_track, app_created, app_updated) = row
+            _posted = jposted_at or jfirst_seen
+            _seen = _tz_naive(jfirst_seen or jdiscovered_at)
             jobs_list.append({
-                "id": job.id,
-                "source": job.source.value if job.source else "manual",
-                "company": job.company,
-                "title": job.title,
-                "location": job.location,
-                "remote": job.remote,
-                "url": job.url,
+                "id": jid,
+                "source": jsource.value if jsource else "manual",
+                "company": jcompany,
+                "title": jtitle,
+                "location": jlocation,
+                "remote": jremote,
+                "url": jurl,
                 "posted": _posted.isoformat() if _posted else None,
                 # Discovered within the last 24h — the "New today" signal.
                 "is_new": bool(_seen and _seen > _new_cutoff),
-                "similarity": job.similarity_score,
-                "rerank": job.rerank_score,
-                "hire_probability": job.hire_probability_score,
-                "blended": job.blended_score,
-                "reason": job.rerank_reasoning,
-                "is_closed": job.is_closed,
-                "closed_reason": job.closed_reason,
+                "similarity": jsimilarity,
+                "rerank": jrerank,
+                "hire_probability": jhire_prob,
+                "blended": jblended,
+                "reason": jreason,
+                "is_closed": jis_closed,
+                "closed_reason": jclosed_reason,
                 "application": {
-                    "id": app.id,
-                    "status": app.status.value,
-                    "apply_track": app.apply_track,
-                    "created_at": app.created_at.isoformat() if app.created_at else None,
-                    "updated_at": app.updated_at.isoformat() if app.updated_at else None,
-                } if app else None
+                    "id": app_id,
+                    "status": app_status.value if hasattr(app_status, "value") else app_status,
+                    "apply_track": app_track,
+                    "created_at": app_created.isoformat() if app_created else None,
+                    "updated_at": app_updated.isoformat() if app_updated else None,
+                } if app_id is not None else None
             })
             
         import math

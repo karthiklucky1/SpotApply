@@ -466,6 +466,21 @@ _PERF_INDEXES = [
     # index matches the filter and serves the ORDER BY.
     ("ix_job_user_rerank", "job",
      "(user_id, rerank_score DESC) WHERE is_closed = false"),
+    # The Job Explorer's default view: WHERE user_id = ? AND is_closed = ?
+    # [AND coalesce(posted_at, first_seen) >= cutoff]
+    # ORDER BY coalesce(posted_at, first_seen) DESC, id DESC  (server.py /api/jobs).
+    # An EXPRESSION index, because the sort key is an expression — no plain
+    # column index can serve it, so every page of every filter keystroke sorted
+    # the user's whole pool to return 25 rows. Indexing the expression itself
+    # keeps the exact posted-else-discovered semantics AND makes the freshness
+    # window a range scan. `id DESC` is included so the tie-breaker stays inside
+    # the index instead of forcing a sort on top of it.
+    #
+    # NOT declared in models.py __table_args__: SQLAlchemy would need a raw
+    # text() element there, and this list is what actually runs on every
+    # startup (including a fresh database), so one home is the honest one.
+    ("ix_job_user_fresh", "job",
+     "(user_id, is_closed, (COALESCE(posted_at, first_seen)) DESC, id DESC)"),
 ]
 
 

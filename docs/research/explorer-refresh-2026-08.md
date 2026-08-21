@@ -78,6 +78,19 @@ default**, so this runs on every load.
 
 Items 1–3 are small and independent; they are where the time actually goes.
 
+> **Status: 1–3 shipped.** The list query is projected to the 22 columns the response
+> returns (`server.py:_JOB_LIST_COLS`) — compiled SQL confirmed: one FROM, one LEFT OUTER
+> JOIN, no `description`. The Explorer opens on the last 7 days
+> (`EXPLORER_DEFAULT_FRESH_DAYS`) and auto-loads on first visit instead of sitting on
+> "Loading job database…". `ix_job_user_fresh` indexes the COALESCE **expression** itself,
+> so the exact posted-else-discovered semantics survive while the filter becomes a range
+> scan and the sort comes out of the index. Guarded by `tests/test_jobs_projection.py`.
+>
+> Items 4–6 are open. While writing the guard, the AST check found **seven more**
+> whole-entity `select(Application, Job)` reads — five in `dashboard` (the Kanban render,
+> on the same egress path), plus `sync_emails` and `export_applications_csv`. They are
+> listed in the test as a debt register that can shrink but not grow.
+
 ## 4. "Is deploying many times a problem?"
 
 Not for correctness — but it is not free, and one failure mode is real.

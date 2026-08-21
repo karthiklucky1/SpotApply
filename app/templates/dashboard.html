@@ -2505,6 +2505,15 @@
                         void card.offsetWidth; // force reflow to restart animation
                         card.style.animationPlayState = 'running';
                     });
+                    // Auto-load the Job Explorer on first visit, on the default
+                    // freshness window. Without this the table sat on "Loading
+                    // job database..." until the user happened to touch a filter
+                    // or a pager button.
+                    if (t === 'explorer' && !window._explorerLoaded) {
+                        window._explorerLoaded = true;
+                        _setFreshState(EXPLORER_DEFAULT_FRESH_DAYS);
+                        loadJobsPage(1);
+                    }
                     // Auto-load ghost jobs on first visit
                     if (t === 'ghost' && !window._ghostJobsLoaded) {
                         window._ghostJobsLoaded = true;
@@ -2776,7 +2785,7 @@
             if (_roReset) _roReset.checked = true;  // "my roles" stays on by default
             explorerRolesOnly = true;
             document.getElementById('score-val').textContent = 0;
-            _setFreshState(0);  // reset Fresh-first button
+            _setFreshState(EXPLORER_DEFAULT_FRESH_DAYS);  // back to the default window, not "all time"
 
             explorerSearchVal = '';
             explorerRemoteVal = '';
@@ -2789,6 +2798,12 @@
 
         let searchDebounceTimer = null;
         const _FRESH_BTN_BASE = "text-[11px] font-black uppercase tracking-wider py-2.5 px-5 rounded-full border transition duration-200 whitespace-nowrap ";
+        // The Explorer opens on the LAST 7 DAYS, not the whole pool. Nobody acts
+        // on tens of thousands of rows — the board is the product and this is a
+        // search tool — and the all-time default made every page sort the entire
+        // pool. "All time" is still one click away (the button cycles 7 → 1 → all).
+        const EXPLORER_DEFAULT_FRESH_DAYS = 7;
+        window.explorerFreshDays = EXPLORER_DEFAULT_FRESH_DAYS;
         function _setFreshState(days) {
             // 0 = all ages, 7 = last week, 1 = discovered/posted in the last 24h
             window.explorerFreshDays = days;
