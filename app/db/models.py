@@ -419,6 +419,13 @@ class UserUsage(SQLModel, table=True):
     week_start: date = Field(index=True)          # Monday of the current week
     tailor_count: int = Field(default=0)          # tailors used today
     autofill_count_week: int = Field(default=0)   # autofills used this week (stored on Monday row)
+    # Adaptive finals budget (app/matching/finals_budget.py). PERSISTED, not
+    # in-memory: a weekly budget cannot live in process memory or every deploy
+    # grants a fresh week — the Aug 14-21 stall "healed" on restart for exactly
+    # that reason. finals_hits counts finals that cleared the shortlist bar; the
+    # two together are the marginal-yield signal that opens the burst zone.
+    finals_count: int = Field(default=0)          # Tier-2 finals paid for today
+    finals_hits: int = Field(default=0)           # of those, how many cleared the bar
 
 
 class FunnelEvent(SQLModel, table=True):

@@ -238,14 +238,37 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
     return users
 
 
+# How much of the freshness window to look at before picking the most promising
+# jobs in it. 3x keeps the SQL a bounded index walk while still giving the sort
+# something to choose from; the ceiling stops a large per-cycle cap from pulling
+# a big slice back for a Python sort.
+_QUEUE_OVERSAMPLE = 3
+_QUEUE_FETCH_MAX = 400
+
+
 def _user_queue(user_id: Optional[str], cap: int) -> List[int]:
-    """A user's queued (unscored) job ids, freshest first, capped. Attempt-ceiling
-    deferred jobs are excluded IN THE QUERY (not after the LIMIT) so a window of
-    deferred fresh jobs can't crowd valid older jobs out of the capped freshest-
-    first slice and starve them indefinitely."""
+    """A user's queued (unscored) job ids: the freshest `cap × _QUEUE_OVERSAMPLE`,
+    re-ordered most-promising-first, then cut to `cap`.
+
+    Spending the expensive model in ARRIVAL order was the quiet half of the flat
+    cap's problem — the day's finals went to whatever showed up first rather
+    than to the best candidates. Promise is the Tier-1 `prescore` where one
+    exists; a job that has never been prescored sorts FIRST (COALESCE to 100),
+    because "unknown" is worth the $0.0002 it costs to find out and the cascade
+    drains it for free if it comes back weak.
+
+    The freshness window stays as the index-friendly SQL (ix_job_unscored rides
+    `first_seen DESC` with a LIMIT); only the small oversampled slice is sorted,
+    in Python. Ordering by the COALESCE in SQL would defeat that index and turn
+    a bounded walk into a full sort of the user's unscored corpus.
+
+    Attempt-ceiling deferred jobs are excluded IN THE QUERY (not after the
+    LIMIT) so a window of deferred fresh jobs can't crowd valid older jobs out
+    of the capped slice and starve them indefinitely."""
     deferred = _deferred_ids()
+    fetch = max(cap, min(cap * _QUEUE_OVERSAMPLE, _QUEUE_FETCH_MAX))
     with get_session() as session:
-        q = select(Job.id).where(
+        q = select(Job.id, Job.prescore).where(
             Job.user_id == user_id,
             Job.rerank_score == None,  # noqa: E711
             Job.is_closed == False,    # noqa: E712
@@ -254,19 +277,36 @@ def _user_queue(user_id: Optional[str], cap: int) -> List[int]:
         # post-filtering only if the deferred set is pathologically large.
         if deferred and len(deferred) <= 2000:
             q = q.where(Job.id.notin_(deferred))
-        q = q.order_by(Job.first_seen.desc()).limit(cap)
-        jids = [r[0] if isinstance(r, tuple) else r for r in session.exec(q).all()]
+        q = q.order_by(Job.first_seen.desc()).limit(fetch)
+        rows = list(session.exec(q).all())
+    # Stable sort: equal promise keeps the freshest-first order the query gave.
+    rows.sort(key=lambda r: (r[1] if r[1] is not None else 100.0), reverse=True)
+    jids = [r[0] for r in rows][:cap]
     return jids if len(deferred) <= 2000 else _drop_deferred(jids)
 
 
 class _Ctx:
-    __slots__ = ("resume", "reranker", "use_prescore", "gate")
+    """Per-user, per-cycle scoring context.
 
-    def __init__(self, resume, reranker, use_prescore, gate):
+    TWO Tier-1 thresholds, and the difference is load-bearing:
+      ``gate``       — below it a job is a misfit: stamped with its prescore and
+                       drained out of the queue for good. Never moves.
+      ``spend_gate`` — at or above it the job is worth a final RIGHT NOW. In the
+                       burst zone this is higher (finals_budget.burst_gate), so
+                       between the two a job is neither drained nor scored: it
+                       stays Queued for a cycle inside the soft budget, which is
+                       when everyday money pays for it. Draining that band
+                       instead would mean an identical job's fate depended on
+                       what time of day it happened to be picked up.
+    """
+    __slots__ = ("resume", "reranker", "use_prescore", "gate", "spend_gate")
+
+    def __init__(self, resume, reranker, use_prescore, gate, spend_gate=None):
         self.resume = resume
         self.reranker = reranker
         self.use_prescore = use_prescore
         self.gate = gate
+        self.spend_gate = gate if spend_gate is None else spend_gate
 
 
 def _pick_provider(jid: int, ctx: "_Ctx") -> Optional[str]:
@@ -378,6 +418,14 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
                 _prescore_memo.pop(jid, None)
                 return ("drained", jid, None, None)
             return None  # lost the race to another lane
+        if pre is not None and pre[0] < ctx.spend_gate:
+            # Burst money only buys finals on strong candidates. This job is not
+            # a misfit — do NOT stamp it — it simply waits for the soft budget,
+            # where the everyday gate applies. Memoize so the wait is free.
+            if len(_prescore_memo) > 10000:
+                _prescore_memo.clear()
+            _prescore_memo[jid] = pre
+            return None
     else:
         pre = None
 
@@ -464,27 +512,42 @@ def _plan_finals_cap(uid: Optional[str]) -> Optional[int]:
         return None
 
 
-def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
-    """How many jobs of ``uid``'s queue this cycle may take.
+def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
+    """How many jobs of ``uid``'s queue this cycle may take, and how promising a
+    candidate must be to earn a final.
 
-    Bounded by BOTH the per-cycle fairness cap and what is left of the user's
-    plan allowance for the day. Returning 0 drops the user from this cycle's
-    work list entirely, so their queue items are never even prescored — the
-    cheap Tier-1 pass is not free either."""
+    The plan's `finals_daily` is the SOFT point, not a ceiling: past it the
+    adaptive budget keeps spending only while the remaining candidates are
+    strong (Test A) and recent finals are still producing matches (Test B),
+    bounded by the daily burst and the weekly budget
+    (`app/matching/finals_budget.py`). Returning 0 drops the user from this
+    cycle's work list entirely, so their queue items are never even prescored —
+    the cheap Tier-1 pass is not free either.
+    """
+    from app.matching.finals_budget import Allowance, allowance, normal_gate
     cap = _plan_finals_cap(uid)
     if cap is None or cap <= 0:
-        return per_cycle_cap
-    from app.matching.reranker import user_finals_today, user_prescores_today
-    remaining = cap - user_finals_today(uid)
+        return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
+    allow = allowance(uid, per_cycle_cap, cap)
     # Every queue item costs a Tier-1 prescore before it can become a final, so
-    # the slice is also bounded by the user's PRESCORE allowance. Prescores are
-    # counted separately from finals on purpose — see reranker._user_prescores:
-    # charging a Haiku prescore as a final spent a PRO user's whole day within
-    # 15 minutes of 00:00 UTC while OpenAI was out of credits.
+    # the slice is also bounded by the user's ANTHROPIC prescore allowance.
+    # Prescores are counted separately from finals on purpose — see
+    # reranker._user_prescores: charging a Haiku prescore as a final spent a PRO
+    # user's whole day within 15 minutes of 00:00 UTC while OpenAI was out of
+    # credits. OpenAI prescores are not counted at all ($0.0002 each).
     mult = int(getattr(settings, "prescore_budget_multiplier", 10) or 0)
     if mult > 0:
-        remaining = min(remaining, cap * mult - user_prescores_today(uid))
-    return max(0, min(per_cycle_cap, remaining))
+        from app.matching.reranker import user_prescores_today
+        headroom = cap * mult - user_prescores_today(uid)
+        if headroom < allow.n:
+            return Allowance(max(0, headroom), allow.gate, "anthropic prescore allowance")
+    return allow
+
+
+def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
+    """Slice size only — the pulse lane's fast path budget check (pulse_lane.py)
+    and anything that does not need the gate."""
+    return _finals_allowance(uid, per_cycle_cap).n
 
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
@@ -697,15 +760,20 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
 
     queues: List[List[Tuple[Optional[str], int]]] = []
     capped_out = 0
+    gate_by_user: dict = {}
     for uid in users:
-        # Per-plan daily allowance, not a slice of one global pool — see
-        # PLAN_LIMITS["finals_daily"]. A user who has spent today's allowance
-        # contributes nothing to this cycle's work list.
-        allowance = _remaining_finals_today(uid, settings.scoring_per_user_cap)
-        if allowance <= 0:
+        # The adaptive budget decides BOTH how many finals this user may buy now
+        # and how promising a candidate has to be to earn one: inside the soft
+        # budget the everyday Tier-1 gate applies, past it only strong
+        # candidates qualify (finals_budget.burst_gate). A user with nothing
+        # left contributes nothing to this cycle's work list.
+        allow = _finals_allowance(uid, settings.scoring_per_user_cap)
+        if allow.n <= 0:
             capped_out += 1
+            log.debug("Scoring: %s gets no slice this cycle (%s)", uid, allow.reason)
             continue
-        q = [(uid, jid) for jid in _user_queue(uid, allowance)]
+        gate_by_user[uid] = allow.gate
+        q = [(uid, jid) for jid in _user_queue(uid, allow.n)]
         if q:
             queues.append(q)
     if capped_out:
@@ -732,9 +800,10 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             if now - _last_capped_log[0] >= 1800:
                 _last_capped_log[0] = now
                 log.warning(
-                    "Scoring cycle: %d scorable user(s) plan-capped — their queued "
-                    "jobs stay unscored until the UTC day rolls (finals cap per "
-                    "PLAN_LIMITS; prescore allowance × PRESCORE_BUDGET_MULTIPLIER)",
+                    "Scoring cycle: %d scorable user(s) have no finals allowance — "
+                    "queued jobs wait for the budget to reopen (soft/burst/weekly "
+                    "per PLAN_LIMITS × FINALS_*_MULTIPLIER, or the marginal-yield "
+                    "test; DEBUG logs the per-user reason)",
                     capped_out)
         return stats
 
@@ -777,9 +846,15 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                 reranker.prewarm_cache(resume)
             except Exception as e:
                 log.debug("cache prewarm unavailable for %s (%s)", uid, e)
+            # The SPEND threshold is per USER per CYCLE, not a constant: past
+            # the soft budget the adaptive policy raises it so burst money only
+            # buys finals on strong candidates (Test A). The DRAIN gate never
+            # moves — see _Ctx.
+            from app.matching.finals_budget import normal_gate
+            gate = normal_gate()
             ctx = _Ctx(resume, reranker,
                        settings.prescore_enabled and reranker.has_prescore_backend(),
-                       min(settings.prescore_advance_threshold, settings.shortlist_score_threshold))
+                       gate, gate_by_user.get(uid, gate))
             ctx_cache[uid] = ctx
             return ctx
 

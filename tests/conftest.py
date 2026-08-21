@@ -119,6 +119,11 @@ def _reset_process_globals():
         counter["count"] = 0
     _rr._usage_totals.update(calls=0, input=0, cache_read=0, cache_write=0, output=0)
     try:
+        from app.matching import finals_budget as _fb
+        _fb.reset_state()          # day/week caches + the marginal-yield ring
+    except ImportError:
+        pass
+    try:
         from app.matching import cards as _cards
         _cards._mints_today["day"] = ""
         _cards._mints_today["count"] = 0

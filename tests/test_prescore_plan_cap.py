@@ -120,11 +120,13 @@ def test_plan_capped_cycle_is_logged_not_silent(monkeypatch, caplog):
     """A cycle where every scorable user is plan-capped used to `return stats`
     before the log line, so a day-long stall left no trace in the logs."""
     import logging
+    from app.matching.finals_budget import Allowance
     monkeypatch.setattr(sl, "_expire_stale_unscored", lambda: 0)
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
-    monkeypatch.setattr(sl, "_remaining_finals_today", lambda uid, cap: 0)
+    monkeypatch.setattr(sl, "_finals_allowance",
+                        lambda uid, cap: Allowance(0, 40, "weekly budget spent"))
     sl._last_capped_log[0] = float("-inf")
     with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
         stats = sl._run_scoring_cycle(None)
     assert stats["plan_capped_users"] == 2
-    assert any("plan-capped" in r.getMessage() for r in caplog.records)
+    assert any("no finals allowance" in r.getMessage() for r in caplog.records)

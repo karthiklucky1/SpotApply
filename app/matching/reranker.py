@@ -140,6 +140,25 @@ def _register_final_call(user_id: Optional[str] = None) -> None:
             _hourly_finals["hour"] = hour
             _hourly_finals["count"] = 0
         _hourly_finals["count"] += 1
+    # Write through to the persisted ledger, OUTSIDE the lock — it is the only
+    # counter that survives a deploy, and the weekly budget is meaningless
+    # without it. Never inside _budget_lock: 20 scoring workers would serialize
+    # on a database round trip.
+    try:
+        from app.matching.finals_budget import record_final
+        record_final(user_id)
+    except Exception as e:
+        log.debug("finals ledger unavailable (spend still counted in memory): %s", e)
+
+
+def _record_final_outcome(user_id: Optional[str], score: float) -> None:
+    """Record whether a paid-for final actually produced a match. Best-effort:
+    losing the outcome must never fail a score the user already has."""
+    try:
+        from app.matching.finals_budget import record_outcome
+        record_outcome(user_id, score)
+    except Exception as e:
+        log.debug("finals outcome not recorded: %s", e)
 
 
 def user_finals_today(user_id: Optional[str]) -> int:
@@ -1037,7 +1056,13 @@ class Reranker:
                 try:
                     text = call_fn(resume_block, job_block)
                     _register_final_call(self._user_id)
-                    return self._calibrate(backend_name, _parse_response(text))
+                    result = self._calibrate(backend_name, _parse_response(text))
+                    # The verdict feeds the adaptive budget's marginal-yield
+                    # test. Recorded AFTER the parse (a score is needed) but the
+                    # spend above is recorded BEFORE it — an unparseable
+                    # response still cost money.
+                    _record_final_outcome(self._user_id, result[0])
+                    return result
                 except Exception as e:
                     error_str = str(e).lower()
                     is_credit_error = _is_exhaustion_error(error_str)

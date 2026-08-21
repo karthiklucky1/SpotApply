@@ -142,11 +142,19 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`shortlist_strong_threshold`=65) then hid. **Raise `PRESCORE_ADVANCE_THRESHOLD`
   in lockstep** — the Tier-1 gate is `min(advance, shortlist)`), `top_k_rerank`,
   `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
-- **Spend is allocated PER USER, per plan** — `PLAN_LIMITS["finals_daily"]`
-  (Free 15 / Pro 50 / Agency 100 finals per UTC day), enforced in
-  `scoring_lane._remaining_finals_today` and the pulse fast path; lookup fails
-  OPEN. One global pool divided by N users meant every signup thinned every
-  existing user's feed. `LLM_DAILY_FINAL_CAP` (5000) / `_HOURLY_` (400) are now
+- **Spend is a per-user BUDGET, not a result cap** (`matching/finals_budget.py`):
+  `PLAN_LIMITS["finals_daily"]` (Free 15 / Pro 50 / Agency 100) is the SOFT
+  point; past it a user keeps scoring only while candidates are strong
+  (`FINALS_PROMISE_FLOOR`=55 raises the Tier-1 gate in burst territory) AND the
+  last `FINALS_YIELD_WINDOW` finals still clear the bar
+  (`FINALS_YIELD_CONTINUE_RATE`). Bounded by burst (×2/day) and weekly (×7 =
+  the SAME money the flat cap cost — bursting reallocates, never adds). Decided
+  in `scoring_lane._finals_allowance` (slice + gate), inherited by the pulse
+  fast path; plan lookup fails OPEN. Counters live in `UserUsage.finals_count/
+  finals_hits` — **persisted**, because in-memory ones reset on every deploy.
+  Never chase a target: 6 good jobs means 6. The queue is promise-ordered
+  (`_user_queue`: freshness filters, prescore sorts) so the money buys the best
+  candidates, not the newest. `LLM_DAILY_FINAL_CAP` (5000) / `_HOURLY_` (400) are now
   only a runaway backstop + burst smoothing — raise as users grow.
 - **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
   OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);

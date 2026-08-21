@@ -2,7 +2,14 @@
 
 *Design spec. Replaces the flat per-plan `finals_daily` cap with a soft/burst/weekly money
 budget plus a quality-driven stop rule. Written against the current code; every file
-reference is a real call site. No code changed yet.*
+reference is a real call site.*
+
+> **Status: SHIPPED.** Implemented in `app/matching/finals_budget.py` with the ledger on
+> `UserUsage.finals_count/finals_hits`, the policy read by
+> `scoring_lane._finals_allowance` (slice **and** Tier-1 gate), and promise-ordering in
+> `_user_queue`. Guard tests: `tests/test_adaptive_finals_budget.py`. Two things changed
+> during the build and are worth knowing: the drain gate and the spend gate had to be
+> **separated** (§6a), and the ledger increment had to become atomic SQL (§6b).
 
 ## 1. What is wrong with the flat cap
 
@@ -110,6 +117,28 @@ the 5-day expiry optional (§7).
 | 7 | `tests/` | guard test: burst is never exceeded; weekly is never exceeded across a restart; a weak pool stops early; a strong pool goes past soft. |
 
 Item 2 is the only real engineering; the rest is arithmetic and a sort key.
+
+### 6a. Two gates, not one — found while building
+
+Raising the Tier-1 gate in the burst zone (Test A) is not enough on its own, because a job
+below the gate is **stamped and drained out of the queue for good**. With one gate, a job
+prescoring 45 would be permanently written off at 15:00 (burst, gate 55) and given a full
+Claude look at 09:00 (soft, gate 40) — the same job, a different fate, decided by what time
+it happened to be picked up.
+
+So `_Ctx` carries two thresholds. `gate` (40) is the **drain** bar and never moves.
+`spend_gate` is the **buy a final now** bar and rises to 55 in the burst zone. Between
+them a job is neither drained nor scored: it stays Queued, its prescore memoized so the
+wait costs nothing, and the next cycle inside the soft budget pays for it with everyday
+money.
+
+### 6b. The ledger increment must be atomic
+
+Twenty scoring workers finish finals concurrently. A read-modify-write on the day row
+loses increments under exactly that concurrency, and a lost increment on a money counter
+means **overspend** — the one direction this must not fail in. The write is a single
+`UPDATE … SET finals_count = COALESCE(finals_count, 0) + :n` with an INSERT only when no
+row was updated.
 
 ## 7. Two open items from the previous arc
 
