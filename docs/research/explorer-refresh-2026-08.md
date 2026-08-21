@@ -110,6 +110,13 @@ So the board still reads a full JD per row, and — worse — **writes one into 
 card**: up to ~260 drawers (`shortlist_render_cap` = 200 plus the four secondary lists),
 each embedding the whole posting. That is page weight as much as egress.
 
+> **Status: done.** `Job.salary_text` and `Job.sponsorship_json` are stamped at write time
+> (`app/strategy/job_facets.py`), the drawer body is fetched from
+> `/application/{id}/description` on open, and the board query loads neither
+> `description` nor `corporate_insights`. The globals read a deferred column through
+> `_loaded_attr`, which returns None instead of raising — a deferred attribute touched in
+> a template after the session closes is a 500, not a blank chip.
+
 **The fix that unlocks it** is the pattern the drawer already uses for its other sections
 (`match-panel-placeholder`, `drawer-documents-placeholder`, `company-profile-placeholder`,
 `autopsy-placeholder`): render a placeholder and fetch on open. The catch is that all

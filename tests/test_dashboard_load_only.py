@@ -43,7 +43,12 @@ def seeded():
                   ghost_score=0.1, posted_at=now - timedelta(hours=6),
                   first_seen=now - timedelta(hours=6), last_seen=now,
                   rerank_reasoning="Deferred: never rendered on the board",
-                  corporate_insights='{"salary": {"text": "$150K-$180K/yr"}}')
+                  corporate_insights='{"salary": {"text": "$150K-$180K/yr"}}',
+                  # The facets that replace reading the posting on every render.
+                  salary_text="$150,000 - $180,000",
+                  sponsorship_json='{"cap_exempt": true, "tone": "good", '
+                                   '"badge": "Cap-exempt", "reason": "University employer", '
+                                   '"refuses": false}')
         s.add(job)
         s.commit()
         s.refresh(job)
@@ -75,15 +80,19 @@ def test_the_board_renders_everything_it_reads(seeded):
     html = res.text
     assert "LoadOnlyCo" in html
     assert "Backend Engineer" in html
-    # The drawer body is server-rendered per card, so `description` must stay
-    # loaded — this is what stops the projection going one column too far.
-    assert "We need a Python engineer" in html
-    # And the cached salary parse (corporate_insights) still feeds the chip.
-    assert "$150K-$180K/yr" in html
+    # The salary chip and the sponsorship badge still render — from the facets
+    # stamped on the row, not from a live regex over the posting.
+    assert "$150,000 - $180,000" in html
+    assert "Cap-exempt" in html or "no lottery" in html.lower()
+    # And the posting itself is NOT in the page: it is fetched when a drawer
+    # opens. Server-rendering it put a full JD in the HTML for every card.
+    assert "We need a Python engineer" not in html
+    assert "jd-body-placeholder" in html
 
 
-def test_the_columns_the_board_never_renders_are_deferred():
-    """The point of the change: unread columns must not be in the SELECT."""
+def test_the_board_never_reads_the_posting_text():
+    """The point of the change: the two heavy columns, and everything else the
+    render does not touch, must be out of the SELECT."""
     from sqlmodel import select as _select
     from app.api.server import _dashboard_load_options
 
@@ -92,12 +101,27 @@ def test_the_columns_the_board_never_renders_are_deferred():
          .where(Application.status == ApplicationStatus.SHORTLISTED))
     sql = str(q.compile(compile_kwargs={"literal_binds": True})).lower()
 
-    for col in ("job.rerank_reasoning", "job.rerank_breakdown",
+    for col in ("job.description",            # the whole point
+                "job.corporate_insights",
+                "job.rerank_reasoning", "job.rerank_breakdown",
                 "job.hire_probability_signals", "job.content_hash",
                 "job.similarity_score", "job.prescore", "job.cross_source_slug",
                 "application.rejection_analysis", "application.notes"):
         assert col not in sql, f"{col} is selected but never rendered"
 
-    for col in ("job.description", "job.corporate_insights", "job.blended_score",
+    for col in ("job.salary_text", "job.sponsorship_json", "job.blended_score",
                 "job.last_seen", "application.apply_track"):
         assert col in sql, f"{col} IS rendered and must stay loaded"
+
+
+def test_the_drawer_fetches_the_posting_and_checks_ownership(seeded):
+    """The lazy body: served per application, and never for someone else's."""
+    from sqlmodel import select as _select
+    with get_session() as s:
+        app_row = s.exec(_select(Application).where(Application.job_id == seeded)).first()
+        app_id = app_row.id
+    res = _client().get(f"/application/{app_id}/description")
+    assert res.status_code == 200
+    assert "We need a Python engineer" in res.json()["description"]
+    # A missing application is a 404, not a leak.
+    assert _client().get("/application/99999999/description").status_code == 404

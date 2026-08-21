@@ -258,6 +258,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     from app.analytics.funnel import FunnelTracker
     from app.discovery.title_filter import keyword_hit, matches_title
     from app.strategy.on_role import compute as _on_role_for
+    from app.strategy.job_facets import compute as _job_facets
     from datetime import datetime
     inserted = 0
 
@@ -479,6 +480,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     # page and count). None when the owner has no roles set.
                     on_role=_on_role_for(r.title, user_keywords),
                 )
+                # Card-face facets from the text we already have in hand, so the
+                # board never has to load the posting to draw a salary chip or a
+                # sponsorship badge (app/strategy/job_facets.py).
+                _sal, _spons, _cap_exempt = _job_facets(
+                    r.title, r.description, r.company, r.url, r.location)
+                job.salary_text = _sal
+                job.sponsorship_json = _spons
+                if _cap_exempt:
+                    job.is_cap_exempt = True
                 # Let Postgres resolve the race instead of raising into it.
                 #
                 # The duplicate checks above run in a DIFFERENT transaction from

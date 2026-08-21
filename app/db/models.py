@@ -143,6 +143,14 @@ class Job(SQLModel, table=True):
     # treats NULL as "keep" — the role gate is deliberately permissive: a false
     # positive gets scored and ranked, a false negative is a job never seen.
     on_role: Optional[bool] = Field(default=None)
+    # Card-face facets derived from the posting text, computed once at write
+    # time (app/strategy/job_facets.py). The Kanban board renders a salary chip
+    # and a sponsorship badge on EVERY card, and both used to be regexed out of
+    # `description` during the render — which is why the board query had to load
+    # the full posting for up to ~260 rows. With these two columns the JD itself
+    # is only read when a drawer is opened.
+    salary_text: Optional[str] = Field(default=None)      # e.g. "$150K-$180K/yr"
+    sponsorship_json: Optional[str] = Field(default=None)  # {tone,badge,reason,cap_exempt,refuses}
     # Classified job type: "full_time" | "internship" (set during matching).
     job_type: str = Field(default="full_time")
     # Visa intelligence (persisted so we can filter/query, not just display).

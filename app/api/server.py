@@ -459,12 +459,16 @@ async def startup_event():
     async def _backfill_on_role():
         try:
             from app.strategy.on_role import backfill
+            from app.strategy.job_facets import backfill as backfill_facets
             for uid in await asyncio.to_thread(_lane_user_ids):
                 roles = await asyncio.to_thread(_get_target_roles, uid)
                 if roles:
                     await asyncio.to_thread(backfill, uid, roles)
+                # Salary + sponsorship facets: same idea, and the reason the
+                # board no longer loads Job.description at all.
+                await asyncio.to_thread(backfill_facets, uid)
         except Exception as e:
-            log.warning("on_role backfill skipped (non-fatal): %s", e)
+            log.warning("row-facet backfill skipped (non-fatal): %s", e)
     asyncio.create_task(_backfill_on_role())
     # Memory watcher — an OOM kill leaves no traceback, so the only record of
     # what was resident is the one we wrote on the way up. Runs in EVERY process
@@ -1360,20 +1364,36 @@ _SALARY_PAT = _sal_re.compile(
     r"(?:\s?(?:/|per\s)\s?(?:yr|year|annum|hour|hr|month|mo)\b)?", _sal_re.I)
 
 
-def _salary_of(job):
-    """Best-known pay for a job: the Insider Intelligence parse when cached,
-    else a currency-anchored range regexed from the description. None if unknown."""
-    import json as _json
+def _loaded_attr(job, name: str):
+    """Read a column ONLY if it is already in memory; None if it is deferred.
+
+    The board defers the heavy columns (`_dashboard_load_options`) while these
+    globals run inside the template — after the session has closed. Touching a
+    deferred attribute there raises DetachedInstanceError, which Jinja does not
+    swallow, so it would 500 the dashboard rather than degrade. None tells the
+    caller to fall back to the facet stamped on the row.
+    """
     try:
-        ins = _json.loads(getattr(job, "corporate_insights", None) or "{}")
-        text = ((ins.get("salary") or {}).get("text") or "").strip()
-        if text:
-            return text[:44]
-    except (ValueError, TypeError):
-        pass
-    desc = (getattr(job, "description", "") or "")[:8000]
+        from sqlalchemy import inspect as _sa_inspect
+        state = _sa_inspect(job, raiseerr=False)
+        if state is not None and name in state.unloaded:
+            return None
+    except Exception:
+        pass                     # not an ORM instance — fall through
+    try:
+        return getattr(job, name, None)
+    except Exception:            # detached after all
+        return None
+
+
+def _loaded_description(job) -> Optional[str]:
+    return _loaded_attr(job, "description")
+
+
+def _salary_from_text(description: str) -> Optional[str]:
+    """A currency-anchored pay range out of a posting body, or None."""
     best = None
-    for m in _SALARY_PAT.finditer(desc):
+    for m in _SALARY_PAT.finditer((description or "")[:8000]):
         t = m.group(0).strip()
         # prefer ranges; require a K suffix, a comma-grouped number, or LPA
         if not _sal_re.search(r"[kK]\b|,\d{3}|LPA", t):
@@ -1383,15 +1403,62 @@ def _salary_of(job):
     return best[:44] if best else None
 
 
+def _salary_of(job):
+    """Best-known pay for a job: the Insider Intelligence parse when cached, then
+    the facet stamped at write time, then a live regex over the description if it
+    happens to be loaded. None if unknown.
+
+    The stored facet is what lets the board render a salary chip per card without
+    the query carrying the whole posting (app/strategy/job_facets.py)."""
+    import json as _json
+    try:
+        ins = _json.loads(_loaded_attr(job, "corporate_insights") or "{}")
+        text = ((ins.get("salary") or {}).get("text") or "").strip()
+        if text:
+            return text[:44]
+    except (ValueError, TypeError):
+        pass
+    stored = _loaded_attr(job, "salary_text")
+    if stored:
+        return stored[:44]
+    desc = _loaded_description(job)
+    return _salary_from_text(desc) if desc else None
+
+
 templates.env.globals["salary_of"] = _salary_of
 
 
+class _StoredSponsorship:
+    """The stamped assessment, in the shape the template and _priority read."""
+    __slots__ = ("cap_exempt", "tone", "badge", "reason", "explicitly_refuses")
+
+    def __init__(self, d: dict):
+        self.cap_exempt = bool(d.get("cap_exempt"))
+        self.tone = d.get("tone") or "neutral"
+        self.badge = d.get("badge") or ""
+        self.reason = d.get("reason") or ""
+        self.explicitly_refuses = bool(d.get("refuses"))
+
+
 def _sponsorship_of(job):
-    """Jinja global: legal sponsorship assessment for a job (cap-exempt aware)."""
+    """Jinja global: legal sponsorship assessment for a job (cap-exempt aware).
+
+    Prefers the assessment stamped at write time; falls back to assessing live
+    only when the description is loaded (a drawer/detail path, never the board)."""
+    import json as _json
+    raw = _loaded_attr(job, "sponsorship_json")
+    if raw:
+        try:
+            return _StoredSponsorship(_json.loads(raw))
+        except Exception:
+            pass
+    desc = _loaded_description(job)
+    if desc is None:
+        return None
     try:
         from app.intelligence.sponsorship import assess
         return assess(company=getattr(job, "company", "") or "",
-                      description=getattr(job, "description", "") or "",
+                      description=desc or "",
                       url=getattr(job, "url", "") or "",
                       location=getattr(job, "location", "") or "")
     except Exception:
@@ -3102,8 +3169,12 @@ def _dashboard_load_options():
         Load(Job).load_only(
             Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
             Job.posted_at, Job.discovered_at, Job.first_seen, Job.last_seen,
-            Job.description,           # drawer body + salary regex + sponsorship
-            Job.corporate_insights,    # salary_of reads the cached parse first
+            # NOT description and NOT corporate_insights: the salary chip and
+            # the sponsorship badge read the facets stamped at write time
+            # (app/strategy/job_facets.py), and the drawer body is fetched on
+            # open (/application/{id}/description). Those three were the only
+            # readers of the posting text on this page.
+            Job.salary_text, Job.sponsorship_json, Job.is_cap_exempt,
             Job.rerank_score, Job.blended_score, Job.hire_probability_score,
             Job.ghost_score, Job.ghost_flags, Job.is_closed,
         ),
@@ -3821,6 +3892,28 @@ def application_company(application_id: int, request: Request) -> dict:
     }
 
 
+@app.get("/application/{application_id}/description")
+def application_description(application_id: int, request: Request) -> dict:
+    """The posting body for one application's job, fetched when its drawer opens.
+
+    This used to be server-rendered into every card on the board — up to ~260
+    drawers, each carrying the whole posting, roughly a megabyte of HTML for
+    content nobody reads until they open one. Deferring it is also what lets the
+    board query stop loading `Job.description` at all (`_dashboard_load_options`).
+    """
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        row = session.exec(
+            select(Job.description)
+            .join(Application, Application.job_id == Job.id)
+            .where(Application.id == application_id)
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    text = row[0] if isinstance(row, tuple) else row
+    return {"description": _cleantext_filter(text or "")}
+
+
 @app.get("/application/{application_id}/insights")
 def application_insights(application_id: int, request: Request) -> dict:
     """Insider Intelligence: the corporate-intelligence parse of this posting —
@@ -3852,6 +3945,13 @@ def application_insights(application_id: int, request: Request) -> dict:
                 row = session.get(Job, job_id)
                 if row:
                     row.corporate_insights = _json.dumps(insights)
+                    # Promote a stated range onto the card facet. The board no
+                    # longer loads corporate_insights (it does not load the
+                    # posting at all), so without this the LLM's better number
+                    # would stay invisible on the card that has room for it.
+                    _stated = ((insights.get("salary") or {}).get("text") or "").strip()
+                    if _stated:
+                        row.salary_text = _stated[:44]
                     session.add(row)
                     session.commit()
 

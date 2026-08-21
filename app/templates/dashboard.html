@@ -1199,10 +1199,11 @@
                         <!-- Tailored documents (submitted / interviewing / rejected states) -->
                         <div class="drawer-documents-placeholder" data-app-id="{{ app.id }}"> <div class="rounded-2xl border border-slate-800/45 bg-slate-950/20 p-5 min-h-[160px] flex flex-col items-center justify-center text-xs text-slate-500"> <span>Loading application documents…</span> </div> </div>
                         {% endif %}
-                        <!-- Full job description -->
-                        {% if job.description %}
-                        <div> <h3 class="font-extrabold text-[12px] uppercase tracking-wider block mb-2.5" style="color:var(--sage-700);"> {% if app.apply_track == 'email_import' %}Email content{% else %}Full job description{% endif %}
-                            </h3> <div class="px-5 py-4 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed" style="white-space:pre-line; max-height: 65vh; overflow-y: auto; color:var(--ink-soft);">{{ job.description|cleantext }}</div> </div> {% endif %}
+                        <!-- Full job description — fetched when the drawer opens.
+                             Server-rendering it inlined the WHOLE posting for every
+                             card on the board (up to ~260 of them), which was about a
+                             megabyte of HTML nobody reads until they open one. -->
+                        <div class="jd-body-placeholder" data-app-id="{{ app.id }}" data-kind="{{ 'email' if app.apply_track == 'email_import' else 'jd' }}"></div>
                         <!-- Company snapshot (funding, who runs it, hiring record) -->
                         <div class="company-profile-placeholder"></div>
                         </div> <aside class="jd-rail">
@@ -6147,6 +6148,10 @@
             if (companyPlaceholder) {
                 loadCompanyProfile(appId, companyPlaceholder);
             }
+            const jdPlaceholder = body.querySelector('.jd-body-placeholder');
+            if (jdPlaceholder) {
+                loadJobDescription(appId, jdPlaceholder);
+            }
             const intelPlaceholder = body.querySelector('.insider-intel-placeholder');
             if (intelPlaceholder) {
                 loadInsiderIntel(appId, intelPlaceholder);
@@ -6277,6 +6282,37 @@
 
     // Insider Intelligence: what the posting reveals between the lines —
     // pain point, reporting line, culture decode, leverage hook, pay & work model.
+    async function loadJobDescription(appId, slot) {
+        // The posting body used to be server-rendered into every card's drawer.
+        // Fetched on open instead: same content, ~1MB less HTML per board load.
+        if (!slot || slot.dataset.loaded) return;
+        slot.dataset.loaded = '1';
+        const heading = slot.dataset.kind === 'email' ? 'Email content' : 'Full job description';
+        slot.innerHTML = `<div class="jd-sec flex items-center justify-center py-5"><span class="text-xs text-slate-500">Loading the posting…</span></div>`;
+        try {
+            const token = localStorage.getItem('sb_token');
+            const r = await fetch('/application/' + appId + '/description',
+                                  { headers: token ? { 'Authorization': 'Bearer ' + token } : {} });
+            if (!r.ok) { slot.innerHTML = ''; return; }
+            const d = await r.json();
+            const text = (d && d.description) ? d.description : '';
+            if (!text.trim()) { slot.innerHTML = ''; return; }
+            const box = document.createElement('div');
+            box.className = 'px-5 py-4 rounded-2xl bg-slate-950/20 border border-slate-800/40 text-[13.5px] leading-relaxed';
+            box.style.cssText = 'white-space:pre-line; max-height: 65vh; overflow-y: auto; color:var(--ink-soft);';
+            box.textContent = text;          // textContent, never innerHTML: this is third-party posting text
+            const h3 = document.createElement('h3');
+            h3.className = 'font-extrabold text-[12px] uppercase tracking-wider block mb-2.5';
+            h3.style.color = 'var(--sage-700)';
+            h3.textContent = heading;
+            slot.innerHTML = '';
+            slot.appendChild(h3);
+            slot.appendChild(box);
+        } catch (e) {
+            slot.innerHTML = '';
+        }
+    }
+
     async function loadInsiderIntel(appId, slot) {
         if (!slot) return;
         slot.innerHTML = `<div class="jd-sec flex items-center justify-center py-5"><span class="text-xs text-slate-500">Reading between the lines of this posting…</span></div>`;
