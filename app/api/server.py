@@ -3071,6 +3071,45 @@ def api_jobs(
         }
 
 
+def _dashboard_load_options():
+    """Load only the columns the Kanban render actually reads.
+
+    The five board queries selected whole `Application` + `Job` entities — every
+    column of both tables, for up to ~260 rows (shortlist_render_cap plus the
+    four secondary lists) on the page every user opens first.
+
+    `load_only` rather than a column projection, deliberately: these objects are
+    handed to Jinja, which touches them through macros and four globals
+    (`salary_of`, `sponsorship_of`, `liveness_of`, `urgency_of`). A tuple
+    projection turns any access this list missed into a 500; with `load_only`
+    the column is merely deferred. The list below is the verified union of what
+    the template and those globals read — including `description` and
+    `corporate_insights`, which ARE used (the drawer body, the salary chip and
+    the sponsorship panel are all server-rendered per card). That is also why
+    this saves less than the /api/jobs projection did: the two heaviest columns
+    are genuinely on the page. Deferring the drawer body the way the other
+    drawer sections already defer (placeholder + fetch on open) is the change
+    that would let them go — see docs/research/explorer-refresh-2026-08.md.
+    """
+    from sqlalchemy.orm import Load
+    return (
+        Load(Application).load_only(
+            Application.job_id, Application.status, Application.apply_track,
+            Application.apply_url, Application.tailored_resume_path,
+            Application.cover_letter_path, Application.submitted_at,
+            Application.created_at, Application.updated_at,
+        ),
+        Load(Job).load_only(
+            Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
+            Job.posted_at, Job.discovered_at, Job.first_seen, Job.last_seen,
+            Job.description,           # drawer body + salary regex + sponsorship
+            Job.corporate_insights,    # salary_of reads the cached parse first
+            Job.rerank_score, Job.blended_score, Job.hire_probability_score,
+            Job.ghost_score, Job.ghost_flags, Job.is_closed,
+        ),
+    )
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, all_submitted: bool = False):
     """Kanban board UI for tracking application progress."""
@@ -3107,7 +3146,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             # postings older than shortlist_max_age_days never render. Jobs the
             # user invested in (TAILORED / autofill review) are never hidden.
             _fresh_ok = _shortlist_fresh_clause()
-            q_short = select(Application, Job).join(Job).where(
+            q_short = select(Application, Job).join(Job).options(
+                *_dashboard_load_options()
+            ).where(
                 Application.status.in_(_SHORTLIST_BOARD_STATUSES)
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
@@ -3138,7 +3179,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
 
             # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
-            q_sub = select(Application, Job).join(Job).where(
+            q_sub = select(Application, Job).join(Job).options(
+                *_dashboard_load_options()
+            ).where(
                 Application.status == ApplicationStatus.SUBMITTED
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
@@ -3161,7 +3204,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             submitted = list(session.exec(q_sub).all())
 
             # 3. Fetch Interviewing (uncapped since active interviews are few)
-            q_int = select(Application, Job).join(Job).where(
+            q_int = select(Application, Job).join(Job).options(
+                *_dashboard_load_options()
+            ).where(
                 Application.status.in_([ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED])
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
@@ -3171,7 +3216,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             interviewing = list(session.exec(q_int).all())
 
             # 4. Fetch Rejected (limit to 20 by default)
-            q_rej = select(Application, Job).join(Job).where(
+            q_rej = select(Application, Job).join(Job).options(
+                *_dashboard_load_options()
+            ).where(
                 Application.status == ApplicationStatus.REJECTED
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
@@ -3181,7 +3228,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             rejected = list(session.exec(q_rej).all())
 
             # 5. Fetch Skipped (limit to 20)
-            q_skip = select(Application, Job).join(Job).where(
+            q_skip = select(Application, Job).join(Job).options(
+                *_dashboard_load_options()
+            ).where(
                 Application.status == ApplicationStatus.SKIPPED
             ).where(
                 Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")

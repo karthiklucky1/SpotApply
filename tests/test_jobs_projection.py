@@ -99,7 +99,6 @@ def test_a_job_without_an_application_reports_none(client):
 # same egress path as /api/jobs (docs/research/explorer-refresh-2026-08.md).
 # Shrink it; never grow it. An unlisted offender fails this test.
 _UNPROJECTED_JOB_APP_SELECTS = {
-    "dashboard",                 # 5 sites — the Kanban render
     "sync_emails",
     "export_applications_csv",
 }
@@ -121,6 +120,21 @@ def test_no_new_unprojected_job_selects():
         inner = [f for f in funcs if f[0] <= line <= f[1]]
         return min(inner, key=lambda f: f[1] - f[0])[2] if inner else "<module>"
 
+    # A statement carrying `.options(...)` is choosing its columns through a
+    # loader strategy rather than a tuple — the same allowance
+    # test_architecture_invariants makes for `select(Job).options(load_only(...))`.
+    # (The options may be built by a helper, as the dashboard's are, so this
+    # cannot look for `load_only` in the statement itself; what those options
+    # actually defer is asserted against real SQL in
+    # tests/test_dashboard_load_only.py.)
+    projected_spans = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        if any(getattr(c.func, "attr", None) == "options"
+               for c in ast.walk(node) if isinstance(c, ast.Call)):
+            projected_spans.append((node.lineno, getattr(node, "end_lineno", node.lineno)))
+
     entities = {"Job", "Application"}
     offenders = []
     for node in ast.walk(tree):
@@ -131,6 +145,8 @@ def test_no_new_unprojected_job_selects():
         names = [a.id for a in node.args if isinstance(a, ast.Name)]
         if len([n for n in names if n in entities]) < 2:
             continue
+        if any(lo <= node.lineno <= hi for lo, hi in projected_spans):
+            continue                     # load_only present: columns are chosen
         owner = _owner(node.lineno)
         if owner not in _UNPROJECTED_JOB_APP_SELECTS:
             offenders.append(f"{owner} (line {node.lineno}): select({', '.join(names)})")

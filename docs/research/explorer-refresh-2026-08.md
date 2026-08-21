@@ -86,10 +86,39 @@ Items 1–3 are small and independent; they are where the time actually goes.
 > so the exact posted-else-discovered semantics survive while the filter becomes a range
 > scan and the sort comes out of the index. Guarded by `tests/test_jobs_projection.py`.
 >
-> Items 4–6 are open. While writing the guard, the AST check found **seven more**
-> whole-entity `select(Application, Job)` reads — five in `dashboard` (the Kanban render,
-> on the same egress path), plus `sync_emails` and `export_applications_csv`. They are
-> listed in the test as a debt register that can shrink but not grow.
+> Item 5 (the roles filter) shipped as `Job.on_role` — see `app/strategy/on_role.py`.
+>
+> The `dashboard` reads found by the guard are now `load_only`, and the register is down
+> to `sync_emails` and `export_applications_csv`. **But the dashboard's win is partial,
+> and the reason matters** (see §5 below).
+
+## 5. The dashboard is a different problem from /api/jobs
+
+The five board queries now `load_only` the columns the render reads, which drops the
+JSON/bookkeeping columns (`rerank_reasoning`, `rerank_breakdown`,
+`hire_probability_signals`, `content_hash`, `similarity_score`, `prescore`, …). That is a
+real but **partial** win, because the two heaviest columns cannot be deferred today:
+
+| Column | Why it stays | Where |
+|---|---|---|
+| `description` | the drawer body is server-rendered **per card** | `dashboard.html:1203` |
+| | the salary chip regexes up to 8,000 chars of it | `_salary_of`, `server.py:1374` |
+| | the sponsorship panel assesses its text | `_sponsorship_of`, `server.py:1394` |
+| `corporate_insights` | `_salary_of` prefers the cached parse before regexing | `server.py:1364` |
+
+So the board still reads a full JD per row, and — worse — **writes one into the HTML per
+card**: up to ~260 drawers (`shortlist_render_cap` = 200 plus the four secondary lists),
+each embedding the whole posting. That is page weight as much as egress.
+
+**The fix that unlocks it** is the pattern the drawer already uses for its other sections
+(`match-panel-placeholder`, `drawer-documents-placeholder`, `company-profile-placeholder`,
+`autopsy-placeholder`): render a placeholder and fetch on open. The catch is that all
+three consumers have to move together — the JD body, the salary chip and the sponsorship
+panel — because each of them is why `description` is still in the query. One endpoint
+returning `{description, salary, sponsorship}` for a job id would let both heavy columns
+leave the board query and take ~1 MB of HTML off the page with them. It is a template
+refactor, not a query change, which is why it is written down here rather than done in the
+same pass.
 
 ## 4. "Is deploying many times a problem?"
 
