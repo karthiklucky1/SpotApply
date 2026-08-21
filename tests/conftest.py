@@ -112,7 +112,7 @@ def _reset_process_globals():
     from app.matching import reranker as _rr
     from app.strategy import scoring_lane as _sl
     for d in (_sl._fail_counts, _sl._deferred_until, _sl._prescore_memo,
-              _rr._provider_down_until, _rr._user_finals):
+              _rr._provider_down_until, _rr._user_finals, _rr._user_prescores):
         d.clear()
     for counter, key in ((_rr._daily_finals, "day"), (_rr._hourly_finals, "hour")):
         counter[key] = ""

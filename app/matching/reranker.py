@@ -106,6 +106,16 @@ _hourly_finals = {"hour": "", "count": 0}
 # scale WITH revenue, so the real allocation is per-user and plan-tied — see
 # PLAN_LIMITS["finals_daily"] and scoring_lane._remaining_finals_today().
 _user_finals: dict[str, int] = {}
+# Per-user daily Tier-1 prescores, SEPARATE from finals. A prescore is a
+# ~$0.0005 call (mini / Haiku with a cached prompt, 120 output tokens); a final
+# is ~10x that. Charging a Haiku prescore as a FINAL — which is what happened
+# whenever OpenAI was unavailable, 2026-08-14 → 08-21 — let ~45 Tier-1 drains
+# consume a PRO user's whole 50-finals allowance within 15 minutes of 00:00 UTC,
+# after which the scoring lane and the pulse fast path skipped that user for
+# the rest of the day while 800+ on-role jobs sat unscored. Prescores get their
+# own allowance (finals_daily × prescore_budget_multiplier) so Tier-1 is still
+# bounded per user, just not at the price of a final.
+_user_prescores: dict[str, int] = {}
 _budget_lock = threading.Lock()
 
 
@@ -115,6 +125,7 @@ def _roll_day_locked(today: str) -> None:
         _daily_finals["day"] = today
         _daily_finals["count"] = 0
         _user_finals.clear()
+        _user_prescores.clear()
 
 
 def _register_final_call(user_id: Optional[str] = None) -> None:
@@ -139,6 +150,32 @@ def user_finals_today(user_id: Optional[str]) -> int:
     with _budget_lock:
         _roll_day_locked(today)
         return _user_finals.get(user_id, 0)
+
+
+def _register_prescore_call(user_id: Optional[str] = None) -> None:
+    """Count one Tier-1 prescore against ``user_id``'s PRESCORE allowance.
+
+    Deliberately does NOT touch ``_user_finals``: the per-plan finals cap is
+    for authoritative Tier-2 scores only. (Whether the prescore also counts
+    toward the platform hourly/daily backstop is the caller's decision — the
+    Anthropic path does, because it is ~5x a mini call.)
+    """
+    if not user_id:
+        return
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with _budget_lock:
+        _roll_day_locked(today)
+        _user_prescores[user_id] = _user_prescores.get(user_id, 0) + 1
+
+
+def user_prescores_today(user_id: Optional[str]) -> int:
+    """Tier-1 prescores charged to ``user_id`` so far this UTC day, all lanes."""
+    if not user_id:
+        return 0
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with _budget_lock:
+        _roll_day_locked(today)
+        return _user_prescores.get(user_id, 0)
 
 
 def llm_budget_exhausted() -> bool:
@@ -806,6 +843,7 @@ class Reranker:
             ],
             response_format={"type": "json_object"},
         )
+        _register_prescore_call(self._user_id)
         return resp.choices[0].message.content
 
     def _prescore_anthropic(self, prompt: str) -> str:
@@ -819,11 +857,22 @@ class Reranker:
             messages=[{"role": "user", "content": prompt}],
         )
         # An Anthropic prescore is ~5x a gpt-4o-mini one and happens per queued
-        # job, so it draws from the SAME hourly/daily budget as finals — the
-        # caps bound total Anthropic spend, whatever the tier mix. (Jul 15
-        # evening: OpenAI hit its daily quota, prescores silently fell to Haiku
-        # uncapped, and Tier-1 quietly outspent the capped finals.)
-        _register_final_call(self._user_id)
+        # job, so it draws from the SAME PLATFORM hourly/daily backstop as
+        # finals — the caps bound total Anthropic spend, whatever the tier mix.
+        # (Jul 15 evening: OpenAI hit its daily quota, prescores silently fell
+        # to Haiku uncapped, and Tier-1 quietly outspent the capped finals.)
+        #
+        # It is NOT charged to the user's per-plan FINALS allowance: user_id=None
+        # here counts it globally only. Passing self._user_id made every Haiku
+        # prescore cost the user a full final, so with OpenAI out of credits
+        # (2026-08-14 → 08-21) a PRO user's 50/day were gone after ~45 Tier-1
+        # drains + ~5 real finals, 15 minutes into each UTC day — and the scoring
+        # lane and pulse fast path then skipped that user until midnight, leaving
+        # 800+ fresh on-role jobs unscored. Prescores have their own per-user
+        # allowance (_register_prescore_call), enforced in
+        # scoring_lane._remaining_finals_today.
+        _register_final_call(None)
+        _register_prescore_call(self._user_id)
         return resp.content[0].text
 
     def has_prescore_backend(self) -> bool:

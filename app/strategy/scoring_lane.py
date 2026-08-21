@@ -49,6 +49,11 @@ from app.db.models import Application, ApplicationStatus, FunnelEvent, Job
 log = logging.getLogger(__name__)
 
 _LANE_LOCK = threading.Lock()  # one scoring cycle at a time in this process
+_last_capped_log = [float("-inf")]  # monotonic time of the last "all users plan-capped" warning
+                                    # (-inf, not 0.0: time.monotonic() counts from BOOT, so on a
+                                    #  freshly started container the first capped cycle is < 1800s
+                                    #  in and a 0.0 baseline swallows the very warning a post-deploy
+                                    #  stall needs to emit)
 
 # One worker pool for the LIFE OF THE PROCESS, not one per cycle. A fresh
 # 20-thread ThreadPoolExecutor every 90s — abandoned with shutdown(wait=False)
@@ -469,8 +474,17 @@ def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
     cap = _plan_finals_cap(uid)
     if cap is None or cap <= 0:
         return per_cycle_cap
-    from app.matching.reranker import user_finals_today
-    return max(0, min(per_cycle_cap, cap - user_finals_today(uid)))
+    from app.matching.reranker import user_finals_today, user_prescores_today
+    remaining = cap - user_finals_today(uid)
+    # Every queue item costs a Tier-1 prescore before it can become a final, so
+    # the slice is also bounded by the user's PRESCORE allowance. Prescores are
+    # counted separately from finals on purpose — see reranker._user_prescores:
+    # charging a Haiku prescore as a final spent a PRO user's whole day within
+    # 15 minutes of 00:00 UTC while OpenAI was out of credits.
+    mult = int(getattr(settings, "prescore_budget_multiplier", 10) or 0)
+    if mult > 0:
+        remaining = min(remaining, cap * mult - user_prescores_today(uid))
+    return max(0, min(per_cycle_cap, remaining))
 
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
@@ -708,6 +722,20 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     stats["users"] = len({u for u, _ in items})
     stats["queued"] = len(items)
     if not items:
+        # Every scorable user is plan-capped (or their queue is empty). This
+        # used to return in silence, so a lane that stalled for a whole day
+        # — every user capped 15 minutes after 00:00 UTC, Aug 14-21 — left
+        # nothing in the logs to distinguish "nothing queued" from "queue
+        # untouched". Say so, rate-limited to once per 30 minutes.
+        if capped_out:
+            now = time.monotonic()
+            if now - _last_capped_log[0] >= 1800:
+                _last_capped_log[0] = now
+                log.warning(
+                    "Scoring cycle: %d scorable user(s) plan-capped — their queued "
+                    "jobs stay unscored until the UTC day rolls (finals cap per "
+                    "PLAN_LIMITS; prescore allowance × PRESCORE_BUDGET_MULTIPLIER)",
+                    capped_out)
         return stats
 
     # Per-user context (résumé + reranker), loaded ONCE and shared across workers.
