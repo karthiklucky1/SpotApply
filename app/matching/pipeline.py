@@ -467,6 +467,30 @@ def _persist_prescore_rejects(rejects: list[tuple[int, float, str]]) -> None:
     log.info("Cascade Tier-1: stamped %d drained job(s)", len(mappings))
 
 
+def _persist_kept_prescores(kept: list[tuple[int, float]]) -> None:
+    """Write the Tier-1 score of jobs that STAY in the queue.
+
+    The distinction from `_persist_prescore_rejects` is the whole point: these
+    jobs get their `prescore` and nothing else — no `rerank_score`, no reasoning
+    — so they remain Queued. That column is what `scoring_lane._user_queue`
+    sorts the queue by, and every other writer sets it only as a job LEAVES the
+    queue, so without this the promise ordering sees NULL ("unknown") for every
+    waiting job. Chunked bulk UPDATE, same egress discipline as the rejects.
+    """
+    if not kept:
+        return
+    mappings = [{"id": int(jid), "prescore": float(score)} for jid, score in kept]
+    for start in range(0, len(mappings), 500):
+        batch = mappings[start:start + 500]
+        try:
+            with get_session() as session:
+                session.bulk_update_mappings(Job, batch)
+                session.commit()
+        except Exception as e:
+            log.warning("Kept-prescore batch %d failed (non-fatal): %s", start, e)
+    log.info("Cascade Tier-1: kept %d job(s) Queued with their prescore", len(mappings))
+
+
 def run_matching(user_id: str | None = None) -> List[int]:
     resume = _load_resume(user_id=user_id)
     # Give jobs unfairly blocked by the old sponsorship boilerplate rule a
@@ -728,11 +752,27 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # leaves the jobs rerank_score-NULL, exactly as before — the next eligible
     # cycle picks them up.
     from app.matching.reranker import llm_budget_exhausted
+    # The user's own adaptive budget, the same one the scoring lane and the pulse
+    # fast path obey (app/matching/finals_budget.py). This lane recorded its
+    # finals to the ledger but never CONSULTED it, so it could spend straight
+    # past the daily burst and the weekly budget on its own — which made those
+    # ceilings advisory rather than hard. `keep_gate` is the promise bar for
+    # buying a final right now; `drain_gate` (below) is the misfit bar and never
+    # moves, so the burst zone never writes a job off.
+    from app.strategy.scoring_lane import _finals_allowance
+    _allow = _finals_allowance(user_id, settings.llm_rerank_cap)
+    if _allow.n <= 0:
+        log.info("Matching lane: no finals allowance for %s (%s) — leaving %d "
+                 "candidate(s) Queued", user_id, _allow.reason, len(to_rerank))
+        to_rerank = []
+    drain_gate = min(settings.prescore_advance_threshold,
+                     settings.shortlist_score_threshold)
+    keep_gate = max(drain_gate, int(_allow.gate))
+    prescore_kept: list[tuple[int, float]] = []   # (jid, prescore) — stay Queued
     if (settings.prescore_enabled and to_rerank
             and reranker.has_prescore_backend()
             and not llm_budget_exhausted()):
-        advance_gate = min(settings.prescore_advance_threshold,
-                           settings.shortlist_score_threshold)
+        advance_gate = keep_gate
         prescore_pool = to_rerank[: settings.prescore_cap]
         log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
                  len(prescore_pool), advance_gate)
@@ -768,19 +808,29 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 advanced.append((jid, sim))
             elif pr[0] >= advance_gate:
                 advanced.append((jid, sim))
+            elif pr[0] >= drain_gate:
+                # Above the misfit bar but below what burst money may buy. NOT a
+                # reject — it must not be stamped, or an identical job's fate
+                # would depend on the time of day it was picked up. It waits for
+                # the soft budget, keeping its prescore so the queue can sort it.
+                prescore_kept.append((jid, float(pr[0])))
             else:
                 prescore_rejects.append((jid, pr[0], pr[1]))
-        log.info("Cascade Tier-1: %d advanced to Claude, %d drained (below gate)",
-                 len(advanced), len(prescore_rejects))
+        log.info("Cascade Tier-1: %d advanced to Claude, %d drained (below %d), "
+                 "%d kept for the soft budget (below %d)",
+                 len(advanced), len(prescore_rejects), drain_gate,
+                 len(prescore_kept), advance_gate)
         to_rerank = advanced
 
-    # ── Cascade Tier-2: Claude (authoritative) score, capped at llm_rerank_cap ──
-    if len(to_rerank) > settings.llm_rerank_cap:
+    # ── Cascade Tier-2: Claude (authoritative) score, capped by the smaller of
+    # the per-pass ceiling and what this user's budget still allows ────────────
+    _tier2_cap = min(settings.llm_rerank_cap, _allow.n) if _allow.n > 0 else 0
+    if len(to_rerank) > _tier2_cap:
         log.info(
-            "LLM gate: %d candidates for Claude — capping to top %d (fresh-first)",
-            len(to_rerank), settings.llm_rerank_cap,
+            "LLM gate: %d candidates for Claude — capping to top %d (fresh-first, "
+            "budget: %s)", len(to_rerank), _tier2_cap, _allow.reason,
         )
-        to_rerank = to_rerank[: settings.llm_rerank_cap]
+        to_rerank = to_rerank[:_tier2_cap]
 
     if to_rerank:
         with ThreadPoolExecutor(max_workers=settings.llm_rerank_workers) as ex:
@@ -792,6 +842,12 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # score is below the shortlist threshold by construction, so the re-shortlist
     # query will not pick them up.
     _persist_prescore_rejects(prescore_rejects)
+    # Jobs kept for the soft budget keep their Tier-1 on the ROW (not just in
+    # memory): `scoring_lane._user_queue` sorts the queue by `Job.prescore`, and
+    # a kept job whose prescore lived only in a lane's memo read NULL there —
+    # "unknown", sorts first — so it re-entered the freshest slice every cycle
+    # and the promise ordering never saw a real number.
+    _persist_kept_prescores(prescore_kept)
 
     # ── Phase 3: serial store + shortlist creation (caps/cooldown/limits) ─────
     # Shortlist-creation order is FIT-FIRST: among the freshly-scored cohort, the

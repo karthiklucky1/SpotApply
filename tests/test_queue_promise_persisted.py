@@ -111,6 +111,54 @@ def test_the_persisted_prescore_is_what_the_queue_sorts_on():
         _cleanup()
 
 
+# ── the matching lane spends the same budget as everyone else ────────────────
+
+def test_the_matching_lane_consults_the_finals_allowance():
+    """run_matching recorded its finals to the ledger but never CONSULTED it, so
+    the 5-minute lane could spend straight past the daily burst and the weekly
+    budget on its own — which made both ceilings advisory rather than hard.
+
+    Source-level, because the pass itself needs FAISS + the ML stack: what must
+    never regress is that the lane asks for an allowance and caps Tier-2 by it.
+    """
+    import ast
+    import inspect
+    from app.matching import pipeline
+
+    tree = ast.parse(inspect.getsource(pipeline))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_matching")
+    calls = {n.func.id for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_finals_allowance" in calls, (
+        "run_matching must consult the per-user adaptive budget before spending "
+        "Tier-2 — otherwise burst and weekly are not ceilings at all"
+    )
+    src = inspect.getsource(pipeline)
+    assert "_tier2_cap = min(settings.llm_rerank_cap, _allow.n)" in src, (
+        "the Tier-2 cap must be the smaller of the per-pass ceiling and what the "
+        "user's budget still allows"
+    )
+
+
+def test_kept_prescores_are_written_without_leaving_the_queue():
+    """_persist_kept_prescores writes `prescore` and NOTHING else: the job stays
+    Queued (rerank_score NULL) but is now sortable by promise. The reject path,
+    by contrast, stamps rerank_score and removes the job from the queue."""
+    from app.matching.pipeline import _persist_kept_prescores
+
+    jid = _make_job("kept-1")
+    try:
+        _persist_kept_prescores([(jid, 47.0)])
+        with get_session() as session:
+            row = session.get(Job, jid)
+            assert row.prescore == 47.0
+            assert row.rerank_score is None, "must stay in the queue"
+            assert row.rerank_reasoning is None, "not a drain: no verdict written"
+    finally:
+        _cleanup()
+
+
 # ── the ledger's first-final-of-the-day insert race ──────────────────────────
 
 def test_a_lost_insert_race_does_not_lose_the_increment(monkeypatch):
