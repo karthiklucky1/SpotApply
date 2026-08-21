@@ -85,6 +85,37 @@ def test_prescores_have_their_own_bounded_per_user_allowance(monkeypatch):
     assert sl._remaining_finals_today("user-b", 40) == 40     # someone else: untouched
 
 
+def test_openai_prescores_are_not_capped_per_user(monkeypatch):
+    """The allowance bounds the ANTHROPIC fallback, not the cheap path.
+
+    A gpt-4o-mini prescore is ~$0.0002 — one user's entire daily Tier-1 volume
+    is well under $1/month — so capping it buys nothing and would let an OpenAI
+    outage (or any burst) throttle the feed for the rest of the UTC day.
+    """
+    monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
+    monkeypatch.setattr(settings, "llm_hourly_final_cap", 0)
+    monkeypatch.setattr(settings, "prescore_budget_multiplier", 2)   # 50 × 2 = 100
+    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+
+    profile = type("P", (), {"user_id": "user-a"})()
+    rk = Reranker(profile=profile)
+    rk._anthropic_client = None
+
+    class _Completions:
+        @staticmethod
+        def create(**kw):
+            msg = type("M", (), {"content": '{"score": 20, "reason": "off-role"}'})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+    rk._openai_client = type("F", (), {
+        "chat": type("Ch", (), {"completions": _Completions()})()})()
+    rk._pre_filter_job = lambda job: None
+
+    for _ in range(200):                       # 2x the allowance the Haiku path has
+        assert rk.prescore("resume", _job())[0] == 20.0
+    assert rr.user_prescores_today("user-a") == 0
+    assert sl._remaining_finals_today("user-a", 40) == 40   # feed untouched
+
+
 def test_plan_capped_cycle_is_logged_not_silent(monkeypatch, caplog):
     """A cycle where every scorable user is plan-capped used to `return stats`
     before the log line, so a day-long stall left no trace in the logs."""

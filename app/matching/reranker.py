@@ -843,7 +843,12 @@ class Reranker:
             ],
             response_format={"type": "json_object"},
         )
-        _register_prescore_call(self._user_id)
+        # NOT counted against the user's prescore allowance. A gpt-4o-mini
+        # prescore is ~$0.0002 — one user's whole daily Tier-1 volume (~110
+        # calls) is $0.65/MONTH, so a per-user cap here buys nothing and is
+        # exactly what turned a provider outage into a feed outage. The
+        # allowance exists for the ANTHROPIC fallback (~$0.00185, 9x), which
+        # still registers below. See docs/research/capacity-one-user-2026-08.md.
         return resp.choices[0].message.content
 
     def _prescore_anthropic(self, prompt: str) -> str:
