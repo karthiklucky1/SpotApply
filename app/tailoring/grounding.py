@@ -87,6 +87,12 @@ class GroundingResult:
     passed: bool
     flagged_bullets: List[Dict[str, Any]]
     confidence_map: Dict[str, float]
+    # THREE states, not two. `unverified` means the check could not form an
+    # opinion (nothing extractable to compare) — which is neither "clean" nor
+    # "fabricated". Collapsing it into `passed=True` is how a résumé nobody
+    # checked gets delivered as verified; collapsing it into a failure would
+    # block a résumé that may be perfectly fine.
+    unverified: bool = False
 
 class GroundingChecker:
     def __init__(self):
@@ -221,8 +227,15 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         tailored_bullets = self._extract_bullets(tailored_resume_md)
 
         if not tailored_bullets:
-            log.info("No tailored bullets found. Passing.")
-            return GroundingResult(passed=True, flagged_bullets=[], confidence_map={})
+            # NOT a pass. Extracting zero bullets means the parse found nothing
+            # to check, which is a fact about our extractor, not about the
+            # document — and "we checked and it was clean" is the one thing this
+            # result is allowed to mean. Report it as unverified and let the
+            # caller decide (grounding_required now defaults to True).
+            log.warning("Grounding: no tailored bullets extracted — cannot verify, "
+                        "reporting UNVERIFIED rather than passing")
+            return GroundingResult(passed=False, flagged_bullets=[], confidence_map={},
+                                   unverified=True)
 
         if not source_bullets:
             # Don't fail open: with no comparable source bullets, every tailored

@@ -30,21 +30,30 @@ def test_fresh_direct_ats_beats_stale_aggregator():
     assert fresh_direct > stale_redirect
 
 
-def test_check_job_alive_dead_on_404():
+# check_job_alive is now SSRF-guarded (app/common/ssrf.py): it resolves the host
+# and follows redirects by hand so every hop is re-checked. These tests keep the
+# liveness behaviour honest while allowing the host through.
+def _allow_public_hosts(monkeypatch):
+    monkeypatch.setattr("app.common.ssrf.is_public_host", lambda host: True)
+
+
+def test_check_job_alive_dead_on_404(monkeypatch):
+    _allow_public_hosts(monkeypatch)
     with patch("httpx.Client") as MockClient:
         client = MockClient.return_value.__enter__.return_value
-        client.head.return_value = httpx.Response(
+        client.request.return_value = httpx.Response(
             404, request=httpx.Request("HEAD", "https://x.co/job/1"))
         alive, reason = check_job_alive("https://x.co/job/1")
     assert alive is False
     assert "404" in reason
 
 
-def test_check_job_alive_dead_on_careers_redirect():
+def test_check_job_alive_dead_on_careers_redirect(monkeypatch):
+    _allow_public_hosts(monkeypatch)
     with patch("httpx.Client") as MockClient:
         client = MockClient.return_value.__enter__.return_value
         resp = httpx.Response(200, request=httpx.Request("HEAD", "https://x.co/careers"))
-        client.head.return_value = resp
+        client.request.return_value = resp
         alive, reason = check_job_alive("https://x.co/job/123")
     assert alive is False
     assert "careers" in reason.lower()

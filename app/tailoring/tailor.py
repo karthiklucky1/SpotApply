@@ -572,8 +572,12 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             log.info("Grounding check: app %d (variant: %s, attempt %d)...",
                      application_id, variant, attempt)
             g_result = checker.check(master, resume_md)
-            grounding_ran = True
-            if not g_result.passed:
+            # `unverified` is the checker saying it could not form an opinion
+            # (no extractable bullets). That is the same state as "the check
+            # never ran" — NOT a pass, and NOT a failure — so it flows into the
+            # unverified path rather than shipping as verified.
+            grounding_ran = not getattr(g_result, "unverified", False)
+            if grounding_ran and not g_result.passed:
                 grounding_failed = True
                 grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
                     [f"- {fb['bullet']}" for fb in g_result.flagged_bullets]

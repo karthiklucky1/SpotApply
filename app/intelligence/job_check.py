@@ -125,25 +125,13 @@ def _check_ats_api_inner(url: str, client: httpx.Client) -> Optional[dict]:
 
 def _is_public_host(host: str) -> bool:
     """SSRF guard: only fetch hosts that resolve exclusively to public IPs.
-    Without this, /api/public/job-check would fetch attacker-supplied URLs
-    server-side (cloud metadata endpoints, internal services, localhost)."""
-    import ipaddress
-    import socket
-    if not host:
-        return False
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except Exception:
-            return False
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            return False
-    return bool(infos)
+
+    Now a thin alias over `app.common.ssrf.is_public_host` — the same rule has
+    to hold for the AUTHENTICATED fetches too (job-liveness verify), and one
+    copy per call site is how the second one ends up without a guard at all.
+    """
+    from app.common.ssrf import is_public_host
+    return is_public_host(host)
 
 
 def _check_generic_page(url: str, client: httpx.Client) -> dict:

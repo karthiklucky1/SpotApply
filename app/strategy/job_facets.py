@@ -20,6 +20,7 @@ import json
 import logging
 from typing import Optional, Tuple
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.db.init_db import get_session
@@ -68,41 +69,77 @@ def compute(title: str, description: str, company: str = "", url: str = "",
     return salary, spons_json, cap_exempt
 
 
-def backfill(user_id: Optional[str], limit: int = 5000) -> int:
+def backfill(user_id: Optional[str], max_rows: int = 250_000,
+             max_seconds: float = 600.0, chunk: int = _BATCH,
+             pause: float = 0.15) -> int:
     """Stamp the facets on this user's rows that have never had them.
 
-    Reads `description` — the very column this exists to stop the board from
-    reading — so it is bounded, batched, and runs off the request path. It is a
-    one-time cost per row against a per-render cost for every card.
+    Loops until the user's pool is DONE (or a budget stops it), because a single
+    bounded pass per boot does not finish: at 5,000 rows/boot a 171,000-row pool
+    needs ~35 restarts, and until a row is stamped its card shows no pay or visa
+    signal at all. The first review after launch found exactly that — every
+    facet NULL for every user.
+
+    Gentle on purpose. It reads `description` — the column this exists to stop
+    the board from reading — so it works in small chunks with a pause between
+    them and a wall-clock budget. The database this runs against is IO-budgeted;
+    finishing an hour later is fine, starving the lanes is not.
     """
-    with get_session() as session:
-        rows = list(session.exec(
-            select(Job.id, Job.title, Job.description, Job.company, Job.url, Job.location)
-            .where(Job.user_id == user_id, Job.sponsorship_json.is_(None))
-            .limit(limit)
-        ).all())
-
-    mappings = []
-    for jid, title, desc, company, url, location in rows:
-        salary, spons, cap_exempt = compute(title or "", desc or "", company or "",
-                                            url or "", location or "")
-        if spons is None and salary is None:
-            continue
-        m = {"id": int(jid), "salary_text": salary, "sponsorship_json": spons}
-        if cap_exempt:
-            m["is_cap_exempt"] = True
-        mappings.append(m)
-
+    import time as _time
+    deadline = _time.monotonic() + max(1.0, max_seconds)
     done = 0
-    for start in range(0, len(mappings), _BATCH):
-        batch = mappings[start:start + _BATCH]
+    while done < max_rows and _time.monotonic() < deadline:
+        with get_session() as session:
+            rows = list(session.exec(
+                # TRUNCATED IN SQL, like matcher._candidate_columns(): the
+                # salary regex reads at most 8,000 chars anyway, and pulling
+                # whole postings for a whole pool is the egress bill this column
+                # exists to avoid paying on every render. Doing it once at
+                # 8,000 chars keeps the backfill from becoming the same problem.
+                select(Job.id, Job.title,
+                       func.substr(Job.description, 1, 8000).label("desc"),
+                       Job.company, Job.url, Job.location)
+                .where(Job.user_id == user_id, Job.sponsorship_json.is_(None))
+                .limit(chunk)
+            ).all())
+        if not rows:
+            break                                   # pool is fully stamped
+
+        mappings = []
+        for jid, title, desc, company, url, location in rows:
+            salary, spons, cap_exempt = compute(title or "", desc or "", company or "",
+                                                url or "", location or "")
+            m = {"id": int(jid),
+                 "salary_text": salary,
+                 # Always write SOMETHING for sponsorship, even "{}": this column
+                 # is the loop's own progress marker, and a row left NULL because
+                 # its assessment came back empty would be re-read forever.
+                 "sponsorship_json": spons or "{}"}
+            if cap_exempt:
+                m["is_cap_exempt"] = True
+            mappings.append(m)
+
         try:
             with get_session() as session:
-                session.bulk_update_mappings(Job, batch)
+                session.bulk_update_mappings(Job, mappings)
                 session.commit()
-            done += len(batch)
+            done += len(mappings)
         except Exception as e:
-            log.warning("job facet backfill batch %d failed (non-fatal): %s", start, e)
+            log.warning("job facet backfill chunk failed for %s (stopping): %s",
+                        user_id or "local", e)
+            break
+        if len(rows) < chunk:
+            break                                   # last partial chunk
+        if pause:
+            _time.sleep(pause)
+
     if done:
-        log.info("job facets: stamped %d job(s) for %s", done, user_id or "local")
+        with get_session() as session:
+            remaining = session.exec(
+                select(func.count(Job.id)).where(
+                    Job.user_id == user_id, Job.sponsorship_json.is_(None))
+            ).first()
+        remaining = remaining[0] if isinstance(remaining, tuple) else (remaining or 0)
+        log.info("job facets: stamped %d job(s) for %s, %s left",
+                 done, user_id or "local", remaining)
     return done

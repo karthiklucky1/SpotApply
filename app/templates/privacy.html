@@ -42,7 +42,7 @@
     <div class="max-w-2xl mx-auto">
         <div class="mb-10">
             <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Privacy Policy</h1>
-            <p class="text-sm" style="color:var(--muted);">Last updated: June 2025</p>
+            <p class="text-sm" style="color:var(--muted);">Last updated: August 2026</p>
         </div>
 
         <div class="prose-dark space-y-2">
@@ -55,6 +55,7 @@
                 <li><strong>Resume data:</strong> The resume file you upload and the structured profile fields extracted from it (name, skills, experience, education, etc.).</li>
                 <li><strong>Application data:</strong> Job listings discovered, matching scores, tailored documents generated, and application statuses.</li>
                 <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
+                <li><strong>Email content (only if you turn on Email Sync):</strong> when you enable Email Sync in the browser extension, it reads job-related messages from the webmail page you have open and sends the sender, subject, date and message body to SpotApply. We use them to detect employer replies, rejections and interview invitations, and to add applications you made outside SpotApply. Message bodies we cannot match to a known application are stored with that application record. Email Sync is off unless you enable it, and turning it off stops any further reading.</li>
             </ul>
 
             <h2>2. How we use your data</h2>
@@ -68,17 +69,21 @@
             <p>Your data is never sold, licensed, or shared with third parties for advertising purposes.</p>
 
             <h2>3. Data storage</h2>
-            <p>Your data is stored in Supabase (PostgreSQL database and file storage), hosted on AWS infrastructure in your region. Resume files are stored in Supabase Storage and accessible only to your account. Application data is stored in a private PostgreSQL database.</p>
+            <p>Your data is stored in Supabase (PostgreSQL database and file storage) on AWS infrastructure in the <strong>United States (us-east-1)</strong>, and the application runs on Railway. If you are outside the United States, using SpotApply means your data is transferred to and processed there. Resume files are stored in Supabase Storage and are accessible only to your account; application data is stored in a private PostgreSQL database.</p>
 
             <h2>4. Third-party services</h2>
             <ul>
-                <li><strong>Supabase</strong> — authentication and database hosting.</li>
-                <li><strong>Anthropic (Claude)</strong> — AI model used for resume extraction, job scoring, and document generation. Data sent to Claude is governed by Anthropic's data processing terms.</li>
-                
+                <li><strong>Supabase</strong> (US) — authentication, database and résumé file storage.</li>
+                <li><strong>Railway</strong> (US) — hosting for the application itself.</li>
+                <li><strong>Anthropic (Claude)</strong> (US) — the model that scores jobs against your résumé and writes your tailored résumé and cover letters. It receives your résumé text and the job posting. Governed by Anthropic's data processing terms.</li>
+                <li><strong>OpenAI</strong> (US) — the cheap first-pass model that pre-screens jobs before Claude sees them, and a fallback for one fact-checking step. It receives an extract of your résumé (about the first 4,000 characters) and the job title, company and description. Governed by OpenAI's API data policy. This runs on essentially every job we score for you, so in practice your résumé text reaches both providers.</li>
+                <li><strong>Stripe</strong> (US) — payment processing. Not active yet; when it is, Stripe receives only what is needed to take a payment, and we never see or store your card details.</li>
             </ul>
+            <p>None of these providers is permitted to use your data to train their models under the API terms we use. We do not sell or license your data, and we do not share it for advertising.</p>
 
-            <h2>5. Important disclosure — platform terms of service</h2>
-            <p>SpotApply automates interactions with job boards and ATS platforms. Some platforms (including LinkedIn and Indeed) prohibit automated scraping in their Terms of Service. By using SpotApply, you acknowledge this risk and accept responsibility for any consequences of using automated job search tools on those platforms. We recommend reviewing the ToS of each platform before enabling sources that interact with them.</p>
+            <h2>5. Where job listings come from</h2>
+            <p>We read job postings from public sources only: company applicant-tracking boards that publish an open API or feed (Greenhouse, Lever, Ashby, Workday, SmartRecruiters, Workable and similar), public job-board feeds and APIs, and licensed aggregators. We respect robots.txt.</p>
+            <p><strong>We do not scrape LinkedIn or Indeed and we never log in to them on your behalf.</strong> Listings that originate there reach us through a paid third-party aggregator API or a public feed, and we show them to you as a link you open yourself. Auto-fill runs only on the application form you choose to open, and <strong>nothing is ever submitted without you clicking Submit</strong>.</p>
 
             <h2>6. Your rights (GDPR / CCPA)</h2>
             <p>You have the right to:</p>
@@ -99,8 +104,8 @@
             <h2>9. Changes to this policy</h2>
             <p>We may update this Privacy Policy from time to time. We will notify you via email or an in-app notice for material changes.</p>
 
-            <h2>10. Contact</h2>
-            <p>Questions about your data? Email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a>.</p>
+            <h2>10. Who is responsible for your data</h2>
+            <p>SpotApply is operated by its founder as the data controller. For any privacy question, or to exercise the rights in section 6, email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a> and we will respond within 30 days.</p>
         </div>
 
         <div class="mt-12 pt-8 flex gap-6 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">

@@ -132,8 +132,9 @@ def test_card_minting_is_capped():
 
 def test_grounding_never_silently_reports_a_pass_it_did_not_verify():
     """grounding_required chooses between 'deliver, labelled unverified' and
-    'block'. Either is defensible; the default is documented in config.py. What is
-    NOT configurable is reporting 'passed' for a résumé that was never read — see
+    'block'. Either is defensible; the default is documented in config.py and was
+    flipped to BLOCK before opening the app to real users. What is NOT
+    configurable is reporting 'passed' for a résumé that was never read — see
     tests/test_grounding_enforcement.py."""
     assert isinstance(settings.grounding_required, bool)
-    assert settings.grounding_required is False
+    assert settings.grounding_required is True

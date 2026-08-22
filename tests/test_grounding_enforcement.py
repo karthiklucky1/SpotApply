@@ -177,10 +177,6 @@ def test_unrunnable_grounding_is_never_reported_as_passed(app_id, tmp_path, monk
     )
     assert r["grounding_passed"] is None
     assert r["grounding_status"] == "unverified"
-    # Delivered (the human review step is the backstop) but explicitly warned,
-    # because that backstop only works if the human is told.
-    assert _status(app_id) == ApplicationStatus.TAILORED
-    assert "could not be verified" in _notes(app_id).lower()
 
 
 def test_grounding_required_blocks_when_the_check_cannot_run(app_id, monkeypatch):
@@ -195,7 +191,38 @@ def test_grounding_required_blocks_when_the_check_cannot_run(app_id, monkeypatch
     assert "could not be verified" in _notes(app_id).lower()
 
 
-def test_grounding_required_defaults_off_so_an_ml_hiccup_is_not_an_outage():
-    """Documented product decision, pinned so a flip is deliberate."""
+def test_the_lenient_posture_still_delivers_with_a_warning(app_id, tmp_path, monkeypatch):
+    """With GROUNDING_REQUIRED off, an unrunnable check delivers the résumé but
+    says so — the human review step is the backstop, and it only works if the
+    human is told."""
     from app.config import settings
-    assert settings.grounding_required is False
+    from app.tailoring.tailor import tailor_for_application
+    monkeypatch.setattr(settings, "grounding_required", False, raising=False)
+    monkeypatch.setitem(sys.modules, "app.tailoring.grounding",
+                        _fake_grounding_module(passed=True, raise_on_init=True))
+    tailor_for_application(app_id)
+    assert _status(app_id) == ApplicationStatus.TAILORED
+    assert "could not be verified" in _notes(app_id).lower()
+
+
+def test_grounding_required_defaults_ON_before_real_users():
+    """Flipped to True for the launch cohort (2026-08-21 pre-launch review).
+
+    Off, a broken ML stack meant the check threw, the résumé shipped as TAILORED
+    anyway, and only a log line said otherwise — on a product whose core promise
+    is that tailoring stays grounded in the real résumé. Failing closed costs a
+    retry; failing open puts a fabricated bullet in someone's real application.
+    Pinned so a flip back is deliberate."""
+    from app.config import settings
+    assert settings.grounding_required is True
+
+
+def test_zero_extractable_bullets_is_unverified_not_passed():
+    """'We found nothing to check' is a fact about the extractor, not about the
+    document. It used to return passed=True — the one thing that result is not
+    allowed to mean."""
+    import importlib
+    g = importlib.import_module("app.tailoring.grounding")
+    res = g.GroundingResult(passed=False, flagged_bullets=[], confidence_map={},
+                            unverified=True)
+    assert res.unverified is True and res.passed is False

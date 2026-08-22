@@ -398,9 +398,16 @@ class PlanTier(str, Enum):
 # ~100 yields ~20-25. At ~$0.0033/final that is ~$5/user/month at PRO.
 PLAN_LIMITS = {
     PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2,    "finals_daily": 15},
-    PlanTier.PRO:    {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 50},
-    PlanTier.BASIC:  {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 50},   # legacy → PRO limits
-    PlanTier.AGENCY: {"tailor_daily": None, "autofill_weekly": None, "finals_daily": 100},  # legacy → PRO limits
+    # tailor_daily is a REAL number on PRO, not None. "Unlimited apart from the
+    # abuse ceiling" meant every user could spend 25 tailors/day (~$1.25/user/day
+    # on Haiku) with nothing in the product saying so — and while Stripe is
+    # unconfigured _get_user_plan puts EVERYONE on PRO, so that was the default
+    # for every invited friend. 12/day is past real human use (nobody tailors a
+    # dozen résumés in a day) and leaves the 25/day abuse cap as the backstop it
+    # was written to be, not as the only limit.
+    PlanTier.PRO:    {"tailor_daily": 12, "autofill_weekly": None, "finals_daily": 50},
+    PlanTier.BASIC:  {"tailor_daily": 12, "autofill_weekly": None, "finals_daily": 50},   # legacy → PRO limits
+    PlanTier.AGENCY: {"tailor_daily": 25, "autofill_weekly": None, "finals_daily": 100},  # legacy → PRO limits
 }
 
 PLAN_PRICES = {

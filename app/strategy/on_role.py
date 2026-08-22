@@ -52,12 +52,17 @@ def compute(title: str, roles: Optional[Sequence[str]]) -> Optional[bool]:
 
 
 def backfill(user_id: Optional[str], roles: Optional[Sequence[str]],
-             only_missing: bool = True, limit: int = 20000) -> int:
+             only_missing: bool = True, limit: int = 250_000) -> int:
     """Stamp `on_role` across one user's pool.
 
     ``only_missing`` (the default) touches rows that have never been computed —
     the one-time migration case. ``False`` recomputes everything, which is what
     a role change needs.
+
+    The default limit covers a whole pool in ONE pass. It was 20,000, which
+    quietly meant several restarts before a large pool finished and the slow
+    ILIKE fallback in the meantime; this reads two small columns per row, so
+    the cost of finishing is far lower than the cost of not finishing.
 
     Projected select (id + title only): the whole point of this column is to
     stop paying for the pool on a hot path, so computing it must not drag full

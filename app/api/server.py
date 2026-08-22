@@ -79,7 +79,34 @@ try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.util import get_remote_address
     from slowapi.errors import RateLimitExceeded
-    _limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
+    def _rate_key(request) -> str:
+        """The authenticated user when we can see one, else the client IP.
+
+        A purely IP-keyed limiter is wrong in both directions once there are
+        real users: one person rotating IPs (or on mobile data) walks around it,
+        while a household, an office or any shared NAT gets throttled as if it
+        were one caller. The bearer token is the identity the expensive routes
+        actually spend money against, so it is the right key.
+
+        Read straight off the Authorization header — no DB round trip and no
+        JWT verification on the rate-limit path. A forged token cannot spend
+        anything (the route's own auth guard still runs); the worst it buys is
+        its own private rate-limit bucket, which is what the IP fallback gives
+        an anonymous caller anyway.
+        """
+        try:
+            auth = request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth.split(" ", 1)[1].strip()
+                if token:
+                    import hashlib
+                    return "u:" + hashlib.sha256(token.encode()).hexdigest()[:32]
+        except Exception:
+            pass
+        return get_remote_address(request)
+
+    _limiter = Limiter(key_func=_rate_key, default_limits=["200/minute"])
     app.state.limiter = _limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     _RATE_LIMIT_AVAILABLE = True
@@ -2515,6 +2542,14 @@ class JobSubmitPayload(BaseModel):
 def submit_job(payload: JobSubmitPayload, request: Request, bg: BackgroundTasks) -> dict:
     # Fail closed in prod: anonymous callers must not write into the job table.
     uid = _require_user(request) if settings.use_supabase else _get_user_id(request)
+    # Reject a URL the server must never fetch, at the door. The liveness check
+    # is SSRF-guarded too (app/common/ssrf.py), but a stored internal address is
+    # a loaded gun aimed at every future code path that reads job.url.
+    from app.common.ssrf import is_fetchable_url
+    if not is_fetchable_url(payload.url.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail="That URL can't be used — it must be a public http(s) job posting link.")
     with get_session() as session:
         import hashlib
         ext_id = hashlib.md5(payload.url.encode("utf-8")).hexdigest()
@@ -3915,6 +3950,7 @@ def application_description(application_id: int, request: Request) -> dict:
 
 
 @app.get("/application/{application_id}/insights")
+@_rate_limit("20/minute")
 def application_insights(application_id: int, request: Request) -> dict:
     """Insider Intelligence: the corporate-intelligence parse of this posting —
     pain point, reporting line, culture decode, leverage hook, stated salary
@@ -8201,13 +8237,13 @@ async function lk(){const t=document.getElementById('token').value;const c=docum
 const cc=document.getElementById('country').value;
 const m=document.getElementById('lkmsg');if(!t||!c){m.textContent='Enter token + company.';return;}m.textContent='…';
 function _esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
-try{const r=await fetch('/api/admin/h1b-lookup?token='+encodeURIComponent(t)+'&company='+encodeURIComponent(c)+'&country='+encodeURIComponent(cc));
+try{const r=await fetch('/api/admin/h1b-lookup?company='+encodeURIComponent(c)+'&country='+encodeURIComponent(cc),{headers:{'X-Admin-Token':t}});
 const d=await r.json();if(!r.ok){m.textContent='✕ '+(d.detail||'error');return;}
 if(d.record&&d.record.record_type==='license'){m.innerHTML='✓ <b>'+_esc(d.record.name||c)+'</b><br>Licensed sponsor'+(d.record.detail?(' — '+_esc(d.record.detail)):'')+(d.record.approvals?(' · '+d.record.approvals+' approved positions'):'');}
 else if(d.record){m.innerHTML='✓ <b>'+_esc(d.record.name||c)+'</b><br>'+d.record.approvals+' approvals · '+d.record.denials+' denials · '+Math.round((d.record.rate||0)*100)+'% rate (FY'+d.record.year+')';}
 else{m.innerHTML='⚠ No sponsor record for "'+_esc(c)+'" in '+_esc(cc)+' (normalized: <code>'+_esc(d.normalized)+'</code>). Not all employers sponsor.';}}
 catch(e){m.textContent='✕ '+e;}}
-async function poll(t){try{const r=await fetch('/api/admin/h1b-status?token='+encodeURIComponent(t));
+async function poll(t){try{const r=await fetch('/api/admin/h1b-status',{headers:{'X-Admin-Token':t}});
 if(r.ok){const d=await r.json();const m=document.getElementById('msg');
 function _esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 if(d.last_error){m.innerHTML='<b style=color:#b91c1c>✕ Ingest error:</b> '+_esc(d.last_error)+
@@ -8226,6 +8262,19 @@ let n=0;const iv=setInterval(()=>{poll(t);if(++n>20)clearInterval(iv);},5000);}
 else{m.textContent='✕ '+(d.detail||'Failed');}}
 catch(e){m.textContent='✕ '+e;}b.disabled=false;b.textContent='Upload & ingest';}
 </script></body></html>"""
+
+
+def _admin_token_from(request, token: str = "") -> str:
+    """The admin token from the X-Admin-Token header, falling back to the query
+    string. A secret in the URL lands in browser history, proxy logs, Railway's
+    request log and any Referer header a page on the other side happens to send;
+    a header does none of that. The query form stays accepted so an existing
+    bookmark keeps working."""
+    try:
+        hdr = (request.headers.get("x-admin-token") or "").strip() if request else ""
+    except Exception:
+        hdr = ""
+    return hdr or (token or "").strip()
 
 
 def _require_admin(token: str) -> None:
@@ -8263,10 +8312,10 @@ def admin_h1b_page(request: Request):
 
 
 @app.get("/api/admin/h1b-status")
-def admin_h1b_status(token: str = "") -> dict:
+def admin_h1b_status(request: Request, token: str = "") -> dict:
     from app.db.models import H1BSponsor
     from app.intelligence import h1b_data as _h
-    _require_admin(token)
+    _require_admin(_admin_token_from(request, token))
     with get_session() as session:
         count = session.exec(select(func.count(H1BSponsor.id))).one()
     li = _h.LAST_INGEST
@@ -8598,10 +8647,10 @@ def get_job_connections(application_id: int, request: Request, mode: str = "") -
 
 
 @app.get("/api/admin/h1b-lookup")
-def admin_h1b_lookup(company: str = "", token: str = "",
+def admin_h1b_lookup(request: Request, company: str = "", token: str = "",
                      country: str = "united states") -> dict:
     """Verify the ingested sponsor data for a company (admin only)."""
-    _require_admin(token)
+    _require_admin(_admin_token_from(request, token))
     from app.intelligence.h1b_data import lookup, normalize
     rec = lookup(company, country=country)
     return {"company": company, "normalized": normalize(company),

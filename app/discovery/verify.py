@@ -17,16 +17,31 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.common.ssrf import guarded_request
+
 log = logging.getLogger(__name__)
 
 
 def check_job_alive(url: str, timeout: float = 4.0) -> tuple[bool, str]:
-    """Return (alive, reason). ``reason`` is set only when dead."""
+    """Return (alive, reason). ``reason`` is set only when dead.
+
+    SSRF-guarded. The URL comes from a job row, and a job row can come from
+    `POST /api/jobs/submit` — i.e. from any logged-in user. This used to HEAD it
+    with `follow_redirects=True` and no host check, so an authenticated caller
+    could point the server at cloud metadata or any internal service and read
+    alive/dead back out of the response. Being signed in is not a reason to
+    trust a URL. Redirects are followed by hand so every hop is re-checked
+    (`app/common/ssrf.py`); a blocked host reports ALIVE, because "we refused to
+    fetch it" is not evidence the posting is gone.
+    """
     if not url:
         return True, ""
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            r = client.head(url)
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            r, err = guarded_request(client, "HEAD", url)
+            if r is None:
+                log.debug("check_job_alive skipped for %s: %s", url, err)
+                return True, ""
             if r.status_code in (404, 410):
                 return False, f"Link returned HTTP {r.status_code}"
             if r.status_code == 200:
