@@ -525,7 +525,7 @@ footer p { max-width: 52ch; margin: 0; }
           <td><b class="m m-y">YES</b><span class="note">Page + email (~95% of jobs)</span></td>
           <td><b class="m m-p">PART</b><span class="note">The email is the receipt</span></td>
           <td><b class="m m-n">NONE</b><span class="note">No view event exists in any API</span></td>
-          <td><b class="m m-n">NONE</b><span class="note">Employer-only audit log</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">Not even in the employer audit log</span></td>
           <td><b class="m m-n">NONE</b></td>
           <td><b class="m m-n">NONE</b><span class="note">Recruiter-sent emails only</span></td>
           <td><b class="m m-n">NONE</b></td>
@@ -715,6 +715,16 @@ footer p { max-width: 52ch; margin: 0; }
     <p>That is a genuine unmet need &mdash; a product that reliably said &ldquo;your stage moved&rdquo; would be doing something the ATS does not. It is also unreachable: there is no candidate-side Greenhouse API, the portal is the only surface, and reading it programmatically means automating a logged-in session. The gap persists precisely because there is no legitimate way to close it.</p>
     <p>The decisive negative was checked directly against Greenhouse&rsquo;s own API source repository rather than its documentation site: the Application object has no viewed field, the activity feed records only notes, emails and stage changes, and the webhook catalogue contains no view event. <strong>Greenhouse does not emit an &ldquo;someone opened your application&rdquo; signal to candidates, to employers, or to any API.</strong></p>
   </div>
+
+  <h3>The employer-side asymmetry</h3>
+  <p>Worth stating precisely, because it is the sharpest version of the finding and it holds across all five ATSs. Employers <em>do</em> get rich, attributed history &mdash; just never of reading.</p>
+  <ul>
+    <li><strong>Stage history with actor attribution exists.</strong> Ashby&rsquo;s <code>application.listHistory</code> returns each stage with an <code>actorId</code> identifying &ldquo;the user that performed the stage change&rdquo;; Lever exposes full stage-change history via <code>expand=stageChanges</code>; SmartRecruiters has a status-history endpoint; Workday returns application history. <span class="g g-c">Confirmed</span> So these systems are perfectly capable of recording who did what &mdash; they simply never record who <em>looked</em>.</li>
+    <li><strong>The audit logs are narrower than they sound.</strong> Greenhouse&rsquo;s Audit Log add-on has exactly five event types: <code>data_change_create</code>, <code>data_change_update</code>, <code>data_change_destroy</code>, <code>harvest_access</code> and <code>action</code>. Lever&rsquo;s <code>audit_events</code> add-on covers user provisioning and authentication. <span class="g g-c">Confirmed</span> Neither is a per-candidate view log, so even the compliance surface would not answer the question.</li>
+    <li><strong>Ashby&rsquo;s complete OpenAPI specification, searched for &ldquo;view&rdquo;, returns nothing</strong> outside the words &ldquo;interview&rdquo; and &ldquo;review&rdquo;. <span class="g g-c">Confirmed</span></li>
+    <li><strong>Workday has no modern webhook product at all</strong> &mdash; the nearest mechanism is a SOAP-era notification service the customer subscribes an external system to. <span class="g g-r">Reported</span></li>
+  </ul>
+  <p>The practical consequence: this is not a signal being withheld from candidates and sold to employers. It is a signal nobody collects. That makes the gap permanent rather than commercial &mdash; no partnership, price, or integration would surface it &mdash; and it is the strongest reason to build the honest version of this feature rather than wait for access.</p>
 </section>
 
 <section id="ladder">
@@ -955,7 +965,7 @@ footer p { max-width: 52ch; margin: 0; }
           <td class="plat">Candidate portal polling</td>
           <td>Rung 7</td>
           <td><b class="m m-n">REJECT</b></td>
-          <td>Technically the richest untapped source &mdash; Workday and MyGreenhouse statuses change silently, so nobody learns without looking. But Workday&rsquo;s terms bar data mining and automated extraction, SmartRecruiters&rsquo; bar automatic access, and Handshake&rsquo;s bar scraping. Doing it with the candidate&rsquo;s own credentials does not cure this.</td>
+          <td>Technically the richest untapped source &mdash; Workday and MyGreenhouse statuses change silently, so nobody learns without looking. But Workday&rsquo;s terms bar data mining, automated extraction, and applications interacting with its sites without written consent; SmartRecruiters&rsquo; candidate terms bar &ldquo;use of automatic means to access content&rdquo;; Handshake&rsquo;s bar scraping. Doing it with the candidate&rsquo;s own credentials does not cure this. Note also the direction of travel: Greenhouse runs reCAPTCHA on its hosted boards and markets MyGreenhouse explicitly as an answer to AI-assisted application floods &mdash; automating that portal would put SpotApply on the wrong side of a fight it should want to be seen winning.</td>
         </tr>
         <tr>
           <td class="plat">Email tracking pixels</td>
