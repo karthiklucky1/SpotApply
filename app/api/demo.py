@@ -116,7 +116,9 @@ def get_demo_jobs(target_role: str) -> List[dict]:
             q = select(Job).where(
                 Job.user_id == SHARED_POOL_USER,
                 Job.is_closed == False,  # noqa: E712
-                Job.title.like(f"%{target_role}%"),
+                # ilike: LIKE is case-sensitive on Postgres, so "data engineer"
+                # matched nothing in production while working in SQLite dev.
+                Job.title.ilike(f"%{target_role}%"),
             ).limit(10)
             real_jobs = session.exec(q).all()
             

@@ -6,10 +6,11 @@ Most spend in this app is bounded by design: the lanes check
 user (or a loop in a browser tab) can call them as fast as HTTP allows, and each
 call is a real Anthropic invoice. Nine of them had no limit at all.
 
-The limits here are IP-keyed via slowapi, which is a burst guard rather than a
-quota. That is the right shape for the immediate risk (accidental or deliberate
-hammering); a genuine per-user token budget for interactive features is still open
-(see docs/AUDIT_2026_07_30.md §"Still open").
+The limits are slowapi burst guards keyed by _rate_key — the authenticated USER
+(hashed bearer) when one is present, the client IP only as the anonymous
+fallback (server.py). A burst guard is the right shape for the immediate risk
+(accidental or deliberate hammering); a genuine per-user token budget for
+interactive features is still open (see docs/AUDIT_2026_07_30.md §"Still open").
 """
 from __future__ import annotations
 
@@ -39,6 +40,10 @@ LLM_ROUTES = {
     '@app.post("/run/tailor/{application_id}")': "résumé + cover letter, ~$0.045-0.09",
     '@app.post("/api/public/job-check")': "unauthenticated — LLM fit check",
     '@app.post("/api/public/demo-match")': "unauthenticated — LLM demo match",
+    # The three routes the Aug 2026 review found spending with no limit at all:
+    '@app.get("/api/fill-pack/{application_id}/resume")': "auto-tailors on a GET the extension retries",
+    '@app.get("/api/fill-pack/{application_id}")': "background auto-tailor per fill-pack open",
+    '@app.get("/application/{application_id}/company")': "one Claude call per company-cache miss",
 }
 
 

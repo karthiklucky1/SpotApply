@@ -246,7 +246,8 @@ _QUEUE_OVERSAMPLE = 3
 _QUEUE_FETCH_MAX = 400
 
 
-def _user_queue(user_id: Optional[str], cap: int) -> List[int]:
+def _user_queue(user_id: Optional[str], cap: int,
+                only_unprescored: bool = False) -> List[int]:
     """A user's queued (unscored) job ids: the freshest `cap × _QUEUE_OVERSAMPLE`,
     re-ordered most-promising-first, then cut to `cap`.
 
@@ -273,6 +274,13 @@ def _user_queue(user_id: Optional[str], cap: int) -> List[int]:
             Job.rerank_score == None,  # noqa: E711
             Job.is_closed == False,    # noqa: E712
         )
+        if only_unprescored:
+            # Drain-only slices (finals allowance exhausted) work through the
+            # UNKNOWNS: a job that already carries a prescore is either waiting
+            # for budget (>= gate, correctly queued) or about to be drained by a
+            # normal slice. Re-picking it here would just re-pay/re-write the
+            # same number every 90s.
+            q = q.where(Job.prescore == None)  # noqa: E711
         # Exclude deferred ids in-SQL for the common (small) set; fall back to
         # post-filtering only if the deferred set is pathologically large.
         if deferred and len(deferred) <= 2000:
@@ -299,14 +307,19 @@ class _Ctx:
                        instead would mean an identical job's fate depended on
                        what time of day it happened to be picked up.
     """
-    __slots__ = ("resume", "reranker", "use_prescore", "gate", "spend_gate")
+    __slots__ = ("resume", "reranker", "use_prescore", "gate", "spend_gate",
+                 "drain_only")
 
-    def __init__(self, resume, reranker, use_prescore, gate, spend_gate=None):
+    def __init__(self, resume, reranker, use_prescore, gate, spend_gate=None,
+                 drain_only=False):
         self.resume = resume
         self.reranker = reranker
         self.use_prescore = use_prescore
         self.gate = gate
         self.spend_gate = gate if spend_gate is None else spend_gate
+        # Finals allowance exhausted: this cycle may prescore-and-drain but must
+        # never buy a Tier-2 final for this user (see settings.scoring_drain_cap).
+        self.drain_only = drain_only
 
 
 def _pick_provider(jid: int, ctx: "_Ctx") -> Optional[str]:
@@ -448,6 +461,13 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
                 _prescore_memo.pop(jid, None)
                 return ("drained", jid, None, None)
             return None  # lost the race to another lane
+        if ctx.drain_only and pre is not None:
+            # Drain slice: the misfit case above already stamped-and-drained;
+            # anything at or over the gate is a real candidate — keep its
+            # prescore (memo AND row) so tomorrow's finals budget opens on the
+            # promise-ordered queue, and buy nothing today.
+            _keep_prescore(jid, pre)
+            return ("prescored", jid, None, None)
         if pre is not None and pre[0] < ctx.spend_gate:
             # Burst money only buys finals on strong candidates. This job is not
             # a misfit — do NOT stamp it — it simply waits for the soft budget,
@@ -457,6 +477,11 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             return None
     else:
         pre = None
+
+    if ctx.drain_only:
+        # No prescore came back (backend hiccup) or Tier-1 is disabled — a
+        # drain slice must NEVER fall through to the Tier-2 final below.
+        return None
 
     # Tier-2: authoritative score (dual routing when enabled; the rule
     # pre-filter runs inside .score()).
@@ -547,9 +572,10 @@ def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     adaptive budget keeps spending only while the remaining candidates are
     strong (Test A) and recent finals are still producing matches (Test B),
     bounded by the daily burst and the weekly budget
-    (`app/matching/finals_budget.py`). Returning 0 drops the user from this
-    cycle's work list entirely, so their queue items are never even prescored —
-    the cheap Tier-1 pass is not free either.
+    (`app/matching/finals_budget.py`). Returning 0 removes the user from the
+    FINALS work list; the cycle may still give them a Tier-1-only drain slice
+    (settings.scoring_drain_cap) so the backlog keeps shrinking while the
+    budget is closed — see _run_scoring_cycle.
     """
     from app.matching.finals_budget import Allowance, allowance, normal_gate
     cap = _plan_finals_cap(uid)
@@ -719,7 +745,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     )
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
-             "by_local": 0}
+             "by_local": 0, "drain_prescored": 0}
 
     # Age gate first: never spend LLM budget (or backlog IO) on postings too
     # old to be worth applying to.
@@ -788,6 +814,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     queues: List[List[Tuple[Optional[str], int]]] = []
     capped_out = 0
     gate_by_user: dict = {}
+    drain_users: set = set()
     for uid in users:
         # The adaptive budget decides BOTH how many finals this user may buy now
         # and how promising a candidate has to be to earn one: inside the soft
@@ -798,6 +825,23 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         if allow.n <= 0:
             capped_out += 1
             log.debug("Scoring: %s gets no slice this cycle (%s)", uid, allow.reason)
+            # DRAIN-ONLY slice: a spent finals budget used to drop the user from
+            # the cycle entirely, which also stopped the ~$0.0002 Tier-1 drain —
+            # so the day's backlog froze the moment the budget did (prod: ~70
+            # finals and ~1,200 prescores/day against ~19k daily intake, feed
+            # median age 34.8 days). Keep prescoring UNKNOWN queue items:
+            # misfits leave for good, real candidates wait promise-ordered for
+            # tomorrow's budget. Never runs when the Anthropic prescore
+            # allowance is the exhausted one — that path is metered.
+            if (settings.scoring_drain_cap > 0
+                    and settings.prescore_enabled
+                    and allow.reason != "anthropic prescore allowance"):
+                dq = [(uid, jid) for jid in _user_queue(
+                    uid, settings.scoring_drain_cap, only_unprescored=True)]
+                if dq:
+                    drain_users.add(uid)
+                    gate_by_user[uid] = allow.gate
+                    queues.append(dq)
             continue
         gate_by_user[uid] = allow.gate
         q = [(uid, jid) for jid in _user_queue(uid, allow.n)]
@@ -881,7 +925,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             gate = normal_gate()
             ctx = _Ctx(resume, reranker,
                        settings.prescore_enabled and reranker.has_prescore_backend(),
-                       gate, gate_by_user.get(uid, gate))
+                       gate, gate_by_user.get(uid, gate),
+                       drain_only=uid in drain_users)
             ctx_cache[uid] = ctx
             return ctx
 
@@ -932,6 +977,11 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                 spend_by_user[(uid, "score_local")] += 1
         elif kind == "drained":
             stats["drained"] += 1
+            spend_by_user[(uid, "score_prescore")] += 1
+        elif kind == "prescored":
+            # Drain-only slice: a real candidate got its Tier-1 number and
+            # stays Queued for the next open budget. Paid one prescore.
+            stats["drain_prescored"] += 1
             spend_by_user[(uid, "score_prescore")] += 1
     # Cancel whatever is still QUEUED so a deadline-truncated cycle can't drain
     # its leftovers into the next one (the old per-cycle pool's shutdown(wait=

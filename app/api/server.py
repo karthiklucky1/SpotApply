@@ -2372,17 +2372,42 @@ def resume_metric_answers(request: Request, body: MetricAnswersRequest) -> dict:
 
 @app.get("/api/discovery/last-run")
 def discovery_last_run(request: Request) -> dict:
-    """Return the most recent discovery run's per-source summary for this user."""
+    """The most recent discovery run that fed THIS user's pool.
+
+    Scheduled discovery is ONE global pass writing to the shared pool
+    (`__shared__`), which adoption then copies to each user — a user's own
+    DiscoveryRun rows exist only when they trigger a manual run. Filtering to
+    the user's uid alone therefore showed their last MANUAL run forever:
+    production served run #716, status=error, from six weeks earlier
+    ("Interrupted (server restart)") while shared runs #1138–1145 had completed
+    the same day. The dashboard looked dead when discovery was fine.
+    """
     import json
     from app.db.models import DiscoveryRun
+    from app.discovery.pipeline import SHARED_POOL_USER
     # Must refuse anonymous callers: the `if uid and uid != "local"` scoping below
     # fails OPEN, so uid=None returned the newest DiscoveryRun of ANY tenant.
     uid = _require_user(request)
     with get_session() as session:
-        q = select(DiscoveryRun).order_by(desc(DiscoveryRun.id))
         if uid and uid != "local":
-            q = q.where(DiscoveryRun.user_id == uid)
-        run = session.exec(q).first()
+            own = session.exec(
+                select(DiscoveryRun).where(DiscoveryRun.user_id == uid)
+                .order_by(desc(DiscoveryRun.id))).first()
+            # A manual run the user just started must stay the tracked run for
+            # the dashboard's poller, whatever the shared lanes do meanwhile.
+            if own is not None and own.status in ("discovering", "ranking",
+                                                  "first_results"):
+                run = own
+            else:
+                shared = session.exec(
+                    select(DiscoveryRun)
+                    .where(DiscoveryRun.user_id == SHARED_POOL_USER)
+                    .order_by(desc(DiscoveryRun.id))).first()
+                candidates = [r for r in (own, shared) if r is not None]
+                run = max(candidates, key=lambda r: r.id) if candidates else None
+        else:
+            run = session.exec(
+                select(DiscoveryRun).order_by(desc(DiscoveryRun.id))).first()
         if not run:
             return {"run": None, "can_run": True, "gate_detail": ""}
         try:
@@ -2390,14 +2415,22 @@ def discovery_last_run(request: Request) -> dict:
         except Exception:
             counts = {}
         allowed, detail = _discovery_gate(uid)
+        is_shared = run.user_id == SHARED_POOL_USER
         return {"can_run": allowed, "gate_detail": detail, "run": {
             "id": run.id,
+            # "shared" = the scheduled global pass that feeds every user via
+            # adoption; "yours" = a run this user triggered themselves.
+            "scope": "shared" if is_shared else "yours",
             "status": run.status,
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
             "total_fetched": run.total_fetched,
             "total_inserted": run.total_inserted,
-            "total_shortlisted": run.total_shortlisted,
+            # Shared runs NEVER shortlist — shortlisting is per-user work done
+            # by the scoring/matching lanes after adoption. Reporting their
+            # structural 0 as a count read as "discovery found nothing good"
+            # on every scheduled run. None = not applicable, and the UI hides it.
+            "total_shortlisted": None if is_shared else run.total_shortlisted,
             "error": run.error,
             "sources": counts,
         }}
@@ -2979,8 +3012,11 @@ def api_jobs(
 
         # Apply filters
         if search:
+            # ilike, not like: LIKE is case-SENSITIVE on Postgres and
+            # case-insensitive (ASCII) on SQLite, so searching "backend" found
+            # "Backend Engineer" in local dev and nothing in production.
             search_pattern = f"%{search}%"
-            query = query.where(Job.title.like(search_pattern) | Job.company.like(search_pattern) | Job.location.like(search_pattern))
+            query = query.where(Job.title.ilike(search_pattern) | Job.company.ilike(search_pattern) | Job.location.ilike(search_pattern))
 
         if company:
             query = query.where(Job.company == company)
@@ -3067,7 +3103,7 @@ def api_jobs(
             count_query = count_query.where(Job.user_id == uid)
         if search:
             search_pattern = f"%{search}%"
-            count_query = count_query.where(Job.title.like(search_pattern) | Job.company.like(search_pattern) | Job.location.like(search_pattern))
+            count_query = count_query.where(Job.title.ilike(search_pattern) | Job.company.ilike(search_pattern) | Job.location.ilike(search_pattern))
         if company:
             count_query = count_query.where(Job.company == company)
         # The page query filters by track; the count must too, or the Job
@@ -3684,19 +3720,30 @@ def application_details(application_id: int, request: Request) -> dict:
     resume_text = ""
     cover_text = ""
 
-    if application.tailored_resume_path:
-        try:
-            from docx import Document
-            doc = Document(application.tailored_resume_path)
-            resume_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        except Exception as e:
-            resume_text = f"(Could not read resume: {e})"
+    # A draft the grounding check rejected is parked at ERROR with the file
+    # still on disk. The download route refuses it with a 409; this preview
+    # returned its FULL text anyway, so the rejected document could be read and
+    # copy-pasted from the Tailoring Studio. Show the reason, not the draft.
+    if application.status == ApplicationStatus.ERROR:
+        _reason = (application.notes or "").strip() or \
+            "This draft did not pass the grounding check."
+        resume_text = (f"(Withheld — {_reason}\nRe-run tailoring to produce a "
+                       "draft that passes the check.)")
+        cover_text = "(Withheld — generated in the same pass as the rejected résumé.)"
+    else:
+        if application.tailored_resume_path:
+            try:
+                from docx import Document
+                doc = Document(application.tailored_resume_path)
+                resume_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            except Exception as e:
+                resume_text = f"(Could not read resume: {e})"
 
-    if application.cover_letter_path:
-        try:
-            cover_text = Path(application.cover_letter_path).read_text(encoding="utf-8")
-        except Exception as e:
-            cover_text = f"(Could not read cover letter: {e})"
+        if application.cover_letter_path:
+            try:
+                cover_text = Path(application.cover_letter_path).read_text(encoding="utf-8")
+            except Exception as e:
+                cover_text = f"(Could not read cover letter: {e})"
 
     rejection_data = None
     if application.rejection_analysis:
@@ -3881,6 +3928,7 @@ _COMPANY_BRIEF_CACHE_MAX = 2000
 
 
 @app.get("/application/{application_id}/company")
+@_rate_limit("20/minute")
 def application_company(application_id: int, request: Request) -> dict:
     """Company snapshot for the job detail: what we actually know — open roles
     we track, funding/growth signals, H-1B record — plus a short AI brief
@@ -4093,6 +4141,7 @@ def application_autopsy(application_id: int, request: Request) -> dict:
 
 
 @app.get("/api/fill-pack/{application_id}")
+@_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
     """Returns all data the browser extension needs to fill a job application form."""
     from pathlib import Path as _P
@@ -4106,35 +4155,50 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         from app.db.models import UserProfile
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
         needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
+        grounding_blocked = application.status == ApplicationStatus.ERROR
 
     # Auto-tailor in background — don't block the fill-pack response.
     # The extension gets the master resume immediately; tailored version
     # will be ready if the user refreshes or applies again later.
-    if needs_tailoring:
-        try:
-            from app.tailoring.tailor import tailor_for_application
-            import threading
-            threading.Thread(
-                target=tailor_for_application,
-                args=(application_id,),
-                daemon=True,
-            ).start()
-        except Exception as e:
-            log.warning("Auto-tailor background start failed for app %d: %s", application_id, e)
+    #
+    # Through _tailor_and_settle, and only inside the daily limit: the old
+    # shape spawned tailor_for_application on a bare daemon thread with no
+    # _check_tailor_limit and no _increment_tailor, so every fill-pack open
+    # could fire an unmetered paid generation that UserUsage never saw.
+    # A grounding-blocked application is not re-tailored automatically either —
+    # the same inputs would fail the same check; the user re-runs it from the
+    # dashboard after fixing their profile.
+    if needs_tailoring and not grounding_blocked:
+        allowed, _detail, _usage = _check_tailor_limit(uid or "local")
+        if allowed:
+            try:
+                import threading
+                threading.Thread(
+                    target=_tailor_and_settle,
+                    args=(application_id, uid or "local"),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                log.warning("Auto-tailor background start failed for app %d: %s", application_id, e)
+        else:
+            log.info("fill-pack auto-tailor skipped for app %d: %s", application_id, _detail)
 
     cover_text = ""
-    if application.cover_letter_path:
-        try:
-            cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
-        except Exception:
-            pass
-
     resume_text = ""
-    if application.tailored_resume_path:
-        try:
-            resume_text = _P(application.tailored_resume_path).read_text(encoding="utf-8")
-        except Exception:
-            pass
+    # Never hand out text from a draft the grounding check rejected — the
+    # browser download route already refuses these with a 409, and the résumé
+    # attach route serves the base résumé instead.
+    if not grounding_blocked:
+        if application.cover_letter_path:
+            try:
+                cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
+            except Exception:
+                pass
+        if application.tailored_resume_path:
+            try:
+                resume_text = _P(application.tailored_resume_path).read_text(encoding="utf-8")
+            except Exception:
+                pass
 
     p = profile
     pack = {
@@ -4263,23 +4327,91 @@ def _base_resume_bytes(uid: str | None):
 
 
 @app.get("/api/fill-pack/{application_id}/resume")
+@_rate_limit("15/minute")
 def get_tailored_resume(application_id: int, request: Request) -> dict:
     """Return the tailored resume .docx as base64 so the extension can attach it
     to a form's file input. Auto-tailors first if no resume exists yet."""
     import base64
     from pathlib import Path as _P
     _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         path = application.tailored_resume_path
+        app_status = application.status
+        app_notes = application.notes
+
+    def _grounding_blocked_response():
+        """The grounding check rejected this draft. The browser download route
+        refuses it with a 409 (server.py, download-resume) — this route used to
+        serve the SAME rejected document to the extension, which is the path
+        every beta user actually attaches from. The extension still needs a
+        file for the form's required upload, so hand it the BASE résumé (real,
+        user-authored, nothing to hallucinate) instead of failing the fill."""
+        base = _base_resume_bytes(uid)
+        if base:
+            filename, mime, blob = base
+            log.info("Serving base résumé for app %d (tailored draft failed grounding)",
+                     application_id)
+            return {
+                "filename": filename, "mime": mime,
+                "base64": base64.b64encode(blob).decode(),
+                "tailored": False,
+                "notice": ((app_notes or "The tailored draft did not pass the "
+                            "grounding check.").strip()
+                           + " Attaching your base résumé instead — re-run "
+                             "tailoring from the dashboard for a checked draft."),
+            }
+        raise HTTPException(
+            status_code=409,
+            detail=(app_notes
+                    or "This résumé did not pass the grounding check and cannot be "
+                       "attached. Re-run tailoring for this application."),
+        )
+
+    if app_status == ApplicationStatus.ERROR:
+        return _grounding_blocked_response()
 
     if not path or not _P(path).exists():
+        # Auto-tailoring is a full paid generation — it must respect the same
+        # per-plan daily limit as every other tailor entry point. This was one
+        # of the three uncapped LLM routes: a GET the extension retries, with
+        # no @_rate_limit and no _check_tailor_limit, spending unmetered money
+        # that never touched UserUsage.tailor_count.
+        allowed, _detail, _usage = _check_tailor_limit(uid or "local")
+        if not allowed:
+            base = _base_resume_bytes(uid)
+            if base:
+                filename, mime, blob = base
+                return {
+                    "filename": filename, "mime": mime,
+                    "base64": base64.b64encode(blob).decode(),
+                    "tailored": False,
+                    "notice": ("Daily tailoring limit reached, so this is your base "
+                               "résumé — review it before submitting."),
+                }
+            raise HTTPException(status_code=429, detail=_detail)
         try:
             from app.tailoring.tailor import tailor_for_application
             resume_path, _ = tailor_for_application(application_id)
             path = str(resume_path)
+            _increment_tailor(uid or "local")
+            try:
+                from app.analytics.spend import record_llm_spend
+                record_llm_spend(uid or "local", "tailor")
+            except Exception:
+                pass
+            # The tailor may have parked the application at ERROR (grounding
+            # failure) while still writing the file — re-check before serving.
+            with get_session() as session:
+                application = session.get(Application, application_id)
+                if application and application.status == ApplicationStatus.ERROR:
+                    app_notes = application.notes
+                    return _grounding_blocked_response()
+        except HTTPException:
+            raise
         except Exception as e:
             log.warning("Resume tailoring failed for app %d: %s", application_id, e)
             # A bare 503 told the extension only "try again", so it retried
@@ -4519,6 +4651,25 @@ def freshness_stats(request: Request) -> dict:
         if (first or disc)
         and _naive(first or disc) > now - timedelta(days=1)
     )
+    # THE canonical "new in 24h": distinct new postings in the shared pool.
+    # Four different numbers wore this label at once in production — 2,611
+    # (this user's own adopted pool, above), 12,936 (pulse-tick inserts only),
+    # 19,071 (all Job rows incl. per-user adopted COPIES, whose first_seen is
+    # re-stamped at adoption), 18,921 (same by discovered_at) — shown side by
+    # side as if comparable. The shared pool counts each posting once, across
+    # every lane, with no per-user duplication.
+    shared_new_24h = 0
+    try:
+        from app.discovery.pipeline import SHARED_POOL_USER as _SPU
+        with get_session() as session:
+            _v = session.exec(
+                select(func.count(Job.id)).where(
+                    Job.user_id == _SPU,
+                    Job.first_seen > now - timedelta(days=1))
+            ).first()
+        shared_new_24h = int(_v[0] if isinstance(_v, tuple) else (_v or 0))
+    except Exception as _se:
+        log.debug("shared-pool 24h count skipped: %s", _se)
     last_discovery_at = None
     with get_session() as session:
         from app.db.models import DiscoveryRun as _DR
@@ -4566,18 +4717,37 @@ def freshness_stats(request: Request) -> dict:
                 ).all()
             pulse["ticks_24h"] = len(ticks)
             pulse["last_tick_at"] = ticks[0].created_at.isoformat() if ticks else None
-            new_24h = alerts_24h = 0
+            new_24h = 0
             for t in ticks:
                 try:
                     m = _json.loads(t.metadata_json or "{}")
                     new_24h += int(m.get("new_jobs") or 0)
-                    alerts_24h += int(m.get("alerts") or 0)
                 except Exception:
                     pass
             pulse["new_jobs_24h"] = new_24h
-            pulse["alerts_24h"] = alerts_24h
+            # Lane-agnostic: fresh alerts are dispatched by the scoring lane,
+            # the matching lane AND the pulse fast path, and every one of them
+            # writes a stage="fresh_alert" FunnelEvent. Summing only the pulse
+            # ticks' metadata (the old shape) undercounted the other lanes to 0.
+            with get_session() as session:
+                _a = session.exec(
+                    select(func.count(_FE2.id)).where(
+                        _FE2.stage == "fresh_alert",
+                        _FE2.created_at > now - timedelta(days=1))
+                ).first()
+            pulse["alerts_24h"] = int(_a[0] if isinstance(_a, tuple) else (_a or 0))
             pulse["fast_interval_min"] = settings.pulse_fast_interval_minutes
             pulse["floor_interval_min"] = settings.pulse_floor_interval_minutes
+            # Is the "every live board within the floor" promise actually being
+            # kept? Production: 18,773 of 21,505 live boards were past the
+            # 60-min floor while the UI said "catching up" — at 87% that is not
+            # catching up, it is structural under-capacity (see the sizing note
+            # on pulse_max_boards_per_tick in config.py). Give the UI the
+            # honest ratio so it can say which one is true.
+            _live = int(pulse.get("live_boards") or 0)
+            _over = int(pulse.get("overdue_boards") or 0)
+            pulse["overdue_pct"] = round(100.0 * _over / _live, 1) if _live else 0.0
+            pulse["floor_holding"] = bool(_live) and (_over / _live) < 0.05
         except Exception as _pe:
             log.debug("pulse stats skipped: %s", _pe)
 
@@ -4593,7 +4763,13 @@ def freshness_stats(request: Request) -> dict:
         "hot_lane_runs_24h": hot_runs_24h,
         "hot_lane_jobs_24h": hot_jobs_24h,
         "hot_lane_inserted_24h": hot_inserted_24h,
+        # Kept for compat; identical to your_pool_new_24h (this USER's pool —
+        # bounded by adoption, not a pipeline throughput number).
         "jobs_discovered_24h": discovered_24h,
+        "your_pool_new_24h": discovered_24h,
+        # The canonical pipeline number: distinct new postings, shared pool,
+        # all lanes, no per-user copies. Headline this one.
+        "shared_pool_new_24h": shared_new_24h,
         "last_discovery_run": last_discovery_at,
         "pulse": pulse,
     }
@@ -6648,6 +6824,13 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
                 f"UTC. If you genuinely need more, contact support."
             ), {"plan": plan, "used": used, "daily_limit": cap}
         return True, "", {"plan": plan, "used": used, "daily_limit": None}
+    # The abuse ceiling stays a real backstop even for plans with a numeric
+    # limit. It used to be reachable only through the `daily_limit is None`
+    # branch above, and no tier has a None limit any more — which made
+    # TAILOR_ABUSE_DAILY_CAP dead code the moment PRO got a real number.
+    _abuse = settings.tailor_abuse_daily_cap
+    if _abuse and _abuse > 0:
+        daily_limit = min(daily_limit, _abuse)
     with get_session() as session:
         row = _get_or_create_usage(session, uid)
         used = row.tailor_count
@@ -8940,10 +9123,18 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # Tailor in the background
-    bg.add_task(tailor_for_application, app_id)
+    # Tailor in the background — through the settle wrapper so it is counted
+    # and capped like every other tailor. The bare bg.add_task(tailor_for_
+    # application) shape ran 10 uncounted paid generations per minute at this
+    # route's own rate limit, invisible to UserUsage.tailor_count.
+    allowed, _detail, _usage = _check_tailor_limit(uid or "local")
+    if allowed:
+        bg.add_task(_tailor_and_settle, app_id, uid or "local")
+    else:
+        log.info("extract-link tailor skipped for app %d: %s", app_id, _detail)
 
-    return {"success": True, "application_id": app_id}
+    return {"success": True, "application_id": app_id,
+            "tailoring": bool(allowed)}
 
 
 # ── GDPR / Account deletion ──────────────────────────────────────────────────

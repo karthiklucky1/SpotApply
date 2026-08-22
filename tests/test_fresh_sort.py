@@ -130,3 +130,15 @@ def test_jobs_carry_posted_and_is_new(client):
     old = by_title["Old High Score"]
     assert fresh["posted"] is not None and fresh["is_new"] is True
     assert old["is_new"] is False
+
+
+def test_search_is_case_insensitive(client):
+    """LIKE is case-sensitive on Postgres and case-insensitive on SQLite, so
+    `search=backend` returned rows in dev and zero in production. The route
+    must use ilike — this test can only prove intent on SQLite, so it pins the
+    source instead of the behavior."""
+    import inspect
+    from app.api import server
+    src = inspect.getsource(server.api_jobs)
+    assert ".like(" not in src, "Explorer search must use .ilike(), not .like()"
+    assert ".ilike(" in src
