@@ -178,6 +178,38 @@ def test_refusal_does_not_erase_the_uscis_record():
     assert {"refusal", "uscis"} <= kinds
 
 
+def test_has_sponsored_is_a_positive_tone():
+    """MEDIUM used to fall through to tone='unknown', so an employer with a
+    real USCIS approval on record rendered as "Sponsorship not stated" — 2,072
+    jobs/day in production. Every consumer branches on 'good'/'bad' and treats
+    the rest as unknown, so the missing case suppressed the card chip and the
+    drawer verdict at once."""
+    _load_us("Initech LLC", approvals=2, denials=0, year=2024)
+    a = assess(company="Initech LLC", description="Backend role.",
+               location="Austin, TX")
+    assert a.likelihood == SponsorshipLikelihood.MEDIUM
+    assert a.badge == "Has sponsored"
+    assert a.tone == "good"
+
+
+def test_contradiction_has_its_own_tone():
+    """'mixed' must be distinguishable — the drawer's fallback branch says the
+    posting was silent, which is the opposite of what a contradiction holds."""
+    _load_us("Globex Corporation", approvals=40, denials=2, year=2024)
+    a = assess(company="Globex Corporation",
+               description="Great role. We do not sponsor work visas.",
+               location="Austin, TX")
+    assert a.tone == "mixed"
+
+
+def test_drawer_renders_every_tone_the_assessor_can_emit():
+    """Guard against a new tone falling into the 'not stated' fallback."""
+    import pathlib
+    html = pathlib.Path("app/templates/dashboard.html").read_text(encoding="utf-8")
+    for tone in ("good", "bad", "mixed"):
+        assert f"tone === '{tone}'" in html, f"drawer has no branch for tone={tone!r}"
+
+
 def test_cap_exempt_does_not_erase_a_refusal():
     """A university posting that refuses used to come back HIGH with
     explicitly_refuses=False — the worst kind of confident wrong answer."""

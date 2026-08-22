@@ -6480,6 +6480,15 @@
                 headline = 'No sponsorship for this role';
                 sub = (a && a.reason) ? esc_(a.reason) : 'The posting states it cannot sponsor — better to spend your energy on the sponsors in your list.';
                 cardStyle = 'background:rgba(244,63,94,0.04);border:1px solid rgba(244,63,94,0.18);';
+            } else if (tone === 'mixed') {
+                // The evidence disagrees with itself: the posting refuses, but the
+                // employer is on a public register or is cap-exempt. Both facts are
+                // true and the user gets both — falling through to the "silent
+                // posting" branch below told them the opposite of what we hold.
+                mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FBF1DC;color:#92600A;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">!</span>';
+                headline = 'Conflicting sponsorship signals';
+                sub = (a && a.reason) ? esc_(a.reason) : 'This posting refuses sponsorship, but the employer has sponsored before — the refusal may apply to this role only.';
+                cardStyle = 'background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.30);';
             } else {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:#FBF1DC;color:#92600A;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;flex-shrink:0;">?</span>';
                 headline = 'Sponsorship not stated';

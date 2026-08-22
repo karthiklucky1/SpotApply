@@ -129,12 +129,22 @@ class SponsorshipAssessment:
 
     @property
     def tone(self) -> str:
-        """UI colour hint."""
+        """UI colour hint: good | bad | mixed | unknown.
+
+        MEDIUM counts as good. It is only ever returned for "Has sponsored" —
+        an employer with a real USCIS approval on record — and it used to fall
+        through to "unknown", so 2,072 jobs a day were shown as "Sponsorship
+        not stated" when we held a public filing proving the opposite. Every
+        consumer branches on 'good'/'bad' and treats the rest as unknown, so
+        that single missing case suppressed the badge, the card chip and the
+        drawer verdict at once.
+        """
         if self.contradictory:
             return "mixed"
         if self.explicitly_refuses or self.likelihood == SponsorshipLikelihood.LOW:
             return "bad"
-        if self.cap_exempt or self.likelihood == SponsorshipLikelihood.HIGH:
+        if self.cap_exempt or self.likelihood in (
+                SponsorshipLikelihood.HIGH, SponsorshipLikelihood.MEDIUM):
             return "good"
         return "unknown"
 
