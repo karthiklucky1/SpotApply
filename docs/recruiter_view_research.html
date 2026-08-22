@@ -1,0 +1,1227 @@
+<title>Recruiter View Signals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap">
+
+<style>
+:root {
+  --paper:        #FBFBFC;
+  --paper-2:      #F2F3F5;
+  --paper-3:      #E7E9EC;
+  --rule:         #D5D9DE;
+  --rule-soft:    #E4E7EB;
+  --ink:          #14171B;
+  --ink-2:        #454C55;
+  --ink-3:        #6B7480;
+  --accent:       #1F5468;
+  --accent-soft:  #E2EDF1;
+  --yes:          #1F6B4A;
+  --yes-bg:       #E1EFE7;
+  --part:         #8A5A12;
+  --part-bg:      #F6EBD8;
+  --no:           #963232;
+  --no-bg:        #F5E3E2;
+  --unk:          #5C6570;
+  --unk-bg:       #E9EBEE;
+  --shadow:       0 1px 2px rgba(20,23,27,.05), 0 8px 24px -16px rgba(20,23,27,.25);
+  --maxw:         min(1180px, 100% - 3rem);
+  --readw:        68ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:       #101317;
+    --paper-2:     #171B21;
+    --paper-3:     #1E242B;
+    --rule:        #2B333C;
+    --rule-soft:   #222A32;
+    --ink:         #E8EBEE;
+    --ink-2:       #AEB6C0;
+    --ink-3:       #7E8895;
+    --accent:      #6FB4CB;
+    --accent-soft: #16303A;
+    --yes:         #6FC79B;
+    --yes-bg:      #14301F;
+    --part:        #DCA84F;
+    --part-bg:     #33260F;
+    --no:          #E08A85;
+    --no-bg:       #34191A;
+    --unk:         #98A1AC;
+    --unk-bg:      #1D232A;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"] {
+  --paper:       #101317;
+  --paper-2:     #171B21;
+  --paper-3:     #1E242B;
+  --rule:        #2B333C;
+  --rule-soft:   #222A32;
+  --ink:         #E8EBEE;
+  --ink-2:       #AEB6C0;
+  --ink-3:       #7E8895;
+  --accent:      #6FB4CB;
+  --accent-soft: #16303A;
+  --yes:         #6FC79B;
+  --yes-bg:      #14301F;
+  --part:        #DCA84F;
+  --part-bg:     #33260F;
+  --no:          #E08A85;
+  --no-bg:       #34191A;
+  --unk:         #98A1AC;
+  --unk-bg:      #1D232A;
+  --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16.5px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { width: var(--maxw); margin-inline: auto; }
+.read { max-width: var(--readw); }
+
+/* ---------- masthead ---------- */
+.masthead {
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-2);
+  padding: clamp(2.5rem, 6vw, 4.5rem) 0 clamp(2rem, 4vw, 3rem);
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .72rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 1.1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.1rem;
+  align-items: baseline;
+}
+.eyebrow span + span { color: var(--ink-3); }
+h1 {
+  font-family: "Newsreader", Georgia, serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-size: clamp(2.1rem, 5.2vw, 3.5rem);
+  line-height: 1.08;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+  margin: 0 0 1rem;
+  max-width: 22ch;
+}
+.standfirst {
+  font-size: clamp(1.02rem, 1.6vw, 1.16rem);
+  color: var(--ink-2);
+  max-width: 62ch;
+  margin: 0;
+}
+.standfirst strong { color: var(--ink); font-weight: 600; }
+
+/* ---------- verdict strip ---------- */
+.verdict-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 2.5rem;
+}
+.vs-cell { background: var(--paper); padding: 1.15rem 1.25rem; }
+.vs-k {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .66rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .55rem;
+}
+.vs-v { margin: 0; font-size: .935rem; line-height: 1.5; color: var(--ink-2); }
+.vs-v b { color: var(--ink); font-weight: 600; }
+
+/* ---------- layout ---------- */
+main { padding: clamp(2.5rem, 5vw, 4rem) 0 6rem; }
+section { padding-block: clamp(2rem, 4vw, 3.25rem); }
+section + section { border-top: 1px solid var(--rule-soft); }
+
+h2 {
+  font-family: "Newsreader", Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(1.5rem, 3vw, 2.05rem);
+  line-height: 1.18;
+  letter-spacing: -.01em;
+  text-wrap: balance;
+  margin: 0 0 .35rem;
+}
+.h2-num {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .7rem;
+  letter-spacing: .12em;
+  color: var(--accent);
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: .5rem;
+}
+h3 {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-weight: 600;
+  font-size: 1.06rem;
+  letter-spacing: -.005em;
+  margin: 2.1rem 0 .6rem;
+}
+h4 {
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 600;
+  font-size: .74rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 1.6rem 0 .5rem;
+}
+p { margin: 0 0 1rem; }
+.lede { font-size: 1.06rem; color: var(--ink-2); max-width: var(--readw); }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+ul, ol { margin: 0 0 1rem; padding-left: 1.25rem; max-width: var(--readw); }
+li { margin-bottom: .42rem; }
+li::marker { color: var(--ink-3); }
+
+code, .mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .875em;
+}
+code {
+  background: var(--paper-3);
+  padding: .1em .38em;
+  border-radius: 2px;
+}
+
+/* ---------- grade chips ---------- */
+.g {
+  display: inline-block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .655rem;
+  font-weight: 600;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+  padding: .16em .5em;
+  border-radius: 2px;
+  white-space: nowrap;
+  vertical-align: .08em;
+}
+.g-c { background: var(--yes-bg);  color: var(--yes); }
+.g-r { background: var(--part-bg); color: var(--part); }
+.g-u { background: var(--unk-bg);  color: var(--unk); }
+.g-n { background: var(--no-bg);   color: var(--no); }
+
+/* ---------- matrix ---------- */
+.scroller {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  margin-bottom: .9rem;
+}
+table { border-collapse: collapse; width: 100%; font-size: .845rem; }
+caption { caption-side: bottom; text-align: left; padding: .8rem 1rem; color: var(--ink-3); font-size: .82rem; }
+th, td { text-align: left; padding: .62rem .7rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--rule);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .655rem;
+  font-weight: 600;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  line-height: 1.35;
+  z-index: 2;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--paper-2); }
+.plat {
+  font-weight: 600;
+  white-space: nowrap;
+  position: sticky;
+  left: 0;
+  background: var(--paper);
+  border-right: 1px solid var(--rule-soft);
+  z-index: 1;
+}
+tbody tr:hover .plat { background: var(--paper-2); }
+thead .plat { background: var(--paper-2); z-index: 3; }
+.plat small { display: block; font-weight: 400; color: var(--ink-3); font-size: .76rem; letter-spacing: 0; text-transform: none; font-family: "IBM Plex Sans", sans-serif; }
+
+.m { display: block; font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: .78rem; }
+.m-y { color: var(--yes); }
+.m-p { color: var(--part); }
+.m-n { color: var(--no); }
+.m-u { color: var(--unk); }
+td .note { display: block; font-size: .765rem; color: var(--ink-3); line-height: 1.4; margin-top: .1rem; max-width: 24ch; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.4rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .72rem;
+  color: var(--ink-2);
+  margin-bottom: 1.4rem;
+}
+.legend b { font-weight: 600; }
+
+/* ---------- ladder ---------- */
+.ladder { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+.rung {
+  background: var(--paper);
+  display: grid;
+  grid-template-columns: 3.1rem 1fr;
+  gap: 0 1.1rem;
+  padding: 1.05rem 1.25rem;
+  align-items: start;
+}
+.rung-n {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--ink-3);
+  border-radius: 2px;
+  text-align: center;
+  padding: .18rem 0;
+  font-variant-numeric: tabular-nums;
+}
+.rung[data-grade="solid"]   .rung-n { background: var(--yes); }
+.rung[data-grade="est"]     .rung-n { background: var(--part); }
+.rung[data-grade="gated"]   .rung-n { background: var(--no); }
+.rung-t { font-weight: 600; margin: 0 0 .25rem; }
+.rung-b { margin: 0; color: var(--ink-2); font-size: .93rem; line-height: 1.55; }
+.rung-b em { color: var(--ink-3); font-style: normal; }
+
+/* ---------- callouts ---------- */
+.callout {
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 1rem 1.2rem;
+  border-radius: 0 3px 3px 0;
+  margin: 1.5rem 0;
+  max-width: var(--readw);
+}
+.callout p:last-child { margin-bottom: 0; }
+.callout .k {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .67rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: block;
+  margin-bottom: .4rem;
+  font-weight: 600;
+}
+
+/* ---------- Q&A ---------- */
+.qa { display: flex; flex-direction: column; gap: 0; }
+.qa-item { border-bottom: 1px solid var(--rule-soft); padding: 1.35rem 0; }
+.qa-item:first-child { border-top: 1px solid var(--rule-soft); }
+.qa-q {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr;
+  gap: .8rem;
+  align-items: baseline;
+  margin: 0 0 .55rem;
+}
+.qa-q .n { font-family: "IBM Plex Mono", monospace; font-size: .78rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.qa-q .t { font-weight: 600; font-size: 1.02rem; }
+.qa-a { margin: 0 0 0 3rem; color: var(--ink-2); max-width: var(--readw); }
+.qa-a p:last-child { margin-bottom: 0; }
+.qa-a .short { color: var(--ink); font-weight: 600; }
+
+/* ---------- detail cards ---------- */
+details {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  margin-bottom: .55rem;
+  background: var(--paper);
+  overflow: hidden;
+}
+summary {
+  cursor: pointer;
+  padding: .8rem 1rem;
+  font-weight: 600;
+  font-size: .95rem;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  background: var(--paper-2);
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; font-family: "IBM Plex Mono", monospace; color: var(--ink-3); font-weight: 400; }
+details[open] summary::after { content: "\2212"; }
+.dbody { padding: 1rem 1.1rem 1.2rem; }
+.dbody p:last-child, .dbody ul:last-child { margin-bottom: 0; }
+.dbody dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .45rem 1.1rem; font-size: .92rem; }
+.dbody dt {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: .66rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: .28em;
+}
+.dbody dd { margin: 0; color: var(--ink-2); }
+
+/* ---------- footer ---------- */
+footer {
+  border-top: 1px solid var(--rule);
+  background: var(--paper-2);
+  padding: 2.5rem 0 3.5rem;
+  font-size: .88rem;
+  color: var(--ink-3);
+}
+footer .wrap { display: flex; flex-wrap: wrap; gap: 1.5rem 3rem; }
+footer p { max-width: 52ch; margin: 0; }
+
+@media (max-width: 640px) {
+  :root { --maxw: min(1180px, 100% - 1.75rem); }
+  .qa-a { margin-left: 0; }
+  .rung { grid-template-columns: 2.6rem 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow"><span>SpotApply · Product Research</span><span>22 August 2026</span></p>
+    <h1>Can a candidate know a recruiter opened their application?</h1>
+    <p class="standfirst">Fourteen platforms, eight signals, and one uncomfortable finding: <strong>no applicant tracking system in the stack exposes a &ldquo;viewed&rdquo; event to anyone</strong> &mdash; not the candidate, not even the employer paying for it. Everything SpotApply could honestly show falls into three tiers, and only the first is proof.</p>
+
+    <div class="verdict-strip">
+      <div class="vs-cell">
+        <p class="vs-k">Reliably knowable</p>
+        <p class="vs-v">Submission, delivery receipts, and opens of <b>SpotApply&rsquo;s own</b> hosted links.</p>
+      </div>
+      <div class="vs-cell">
+        <p class="vs-k">Estimable only</p>
+        <p class="vs-v">Whether a <b>human</b> — rather than a scanner — did the opening.</p>
+      </div>
+      <div class="vs-cell">
+        <p class="vs-k">Structurally impossible</p>
+        <p class="vs-v">Recruiter activity inside <b>Workday, Greenhouse, Lever, Ashby</b>.</p>
+      </div>
+      <div class="vs-cell">
+        <p class="vs-k">Competitive read</p>
+        <p class="vs-v">No incumbent does this. <b>Two who tried are dead.</b></p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+<section id="matrix">
+  <span class="h2-num">The evidence base</span>
+  <h2>What each platform actually shows the candidate</h2>
+  <p class="lede">Eight signals, fourteen platforms. Read the columns, not the rows: signals&nbsp;3&ndash;5 &mdash; the ones candidates most want &mdash; are almost entirely empty, and signal&nbsp;8 is empty everywhere.</p>
+
+  <div class="legend">
+    <span><b class="m m-y" style="display:inline">YES</b> shown to candidate</span>
+    <span><b class="m m-p" style="display:inline">PART</b> conditional or indirect</span>
+    <span><b class="m m-n" style="display:inline">NONE</b> does not exist</span>
+    <span><b class="m m-u" style="display:inline">&nbsp;?&nbsp;</b> unverified</span>
+  </div>
+
+  <div class="scroller">
+    <table>
+      <caption>Candidate-visible signals by platform. &ldquo;Self&rdquo; marks a signal the candidate&rsquo;s own tool infers, with no employer involvement.</caption>
+      <thead>
+        <tr>
+          <th class="plat">Platform</th>
+          <th>1 · Submitted</th>
+          <th>2 · Delivered</th>
+          <th>3 · Recruiter opened</th>
+          <th>4 · Profile viewed</th>
+          <th>5 · Résumé downloaded</th>
+          <th>6 · Stage changed</th>
+          <th>7 · Hiring mgr viewed</th>
+          <th>8 · Recruiter verified</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="plat">LinkedIn <small>Easy Apply</small></td>
+          <td><b class="m m-y">YES</b><span class="note">In-app + email</span></td>
+          <td><b class="m m-p">PART</b><span class="note">No separate receipt</span></td>
+          <td><b class="m m-y">YES</b><span class="note">&ldquo;Application viewed&rdquo;. Automatic on native jobs; employer opt-in on ATS-synced ones</span></td>
+          <td><b class="m m-p">PART</b><span class="note">Who-viewed-profile, never tied to the application</span></td>
+          <td><b class="m m-y">YES</b><span class="note">Also fires on a mere ATS document-viewer render</span></td>
+          <td><b class="m m-p">PART</b><span class="note">Rejection only, and by two different mechanisms</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">Attributed to company, not a person</span></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">LinkedIn <small>offsite apply</small></td>
+          <td><b class="m m-p">PART</b><span class="note">Click-inferred</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">LinkedIn keeps no record of who applied</span></td>
+          <td><b class="m m-p">PART</b><span class="note">Unlinked profile views</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Indeed <small>Indeed Apply</small></td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">No receipt state</span></td>
+          <td><b class="m m-y">YES</b><span class="note">Status + notification + email. But not all employers update it</span></td>
+          <td><b class="m m-u">?</b><span class="note">No first-party doc either way for résumé-search views</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-y">YES</b><span class="note">Employer statuses, changed silently</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">ZipRecruiter</td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Asserted, not receipted</span></td>
+          <td><b class="m m-y">YES</b><span class="note">View alerts, opt-in notification setting</span></td>
+          <td><b class="m m-p">PART</b><span class="note">&ldquo;Contact info looked at&rdquo;</span></td>
+          <td><b class="m m-u">?</b><span class="note">Undocumented</span></td>
+          <td><b class="m m-p">PART</b><span class="note">Thumbs-up shown; thumbs-down hidden</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">&ldquo;Great Match&rdquo; is an ML label</span></td>
+        </tr>
+        <tr>
+          <td class="plat">Handshake</td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-p">PART</b></td>
+          <td><b class="m m-p">PART</b><span class="note">&ldquo;Reviewed&rdquo; auto-set on click — but no notification sent</span></td>
+          <td><b class="m m-y">YES</b><span class="note">Named viewers, 90 days, daily batch</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">Bulk résumé books are silent</span></td>
+          <td><b class="m m-y">YES</b><span class="note">Silent; declines send nothing</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Greenhouse <small>job board</small></td>
+          <td><b class="m m-y">YES</b><span class="note">Page + email (~95% of jobs)</span></td>
+          <td><b class="m m-p">PART</b><span class="note">The email is the receipt</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">No view event exists in any API</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">Employer-only audit log</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">Recruiter-sent emails only</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">MyGreenhouse <small>candidate portal</small></td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-p">PART</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">Shows only what the employer chooses to share</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Opt-in Active/Inactive; stage labels where configured</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Inverted: candidate self-verifies ID via CLEAR</span></td>
+        </tr>
+        <tr>
+          <td class="plat">Lever</td>
+          <td><b class="m m-p">PART</b><span class="note">Email is employer-configurable</span></td>
+          <td><b class="m m-p">PART</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">No candidate portal at all</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Only when an email is sent</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Ashby</td>
+          <td><b class="m m-p">PART</b><span class="note">Email only if employer configured it</span></td>
+          <td><b class="m m-p">PART</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">No candidate portal; no view event in 22 webhook types</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Only when an email is sent</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b><span class="note">AI review scores are employer-only</span></td>
+        </tr>
+        <tr>
+          <td class="plat">Workday <small>Candidate Home</small></td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-p">PART</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">PART</b><span class="note">Coarse, employer-worded, no notification</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">Rare &ldquo;sent to dept&rdquo; label</span></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">SmartRecruiters</td>
+          <td><b class="m m-y">YES</b></td>
+          <td><b class="m m-p">PART</b><span class="note">UUID returned to Apply-API partners</span></td>
+          <td><b class="m m-n">NONE</b><span class="note">IN_REVIEW is a status move, not an open</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-y">YES</b><span class="note">Portal + the one partner API in this table</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Teal <small>tracker</small></td>
+          <td><b class="m m-p">Self</b><span class="note">Manual dropdown</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">Self</b><span class="note">Manual</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Huntr <small>tracker</small></td>
+          <td><b class="m m-p">Self</b><span class="note">Inferred from autofill; Huntr &ldquo;assumes these actions happened&rdquo;</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">Self</b><span class="note">Kanban drag</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+        <tr>
+          <td class="plat">Simplify <small>tracker</small></td>
+          <td><b class="m m-p">Self</b><span class="note">Extension detects submit; can&rsquo;t confirm acceptance</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-p">Self</b><span class="note">Manual; email-scan is an open feature request</span></td>
+          <td><b class="m m-n">NONE</b></td>
+          <td><b class="m m-n">NONE</b></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <span class="k">The column that matters</span>
+    <p>Column 8 is empty for all fourteen platforms. <span class="g g-c">Confirmed</span> Every &ldquo;verification&rdquo; product that exists &mdash; Greenhouse Real Talent with CLEAR, LinkedIn&rsquo;s identity badges &mdash; runs in the opposite direction: the <em>candidate</em> proves their identity to the employer. Nowhere does a recruiter attest to a candidate in a way the candidate can see. If SpotApply wants &ldquo;Recruiter verified,&rdquo; it has to create the action, not detect it.</p>
+  </div>
+</section>
+
+<section id="mechanics">
+  <span class="h2-num">How the signals are produced</span>
+  <h2>Where each signal comes from, and what it&rsquo;s worth</h2>
+  <p class="lede">Four platforms produce a genuine &ldquo;opened&rdquo; event. All four produce it the same way &mdash; by instrumenting their <em>own</em> employer-facing UI &mdash; which is exactly why no third party can reproduce it.</p>
+
+  <div class="scroller">
+    <table>
+      <caption>Only platforms that surface an engagement signal are listed. &ldquo;Third-party reachable&rdquo; means a candidate-side product could legitimately obtain it.</caption>
+      <thead>
+        <tr>
+          <th class="plat">Platform</th>
+          <th>How the platform gets it</th>
+          <th>Proves a human recruiter?</th>
+          <th>Third-party reachable?</th>
+          <th>API / webhook</th>
+          <th>Main limitation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="plat">LinkedIn</td>
+          <td>Native jobs: LinkedIn logs opens in its own applicant manager, and sends updates <em>automatically</em>. ATS jobs: the ATS calls <code>jobApplicationLifecycleActions</code> with <code>APPLICATION_VIEWED</code> / <code>RESUME_DOWNLOADED</code> / <code>APPLICATION_REJECTED</code>, gated on the employer ticking &ldquo;Applicant notifications&rdquo;.</td>
+          <td><b>Weakly.</b> Native opens imply a logged-in human, but any team member counts. ATS-relayed &ldquo;downloaded&rdquo; fires when the résumé is &ldquo;downloaded <em>or displayed within a document viewer</em>&rdquo; &mdash; and LinkedIn&rsquo;s candidate-facing help says only &ldquo;downloaded&rdquo;, so candidates are not told this.</td>
+          <td><b>Only via the candidate&rsquo;s inbox.</b> Partner APIs are restricted to vetted ATS companies; a candidate copilot cannot qualify. Scraping breaches User Agreement §8.2.</td>
+          <td>Partner-only. No candidate API, no candidate webhook, no status export. Apply-with-LinkedIn closed to new partners.</td>
+          <td>The ATS sends an event <em>every</em> time; LinkedIn de-duplicates so only the first notifies. Silent for offsite applies. The status surfaces in three places &mdash; email, the job posting, and the Job Tracker.</td>
+        </tr>
+        <tr>
+          <td class="plat">Indeed</td>
+          <td>Employer opens the application inside Indeed&rsquo;s own dashboard.</td>
+          <td><b>Weakly.</b> A real click by an employer-account user, but any seat, any duration, and one-click bulk rejection looks identical to a considered decision.</td>
+          <td><b>Only via the candidate&rsquo;s inbox</b> &mdash; Indeed emails the candidate on view. ToS bars automated access to the site.</td>
+          <td>Partner-gated (Job Sync, Indeed Apply, Disposition Sync). The public job-search API shut down in 2023.</td>
+          <td>Indeed&rsquo;s own help states <strong>&ldquo;not all employers update viewing status, meaning you may not have a viewed label even if your application was reviewed.&rdquo;</strong> Statuses like &ldquo;Response seems unlikely&rdquo; are algorithmically inferred, and Indeed-set statuses are documented as appearing in the mobile app only.</td>
+        </tr>
+        <tr>
+          <td class="plat">ZipRecruiter</td>
+          <td>Employer opens or rates the candidate in ZipRecruiter&rsquo;s dashboard; view and thumbs-up alerts are pushed to the candidate.</td>
+          <td><b>Partly.</b> Thumbs-up is a deliberate human click &mdash; the strongest signal in this table. &ldquo;Great Match&rdquo; badges are pure ML with no human involved.</td>
+          <td><b>Only via the candidate&rsquo;s inbox.</b> Terms bar scraping by automated <em>or manual</em> means, and bar using content to train models.</td>
+          <td>Partner Integration Toolkit; API keys issued only to registered ATS partners.</td>
+          <td>Alerts are opt-in, so silence may mean disabled notifications. ZipRecruiter states it &ldquo;has limited information&rdquo; about application status.</td>
+        </tr>
+        <tr>
+          <td class="plat">Handshake</td>
+          <td>An employer clicking an applicant&rsquo;s profile <em>automatically</em> flips the application to &ldquo;Reviewed&rdquo;. Profile Viewers is separate first-party page-view tracking.</td>
+          <td><b>Yes, unusually well</b> for &ldquo;Reviewed&rdquo; &mdash; there is no bot path that trips it. But any teammate counts, and ATS-synced statuses are automated writes.</td>
+          <td><b>Barely.</b> No notification is sent, so there is no email to parse. The API is restricted to partner schools. ToS bars scraping.</td>
+          <td>EDU/Career Services API (schools only) and Reporting API (schools, beta). No webhooks anywhere.</td>
+          <td>Silent &mdash; candidates must poll the page. Declines send nothing. Profile Viewers is batched once daily.</td>
+        </tr>
+        <tr>
+          <td class="plat">SmartRecruiters</td>
+          <td>Status transitions in the employer&rsquo;s tenant, exposed through the candidate portal <em>and</em> a partner status endpoint.</td>
+          <td><b>No.</b> <code>IN_REVIEW</code> is a status move that can be bulk, automated, or an API write. Knockout questions auto-reject and auto-email.</td>
+          <td><b>Sanctioned but gated.</b> The docs explicitly bless showing status in a partner&rsquo;s own UI &mdash; but every employer must authorize the partner individually over OAuth. See below.</td>
+          <td>Customer API + webhooks (<code>application.status.updated</code>), employer-credentialed. Partner credentials issued case-by-case by the Partner &amp; API Team.</td>
+          <td>Status semantics are employer-configured; the same label means different things at different companies.</td>
+        </tr>
+        <tr>
+          <td class="plat">Greenhouse · Lever<br>Workday · Ashby</td>
+          <td>Nothing. These systems record no candidate-visible open, view, or download event of any kind.</td>
+          <td><b>N/A.</b> The strongest inference available is that a stage moved &mdash; which can be an automation rule.</td>
+          <td><b>No.</b> All credentials are employer-issued. Candidate portals (Workday, MyGreenhouse) are behind ToS that bar automated access.</td>
+          <td>All employer-credentialed. Greenhouse and Ashby webhook catalogues contain no view event at all &mdash; the data does not exist to expose.</td>
+          <td>Silence is the default state and carries no information whatsoever.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Two findings that survived adversarial re-checking</h3>
+  <p>Both were re-verified against first-party documentation specifically to try to <em>refute</em> them, because both would change what gets built.</p>
+
+  <div class="callout">
+    <span class="k">SmartRecruiters &mdash; sanctioned, but it is a sales problem, not an engineering one</span>
+    <p>The endpoint is real and its documented purpose is unusually explicit: retrieve a candidate&rsquo;s application status and &ldquo;expose it in your interface, so the candidate can see what status they are in for the job.&rdquo; <span class="g g-c">Confirmed</span> That removes the policy risk entirely &mdash; which is rare and genuinely notable.</p>
+    <p>What it does not remove is the distribution problem. Partner credentials are issued case-by-case by SmartRecruiters&rsquo; Partner &amp; API Team, and <strong>each employer must then separately authorize the integration over OAuth with an admin account</strong>. Status is returned only for applications the partner itself submitted through the Apply API, to an employer that has the API add-on enabled &mdash; there is no lookup-by-email path. So coverage grows one employer at a time, through a sales motion, not through shipping code. Treat it as an enterprise integration to keep on file, not as a route to broad coverage.</p>
+  </div>
+
+  <div class="callout">
+    <span class="k">Greenhouse &mdash; the gap is real, and unreachable</span>
+    <p>MyGreenhouse Stages went GA in March 2026 on all product tiers, letting employers map internal pipeline stages to candidate-facing labels that update automatically as recruiters move people. <span class="g g-c">Confirmed</span> But it notifies nobody: &ldquo;candidates will see their current stage in MyGreenhouse &mdash; no extra emails or manual updates required.&rdquo; The only candidate email MyGreenhouse sends is new-job alerts. Checking status means a passwordless sign-in every time.</p>
+    <p>That is a genuine unmet need &mdash; a product that reliably said &ldquo;your stage moved&rdquo; would be doing something the ATS does not. It is also unreachable: there is no candidate-side Greenhouse API, the portal is the only surface, and reading it programmatically means automating a logged-in session. The gap persists precisely because there is no legitimate way to close it.</p>
+    <p>The decisive negative was checked directly against Greenhouse&rsquo;s own API source repository rather than its documentation site: the Application object has no viewed field, the activity feed records only notes, emails and stage changes, and the webhook catalogue contains no view event. <strong>Greenhouse does not emit an &ldquo;someone opened your application&rdquo; signal to candidates, to employers, or to any API.</strong></p>
+  </div>
+</section>
+
+<section id="ladder">
+  <span class="h2-num">The honesty ladder</span>
+  <h2>Seven statuses, three tiers of truth</h2>
+  <p class="lede">These are genuinely ordered &mdash; each rung is a strictly stronger claim than the one below it, and the tier boundaries are where the evidence changes kind. Rungs 1&ndash;3 are facts SpotApply records. Rung 4 is an inference. Rungs 5&ndash;7 need someone else&rsquo;s cooperation.</p>
+
+  <div class="ladder">
+    <div class="rung" data-grade="solid">
+      <div class="rung-n">01</div>
+      <div>
+        <p class="rung-t">Submission confirmed</p>
+        <p class="rung-b">SpotApply&rsquo;s extension observed a real submit click on the ATS page. <em>Already implemented</em> &mdash; content.js requires the literal word &ldquo;submit&rdquo;, rejects bare &ldquo;apply&rdquo;, checks <code>isTrusted</code>, and dedups, then posts to a state-guarded endpoint that stamps <code>submitted_at</code>. This is a fact about the candidate&rsquo;s own browser and is fully reliable. It does <em>not</em> prove the ATS accepted the application.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="solid">
+      <div class="rung-n">02</div>
+      <div>
+        <p class="rung-t">Delivered</p>
+        <p class="rung-b">A confirmation email arrived from the ATS. <em>Partly implemented</em> &mdash; the extension already scrapes Gmail and Outlook and posts to <code>/api/sync-emails</code>, which flips applications to REJECTED and INTERVIEWING. Reliable when the email exists; the gap is that Lever, Ashby and Workday all make the confirmation email employer-optional, so absence means nothing.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="solid">
+      <div class="rung-n">03</div>
+      <div>
+        <p class="rung-t">Profile opened</p>
+        <p class="rung-b">A unique SpotApply-hosted link was loaded. This is the only rung where SpotApply owns the whole measurement, so it is the only engagement signal it can state as fact &mdash; but the fact is narrow: <em>a request reached our server</em>. It says nothing yet about who sent it.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="est">
+      <div class="rung-n">04</div>
+      <div>
+        <p class="rung-t">Human engagement detected</p>
+        <p class="rung-b">Scroll depth, dwell time, or a click on an evidence item. This is where estimation begins and it cannot be promoted to fact: it is a <em>likelihood</em> that the opener was a person rather than a scanner. Achievable and worth building &mdash; but it must be labelled as an inference in the UI, every time.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="gated">
+      <div class="rung-n">05</div>
+      <div>
+        <p class="rung-t">Recruiter viewed</p>
+        <p class="rung-b">An authoritative platform said a recruiter viewed it. Available for exactly four platforms, only through the candidate&rsquo;s own inbox, and never for an application submitted to Greenhouse, Lever, Workday or Ashby. SpotApply can relay this; it can never generate it.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="gated">
+      <div class="rung-n">06</div>
+      <div>
+        <p class="rung-t">Recruiter verified</p>
+        <p class="rung-b">A named person at a confirmed company domain took a deliberate, attributable action. No platform offers this, so SpotApply would have to <em>create</em> the action rather than detect it &mdash; which means it depends entirely on recruiter adoption, and is worth nothing until recruiters actually click it.</p>
+      </div>
+    </div>
+    <div class="rung" data-grade="gated">
+      <div class="rung-n">07</div>
+      <div>
+        <p class="rung-t">ATS stage changed</p>
+        <p class="rung-b">The employer moved the candidate. Reachable three ways, all partial: parsing rejection and interview emails (already built), the SmartRecruiters partner endpoint (narrow), and portal polling (barred by every portal&rsquo;s terms). Genuinely useful, but coverage will always be patchy and stage labels mean different things at different employers.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="k">The line that must not blur</span>
+    <p>Rungs 3 and 5 are the ones users will conflate, and the temptation to let them is the central product risk here. &ldquo;Your profile was opened&rdquo; and &ldquo;a recruiter viewed your application&rdquo; are different claims about different objects, and SpotApply can only ever prove the first. Any UI that lets the first read as the second is misleading, however carefully the tooltip is worded.</p>
+  </div>
+</section>
+
+<section id="competitors">
+  <span class="h2-num">Prior art</span>
+  <h2>Who already sells this, and what happened to them</h2>
+  <p class="lede">Nobody in SpotApply&rsquo;s category offers recruiter-view tracking. The products that offer something adjacent split cleanly into two groups: hosted-link analytics (which work, within their limits) and dedicated candidate-side engagement trackers (both of which died).</p>
+
+  <h3>Hosted-link analytics &mdash; the working pattern</h3>
+  <p>These prove the model is technically sound and commercially viable as a paid tier. All of them measure their own hosted page, which is precisely rung 3.</p>
+  <ul>
+    <li><strong>VisualCV</strong> <span class="g g-c">Confirmed</span> logs every view and download of a hosted résumé with date, IP, approximate location, view count and time spent; unique links per employer let the candidate infer <em>which</em> recruiter opened it. Paid tier.</li>
+    <li><strong>resume.io</strong> <span class="g g-c">Confirmed</span> ships share-link statistics: views over time, viewer city/country, and duration per view.</li>
+    <li><strong>Standard Resume</strong> <span class="g g-c">Confirmed</span> explicitly recommends one web résumé per application so you &ldquo;know when the recruiter views your résumé.&rdquo;</li>
+    <li><strong>DocSend</strong> and the open-source <strong>Papermark</strong> <span class="g g-c">Confirmed</span> offer the richest version &mdash; per-visit identity via unique links, total time, and page-by-page dwell &mdash; but as general document tools, not job-search products.</li>
+    <li><strong>LoopCV</strong> <span class="g g-c">Confirmed</span> shows which companies opened its auto-sent outreach emails. Email-pixel based, so it inherits every accuracy problem in the next section.</li>
+    <li><strong>Mailtrack / Mailsuite</strong> <span class="g g-c">Confirmed</span> markets read receipts and PDF-open tracking directly at candidates wanting to know &ldquo;whether your résumé has been opened by the recruiter.&rdquo;</li>
+    <li><strong>Kickresume</strong> <span class="g g-n">Not offered</span> hosts résumé websites but ships no view analytics.</li>
+  </ul>
+
+  <h3>Dedicated trackers &mdash; the cautionary pattern</h3>
+  <p>Two companies built precisely the product being considered here. Both are gone.</p>
+  <ul>
+    <li><strong>Presumi</strong> (Sydney, 2015&ndash;2017) <span class="g g-r">Reported</span> sold trackable résumé links: opens, in-résumé link clicks, email delivery, plus a B2B analytics layer for job marketplaces. Last update April 2017; site dead by 2019.</li>
+    <li><strong>StartWire</strong> <span class="g g-r">Reported</span> pushed automatic application-status updates by SMS and email, monitoring 20,000+ career pages plus ATS integrations &mdash; the closest historical analogue to inbox-parsing plus portal-scraping. Listed as permanently closed.</li>
+  </ul>
+  <p>Neither death proves the idea is bad, but they establish the failure mode: a signal that depends on employer-side behaviour degrades as employers change their tooling, and a tracker with patchy coverage is hard to keep alive on its own.</p>
+
+  <h3>The category SpotApply competes in</h3>
+  <p>Teal, Huntr and Simplify &mdash; the three trackers users actually compare SpotApply against &mdash; show <strong>zero</strong> employer-side signals between them. Simplify auto-detects the submit click; Huntr infers &ldquo;applied&rdquo; from its own autofill and states in its docs that it &ldquo;assumes these actions happened&rdquo;; Teal requires a manual dropdown. Simplify users are still filing feature requests asking for basic email-based status detection, which SpotApply already ships. <span class="g g-c">Confirmed</span></p>
+</section>
+
+<section id="codebase">
+  <span class="h2-num">Build position</span>
+  <h2>What SpotApply already has</h2>
+  <p class="lede">More than expected. Rungs 1, 2 and 7 are partly shipped; rung 3 needs a tracked-link table on top of a page that already exists; rung 6 has its data model built and its send path missing.</p>
+
+  <div class="scroller">
+    <table>
+      <caption>Recon of the current codebase against the seven statuses.</caption>
+      <thead>
+        <tr><th class="plat">Capability</th><th>State</th><th>Where it lives</th><th>What&rsquo;s missing</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="plat">Real-submit detection</td>
+          <td><b class="m m-y">SHIPPED</b></td>
+          <td><code>extension/content.js:544-596</code> &rarr; <code>server.py:4918</code></td>
+          <td>Nothing. Requires &ldquo;submit&rdquo; not &ldquo;apply&rdquo;, checks <code>isTrusted</code>, dedups, state-guarded write.</td>
+        </tr>
+        <tr>
+          <td class="plat">Inbox status parsing</td>
+          <td><b class="m m-y">SHIPPED</b></td>
+          <td><code>content.js:3786-4340</code> &rarr; <code>/api/sync-emails</code>, <code>server.py:9189/9235/9280</code></td>
+          <td>Flips REJECTED and INTERVIEWING today. Could also parse the LinkedIn, Indeed and ZipRecruiter <em>view</em> emails &mdash; that is the whole of rung 5.</td>
+        </tr>
+        <tr>
+          <td class="plat">Public profile page</td>
+          <td><b class="m m-p">PARTIAL</b></td>
+          <td><code>GET /u/{handle}</code> at <code>server.py:7755</code>, <code>public_profile.html</code></td>
+          <td>One handle per user, not per recipient. No view logging at all. Handle is <code>token_hex(2)</code> &mdash; 16 bits, guessable. No rate limit, no <code>X-Robots-Tag</code>, <code>robots.txt</code> doesn&rsquo;t disallow <code>/u/</code>.</td>
+        </tr>
+        <tr>
+          <td class="plat">Link analytics</td>
+          <td><b class="m m-n">MISSING</b></td>
+          <td>&mdash;</td>
+          <td>Everything. <code>FunnelEvent</code> can&rsquo;t carry it (no user_id, no application_id, no IP/UA). Needs its own table. <strong>Zero bot filtering exists anywhere in the repo.</strong></td>
+        </tr>
+        <tr>
+          <td class="plat">Engagement beacons</td>
+          <td><b class="m m-n">MISSING</b></td>
+          <td>&mdash;</td>
+          <td><code>public_profile.html</code> has no JavaScript at all. Needs <code>sendBeacon</code>, dwell/scroll capture, and an unauthenticated write endpoint &mdash; the first in the codebase.</td>
+        </tr>
+        <tr>
+          <td class="plat">Recruiter accounts</td>
+          <td><b class="m m-p">PARTIAL</b></td>
+          <td><code>RecruiterProfile</code> <code>models.py:542</code>, <code>_verify_recruiter()</code> <code>server.py:7174</code></td>
+          <td>Schema is right and free-mail domains are already rejected. But domain match is deliberately treated as a signal, not proof &mdash; the code comments name the hole, and a test locks it in.</td>
+        </tr>
+        <tr>
+          <td class="plat">Email sending</td>
+          <td><b class="m m-n">MISSING</b></td>
+          <td>&mdash;</td>
+          <td><strong>The hard blocker for rung 6.</strong> No SMTP, no provider, no library in requirements, no templates. All mail today is Supabase Auth sent client-side. No signed-token machinery either.</td>
+        </tr>
+        <tr>
+          <td class="plat">Notifications</td>
+          <td><b class="m m-y">SHIPPED</b></td>
+          <td><code>UserNotification</code> <code>models.py:634</code>, 60s dashboard poll</td>
+          <td>Nothing. The free-form <code>link</code> field means a &ldquo;your profile was viewed&rdquo; alert needs no new plumbing.</td>
+        </tr>
+        <tr>
+          <td class="plat">Application statuses</td>
+          <td><b class="m m-p">PARTIAL</b></td>
+          <td>13 values, <code>models.py:50-64</code></td>
+          <td>None represent recruiter-side engagement &mdash; no VIEWED, no RECRUITER_VERIFIED, no INTERVIEW_REQUESTED.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <span class="k">Already designed, never built</span>
+    <p><code>docs/research/redesign-appendix-2026-07.md:235-289</code> contains a complete spec for this feature under the name <strong>Application Receipt</strong> &mdash; <code>ApplicationReceipt</code> / <code>ReceiptEvent</code> / <code>ReceiptView</code> tables with sha256-hashed IP and UA, a revocable <code>GET /r/{token}</code> page, notification on first view, a recruiter funnel at <code>/recruiter?src=receipt</code>, and an explicit 90-day kill threshold if the view rate stays under 2%. Grep confirms <strong>none of it is implemented</strong>. It is a better starting point than a fresh design, and its framing &mdash; &ldquo;SpotApply&rsquo;s records show&hellip;&rdquo;, an event log rather than a guarantee &mdash; is exactly the honesty posture this research argues for.</p>
+  </div>
+</section>
+
+<section id="methods">
+  <span class="h2-num">Detection options</span>
+  <h2>Twelve ways SpotApply could try to detect this</h2>
+  <p class="lede">Graded by what each one actually establishes, not by how easy it is. Three are worth building, four are worth building with caveats, and five should be rejected outright.</p>
+
+  <div class="scroller">
+    <table>
+      <caption>Detection methods against the rung they can reach and the reason for the verdict.</caption>
+      <thead>
+        <tr><th class="plat">Method</th><th>Reaches</th><th>Verdict</th><th>Reasoning</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="plat">Browser-extension activity</td>
+          <td>Rung 1</td>
+          <td><b class="m m-y">BUILD</b><span class="note">Already shipped</span></td>
+          <td>The most reliable signal SpotApply has, because it observes the candidate&rsquo;s own browser rather than inferring anything. Its one gap: it cannot confirm the ATS <em>accepted</em> the submission &mdash; Ashby&rsquo;s own docs warn that a failed submit records nothing and notifies no one.</td>
+        </tr>
+        <tr>
+          <td class="plat">Application confirmation emails</td>
+          <td>Rung 2</td>
+          <td><b class="m m-y">BUILD</b><span class="note">Partly shipped</span></td>
+          <td>The single highest-coverage channel available, and the only legitimate route to platform-authoritative signals. Already implemented for rejections and interviews; extending it to LinkedIn, Indeed and ZipRecruiter view emails is the cheapest possible route to rung 5.</td>
+        </tr>
+        <tr>
+          <td class="plat">Unique profile / résumé links</td>
+          <td>Rung 3</td>
+          <td><b class="m m-y">BUILD</b></td>
+          <td>The only engagement signal SpotApply can state as fact. Proven commercially by VisualCV, resume.io and DocSend. Needs per-recipient tokens, not the current one-handle-per-user model.</td>
+        </tr>
+        <tr>
+          <td class="plat">Server-side link analytics</td>
+          <td>Rung 3</td>
+          <td><b class="m m-y">BUILD</b></td>
+          <td>Must be server-side, and must ship <em>with</em> bot filtering rather than after it. Shipping raw view counts first would train users to trust a number that is 20&ndash;80% scanner traffic.</td>
+        </tr>
+        <tr>
+          <td class="plat">Dwell time, scroll, evidence clicks</td>
+          <td>Rung 4</td>
+          <td><b class="m m-p">BUILD, LABEL</b></td>
+          <td>The best available human-vs-machine discriminator, and still only an inference. Calibrate to interaction shape rather than duration &mdash; see the sandbox trap above.</td>
+        </tr>
+        <tr>
+          <td class="plat">Recruiter &ldquo;Verify&rdquo; / &ldquo;Request interview&rdquo; button</td>
+          <td>Rung 6</td>
+          <td><b class="m m-p">BUILD, LATER</b></td>
+          <td>The only path to a genuine verification claim, since no platform provides one. Data model is largely built. Blocked on the missing email send path, and worth nothing until recruiters actually click it &mdash; so it should follow demonstrated view traffic, not precede it.</td>
+        </tr>
+        <tr>
+          <td class="plat">Recruiter confirmation via company email</td>
+          <td>Rung 6</td>
+          <td><b class="m m-p">PREREQUISITE</b></td>
+          <td>Not optional if rung 6 ships. The current domain-match check is explicitly not proof &mdash; both strings arrive in the same request &mdash; and the code comments say so. A one-time code to the corporate mailbox closes a known hole.</td>
+        </tr>
+        <tr>
+          <td class="plat">ATS confirmation pages</td>
+          <td>Rung 1&ndash;2</td>
+          <td><b class="m m-p">MARGINAL</b></td>
+          <td>Confirms submission, which the extension already knows more reliably. Worth scraping only for the reference number some ATSs display.</td>
+        </tr>
+        <tr>
+          <td class="plat">Authorized APIs and webhooks</td>
+          <td>Rung 7</td>
+          <td><b class="m m-n">CLOSED</b><span class="note">One gated exception</span></td>
+          <td>Every ATS issues credentials to employers or vetted partners only. SmartRecruiters&rsquo; Apply-API status endpoint is the sole sanctioned candidate-facing path, and it needs per-employer OAuth authorization &mdash; coverage grows through sales, not engineering.</td>
+        </tr>
+        <tr>
+          <td class="plat">Candidate portal polling</td>
+          <td>Rung 7</td>
+          <td><b class="m m-n">REJECT</b></td>
+          <td>Technically the richest untapped source &mdash; Workday and MyGreenhouse statuses change silently, so nobody learns without looking. But Workday&rsquo;s terms bar data mining and automated extraction, SmartRecruiters&rsquo; bar automatic access, and Handshake&rsquo;s bar scraping. Doing it with the candidate&rsquo;s own credentials does not cure this.</td>
+        </tr>
+        <tr>
+          <td class="plat">Email tracking pixels</td>
+          <td>&mdash;</td>
+          <td><b class="m m-n">REJECT</b></td>
+          <td>Roughly half of opens fire without a human present, a quarter are anonymized, and corporate scanners add more. The error is unmeasurable per-recipient, and a candidate acting on a phantom open pays a real social cost.</td>
+        </tr>
+        <tr>
+          <td class="plat">Tracked links in outbound email</td>
+          <td>Rung 3</td>
+          <td><b class="m m-p">CONDITIONAL</b></td>
+          <td>Materially better than pixels because the destination is SpotApply&rsquo;s own instrumented page. Still needs honeypot links, send-time discard windows, and all-links-clicked detection before any number reaches a user.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="noise">
+  <span class="h2-num">The noise floor</span>
+  <h2>Eight ways a &ldquo;view&rdquo; lies</h2>
+  <p class="lede">Every figure below is <span class="g g-r">Reported</span> &mdash; this environment&rsquo;s egress proxy blocked direct fetches of Apple, Microsoft, Google and Litmus documentation, so the numbers come from search-extracted content of those named pages rather than pages read first-hand. They should be re-verified before appearing in any user-facing copy. The direction of every finding is consistent across sources.</p>
+
+  <div class="scroller">
+    <table>
+      <caption>Sources of false and masked signals, ordered by how much damage each does to a candidate-facing claim.</caption>
+      <thead>
+        <tr><th class="plat">Cause</th><th>False signal</th><th>Scale</th><th>Mitigation</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="plat">Apple Mail Privacy Protection</td>
+          <td><b class="m m-n">False open</b><span class="note">Plus masked IP, geo, device and true open time</span></td>
+          <td>Apple Mail is <strong>46&ndash;50%</strong> of all tracked opens; MPP adoption among those users estimated <strong>95%+</strong>. Inflates open rates by 15&ndash;20 points.</td>
+          <td>Apple proxy IP ranges and a stripped generic user agent identify machine opens with ~95% precision &mdash; but Apple publishes no definitive proxy list, so this stays heuristic. A real Apple open and a prefetch are <em>indistinguishable</em>.</td>
+        </tr>
+        <tr>
+          <td class="plat">Corporate scanners<br><small>Defender Safe Links, Proofpoint, Mimecast</small></td>
+          <td><b class="m m-n">False click</b><span class="note">Also false page view and false form submit</span></td>
+          <td><strong>M3AAWG: 20&ndash;80% of B2B email clicks are non-human.</strong> Recruiters sit behind exactly these gateways, so SpotApply&rsquo;s recipients are the worst case. Proofpoint alone protects 80+ of the Fortune 100.</td>
+          <td>Honeypot links no human would click; discard clicks within seconds of send; flag all-links-clicked patterns. User-agent filtering is weak here &mdash; Mimecast states it deliberately anonymizes scanners to avoid evasion.</td>
+        </tr>
+        <tr>
+          <td class="plat">Gmail image proxy</td>
+          <td><b class="m m-u">Masked identity</b><span class="note">Plus some prefetch false opens</span></td>
+          <td><strong>24&ndash;28%</strong> of opens. Identity masking applies to essentially all of them; prefetch false opens are a smaller <strong>1&ndash;6%</strong> of Gmail opens.</td>
+          <td>The proxy user agent is honest, so these can be bucketed as &ldquo;Gmail, viewer unknown&rdquo; rather than discarded &mdash; unlike MPP, a proxy hit usually is a real open. Caching means repeat opens undercount.</td>
+        </tr>
+        <tr>
+          <td class="plat">ATS parsing at submission</td>
+          <td><b class="m m-n">False download</b><span class="note">Fires at t=0, before a human exists in the loop</span></td>
+          <td>Universal. Every major ATS parses the résumé on upload; Greenhouse additionally virus-scans every uploaded document. With ~250 applicants per posting and fewer than 10 shortlisted, the machine parse is often the <em>only</em> access a résumé ever gets.</td>
+          <td>Discard or relabel any access in the minutes after submission to that employer. Serve a JavaScript viewer rather than a raw PDF URL &mdash; a parser hitting a static file is indistinguishable from a human download.</td>
+        </tr>
+        <tr>
+          <td class="plat">Link-preview bots<br><small>Slack, Teams, iMessage, WhatsApp</small></td>
+          <td><b class="m m-n">False view</b><span class="note">Fires on paste, before anyone clicks</span></td>
+          <td>No published rate, but structurally it fires on nearly every share into a chat &mdash; and pasting candidate links into a hiring channel is routine.</td>
+          <td><strong>The easiest to fix.</strong> These bots identify themselves honestly: <code>Slackbot-LinkExpanding</code>, <code>SkypeUriPreview</code>, <code>LinkedInBot</code>, <code>facebookexternalhit</code>. Filter by user agent and serve them metadata only.</td>
+        </tr>
+        <tr>
+          <td class="plat">Bulk résumé downloads</td>
+          <td><b class="m m-n">False download</b><span class="note">One machine action, many candidates</span></td>
+          <td>Unquantified. ATS-to-ATS exports, batch AI screening, and CRM syncs all fetch documents with zero per-candidate attention.</td>
+          <td>Fan-out heuristics: many fetches from one source across many candidates in a short window is a sync, not interest. Data-center ASN filtering catches API-driven pulls.</td>
+        </tr>
+        <tr>
+          <td class="plat">LinkedIn private mode</td>
+          <td><b class="m m-u">Masked identity</b><span class="note">A real view whose viewer is hidden</span></td>
+          <td>Unquantified, but described as common practice for discreet sourcing &mdash; and Recruiter Lite keeps view-your-viewers while browsing privately, removing the usual disincentive.</td>
+          <td><strong>None. This is a platform-enforced boundary, not a measurement artifact.</strong> No subscription tier can unmask a private-mode viewer. Any product claiming otherwise is claiming the impossible.</td>
+        </tr>
+        <tr>
+          <td class="plat">Coordinator, not recruiter</td>
+          <td><b class="m m-p">Misattributed intent</b><span class="note">Real human view, wrong story about who</span></td>
+          <td>Structural. Coordinators screen 50+ résumés a day; panels average ~3 people; links get forwarded internally. No telemetry can separate these roles.</td>
+          <td>Report role-agnostic events. Note the trap in the other direction: the classic eye-tracking study puts a recruiter&rsquo;s first-pass scan at <strong>7.4 seconds</strong>, so a dwell threshold set high enough to exclude bots will also discard genuine screens.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <span class="k">The trap in the obvious fix</span>
+    <p>&ldquo;Require JavaScript execution&rdquo; is the standard answer to pixel noise, and it does eliminate bare fetchers, most unfurl bots, and simple parsers. It does <em>not</em> eliminate modern detonation sandboxes, which execute JavaScript for 30&ndash;90 seconds per URL &mdash; longer than a real recruiter&rsquo;s 7.4-second scan. A naive &ldquo;dwell &gt; 10 seconds means human&rdquo; rule therefore <strong>inverts</strong>: it admits the sandbox and rejects the recruiter. Interaction shape &mdash; scroll events, page turns, pointer entropy &mdash; discriminates where duration alone does not. Note also that DocSend, the category leader in document-view tracking, publicly disclaims pixel-tier accuracy in its own marketing.</p>
+  </div>
+</section>
+
+<section id="questions">
+  <span class="h2-num">Direct answers</span>
+  <h2>The nine questions</h2>
+
+  <div class="qa">
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">01</span><span class="t">Can SpotApply reliably know that a recruiter opened an external Workday, Greenhouse, Lever or Ashby application?</span></p>
+      <div class="qa-a">
+        <p><span class="short">No, and not because of an access problem &mdash; because the event does not exist.</span> None of these four systems records a candidate-visible open, view, or download. Greenhouse&rsquo;s published webhook catalogue and Ashby&rsquo;s 22 event types contain no view event; Lever and Ashby have no candidate portal at all. The employer paying for the ATS cannot see this either, except through Greenhouse&rsquo;s separate employer-only audit-log add-on. There is nothing to intercept, buy, or negotiate for.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">02</span><span class="t">Can SpotApply access employer-side ATS activity without the employer&rsquo;s permission?</span></p>
+      <div class="qa-a">
+        <p><span class="short">No.</span> Every ATS in scope issues API credentials only to an employer administrator or to a vetted partner acting on an employer&rsquo;s behalf. Candidate-side products have no credential path anywhere.</p>
+        <p>SmartRecruiters is the apparent exception and it proves the rule: it openly sanctions showing a candidate their status in a third party&rsquo;s interface, but only after that partner is credentialed by SmartRecruiters <em>and</em> authorized by each employer individually. That is employer permission, obtained one employer at a time.</p>
+        <p>The two channels that remain both belong to the candidate rather than the employer: parsing their own inbox, and reading what their own portal login shows them. The first is clean. The second is barred by the portals&rsquo; own terms &mdash; Workday&rsquo;s prohibit data mining and automated extraction, SmartRecruiters&rsquo; candidate terms bar access by automatic means, and Handshake&rsquo;s bar scraping. Using the candidate&rsquo;s own credentials does not cure that.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">03</span><span class="t">Can a unique grounded-profile link show that someone opened it?</span></p>
+      <div class="qa-a">
+        <p><span class="short">Yes &mdash; this is the one thing in the whole report SpotApply can measure directly.</span> A unique per-recipient URL on SpotApply&rsquo;s own domain gives an unambiguous server-side fact: this token was requested, at this time, from this IP, with this user agent and referer. VisualCV, resume.io, Standard Resume and DocSend all ship exactly this. What it establishes is that <em>a request arrived</em> &mdash; not who sent it, and not that they read anything.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">04</span><span class="t">Can SpotApply prove the visitor was the recruiter rather than a bot?</span></p>
+      <div class="qa-a">
+        <p><span class="short">No. It can raise confidence substantially, but proof is not available.</span> Bot filtering by user agent and IP range removes the obvious crawlers; requiring JavaScript execution rather than a bare image load removes most scanners; requiring dwell time and scroll depth removes nearly all of the rest. What survives is still only a strong inference &mdash; a corporate security scanner that renders pages, or a colleague the recruiter forwarded the link to, both look like engaged humans. And the inverse error is permanent: a recruiter who reads the page in a reading-mode extension or with JS disabled registers as nothing.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">05</span><span class="t">What explicit action would be required to call someone &ldquo;Recruiter verified&rdquo;?</span></p>
+      <div class="qa-a">
+        <p><span class="short">All four of these, together:</span></p>
+        <ul>
+          <li>A recruiter account whose <strong>mailbox ownership</strong> at a non-free corporate domain has been proven by a one-time code sent to that address &mdash; not merely a domain string typed into a form. SpotApply&rsquo;s current <code>_verify_recruiter()</code> explicitly refuses to treat the typed version as proof, and its code comments name the hole. Closing it is a prerequisite, not a nice-to-have.</li>
+          <li>A <strong>deliberate, attributable click</strong> on a specific candidate &mdash; &ldquo;I reviewed this&rdquo; or &ldquo;Request interview&rdquo; &mdash; that the recruiter knows the candidate will see.</li>
+          <li>A <strong>server-recorded event</strong> the client cannot forge, tied to that recruiter&rsquo;s authenticated session.</li>
+          <li>Wording that states what was actually attested: a named person at a confirmed domain took an action on a date. Not that they endorse the candidate, and not that they verified any résumé claim &mdash; no platform anywhere offers that, and SpotApply should not imply it either.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">06</span><span class="t">Is email-open tracking accurate enough to show candidates?</span></p>
+      <div class="qa-a">
+        <p><span class="short">No. Do not build a candidate-facing feature on email opens.</span> The detail is in the next section, but the summary is that pixel-based opens now generate both false positives at scale (privacy proxies and security scanners fetching images the recipient never saw) and false negatives (blocked images), in proportions SpotApply cannot measure per-recipient. A candidate who follows up on a phantom open pays a real social cost. <em>Tracked links</em> on SpotApply&rsquo;s own domain, with scanner filtering, are meaningfully better &mdash; that is rung 3, not rung 6.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">07</span><span class="t">Are any competitors already offering this?</span></p>
+      <div class="qa-a">
+        <p><span class="short">Not in this category, and the two who tried are dead.</span> Résumé builders sell hosted-link view analytics (VisualCV, resume.io, Standard Resume) and general document tools do it better (DocSend, Papermark). But the trackers SpotApply competes with &mdash; Teal, Huntr, Simplify &mdash; show no employer-side signal whatsoever. Presumi and StartWire both built dedicated candidate-side engagement tracking and both shut down.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">08</span><span class="t">Is this feature technically feasible without partnerships with employers?</span></p>
+      <div class="qa-a">
+        <p><span class="short">Rungs 1&ndash;4 yes, entirely. Rung 6 yes but it depends on recruiter behaviour, not employer contracts. Rungs 5 and 7 only partially, and never for the four ATSs that matter most.</span> The uncomfortable shape of this is that feasibility runs inversely to what candidates actually want: the signals SpotApply can build unilaterally are the ones about its own surfaces, and the signal candidates ask for &mdash; &ldquo;did a recruiter at this company read my application&rdquo; &mdash; is precisely the one that needs cooperation nobody will give.</p>
+      </div>
+    </div>
+
+    <div class="qa-item">
+      <p class="qa-q"><span class="n">09</span><span class="t">What can SpotApply honestly show without misleading users?</span></p>
+      <div class="qa-a">
+        <p>Four things, stated as what they are:</p>
+        <ul>
+          <li><strong>&ldquo;You submitted this on [date].&rdquo;</strong> A fact SpotApply observed.</li>
+          <li><strong>&ldquo;[Company]&rsquo;s system confirmed receipt on [date].&rdquo;</strong> A fact, quoted from their email.</li>
+          <li><strong>&ldquo;Your profile link was opened 3 times &mdash; most recently from a [Company] network.&rdquo;</strong> A fact about SpotApply&rsquo;s own server, with the inference about <em>who</em> clearly separated from the observation.</li>
+          <li><strong>&ldquo;LinkedIn says the employer viewed your application.&rdquo;</strong> Attributed to LinkedIn, because the claim is theirs.</li>
+        </ul>
+        <p>And two things it must refuse to show: a &ldquo;recruiter viewed&rdquo; badge derived from an email-open pixel, and any inference of interest drawn from <em>silence</em>. On four of the fourteen platforms, absence of a signal is the normal state for applications that were read carefully.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="verdict">
+  <span class="h2-num">Verdict</span>
+  <h2>What to build</h2>
+
+  <h3>Reliably knowable</h3>
+  <ul>
+    <li>That the candidate submitted, and when &mdash; observed in their own browser.</li>
+    <li>That the employer&rsquo;s system acknowledged receipt, where a confirmation email exists.</li>
+    <li>That a SpotApply-hosted link was requested, by which network, at what time, with what referer.</li>
+    <li>Whatever LinkedIn, Indeed, ZipRecruiter or Handshake state in an email to the candidate &mdash; relayed with attribution, never re-badged as SpotApply&rsquo;s own finding.</li>
+    <li>Rejections and interview invitations, from inbox parsing that already works.</li>
+  </ul>
+
+  <h3>Estimable only</h3>
+  <ul>
+    <li>Whether a human rather than a scanner opened the link. Good filtering gets this to a confident inference; it never becomes proof.</li>
+    <li>Which company the viewer came from &mdash; IP and referer suggest it, corporate VPNs and home networks blur it.</li>
+    <li>Whether attention was real. Dwell and scroll help, and the 7.4-second first-pass norm means a genuine read can look identical to a glance.</li>
+    <li>Whether a stage change reflects human judgement or an automation rule. Nothing in the data distinguishes them.</li>
+  </ul>
+
+  <h3>Impossible without employer cooperation</h3>
+  <ul>
+    <li>Any recruiter activity inside Greenhouse, Lever, Workday or Ashby. <strong>Not gated &mdash; nonexistent.</strong> The event is not recorded, so no amount of access would surface it.</li>
+    <li>Who specifically opened an application, on every platform in this report.</li>
+    <li>Whether a hiring manager, as distinct from anyone else on the team, saw it.</li>
+    <li>Any recruiter verification of a candidate&rsquo;s claims. No platform offers the concept.</li>
+  </ul>
+
+  <h3>The smallest honest version worth building</h3>
+  <p>A tracked evidence link attached to applications, plus relay of the platform signals already arriving in the candidate&rsquo;s inbox. Concretely, and in this order:</p>
+  <ol>
+    <li><strong>Per-application tracked link</strong> on SpotApply&rsquo;s domain, opt-in and revocable, with a proper 128-bit token rather than today&rsquo;s 16-bit handle.</li>
+    <li><strong>View logging with bot filtering from day one</strong> &mdash; user-agent classification, data-center ASN detection, a send-time discard window, and honeypot links. Not a follow-up ticket.</li>
+    <li><strong>An interaction beacon</strong> reporting scroll and dwell, surfaced as a separate and clearly weaker claim than the view itself.</li>
+    <li><strong>Extend the existing email sync</strong> to capture LinkedIn, Indeed and ZipRecruiter view notifications. Highest value per unit of work in this entire report &mdash; the parsing infrastructure exists and these are the only authoritative recruiter-view signals a candidate ever receives.</li>
+    <li><strong>Three-tier status vocabulary</strong> in the UI: <em>Submitted</em> &rarr; <em>Delivered</em> &rarr; <em>Opened</em>, with human engagement and platform-reported views as annotations on the third, never as separate stages implying progression.</li>
+  </ol>
+  <p>The recruiter &ldquo;Verify&rdquo; button is a second phase. It needs a transactional email provider and signed tokens, neither of which exists in the codebase, and its value is entirely contingent on recruiters showing up &mdash; which the view-rate data from phase one would actually measure. The existing internal spec sets a sensible kill threshold: under 2% view rate at 90 days means recruiters are ignoring the link.</p>
+
+  <h3>Is this a competitive advantage?</h3>
+  <p><strong>A real but narrow one, and not the one it looks like.</strong></p>
+  <p>Against Teal, Huntr and Simplify the gap is genuine: none of them shows any employer-side signal, and SpotApply&rsquo;s existing submit detection and inbox parsing already put it ahead. Extending to platform view-notification relay would make it the only tracker in that group surfacing authoritative recruiter views, and hosted-link analytics are demonstrably monetizable as a paid tier.</p>
+  <p>But the advantage is not defensible on technology &mdash; hosted-link analytics is a well-understood pattern that any competitor could copy in weeks. And the ceiling is low where it matters most: for applications to Greenhouse, Lever, Workday and Ashby &mdash; the ATSs behind most serious tech roles &mdash; SpotApply will show a tracked-link open and nothing else, forever. Two companies built exactly this product and neither survived.</p>
+  <div class="callout">
+    <span class="k">The strategic read</span>
+    <p>Treat this as a <strong>trust and anti-ghosting feature</strong>, not a surveillance one. The durable version of the advantage is not &ldquo;we can see recruiters&rdquo; &mdash; that claim is mostly unbackable and invites a competitor to make the same claim more loudly and less carefully. It is that SpotApply tells candidates the truth about what is knowable, in a market where the honest answer to &ldquo;did anyone read this?&rdquo; is usually <em>nobody can tell you</em>. That position is hard to copy precisely because copying it means giving up the overclaim.</p>
+  </div>
+</section>
+
+<section id="method">
+  <span class="h2-num">Method and confidence</span>
+  <h2>How this was researched, and where to distrust it</h2>
+
+  <details>
+    <summary>Sourcing limitation &mdash; read before quoting any number</summary>
+    <div class="dbody">
+      <p>This research environment&rsquo;s egress proxy blocked direct fetches of a large share of the primary domains: <code>linkedin.com</code>, <code>learn.microsoft.com</code>, <code>support.indeed.com</code>, <code>ziprecruiter.com</code>, <code>joinhandshake.com</code>, <code>support.greenhouse.io</code>, <code>developers.smartrecruiters.com</code>, <code>workday.com</code>, and Apple, Google and Litmus documentation.</p>
+      <p>Where a page could not be opened, its content was read through search-engine extraction of that same page. Claims marked <span class="g g-c">Confirmed</span> rest on first-party text obtained that way, and the wording is very likely verbatim but cannot be guaranteed against light paraphrase. Two exceptions were read directly and are the strongest evidence in the report: Greenhouse&rsquo;s API documentation source repository on <code>raw.githubusercontent.com</code>, and Lever&rsquo;s <code>postings-api</code> repository.</p>
+      <p><strong>Practical implication:</strong> the structural findings are solid and consistent across many independent sources. The specific percentages in the noise-floor section should be re-verified from the primary pages before any of them appears in user-facing copy or a pitch deck.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Grade definitions</summary>
+    <div class="dbody">
+      <dl>
+        <dt>Confirmed</dt><dd>First-party documentation states it. Subject to the extraction caveat above.</dd>
+        <dt>Reported</dt><dd>A named secondary source states it, or first-party content that could not be corroborated. Directionally trustworthy, numerically soft.</dd>
+        <dt>Unknown</dt><dd>Checked and not resolved. Distinguished throughout from &ldquo;confirmed absent&rdquo;, which is a much stronger claim and is stated as such where it applies.</dd>
+      </dl>
+    </div>
+  </details>
+
+  <details>
+    <summary>Known open items</summary>
+    <div class="dbody">
+      <ul>
+        <li>Whether Indeed notifies candidates when an employer views their résumé in <em>résumé search</em>, as opposed to viewing an application. No first-party page was found stating either answer. Do not assert either direction.</li>
+        <li>Whether ZipRecruiter surfaces a résumé-download signal. Its candidate help centre documents view and &ldquo;contact info looked at&rdquo; alerts but no download state.</li>
+        <li>A conflicting figure in LinkedIn&rsquo;s ATS documentation suggesting applicant email notifications arrive 72 hours after the action, against marketing copy describing real-time updates. If notification latency matters to the design, verify before relying on it.</li>
+        <li>Whether Handshake counts an employer opening an application as a profile view in its Profile Viewers list. Undocumented.</li>
+        <li>Whether a SmartRecruiters public, unauthenticated status endpoint exists. A reference slug appears in the search index but could not be read; the platform states unauthenticated access is limited to publicly available data, which would exclude application status. Treat as unlikely rather than ruled out &mdash; it is the one finding that would change the economics.</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Compiled from first-party platform documentation where reachable. Every claim carries an evidence grade; ungraded prose is analysis, not sourcing.</p>
+  </div>
+</footer>
