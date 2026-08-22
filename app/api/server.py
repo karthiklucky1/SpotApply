@@ -8583,25 +8583,32 @@ def admin_h1b_status(request: Request, token: str = "") -> dict:
 
 @app.post("/api/admin/h1b-restamp")
 def admin_h1b_restamp(request: Request, bg: BackgroundTasks, token: str = "",
-                      max_seconds: float = 600.0) -> dict:
+                      max_seconds: float = 600.0, start_id: int = 0) -> dict:
     """Re-assess the sponsorship facet on existing job rows.
 
-    The upload path runs this automatically, but it is wall-clock bounded and a
-    deploy kills it (there is no graceful shutdown), so it is exposed to be
-    re-run until `jobs_unstamped` and the badges settle."""
+    Walks the primary key globally (job_facets.restamp_facets). Wall-clock
+    bounded and killed by any deploy — there is no graceful shutdown — so it
+    logs a resume cursor and is meant to be re-run with `start_id` until the
+    log says the table is complete."""
     _require_admin(_admin_token_from(request, token))
 
     def _do():
         try:
-            from app.strategy.job_facets import restamp_all
-            log.info("Admin re-stamp: %d job facet(s) updated",
-                     restamp_all(max_seconds=max_seconds))
+            from app.strategy.job_facets import restamp_facets
+            done, nxt = restamp_facets(start_id=start_id, max_seconds=max_seconds)
+            if nxt:
+                log.info("Admin re-stamp: %d row(s) updated; budget spent — "
+                         "re-run with start_id=%d to continue", done, nxt)
+            else:
+                log.info("Admin re-stamp: %d row(s) updated; table complete", done)
         except Exception as e:
             log.exception("Admin re-stamp failed: %s", e)
 
     bg.add_task(_do)
-    return {"started": True,
-            "note": "Re-stamping in the background; poll /api/admin/h1b-status."}
+    return {"started": True, "start_id": start_id,
+            "note": ("Re-stamping in the background. The logs print a resume "
+                     "cursor if the wall-clock budget runs out before the end "
+                     "of the table; re-POST with ?start_id=<that value>.")}
 
 
 @app.post("/api/admin/h1b-upload")

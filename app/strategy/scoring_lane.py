@@ -749,7 +749,19 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
 
     # Age gate first: never spend LLM budget (or backlog IO) on postings too
     # old to be worth applying to.
-    _expire_stale_unscored()
+    #
+    # SURFACED in the cycle stats, not just the log line, because this is the
+    # single biggest consumer of the queue and it was invisible. Production
+    # (Aug 2026): 11 of 13 users showed ZERO unscored jobs and so were invisible
+    # to _scorable_user_ids entirely — not because their pools were scored, but
+    # because this gate had stamped rerank_score=8.0 on everything. Detection
+    # lag is ~91.5h median and 36.7% of postings are already >7d old when first
+    # seen, against scoring_max_job_age_days=5 — so most of the intake is
+    # expired before the finals budget can reach it, and the "621k scored jobs"
+    # figure is mostly these stamps rather than real verdicts. If expired_stale
+    # dwarfs `scored` cycle after cycle, the gate is the bottleneck, not the
+    # scorer.
+    stats["expired_stale"] = _expire_stale_unscored()
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —

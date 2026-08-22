@@ -79,11 +79,29 @@ def main() -> None:
               "server logs for 'Pulse lane ENABLED', and that the deploy restarted.")
     print(f"Fresh alerts delivered (24h, all lanes): {alerts_24h}")
 
+    # Say WHICH world we are in. A handful of boards briefly late is a backlog
+    # draining; 86% of them past the floor is structural under-capacity, and
+    # calling that "catching up" is how it went unnoticed for weeks. Same
+    # distinction the API (pulse.floor_holding / overdue_pct) and the dashboard
+    # now make — this script kept the old wording after those were fixed.
+    pct = (100.0 * overdue / live) if live else None
     if ticks and overdue == 0:
         print("VERDICT: ✅ guarantee holding — fast lane live, floor on schedule.")
+    elif ticks and pct is not None and pct < 5:
+        print(f"VERDICT: ✅ floor essentially holding — {overdue} board(s) "
+              f"({pct:.1f}%) briefly behind.")
+    elif ticks and pct is not None and pct < 20:
+        print(f"VERDICT: ⚠ {overdue} board(s) ({pct:.1f}%) behind schedule — "
+              "a backlog draining, or a slow source. Re-check in an hour.")
+    elif ticks and pct is not None:
+        print(f"VERDICT: ❌ floor NOT holding — {overdue} of {live} boards "
+              f"({pct:.1f}%) past the sweep interval. This is capacity, not a "
+              "backlog: compare demand (live_boards × 60/floor_interval + "
+              "fast_boards × 60/fast_interval) against capacity "
+              "(pulse_max_boards_per_tick × 3600/pulse_tick_seconds) and raise "
+              "PULSE_MAX_BOARDS_PER_TICK or lengthen the floor.")
     elif ticks:
-        print("VERDICT: ⚠ running, but some boards are behind schedule "
-              "(normal during the first post-deploy hour while the backlog drains).")
+        print(f"VERDICT: ⚠ running, {overdue} board(s) behind schedule.")
     else:
         print("VERDICT: ❌ not running.")
 

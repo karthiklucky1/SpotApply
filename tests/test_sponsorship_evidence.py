@@ -272,7 +272,9 @@ def test_restamp_updates_an_already_stamped_row():
     assert backfill("u-restamp", pause=0) == 0
 
     # ...but the re-stamp must.
-    assert backfill("u-restamp", pause=0, only_missing=False) == 1
+    from app.strategy.job_facets import restamp_facets
+    stamped, _next = restamp_facets(pause=0)
+    assert stamped >= 1
     with get_session() as session:
         after = json.loads(session.exec(
             select(Job.sponsorship_json).where(Job.user_id == "u-restamp")).first())
@@ -295,8 +297,49 @@ def test_restamp_can_clear_a_stale_cap_exempt_flag():
                         is_cap_exempt=True))
         session.commit()
 
-    backfill("u-capex", pause=0, only_missing=False)
+    from app.strategy.job_facets import restamp_facets
+    restamp_facets(pause=0)
     with get_session() as session:
         flag = session.exec(
             select(Job.is_cap_exempt).where(Job.user_id == "u-capex")).first()
     assert flag is False
+
+
+def test_restamp_pages_on_the_primary_key_only():
+    """The re-stamp must never filter by user inside its paged query.
+
+    `job` carries a dozen indexes and every one LEADS on user_id; none is
+    (user_id, id). So `WHERE user_id = :u AND id > :c ORDER BY id LIMIT 500`
+    has no index to serve it — the planner either sorts six figures of rows or
+    heap-checks user_id row by row, and on production it hit Supabase's
+    2-minute statement_timeout on the FIRST chunk every time. Paging on the
+    primary key alone is a plain job_pkey range scan: bounded, no sort, no new
+    index. Pin the shape so it cannot regress into the timeout.
+    """
+    import inspect
+    from app.strategy import job_facets
+    src = inspect.getsource(job_facets.restamp_facets)
+    assert "Job.user_id" not in src, (
+        "restamp_facets must not filter by user_id — that is the query shape "
+        "that timed out in production")
+    assert "Job.id > cursor" in src and "order_by(Job.id)" in src
+
+
+def test_restamp_reports_a_resume_cursor_when_its_budget_runs_out():
+    """A wall-clock-bounded pass over 1.28M rows will not finish in one go, so
+    it must hand back where to continue instead of silently restarting at 0."""
+    from app.db.init_db import get_session
+    from app.db.models import Job, JobSource
+    from app.strategy.job_facets import restamp_facets
+    with get_session() as session:
+        for i in range(3):
+            session.add(Job(user_id="u-cursor", source=JobSource.GREENHOUSE,
+                            external_id=f"cur{i}", company="Co", title="T",
+                            url=f"https://x/{i}", description="d"))
+        session.commit()
+    # chunk=1 with a spent budget stops mid-table and reports a non-zero cursor.
+    done, nxt = restamp_facets(chunk=1, max_rows=1, pause=0)
+    assert done == 1 and nxt > 0
+    # Resuming from that cursor does not re-do the row already handled.
+    done2, _ = restamp_facets(start_id=nxt, chunk=1, max_rows=1, pause=0)
+    assert done2 == 1

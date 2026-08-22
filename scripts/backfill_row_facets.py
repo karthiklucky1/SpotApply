@@ -112,6 +112,9 @@ def main() -> int:
     ap.add_argument("--restamp", action="store_true",
                     help="re-assess EVERY row, not just never-stamped ones "
                          "(run this after uploading sponsor data)")
+    ap.add_argument("--start-id", type=int, default=0, dest="start_id",
+                    help="resume a --restamp from this job id (printed by the "
+                         "previous run when its wall-clock budget ran out)")
     args = ap.parse_args()
 
     init_db()
@@ -138,18 +141,32 @@ def main() -> int:
             done = on_role.backfill(uid, roles)
             print(f"    on_role stamped: {done}")
             total += done
-        done = job_facets.backfill(uid, max_seconds=args.seconds,
-                                   chunk=args.chunk, pause=args.pause,
-                                   only_missing=not args.restamp)
-        print(f"    facets {'re-stamped' if args.restamp else 'stamped'}:  {done}")
+        if not args.restamp:
+            done = job_facets.backfill(uid, max_seconds=args.seconds,
+                                       chunk=args.chunk, pause=args.pause)
+            print(f"    facets stamped:  {done}")
+            total += done
+
+    # The re-stamp is GLOBAL and pages on the primary key — it is not a per-user
+    # loop. See job_facets.restamp_facets: the per-user `ORDER BY id` version had
+    # no index to serve it and hit Supabase's statement timeout on chunk one.
+    if args.yes and args.restamp:
+        done, nxt = job_facets.restamp_facets(
+            start_id=args.start_id, max_seconds=args.seconds,
+            chunk=args.chunk, pause=args.pause)
         total += done
+        print(f"\nRe-stamped {done} row(s).")
+        if nxt:
+            print(f"Budget spent before the end of the table. Continue with:\n"
+                  f"  python -m scripts.backfill_row_facets --yes --restamp "
+                  f"--start-id {nxt}")
+        else:
+            print("Reached the end of the table — re-stamp complete.")
+        return 0
 
     if not args.yes:
         print("\nDry run. Re-run with --yes to write"
               " (add --restamp after loading sponsor data).")
-    elif args.restamp:
-        print(f"\nRe-stamped {total} row(s). The budget is wall-clock bounded — "
-              "re-run until the count reaches 0.")
     else:
         print(f"\nStamped {total} row(s). Re-run until 'missing' reaches 0.")
     return 0
