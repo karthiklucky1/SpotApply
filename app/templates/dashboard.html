@@ -2936,7 +2936,16 @@
                         const ts = /Z$|[+-]\d\d:\d\d$/.test(j.posted) ? j.posted : j.posted + 'Z';
                         const h = Math.max(0, (Date.now() - new Date(ts).getTime()) / 3600000);
                         const ageTxt = h < 1 ? 'just now' : (h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`);
-                        ageHtml = `<span class="text-[10px] text-slate-500 font-medium ml-2 shrink-0">· ${ageTxt}</span>`;
+                        // When the source gave us no publish date we are showing
+                        // when WE found it, which is only an upper bound on the
+                        // real age — say so rather than passing our crawl time
+                        // off as the employer's posting date.
+                        const est = j.posted_is_estimated;
+                        const label = est ? `first seen ${ageTxt}` : ageTxt;
+                        const tip = est
+                            ? 'This source does not publish a posting date. We are showing when SpotApply first saw the job — the real posting may be older.'
+                            : 'Posting date published by the employer\u2019s job board.';
+                        ageHtml = `<span class="text-[10px] ${est ? 'text-slate-600 italic' : 'text-slate-500'} font-medium ml-2 shrink-0" title="${tip}">· ${label}</span>`;
                     }
                     
                     let scoreBadge = `<span class="text-slate-500 font-mono">-</span>`;

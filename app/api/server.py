@@ -3114,8 +3114,32 @@ def api_jobs(
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
         # priority sort otherwise buries under older high-scoring ones).
         if sort == "fresh":
+            # DATED JOBS FIRST, then undated ones by when we found them.
+            #
+            # This used to be a bare `coalesce(posted_at, first_seen) DESC`,
+            # which ranks a job we have no posting date for as though it were
+            # posted the moment we crawled it — i.e. always "now". Production:
+            # 100 of the top 100 rows in the 7-day window had posted_at NULL.
+            # Undated postings are ~6% of daily intake (RIPPLING, RECRUITEE and
+            # PINPOINT are 100% undated) and they monopolised every top slot,
+            # burying WORKDAY, GREENHOUSE, ASHBY, LEVER and SMARTRECRUITERS —
+            # the sources that DO publish a real date, and ~90% of the volume.
+            #
+            # first_seen is not a weak posting date, it is an upper bound on
+            # one: a job first seen today may have been posted today or a year
+            # ago. Measured against 90k dated postings, median detection lag is
+            # 91.5h and 36.7% are already >7 days old when first seen — so
+            # first_seen systematically OVERSTATES freshness. A sort whose
+            # entire promise is "apply before the pile builds" cannot be led by
+            # the one field that cannot support that claim.
+            #
+            # Undated jobs are still returned (the max_age window keeps using
+            # coalesce, so they are included on discovery recency) — they just
+            # cannot outrank a posting whose date we actually know.
             query = query.order_by(
-                desc(func.coalesce(Job.posted_at, Job.first_seen)), desc(Job.id)
+                desc(Job.posted_at.is_not(None)),
+                desc(func.coalesce(Job.posted_at, Job.first_seen)),
+                desc(Job.id),
             ).offset(offset).limit(limit)
         else:
             # nullslast: Postgres sorts NULLs FIRST under DESC, so without this
@@ -3154,6 +3178,12 @@ def api_jobs(
                 "remote": jremote,
                 "url": jurl,
                 "posted": _posted.isoformat() if _posted else None,
+                # False when `posted` is the real publish date from the ATS;
+                # True when we are falling back to first_seen because the
+                # source never gave us one. The UI must say "first seen" for
+                # the latter — reporting our own crawl time as the employer's
+                # posting date is the display half of the sort bug above.
+                "posted_is_estimated": jposted_at is None and jfirst_seen is not None,
                 # Discovered within the last 24h — the "New today" signal.
                 "is_new": bool(_seen and _seen > _new_cutoff),
                 "similarity": jsimilarity,

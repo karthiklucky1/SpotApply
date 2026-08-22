@@ -481,6 +481,18 @@ _PERF_INDEXES = [
     # startup (including a fresh database), so one home is the honest one.
     ("ix_job_user_fresh", "job",
      "(user_id, is_closed, (COALESCE(posted_at, first_seen)) DESC, id DESC)"),
+    # The ORDER BY of `sort=fresh` after it stopped treating first_seen as a
+    # posting date (server.py, api_jobs). The leading boolean splits dated from
+    # undated rows, so the sort must lead with it too — ix_job_user_fresh above
+    # cannot serve that ordering and the planner would fall back to a sort over
+    # the whole 7-day window.
+    #
+    # BOTH indexes are kept on purpose. This one serves the ORDER BY; the older
+    # one still serves the two COUNT queries and the max_age range predicate,
+    # which have no ORDER BY and so want coalesce as the immediate second key.
+    ("ix_job_user_fresh_dated", "job",
+     "(user_id, is_closed, ((posted_at IS NOT NULL)) DESC, "
+     "(COALESCE(posted_at, first_seen)) DESC, id DESC)"),
 ]
 
 
