@@ -31,30 +31,20 @@ def source_quality(source) -> float:
 # Explicit, unambiguous refusals — a posting containing one of these will not
 # sponsor THIS role regardless of the employer's overall visa record, so the
 # rule filter may hard-block on them for sponsorship-needing users.
-# (Kept in sync with app/intelligence/sponsorship.py)
-NO_SPONSORSHIP_HARD = [
-    "not offer visa sponsorship",
-    "unable to sponsor",
-    "do not sponsor",
-    "will not sponsor",
-    "cannot sponsor",
-    "no visa sponsorship",
-    "no sponsorship",
-    "does not sponsor",
-    "must be us citizen",
-    "us citizen or permanent resident",
-    "us citizenship required",
-    "active security clearance required",
-    "must hold an active secret",
-    "must possess an active ts/sci",
-    "without sponsorship",  # "...authorized/eligible to work without sponsorship"
-    "without the need for sponsorship",
-    "without visa sponsorship",
-    "citizens only",
-    "permanent residents only",
-    "unable to provide visa sponsorship",
-    "not able to sponsor",
-]
+#
+# The list itself now lives in app/common/sponsorship_text.py, imported by BOTH
+# this module and app/intelligence/sponsorship.py. It used to be duplicated in
+# the two files with a "keep in sync" comment on each and no test that they
+# agreed. Do not re-inline it here: the card and the filter disagreeing about
+# the same posting is the failure that split it out.
+#
+# Matching is NOT `phrase in description` any more — use find_refusal(), which
+# scopes the match to one sentence and vetoes positives like "there is no
+# sponsorship requirement for this role". Plain containment on that sentence
+# hard-blocked jobs the user was fully eligible for.
+from app.common.sponsorship_text import (  # noqa: E402,F401  (re-export)
+    NO_SPONSORSHIP_HARD, find_refusal, refuses,
+)
 
 # Ambiguous right-to-work boilerplate. Employers that DO sponsor put these
 # lines in postings too (and OPT/EAD holders ARE authorized to work), so these

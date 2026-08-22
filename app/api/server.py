@@ -1456,8 +1456,14 @@ templates.env.globals["salary_of"] = _salary_of
 
 
 class _StoredSponsorship:
-    """The stamped assessment, in the shape the template and _priority read."""
-    __slots__ = ("cap_exempt", "tone", "badge", "reason", "explicitly_refuses")
+    """The stamped assessment, in the shape the template and _priority read.
+
+    The provenance keys (source/as_of/confidence/signals) only exist on rows
+    stamped after they shipped, so every one of them defaults — an older row
+    renders exactly as it did before rather than raising."""
+    __slots__ = ("cap_exempt", "tone", "badge", "reason", "explicitly_refuses",
+                 "likelihood", "source", "as_of", "confidence", "contradictory",
+                 "signals")
 
     def __init__(self, d: dict):
         self.cap_exempt = bool(d.get("cap_exempt"))
@@ -1465,6 +1471,12 @@ class _StoredSponsorship:
         self.badge = d.get("badge") or ""
         self.reason = d.get("reason") or ""
         self.explicitly_refuses = bool(d.get("refuses"))
+        self.likelihood = d.get("likelihood") or ""
+        self.source = d.get("source") or ""
+        self.as_of = d.get("as_of") or ""
+        self.confidence = d.get("confidence") or ""
+        self.contradictory = bool(d.get("contradictory"))
+        self.signals = d.get("signals") or []
 
 
 def _sponsorship_of(job):
@@ -8313,18 +8325,70 @@ def admin_h1b_page(request: Request):
 
 @app.get("/api/admin/h1b-status")
 def admin_h1b_status(request: Request, token: str = "") -> dict:
-    from app.db.models import H1BSponsor
+    """What sponsor data is actually loaded, and whether the cards reflect it.
+
+    Reads the DATABASE, not `LAST_INGEST` — that dict lives in process memory
+    and is empty after every deploy, so an upload that succeeded last week
+    reported "0 rows" and looked like it had never happened.
+
+    `jobs_unstamped` is the number that answers "did my upload reach the UI?":
+    a loaded dataset with a large unstamped count means the data is there and
+    the cards have not been re-assessed yet — POST /api/admin/h1b-restamp.
+    """
+    from app.db.models import H1BSponsor, Job
     from app.intelligence import h1b_data as _h
     _require_admin(_admin_token_from(request, token))
+
+    def _scalar(v):
+        return int(v[0] if isinstance(v, (list, tuple)) else (v or 0))
+
     with get_session() as session:
-        count = session.exec(select(func.count(H1BSponsor.id))).one()
+        count = _scalar(session.exec(select(func.count(H1BSponsor.id))).one())
+        by_country = [
+            {"country": c or "united states", "employers": _scalar(n),
+             "latest_year": (int(y) if y else None)}
+            for c, n, y in session.exec(
+                select(H1BSponsor.country, func.count(H1BSponsor.id),
+                       func.max(H1BSponsor.fiscal_year))
+                .group_by(H1BSponsor.country)).all()
+        ]
+        jobs_total = _scalar(session.exec(select(func.count(Job.id))).one())
+        jobs_unstamped = _scalar(session.exec(
+            select(func.count(Job.id)).where(Job.sponsorship_json.is_(None))).one())
     li = _h.LAST_INGEST
     return {
-        "employers": int(count if not isinstance(count, (list, tuple)) else count[0]),
+        "employers": count,
+        "by_country": sorted(by_country, key=lambda r: -r["employers"]),
+        "jobs_total": jobs_total,
+        "jobs_unstamped": jobs_unstamped,
+        # Only meaningful since this process started — see the docstring.
         "last_rows": li.get("rows", 0),
         "last_error": li.get("error", ""),
         "headers": li.get("headers", []),
     }
+
+
+@app.post("/api/admin/h1b-restamp")
+def admin_h1b_restamp(request: Request, bg: BackgroundTasks, token: str = "",
+                      max_seconds: float = 600.0) -> dict:
+    """Re-assess the sponsorship facet on existing job rows.
+
+    The upload path runs this automatically, but it is wall-clock bounded and a
+    deploy kills it (there is no graceful shutdown), so it is exposed to be
+    re-run until `jobs_unstamped` and the badges settle."""
+    _require_admin(_admin_token_from(request, token))
+
+    def _do():
+        try:
+            from app.strategy.job_facets import restamp_all
+            log.info("Admin re-stamp: %d job facet(s) updated",
+                     restamp_all(max_seconds=max_seconds))
+        except Exception as e:
+            log.exception("Admin re-stamp failed: %s", e)
+
+    bg.add_task(_do)
+    return {"started": True,
+            "note": "Re-stamping in the background; poll /api/admin/h1b-status."}
 
 
 @app.post("/api/admin/h1b-upload")
@@ -8352,6 +8416,21 @@ async def admin_h1b_upload(bg: BackgroundTasks, token: str = Form(""),
             else:
                 n = ingest_register(tmp.name, cc)
                 log.info("Sponsor register upload ingested %d employers for %s", n, cc)
+            # Ingest alone changes NOTHING a user can see. Job cards carry a
+            # sponsorship verdict stamped at insert time, and the backfill only
+            # ever filled never-stamped rows — so before this, uploading a
+            # dataset updated only jobs discovered afterwards, which reads
+            # exactly like the upload having failed. Re-stamp the existing pool.
+            if n:
+                try:
+                    from app.strategy.job_facets import restamp_all
+                    stamped = restamp_all()
+                    log.info("Sponsor upload: re-stamped %d job facet(s); "
+                             "re-run POST /api/admin/h1b-restamp if rows remain",
+                             stamped)
+                except Exception as e:
+                    log.warning("Sponsor upload: re-stamp failed (data IS loaded, "
+                                "cards will be stale until it runs): %s", e)
         except Exception as e:
             log.exception("H-1B ingest failed: %s", e)
             try:

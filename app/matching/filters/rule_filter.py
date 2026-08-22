@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 
 from app.common.geo import detect_country, norm_country
 from app.db.models import Job
-from app.matching.filters.constants import NO_SPONSORSHIP_HARD, STAFF_TITLES
+from app.matching.filters.constants import STAFF_TITLES, find_refusal
 
 log = logging.getLogger(__name__)
 
@@ -249,14 +249,20 @@ class RuleFilter:
         #    ("must be authorized to work in...") appears in postings from employers
         #    that do sponsor, so those flow through to the LLM reranker, which
         #    scores them with the posting text + the employer's public H-1B record.
+        #
+        #    Matched per SENTENCE, not by substring containment: "there is no
+        #    sponsorship requirement for this role" contains "no sponsorship"
+        #    and used to hard-block a job the user was fully eligible for —
+        #    silently, before scoring, so it never reached the board.
         if self.requires_sponsorship:
-            for pattern in NO_SPONSORSHIP_HARD:
-                if pattern in desc_low:
-                    return FilterResult(
-                        passed=False,
-                        reason=f"Sponsorship pre-filtered: matches '{pattern}'",
-                        score_override=10
-                    )
+            _refusal = find_refusal(desc_low)
+            if _refusal:
+                return FilterResult(
+                    passed=False,
+                    reason=(f"Sponsorship pre-filtered: matches '{_refusal.phrase}' "
+                            f"in \"{_refusal.sentence[:120]}\""),
+                    score_override=10
+                )
 
         # 3. Experience Gap Filter — only active when resume-extracted years are
         #    known (>0). Skipped for new users/students until resume is parsed.
