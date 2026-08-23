@@ -105,12 +105,17 @@ def test_dashboard_fresh_jobs_lead_shortlist():
 
 
 def test_dashboard_hides_stale_shortlisted_but_keeps_tailored():
-    """Render-time freshness: a plain SHORTLISTED posting older than
+    """Render-time freshness: a plain SHORTLISTED posting we have HELD past
     shortlist_max_age_days never renders (even when the hygiene lane is off,
-    e.g. LANES_ENABLED=0) — but a stale job the user TAILORED is never hidden."""
+    e.g. LANES_ENABLED=0) — but a job the user TAILORED gets the longer window.
+
+    Staleness is set on first_seen, because that is the axis the render window
+    measures. A posting we only found today is NOT stale however old the source
+    claims it is (app/common/freshness.py) — see the companion test below."""
     from datetime import timedelta
     from sqlmodel import select as _select
     now = datetime.utcnow()
+    old = now - timedelta(days=9)
     with get_session() as s:
         for j in s.exec(_select(Job).where(Job.external_id.like("stalewin-%"))).all():
             for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
@@ -120,11 +125,11 @@ def test_dashboard_hides_stale_shortlisted_but_keeps_tailored():
         stale = Job(source=JobSource.GREENHOUSE, external_id="stalewin-short",
                     company="StaleShortCo", title="ML Engineer", url="http://ss",
                     description="x", rerank_score=90, blended_score=90,
-                    posted_at=now - timedelta(days=9))
+                    posted_at=old, first_seen=old, discovered_at=old)
         invested = Job(source=JobSource.GREENHOUSE, external_id="stalewin-tail",
                        company="StaleTailoredCo", title="ML Engineer", url="http://st",
                        description="x", rerank_score=90, blended_score=90,
-                       posted_at=now - timedelta(days=9))
+                       posted_at=old, first_seen=old, discovered_at=old)
         s.add(stale); s.add(invested); s.commit()
         s.refresh(stale); s.refresh(invested)
         s.add(Application(job_id=stale.id, status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
@@ -137,6 +142,62 @@ def test_dashboard_hides_stale_shortlisted_but_keeps_tailored():
 
     with get_session() as s:
         for j in s.exec(_select(Job).where(Job.external_id.like("stalewin-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+
+
+def test_dashboard_keeps_a_fresh_match_with_an_old_source_date(monkeypatch):
+    """The render half of the immediate-expiry bug. A match we found this
+    morning must appear even when the ATS dates the role a week back — that
+    date is unreliable (Greenhouse's updated_at moves on edits, aggregators
+    stamp their own crawl date), and hiding on it emptied the board of exactly
+    the postings the user had the best chance at.
+
+    A genuinely ancient listing is still hidden, by the far looser posted
+    bound."""
+    from datetime import timedelta
+    from sqlmodel import select as _select
+
+    from app.config import settings
+    monkeypatch.setattr(settings, "shortlist_max_posted_age_days", 30)
+    now = datetime.utcnow()
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("freshwin-%"))).all():
+            for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
+                s.delete(a)
+            s.delete(j)
+        s.commit()
+        # Found today; the source claims 9 days. Must still render.
+        fresh = Job(source=JobSource.GREENHOUSE, external_id="freshwin-ok",
+                    company="FreshFindCo", title="ML Engineer", url="http://ff",
+                    description="x", rerank_score=90, blended_score=90,
+                    posted_at=now - timedelta(days=9),
+                    first_seen=now, discovered_at=now)
+        # Found today; the source claims last year. Still suppressed.
+        ancient = Job(source=JobSource.GREENHOUSE, external_id="freshwin-old",
+                      company="EvergreenReqCo", title="ML Engineer", url="http://eg",
+                      description="x", rerank_score=90, blended_score=90,
+                      posted_at=now - timedelta(days=400),
+                      first_seen=now, discovered_at=now)
+        s.add(fresh); s.add(ancient); s.commit()
+        s.refresh(fresh); s.refresh(ancient)
+        s.add(Application(job_id=fresh.id, status=ApplicationStatus.SHORTLISTED,
+                          apply_track="autofill"))
+        s.add(Application(job_id=ancient.id, status=ApplicationStatus.SHORTLISTED,
+                          apply_track="autofill"))
+        s.commit()
+
+    html = _client().get("/dashboard").text
+    assert html.find("FreshFindCo") != -1, (
+        "a match discovered today was hidden because an unreliable ATS date "
+        "called it old — the render half of the immediate-expiry bug")
+    assert html.find("EvergreenReqCo") == -1, (
+        "an evergreen listing dated 400 days ago must still be suppressed")
+
+    with get_session() as s:
+        for j in s.exec(_select(Job).where(Job.external_id.like("freshwin-%"))).all():
             for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():
                 s.delete(a)
             s.delete(j)

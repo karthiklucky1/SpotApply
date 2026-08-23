@@ -21,18 +21,53 @@ from app.db.models import PLAN_LIMITS, PlanTier
 # ── the freshness window ─────────────────────────────────────────────────────
 
 def test_the_funnel_is_fresh_only_at_five_days():
+    """The KNOWN-age window: five days from when WE found the posting."""
     assert settings.shortlist_max_age_days == 5
     assert settings.scoring_max_job_age_days == 5
 
 
+def test_the_posted_age_bound_is_far_looser_than_the_known_age_one():
+    """The two bounds exist precisely because they are not the same size, and
+    collapsing them back into one is the bug (app/common/freshness.py).
+
+    The known bound carries the product promise (be first to apply). The posted
+    bound only suppresses ancient/evergreen listings, so it has to be loose
+    enough to survive unreliable ATS dates: production saw a ~91.5h median
+    detection lag with 36.7% of intake already >7d old at first sight. Set the
+    posted bound anywhere near 5 and it starts expiring newly discovered jobs
+    again — which is what stamped 11 of 13 users down to an empty queue."""
+    assert settings.scoring_max_posted_age_days >= 3 * settings.scoring_max_job_age_days, (
+        f"SCORING_MAX_POSTED_AGE_DAYS={settings.scoring_max_posted_age_days} is "
+        f"close to the known-age bound of {settings.scoring_max_job_age_days}d — "
+        f"an unreliable source date will start killing fresh discoveries again"
+    )
+    assert settings.shortlist_max_posted_age_days >= 3 * settings.shortlist_max_age_days
+
+
 def test_we_never_pay_to_score_jobs_the_board_will_hide():
     """Scoring a posting the shortlist window then excludes is pure waste — the
-    scoring gate must never reach further back than the render window."""
+    scoring gate must never reach further back than the render window. There
+    are now TWO axes, and the invariant has to hold on BOTH: widening the
+    scoring gate's posted bound without the render one would recreate the waste
+    on the axis nobody was watching."""
     assert settings.shortlist_max_age_days >= settings.scoring_max_job_age_days, (
         f"scoring accepts jobs up to {settings.scoring_max_job_age_days}d old but "
         f"the board only shows {settings.shortlist_max_age_days}d — every job in "
         f"the gap costs a Claude final and is then never displayed"
     )
+    assert settings.shortlist_max_posted_age_days >= settings.scoring_max_posted_age_days, (
+        f"scoring accepts source dates up to "
+        f"{settings.scoring_max_posted_age_days}d old but the board only shows "
+        f"{settings.shortlist_max_posted_age_days}d — same waste, other axis"
+    )
+
+
+def test_descriptions_are_not_stripped_out_from_under_scorable_jobs():
+    """strip_dead_descriptions blanks the JD text on rows it judges dead. It
+    measures KNOWN age, so its window must outlive the known-age scoring window
+    — otherwise a job still queued to be scored loses the text it would be
+    scored on."""
+    assert settings.job_description_strip_age_days > settings.scoring_max_job_age_days
 
 
 def test_user_job_retention_outlives_the_shortlist_window():

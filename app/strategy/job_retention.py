@@ -140,15 +140,24 @@ def strip_dead_descriptions(days: int = 14, batch: int = 2000, max_batches: int 
     * jobs stamped "Expired unscored" by the scoring lane are fair game — that
       score is a placeholder, not a judgement, so there is nothing to learn
       from them.
+
+    Age here is KNOWN age — how long WE have held the row — not the source's
+    posted_at (app/common/freshness.py). On the old
+    ``coalesce(posted_at, first_seen, discovered_at)`` measure this stripped the
+    JD off a posting discovered TODAY whenever a source dated it two weeks back,
+    and since the scoring window now accepts source dates up to
+    ``scoring_max_posted_age_days``, that would delete the description out from
+    under a job still queued to be scored.
     """
+    from app.common.freshness import known_ref
     from app.db.init_db import get_session
     from app.db.models import Application, Job
-    from sqlalchemy import func as _func, or_, update
+    from sqlalchemy import or_, update
 
     if days <= 0:
         return 0
     cutoff = datetime.utcnow() - timedelta(days=days)
-    age = _func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    age = known_ref()
     stripped = 0
     for _ in range(max_batches):
         with get_session() as session:
@@ -160,8 +169,11 @@ def strip_dead_descriptions(days: int = 14, batch: int = 2000, max_batches: int 
                     Job.description.is_not(None),
                     # Never a job the user engaged with.
                     Job.id.not_in(select(Application.job_id)),
-                    # Unscored, or scored only by the staleness stamp.
+                    # Unscored, or "scored" only by the age-expiry stamp.
+                    # expired_at is the reliable form; the reasoning LIKE keeps
+                    # rows stamped before that column shipped in scope.
                     or_(Job.rerank_score.is_(None),
+                        Job.expired_at.is_not(None),
                         Job.rerank_reasoning.like("Expired unscored%")),
                 )
                 .limit(batch)

@@ -348,7 +348,7 @@ class Settings(BaseSettings):
     tailor_abuse_daily_cap: int = 25     # TAILOR_ABUSE_DAILY_CAP — per-user hard ceiling on tailors/day that applies even to "unlimited" plans. This is the ABUSE backstop, not the product limit: the per-plan number (PLAN_LIMITS[...]["tailor_daily"], 12 on PRO) is what a normal user meets first. Tailoring runs on tailoring_model (Haiku 4.5, ~$0.025-0.05 per tailor incl. the cover letter) and is deliberately OUTSIDE the adaptive finals budget, so this is the only thing bounding it: 25/day is ~$1.25/user/day worst case. Docs that still say "Sonnet" or "150" are stale (docs/CAPACITY.md predates both changes). 0 disables.
     dormant_user_grace_days: int = 21    # DORMANT_USER_GRACE_DAYS — users with no authenticated request for this many days are skipped by adoption/matching/scoring/alerts (their pool stops refilling, so no LLM money is spent on them); the next visit re-activates them within one lane tick. Profiles that predate activity tracking (last_active_at NULL) are grandfathered as active. 0 disables the gate.
     shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
-    shortlist_max_age_days: int = 5      # SHORTLIST_MAX_AGE_DAYS — a posting older than this is likely filled/ghosted, so a job that has sat SHORTLISTED (never tailored/applied) this long is auto-removed from the board (→ SKIPPED, which also frees the per-company slot). Keeps the shortlist to fresh, applyable roles. Founder-set to 5 in lockstep with SCORING_MAX_JOB_AGE_DAYS=5: the whole funnel is fresh-only — score nothing older than 5d, show nothing older than 5d. 0 disables the prune.
+    shortlist_max_age_days: int = 5      # SHORTLIST_MAX_AGE_DAYS — the KNOWN-age render/prune bound: a job we have held this long without it being tailored/applied leaves the board (→ SKIPPED, freeing the per-company slot). Founder-set to 5 in lockstep with SCORING_MAX_JOB_AGE_DAYS=5: score nothing we have held longer than 5d, show nothing we have held longer than 5d. Measured from coalesce(first_seen, discovered_at); the source's own date is bounded separately by SHORTLIST_MAX_POSTED_AGE_DAYS. 0 disables the prune.
     # JOB_DESCRIPTION_STRIP_AGE_DAYS — blank the JD text on jobs older than this
     # that nobody applied to and that carry no real score. `description` is ~5.8 KB
     # a row and was 3.3 GB of a 5.76 GB table (over half the disk); the funnel is
@@ -359,7 +359,27 @@ class Settings(BaseSettings):
     job_description_strip_age_days: int = 14
     job_purge_max_age_days: int = 60     # JOB_PURGE_MAX_AGE_DAYS — hard-DELETE closed jobs older than this that have no Application attached, so the job table (and every scan's DB egress) stays bounded. Applied jobs are never deleted. 0 disables.
     user_job_close_age_days: int = 45    # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application (a 45-day-old posting is filled/ghost; SHORTLIST_MAX_AGE_DAYS is 5). Shared-pool rows have their own 45d close; per-user rows previously NEVER closed by age, so the table grew forever (the 3.8 GB job-table finding). Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
-    scoring_max_job_age_days: int = 5    # SCORING_MAX_JOB_AGE_DAYS — unscored jobs older than this are bulk-stamped out of the queue (score 8) instead of paying prescores/finals: 'be first to apply' is the product, and a posting that sat unscored this long (outage backlog) is going stale. One indexed UPDATE per scoring cycle replaces thousands of LLM calls during a backlog drain. Founder-set to 5 (fresh-only feed); raise if discovery volume ever outpaces scoring at 5d. 0 disables.
+    scoring_max_job_age_days: int = 5    # SCORING_MAX_JOB_AGE_DAYS — the KNOWN-age bound: an unscored job that has sat in the queue this long is stamped out of it (score 8, expired_at set) instead of paying prescores/finals. 'Be first to apply' is the product, so a posting we have held unscored for days has missed its moment. Measured from coalesce(first_seen, discovered_at) — NOT from posted_at; see scoring_max_posted_age_days and app/common/freshness.py for why the two are separate. One indexed UPDATE per cycle replaces thousands of LLM calls during a backlog drain. 0 disables.
+    # SCORING_MAX_POSTED_AGE_DAYS — the POSTED-age bound, and it is deliberately
+    # far looser than the known-age one. It exists ONLY to suppress genuinely
+    # ancient and evergreen listings, never to second-guess a fresh discovery.
+    #
+    # These used to be one number: age was coalesce(posted_at, first_seen,
+    # discovered_at) against 5 days, so posted_at won and a job discovered TODAY
+    # expired instantly if a source claimed it went up six days ago. Production:
+    # 82.9% of the 8.0 expiry stamps were already >=5d old at first discovery,
+    # 36.7% of intake is >7d old the first time we see it, and 11 of 13 users had
+    # been stamped down to ZERO unscored jobs — invisible to _scorable_user_ids.
+    # ATS posted_at is not reliable enough to carry that: Greenhouse's updated_at
+    # moves on edits, aggregators stamp their own crawl date, evergreen reqs are
+    # re-dated, some feeds emit future dates.
+    #
+    # Widening this does NOT raise spend: per-cycle finals and prescores are
+    # bounded by the adaptive budget and scoring_*_cap, so a bigger eligible
+    # queue changes WHICH jobs the fixed budget buys, not how much it costs.
+    # Keep <= shortlist_max_posted_age_days (tests/test_settings_defaults.py).
+    scoring_max_posted_age_days: int = 30
+    shortlist_max_posted_age_days: int = 30  # SHORTLIST_MAX_POSTED_AGE_DAYS — the render/prune counterpart of the above. The board shows a job while BOTH bounds hold: we found it within shortlist_max_age_days AND the source's date is within this. Must stay >= scoring_max_posted_age_days or we pay for finals the board then hides.
     company_cap: int = 3                 # max active applications per company at once (focused, low spray-risk)
     # When a company is at the cap and a NEW job scores clearly higher than a
     # cap-holding application that is still just SHORTLISTED (untouched — not
@@ -443,6 +463,29 @@ class Settings(BaseSettings):
     pulse_tick_max_seconds: int = 150      # HARD wall-clock cap per tick. The tick stops taking new work past this and reschedules the rest — so it always releases the lock promptly (a tick that ran serial LLM scoring for 20+ min once froze the whole lane). Keep < tick_seconds*3.
     pulse_max_boards_per_tick: int = 300   # PULSE_MAX_BOARDS_PER_TICK — hard cap per tick, and THE capacity lever for the hourly-floor promise. Sizing arithmetic (do it whenever live_boards grows): demand/hour ≈ live_boards × (60/floor_interval_minutes) + fast_boards × (60/fast_interval_minutes); capacity/hour ≈ this × (3600/tick_seconds), cut further whenever ticks overrun toward pulse_tick_max_seconds. The "~150 boards/min" note this comment used to carry dated from a ~9k-board registry; at 21,505 live boards the floor alone demands ~358 boards/min against a real capacity of ~120-300/min — which is how production reached 18,773 boards (87%) past the floor while the UI said "catching up". The dashboard now reports floor_holding/overdue_pct honestly; raising this (network fetches only, no LLM cost — but watch container CPU/RSS per docs/MEMORY.md) or lengthening the floor for low-yield boards are the two ways to make the promise true again.
     pulse_fetch_workers: int = 24          # concurrent board fetches per tick
+    # PULSE_DEFERRED_RETRY_MINUTES — how soon a board the tick never actually
+    # fetched comes back. A deferred board is NOT a polled board: it ran out of
+    # tick capacity, nothing was learned about it, and advancing it by the full
+    # cadence (what the code used to do) was the single biggest source of false
+    # telemetry in the lane — ~88% of selected boards were deferred per tick,
+    # every one of them stamped with a fresh next_poll_at as though it had been
+    # checked. next_poll_at looked current, overdue_boards looked small, and the
+    # dashboard reported a floor that was not being kept.
+    #
+    # Short, but NOT a hot retry loop: boards are submitted and collected in
+    # selection order, so the deferred set is the TAIL of the batch — coming back
+    # in ~2 ticks puts it at the head of the next selection, which is exactly the
+    # rotation the floor needs. Jitter (derived from the board id, so it is
+    # stable per board) spreads the returning tail instead of re-clumping it.
+    pulse_deferred_retry_minutes: int = 2
+    pulse_deferred_retry_jitter_seconds: int = 45
+    # PULSE_FAILURE_BACKOFF_MINUTES — base for the exponential backoff applied to
+    # a board whose fetch genuinely FAILED (as opposed to never running). Delay
+    # is base * 2**(failure_count-1), capped at pulse_dead_interval_hours, so a
+    # host having a bad afternoon stops consuming a slot every cadence while the
+    # first failure still retries promptly. _mark_polled still counts the failure
+    # and retires the board on a 404 or at BOARD_DEACTIVATE_AFTER_FAILURES.
+    pulse_failure_backoff_minutes: int = 15
     pulse_fast_path_score_cap: int = 10    # max brand-new jobs LLM-scored per tick via the fast path (kept small so the tick stays short; the rest are scored by the 5-min matching lane)
     # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.
     # The rest goes to proven yielders + productive boards. Kept low so tens of

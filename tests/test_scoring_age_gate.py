@@ -1,6 +1,11 @@
-"""Scoring age gate: unscored jobs older than SCORING_MAX_JOB_AGE_DAYS drain
-in one bulk stamp at $0 instead of paying prescores/finals during a backlog
-catch-up. Fresh jobs, already-scored jobs, and the shared pool are untouched."""
+"""Scoring age gate: unscored jobs past a freshness bound drain in one bulk
+stamp at $0 instead of paying prescores/finals during a backlog catch-up. Fresh
+jobs, already-scored jobs, and the shared pool are untouched.
+
+This file covers the DRAIN mechanics (what the gate touches, and that draining
+is free). The two-bound SEMANTICS — known age vs source posting age, and why
+conflating them expired most of the funnel on arrival — live in
+tests/test_expiry_semantics.py."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -41,7 +46,7 @@ def test_old_unscored_expire_fresh_and_scored_survive(monkeypatch):
         old_scored = _job(session, "u1", "scored", 30, score=72.0)
         shared_old = _job(session, SHARED_POOL_USER, "shared", 30)
 
-    assert _expire_stale_unscored() == 1
+    assert _expire_stale_unscored()["total"] == 1
 
     with get_session() as session:
         j = session.get(Job, old_unscored)
@@ -56,9 +61,12 @@ def test_zero_disables(monkeypatch):
     init_db()
     _cleanup()
     monkeypatch.setattr(settings, "scoring_max_job_age_days", 0)
+    # Both bounds off — the posted bound is a separate knob now, and leaving it
+    # on would expire this row for a different (correct) reason.
+    monkeypatch.setattr(settings, "scoring_max_posted_age_days", 0)
     with get_session() as session:
         jid = _job(session, "u1", "ancient", 300)
-    assert _expire_stale_unscored() == 0
+    assert _expire_stale_unscored()["total"] == 0
     with get_session() as session:
         assert session.get(Job, jid).rerank_score is None
     _cleanup()

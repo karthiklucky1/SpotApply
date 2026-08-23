@@ -1904,23 +1904,35 @@
                             hotEl.textContent = mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
                             if (hotSub) {
                                 // Say which of two different worlds we are in: a handful
-                                // of boards briefly late ("catching up"), or structural
+                                // of boards briefly late (a backlog draining), or structural
                                 // under-capacity. Production hit 18,773 of 21,505 live
                                 // boards past the floor (87%) while this line still read
                                 // "catching up" — at that ratio the hourly-sweep promise
                                 // is simply not being kept, and the panel must say so.
+                                //
+                                // "Catching up" is now gated on capacity_limited being
+                                // FALSE. A backlog drains on its own; a lane that defers
+                                // most of what it selects never will, and calling that
+                                // "catching up" is what kept it unnoticed for weeks.
                                 const _od = pulse.overdue_boards || 0;
                                 const _lv = pulse.live_boards || 0;
                                 let floorTxt;
-                                if (pulse.floor_holding || _od === 0) {
+                                if (pulse.capacity_limited) {
+                                    const _rev = pulse.effective_revisit_hours;
+                                    floorTxt = `⚠ capacity-limited · ${pulse.deferred_pct || 0}% of selected boards not fetched` +
+                                        (_rev ? ` · every board ~${_rev}h apart` : '');
+                                } else if (pulse.floor_holding || _od === 0) {
                                     floorTxt = `${_fmtK(_lv)} swept ≤${pulse.floor_interval_min || 60}m`;
                                 } else if ((pulse.overdue_pct || 0) < 20) {
                                     floorTxt = `${_fmtK(_lv)} boards · ${_fmtK(_od)} catching up`;
                                 } else {
                                     floorTxt = `⚠ ${_fmtK(_od)} of ${_fmtK(_lv)} boards past the ${pulse.floor_interval_min || 60}m sweep`;
                                 }
+                                // Completed fetches, never ticks x selected.
+                                const _polled = pulse.unique_boards_polled_24h;
                                 hotSub.textContent = `⚡ ${_fmtK(pulse.fast_boards || 0)} on the ${pulse.fast_interval_min || 5}-min lane · ` +
                                     floorTxt +
+                                    (_polled ? ` · ${_fmtK(_polled)} boards reached (24h)` : '') +
                                     ` · +${_fmtK(pulse.new_jobs_24h || 0)} via pulse (24h)`;
                             }
                         } else if (hotEl) {

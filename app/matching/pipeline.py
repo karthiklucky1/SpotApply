@@ -17,6 +17,7 @@ from typing import List
 from sqlalchemy.orm import load_only
 from sqlmodel import select
 
+from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource
@@ -605,6 +606,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 job.similarity_score = sim
                 job.rerank_score = float(rule_res.score_override or 10.0)
                 job.rerank_reasoning = f"Rule filtered: {rule_res.reason}"
+                job.scored_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
                 continue
@@ -632,8 +634,9 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     job.title, job.company, ghost_res.ghost_score, ghost_res.flags,
                 )
                 job.similarity_score = sim
-                job.rerank_score = 5.0
+                job.rerank_score = GHOST_SENTINEL_SCORE
                 job.rerank_reasoning = f"Ghost filtered (score={ghost_res.ghost_score:.2f}): {', '.join(ghost_res.flags)}"
+                job.scored_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
                 continue
@@ -650,6 +653,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 job.similarity_score = sim
                 job.rerank_score = 15.0
                 job.rerank_reasoning = f"Embedding filtered: {emb_reason}"
+                job.scored_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
                 continue
@@ -666,6 +670,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                         job.similarity_score = sim
                         job.rerank_score = 20.0
                         job.rerank_reasoning = f"Wrong Door: {verdict.top_reason}"
+                        job.scored_at = datetime.utcnow()
                         session.add(job)
                         session.commit()
                         continue
@@ -868,9 +873,12 @@ def run_matching(user_id: str | None = None) -> List[int]:
             job = session.get(Job, jid)
             if not job:
                 continue
+            _now = datetime.utcnow()
             job.rerank_score = score
+            job.scored_at = _now
             if jid in prescore_by_jid:
                 job.prescore = prescore_by_jid[jid]
+                job.prescored_at = job.prescored_at or _now
             job.rerank_reasoning = reason + (
                 ("\nConcerns: " + "; ".join(concerns)) if concerns else ""
             )

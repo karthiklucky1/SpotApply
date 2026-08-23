@@ -22,7 +22,7 @@ Board selection is skills-aware at two levels:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import select
@@ -409,11 +409,32 @@ def _retire_unsupported(slug: str, ats) -> None:
 
 
 def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
-                 new_jobs: int = 0, error: str = "") -> None:
+                 new_jobs: int = 0, error: str = "",
+                 next_poll_at: Optional[datetime] = None,
+                 poll_hash: Optional[str] = None,
+                 failure_backoff_minutes: Optional[int] = None,
+                 failure_backoff_cap_hours: Optional[int] = None) -> None:
     """Record a poll so board rotation stays fair, failures decay a board, and
     yield (new postings produced) steers future polling toward active boards.
     Dead boards (404 = board gone; or repeated failures) are retired so the
-    per-cycle budget stops burning slots on companies that no longer exist."""
+    per-cycle budget stops burning slots on companies that no longer exist.
+
+    ONLY CALL THIS FOR A FETCH THAT ACTUALLY RAN. It moves ``last_seen``, which
+    is the registry's "we checked this board" record; a board the pulse lane
+    deferred without fetching must go through ``pulse_lane._defer_boards``
+    instead, which touches nothing but ``next_poll_at``.
+
+    The pulse lane also passes ``next_poll_at``/``poll_hash`` so the poll record
+    and the schedule land in ONE round-trip. They used to be two writes to the
+    same row per board (``_mark_polled`` then ``_set_schedule``), and that
+    serial main-thread DB work — not the fetch concurrency — is what consumed
+    the tick's wall clock.
+
+    ``failure_backoff_minutes`` applies exponential backoff on a REAL failure:
+    ``base * 2**(failure_count - 1)``, capped at ``failure_backoff_cap_hours``.
+    Computed here, inside the same transaction that increments the counter, so
+    the delay always matches the failure count it is derived from.
+    """
     from app.discovery.pipeline import BOARD_DEACTIVATE_AFTER_FAILURES
     try:
         with get_session() as session:
@@ -441,6 +462,16 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                         "board_not_found (404)" if is_404
                         else f"unreachable x{row.failure_count}"
                     )
+                elif failure_backoff_minutes and failure_backoff_minutes > 0:
+                    delay = timedelta(
+                        minutes=failure_backoff_minutes
+                        * (2 ** max(0, (row.failure_count or 1) - 1)))
+                    cap = timedelta(hours=failure_backoff_cap_hours or 24)
+                    next_poll_at = datetime.utcnow() + min(delay, cap)
+            if next_poll_at is not None:
+                row.next_poll_at = next_poll_at
+            if poll_hash is not None:
+                row.poll_hash = poll_hash
             session.add(row)
             session.commit()
     except Exception:

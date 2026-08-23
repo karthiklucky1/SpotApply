@@ -42,6 +42,7 @@ from typing import List, Optional, Tuple
 
 from sqlmodel import select
 
+from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, FunnelEvent, Job
@@ -339,7 +340,13 @@ def _stamp_job(jid: int, ghost: Optional[Tuple],
                extras: Optional[Tuple] = None,
                prescore: Optional[float] = None) -> bool:
     """Short write-back session. Re-checks idempotency (another lane may have
-    scored the job while we were on the LLM). Returns False if it lost the race."""
+    scored the job while we were on the LLM). Returns False if it lost the race.
+
+    Also stamps ``scored_at``/``prescored_at`` in the SAME update — the stage
+    clock costs no extra round-trip, and without it "first_seen -> scored" was
+    unanswerable: ``rerank_score`` records the verdict but nothing recorded
+    WHEN, so scoring latency could only be guessed at."""
+    now = datetime.utcnow()
     with get_session() as session:
         job = session.get(Job, jid)
         if not job or job.rerank_score is not None or job.is_closed:
@@ -348,8 +355,15 @@ def _stamp_job(jid: int, ghost: Optional[Tuple],
             job.ghost_score, job.ghost_flags = ghost
         job.rerank_score = score
         job.rerank_reasoning = reasoning
+        # A terminal verdict was reached by a scorer (Tier-2 final, Tier-1
+        # drain, or a ghost/rule stamp) — as opposed to an age expiry, which
+        # sets expired_at and never comes through here. `prescore` tells the
+        # tiers apart: prescore == rerank_score is a Tier-1 drain.
+        job.scored_at = now
         if prescore is not None:
             job.prescore = float(prescore)
+            if job.prescored_at is None:
+                job.prescored_at = now
         if extras is not None:
             breakdown, hp_fn = extras
             job.rerank_breakdown = breakdown
@@ -393,6 +407,8 @@ def _keep_prescore(jid: int, pre: Tuple[float, str]) -> None:
                 return               # scored by another lane meanwhile
             if job.prescore != float(pre[0]):
                 job.prescore = float(pre[0])
+                if job.prescored_at is None:
+                    job.prescored_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
     except Exception as e:
@@ -436,8 +452,9 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             ghost = (g.ghost_score, g.flags_json)
             if g.is_ghost:
                 job.ghost_score, job.ghost_flags = ghost
-                job.rerank_score = 5.0
+                job.rerank_score = GHOST_SENTINEL_SCORE
                 job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
+                job.scored_at = datetime.utcnow()
                 session.add(job)
                 session.commit()
                 return ("drained", jid, None, None)
@@ -671,71 +688,126 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
         _LANE_LOCK.release()
 
 
-def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> int:
-    """Bulk-stamp unscored per-user jobs older than scoring_max_job_age_days so
-    they exit the queue WITHOUT costing a prescore or final.
+def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
+    """Bulk-stamp unscored per-user jobs that are past a freshness bound so they
+    exit the queue WITHOUT costing a prescore or final.
 
-    Rationale: 'be first to apply' is the product — a posting that sat unscored
-    for days (credit outage, backlog) is going stale, and paying LLM calls
-    to rank it wastes budget and disk IO exactly when the lane is trying to
-    catch up. One indexed UPDATE per cycle (0 rows in steady state) replaces
-    thousands of per-job LLM calls during a backlog drain. Shared-pool rows are
-    excluded (never scored directly); 0 disables."""
-    days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
-    if days <= 0:
-        return 0
+    TWO BOUNDS, TWO MEANINGS (app/common/freshness.py has the full rationale):
+
+      * ``queue_stale`` — we have HELD this posting, unscored, for longer than
+        ``scoring_max_job_age_days``. 'Be first to apply' is the product, so a
+        job that sat in the queue through a credit outage or a backlog has
+        missed its moment. This is the bound that carries the product promise.
+      * ``ancient`` — the SOURCE says the role went up more than
+        ``scoring_max_posted_age_days`` ago. Deliberately far looser: it exists
+        only to suppress evergreen and genuinely ancient listings.
+
+    This used to be ONE bound over ``coalesce(posted_at, first_seen,
+    discovered_at) < now - 5 days``. Because posted_at wins that coalesce, a job
+    DISCOVERED TODAY was stamped terminally stale the instant a source claimed
+    it went up six days ago — and ATS dates are not good enough to carry that
+    (Greenhouse's updated_at moves on edits, aggregators stamp their own crawl
+    date, evergreen reqs are re-dated, some feeds emit future dates). The result
+    in production: 82.9% of these stamps were already >=5d old at first
+    discovery, and 11 of 13 users had been stamped down to zero unscored jobs,
+    which made them invisible to ``_scorable_user_ids`` — the lane looked idle
+    because its input had been destroyed, not because it was caught up.
+
+    Widening the posted bound does NOT raise spend: per-cycle finals and
+    prescores are bounded by the adaptive budget and ``scoring_*_cap``, so a
+    larger eligible queue changes WHICH jobs the fixed budget buys.
+
+    Run as two index-friendly passes rather than one OR'd predicate: pass A
+    rides ``ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL``
+    directly, and pass B constrains ``first_seen >= known_cutoff`` so it walks
+    the same bounded range (rows older than that are already pass A's).
+
+    Shared-pool rows are excluded (never scored directly). Returns a per-reason
+    breakdown; either bound at 0 disables that leg.
+    """
     from datetime import timedelta
 
     from sqlalchemy import update
 
+    from app.common.freshness import EXPIRY_SENTINEL_SCORE, known_ref
     from app.discovery.pipeline import SHARED_POOL_USER
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    # Age is coalesce(posted_at, first_seen, discovered_at) — the SAME measure the
-    # render filter, hygiene lane and pulse fast path use. Keying off first_seen
-    # alone let an aggregator posting that is 30 days old but adopted today sail
-    # through the gate and buy a prescore + a Claude final, only to be hidden at
-    # render — exactly the spend this gate exists to prevent. discovered_at is the
-    # final fallback because first_seen reached prod via a bare ALTER TABLE with no
-    # backfill, so it is NULL on the oldest rows and `NULL < cutoff` is NULL.
-    from sqlalchemy import func as _func
-    age = _func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
-    total = 0
+
+    known_days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+    posted_days = int(getattr(settings, "scoring_max_posted_age_days", 0) or 0)
+    out = {"total": 0, "queue_stale": 0, "ancient_posting": 0}
+    if known_days <= 0 and posted_days <= 0:
+        return out
+
+    now = datetime.utcnow()
+    known_cutoff = now - timedelta(days=known_days) if known_days > 0 else None
+    posted_cutoff = now - timedelta(days=posted_days) if posted_days > 0 else None
+    base = (
+        Job.rerank_score == None,   # noqa: E711
+        Job.is_closed == False,     # noqa: E712
+        (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
+    )
+
+    passes = []
+    if known_cutoff is not None:
+        passes.append((
+            "queue_stale",
+            (known_ref() < known_cutoff,),
+            f"Expired unscored — held {known_days}d without a score "
+            f"(too stale to be worth applying to)",
+        ))
+    if posted_cutoff is not None:
+        passes.append((
+            "ancient_posting",
+            # Bounded to rows the queue-stale pass does NOT already cover, so
+            # this walks the same index range instead of the whole table.
+            ((known_ref() >= known_cutoff) if known_cutoff is not None
+             else (Job.id == Job.id),
+             Job.posted_at.is_not(None),
+             Job.posted_at < posted_cutoff),
+            f"Expired unscored — source posting date is over {posted_days}d old "
+            f"(evergreen or long-filled listing)",
+        ))
+
     try:
         # Batched like close_stale_user_jobs: the first run after deploy can match
         # six figures of rows on a 764k-row table, and one unbounded UPDATE is the
         # Supabase statement-timeout / Disk-IO pattern we just spent a day fixing.
-        for _ in range(max_batches):
-            with get_session() as session:
-                ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
-                    select(Job.id).where(
-                        Job.rerank_score == None,   # noqa: E711
-                        Job.is_closed == False,     # noqa: E712
-                        (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
-                        age < cutoff,
-                    ).limit(batch)
-                ).all()]
-                if not ids:
+        for reason_key, extra, reason_text in passes:
+            for _ in range(max_batches):
+                with get_session() as session:
+                    ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                        select(Job.id).where(*base, *extra).limit(batch)
+                    ).all()]
+                    if not ids:
+                        break
+                    session.exec(
+                        update(Job)
+                        .where(Job.id.in_(ids))
+                        # expired_at is the LIFECYCLE record: it says this row
+                        # left the queue on age with no scoring verdict, which
+                        # the 8.0 sentinel alone could never distinguish from a
+                        # real (very low) score. Written in the SAME update, so
+                        # it costs nothing extra.
+                        .values(rerank_score=EXPIRY_SENTINEL_SCORE,
+                                expired_at=now,
+                                rerank_reasoning=reason_text)
+                    )
+                    session.commit()
+                    out[reason_key] += len(ids)
+                    out["total"] += len(ids)
+                if len(ids) < batch:
                     break
-                session.exec(
-                    update(Job)
-                    .where(Job.id.in_(ids))
-                    .values(rerank_score=8.0,
-                            rerank_reasoning=f"Expired unscored (older than {days}d "
-                                             f"before scoring caught up — too stale to apply)")
-                )
-                session.commit()
-                total += len(ids)
-            if len(ids) < batch:
-                break
-        if total:
-            log.info("Scoring: expired %d stale unscored job(s) older than %dd "
-                     "(drained free, no LLM spend)", total, days)
-        return total
+        if out["total"]:
+            log.info("Scoring: expired %d unscored job(s) — %d held >%dd unscored, "
+                     "%d posted >%dd ago (drained free, no LLM spend)",
+                     out["total"], out["queue_stale"], known_days,
+                     out["ancient_posting"], posted_days)
+        return out
     except Exception as e:
         # WARNING not DEBUG: this runs every 90s, so a silent failure means a
         # repeating unlogged IO burn.
         log.warning("stale-unscored expiry failed (non-fatal): %s", e)
-        return total
+        return out
 
 
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
@@ -756,12 +828,18 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # to _scorable_user_ids entirely — not because their pools were scored, but
     # because this gate had stamped rerank_score=8.0 on everything. Detection
     # lag is ~91.5h median and 36.7% of postings are already >7d old when first
-    # seen, against scoring_max_job_age_days=5 — so most of the intake is
-    # expired before the finals budget can reach it, and the "621k scored jobs"
-    # figure is mostly these stamps rather than real verdicts. If expired_stale
-    # dwarfs `scored` cycle after cycle, the gate is the bottleneck, not the
-    # scorer.
-    stats["expired_stale"] = _expire_stale_unscored()
+    # seen, so under the OLD single coalesce(posted_at, ...) bound most of the
+    # intake expired before the finals budget could reach it, and the "621k
+    # scored jobs" figure was mostly these stamps rather than real verdicts.
+    #
+    # The split below is what makes that diagnosable going forward: if
+    # `expired_ancient` dwarfs `expired_queue_stale`, the sources are feeding us
+    # evergreen listings; if `expired_queue_stale` dwarfs `scored`, the SCORER is
+    # behind and the gate is throwing away work it should have reached.
+    _exp = _expire_stale_unscored()
+    stats["expired_stale"] = _exp["total"]
+    stats["expired_queue_stale"] = _exp["queue_stale"]
+    stats["expired_ancient"] = _exp["ancient_posting"]
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —

@@ -2846,7 +2846,17 @@ def api_stats(request: Request) -> dict:
             return session.exec(q).first() or 0
 
         cross_encoder_passed = _jcount(Job.similarity_score.is_not(None))
-        reranker_scored = _jcount(Job.rerank_score.is_not(None))
+        # `rerank_score IS NOT NULL` is NOT "was scored" — the age gate stamps a
+        # sentinel on rows it drains without ever calling a scorer, so this
+        # counter reported expiries as scoring work (production's "621k scored
+        # jobs" was mostly those stamps). Count real verdicts, and report the
+        # expiries under their own name instead of hiding them in this one.
+        from app.common.freshness import (
+            expired_without_scoring_expr, genuinely_scored_expr,
+        )
+        reranker_scored = _jcount(genuinely_scored_expr())
+        expired_unscored = _jcount(expired_without_scoring_expr())
+        pending_scoring = _jcount(Job.rerank_score.is_(None))
 
         # Application counts by status — JOIN Job so orphan applications (whose
         # Job row was deleted) are excluded; otherwise counts here disagree with
@@ -2925,7 +2935,12 @@ def api_stats(request: Request) -> dict:
         "funnel": {
             "total_pool": total_jobs,
             "cross_encoder_passed": cross_encoder_passed,
+            # Real scoring verdicts only. The two lifecycle states that used to
+            # be folded in here are now named, so "how much did we actually
+            # score?" and "how much aged out unscored?" are separable.
             "reranker_scored": reranker_scored,
+            "expired_unscored": expired_unscored,
+            "pending_scoring": pending_scoring,
             "shortlisted": shortlisted,
         },
         "applications": app_counts,
@@ -3087,15 +3102,26 @@ def api_jobs(
                 _roles_cond = _or(*_parts)
                 query = query.where(_roles_cond)
 
-        # Freshness age filter: only jobs posted within N days. Uses posted_at
-        # when known, else first_seen (when we first discovered it).
-        _age_cutoff = None
+        # Freshness filter — TWO bounds, not one (app/common/freshness.py).
+        # `max_age_days` is the KNOWN-age bound: how long we have had the
+        # posting. The source's own date is bounded separately and far more
+        # loosely by shortlist_max_posted_age_days, so a job we found today is
+        # shown even when an unreliable ATS date calls it a week old — the
+        # single coalesce(posted_at, first_seen) bound this replaces hid exactly
+        # those, which is the render half of the immediate-expiry bug.
+        #
+        # This must stay at least as permissive as the scoring gate or we pay
+        # for finals the board then hides (tests/test_settings_defaults.py).
+        _age_filter = None
         if max_age_days is not None and max_age_days > 0:
-            from datetime import datetime as _dtm, timedelta as _td
-            _age_cutoff = _dtm.utcnow() - _td(days=max_age_days)
-            query = query.where(
-                func.coalesce(Job.posted_at, Job.first_seen) >= _age_cutoff
+            from app.common.freshness import is_fresh_expr as _fresh_expr
+            _age_filter = _fresh_expr(
+                max_age_days,
+                int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+                for_render=True,
             )
+            if _age_filter is not None:
+                query = query.where(_age_filter)
 
         # Get total count (for pagination)
         count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
@@ -3131,10 +3157,8 @@ def api_jobs(
             )
         if _roles_cond is not None:
             count_query = count_query.where(_roles_cond)
-        if _age_cutoff is not None:
-            count_query = count_query.where(
-                func.coalesce(Job.posted_at, Job.first_seen) >= _age_cutoff
-            )
+        if _age_filter is not None:
+            count_query = count_query.where(_age_filter)
 
         total = session.exec(count_query).first() or 0
 
@@ -4710,6 +4734,13 @@ def freshness_stats(request: Request) -> dict:
                         _CR.job_count > 0,
                         _CR.next_poll_at != None,  # noqa: E711
                         _CR.next_poll_at < now - timedelta(minutes=10)))
+                # Boards we ACTUALLY reached, counted on the registry rather
+                # than inferred from tick metadata: _mark_polled moves last_seen
+                # only on a completed fetch, and a deferral never touches it.
+                pulse["unique_boards_polled_24h"] = _cnt(
+                    select(func.count(_CR.id)).where(
+                        _CR.last_seen != None,  # noqa: E711
+                        _CR.last_seen >= now - timedelta(hours=24)))
                 ticks = session.exec(
                     select(_FE2).where(_FE2.stage == "pulse_tick",
                                        _FE2.created_at > now - timedelta(hours=24))
@@ -4717,14 +4748,47 @@ def freshness_stats(request: Request) -> dict:
                 ).all()
             pulse["ticks_24h"] = len(ticks)
             pulse["last_tick_at"] = ticks[0].created_at.isoformat() if ticks else None
-            new_24h = 0
+            # SELECTED IS NOT POLLED. The only per-tick number recorded used to
+            # be the SELECTION, so every consumer that wanted a poll count
+            # multiplied ticks x selected — scripts/pulse_check.py printed that
+            # product verbatim as "board polls" — while ~88% of each tick's
+            # selection was being deferred without ever being fetched. These
+            # four are kept separate so that can never be conflated again.
+            new_24h = selected_24h = polled_24h = deferred_24h = failed_24h = 0
+            lat_p50: list[int] = []
             for t in ticks:
                 try:
                     m = _json.loads(t.metadata_json or "{}")
-                    new_24h += int(m.get("new_jobs") or 0)
                 except Exception:
-                    pass
+                    continue
+                new_24h += int(m.get("new_jobs") or 0)
+                selected_24h += int(m.get("selected") or m.get("boards") or 0)
+                # `fetch_ok` only exists on ticks written since the split; older
+                # events contribute to `selected` and are honestly absent here
+                # rather than being back-filled with a guess.
+                polled_24h += int(m.get("fetch_ok") or 0)
+                deferred_24h += int(m.get("deferred") or 0)
+                failed_24h += int(m.get("fetch_failed") or 0)
+                if m.get("fetch_p50_ms"):
+                    lat_p50.append(int(m["fetch_p50_ms"]))
             pulse["new_jobs_24h"] = new_24h
+            pulse["boards_selected_24h"] = selected_24h
+            pulse["fetches_completed_24h"] = polled_24h
+            pulse["fetches_failed_24h"] = failed_24h
+            pulse["fetches_deferred_24h"] = deferred_24h
+            pulse["deferred_pct"] = (round(100.0 * deferred_24h / selected_24h, 1)
+                                     if selected_24h else 0.0)
+            if lat_p50:
+                lat_p50.sort()
+                pulse["fetch_p50_ms"] = lat_p50[len(lat_p50) // 2]
+            # The honest answer to "how often does a board actually get looked
+            # at?" — live boards divided by real completed fetches per hour.
+            # This is the number the floor promise should be judged on.
+            _lv0 = int(pulse.get("live_boards") or 0)
+            if polled_24h > 0 and _lv0:
+                pulse["effective_revisit_hours"] = round(_lv0 / (polled_24h / 24.0), 1)
+            else:
+                pulse["effective_revisit_hours"] = None
             # Lane-agnostic: fresh alerts are dispatched by the scoring lane,
             # the matching lane AND the pulse fast path, and every one of them
             # writes a stage="fresh_alert" FunnelEvent. Summing only the pulse
@@ -4747,7 +4811,17 @@ def freshness_stats(request: Request) -> dict:
             _live = int(pulse.get("live_boards") or 0)
             _over = int(pulse.get("overdue_boards") or 0)
             pulse["overdue_pct"] = round(100.0 * _over / _live, 1) if _live else 0.0
-            pulse["floor_holding"] = bool(_live) and (_over / _live) < 0.05
+            # floor_holding needs BOTH halves. overdue_pct alone was checkable
+            # against a schedule the lane itself was falsifying: a deferred board
+            # got its next_poll_at advanced exactly like a polled one, so the
+            # schedule looked current while the fetch never happened. The
+            # deferral rate is the independent check — a lane deferring a large
+            # share of what it selects is capacity-limited whatever its
+            # next_poll_at column says.
+            _defer_pct = float(pulse.get("deferred_pct") or 0.0)
+            pulse["capacity_limited"] = _defer_pct >= 20.0
+            pulse["floor_holding"] = (bool(_live) and (_over / _live) < 0.05
+                                      and not pulse["capacity_limited"])
         except Exception as _pe:
             log.debug("pulse stats skipped: %s", _pe)
 
@@ -5508,35 +5582,62 @@ def _shortlist_fresh_clause():
     user never submitted still deserves time to act on; it does not deserve
     forever.
 
-    coalesce(posted_at, first_seen, discovered_at): first_seen reached prod via a
+    The window is measured on KNOWN age — coalesce(first_seen, discovered_at),
+    how long WE have had the posting — not on the source's posted_at. Under the
+    old coalesce(posted_at, first_seen, discovered_at) form a match found this
+    morning fell out of the board immediately whenever an ATS claimed the role
+    went up a week ago, and ATS dates are not reliable enough to evict a fresh
+    match (app/common/freshness.py). Genuinely ancient postings are still
+    excluded, by the separate and much looser posted-age bound below.
+
+    discovered_at is the final fallback because first_seen reached prod via a
     bare ALTER TABLE with no backfill, so it is NULL on the oldest rows, and
-    `NULL < cutoff` is NULL — without discovered_at as the final fallback those
-    rows would evade the window entirely.
+    `NULL < cutoff` is NULL — those rows would otherwise evade the window.
     """
     days = settings.shortlist_max_age_days
     if not days or days <= 0:
         return None
     from datetime import datetime as _fdt, timedelta as _ftd
+
+    from app.common.freshness import known_ref, posting_ref
     now = _fdt.utcnow()
-    freshness = func.coalesce(Job.posted_at, Job.first_seen, Job.discovered_at)
+    freshness = known_ref()
     fresh_cut = now - _ftd(days=days)
+    # The ancient/evergreen bound, applied to EVERY status the window governs:
+    # a source date this old means the listing is long filled whatever our own
+    # first_seen says about it.
+    posted_days = int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0)
+    ancient = None
+    if posted_days > 0:
+        ancient = posting_ref() >= now - _ftd(days=posted_days)
 
     invested_days = int(getattr(settings, "tailored_max_age_days", 0) or 0)
     if invested_days <= 0:
         # Explicitly opted back into "never hide invested work".
-        return (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= fresh_cut)
-    invested_cut = now - _ftd(days=invested_days)
-    invested = [ApplicationStatus.TAILORED,
-                ApplicationStatus.AUTOFILLED,
-                ApplicationStatus.AWAITING_USER,
-                ApplicationStatus.READY_TO_SUBMIT]
-    return (
-        # Anything past the shortlist board (submitted, interviewing, rejected…)
-        # is pipeline history, not a match feed — the window must not touch it.
-        (~Application.status.in_([ApplicationStatus.SHORTLISTED] + invested))
-        | (Application.status.in_(invested) & (freshness >= invested_cut))
-        | (freshness >= fresh_cut)
-    )
+        keep = (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= fresh_cut)
+    else:
+        invested_cut = now - _ftd(days=invested_days)
+        invested = [ApplicationStatus.TAILORED,
+                    ApplicationStatus.AUTOFILLED,
+                    ApplicationStatus.AWAITING_USER,
+                    ApplicationStatus.READY_TO_SUBMIT]
+        keep = (
+            # Anything past the shortlist board (submitted, interviewing,
+            # rejected…) is pipeline history, not a match feed — the window must
+            # not touch it.
+            (~Application.status.in_([ApplicationStatus.SHORTLISTED] + invested))
+            | (Application.status.in_(invested) & (freshness >= invested_cut))
+            | (freshness >= fresh_cut)
+        )
+    if ancient is None:
+        return keep
+    # Pipeline history stays exempt from the ancient bound too — a submitted
+    # application is a record, not a listing we are still offering.
+    history = ~Application.status.in_([
+        ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
+        ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
+        ApplicationStatus.READY_TO_SUBMIT])
+    return keep & (history | ancient)
 
 
 def _has_active_paid_plan(uid) -> bool:

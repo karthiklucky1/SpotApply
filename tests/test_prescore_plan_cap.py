@@ -121,7 +121,9 @@ def test_plan_capped_cycle_is_logged_not_silent(monkeypatch, caplog):
     before the log line, so a day-long stall left no trace in the logs."""
     import logging
     from app.matching.finals_budget import Allowance
-    monkeypatch.setattr(sl, "_expire_stale_unscored", lambda: 0)
+    # Returns a per-reason breakdown now (queue-stale vs ancient posting).
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
     monkeypatch.setattr(sl, "_finals_allowance",
                         lambda uid, cap: Allowance(0, 40, "weekly budget spent"))

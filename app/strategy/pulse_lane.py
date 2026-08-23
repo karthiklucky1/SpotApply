@@ -33,12 +33,15 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
+from concurrent.futures import (
+    ThreadPoolExecutor, TimeoutError as _FutureTimeout, as_completed as _as_completed,
+)
 from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import select
 
+from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import (
@@ -127,6 +130,10 @@ def _board_signature(raw: list) -> str:
 
 
 def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -> None:
+    """Move ONE board's next_poll_at. Kept for callers outside the tick loop
+    (the watchlist route pulls followed boards forward). The tick itself folds
+    the schedule into ``_mark_polled``'s write, or batches it via
+    ``_defer_boards`` — one round-trip per board instead of two."""
     try:
         with get_session() as session:
             row = session.exec(
@@ -142,6 +149,60 @@ def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -
             session.commit()
     except Exception as e:
         log.debug("pulse: schedule update failed for %s: %s", slug, e)
+
+
+def _defer_boards(boards: list, now: Optional[datetime] = None) -> int:
+    """Reschedule boards the tick NEVER FETCHED — soon, and as deferred.
+
+    This is the fix for the lane's central lie. Every one of these boards used
+    to be handed to ``_set_schedule`` with the full normal cadence, i.e. the
+    exact write a *successful* poll performs. Nothing had been fetched, nothing
+    had been learned, and yet ``next_poll_at`` advanced an hour (or five
+    minutes, or a day) as though the board had been checked. With ~88% of each
+    tick's selection being deferred, the registry's schedule — and therefore
+    ``overdue_boards``, ``floor_holding`` and the dashboard's sweep claim —
+    described a poll rate the lane was not achieving.
+
+    What this does NOT touch is the point: ``last_seen`` (the "we checked it"
+    record), ``poll_hash``, ``job_count``, ``failure_count`` and
+    ``last_new_job_at`` all stay exactly as they were. A deferred board is
+    indistinguishable from one that was never selected, except that it comes
+    back quickly.
+
+    ONE round-trip for the whole batch (executemany by primary key). The old
+    per-board write was ~2-3 serial Supabase round-trips EACH, in the main
+    thread, inside the tick's fetch window — hundreds of round-trips per tick
+    spent recording that nothing had been done, which is itself a large part of
+    why so much of the batch had to be deferred.
+    """
+    if not boards:
+        return 0
+    from sqlalchemy import update as _update
+    now = now or datetime.utcnow()
+    base = max(1, int(settings.pulse_deferred_retry_minutes or 1))
+    jitter = max(0, int(settings.pulse_deferred_retry_jitter_seconds or 0))
+    rows = []
+    for b in boards:
+        bid = getattr(b, "id", None)
+        if bid is None:
+            continue
+        # Jitter derived from the board id, so it is STABLE per board: a random
+        # spread would re-shuffle the tail every tick and let the same boards
+        # keep losing the race. Deterministic offsets keep the rotation fair.
+        offset = (bid % (jitter + 1)) if jitter else 0
+        rows.append({"id": bid,
+                     "next_poll_at": now + timedelta(minutes=base, seconds=offset)})
+    if not rows:
+        return 0
+    try:
+        with get_session() as session:
+            session.execute(_update(CompanyRegistry), rows)
+            session.commit()
+        return len(rows)
+    except Exception as e:
+        log.warning("pulse: deferral reschedule failed for %d board(s): %s",
+                    len(rows), e)
+        return 0
 
 
 # ── Per-job fast path ─────────────────────────────────────────────────────────
@@ -276,8 +337,9 @@ def _fast_path_user(uid: str, score_budget: int,
                     job.ghost_score = g.ghost_score
                     job.ghost_flags = g.flags_json
                     if g.is_ghost:
-                        job.rerank_score = 5.0
+                        job.rerank_score = GHOST_SENTINEL_SCORE
                         job.rerank_reasoning = f"Ghost filtered (score={g.ghost_score:.2f}): {', '.join(g.flags)}"
+                        job.scored_at = datetime.utcnow()
                         session.add(job)
                         session.commit()
                         continue
@@ -302,9 +364,12 @@ def _fast_path_user(uid: str, score_budget: int,
                     with get_session() as session:
                         fresh = session.get(Job, jid)
                         if fresh is not None:
+                            _now = datetime.utcnow()
                             fresh.prescore = prescore_val
                             fresh.rerank_score = prescore_val
                             fresh.rerank_reasoning = f"Pre-screened (Tier-1 fit {int(pre[0])}): {pre[1]}"[:500]
+                            fresh.prescored_at = fresh.prescored_at or _now
+                            fresh.scored_at = _now
                             session.add(fresh)
                             session.commit()
                     scored += 1
@@ -317,6 +382,7 @@ def _fast_path_user(uid: str, score_budget: int,
                         fresh = session.get(Job, jid)
                         if fresh is not None and fresh.rerank_score is None:
                             fresh.prescore = prescore_val
+                            fresh.prescored_at = fresh.prescored_at or datetime.utcnow()
                             session.add(fresh)
                             session.commit()
                     continue
@@ -334,9 +400,12 @@ def _fast_path_user(uid: str, score_budget: int,
                 job = session.get(Job, jid)
                 if job is None:
                     continue
+                _now = datetime.utcnow()
                 if prescore_val is not None:
                     job.prescore = prescore_val
+                    job.prescored_at = job.prescored_at or _now
                 job.rerank_score = score
+                job.scored_at = _now
                 job.rerank_reasoning = reason + (("\nConcerns: " + "; ".join(concerns)) if concerns else "")
                 job.rerank_breakdown = json.dumps(breakdown) if breakdown else None
                 try:
@@ -431,7 +500,27 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
 
     now = datetime.utcnow()
     boards = _due_boards(now, settings.pulse_max_boards_per_tick)
-    stats = {"boards": len(boards), "changed": 0, "fetched_jobs": 0,
+    # TELEMETRY CONTRACT — every board selected lands in EXACTLY ONE outcome
+    # bucket, and the buckets sum to `selected`. Before this, the only number
+    # recorded was `boards` (the SELECTION), so every consumer that wanted a
+    # poll count multiplied ticks x selected and got a figure ~8x the real one:
+    # scripts/pulse_check.py printed it verbatim as "board polls". A board is
+    # only ever counted as polled if its fetch actually completed.
+    #
+    #   selected   = boards pulled off the due schedule (`boards` is kept as an
+    #                alias for older tick events; it was ALWAYS the selection)
+    #   started    = fetches that actually began running
+    #   fetch_ok   = fetches that completed and returned a posting list
+    #   fetch_failed / unsupported = fetches that ran and errored
+    #   deferred   = never recorded as a poll, split three ways:
+    #                cancelled (never started) / running (still in flight at the
+    #                deadline) / unconsumed (finished, no time left to process)
+    #   unchanged/changed = the fetch_ok split by board signature
+    stats = {"boards": len(boards), "selected": len(boards),
+             "started": 0, "fetch_ok": 0, "fetch_failed": 0, "unsupported": 0,
+             "deferred": 0, "deferred_cancelled": 0, "deferred_running": 0,
+             "deferred_unconsumed": 0,
+             "unchanged": 0, "changed": 0, "fetched_jobs": 0,
              "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0}
     # RESERVE ~40% of the budget for SCORING. During the bootstrap backlog the
     # fetch/route phase would otherwise eat the whole tick (deferring hundreds of
@@ -448,94 +537,139 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     all_roles = sorted({r for u in users for r in (u["roles"] or [])})
 
     def _fetch(board):
+        """Runs on the pool. Times itself so the tick can report REAL fetch
+        latency — the number you need before touching worker counts."""
+        t0 = time.monotonic()
         scraper = scraper_for(board.ats, board.slug, board.career_url)
         if scraper is None:
-            return board, None, "unsupported"
+            return board, None, "unsupported", time.monotonic() - t0
         try:
-            return board, scraper.fetch(), None
+            return board, scraper.fetch(), None, time.monotonic() - t0
         except Exception as e:
-            return board, None, str(e)
+            return board, None, str(e), time.monotonic() - t0
 
     users_touched: set[str] = set()
+    latencies: list[float] = []
+    deferred_boards: list = []
+    backoff = int(getattr(settings, "pulse_failure_backoff_minutes", 0) or 0)
+    backoff_cap = int(settings.pulse_dead_interval_hours or 24)
     pool = _fetch_pool()
-    # Submit all fetches, then collect each with a deadline-bounded wait. A board
-    # that hasn't returned by the tick's wall-clock deadline is rescheduled (it's
-    # simply due again) rather than blocked on — so one slow board/host can never
-    # stall the tick; its queued future is CANCELLED so leftovers don't drain
-    # into the next tick on the shared pool. Each processed slot is nulled out
-    # immediately: holding every board's full posting list until the end of the
-    # tick kept a few hundred MB resident, every 60 seconds.
-    pending = [(pool.submit(_fetch, b), b) for b in boards]
-    deferred = 0
-    for _pi, (fut, board) in enumerate(pending):
-        pending[_pi] = None  # release the future (and its postings) once handled
-        remaining = fetch_deadline - time.monotonic()
-        if remaining <= 0:
-            fut.cancel()
-            deferred += 1
-            _set_schedule(board.slug, board.ats,
-                          datetime.utcnow() + _cadence(board, terms, now), None)
-            continue
-        try:
-            board, raw, err = fut.result(timeout=remaining)
-        except _FutureTimeout:
-            deferred += 1
-            _set_schedule(board.slug, board.ats,
-                          datetime.utcnow() + _cadence(board, terms, now), None)
-            continue
-        except Exception as e:
-            _mark_polled(board.slug, board.ats, job_count=None, ok=False, error=str(e))
-            _set_schedule(board.slug, board.ats,
-                          datetime.utcnow() + _cadence(board, terms, now), None)
-            continue
-        finally:
-            del fut
-        if raw is None:
-            if err == "unsupported":
-                _retire_unsupported(board.slug, board.ats)
-            else:
-                _mark_polled(board.slug, board.ats, job_count=None, ok=False, error=err)
-                _set_schedule(board.slug, board.ats,
-                              datetime.utcnow() + _cadence(board, terms, now), None)
-            continue
-
-        stats["fetched_jobs"] += len(raw)
-        sig = _board_signature(raw)
-        if raw and sig == (board.poll_hash or ""):
-            # Unchanged board — zero downstream work. This is the common case
-            # that makes the hourly floor affordable.
-            _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True)
-            _set_schedule(board.slug, board.ats,
-                          datetime.utcnow() + _cadence(board, terms, now), sig)
-            continue
-
-        stats["changed"] += 1
-        new_here = 0
-        try:
-            new_here += _upsert(raw, user_id=SHARED_POOL_USER, user_keywords=all_roles or None)
-        except Exception as e:
-            log.debug("pulse shared upsert failed %s: %s", board.slug, e)
-        for u in users:
-            relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
-            if not relevant:
+    # Submit all fetches, then drain them IN COMPLETION ORDER. The old loop
+    # walked them in SUBMISSION order, so one slow host at the head blocked the
+    # collection of every board behind it that had already finished — the tick
+    # hit its deadline holding a pile of completed, unprocessed results. Taking
+    # them as they land converts that dead time into processed boards without
+    # adding a single worker.
+    futures = {pool.submit(_fetch, b): b for b in boards}
+    try:
+        for fut in _as_completed(list(futures), timeout=max(0.0, fetch_deadline - time.monotonic())):
+            board = futures.pop(fut, None)
+            if board is None:
                 continue
             try:
-                n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]),
-                            user_keywords=u["roles"] or None)
-                if n:
-                    users_touched.add(u["user_id"])
-                    new_here += n
+                board, raw, err, elapsed = fut.result()
+                latencies.append(elapsed)
             except Exception as e:
-                log.debug("pulse user upsert failed %s/%s: %s", board.slug, u["user_id"], e)
-        stats["new_jobs"] += new_here
-        _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True, new_jobs=new_here)
-        # Re-read cadence AFTER _mark_polled: a board that just posted has a
-        # fresh last_new_job_at, so it lands on the fast lane immediately.
-        board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
-        _set_schedule(board.slug, board.ats,
-                      datetime.utcnow() + _cadence(board, terms, now), sig)
-    if deferred:
-        stats["deferred"] = deferred
+                # The fetch RAN and blew up — a real failure, so it decays the
+                # board through the normal failure path (and its backoff).
+                stats["fetch_failed"] += 1
+                _mark_polled(board.slug, board.ats, job_count=None, ok=False,
+                             error=str(e), failure_backoff_minutes=backoff,
+                             failure_backoff_cap_hours=backoff_cap)
+                continue
+            finally:
+                del fut
+
+            if raw is None:
+                if err == "unsupported":
+                    stats["unsupported"] += 1
+                    _retire_unsupported(board.slug, board.ats)
+                else:
+                    stats["fetch_failed"] += 1
+                    _mark_polled(board.slug, board.ats, job_count=None, ok=False,
+                                 error=err, failure_backoff_minutes=backoff,
+                                 failure_backoff_cap_hours=backoff_cap)
+                continue
+
+            # From here the fetch COMPLETED — this board was genuinely polled.
+            stats["fetch_ok"] += 1
+            stats["fetched_jobs"] += len(raw)
+            sig = _board_signature(raw)
+            if raw and sig == (board.poll_hash or ""):
+                # Unchanged board — zero downstream work. This is the common
+                # case that makes the hourly floor affordable.
+                stats["unchanged"] += 1
+                _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
+                             next_poll_at=datetime.utcnow() + _cadence(board, terms, now),
+                             poll_hash=sig)
+                continue
+
+            stats["changed"] += 1
+            new_here = 0
+            try:
+                new_here += _upsert(raw, user_id=SHARED_POOL_USER, user_keywords=all_roles or None)
+            except Exception as e:
+                log.debug("pulse shared upsert failed %s: %s", board.slug, e)
+            for u in users:
+                relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
+                if not relevant:
+                    continue
+                try:
+                    n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]),
+                                user_keywords=u["roles"] or None)
+                    if n:
+                        users_touched.add(u["user_id"])
+                        new_here += n
+                except Exception as e:
+                    log.debug("pulse user upsert failed %s/%s: %s", board.slug, u["user_id"], e)
+            stats["new_jobs"] += new_here
+            # A board that just posted has a fresh last_new_job_at, so it must
+            # land on the fast lane immediately — reflect that in the cadence
+            # we write in the same round-trip.
+            board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
+            _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
+                         new_jobs=new_here,
+                         next_poll_at=datetime.utcnow() + _cadence(board, terms, now),
+                         poll_hash=sig)
+    except _FutureTimeout:
+        pass  # out of fetch budget — whatever is left is deferred, below
+
+    # Everything still in `futures` was never turned into a poll record. NOT
+    # polled: each gets a short deferral and none of the registry fields a poll
+    # would move.
+    #
+    # The three-way split is the diagnosis, and it says which lever (if any) is
+    # the right one — the reason this patch measures before it tunes:
+    #   cancelled  — never started. The tick could not even begin them:
+    #                too few worker-seconds for the batch size.
+    #   running    — started, still in flight at the deadline. Slow hosts;
+    #                a per-fetch timeout, not more workers, is the answer.
+    #   unconsumed — the FETCH FINISHED and the tick ran out of time to process
+    #                the result. The bottleneck is the serial main-thread work
+    #                downstream of the fetch (registry writes, upserts), and
+    #                adding workers would make it strictly worse.
+    for fut, board in futures.items():
+        if fut.cancel():
+            stats["deferred_cancelled"] += 1
+        elif fut.done():
+            stats["deferred_unconsumed"] += 1
+        else:
+            stats["deferred_running"] += 1
+        deferred_boards.append(board)
+    stats["deferred"] = len(deferred_boards)
+    # Submitting is not starting: with 24 workers and 300 submissions, most sit
+    # in the pool's queue. `started` is what actually ran — everything except
+    # the futures we managed to cancel before they were picked up.
+    stats["started"] = stats["selected"] - stats["deferred_cancelled"]
+    _defer_boards(deferred_boards)
+    futures.clear()
+
+    if latencies:
+        latencies.sort()
+        stats["fetch_p50_ms"] = int(latencies[len(latencies) // 2] * 1000)
+        stats["fetch_p95_ms"] = int(latencies[min(len(latencies) - 1,
+                                                  int(len(latencies) * 0.95))] * 1000)
+        stats["fetch_max_ms"] = int(latencies[-1] * 1000)
 
     # Per-job fast path for every user who just received something new — best
     # effort within whatever wall-clock time the tick has left. Anything not
@@ -557,12 +691,31 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     try:
         with get_session() as session:
             session.add(FunnelEvent(
-                job_id=None, stage="pulse_tick", passed=True,
-                reason=f"boards={stats['boards']} new={stats['new_jobs']}",
+                job_id=None, stage="pulse_tick",
+                # `passed` now means "this tick actually polled something", so a
+                # run that selected 300 boards and completed none stops reading
+                # as a success in the funnel.
+                passed=stats["fetch_ok"] > 0,
+                reason=(f"selected={stats['selected']} polled={stats['fetch_ok']} "
+                        f"deferred={stats['deferred']} new={stats['new_jobs']}"),
                 metadata_json=json.dumps(stats),
             ))
             session.commit()
     except Exception as e:
         log.debug("pulse tick event write failed: %s", e)
-    log.info("Pulse tick: %s", stats)
+    # Say the capacity story out loud every tick. A lane that can only complete
+    # a fraction of what it selects is not "catching up", and this is the line
+    # that makes that visible in the logs without a DB query.
+    if stats["deferred"] and stats["selected"]:
+        log.warning(
+            "Pulse tick CAPACITY-LIMITED: polled %d/%d selected (%.0f%% deferred: "
+            "%d never started, %d still running, %d fetched-but-unprocessed) · "
+            "fetch p50=%sms p95=%sms · %s",
+            stats["fetch_ok"], stats["selected"],
+            100.0 * stats["deferred"] / stats["selected"],
+            stats["deferred_cancelled"], stats["deferred_running"],
+            stats["deferred_unconsumed"],
+            stats.get("fetch_p50_ms", "?"), stats.get("fetch_p95_ms", "?"), stats)
+    else:
+        log.info("Pulse tick: %s", stats)
     return stats

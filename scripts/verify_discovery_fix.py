@@ -1,0 +1,298 @@
+"""Read-only before/after snapshot for the discovery + expiry fixes.
+
+One command that prints every number the Aug 2026 investigation asked for, so
+"before" and "after" are the same measurement rather than two different ad-hoc
+queries::
+
+    python -m scripts.verify_discovery_fix            # 24h window
+    python -m scripts.verify_discovery_fix --hours 6
+    python -m scripts.verify_discovery_fix --json     # machine-readable
+
+STRICTLY READ-ONLY. Every statement is a SELECT; nothing is written, updated or
+deleted. Safe to run against production.
+
+Cheap by construction — counts and small ordered slices only, no ``select(Job)``
+and no unindexed predicate (docs/CAPACITY.md: full-row scans put Supabase at
+205% of its egress quota).
+
+Companion tools:
+  * ``scripts.pulse_check``   — pulse-lane detail and the capacity verdict
+  * ``scripts.stage_latency`` — first_seen -> prescored/scored/shortlisted
+"""
+from __future__ import annotations
+
+import argparse
+import json as _json
+from datetime import datetime, timedelta
+
+from sqlalchemy import func
+from sqlmodel import select
+
+from app.common.freshness import (
+    EXPIRY_SENTINEL_SCORE, expired_without_scoring_expr, genuinely_scored_expr,
+)
+from app.config import settings
+from app.db.init_db import get_session
+from app.db.models import (
+    Application, ApplicationStatus, CompanyRegistry, FunnelEvent, Job,
+)
+from app.discovery.pipeline import SHARED_POOL_USER
+
+
+def collect(hours: int) -> dict:
+    now = datetime.utcnow()
+    since = now - timedelta(hours=hours)
+    out: dict = {"window_hours": hours, "as_of": now.isoformat()}
+
+    with get_session() as session:
+        def cnt(model_id, *where) -> int:
+            v = session.exec(select(func.count(model_id)).where(*where)).one()
+            return int(v[0] if isinstance(v, tuple) else v)
+
+        # ── Discovery / polling ──────────────────────────────────────────────
+        live = cnt(CompanyRegistry.id, CompanyRegistry.is_active == True,  # noqa: E712
+                   CompanyRegistry.job_count > 0)
+        out["live_boards"] = live
+        out["overdue_boards"] = cnt(
+            CompanyRegistry.id,
+            CompanyRegistry.is_active == True,  # noqa: E712
+            CompanyRegistry.job_count > 0,
+            CompanyRegistry.next_poll_at != None,  # noqa: E711
+            CompanyRegistry.next_poll_at < now - timedelta(minutes=10))
+        # last_seen moves ONLY on a completed fetch (_mark_polled). A deferral
+        # never touches it, so this cannot be inflated by mere selection.
+        out["unique_boards_fetched"] = cnt(
+            CompanyRegistry.id,
+            CompanyRegistry.last_seen != None,  # noqa: E711
+            CompanyRegistry.last_seen >= since)
+
+        ticks = session.exec(
+            select(FunnelEvent.metadata_json)
+            .where(FunnelEvent.stage == "pulse_tick", FunnelEvent.created_at >= since)
+            .order_by(FunnelEvent.created_at.desc()).limit(5000)
+        ).all()
+        agg = {k: 0 for k in ("selected", "started", "fetch_ok", "fetch_failed",
+                              "unsupported", "deferred", "deferred_cancelled",
+                              "deferred_running", "deferred_unconsumed",
+                              "changed", "unchanged", "new_jobs", "scored",
+                              "shortlisted", "alerts")}
+        legacy = 0
+        lat = []
+        for row in ticks:
+            raw = row[0] if isinstance(row, tuple) else row
+            try:
+                m = _json.loads(raw or "{}")
+            except Exception:
+                continue
+            if "fetch_ok" not in m:
+                # Pre-split tick: recorded the SELECTION only, so it cannot
+                # contribute a poll count. Never back-filled with a guess.
+                legacy += 1
+                agg["selected"] += int(m.get("boards") or 0)
+                agg["new_jobs"] += int(m.get("new_jobs") or 0)
+                continue
+            for k in agg:
+                agg[k] += int(m.get(k) or 0)
+            if m.get("fetch_p50_ms"):
+                lat.append(int(m["fetch_p50_ms"]))
+
+        out["ticks"] = len(ticks)
+        out["pre_split_ticks"] = legacy
+        out.update({f"tick_{k}": v for k, v in agg.items()})
+        out["deferred_pct"] = (round(100.0 * agg["deferred"] / agg["selected"], 1)
+                               if agg["selected"] else None)
+        out["completed_fetches_per_tick"] = (
+            round(agg["fetch_ok"] / (len(ticks) - legacy), 1)
+            if (len(ticks) - legacy) > 0 else None)
+        out["completed_fetches_per_day"] = (
+            round(agg["fetch_ok"] * 24.0 / hours) if hours else None)
+        out["fetch_p50_ms"] = (sorted(lat)[len(lat) // 2] if lat else None)
+        # The honest floor number: how long between real visits to a board.
+        out["effective_revisit_hours"] = (
+            round(live / (agg["fetch_ok"] / hours), 1)
+            if (agg["fetch_ok"] and live and hours) else None)
+        out["floor_promise_minutes"] = settings.pulse_floor_interval_minutes
+
+        # ── Intake ───────────────────────────────────────────────────────────
+        out["shared_pool_new"] = cnt(
+            Job.id, Job.user_id == SHARED_POOL_USER, Job.first_seen >= since)
+        out["user_pool_new"] = cnt(
+            Job.id,
+            (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
+            Job.first_seen >= since)
+
+        # ── Expiry ───────────────────────────────────────────────────────────
+        per_user = ((Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER))
+        out["expired_stale"] = cnt(
+            Job.id, per_user, expired_without_scoring_expr(),
+            Job.first_seen >= since)
+        out["genuinely_scored"] = cnt(
+            Job.id, per_user, genuinely_scored_expr(), Job.first_seen >= since)
+        out["pending_scoring"] = cnt(
+            Job.id, per_user, Job.rerank_score.is_(None), Job.is_closed == False)  # noqa: E712
+
+        # IMMEDIATE-EXPIRY RATE — the headline of the expiry bug. A job counts
+        # as immediately expired when it was ALREADY past the known-age bound at
+        # the moment we first saw it, i.e. the expiry had nothing to do with how
+        # long we sat on it. Under the old single-bound gate these expired on
+        # arrival; under the split bounds this should be near zero.
+        sample = session.exec(
+            select(Job.first_seen, Job.posted_at)
+            .where(per_user, expired_without_scoring_expr(), Job.first_seen >= since)
+            .limit(20000)
+        ).all()
+        known_days = int(settings.scoring_max_job_age_days or 0)
+        immediate = sum(
+            1 for fs, posted in sample
+            if fs is not None and posted is not None
+            and (fs - posted) >= timedelta(days=known_days))
+        out["expiry_sample"] = len(sample)
+        out["immediate_expiry_pct"] = (round(100.0 * immediate / len(sample), 1)
+                                       if sample else None)
+
+        # ── Scoring ──────────────────────────────────────────────────────────
+        cycles = session.exec(
+            select(FunnelEvent.metadata_json)
+            .where(FunnelEvent.stage == "scoring_cycle", FunnelEvent.created_at >= since)
+            .order_by(FunnelEvent.created_at.desc()).limit(5000)
+        ).all()
+        cagg = {k: 0 for k in ("users", "queued", "scored", "drained",
+                               "shortlisted", "alerts", "expired_stale",
+                               "expired_queue_stale", "expired_ancient")}
+        for row in cycles:
+            raw = row[0] if isinstance(row, tuple) else row
+            try:
+                m = _json.loads(raw or "{}")
+            except Exception:
+                continue
+            for k in cagg:
+                cagg[k] += int(m.get(k) or 0)
+        out["scoring_cycles"] = len(cycles)
+        out.update({f"cycle_{k}": v for k, v in cagg.items()})
+
+        # _scorable_user_ids is a live call, not a stored metric — it is the
+        # thing that read ZERO for 11 of 13 users because the gate had stamped
+        # their pools empty.
+        try:
+            from app.strategy.scoring_lane import _scorable_user_ids
+            out["scorable_users"] = len(_scorable_user_ids())
+        except Exception as e:
+            out["scorable_users"] = f"unavailable: {e}"
+
+        # Finals consumption, from the PERSISTED per-user counters (they live in
+        # user_usage precisely so a deploy cannot reset the week).
+        try:
+            from app.db.models import UserUsage
+            rows = session.exec(
+                select(UserUsage.finals_count, UserUsage.finals_hits)
+                .where(UserUsage.usage_date == now.date())
+            ).all()
+            out["finals_today"] = sum(int(r[0] or 0) for r in rows)
+            out["finals_hits_today"] = sum(int(r[1] or 0) for r in rows)
+            out["finals_users_today"] = len(rows)
+        except Exception as e:
+            out["finals_today"] = f"unavailable: {e}"
+            out["finals_hits_today"] = None
+
+        # ── Delivery ─────────────────────────────────────────────────────────
+        out["shortlisted_new"] = cnt(
+            Application.id, Application.created_at >= since)
+        out["shortlisted_open"] = cnt(
+            Application.id, Application.status == ApplicationStatus.SHORTLISTED)
+        out["fresh_alerts"] = cnt(
+            FunnelEvent.id, FunnelEvent.stage == "fresh_alert",
+            FunnelEvent.created_at >= since)
+
+    return out
+
+
+def _show(d: dict) -> None:
+    w = d["window_hours"]
+    print(f"SpotApply pipeline verification — last {w}h (as of {d['as_of']} UTC)")
+    print("=" * 74)
+
+    print("\nDISCOVERY / POLLING")
+    print(f"  live boards                  {d['live_boards']:,}")
+    print(f"  ticks in window              {d['ticks']:,}"
+          + (f"  ({d['pre_split_ticks']} pre-split, selection-only)"
+             if d["pre_split_ticks"] else ""))
+    print(f"  boards SELECTED              {d['tick_selected']:,}")
+    print(f"  fetches started              {d['tick_started']:,}")
+    print(f"  fetches COMPLETED            {d['tick_fetch_ok']:,}   <- the real poll count")
+    print(f"  fetches failed               {d['tick_fetch_failed']:,} "
+          f"(+{d['tick_unsupported']:,} unsupported)")
+    print(f"  fetches DEFERRED             {d['tick_deferred']:,}"
+          f"  ({d['tick_deferred_cancelled']:,} never started, "
+          f"{d['tick_deferred_running']:,} running, "
+          f"{d['tick_deferred_unconsumed']:,} unprocessed)")
+    print(f"  DEFERRED %                   {d['deferred_pct']}")
+    print(f"  completed fetches / tick     {d['completed_fetches_per_tick']}")
+    print(f"  completed fetches / day      {d['completed_fetches_per_day']}")
+    print(f"  unique boards fetched        {d['unique_boards_fetched']:,}")
+    print(f"  EFFECTIVE REVISIT            {d['effective_revisit_hours']}h "
+          f"(promise: {d['floor_promise_minutes']}m)")
+    print(f"  fetch latency p50            {d['fetch_p50_ms']}ms")
+    print(f"  overdue boards               {d['overdue_boards']:,}")
+
+    print("\nINTAKE")
+    print(f"  new shared-pool postings     {d['shared_pool_new']:,}")
+    print(f"  new per-user rows            {d['user_pool_new']:,}")
+    print(f"  jobs discovered via pulse    {d['tick_new_jobs']:,}")
+
+    print("\nEXPIRY")
+    print(f"  expired_stale (window)       {d['expired_stale']:,}")
+    print(f"  genuinely scored (window)    {d['genuinely_scored']:,}")
+    print(f"  IMMEDIATE-EXPIRY RATE        {d['immediate_expiry_pct']}%  "
+          f"(of {d['expiry_sample']:,} sampled)")
+    print(f"    -> was ~82.9% before the split; near zero is the target.")
+    print(f"  cycle expiries: queue-stale  {d['cycle_expired_queue_stale']:,}"
+          f"  ancient {d['cycle_expired_ancient']:,}")
+
+    print("\nSCORING")
+    print(f"  scoring cycles               {d['scoring_cycles']:,}")
+    print(f"  _scorable_user_ids           {d['scorable_users']}")
+    print(f"  queued / scored / drained    {d['cycle_queued']:,} / "
+          f"{d['cycle_scored']:,} / {d['cycle_drained']:,}")
+    print(f"  finals consumed today        {d['finals_today']}")
+    print(f"  pending (open, unscored)     {d['pending_scoring']:,}")
+
+    print("\nDELIVERY")
+    print(f"  shortlisted in window        {d['shortlisted_new']:,}")
+    print(f"  shortlist open now           {d['shortlisted_open']:,}")
+    print(f"  fresh alerts                 {d['fresh_alerts']:,}")
+
+    print("\nREAD THE RESULT")
+    dp = d["deferred_pct"]
+    if dp is None:
+        print("  No post-split ticks yet — re-run once the deploy has been up "
+              "for an hour.")
+    elif dp >= 20:
+        print(f"  Still capacity-limited ({dp}% deferred). The deferral split "
+              "above says which lever:\n"
+              "    never started   -> batch too large for the worker-seconds\n"
+              "    running         -> slow hosts; bound per-fetch time\n"
+              "    unprocessed     -> serial post-fetch DB work is the limit")
+    else:
+        print(f"  Deferral rate {dp}% — the lane is fetching what it selects. "
+              "Judge the floor on\n  EFFECTIVE REVISIT above, not on next_poll_at.")
+    ie = d["immediate_expiry_pct"]
+    if ie is not None and ie > 10:
+        print(f"  Immediate-expiry rate is {ie}% — jobs are still being expired "
+              "on arrival. Check\n  SCORING_MAX_POSTED_AGE_DAYS "
+              f"(={getattr(settings, 'scoring_max_posted_age_days', '?')}).")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hours", type=int, default=24)
+    ap.add_argument("--json", action="store_true", help="emit raw JSON")
+    args = ap.parse_args()
+    data = collect(args.hours)
+    if args.json:
+        print(_json.dumps(data, indent=2, default=str))
+    else:
+        _show(data)
+
+
+if __name__ == "__main__":
+    main()

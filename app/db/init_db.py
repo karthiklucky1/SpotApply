@@ -289,6 +289,13 @@ def init_db() -> None:
         ("rerank_breakdown", "TEXT"),
         ("corporate_insights", "TEXT"),
         ("prescore", "FLOAT"),
+        # Lifecycle stamps — see app/common/freshness.py. All nullable with no
+        # backfill: the metric predicates treat NULL on a pre-migration row as
+        # "unknown", never as "did not happen", and fall back to the legacy
+        # sentinel scores for those rows.
+        ("prescored_at", "DATETIME"),
+        ("scored_at", "DATETIME"),
+        ("expired_at", "DATETIME"),
     ]:
         add_column_if_missing("job", col, col_type)
         

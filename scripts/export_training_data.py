@@ -28,6 +28,8 @@ import logging
 from collections import Counter
 from pathlib import Path
 
+from app.common.freshness import genuinely_scored_expr
+
 log = logging.getLogger(__name__)
 
 _CHEAP_GATE_PREFIXES = (
@@ -76,7 +78,11 @@ def _scored_chunks(max_rows: int = 0):
                     Job.remote, Job.description, Job.rerank_score,
                     Job.rerank_reasoning, Job.rerank_breakdown,
                 ))
-                .where(Job.rerank_score != None, Job.id > last_id)  # noqa: E711
+                # Real scoring verdicts ONLY. An age-expiry stamp is a
+                # placeholder, not a judgement — training the distilled scorer
+                # on those teaches it to output 8.0 for whatever the crawler
+                # happened to be slow about (app/common/freshness.py).
+                .where(genuinely_scored_expr(), Job.id > last_id)
                 .order_by(Job.id)
                 .limit(_CHUNK)
             ).all()

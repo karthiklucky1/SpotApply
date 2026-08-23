@@ -123,6 +123,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   one of the two runs. Do NOT also schedule those in
   `app/main.py` (it only adds the harvester/validator/report jobs)
   — double-runs otherwise.
+- **SELECTED IS NOT POLLED** (pulse lane): a tick selects up to
+  `PULSE_MAX_BOARDS_PER_TICK` and hard-stops at `pulse_tick_max_seconds`.
+  Whatever never came back is DEFERRED — `_defer_boards` moves ONLY
+  `next_poll_at` (short retry + id-derived jitter). It must never touch
+  `last_seen`/`poll_hash`/`job_count`/`failure_count`: those are the record of
+  an actual fetch, and advancing a deferred board on the normal cadence (the old
+  behaviour, at ~88% of each tick) made the schedule describe a poll rate the
+  lane wasn't achieving. Only a COMPLETED fetch calls `_mark_polled` — which now
+  also writes the schedule, one round-trip instead of two, and applies
+  exponential backoff on a real failure. Futures are drained in COMPLETION order
+  (`as_completed`), not submission order. Tick stats bucket every selected board
+  exactly once (`fetch_ok`/`fetch_failed`/`unsupported`/`deferred`, deferrals
+  split cancelled/running/unconsumed — that split names the bottleneck before
+  anyone touches worker counts). Never derive a poll count from ticks × selected.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT
@@ -142,6 +156,30 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`shortlist_strong_threshold`=65) then hid. **Raise `PRESCORE_ADVANCE_THRESHOLD`
   in lockstep** — the Tier-1 gate is `min(advance, shortlist)`), `top_k_rerank`,
   `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **Freshness has TWO bounds** (`app/common/freshness.py` — read it before
+  touching any age gate): KNOWN age = `coalesce(first_seen, discovered_at)`,
+  how long WE have held the posting (tight: `SCORING_MAX_JOB_AGE_DAYS` /
+  `SHORTLIST_MAX_AGE_DAYS` = 5, the "be first to apply" promise); POSTED age =
+  `coalesce(posted_at, …)`, what the source claims (loose: `*_MAX_POSTED_AGE_DAYS`
+  = 30, and it exists ONLY to suppress evergreen/ancient listings). Stale = past
+  EITHER. These were one `coalesce(posted_at, first_seen, discovered_at) < 5d`
+  expression, so posted_at won and a job discovered TODAY expired the instant an
+  ATS called it a week old — 82.9% of `rerank_score=8.0` stamps were already ≥5d
+  old at first sight, and 11 of 13 users were stamped down to an empty queue,
+  invisible to `_scorable_user_ids`. ATS dates are not reliable enough for that
+  (Greenhouse `updated_at` moves on edits, aggregators stamp their crawl date,
+  some feeds are future-dated), so `first_seen - posted_at` is NOT crawler
+  latency. All four consumers — scoring gate, render filter, shortlist hygiene,
+  description stripper — build from that module, and widening either bound is
+  spend-neutral (per-cycle finals/prescores are capped, so a bigger queue changes
+  WHICH jobs the fixed budget buys).
+- **`rerank_score` is overloaded**: it carries real 0–100 verdicts AND the ghost
+  (5.0) / age-expiry (8.0) sentinels, so `rerank_score IS NOT NULL` is NOT "was
+  scored" (production's "621k scored jobs" was mostly expiry stamps). Lifecycle
+  now lives in its own columns, written INSIDE the existing updates (no extra
+  round-trip): `prescored_at`, `scored_at`, `expired_at`. Count with
+  `genuinely_scored_expr()` / `expired_without_scoring_expr()`, never the raw
+  NULL check. Stage latency: `scripts/stage_latency.py`.
 - **Spend is a per-user BUDGET, not a result cap** (`matching/finals_budget.py`):
   `PLAN_LIMITS["finals_daily"]` (Free 15 / Pro 50 / Agency 100) is the SOFT
   point; past it a user keeps scoring only while candidates are strong
@@ -239,7 +277,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `browser_slot`; MiniLM/CrossEncoder only in `matcher._MODEL_CACHE`; no
   unprojected `select(Job)` on a hot path) · `settings_defaults` (the load-bearing
   numbers + their lockstep relations) · `index_declarations` (the 3 DDL sites can't
-  disagree) · `grounding_enforcement` (3 states; "never ran" ≠ passed).
+  disagree) · `grounding_enforcement` (3 states; "never ran" ≠ passed) ·
+  `pulse_deferral` (a board never fetched is never recorded as polled) ·
+  `expiry_semantics` (the two freshness bounds, and that expiry stamps aren't
+  counted as scoring).
+- **Tests must clean up only their OWN rows.** A wholesale `delete(Job)` /
+  `delete(CompanyRegistry)` takes out fixtures other files already built, which
+  is a suite that fails differently every run. Prefix your rows and delete by
+  that prefix; scope global-count assertions to them too.
 
 ## Maintenance
 Update on major architectural changes or completed modules. Keep under ~150 lines —

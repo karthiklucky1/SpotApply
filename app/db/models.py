@@ -120,6 +120,21 @@ class Job(SQLModel, table=True):
     # gate safe?" unanswerable: jobs the gate kills never get a final to compare
     # against. See scripts/eval_scorers.py.
     prescore: Optional[float] = Field(default=None)
+    # ── Lifecycle stamps (app/common/freshness.py) ───────────────────────────
+    # `rerank_score` alone cannot say WHICH of these happened: a real verdict, a
+    # Tier-1 drain, a ghost stamp, or an age expiry all leave a number on the
+    # row. These three are written INSIDE the existing writes (the same UPDATE
+    # that sets prescore / rerank_score / the expiry stamp), so they add no
+    # extra round-trip to any hot path, and they are what the stage-latency
+    # instrumentation and the scoring metrics read.
+    #
+    # first_seen -> prescored_at -> scored_at is the scoring funnel's clock;
+    # first_seen -> Application.created_at (already recorded) closes it out at
+    # shortlist. expired_at marks a row that left the queue on AGE with no
+    # scoring verdict at all — the state the 8.0 sentinel used to hide.
+    prescored_at: Optional[datetime] = Field(default=None)
+    scored_at: Optional[datetime] = Field(default=None)
+    expired_at: Optional[datetime] = Field(default=None)
     # JSON: per-factor breakdown {skills,experience,location,work_auth:{score,note}}
     rerank_breakdown: Optional[str] = Field(default=None)
     corporate_insights: Optional[str] = Field(default=None)  # JSON: pain point, reporting line, culture decode, leverage hook, salary/work model
