@@ -17,6 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import load_only
 from sqlmodel import select
 
+from app.common.freshness import is_fresh
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Job
@@ -153,27 +154,55 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
             # corporate_insights) are dead weight here. Combined with the SQL
             # freshness cutoff and a tighter cap, this replaces a 5000-full-row
             # (~16 MB) scan-to-keep-400 with a much smaller read.
+            # discovered_at is loaded because _fresh_enough reads it (the known
+            # reference is coalesce(first_seen, discovered_at)). These rows are
+            # used AFTER the session closes, so any column the freshness rule
+            # touches must be loaded here — a deferred attribute on a detached
+            # instance raises DetachedInstanceError rather than returning None,
+            # which would take out the whole adoption pass.
             .options(load_only(
                 Job.source, Job.external_id, Job.company, Job.title, Job.location,
                 Job.remote, Job.url, Job.description, Job.posted_at, Job.first_seen,
+                Job.discovered_at,
             ))
             .where(Job.user_id == SHARED_POOL_USER,
                    Job.is_closed == False,  # noqa: E712
                    Job.first_seen != None,  # noqa: E711
-                   # Freshness cutoff in SQL (mirrors _fresh_enough) so stale rows
-                   # aren't streamed over just to be dropped in Python.
+                   # Freshness prefilter in SQL so stale rows aren't streamed
+                   # over just to be dropped in Python. Deliberately a SUPERSET
+                   # of _fresh_enough (which applies the real two-bound rule):
+                   # anything that rule keeps has known_age <= max_age_days and
+                   # therefore satisfies the `first_seen >= cutoff` arm here.
                    (Job.posted_at >= cutoff) | (Job.first_seen >= cutoff))
             .order_by(Job.first_seen.desc())
             .limit(3000)
         ).all()
 
     def _fresh_enough(j: Job) -> bool:
-        ref = j.posted_at or j.first_seen
-        if ref is None:
-            return False
-        if ref.tzinfo is not None:
-            ref = ref.replace(tzinfo=None)
-        return ref >= cutoff
+        """The SAME two-bound rule the rest of the funnel uses
+        (app/common/freshness.py).
+
+        This was the last place where ``posted_at`` still won a coalesce, and it
+        is the earliest gate on the forward path — so it silently narrowed the
+        effective posted bound from ``scoring_max_posted_age_days`` (30d) to
+        ``ADOPT_MAX_AGE_DAYS`` (21d). A posting discovered TODAY that an ATS
+        dated 25 days back was dropped here and never reached the user's pool at
+        all, so neither the fixed scoring gate nor the fixed render window ever
+        got a chance to keep it.
+
+        Worse, it made behaviour depend on WHICH LANE found the job: the pulse
+        lane's per-user ``_upsert`` applies no age filter, so the identical
+        posting reached a user when the pulse lane routed it and was discarded
+        when adoption did.
+
+        Known age is bounded by ``max_age_days`` (don't copy shared rows we have
+        sat on for weeks); the source's own date is bounded far more loosely, and
+        only to suppress evergreen/ancient listings. The SQL prefilter above is a
+        superset of this rule — anything this keeps has ``known_age <=
+        max_age_days``, which satisfies the query's ``first_seen >= cutoff`` arm.
+        """
+        return is_fresh(j, max_age_days,
+                        int(getattr(settings, "scoring_max_posted_age_days", 0) or 0))
 
     fresh = [j for j in shared if _fresh_enough(j)]
     candidates = _select_adoptable(fresh, roles, user_id, limit)
