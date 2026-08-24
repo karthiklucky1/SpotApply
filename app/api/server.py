@@ -2852,9 +2852,17 @@ def api_stats(request: Request) -> dict:
         # jobs" was mostly those stamps). Count real verdicts, and report the
         # expiries under their own name instead of hiding them in this one.
         from app.common.freshness import (
-            expired_without_scoring_expr, genuinely_scored_expr,
+            expired_without_scoring_expr, terminal_verdict_expr, tier1_drain_expr,
         )
-        reranker_scored = _jcount(genuinely_scored_expr())
+        # NAMING: `reranker_scored` counts every TERMINAL VERDICT — Tier-2 Claude
+        # finals, Tier-1 drains and rule/ghost stamps alike. It does NOT mean
+        # "Claude finals", and reading it that way cost a real investigation an
+        # hour: a production sample showed 78 of these against a cycle stat of
+        # `scored=0`, which looked contradictory until the tiers were separated
+        # (75 were drains). The field name is kept for API compatibility; the two
+        # below say what is actually in it.
+        reranker_scored = _jcount(terminal_verdict_expr())
+        tier1_drains = _jcount(tier1_drain_expr())
         expired_unscored = _jcount(expired_without_scoring_expr())
         pending_scoring = _jcount(Job.rerank_score.is_(None))
 
@@ -2938,7 +2946,15 @@ def api_stats(request: Request) -> dict:
             # Real scoring verdicts only. The two lifecycle states that used to
             # be folded in here are now named, so "how much did we actually
             # score?" and "how much aged out unscored?" are separable.
+            #
+            # `reranker_scored` is kept for compatibility but is a TERMINAL
+            # VERDICT count across all tiers — `terminal_verdicts` is the same
+            # number under an honest name, and the tier split says how much of
+            # it actually cost a Tier-2 call.
             "reranker_scored": reranker_scored,
+            "terminal_verdicts": reranker_scored,
+            "tier1_drains": tier1_drains,
+            "tier2_or_rule_verdicts": reranker_scored - tier1_drains,
             "expired_unscored": expired_unscored,
             "pending_scoring": pending_scoring,
             "shortlisted": shortlisted,

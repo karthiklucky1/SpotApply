@@ -28,7 +28,7 @@ import logging
 from collections import Counter
 from pathlib import Path
 
-from app.common.freshness import genuinely_scored_expr
+from app.common.freshness import terminal_verdict_expr
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _scored_chunks(max_rows: int = 0):
                 # placeholder, not a judgement — training the distilled scorer
                 # on those teaches it to output 8.0 for whatever the crawler
                 # happened to be slow about (app/common/freshness.py).
-                .where(genuinely_scored_expr(), Job.id > last_id)
+                .where(terminal_verdict_expr(), Job.id > last_id)
                 .order_by(Job.id)
                 .limit(_CHUNK)
             ).all()

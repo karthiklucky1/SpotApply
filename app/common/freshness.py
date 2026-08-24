@@ -158,10 +158,20 @@ def is_fresh(job, known_days: int, posted_days: int,
 
 # ── Scoring-metric predicates ────────────────────────────────────────────────
 
-def genuinely_scored_expr():
-    """SQL: rows that carry a REAL scoring verdict.
+def terminal_verdict_expr():
+    """SQL: rows where a SCORER reached a terminal verdict — any tier.
 
-    ``rerank_score IS NOT NULL`` is not that question — it also matches expiry
+    NAME MATTERS HERE. This counts Tier-2 Claude finals, Tier-1 drains, and
+    rule/ghost stamps alike: everything that is not "aged out without being
+    looked at". It was previously called ``genuinely_scored_expr``, and that
+    name cost real confusion — a production read showed 78 "genuinely scored"
+    against a cycle stat of ``scored=0``, which looked like a contradiction and
+    was not: 75 of the 78 were Tier-1 drains, and ``scored`` counts Tier-2
+    finals only. Both numbers were right; the name was wrong.
+
+    Use :func:`tier1_drain_expr` to separate the tiers.
+
+    ``rerank_score IS NOT NULL`` is not this question — it also matches expiry
     and ghost stamps, which is how production's "621k scored jobs" came to be
     mostly age stamps.
 
@@ -176,6 +186,26 @@ def genuinely_scored_expr():
         Job.scored_at.is_not(None)
         | (Job.rerank_score.is_not(None)
            & Job.rerank_score.notin_(SENTINEL_SCORES))
+    )
+
+
+# Deprecated alias. The old name reads as "got a Claude final" and does not mean
+# that; kept only so existing callers/dashboards don't break mid-deploy.
+genuinely_scored_expr = terminal_verdict_expr
+
+
+def tier1_drain_expr():
+    """SQL: terminal verdicts that came from the CHEAP tier only.
+
+    A Tier-1 drain stamps the prescore itself as the final score, so
+    ``prescore == rerank_score`` is the discriminator (the convention
+    ``_stamp_job`` documents). Subtract these from ``terminal_verdict_expr`` to
+    get the verdicts that actually cost a Tier-2 call.
+    """
+    return (
+        terminal_verdict_expr()
+        & Job.prescore.is_not(None)
+        & (Job.rerank_score == Job.prescore)
     )
 
 

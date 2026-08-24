@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from sqlmodel import delete
 
 from app.common.freshness import (
-    EXPIRY_SENTINEL_SCORE, expired_without_scoring_expr, genuinely_scored_expr,
+    EXPIRY_SENTINEL_SCORE, expired_without_scoring_expr, terminal_verdict_expr,
     is_fresh,
 )
 from app.config import settings
@@ -320,7 +320,7 @@ def test_expiry_stamps_are_not_counted_as_scored(monkeypatch):
                 Job.external_id.like(f"{_PREFIX}%"), expr)).one()
             return int(v[0] if isinstance(v, tuple) else v)
 
-        assert n(genuinely_scored_expr()) == 1
+        assert n(terminal_verdict_expr()) == 1
         assert n(expired_without_scoring_expr()) == 1
         # The naive predicate cannot tell them apart — which is the point.
         assert n(Job.rerank_score.is_not(None)) == 2
@@ -350,7 +350,7 @@ def test_a_real_verdict_that_lands_on_the_sentinel_value_still_counts():
                 Job.external_id.like(f"{_PREFIX}%"), expr)).one()
             return int(v[0] if isinstance(v, tuple) else v)
 
-        assert n(genuinely_scored_expr()) == 1, (
+        assert n(terminal_verdict_expr()) == 1, (
             "a real verdict was discarded because it happened to equal the "
             "expiry sentinel")
         assert n(expired_without_scoring_expr()) == 0
@@ -370,7 +370,7 @@ def test_legacy_expiry_rows_without_the_column_are_still_excluded():
     with get_session() as session:
         v = session.exec(
             select(func.count(Job.id)).where(
-                Job.external_id.like(f"{_PREFIX}%"), genuinely_scored_expr())).one()
+                Job.external_id.like(f"{_PREFIX}%"), terminal_verdict_expr())).one()
         assert int(v[0] if isinstance(v, tuple) else v) == 0
     _cleanup()
 

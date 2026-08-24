@@ -34,7 +34,7 @@ from sqlmodel import select
 
 from app.common.freshness import (
     EXPIRY_SENTINEL_SCORE, GHOST_SENTINEL_SCORE,
-    expired_without_scoring_expr, genuinely_scored_expr,
+    expired_without_scoring_expr, terminal_verdict_expr,
 )
 from app.config import settings
 from app.db.init_db import get_session
@@ -99,7 +99,7 @@ def main() -> None:
             return int(v[0] if isinstance(v, tuple) else v)
 
         total = cnt()
-        scored = cnt(genuinely_scored_expr())
+        scored = cnt(terminal_verdict_expr())
         expired = cnt(expired_without_scoring_expr())
         ghosted = cnt(Job.rerank_score == GHOST_SENTINEL_SCORE)
         pending = cnt(Job.rerank_score.is_(None))
@@ -107,7 +107,8 @@ def main() -> None:
                              Job.rerank_score.is_(None))
 
         print(f"LIFECYCLE  (n={total:,} per-user jobs first seen in window)")
-        print(f"  genuinely scored          {scored:>9,}  {_pct(scored, total)}")
+        print(f"  terminal verdicts         {scored:>9,}  {_pct(scored, total)}"
+              f"   <- ANY tier, incl. Tier-1 drains")
         print(f"  expired without scoring   {expired:>9,}  {_pct(expired, total)}"
               f"   <- rerank_score={EXPIRY_SENTINEL_SCORE} sentinel")
         print(f"  ghost-filtered            {ghosted:>9,}  {_pct(ghosted, total)}")

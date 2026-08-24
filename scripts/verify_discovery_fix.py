@@ -29,7 +29,8 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from app.common.freshness import (
-    EXPIRY_SENTINEL_SCORE, expired_without_scoring_expr, genuinely_scored_expr,
+    expired_without_scoring_expr,
+    terminal_verdict_expr, tier1_drain_expr,
 )
 from app.config import settings
 from app.db.init_db import get_session
@@ -126,29 +127,58 @@ def collect(hours: int) -> dict:
         out["expired_stale"] = cnt(
             Job.id, per_user, expired_without_scoring_expr(),
             Job.first_seen >= since)
-        out["genuinely_scored"] = cnt(
-            Job.id, per_user, genuinely_scored_expr(), Job.first_seen >= since)
+        # Terminal verdicts, and the tier split. NOT "Claude finals" — see
+        # terminal_verdict_expr. Reported separately because conflating them
+        # made a healthy lane look broken.
+        out["terminal_verdicts"] = cnt(
+            Job.id, per_user, terminal_verdict_expr(), Job.first_seen >= since)
+        out["tier1_drains"] = cnt(
+            Job.id, per_user, tier1_drain_expr(), Job.first_seen >= since)
+        out["tier2_or_rule_verdicts"] = out["terminal_verdicts"] - out["tier1_drains"]
+        # Deprecated alias, kept so an older reader doesn't silently lose the row.
+        out["genuinely_scored"] = out["terminal_verdicts"]
         out["pending_scoring"] = cnt(
             Job.id, per_user, Job.rerank_score.is_(None), Job.is_closed == False)  # noqa: E712
 
-        # IMMEDIATE-EXPIRY RATE — the headline of the expiry bug. A job counts
-        # as immediately expired when it was ALREADY past the known-age bound at
-        # the moment we first saw it, i.e. the expiry had nothing to do with how
-        # long we sat on it. Under the old single-bound gate these expired on
-        # arrival; under the split bounds this should be near zero.
-        sample = session.exec(
-            select(Job.first_seen, Job.posted_at)
-            .where(per_user, expired_without_scoring_expr(), Job.first_seen >= since)
-            .limit(20000)
-        ).all()
-        known_days = int(settings.scoring_max_job_age_days or 0)
-        immediate = sum(
-            1 for fs, posted in sample
-            if fs is not None and posted is not None
-            and (fs - posted) >= timedelta(days=known_days))
-        out["expiry_sample"] = len(sample)
-        out["immediate_expiry_pct"] = (round(100.0 * immediate / len(sample), 1)
-                                       if sample else None)
+        # INTAKE-EXPIRY RATE — of the jobs that ENTERED a user pool during this
+        # window, how many were expired straight away on the source's posting
+        # date?
+        #
+        # The metric this replaces was structurally incapable of being anything
+        # but 100%. It sampled `expired AND first_seen >= since` and asked
+        # whether each row was already past the known-age bound at discovery.
+        # But a queue-stale expiry REQUIRES first_seen < now - known_days, so it
+        # can never appear in a window shorter than that — the sample could only
+        # ever contain posting-age expiries, and those satisfy the test by
+        # definition. The denominator could not hold a counter-example, so the
+        # figure read 100% in production while nothing was wrong, and the advice
+        # line told the operator to go check a setting that was already correct.
+        #
+        # The honest denominator is the same-window INTAKE, not the same-window
+        # expiries. `user_pool_new` is exactly that: per-user rows (shared pool
+        # excluded, matching the numerator's scope) whose first_seen falls in the
+        # window. Deliberately NOT `tick_new_jobs`, which sums shared-pool AND
+        # per-user upserts and would understate the rate against a per-user
+        # numerator.
+        posted_days = int(getattr(settings, "scoring_max_posted_age_days", 0) or 0)
+        intake = out["user_pool_new"]
+        out["intake_expired"] = cnt(
+            Job.id, per_user, Job.first_seen >= since,
+            expired_without_scoring_expr())
+        # Split by which bound actually fired, tested on the row itself rather
+        # than on reasoning text.
+        out["intake_expired_ancient"] = cnt(
+            Job.id, per_user, Job.first_seen >= since,
+            expired_without_scoring_expr(),
+            Job.posted_at.is_not(None),
+            Job.posted_at < now - timedelta(days=posted_days)) if posted_days > 0 else 0
+        out["intake_expired_queue_stale"] = (
+            out["intake_expired"] - out["intake_expired_ancient"])
+        out["intake_expired_pct"] = (round(100.0 * out["intake_expired"] / intake, 1)
+                                     if intake else None)
+        out["intake_expired_ancient_pct"] = (
+            round(100.0 * out["intake_expired_ancient"] / intake, 1)
+            if intake else None)
 
         # ── Scoring ──────────────────────────────────────────────────────────
         cycles = session.exec(
@@ -239,14 +269,20 @@ def _show(d: dict) -> None:
     print(f"  new per-user rows            {d['user_pool_new']:,}")
     print(f"  jobs discovered via pulse    {d['tick_new_jobs']:,}")
 
-    print("\nEXPIRY")
-    print(f"  expired_stale (window)       {d['expired_stale']:,}")
-    print(f"  genuinely scored (window)    {d['genuinely_scored']:,}")
-    print(f"  IMMEDIATE-EXPIRY RATE        {d['immediate_expiry_pct']}%  "
-          f"(of {d['expiry_sample']:,} sampled)")
-    print(f"    -> was ~82.9% before the split; near zero is the target.")
+    print("\nEXPIRY  (denominator = jobs that ENTERED a user pool this window)")
+    print(f"  intake (user_pool_new)       {d['user_pool_new']:,}")
+    print(f"  of which expired             {d['intake_expired']:,}"
+          f"   = {d['intake_expired_pct']}%")
+    print(f"    on source posting age      {d['intake_expired_ancient']:,}"
+          f"   = {d['intake_expired_ancient_pct']}%")
+    print(f"    on queue staleness         {d['intake_expired_queue_stale']:,}")
     print(f"  cycle expiries: queue-stale  {d['cycle_expired_queue_stale']:,}"
           f"  ancient {d['cycle_expired_ancient']:,}")
+
+    print("\nSCORING VERDICTS  (terminal = ANY tier, not just Claude finals)")
+    print(f"  terminal verdicts (window)   {d['terminal_verdicts']:,}")
+    print(f"    Tier-1 drains              {d['tier1_drains']:,}")
+    print(f"    Tier-2 finals / rule stamps{d['tier2_or_rule_verdicts']:>7,}")
 
     print("\nSCORING")
     print(f"  scoring cycles               {d['scoring_cycles']:,}")
@@ -275,11 +311,32 @@ def _show(d: dict) -> None:
     else:
         print(f"  Deferral rate {dp}% — the lane is fetching what it selects. "
               "Judge the floor on\n  EFFECTIVE REVISIT above, not on next_poll_at.")
-    ie = d["immediate_expiry_pct"]
-    if ie is not None and ie > 10:
-        print(f"  Immediate-expiry rate is {ie}% — jobs are still being expired "
-              "on arrival. Check\n  SCORING_MAX_POSTED_AGE_DAYS "
-              f"(={getattr(settings, 'scoring_max_posted_age_days', '?')}).")
+    # The line this replaces fired on a percentage that could only ever be
+    # 100% (see intake-expiry above) and sent the operator to check a setting
+    # that was already correct. This one is judged against the window's INTAKE,
+    # so it can actually be low — and it does not moralise about the posting-age
+    # arm, which suppressing evergreen listings is SUPPOSED to trigger.
+    iep = d["intake_expired_pct"]
+    if iep is None:
+        print("  No intake in this window — widen --hours before reading the "
+              "expiry rate.")
+    elif iep >= 50:
+        print(f"  {iep}% of this window's intake was expired on arrival "
+              f"({d['intake_expired_ancient_pct']}% of it on source posting age).\n"
+              "  That is the evergreen filter doing its job IF the sources are "
+              "genuinely serving old\n  listings — check a sample before "
+              "changing SCORING_MAX_POSTED_AGE_DAYS "
+              f"(={getattr(settings, 'scoring_max_posted_age_days', '?')}d). "
+              "A high rate is a SOURCE-MIX\n  signal, not necessarily a bug.")
+    if d["intake_expired_queue_stale"]:
+        print(f"  {d['intake_expired_queue_stale']:,} job(s) entered the pool and "
+              "aged out unscored inside this window —\n  the scorer is behind the "
+              "intake, not the gate.")
+    if d["terminal_verdicts"] and d["tier1_drains"] == d["terminal_verdicts"]:
+        print("  Every terminal verdict this window was a Tier-1 drain — no "
+              "Tier-2 finals were bought.\n  Expected once the per-plan finals "
+              "budget is spent for the day (scoring_drain_cap keeps\n  the cheap "
+              "drain running); check `finals consumed today` against the plan cap.")
 
 
 def main() -> None:
