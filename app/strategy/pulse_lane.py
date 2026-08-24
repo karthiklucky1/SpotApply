@@ -58,6 +58,25 @@ log = logging.getLogger(__name__)
 _POLL_FLUSH_BATCH = 50
 
 
+def _pctl_ms(values: list) -> dict:
+    """p50/p75/p90/p95 + total, in milliseconds, from a list of seconds.
+
+    Deliberately tiny: the tick calls time.monotonic() around each consumer
+    stage, which is ~50ns against millisecond-scale work, so the instrumentation
+    cannot meaningfully perturb what it measures.
+    """
+    if not values:
+        return {}
+    vs = sorted(values)
+    n = len(vs)
+
+    def _at(q):
+        return int(vs[min(n - 1, int(n * q))] * 1000)
+
+    return {"n": n, "p50": _at(0.50), "p75": _at(0.75), "p90": _at(0.90),
+            "p95": _at(0.95), "total_ms": int(sum(vs) * 1000)}
+
+
 def _record_spend(uid: str | None, kind: str) -> None:
     """Per-user spend attribution for fast-path LLM calls — never raises."""
     try:
@@ -629,6 +648,13 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     # way loses at most one batch rather than all its work, and the memory the
     # records hold stays flat.
     poll_records: list[dict] = []
+    # PHASE-2 INSTRUMENTATION. deferred_unconsumed says the serial consumer is
+    # the bottleneck but not WHICH part of it, so each stage downstream of the
+    # fetch is timed separately. Guessing here would be expensive: the obvious
+    # suspect (_upsert) only runs for CHANGED boards, which are the minority.
+    timings: dict[str, list] = {
+        "signature": [], "upsert_shared": [], "upsert_users": [], "flush": [],
+    }
     backoff = int(getattr(settings, "pulse_failure_backoff_minutes", 0) or 0)
     backoff_cap = int(settings.pulse_dead_interval_hours or 24)
     pool = _fetch_pool()
@@ -672,7 +698,9 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # From here the fetch COMPLETED — this board was genuinely polled.
             stats["fetch_ok"] += 1
             stats["fetched_jobs"] += len(raw)
+            _t = time.monotonic()
             sig = _board_signature(raw)
+            timings["signature"].append(time.monotonic() - _t)
             if raw and sig == (board.poll_hash or ""):
                 # Unchanged board — zero downstream work. This is the common
                 # case that makes the hourly floor affordable.
@@ -683,16 +711,21 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                     "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
                 })
                 if len(poll_records) >= _POLL_FLUSH_BATCH:
+                    _t = time.monotonic()
                     _flush_polls(poll_records)
+                    timings["flush"].append(time.monotonic() - _t)
                     poll_records.clear()
                 continue
 
             stats["changed"] += 1
             new_here = 0
+            _t = time.monotonic()
             try:
                 new_here += _upsert(raw, user_id=SHARED_POOL_USER, user_keywords=all_roles or None)
             except Exception as e:
                 log.debug("pulse shared upsert failed %s: %s", board.slug, e)
+            timings["upsert_shared"].append(time.monotonic() - _t)
+            _t = time.monotonic()
             for u in users:
                 relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
                 if not relevant:
@@ -705,6 +738,7 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                         new_here += n
                 except Exception as e:
                     log.debug("pulse user upsert failed %s/%s: %s", board.slug, u["user_id"], e)
+            timings["upsert_users"].append(time.monotonic() - _t)
             stats["new_jobs"] += new_here
             # A board that just posted has a fresh last_new_job_at, so it must
             # land on the fast lane immediately — reflect that in the cadence
@@ -716,7 +750,9 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
             })
             if len(poll_records) >= _POLL_FLUSH_BATCH:
+                _t = time.monotonic()
                 _flush_polls(poll_records)
+                timings["flush"].append(time.monotonic() - _t)
                 poll_records.clear()
     except _FutureTimeout:
         pass  # out of fetch budget — whatever is left is deferred, below
@@ -724,7 +760,9 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         # Never leave a processed board unrecorded because the deadline landed
         # between its fetch and its flush.
         if poll_records:
+            _t = time.monotonic()
             _flush_polls(poll_records)
+            timings["flush"].append(time.monotonic() - _t)
             poll_records.clear()
 
     # Everything still in `futures` was never turned into a poll record. NOT
@@ -746,6 +784,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             stats["deferred_cancelled"] += 1
         elif fut.done():
             stats["deferred_unconsumed"] += 1
+            # LATENCY BIAS FIX. as_completed yields fastest-first, so the boards
+            # that miss the deadline are systematically the SLOWEST — and until
+            # now they contributed no sample, because `latencies` was only
+            # appended inside the consumption block. The reported p50/p95 were
+            # therefore biased low by exactly the unconsumed share (~21% in
+            # production). These futures are already DONE, so reading them is a
+            # dict lookup, not a wait.
+            try:
+                latencies.append(fut.result()[3])
+            except Exception:
+                pass
         else:
             stats["deferred_running"] += 1
         deferred_boards.append(board)
@@ -756,6 +805,14 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     stats["started"] = stats["selected"] - stats["deferred_cancelled"]
     _defer_boards(deferred_boards)
     futures.clear()
+
+    # Post-fetch consumer cost, per stage. This is what explains
+    # deferred_unconsumed: the fetch is done, so whatever is left is here.
+    consumer = {k: _pctl_ms(v) for k, v in timings.items() if v}
+    if consumer:
+        stats["consumer_ms"] = consumer
+        stats["consumer_total_ms"] = sum(
+            c.get("total_ms", 0) for c in consumer.values())
 
     if latencies:
         latencies.sort()

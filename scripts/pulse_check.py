@@ -125,6 +125,36 @@ def main() -> None:
             lat.sort()
             print(f"  fetch latency p50    : {lat[len(lat) // 2]:,}ms "
                   f"(median of per-tick medians)")
+        # POST-FETCH CONSUMER COST — the breakdown that explains
+        # deferred_unconsumed. The fetch is already done for those boards, so
+        # whatever is still costing time is in one of these stages.
+        stages: dict = {}
+        for t in ticks:
+            try:
+                m = json.loads(t.metadata_json or "{}")
+            except Exception:
+                continue
+            for stage, c in (m.get("consumer_ms") or {}).items():
+                acc = stages.setdefault(stage, {"n": 0, "total_ms": 0, "p50": [],
+                                                "p90": [], "p95": []})
+                acc["n"] += int(c.get("n") or 0)
+                acc["total_ms"] += int(c.get("total_ms") or 0)
+                for q in ("p50", "p90", "p95"):
+                    if c.get(q) is not None:
+                        acc[q].append(int(c[q]))
+        if stages:
+            grand = sum(v["total_ms"] for v in stages.values()) or 1
+            print("  post-fetch consumer cost per stage (24h):")
+            for stage, v in sorted(stages.items(),
+                                   key=lambda kv: -kv[1]["total_ms"]):
+                def _med(xs):
+                    return sorted(xs)[len(xs) // 2] if xs else 0
+                print(f"    {stage:<14} n={v['n']:>7,}  "
+                      f"p50={_med(v['p50']):>5}ms p90={_med(v['p90']):>6}ms "
+                      f"p95={_med(v['p95']):>6}ms  "
+                      f"share={100.0 * v['total_ms'] / grand:5.1f}%")
+            print("    ^ the stage with the largest SHARE is the remaining "
+                  "serial bottleneck.")
         if totals["selected"]:
             deferred_pct = 100.0 * totals["deferred"] / totals["selected"]
             print(f"  DEFERRAL RATE        : {deferred_pct:.1f}% of selected boards "
