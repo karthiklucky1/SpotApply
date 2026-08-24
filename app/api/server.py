@@ -783,6 +783,14 @@ async def _hot_lane():
         await asyncio.sleep(minutes * 60)
 
 
+def _loop_now() -> float:
+    """Monotonic clock for lane pacing. A named indirection so the fixed-rate
+    loop's timing is testable without sleeping through a real interval, and so
+    pacing can never be knocked sideways by a wall-clock/NTP adjustment."""
+    import time as _t
+    return _t.monotonic()
+
+
 async def _pulse_lane():
     """Freshness-guarantee scheduler (see app/strategy/pulse_lane.py): every
     tick polls whichever boards are due on their own next_poll_at cadence —
@@ -805,17 +813,39 @@ async def _pulse_lane():
     # the tick's own grace window — a truly hung tick's await is abandoned and
     # the next tick recovers via the self-healing lock.
     _budget = max(300, settings.pulse_tick_max_seconds + 120)
+    # FIXED-RATE, not fixed-delay. This slept a full `tick` AFTER the body, so
+    # the real period was tick_duration + tick — with a saturated ~197s body and
+    # a 60s setting that is a 257s period, i.e. 14 ticks/hour where the config
+    # says 60. A third of the lane's capacity was being given away to a sleep
+    # that was never meant to be additive. Now the sleep is only the REMAINDER
+    # of the interval, so a fast tick still lands on its cadence and a slow one
+    # stops paying twice.
+    #
+    # Overlap is impossible by construction: the body is awaited before the
+    # sleep is computed, so there is only ever one tick in flight from this
+    # loop. (run_pulse_tick also holds its own self-healing lock, which
+    # guards against a manual/admin invocation racing the lane.)
+    _min_yield = 1.0   # never spin: a tick that always overruns still yields
     while True:
+        _started = _loop_now()
         try:
             from app.strategy.pulse_lane import run_pulse_tick
             stats = await asyncio.wait_for(asyncio.to_thread(run_pulse_tick), timeout=_budget)
             if stats.get("boards"):
                 _log.info("Pulse tick done: %s", stats)
+        except asyncio.CancelledError:
+            _log.info("Pulse lane cancelled — shutting down")
+            raise
         except asyncio.TimeoutError:
             _log.warning("Pulse tick exceeded %ds budget — continuing", _budget)
         except Exception as e:
             _log.exception("Pulse lane error: %s", e)
-        await asyncio.sleep(tick)
+        elapsed = _loop_now() - _started
+        delay = max(_min_yield, tick - elapsed)
+        if elapsed >= tick:
+            _log.info("Pulse tick took %.0fs, over the %ds interval — starting the "
+                      "next one immediately (no additive sleep)", elapsed, tick)
+        await asyncio.sleep(delay)
 
 
 async def _matching_lane():
