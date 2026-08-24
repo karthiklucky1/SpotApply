@@ -50,6 +50,13 @@ from app.db.models import (
 
 log = logging.getLogger(__name__)
 
+# How many successful poll records accumulate before a bulk write. Small enough
+# that a tick which dies mid-way loses at most this many records (they simply
+# get re-fetched next tick, since their next_poll_at never moved), large enough
+# that the per-board round-trip cost effectively disappears: 50 boards go from
+# ~150 statements to 1-2.
+_POLL_FLUSH_BATCH = 50
+
 
 def _record_spend(uid: str | None, kind: str) -> None:
     """Per-user spend attribution for fast-path LLM calls — never raises."""
@@ -149,6 +156,72 @@ def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -
             session.commit()
     except Exception as e:
         log.debug("pulse: schedule update failed for %s: %s", slug, e)
+
+
+def _flush_polls(records: list, now: Optional[datetime] = None) -> int:
+    """Write a batch of SUCCESSFUL poll records in bounded bulk statements.
+
+    This is the throughput fix. ``_mark_polled`` does SELECT -> mutate ->
+    COMMIT once per board, and the tick ran it serially in the main thread for
+    every board it processed. Production measured ~481ms of post-fetch DB work
+    per board against a 519ms p50 FETCH — i.e. recording the poll cost as much
+    as fetching it — and the tick's deferral split came back
+    ``0 never-started / 0 running / 1,586 unprocessed``: every fetch had
+    completed and the consumer simply could not keep up. Fetch concurrency was
+    never the constraint, so adding workers would only have deepened the queue
+    in front of this function.
+
+    A successful poll needs NO READ. ``_due_boards`` already handed us the row
+    (so we have its primary key), and success sets ``failure_count = 0``
+    unconditionally rather than incrementing it — the only reason
+    ``_mark_polled`` reads first is the FAILURE path's read-modify-write and its
+    retirement decision. Failures stay on that path: they are rare, and their
+    semantics depend on the current counter.
+
+    Written as an ORM bulk UPDATE keyed by primary key, so every row in a batch
+    is addressed by its own id — a board can only ever update itself, and a
+    stale slug/ats pair cannot collide with another company's row the way a
+    ``WHERE slug = ... AND ats = ...`` lookup could.
+
+    ``last_new_job_at`` moves only for boards that actually produced something,
+    so the batch is split in two rather than writing back a possibly-stale
+    value for the rest. Yield tracking is what promotes a board to the fast
+    lane, so clobbering it would quietly change every future cadence decision.
+    """
+    if not records:
+        return 0
+    from sqlalchemy import update as _update
+    now = now or datetime.utcnow()
+    with_yield, without_yield = [], []
+    for r in records:
+        if r.get("id") is None:
+            continue
+        row = {"id": r["id"], "last_seen": now, "failure_count": 0,
+               "new_jobs_last_poll": int(r.get("new_jobs") or 0),
+               "next_poll_at": r["next_poll_at"], "poll_hash": r["poll_hash"]}
+        if r.get("job_count") is not None:
+            row["job_count"] = int(r["job_count"])
+        if r.get("new_jobs"):
+            row["last_new_job_at"] = now
+            with_yield.append(row)
+        else:
+            without_yield.append(row)
+    written = 0
+    try:
+        with get_session() as session:
+            for group in (with_yield, without_yield):
+                if group:
+                    session.execute(_update(CompanyRegistry), group)
+                    written += len(group)
+            session.commit()
+        return written
+    except Exception as e:
+        # Non-fatal: an unwritten poll record leaves next_poll_at where it was,
+        # so the board is simply re-selected next tick and re-fetched. Loud,
+        # because silently losing poll records would make the schedule drift.
+        log.warning("pulse: poll-record flush failed for %d board(s): %s",
+                    len(records), e)
+        return 0
 
 
 def _defer_boards(boards: list, now: Optional[datetime] = None) -> int:
@@ -551,6 +624,11 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     users_touched: set[str] = set()
     latencies: list[float] = []
     deferred_boards: list = []
+    # Successful poll records, flushed in bounded batches. Bounded, not
+    # accumulated to the end of the tick, for two reasons: a tick that dies mid
+    # way loses at most one batch rather than all its work, and the memory the
+    # records hold stays flat.
+    poll_records: list[dict] = []
     backoff = int(getattr(settings, "pulse_failure_backoff_minutes", 0) or 0)
     backoff_cap = int(settings.pulse_dead_interval_hours or 24)
     pool = _fetch_pool()
@@ -599,9 +677,14 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 # Unchanged board — zero downstream work. This is the common
                 # case that makes the hourly floor affordable.
                 stats["unchanged"] += 1
-                _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
-                             next_poll_at=datetime.utcnow() + _cadence(board, terms, now),
-                             poll_hash=sig)
+                poll_records.append({
+                    "id": getattr(board, "id", None), "job_count": len(raw),
+                    "new_jobs": 0, "poll_hash": sig,
+                    "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
+                })
+                if len(poll_records) >= _POLL_FLUSH_BATCH:
+                    _flush_polls(poll_records)
+                    poll_records.clear()
                 continue
 
             stats["changed"] += 1
@@ -627,12 +710,22 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # land on the fast lane immediately — reflect that in the cadence
             # we write in the same round-trip.
             board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
-            _mark_polled(board.slug, board.ats, job_count=len(raw), ok=True,
-                         new_jobs=new_here,
-                         next_poll_at=datetime.utcnow() + _cadence(board, terms, now),
-                         poll_hash=sig)
+            poll_records.append({
+                "id": getattr(board, "id", None), "job_count": len(raw),
+                "new_jobs": new_here, "poll_hash": sig,
+                "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
+            })
+            if len(poll_records) >= _POLL_FLUSH_BATCH:
+                _flush_polls(poll_records)
+                poll_records.clear()
     except _FutureTimeout:
         pass  # out of fetch budget — whatever is left is deferred, below
+    finally:
+        # Never leave a processed board unrecorded because the deadline landed
+        # between its fetch and its flush.
+        if poll_records:
+            _flush_polls(poll_records)
+            poll_records.clear()
 
     # Everything still in `futures` was never turned into a poll record. NOT
     # polled: each gets a short deferral and none of the registry fields a poll
