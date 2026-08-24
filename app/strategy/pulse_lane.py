@@ -129,7 +129,12 @@ def _cadence(row: CompanyRegistry, terms: set[str], now: datetime) -> timedelta:
         return timedelta(minutes=settings.pulse_fast_interval_minutes)
     if (row.job_count or 0) > 0:
         return timedelta(minutes=settings.pulse_floor_interval_minutes)
-    # Never held a job (or 404s en route to retirement) — daily retry.
+    # ZERO-YIELD: active, unwatched, nothing posted recently, and it has never
+    # held a job. Reached ONLY when job_count == 0, so nothing productive can
+    # land here — the three branches above claim every board that has ever had
+    # a posting or that a user follows. 59.2% of the active registry sits in
+    # this branch (scripts/zero_yield_boards.py), so its cadence is the single
+    # biggest claim on the lane's capacity.
     return timedelta(hours=settings.pulse_dead_interval_hours)
 
 
@@ -656,7 +661,10 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         "signature": [], "upsert_shared": [], "upsert_users": [], "flush": [],
     }
     backoff = int(getattr(settings, "pulse_failure_backoff_minutes", 0) or 0)
-    backoff_cap = int(settings.pulse_dead_interval_hours or 24)
+    # NOT pulse_dead_interval_hours. That knob is the ZERO-YIELD cadence, and
+    # borrowing it here meant raising the dead-board cadence silently raised the
+    # failure ceiling for productive boards too.
+    backoff_cap = int(getattr(settings, "pulse_failure_backoff_cap_hours", 0) or 24)
     pool = _fetch_pool()
     # Submit all fetches, then drain them IN COMPLETION ORDER. The old loop
     # walked them in SUBMISSION order, so one slow host at the head blocked the

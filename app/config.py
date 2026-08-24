@@ -457,7 +457,30 @@ class Settings(BaseSettings):
     pulse_lane_enabled: bool = True        # PULSE_LANE_ENABLED
     pulse_fast_interval_minutes: int = 5   # watchlist + recently-active boards
     pulse_floor_interval_minutes: int = 60 # every live board at least this often
-    pulse_dead_interval_hours: int = 24    # 404/empty boards retry cadence
+    # PULSE_DEAD_INTERVAL_HOURS — retry cadence for ZERO-YIELD boards only:
+    # active, not watched, no posting in pulse_active_days, and job_count == 0.
+    # A board with job_count > 0 never reaches this branch of _cadence.
+    #
+    # Raised 24 -> 72 on measured evidence, not intuition. The census
+    # (scripts/zero_yield_boards.py) found 31,219 of 52,698 active boards —
+    # 59.2% — holding zero jobs, 30,822 of them for over 30 days, and ALL of
+    # them fetching successfully (never_fetched = 0). They were consuming ~59.9%
+    # of the lane's real completed-fetch capacity to re-confirm emptiness on a
+    # daily cadence, while live boards sat at an ~8.7h effective revisit against
+    # a 60-minute promise.
+    #
+    # 72h rather than 7d because these boards are not proven dead, only quiet:
+    # a company that opens its first req should still be found within days, and
+    # anything that posts jumps straight back to the 5-minute fast lane on its
+    # next poll (last_new_job_at moves). Retirement stays off the table.
+    pulse_dead_interval_hours: int = 72
+    # PULSE_FAILURE_BACKOFF_CAP_HOURS — ceiling on the exponential backoff a
+    # board gets after a REAL fetch failure. Split out from
+    # pulse_dead_interval_hours, which it used to borrow: raising the zero-yield
+    # cadence would otherwise have tripled the failure ceiling for every board
+    # INCLUDING productive ones, which is a live-board cadence change smuggled
+    # in behind a dead-board setting. Two meanings, two knobs.
+    pulse_failure_backoff_cap_hours: int = 24
     pulse_active_days: int = 7             # "recently posted" = new job within N days
     pulse_tick_seconds: int = 60           # scheduler tick
     pulse_tick_max_seconds: int = 150      # HARD wall-clock cap per tick. The tick stops taking new work past this and reschedules the rest — so it always releases the lock promptly (a tick that ran serial LLM scoring for 20+ min once froze the whole lane). Keep < tick_seconds*3.
