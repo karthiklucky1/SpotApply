@@ -1,0 +1,23 @@
+====================================================================================================
+ROADMAP — the two independent levers, and what each is worth
+====================================================================================================
+measured in-model: 96.6% of polls find NO new posting.
+
+If an unchanged board can be confirmed by a conditional request at
+cost ratio r (vs a full fetch+parse+upsert), effective capacity is
+   B_eff = B / (changed_share + r * unchanged_share)
+
+scenario                                       fetch/h |     p50    p75    p90    p95 |   <60m
+----------------------------------------------------------------------------------------------------
+today: every poll a full fetch  +  baseline cadence     3,774 |    3.0h   4.5h   5.4h   6.1h |  16.2%
+today: every poll a full fetch  +  policy G        3,774 |    1.8h   3.8h   6.0h   7.2h |  34.6%
+
+conditional GET at 1/4 cost  +  baseline cadence    13,691 |     41m    61m    77m   1.6h |  73.5%
+conditional GET at 1/4 cost  +  policy G          13,691 |     29m    58m   1.6h   1.9h |  76.4%
+
+conditional GET at 1/10 cost  +  baseline cadence    28,855 |     17m    24m    38m    61m |  94.6%
+conditional GET at 1/10 cost  +  policy G         28,855 |     13m    27m    44m    54m |  96.9%
+
+Read the columns, not the rows: scheduling moves p50 and the <60m rate;
+cheap probes move the whole distribution by multiplying capacity. They
+compose, and neither alone reaches a 15-60 minute promise.
