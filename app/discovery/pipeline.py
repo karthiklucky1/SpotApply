@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import re
+from datetime import datetime
 from typing import List
 
 from sqlalchemy.exc import IntegrityError
@@ -159,6 +160,177 @@ SHARED_POOL_USER = "__shared__"
 # batch's keys into chunks and union the results.
 _DEDUPE_PREFETCH_CHUNK = 500
 
+# How stale ``last_seen`` must be before a re-seen posting is worth a write.
+#
+# THIS CONSTANT IS COUPLED TO THE POLL CADENCE, and that coupling was the
+# discovery consumer's whole cost. The prefetch snapshot skips a re-seen
+# posting with zero DB work only while its ``last_seen`` is inside this window;
+# past it, every unchanged posting on the board fell through to a per-job
+# session — SELECT the full row (description and all), UPDATE one timestamp,
+# COMMIT. Production's measured productive revisit was ~9.6h against a 6h
+# window, so the fast path essentially never fired: a 40-posting board went
+# from 2 statements to 82 (41x), which is the ~3.5s/changed-board that made
+# ``upsert_shared`` 76.7% of the consumer and left 37% of completed fetches
+# unprocessed. Worse, it was self-reinforcing — a slower consumer means fewer
+# fetches/hour means a longer revisit means the window is missed by more.
+#
+# The batched path below removes the coupling as a COST question (a stale
+# refresh is now one row in a bulk UPDATE, not a session), so this stays at 6h
+# purely as the freshness rule it was meant to be.
+_LAST_SEEN_REFRESH_SECONDS = 6 * 3600
+
+# Multi-row INSERT width. Job has ~30 columns, so 200 rows is ~6k bind
+# parameters — comfortably inside Postgres's 65,535 limit with room for the
+# widest row, and small enough that one statement stays well under Supabase's
+# statement_timeout.
+_BULK_INSERT_CHUNK = 200
+
+# How much deferred work _upsert holds before draining it. content_updates and
+# the queued inserts carry full job DESCRIPTIONS, and this process shares a
+# container with torch, FAISS and Chromium (docs/MEMORY.md), so the batches are
+# bounded rather than accumulated across a whole board. 500 postings is larger
+# than almost every real board — the flush is still effectively once per board —
+# while capping what a first-ever poll of a very large one can hold at once.
+_UPSERT_FLUSH_BATCH = 500
+
+# Bulk write helpers. Same shape as pulse_lane._flush_polls, and for the same
+# reason: these are blind writes keyed by primary key, so they need no read.
+
+
+def _flush_last_seen(ids: List[int], now: datetime) -> None:
+    """Refresh ``last_seen`` on re-seen postings — one statement per chunk.
+
+    The prefetch already told us the row exists and that its content is
+    unchanged; the per-job SELECT it replaces re-read the whole row (including
+    the description CLAUDE.md forbids on hot paths) to write one timestamp.
+    """
+    if not ids:
+        return
+    from sqlalchemy import update as _update
+    with get_session() as session:
+        for start in range(0, len(ids), _DEDUPE_PREFETCH_CHUNK):
+            chunk = ids[start:start + _DEDUPE_PREFETCH_CHUNK]
+            session.execute(
+                _update(Job.__table__)
+                .where(Job.__table__.c.id.in_(chunk))
+                .values(last_seen=now)
+            )
+        session.commit()
+
+
+def _flush_content_updates(rows: List[dict]) -> None:
+    """Write changed descriptions back — one executemany keyed by primary key.
+
+    ``embedding_id`` is cleared so the row is re-embedded, exactly as the
+    per-job path did.
+    """
+    if not rows:
+        return
+    from sqlalchemy import bindparam, update as _update
+    with get_session() as session:
+        stmt = (_update(Job.__table__)
+                .where(Job.__table__.c.id == bindparam("_id"))
+                .values(description=bindparam("_description"),
+                        content_hash=bindparam("_content_hash"),
+                        embedding_id=None,
+                        last_seen=bindparam("_last_seen")))
+        for start in range(0, len(rows), _DEDUPE_PREFETCH_CHUNK):
+            session.execute(stmt, rows[start:start + _DEDUPE_PREFETCH_CHUNK])
+        session.commit()
+
+
+def _build_job(r: "RawJob", content_hash: str, slug: str,
+               user_id: str | None, user_keywords: List[str] | None) -> "Job":
+    """Construct the row for a never-seen posting.
+
+    Shared by the batched and per-job paths so a new column can never be set on
+    one and forgotten on the other — the two would then disagree only for boards
+    that happen to take the fallback, which is the hardest kind of drift to see.
+    """
+    from datetime import datetime as _dt
+    from app.strategy.job_facets import compute as _job_facets
+    from app.strategy.on_role import compute as _on_role_for
+    now = _dt.utcnow()
+    job = Job(
+        source=JobSource(r.source),
+        external_id=r.external_id,
+        company=r.company,
+        title=r.title,
+        location=r.location,
+        remote=r.remote,
+        url=r.url,
+        description=r.description,
+        posted_at=r.posted_at,
+        first_seen=now,
+        last_seen=now,
+        content_hash=content_hash,
+        cross_source_slug=slug,
+        user_id=user_id,
+        # Answer the board's "my roles" question once, here, instead of with
+        # ~20 unindexable ILIKEs on every keystroke (twice — page and count).
+        # None when the owner has no roles set.
+        on_role=_on_role_for(r.title, user_keywords),
+    )
+    # Card-face facets from the text we already have in hand, so the board never
+    # has to load the posting to draw a salary chip or a sponsorship badge
+    # (app/strategy/job_facets.py).
+    _sal, _spons, _cap_exempt = _job_facets(
+        r.title, r.description, r.company, r.url, r.location)
+    job.salary_text = _sal
+    job.sponsorship_json = _spons
+    if _cap_exempt:
+        job.is_cap_exempt = True
+    return job
+
+
+def _bulk_insert_jobs(jobs: List["Job"]) -> List[int]:
+    """Insert new postings in multi-row batches, skipping conflicts.
+
+    Returns the ids actually created (losers of an insert race return nothing,
+    same as ``_insert_job_returning_id``). Dialect-aware for the same reason:
+    Postgres in production, SQLite locally and in tests. Any other dialect —
+    or any failure of the bulk statement — falls back to the per-job path so
+    this can never be the thing that stops discovery.
+    """
+    if not jobs:
+        return []
+    cols = [c.name for c in Job.__table__.columns if c.name != "id"]
+    with get_session() as session:
+        dialect = session.get_bind().dialect.name
+        try:
+            if dialect.startswith("postgres"):
+                from sqlalchemy.dialects.postgresql import insert as _ins
+            elif dialect == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert as _ins
+            else:
+                raise NotImplementedError(dialect)
+            new_ids: List[int] = []
+            for start in range(0, len(jobs), _BULK_INSERT_CHUNK):
+                chunk = jobs[start:start + _BULK_INSERT_CHUNK]
+                values = [{c: getattr(j, c) for c in cols} for j in chunk]
+                stmt = (_ins(Job.__table__).values(values)
+                        .on_conflict_do_nothing()
+                        .returning(Job.__table__.c.id))
+                new_ids.extend(row[0] for row in session.execute(stmt))
+            session.commit()
+            return new_ids
+        except Exception as e:
+            log.warning("Bulk job insert failed (%s) — falling back per-job: %s",
+                        dialect, e)
+            session.rollback()
+    out: List[int] = []
+    for job in jobs:
+        try:
+            with get_session() as session:
+                jid = _insert_job_returning_id(session, job)
+                if jid is not None:
+                    session.commit()
+                    out.append(jid)
+        except IntegrityError:
+            log.debug("IntegrityError (concurrent duplicate) skipped for '%s' @ '%s'",
+                      job.title, job.company)
+    return out
+
 
 def scraper_for(ats, slug: str, career_url: str | None = None):
     """Map a (ats, slug) to a live scraper instance, or None if unsupported.
@@ -304,7 +476,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     # by the batch's external_ids and cross-source slugs — egress becomes
     # O(batch) instead of O(pool). Chunked so each IN(...) stays well under
     # Supabase's statement_timeout.
-    by_key: dict = {}    # (source, external_id) -> (content_hash, last_seen)
+    # ``id`` is projected too: it is what lets a re-seen posting be written by
+    # PRIMARY KEY in a bulk statement instead of being re-SELECTed row by row.
+    by_key: dict = {}    # (source, external_id) -> (id, content_hash, last_seen)
     by_slug: dict = {}   # cross_source_slug -> source value
     prefetched = False
     batch_ext_ids = list({r.external_id for r in candidates if r.external_id})
@@ -323,13 +497,13 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     if not chunk:
                         continue
                     rows.extend(session.exec(
-                        select(Job.source, Job.external_id, Job.content_hash,
+                        select(Job.id, Job.source, Job.external_id, Job.content_hash,
                                Job.last_seen, Job.cross_source_slug)
                         .where(Job.user_id == user_id, col.in_(chunk))
                     ).all())
-        for src, ext, chash, lseen, slug in rows:
+        for jid, src, ext, chash, lseen, slug in rows:
             src_v = src.value if hasattr(src, "value") else str(src)
-            by_key[(src_v, ext)] = (chash, lseen)
+            by_key[(src_v, ext)] = (jid, chash, lseen)
             if slug and slug not in by_slug:
                 by_slug[slug] = src_v
         prefetched = True
@@ -338,18 +512,93 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         log.warning("Upsert prefetch failed (using per-job dedupe): %s", e)
 
     _now = datetime.utcnow()
+    # Work the prefetch has already fully decided, deferred into bulk statements
+    # and drained by _flush below (once per board for any realistic board size).
+    # Everything the snapshot CANNOT decide — a cross-source upgrade, or any
+    # candidate at all when the prefetch itself failed — still takes the per-job
+    # path below, unchanged.
+    touch_ids: List[int] = []          # re-seen, unchanged, last_seen stale
+    content_updates: List[dict] = []   # re-seen, description changed
+    pending_new: List[Job] = []        # never seen — one multi-row INSERT
+    # Rows queued for that INSERT, by dedupe key. A board that lists the same
+    # external_id twice used to have the second occurrence land on the row the
+    # first had already COMMITTED, so the later description won. Nothing is
+    # committed mid-batch any more, so the second occurrence has to find the
+    # queued row here instead — otherwise it would insert a duplicate.
+    pending_by_key: dict = {}
+
+    def _flush(force: bool = False) -> int:
+        """Drain the batches. BOUNDED, not accumulated to the end of the board —
+        the same reasoning as pulse_lane's _POLL_FLUSH_BATCH: content_updates
+        and pending_new hold full job DESCRIPTIONS, so a first-ever poll of a
+        large board would otherwise hold the whole thing in RSS at once, and
+        this process already shares a container with torch, FAISS and Chromium
+        (docs/MEMORY.md). Flushing in slices keeps the footprint flat and means
+        a board that dies mid-way keeps the work it already did."""
+        n = 0
+        if touch_ids and (force or len(touch_ids) >= _UPSERT_FLUSH_BATCH):
+            try:
+                _flush_last_seen(touch_ids, _now)
+            except Exception as e:
+                log.warning("Upsert last_seen flush failed for user %s: %s", user_id, e)
+            touch_ids.clear()
+        if content_updates and (force or len(content_updates) >= _UPSERT_FLUSH_BATCH):
+            try:
+                _flush_content_updates(content_updates)
+            except Exception as e:
+                log.warning("Upsert content flush failed for user %s: %s", user_id, e)
+            content_updates.clear()
+        if pending_new and (force or len(pending_new) >= _UPSERT_FLUSH_BATCH):
+            new_ids = _bulk_insert_jobs(pending_new)
+            n = len(new_ids)
+            FunnelTracker.record_many(new_ids, "discovered", True)
+            pending_new.clear()
+            pending_by_key.clear()
+        return n
+
     for r in candidates:
+        inserted += _flush()
         content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
+        slug = _cross_source_slug(r.company, r.title, r.location)
 
         if prefetched:
             hit = by_key.get((r.source, r.external_id))
             if hit:
-                prev_hash, prev_seen = hit
-                if prev_hash == content_hash and prev_seen is not None \
-                        and (_now - prev_seen).total_seconds() <= 6 * 3600:
-                    continue  # unchanged, recently-seen duplicate — no DB work
+                row_id, prev_hash, prev_seen = hit
+                if prev_hash == content_hash:
+                    if prev_seen is not None and \
+                            (_now - prev_seen).total_seconds() <= _LAST_SEEN_REFRESH_SECONDS:
+                        continue  # unchanged, recently-seen duplicate — no DB work
+                    if row_id is not None:
+                        # Stale but unchanged: one row in a bulk UPDATE. This is
+                        # the case that used to cost a session per posting, and
+                        # (given a revisit interval longer than the refresh
+                        # window) the case that describes almost every posting
+                        # on almost every changed board.
+                        touch_ids.append(row_id)
+                        by_key[(r.source, r.external_id)] = (row_id, prev_hash, _now)
+                        continue
+                elif row_id is not None:
+                    content_updates.append({
+                        "_id": row_id, "_description": r.description,
+                        "_content_hash": content_hash, "_last_seen": _now,
+                    })
+                    by_key[(r.source, r.external_id)] = (row_id, content_hash, _now)
+                    continue
+                else:
+                    queued = pending_by_key.get((r.source, r.external_id))
+                    if queued is not None:
+                        # Same posting, later in the same batch, different text.
+                        # Last one wins, exactly as it did when each insert
+                        # committed on its own.
+                        queued.description = r.description
+                        queued.content_hash = content_hash
+                        by_key[(r.source, r.external_id)] = (None, content_hash, _now)
+                        continue
+                # No primary key in the snapshot and nothing queued (should not
+                # happen) — fall through and let the per-job path resolve it.
             else:
-                slug_v = by_slug.get(_cross_source_slug(r.company, r.title, r.location))
+                slug_v = by_slug.get(slug)
                 if slug_v is not None:
                     try:
                         upgrades = (JobSource(r.source) in _DIRECT_ATS_SOURCES
@@ -358,6 +607,22 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         upgrades = False
                     if not upgrades:
                         continue  # cross-source duplicate with nothing to upgrade
+                    # else: a real upgrade — the per-job path below owns it.
+                else:
+                    # Neither key nor slug is known: a genuinely new posting.
+                    # The two SELECTs the per-job path would run here are the
+                    # ones the prefetch already answered.
+                    job = _build_job(r, content_hash, slug, user_id, user_keywords)
+                    pending_new.append(job)
+                    pending_by_key[(r.source, r.external_id)] = job
+                    # Keep the snapshot current so a later item in THIS batch
+                    # that duplicates this one skips without a round-trip. The
+                    # id is not known until the insert; None is enough to mark
+                    # the key as claimed, and `_now` keeps it inside the
+                    # refresh window so it is skipped rather than re-touched.
+                    by_key[(r.source, r.external_id)] = (None, content_hash, _now)
+                    by_slug.setdefault(slug, r.source)
+                    continue
 
         try:
             with get_session() as session:
@@ -460,35 +725,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         session.commit()
                     continue
 
-                job = Job(
-                    source=JobSource(r.source),
-                    external_id=r.external_id,
-                    company=r.company,
-                    title=r.title,
-                    location=r.location,
-                    remote=r.remote,
-                    url=r.url,
-                    description=r.description,
-                    posted_at=r.posted_at,
-                    first_seen=datetime.utcnow(),
-                    last_seen=datetime.utcnow(),
-                    content_hash=content_hash,
-                    cross_source_slug=slug,
-                    user_id=user_id,
-                    # Answer the board's "my roles" question once, here, instead
-                    # of with ~20 unindexable ILIKEs on every keystroke (twice —
-                    # page and count). None when the owner has no roles set.
-                    on_role=_on_role_for(r.title, user_keywords),
-                )
-                # Card-face facets from the text we already have in hand, so the
-                # board never has to load the posting to draw a salary chip or a
-                # sponsorship badge (app/strategy/job_facets.py).
-                _sal, _spons, _cap_exempt = _job_facets(
-                    r.title, r.description, r.company, r.url, r.location)
-                job.salary_text = _sal
-                job.sponsorship_json = _spons
-                if _cap_exempt:
-                    job.is_cap_exempt = True
+                job = _build_job(r, content_hash, slug, user_id, user_keywords)
                 # Let Postgres resolve the race instead of raising into it.
                 #
                 # The duplicate checks above run in a DIFFERENT transaction from
@@ -510,11 +747,13 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                 if prefetched:
                     # Keep the snapshot current so later items in THIS batch that
                     # duplicate a just-inserted job skip without a round-trip.
-                    by_key[(r.source, r.external_id)] = (content_hash, job.last_seen)
+                    by_key[(r.source, r.external_id)] = (new_id, content_hash, job.last_seen)
                     by_slug.setdefault(slug, r.source)
         except IntegrityError:
             log.debug("IntegrityError (concurrent duplicate) skipped for '%s' @ '%s'", r.title, r.company)
 
+    # Drain whatever is left: at most a handful of statements per board.
+    inserted += _flush(force=True)
     return inserted
 
 

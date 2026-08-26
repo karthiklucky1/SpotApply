@@ -32,6 +32,28 @@ class FunnelTracker:
             log.error("Funnel: Failed to record event: %s", e)
 
     @staticmethod
+    def record_many(job_ids: list, stage: str, passed: bool,
+                    reason: Optional[str] = None) -> None:
+        """One session + one commit for a batch of identical-stage events.
+
+        ``record`` opens its own session and commits per call. That is fine at
+        the one-off call sites, but discovery records "discovered" once per
+        INSERTED job, so a board that drops fifty new postings paid fifty
+        round-trips to Supabase on top of the insert itself.
+        """
+        if not job_ids:
+            return
+        try:
+            now = datetime.utcnow()
+            with get_session() as session:
+                for jid in job_ids:
+                    session.add(FunnelEvent(job_id=jid, stage=stage, passed=passed,
+                                            reason=reason, created_at=now))
+                session.commit()
+        except Exception as e:
+            log.error("Funnel: Failed to record %d %s events: %s", len(job_ids), stage, e)
+
+    @staticmethod
     def get_summary(days: int = 30) -> Dict[str, Any]:
         """Get funnel performance summary for the last N days."""
         cutoff = datetime.utcnow() - timedelta(days=days)
