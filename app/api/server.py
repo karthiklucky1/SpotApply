@@ -4679,13 +4679,24 @@ def freshness_stats(request: Request) -> dict:
     latencies = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
                  for (posted, disc) in recent]
     latencies = [x for x in latencies if x < 24 * 30]  # drop garbage timestamps
-    alert_lat = []
+    # Two lists on purpose. Every alert counts toward fresh_alerts_7d, but
+    # median_post_to_alert_min advertises a POST-to-alert number, and an alert
+    # fired on KNOWN age (no trustworthy posted_at — see
+    # app/strategy/fresh_alerts.py) has no posting reference to measure from.
+    # Counting those would quietly turn the advertised figure into a detection
+    # latency. Legacy events predate `posted_trusted` and are kept.
+    alert_count, alert_lat = 0, []
     for e in alerts:
         try:
-            alert_lat.append(_json.loads(e.metadata_json or "{}").get("latency_min"))
+            meta = _json.loads(e.metadata_json or "{}")
         except Exception:
-            pass
-    alert_lat = [x for x in alert_lat if isinstance(x, (int, float))]
+            continue
+        v = meta.get("latency_min")
+        if not isinstance(v, (int, float)):
+            continue
+        alert_count += 1
+        if meta.get("posted_trusted", True):
+            alert_lat.append(v)
 
     med = lambda xs: round(statistics.median(xs), 1) if xs else None
 
@@ -4877,7 +4888,7 @@ def freshness_stats(request: Request) -> dict:
         "median_detection_latency_hours": med(latencies),
         "detected_within_24h_pct": (round(100 * sum(1 for x in latencies if x <= 24) / len(latencies))
                                     if latencies else None),
-        "fresh_alerts_7d": len(alert_lat),
+        "fresh_alerts_7d": alert_count,
         "median_post_to_alert_min": med(alert_lat),
         "hot_lane_last_run": hot_last_at,
         "hot_lane_runs_24h": hot_runs_24h,
@@ -4949,14 +4960,18 @@ def public_freshness() -> dict:
     lat_h = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
              for posted, disc in recent]
     lat_h = [x for x in lat_h if x < 24 * 30]
+    # Same split as /api/freshness-stats: alerts fired on KNOWN age carry no
+    # trustworthy posting reference, so they are counted but not averaged into
+    # a "post to alert" figure.
     alert_min = []
     for e in alerts:
         try:
-            v = _json.loads(e.metadata_json or "{}").get("latency_min")
-            if isinstance(v, (int, float)):
-                alert_min.append(v)
+            meta = _json.loads(e.metadata_json or "{}")
         except Exception:
-            pass
+            continue
+        v = meta.get("latency_min")
+        if isinstance(v, (int, float)) and meta.get("posted_trusted", True):
+            alert_min.append(v)
     med = lambda xs: round(statistics.median(xs), 1) if xs else None
 
     result = {

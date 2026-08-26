@@ -11,10 +11,21 @@ from app.db.models import FunnelEvent, Job, JobSource, UserNotification
 
 
 def _mk_job(session, i, hours_old, score=80.0, source=JobSource.LEVER):
+    """A job that is ``hours_old`` old on BOTH freshness axes.
+
+    ``first_seen`` is set alongside ``posted_at`` deliberately. The alert gate
+    reads two independent ages (app/common/freshness.py: how long WE have held
+    the posting, and what the source claims), so a fixture that moved only
+    ``posted_at`` left the known age at zero and could not express "this job is
+    old" at all. Tests that need the two axes to DISAGREE live in
+    tests/test_fresh_alert_freshness_bounds.py.
+    """
     job = Job(
         user_id=None, source=source, external_id=f"fa-{i}", company=f"Co{i}",
         title="Backend Engineer", url=f"https://jobs.lever.co/co{i}/x",
         description="jd", rerank_score=score, blended_score=score,
+        first_seen=datetime.utcnow() - timedelta(hours=hours_old),
+        discovered_at=datetime.utcnow() - timedelta(hours=hours_old),
         posted_at=datetime.utcnow() - timedelta(hours=hours_old),
     )
     session.add(job)
