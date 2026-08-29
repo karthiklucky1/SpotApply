@@ -235,6 +235,15 @@ def _flush_polls(records: list, now: Optional[datetime] = None) -> int:
         with get_session() as session:
             for group in (with_yield, without_yield):
                 if group:
+                    # ASCENDING PRIMARY KEY, always. Postgres takes a row lock
+                    # per UPDATE and holds it to commit, so two transactions
+                    # that touch an overlapping set of registry rows in
+                    # DIFFERENT orders can deadlock — and the board order here
+                    # comes from _due_boards, which sorts by next_poll_at, so it
+                    # varies tick to tick. A single fixed order across every
+                    # writer means the worst case is one waiting on the other.
+                    # Free: the rows are already in memory.
+                    group.sort(key=lambda r: r["id"])
                     session.execute(_update(CompanyRegistry), group)
                     written += len(group)
             session.commit()
@@ -293,6 +302,11 @@ def _defer_boards(boards: list, now: Optional[datetime] = None) -> int:
         return 0
     try:
         with get_session() as session:
+            # Same fixed lock order as _flush_polls — see the note there. These
+            # two write the same table and can be in flight against overlapping
+            # rows, so they must agree on the order or they are each other's
+            # deadlock partner.
+            rows.sort(key=lambda r: r["id"])
             session.execute(_update(CompanyRegistry), rows)
             session.commit()
         return len(rows)

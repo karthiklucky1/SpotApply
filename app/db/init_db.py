@@ -34,6 +34,35 @@ if settings.use_supabase:
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=True,
         pool_recycle=280,      # under Supabase's ~5-min pooler idle timeout
+        # Collapse executemany UPDATE/DELETE into batched round trips.
+        #
+        # SQLAlchemy 2.0's psycopg2 default is already "values_only", which
+        # batches INSERT and nothing else. Every executemany UPDATE therefore
+        # still went one statement per row: the pulse lane's ~50-row registry
+        # flush was ~50 cross-region round trips, measured at ~3.7-3.8s per
+        # batch and ~22s of every tick. Measured here against a real
+        # PostgreSQL 16 with log_statement='all': 50 rows go from 50 command
+        # strings to 1.
+        #
+        # THE DOCUMENTED COST is that psycopg2's execute_batch makes MULTI-row
+        # rowcount meaningless, so SQLAlchemy flips supports_sane_multi_rowcount
+        # to False. That is the designed mitigation, not a surprise: it tells
+        # the ORM to stop asserting on executemany rowcounts. Verified safe for
+        # this codebase specifically —
+        #   * supports_sane_rowcount stays True, so SINGLE-statement rowcount is
+        #     unchanged. That is what finals_budget._register reads
+        #     (`if not res.rowcount: INSERT`), and it is the only load-bearing
+        #     rowcount in the app; the others (retention, account deletion,
+        #     init_db backfill) are single statements too.
+        #   * there is no version_id_col, no __mapper_args__ and no
+        #     StaleDataError handler anywhere in app/, so the ORM staleness
+        #     machinery this flag guards is not in use.
+        #   * the only executemany UPDATEs are pulse_lane._flush_polls /
+        #     _defer_boards and discovery.pipeline._flush_content_updates, none
+        #     of which read a rowcount.
+        # tests/test_pg_executemany_batching.py re-proves all of this against a
+        # live PostgreSQL when POSTGRES_TEST_URL is set.
+        executemany_mode="values_plus_batch",
         connect_args={
             "connect_timeout": 10,
             "keepalives": 1,

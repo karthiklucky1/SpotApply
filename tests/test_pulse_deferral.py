@@ -185,6 +185,80 @@ def test_defer_boards_handles_an_empty_batch():
     _cleanup()
 
 
+# ── 1b. Registry batches are written in a fixed lock order ───────────────────
+
+def _captured_order(monkeypatch, call):
+    """The row order actually handed to the executemany."""
+    seen = []
+    real = pulse_lane.get_session
+
+    class _Spy:
+        def __init__(self, s):
+            self._s = s
+
+        def __getattr__(self, k):
+            return getattr(self._s, k)
+
+        def execute(self, stmt, params=None, *a, **kw):
+            if isinstance(params, list):
+                seen.append([p.get("id") for p in params])
+            return self._s.execute(stmt, params, *a, **kw) if params is not None \
+                else self._s.execute(stmt, *a, **kw)
+
+    class _Ctx:
+        def __enter__(self):
+            self._cm = real()
+            return _Spy(self._cm.__enter__())
+
+        def __exit__(self, *a):
+            return self._cm.__exit__(*a)
+
+    monkeypatch.setattr(pulse_lane, "get_session", _Ctx)
+    call()
+    return seen
+
+
+def test_deferrals_are_written_in_ascending_primary_key_order(monkeypatch):
+    """Postgres holds a row lock per UPDATE until commit, so two transactions
+    touching an overlapping set of registry rows in DIFFERENT orders deadlock.
+    The board order here comes from _due_boards (sorted by next_poll_at), which
+    varies tick to tick — so the write must impose its own fixed order."""
+    init_db()
+    _cleanup()
+    for i in range(8):
+        _board(f"ord-{i}")
+    boards = list(_mine())
+    boards.reverse()          # hand them over in the worst possible order
+
+    batches = _captured_order(monkeypatch, lambda: pulse_lane._defer_boards(boards))
+    assert batches, "no executemany was issued"
+    for ids in batches:
+        assert ids == sorted(ids), f"deferral batch not in ascending id order: {ids}"
+    _cleanup()
+
+
+def test_poll_records_are_written_in_ascending_primary_key_order(monkeypatch):
+    """Same fixed order for the success path — _flush_polls and _defer_boards
+    write the same table and can be in flight against overlapping rows, so they
+    must agree or they are each other's deadlock partner."""
+    init_db()
+    _cleanup()
+    ids = [_board(f"ordp-{i}") for i in range(8)]
+    now = datetime.utcnow()
+    # Interleave yielding and non-yielding boards: _flush_polls splits them into
+    # two groups, and BOTH must be ordered.
+    records = [{"id": bid, "job_count": 3, "new_jobs": (n % 2),
+                "poll_hash": f"h{n}", "next_poll_at": now + timedelta(minutes=60)}
+               for n, bid in enumerate(reversed(ids))]
+
+    batches = _captured_order(monkeypatch,
+                              lambda: pulse_lane._flush_polls(records, now))
+    assert len(batches) == 2, f"expected a yield/no-yield split, got {len(batches)}"
+    for group in batches:
+        assert group == sorted(group), f"poll batch not in ascending id order: {group}"
+    _cleanup()
+
+
 # ── 2. A completed fetch schedules normally ──────────────────────────────────
 
 def test_completed_fetch_schedules_on_the_normal_cadence():
