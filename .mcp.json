@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "railway": {
+      "type": "stdio",
+      "command": "railway",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}
