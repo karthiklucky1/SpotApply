@@ -540,13 +540,30 @@ def _fast_path_user(uid: str, score_budget: int,
 
 # ── One scheduler tick ────────────────────────────────────────────────────────
 
-# One tick at a time — but SELF-HEALING. A plain lock froze the whole lane once
-# a single slow tick (serial LLM scoring for 20+ min) held it. Now: a tick is
-# hard-bounded by pulse_tick_max_seconds (it stops taking new work and releases
-# promptly), and if a holder ever overruns a generous grace window it's treated
-# as dead and the next tick proceeds anyway — the lane can never freeze forever.
+# ONE CONSUMER AT A TIME. Not "usually one" — the lock is never bypassed.
+#
+# This used to be a self-healing lock: if a holder overran a grace window it was
+# presumed dead and the next tick PROCEEDED WITHOUT THE LOCK. The premise was
+# wrong. A tick that overruns is not dead, it is slow — and a slow tick is
+# exactly the condition that produces the overrun, so the "recovery" fired
+# precisely when a second consumer was most harmful. It fired once on the P2
+# deployment, and historically produced overlapping consumers and registry
+# deadlocks: two threads writing the same CompanyRegistry rows in whatever order
+# their board lists happened to take.
+#
+# Freezing was the fear the steal was meant to answer, and it is now answered
+# where it belongs instead:
+#   * the consumer loop stops taking work at `deadline` (see the deadline check
+#     in _run_pulse_tick_locked) rather than running until it happens to finish;
+#   * whatever it did not consume is DEFERRED, not lost;
+#   * the scheduler in server.py tracks the worker Future across its own
+#     asyncio timeout and will not launch another tick until that Future is
+#     actually done — asyncio.wait_for cancels the AWAIT, never the thread.
+# So a tick bounds itself, and a slow one delays the lane instead of doubling it.
 _TICK_LOCK = threading.Lock()
-_TICK_DEADLINE = [0.0]  # monotonic time by which the current holder must be done
+# Monotonic time the current holder acquired, or 0.0 when free. Diagnostic only:
+# nothing branches on it, so it can never become a bypass again.
+_TICK_STARTED = [0.0]
 
 # One fetch pool for the life of the process — see scoring_lane._worker_pool.
 # A fresh 24-thread pool per 60s tick, abandoned with shutdown(wait=False), was
@@ -571,22 +588,24 @@ def run_pulse_tick() -> dict:
     """Poll every board that's due, route changes, fast-path new jobs to alerts.
     Returns tick stats; records a ``pulse_tick`` FunnelEvent when work was done."""
     now_m = time.monotonic()
-    got = _TICK_LOCK.acquire(blocking=False)
-    if not got:
-        if now_m < _TICK_DEADLINE[0]:
-            log.info("Pulse tick skipped — previous tick still running")
-            return {"boards": 0, "skipped": "previous tick still running"}
-        # Holder blew past its grace window → hung/abandoned thread. Proceed
-        # without the lock so the lane recovers instead of freezing forever.
-        log.warning("Pulse tick: prior tick overran its grace window — proceeding")
+    if not _TICK_LOCK.acquire(blocking=False):
+        # A consumer is running. There is no branch that proceeds anyway.
+        started = _TICK_STARTED[0]
+        age = (now_m - started) if started else 0.0
+        log.warning(
+            "Pulse tick skipped — a consumer is still running (holder age %.0fs, "
+            "tick cap %ds). Not starting a second one.",
+            age, settings.pulse_tick_max_seconds)
+        return {"boards": 0, "selected": 0,
+                "skipped": "previous tick still running",
+                "holder_age_s": round(age, 1)}
+    _TICK_STARTED[0] = now_m
     work_deadline = now_m + settings.pulse_tick_max_seconds
-    # Grace: work deadline + a cushion for in-flight ops to drain before a steal.
-    _TICK_DEADLINE[0] = work_deadline + 90
     try:
         return _run_pulse_tick_locked(work_deadline)
     finally:
-        if got:
-            _TICK_LOCK.release()
+        _TICK_STARTED[0] = 0.0
+        _TICK_LOCK.release()
 
 
 def _run_pulse_tick_locked(deadline: float) -> dict:
@@ -617,6 +636,10 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
              "started": 0, "fetch_ok": 0, "fetch_failed": 0, "unsupported": 0,
              "deferred": 0, "deferred_cancelled": 0, "deferred_running": 0,
              "deferred_unconsumed": 0,
+             # 1 when the consumer stopped on the tick's wall clock rather than
+             # running out of futures — the honest signal that the tick is
+             # capacity-limited downstream of the fetch.
+             "consumer_deadline_hit": 0,
              "unchanged": 0, "changed": 0, "fetched_jobs": 0,
              "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0}
     # RESERVE ~40% of the budget for SCORING. During the bootstrap backlog the
@@ -675,6 +698,22 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     futures = {pool.submit(_fetch, b): b for b in boards}
     try:
         for fut in _as_completed(list(futures), timeout=max(0.0, fetch_deadline - time.monotonic())):
+            # HARD STOP on the tick's own wall clock.
+            #
+            # The as_completed timeout only bounds WAITING. Once a pile of
+            # futures is already done it yields them back to back with no wait
+            # at all, so the consumer could run arbitrarily far past `deadline`
+            # — which is how a 150s-capped tick reached the scheduler's 300s
+            # asyncio timeout and left a worker thread running underneath it.
+            #
+            # Checked BEFORE the pop, deliberately. A board only leaves
+            # `futures` once we are committed to consuming it, so anything we
+            # stop short of is still in the dict and is DEFERRED by the block
+            # after this loop. That is what keeps the telemetry contract true:
+            # a board is completed or deferred, never both and never neither.
+            if time.monotonic() >= deadline:
+                stats["consumer_deadline_hit"] = 1
+                break
             board = futures.pop(fut, None)
             if board is None:
                 continue

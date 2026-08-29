@@ -800,6 +800,15 @@ async def _pulse_lane():
     import logging
     from app.config import settings
     _log = logging.getLogger("pulse_lane")
+
+    class _StillRunning(Exception):
+        """A previous tick's worker thread has not returned yet.
+
+        Raised and caught inside this loop only, so "skip this cycle" takes the
+        same path as any other early exit and still pays the pacing sleep at the
+        bottom — rather than an early `continue` that would bypass it and spin.
+        """
+
     if not settings.direct_ats_enabled:
         _log.info("Pulse lane disabled (direct_ats_enabled=False)")
         return
@@ -808,10 +817,11 @@ async def _pulse_lane():
               "(fast=%dm floor=%dm)", tick, settings.pulse_fast_interval_minutes,
               settings.pulse_floor_interval_minutes)
     await asyncio.sleep(150)  # let boot + migrations settle
-    # The tick self-bounds to pulse_tick_max_seconds (+ a drain cushion) and its
-    # lock is self-healing, so this outer timeout is only a backstop just above
-    # the tick's own grace window — a truly hung tick's await is abandoned and
-    # the next tick recovers via the self-healing lock.
+    # The tick self-bounds to pulse_tick_max_seconds, so this outer timeout is
+    # only a backstop above it. Note what it can and cannot do: it abandons the
+    # AWAIT, never the thread. asyncio.to_thread has no way to interrupt running
+    # Python, so a tick that blows the budget is still executing afterwards.
+    # That is why the timeout below parks the Future instead of forgetting it.
     _budget = max(300, settings.pulse_tick_max_seconds + 120)
     # FIXED-RATE, not fixed-delay. This slept a full `tick` AFTER the body, so
     # the real period was tick_duration + tick — with a saturated ~197s body and
@@ -821,23 +831,57 @@ async def _pulse_lane():
     # of the interval, so a fast tick still lands on its cadence and a slow one
     # stops paying twice.
     #
-    # Overlap is impossible by construction: the body is awaited before the
-    # sleep is computed, so there is only ever one tick in flight from this
-    # loop. (run_pulse_tick also holds its own self-healing lock, which
-    # guards against a manual/admin invocation racing the lane.)
+    # Overlap is impossible by construction, and "by construction" now means the
+    # WORKER THREAD, not just the await.
+    #
+    # The old loop awaited `wait_for(to_thread(run_pulse_tick), _budget)`. On
+    # timeout that raises, the await is abandoned — and the thread runs on,
+    # invisible. The loop then looped, called run_pulse_tick again, and the only
+    # thing standing between that and two live consumers was a lock that would
+    # deliberately let itself be bypassed once the first tick looked overdue.
+    # Both halves of that are gone: the lock is never bypassed, and this loop
+    # keeps the abandoned Future and refuses to launch another tick until it is
+    # genuinely done.
     _min_yield = 1.0   # never spin: a tick that always overruns still yields
+    _inflight = None   # a tick whose await we gave up on, still running
     while True:
         _started = _loop_now()
         try:
+            if _inflight is not None:
+                if not _inflight.done():
+                    _log.error(
+                        "Pulse tick from a previous cycle is STILL RUNNING past "
+                        "its %ds budget — not starting another consumer.", _budget)
+                    raise _StillRunning
+                # It finished after we stopped waiting. Reap it so the exception
+                # (if any) is retrieved and not reported as never-consumed.
+                try:
+                    _inflight.result()
+                except Exception as e:      # noqa: BLE001 - diagnostic only
+                    _log.warning("Late pulse tick finished with an error: %s", e)
+                else:
+                    _log.info("Late pulse tick finished; resuming normal cadence")
+                _inflight = None
+
             from app.strategy.pulse_lane import run_pulse_tick
-            stats = await asyncio.wait_for(asyncio.to_thread(run_pulse_tick), timeout=_budget)
-            if stats.get("boards"):
-                _log.info("Pulse tick done: %s", stats)
+            _task = asyncio.ensure_future(asyncio.to_thread(run_pulse_tick))
+            # asyncio.wait (not wait_for): on timeout it returns, it does not
+            # cancel. We want the Future to keep existing so we can track it.
+            _done, _ = await asyncio.wait({_task}, timeout=_budget)
+            if _task in _done:
+                stats = _task.result()
+                if stats.get("boards"):
+                    _log.info("Pulse tick done: %s", stats)
+            else:
+                _inflight = _task
+                _log.error(
+                    "Pulse tick exceeded %ds budget — its worker thread cannot be "
+                    "cancelled, so the lane pauses until it returns.", _budget)
+        except _StillRunning:
+            pass
         except asyncio.CancelledError:
             _log.info("Pulse lane cancelled — shutting down")
             raise
-        except asyncio.TimeoutError:
-            _log.warning("Pulse tick exceeded %ds budget — continuing", _budget)
         except Exception as e:
             _log.exception("Pulse lane error: %s", e)
         elapsed = _loop_now() - _started
