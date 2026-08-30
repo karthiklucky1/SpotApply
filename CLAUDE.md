@@ -215,6 +215,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **DB discipline:** NEVER hold a session across an LLM call (scoring lane is
   read → LLM → idempotent write-back). Pool is env-tunable (`DB_POOL_SIZE` 10 /
   `DB_MAX_OVERFLOW` 20) — the old 5+10 starved funnel/web when lanes overlapped.
+  Every MULTI-ROW companyregistry write is per-PK executemany, ascending id,
+  ONE monotonic transaction per homogeneous group, wrapped in
+  `app.common.db_retry.run_with_deadlock_retry` (all such writers are
+  idempotent). Piecewise-sorted groups in one txn deadlocked production
+  (68-99/day pre-single-consumer; once after). Guard: `test_registry_lock_order`.
 - **Memory discipline** (`docs/MEMORY.md` — one container holds torch + models +
   FAISS + all lanes + Chromium): ALL Playwright launches go through
   `app.common.browser.browser_slot` (`BROWSER_MAX_CONCURRENCY`, default 1 — each
@@ -280,7 +285,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   disagree) · `grounding_enforcement` (3 states; "never ran" ≠ passed) ·
   `pulse_deferral` (a board never fetched is never recorded as polled) ·
   `expiry_semantics` (the two freshness bounds, and that expiry stamps aren't
-  counted as scoring).
+  counted as scoring) · `registry_lock_order` (every multi-row companyregistry
+  txn locks ascending-PK; the deadlock class) · `signature_stability` (poll
+  hashes come from listing-phase entries, immune to detail-fetch jitter; a
+  volatile hash never overwrites the baseline).
 - **Tests must clean up only their OWN rows.** A wholesale `delete(Job)` /
   `delete(CompanyRegistry)` takes out fixtures other files already built, which
   is a suite that fails differently every run. Prefix your rows and delete by

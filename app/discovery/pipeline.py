@@ -825,49 +825,92 @@ def record_board_failure(source_name: str, slug: str | None, error: str) -> None
 
 
 def record_board_failures_bulk(failures: list) -> int:
-    """Retire many failed boards in ONE session/commit.
+    """Retire many failed boards in bulk, in a FIXED lock order.
 
     ``failures`` = [(slug, source_name, error), …]. Same policy as
-    record_board_failure (404 → retire now; else after
-    BOARD_DEACTIVATE_AFTER_FAILURES), but batched so pruning hundreds of dead
-    boards after a concurrent fetch is a single round-trip, not one per board.
-    Returns the number of boards deactivated."""
+    record_board_failure (429 → back off, never retire; 404 → retire now; else
+    retire after BOARD_DEACTIVATE_AFTER_FAILURES), but batched: ONE read for
+    the whole set instead of a SELECT per board, and the writes issued as
+    per-primary-key UPDATEs in ASCENDING id order — the same fixed order every
+    other multi-row companyregistry writer uses (see pulse_lane._flush_polls).
+    The previous version mutated ORM rows in fetch-completion order and let the
+    flush decide the UPDATE order — an implementation detail nothing pinned,
+    racing the pulse lane's batches on overlapping rows.
+
+    The three SET shapes (throttle / plain failure / retirement) each get their
+    own sorted executemany in their own transaction: executemany needs
+    homogeneous keys, and writing untouched columns back would race the pulse
+    writers on next_poll_at. Atomicity across shapes buys nothing — the boards
+    are independent. Returns the number of boards deactivated."""
+    from sqlalchemy import update as _update
+    from app.common.db_retry import run_with_deadlock_retry
+
+    wanted: dict[tuple[str, JobSource], str] = {}
+    for slug, source_name, error in failures:
+        if not slug:
+            continue
+        try:
+            ats = JobSource(source_name)
+        except ValueError:
+            continue
+        wanted[(slug, ats)] = error or ""
+    if not wanted:
+        return 0
+
     deactivated = 0
     try:
         with get_session() as session:
-            for slug, source_name, error in failures:
-                if not slug:
-                    continue
-                try:
-                    ats = JobSource(source_name)
-                except ValueError:
-                    continue
-                row = session.exec(
-                    select(CompanyRegistry)
-                    .where(CompanyRegistry.slug == slug)
-                    .where(CompanyRegistry.ats == ats)
-                ).first()
-                if not row or not row.is_active:
-                    continue
-                row.last_error = (error or "")[:300]
-                if _is_throttled(error):
-                    # Same policy as record_board_failure: back off, never retire.
-                    from datetime import datetime as _dt, timedelta as _td
-                    row.next_poll_at = _dt.utcnow() + _td(
-                        hours=THROTTLED_BOARD_BACKOFF_HOURS)
-                    session.add(row)
-                    continue
-                row.failure_count = (row.failure_count or 0) + 1
-                is_404 = "404" in (error or "")
-                if is_404 or row.failure_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
-                    row.is_active = False
-                    row.inactive_reason = (
-                        "board_not_found (404)" if is_404
-                        else f"unreachable x{row.failure_count}"
-                    )
-                    deactivated += 1
-                session.add(row)
-            session.commit()
+            rows = session.exec(
+                select(CompanyRegistry.id, CompanyRegistry.slug,
+                       CompanyRegistry.ats, CompanyRegistry.failure_count)
+                .where(CompanyRegistry.slug.in_({s for s, _ in wanted}))
+                .where(CompanyRegistry.is_active == True)  # noqa: E712
+                .order_by(CompanyRegistry.id.asc())
+            ).all()
+
+        throttled_rows, failed_rows, retired_rows = [], [], []
+        for rid, slug, ats, failure_count in rows:
+            error = wanted.get((slug, ats))
+            if error is None:
+                continue
+            last_error = error[:300]
+            if _is_throttled(error):
+                # Back off, never retire: a 429 is about our request rate, not
+                # the board, and it must not count toward retirement.
+                from datetime import datetime as _dt, timedelta as _td
+                throttled_rows.append({
+                    "id": rid, "last_error": last_error,
+                    "next_poll_at": _dt.utcnow() + _td(
+                        hours=THROTTLED_BOARD_BACKOFF_HOURS),
+                })
+                continue
+            new_count = (failure_count or 0) + 1
+            is_404 = "404" in error
+            if is_404 or new_count >= BOARD_DEACTIVATE_AFTER_FAILURES:
+                retired_rows.append({
+                    "id": rid, "last_error": last_error,
+                    "failure_count": new_count, "is_active": False,
+                    "inactive_reason": ("board_not_found (404)" if is_404
+                                        else f"unreachable x{new_count}"),
+                })
+            else:
+                failed_rows.append({
+                    "id": rid, "last_error": last_error,
+                    "failure_count": new_count,
+                })
+
+        for group in (throttled_rows, failed_rows, retired_rows):
+            if not group:
+                continue
+            group.sort(key=lambda r: r["id"])
+
+            def _write(g=group):
+                with get_session() as session:
+                    session.execute(_update(CompanyRegistry), g)
+                    session.commit()
+
+            run_with_deadlock_retry("board-failure bulk write", _write)
+        deactivated = len(retired_rows)
     except Exception as e:
         log.debug("record_board_failures_bulk failed: %s", e)
     return deactivated

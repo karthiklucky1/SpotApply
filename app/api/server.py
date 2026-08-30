@@ -8517,39 +8517,19 @@ def update_target_companies(request: Request, body: TargetCompaniesUpdate) -> di
         session.commit()
 
     # Pull matching boards forward so a freshly-followed company is checked
-    # within minutes, not whenever its floor slot next arrives.
+    # within minutes, not whenever its floor slot next arrives. The write lives
+    # in pulse_lane next to the other registry batch writers so it shares their
+    # ascending-primary-key lock order — the in-place version here issued
+    # un-ordered `UPDATE … WHERE id IN (batch)` statements, whose row-lock
+    # order is the executor's scan order: a deadlock partner aimed at exactly
+    # the boards the pulse lane polls most.
     try:
-        from datetime import datetime as _dt_now
-        from app.strategy.pulse_lane import _norm
+        from app.strategy.pulse_lane import _norm, pull_boards_forward
         terms = {_norm(c) for c in cleaned if _norm(c)}
+        touched = pull_boards_forward(terms)
         if terms:
-            from app.db.models import CompanyRegistry
-            now = _dt_now.utcnow()
-            with get_session() as session:
-                # Narrow projection — matching in Python needs only these three
-                # columns, never the full registry rows.
-                rows = session.exec(
-                    select(CompanyRegistry.id, CompanyRegistry.slug,
-                           CompanyRegistry.company_name)
-                    .where(CompanyRegistry.is_active == True)  # noqa: E712
-                ).all()
-                due_ids = []
-                for rid, slug, cname in rows:
-                    slug_n = _norm(slug)
-                    name_n = _norm(cname or "")
-                    if any(t == slug_n or t == name_n
-                           or (len(t) >= 4 and (t in slug_n or t in name_n)) for t in terms):
-                        due_ids.append(rid)
-                touched = len(due_ids)
-                for start in range(0, len(due_ids), 500):
-                    batch = due_ids[start:start + 500]
-                    session.execute(
-                        CompanyRegistry.__table__.update()
-                        .where(CompanyRegistry.id.in_(batch))
-                        .values(next_poll_at=now)
-                    )
-                session.commit()
-            log.info("Watchlist saved: %d companies, %d boards pulled forward", len(cleaned), touched)
+            log.info("Watchlist saved: %d companies, %d boards pulled forward",
+                     len(cleaned), touched)
     except Exception as _we:
         log.debug("watchlist board pull-forward skipped: %s", _we)
     return {"success": True, "companies": cleaned}

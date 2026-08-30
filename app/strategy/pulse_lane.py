@@ -154,10 +154,23 @@ def _due_boards(now: datetime, limit: int) -> list[CompanyRegistry]:
         ).all()
 
 
+def _signature_from_entries(entries) -> str:
+    """Hash a board's posting list from (stable_id, title) pairs.
+
+    The pairs come from the cheap LISTING phase of an N+1 adapter (Workday,
+    SmartRecruiters) when available, and from the parsed RawJobs otherwise.
+    Hashing the listing is what makes the signature immune to detail-fetch
+    jitter: a posting whose detail GET times out drops out of ``raw`` but not
+    out of the listing, and production measured that jitter as 93% of ALL
+    changed-board events (983 oscillating Workday boards, up/down symmetric),
+    each false flip paying the full upsert_shared consumer cost."""
+    keys = sorted(f"{i}|{(t or '')[:80]}" for i, t in entries)
+    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+
+
 def _board_signature(raw: list) -> str:
     """Signature of a board's posting list: which jobs exist (id + title)."""
-    keys = sorted(f"{r.external_id}|{(r.title or '')[:80]}" for r in raw)
-    return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+    return _signature_from_entries((r.external_id, r.title) for r in raw)
 
 
 def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -> None:
@@ -230,31 +243,45 @@ def _flush_polls(records: list, now: Optional[datetime] = None) -> int:
             with_yield.append(row)
         else:
             without_yield.append(row)
+    from app.common.db_retry import run_with_deadlock_retry
+
     written = 0
-    try:
-        with get_session() as session:
-            for group in (with_yield, without_yield):
-                if group:
-                    # ASCENDING PRIMARY KEY, always. Postgres takes a row lock
-                    # per UPDATE and holds it to commit, so two transactions
-                    # that touch an overlapping set of registry rows in
-                    # DIFFERENT orders can deadlock — and the board order here
-                    # comes from _due_boards, which sorts by next_poll_at, so it
-                    # varies tick to tick. A single fixed order across every
-                    # writer means the worst case is one waiting on the other.
-                    # Free: the rows are already in memory.
-                    group.sort(key=lambda r: r["id"])
-                    session.execute(_update(CompanyRegistry), group)
-                    written += len(group)
-            session.commit()
-        return written
-    except Exception as e:
-        # Non-fatal: an unwritten poll record leaves next_poll_at where it was,
-        # so the board is simply re-selected next tick and re-fetched. Loud,
-        # because silently losing poll records would make the schedule drift.
-        log.warning("pulse: poll-record flush failed for %d board(s): %s",
-                    len(records), e)
-        return 0
+    for group in (with_yield, without_yield):
+        if not group:
+            continue
+        # ASCENDING PRIMARY KEY, always. Postgres takes a row lock per UPDATE
+        # and holds it to commit, so two transactions that touch an overlapping
+        # set of registry rows in DIFFERENT orders can deadlock — and the board
+        # order here comes from _due_boards, which sorts by next_poll_at, so it
+        # varies tick to tick. A single fixed order across every writer means
+        # the worst case is one waiting on the other. Free: the rows are
+        # already in memory.
+        group.sort(key=lambda r: r["id"])
+
+        # ONE TRANSACTION PER GROUP, deliberately. Both groups in a single
+        # transaction acquired locks ascending, then RESTARTED lower at the
+        # group boundary — piecewise-sorted, not monotonic, and that boundary
+        # was one half of the only post-fix production deadlock (03:21:14, the
+        # victim statement verifiably the without-yield group). Atomicity
+        # across the groups buys nothing: each record is independent and
+        # idempotent, and an unwritten group just means those boards are
+        # re-selected next tick.
+        def _write(g=group):
+            with get_session() as session:
+                session.execute(_update(CompanyRegistry), g)
+                session.commit()
+
+        try:
+            run_with_deadlock_retry("pulse poll-record flush", _write)
+            written += len(group)
+        except Exception as e:
+            # Non-fatal: an unwritten poll record leaves next_poll_at where it
+            # was, so the board is simply re-selected next tick and re-fetched.
+            # Loud, because silently losing poll records would make the
+            # schedule drift.
+            log.warning("pulse: poll-record flush failed for %d board(s): %s",
+                        len(group), e)
+    return written
 
 
 def _defer_boards(boards: list, now: Optional[datetime] = None) -> int:
@@ -300,20 +327,78 @@ def _defer_boards(boards: list, now: Optional[datetime] = None) -> int:
                      "next_poll_at": now + timedelta(minutes=base, seconds=offset)})
     if not rows:
         return 0
+    from app.common.db_retry import run_with_deadlock_retry
     try:
-        with get_session() as session:
-            # Same fixed lock order as _flush_polls — see the note there. These
-            # two write the same table and can be in flight against overlapping
-            # rows, so they must agree on the order or they are each other's
-            # deadlock partner.
-            rows.sort(key=lambda r: r["id"])
-            session.execute(_update(CompanyRegistry), rows)
-            session.commit()
+        # Same fixed lock order as _flush_polls — see the note there. These
+        # two write the same table and can be in flight against overlapping
+        # rows, so they must agree on the order or they are each other's
+        # deadlock partner.
+        rows.sort(key=lambda r: r["id"])
+
+        def _write():
+            with get_session() as session:
+                session.execute(_update(CompanyRegistry), rows)
+                session.commit()
+
+        run_with_deadlock_retry("pulse deferral reschedule", _write)
         return len(rows)
     except Exception as e:
         log.warning("pulse: deferral reschedule failed for %d board(s): %s",
                     len(rows), e)
         return 0
+
+
+def pull_boards_forward(terms: set[str], now: Optional[datetime] = None) -> int:
+    """Set ``next_poll_at = now`` on every active board matching the given
+    normalized watchlist terms, so a freshly-followed company is checked within
+    minutes instead of whenever its floor slot next arrives.
+
+    This is the watchlist route's write, moved next to the other registry batch
+    writers so it shares their lock discipline. The route's original in-place
+    version issued several un-ordered ``UPDATE … WHERE id IN (batch)``
+    statements inside ONE transaction: within a statement Postgres locks rows
+    in the executor's SCAN order (not the list's order), and across batches the
+    ids were in arbitrary full-scan order — a genuinely nondeterministic lock
+    order aimed at exactly the rows the pulse lane touches most (matching
+    boards go straight onto the fast cadence). Here: one executemany keyed by
+    primary key, ascending — the same fixed order every other batch writer
+    uses — in its own transaction, retried once if an outside writer deadlocks
+    it anyway.
+
+    Returns the number of boards pulled forward.
+    """
+    if not terms:
+        return 0
+    from sqlalchemy import update as _update
+    from app.common.db_retry import run_with_deadlock_retry
+
+    now = now or datetime.utcnow()
+    with get_session() as session:
+        # Narrow projection — matching in Python needs only these three
+        # columns, never the full registry rows.
+        rows = session.exec(
+            select(CompanyRegistry.id, CompanyRegistry.slug,
+                   CompanyRegistry.company_name)
+            .where(CompanyRegistry.is_active == True)  # noqa: E712
+        ).all()
+    due = []
+    for rid, slug, cname in rows:
+        slug_n = _norm(slug)
+        name_n = _norm(cname or "")
+        if any(t == slug_n or t == name_n
+               or (len(t) >= 4 and (t in slug_n or t in name_n)) for t in terms):
+            due.append({"id": rid, "next_poll_at": now})
+    if not due:
+        return 0
+    due.sort(key=lambda r: r["id"])
+
+    def _write():
+        with get_session() as session:
+            session.execute(_update(CompanyRegistry), due)
+            session.commit()
+
+    run_with_deadlock_retry("watchlist pull-forward", _write)
+    return len(due)
 
 
 # ── Per-job fast path ─────────────────────────────────────────────────────────
@@ -672,15 +757,29 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
 
     def _fetch(board):
         """Runs on the pool. Times itself so the tick can report REAL fetch
-        latency — the number you need before touching worker counts."""
+        latency — the number you need before touching worker counts.
+
+        The scraper instance dies here, so anything the consumer needs from it
+        travels in ``meta``: whether the fetch was COMPLETE (partial results
+        must not drive ghost-close-like decisions), the LISTING-phase signature
+        entries an N+1 adapter collected (stable under detail-fetch jitter),
+        and whether that signature is STABLE (an adapter that died mid-listing
+        produces a hash that varies with where it died — never worth storing).
+        """
         t0 = time.monotonic()
         scraper = scraper_for(board.ats, board.slug, board.career_url)
         if scraper is None:
-            return board, None, "unsupported", time.monotonic() - t0
+            return board, None, "unsupported", time.monotonic() - t0, None
         try:
-            return board, scraper.fetch(), None, time.monotonic() - t0
+            raw = scraper.fetch()
+            meta = {
+                "complete": bool(getattr(scraper, "fetch_complete", True)),
+                "entries": getattr(scraper, "signature_entries", None),
+                "sig_stable": getattr(scraper, "signature_stable", None),
+            }
+            return board, raw, None, time.monotonic() - t0, meta
         except Exception as e:
-            return board, None, str(e), time.monotonic() - t0
+            return board, None, str(e), time.monotonic() - t0, None
 
     users_touched: set[str] = set()
     latencies: list[float] = []
@@ -732,7 +831,7 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             if board is None:
                 continue
             try:
-                board, raw, err, elapsed = fut.result()
+                board, raw, err, elapsed, meta = fut.result()
                 latencies.append(elapsed)
             except Exception as e:
                 # The fetch RAN and blew up — a real failure, so it decays the
@@ -759,15 +858,37 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # From here the fetch COMPLETED — this board was genuinely polled.
             stats["fetch_ok"] += 1
             stats["fetched_jobs"] += len(raw)
+            meta = meta or {}
+            entries = meta.get("entries") or None
             _t = time.monotonic()
-            sig = _board_signature(raw)
+            # Prefer the LISTING-phase signature when the adapter collected
+            # one: it is immune to detail-fetch jitter, which production
+            # measured as 93% of all "changed" events (Workday: 32.6% per-poll
+            # change rate vs ≤1.4% for every other source — pagination noise,
+            # not postings).
+            sig = _signature_from_entries(entries) if entries \
+                else _board_signature(raw)
             timings["signature"].append(time.monotonic() - _t)
-            if raw and sig == (board.poll_hash or ""):
+            # A partial fetch whose signature basis varies with WHERE it died
+            # must never overwrite the stored baseline — comparisons against a
+            # volatile hash read as perpetual change. sig_stable=None means the
+            # adapter doesn't distinguish, so completeness decides.
+            sig_stable = meta.get("sig_stable")
+            if sig_stable is None:
+                sig_stable = meta.get("complete", True)
+            persist_hash = sig if (sig_stable or not board.poll_hash) \
+                else board.poll_hash
+            # Listing size beats parsed size for the board's census count: an
+            # N+1 adapter's raw list shrinks with every failed detail GET, and
+            # stamping a live Workday board job_count=0 on a bad afternoon
+            # would demote it to the 72h zero-yield tier.
+            board_count = len(entries) if entries else len(raw)
+            if (raw or entries) and sig == (board.poll_hash or ""):
                 # Unchanged board — zero downstream work. This is the common
                 # case that makes the hourly floor affordable.
                 stats["unchanged"] += 1
                 poll_records.append({
-                    "id": getattr(board, "id", None), "job_count": len(raw),
+                    "id": getattr(board, "id", None), "job_count": board_count,
                     "new_jobs": 0, "poll_hash": sig,
                     "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
                 })
@@ -806,8 +927,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # we write in the same round-trip.
             board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
             poll_records.append({
-                "id": getattr(board, "id", None), "job_count": len(raw),
-                "new_jobs": new_here, "poll_hash": sig,
+                "id": getattr(board, "id", None), "job_count": board_count,
+                "new_jobs": new_here, "poll_hash": persist_hash,
                 "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
             })
             if len(poll_records) >= _POLL_FLUSH_BATCH:

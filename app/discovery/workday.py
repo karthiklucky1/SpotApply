@@ -105,15 +105,29 @@ class WorkdayScraper:
         jobs: List[RawJob] = []
         offset = 0
         limit = 20
-        max_total = 100  # Cap total jobs fetched per company run to avoid timeouts
+        max_total = 100  # Cap postings considered per company run to avoid timeouts
         # A PARTIAL result must never be treated as "the whole board". The
         # pipeline ghost-closes every stored job missing from a fetch, so a
         # mid-pagination failure (or hitting max_total on a big board) would
         # permanently close live postings and SKIP their applications.
         self.fetch_complete = True
+        # LISTING-phase identity of every tech posting considered, collected
+        # BEFORE the per-posting detail GETs. The pulse lane hashes THESE for
+        # its poll signature: the parsed job list shrinks with every failed
+        # detail fetch, and that jitter measured as 93% of all changed-board
+        # events in production (32.6% per-poll change rate on Workday vs ≤1.4%
+        # everywhere else) — pagination noise billed as change, every flip
+        # paying the full upsert cost. The cap below counts LISTINGS, not
+        # parsed jobs, for the same reason: a cap on parsed jobs makes the
+        # number of pages consumed depend on detail-fetch luck.
+        self.signature_entries: list[tuple[str, str]] = []
+        # False when the pagination itself died mid-way: the entry list then
+        # varies with WHERE it died, and a volatile signature must never be
+        # stored as the board's baseline.
+        self.signature_stable = True
 
         try:
-            while len(jobs) < max_total:
+            while len(self.signature_entries) < max_total:
                 payload = {
                     "appliedFacets": {},
                     "limit": limit,
@@ -125,6 +139,7 @@ class WorkdayScraper:
                     log.warning("Workday fetch failed for %s: HTTP %d", tenant, r.status_code)
                     # If offset is 0, this is a fatal run error
                     self.fetch_complete = False
+                    self.signature_stable = False
                     return None if offset == 0 else jobs
                     
                 data = r.json()
@@ -140,17 +155,32 @@ class WorkdayScraper:
                     ext_path = p.get("externalPath")
                     if not ext_path:
                         continue
-                        
+
+                    if len(self.signature_entries) >= max_total:
+                        # Truncated at the cap — the board may hold more.
+                        self.fetch_complete = False
+                        break
+                    # Stable listing identity, recorded whether or not the
+                    # detail fetch below succeeds.
+                    self.signature_entries.append((str(ext_path), title))
+
                     # Fetch details
                     path_suffix = ext_path if ext_path.startswith("/job") else f"/job{ext_path}"
                     detail_url = f"https://{domain}/wday/cxs/{tenant}/{site}{path_suffix}"
                     try:
                         dr = httpx.get(detail_url, headers=headers, timeout=15.0)
                         if dr.status_code != 200:
+                            # Posting is live but missing from the parsed list —
+                            # the result is PARTIAL (SmartRecruiters already
+                            # flags this; Workday silently didn't, so a board
+                            # with one flaky detail endpoint could ghost-close
+                            # live postings in the fresh/full lanes).
+                            self.fetch_complete = False
                             continue
                         detail_data = dr.json()
                     except Exception as e:
                         log.debug("Workday: failed to fetch job details for %s: %s", ext_path, e)
+                        self.fetch_complete = False
                         continue
                         
                     info = detail_data.get("jobPostingInfo", {})
@@ -187,11 +217,6 @@ class WorkdayScraper:
                         )
                     )
                     
-                    if len(jobs) >= max_total:
-                        # Truncated at the cap — the board may hold more.
-                        self.fetch_complete = False
-                        break
-                        
                 # Next page
                 total = data.get("total", 0)
                 offset += limit
@@ -201,6 +226,7 @@ class WorkdayScraper:
         except httpx.HTTPError as e:
             log.warning("Workday connection failed for %s: %s", tenant, e)
             self.fetch_complete = False
+            self.signature_stable = False
             return None if offset == 0 else jobs
             
         log.info("Workday[%s]: %d tech jobs parsed successfully", tenant, len(jobs))

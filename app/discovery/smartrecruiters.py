@@ -84,6 +84,19 @@ class SmartRecruitersScraper:
                      self.company_slug, len(postings), total_found)
         log.info("SmartRecruiters[%s]: found %d total job postings", self.company_slug, len(postings))
 
+        # LISTING-phase identity of every tech posting, taken from the ONE list
+        # response before any detail GETs. The pulse lane hashes these for its
+        # poll signature, so a failed detail fetch (which drops the posting
+        # from the parsed list below) no longer reads as board change. The list
+        # response is a single atomic snapshot, so the entries are stable even
+        # when the board is truncated at the API's page size.
+        self.signature_entries = [
+            (str(p["id"]), p.get("name", ""))
+            for p in postings
+            if p.get("id") and not _is_obvious_non_tech(p.get("name", ""))
+        ]
+        self.signature_stable = True
+
         for p in postings:
             title = p.get("name", "")
             
