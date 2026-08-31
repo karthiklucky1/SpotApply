@@ -288,7 +288,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   counted as scoring) · `registry_lock_order` (every multi-row companyregistry
   txn locks ascending-PK; the deadlock class) · `signature_stability` (poll
   hashes come from listing-phase entries, immune to detail-fetch jitter; a
-  volatile hash never overwrites the baseline).
+  stored hash always denotes fully-INGESTED content — a poll whose details
+  failed never establishes the baseline, or recovery reads as unchanged and
+  the postings are never upserted).
 - **Tests must clean up only their OWN rows.** A wholesale `delete(Job)` /
   `delete(CompanyRegistry)` takes out fixtures other files already built, which
   is a suite that fails differently every run. Prefix your rows and delete by

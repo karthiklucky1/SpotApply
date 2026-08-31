@@ -113,6 +113,10 @@ class SmartRecruitersScraper:
             try:
                 dr = httpx.get(detail_url, timeout=15.0)
                 if dr.status_code != 200:
+                    # Posting is live but missing from the parsed list — the
+                    # result is PARTIAL (the exception path below already
+                    # flagged this; a 500/404 detail response is the same loss).
+                    self.fetch_complete = False
                     continue
                 d = dr.json()
             except Exception as e:

@@ -18,7 +18,11 @@ The contract pinned here:
     not be stamped toward the zero-yield tier because its detail endpoint had
     a bad afternoon;
   * a partial fetch is flagged ``fetch_complete = False`` even when the only
-    loss was a detail GET (ghost-close must never run on a subset).
+    loss was a detail GET (ghost-close must never run on a subset);
+  * a stored hash — baseline or volatile memo — always denotes content that
+    was fully INGESTED: a poll whose listing succeeded but whose details
+    failed must never establish the baseline, or the recovery poll would read
+    as unchanged and the postings would never be upserted.
 """
 from __future__ import annotations
 
@@ -60,6 +64,9 @@ def _cleanup() -> None:
         session.exec(
             delete(CompanyRegistry).where(CompanyRegistry.slug.like(f"{_PREFIX}%")))
         session.commit()
+    # SQLite reuses row ids after deletes, so a stale memo entry from an
+    # earlier test could alias a fresh board.
+    pulse_lane._VOLATILE_SIGS.clear()
 
 
 def _raw(eid: str, title: str) -> RawJob:
@@ -153,6 +160,56 @@ def test_a_real_listing_change_is_still_detected(monkeypatch):
     _cleanup()
 
 
+# ── a stored hash always denotes fully-ingested content ──────────────────────
+
+def test_never_ingested_content_never_becomes_the_baseline(monkeypatch):
+    """The listing can succeed while every detail GET fails (raw=[], entries
+    full). Storing that signature would send the NEXT poll — details
+    recovered, listing unchanged — down the zero-work path, and those
+    postings would never be upserted until the listing itself changed."""
+    init_db()
+    _cleanup()
+    bid = _board("outage-co", poll_hash=None)
+    entries = [("p1", "Engineer"), ("p2", "Scientist")]
+
+    broken = SimpleNamespace(fetch=lambda: [], fetch_complete=False,
+                             signature_entries=entries, signature_stable=True)
+    calls: list = []
+    _tick_with(monkeypatch, broken, upsert_calls=calls)
+    assert _get(bid).poll_hash is None, (
+        "a baseline was stored for content that was never ingested — the "
+        "recovery poll will now skip these postings forever")
+
+    recovered = SimpleNamespace(
+        fetch=lambda: [_raw("p1", "Engineer"), _raw("p2", "Scientist")],
+        fetch_complete=True, signature_entries=entries, signature_stable=True)
+    calls.clear()
+    stats = _tick_with(monkeypatch, recovered, upsert_calls=calls)
+    assert stats["changed"] == 1
+    assert calls and calls[0], "the recovery poll must ingest the postings"
+    assert _get(bid).poll_hash == pulse_lane._signature_from_entries(entries)
+    _cleanup()
+
+
+def test_partial_parse_never_advances_an_existing_baseline(monkeypatch):
+    """The listing changed while the detail endpoint is degraded: the poll
+    ingests whatever parsed, but the baseline stays put so the recovery poll
+    still reads as change and back-fills the postings that failed."""
+    init_db()
+    _cleanup()
+    old = pulse_lane._signature_from_entries([("p1", "Engineer")])
+    bid = _board("degraded-co", poll_hash=old)
+    entries = [("p1", "Engineer"), ("p2", "Scientist")]   # p2 is new
+    degraded = SimpleNamespace(
+        fetch=lambda: [_raw("p1", "Engineer")],           # p2's detail failed
+        fetch_complete=False, signature_entries=entries, signature_stable=True)
+    stats = _tick_with(monkeypatch, degraded, upsert_calls=[])
+    assert stats["changed"] == 1
+    assert _get(bid).poll_hash == old, (
+        "the baseline advanced past content that was never ingested")
+    _cleanup()
+
+
 # ── volatile signatures never clobber the baseline ───────────────────────────
 
 def test_unstable_partial_fetch_keeps_the_stored_baseline(monkeypatch):
@@ -191,6 +248,32 @@ def test_unstable_fetch_still_bootstraps_an_empty_baseline(monkeypatch):
     )
     _tick_with(monkeypatch, scraper, upsert_calls=[])
     assert _get(bid).poll_hash is not None
+    _cleanup()
+
+
+def test_deterministic_partial_skips_via_volatile_memo(monkeypatch):
+    """A board whose fetch always dies at the same point produces the same
+    volatile signature every poll. It must not pay the changed path forever:
+    once its content has been ingested, the process-local memo of the last
+    volatile signature dedupes the repeat — while the STORED baseline never
+    flips to the volatile hash."""
+    init_db()
+    _cleanup()
+    bid = _board("stuck-co", poll_hash="baseline-hash")
+    scraper = SimpleNamespace(
+        fetch=lambda: [_raw("p1", "Engineer")],
+        fetch_complete=False,
+        signature_stable=False,
+    )
+    calls: list = []
+    first = _tick_with(monkeypatch, scraper, upsert_calls=calls)
+    assert first["changed"] == 1, "first sight of the volatile content ingests it"
+
+    calls.clear()
+    second = _tick_with(monkeypatch, scraper, upsert_calls=calls)
+    assert second["unchanged"] == 1 and second["changed"] == 0
+    assert calls == [], "the identical volatile poll must do no upsert work"
+    assert _get(bid).poll_hash == "baseline-hash"
     _cleanup()
 
 
@@ -256,6 +339,36 @@ def test_workday_mid_pagination_death_marks_signature_volatile(monkeypatch):
         "entries end where the pagination died — that hash must never be stored")
 
 
+def test_workday_cap_on_page_boundary_is_still_partial(monkeypatch):
+    """max_total (100) is a multiple of the page limit (20), so on an all-tech
+    board the entry cap lands exactly on a page boundary: the loop exits via
+    its while condition without ever reaching the in-loop cap check. The
+    source said 120, we consumed 100 — the result is partial, and ghost-close
+    on it would close 20 live postings."""
+    from app.discovery import workday
+
+    def fake_post(url, json=None, **kw):
+        off = json["offset"]
+        return SimpleNamespace(status_code=200, json=lambda: {
+            "jobPostings": [
+                {"title": f"Engineer {off + i}", "externalPath": f"/job/e{off + i}"}
+                for i in range(20)],
+            "total": 120})
+
+    monkeypatch.setattr(workday.httpx, "post", fake_post)
+    monkeypatch.setattr(workday.httpx, "get", lambda url, **kw: SimpleNamespace(
+        status_code=200, json=lambda: {"jobPostingInfo": {"jobReqId": "r",
+                                                          "jobDescription": "d"}}))
+    s = _wd_scraper()
+    jobs = s.fetch()
+    assert len(s.signature_entries) == 100
+    assert len(jobs) == 100
+    assert s.fetch_complete is False, (
+        "cap hit with postings left on the source — treating this as the "
+        "whole board would ghost-close everything past the cap")
+    assert s.signature_stable is True, "cap truncation is deterministic"
+
+
 def test_smartrecruiters_entries_come_from_the_listing(monkeypatch):
     from app.discovery import smartrecruiters as sr
 
@@ -280,4 +393,31 @@ def test_smartrecruiters_entries_come_from_the_listing(monkeypatch):
     assert [e[0] for e in s.signature_entries] == ["111", "222"]
     assert len(jobs) == 1
     assert s.signature_stable is True
+    assert s.fetch_complete is False
+
+
+def test_smartrecruiters_detail_http_error_flags_partial(monkeypatch):
+    """A 500/404 on a detail GET is the same loss as a network error: the
+    posting is live but missing from the parsed list, so the result must be
+    flagged partial (the exception path already was; the non-200 path
+    silently wasn't)."""
+    from app.discovery import smartrecruiters as sr
+
+    listing = {"content": [
+        {"id": "111", "name": "Backend Engineer", "location": {}},
+        {"id": "222", "name": "ML Engineer", "location": {}},
+    ], "totalFound": 2}
+
+    def fake_get(url, **kw):
+        if url.endswith("/postings"):
+            return SimpleNamespace(status_code=200, json=lambda: listing)
+        if url.endswith("/222"):
+            return SimpleNamespace(status_code=500, json=lambda: {})
+        return SimpleNamespace(status_code=200, json=lambda: {"jobAd": {"sections": {}}})
+
+    monkeypatch.setattr(sr.httpx, "get", fake_get)
+    s = sr.SmartRecruitersScraper("acme")
+    jobs = s.fetch()
+
+    assert len(jobs) == 1
     assert s.fetch_complete is False

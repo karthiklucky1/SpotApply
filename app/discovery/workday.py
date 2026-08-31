@@ -105,6 +105,7 @@ class WorkdayScraper:
         jobs: List[RawJob] = []
         offset = 0
         limit = 20
+        total = 0   # source-reported posting count; set per fetched page
         max_total = 100  # Cap postings considered per company run to avoid timeouts
         # A PARTIAL result must never be treated as "the whole board". The
         # pipeline ghost-closes every stored job missing from a fetch, so a
@@ -228,6 +229,16 @@ class WorkdayScraper:
             self.fetch_complete = False
             self.signature_stable = False
             return None if offset == 0 else jobs
-            
+
+        # Truncation can land exactly on a page boundary (max_total is a
+        # multiple of the page limit, so on an all-tech board it always does):
+        # the loop then exits via its while condition without ever reaching the
+        # in-loop cap check, and the flag would be lost — letting ghost-close
+        # treat the first max_total postings as the whole board. If the source
+        # reported more postings than the pages we consumed, the result is
+        # partial, full stop.
+        if len(self.signature_entries) >= max_total and offset < total:
+            self.fetch_complete = False
+
         log.info("Workday[%s]: %d tech jobs parsed successfully", tenant, len(jobs))
         return jobs

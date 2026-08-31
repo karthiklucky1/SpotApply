@@ -42,11 +42,14 @@ _PREFIX = "rlo-"
 
 def _board(slug: str, *, job_count: int = 5, failure_count: int = 0,
            is_active: bool = True, company_name: str | None = None,
-           ats: JobSource = JobSource.GREENHOUSE) -> int:
+           ats: JobSource = JobSource.GREENHOUSE,
+           last_seen: datetime | None = None,
+           last_new_job_at: datetime | None = None) -> int:
     with get_session() as session:
         row = CompanyRegistry(
             slug=_PREFIX + slug, ats=ats, company_name=company_name or (_PREFIX + slug),
             is_active=is_active, job_count=job_count, failure_count=failure_count,
+            last_seen=last_seen, last_new_job_at=last_new_job_at,
         )
         session.add(row)
         session.commit()
@@ -258,6 +261,62 @@ def test_pull_boards_forward_moves_only_next_poll_at():
 def test_pull_boards_forward_empty_terms_is_a_noop():
     init_db()
     assert pulse_lane.pull_boards_forward(set()) == 0
+
+
+def test_pull_boards_forward_chunks_large_writes(monkeypatch):
+    """A generic ≥4-char watchlist term ("data", "tech") can match thousands
+    of boards; one transaction over the whole match set holds that many row
+    locks against the pulse lane's own writers until commit. The write must go
+    out in bounded chunks that preserve the global ascending order."""
+    init_db()
+    _cleanup()
+    ids = [_board(f"chunk-{i}", company_name=f"{_PREFIX}chunkco{i}")
+           for i in range(5)]
+
+    monkeypatch.setattr(pulse_lane, "_PULL_FORWARD_BATCH", 2)
+    spy = _TxnSpy(pulse_lane).install(monkeypatch)
+    assert pulse_lane.pull_boards_forward(
+        {pulse_lane._norm(_PREFIX + "chunkco")}) == 5
+
+    writes = spy.write_txns
+    assert len(writes) == 3, "5 matches at batch=2 → 3 bounded transactions"
+    flat = [i for txn in writes for params in txn for i in params]
+    assert flat == sorted(flat), "chunks must preserve the global ascending order"
+    assert set(flat) == set(ids)
+    _cleanup()
+
+
+# ── park_join_boards: candidate filter and write discipline ──────────────────
+
+def test_park_join_candidates_require_a_prior_poll():
+    """A freshly-seeded board has job_count 0/NULL because it was never
+    POLLED, not because it never yielded — parking it would hide a
+    possibly-live company for a month before its first probe. Only boards
+    with an actual fetch on record (last_seen set) qualify, and the id list
+    arrives ascending, ready for the batch writer's fixed lock order."""
+    from scripts.park_join_boards import _candidates
+    init_db()
+    _cleanup()
+    now = datetime.utcnow()
+    polled_dead = _board("join-dead", ats=JobSource.JOIN, job_count=0,
+                         last_seen=now)
+    mine = {
+        polled_dead,
+        _board("join-fresh", ats=JobSource.JOIN, job_count=0),  # never polled
+        _board("join-live", ats=JobSource.JOIN, job_count=0,
+               last_seen=now, last_new_job_at=now),             # yielded once
+        _board("join-jobs", ats=JobSource.JOIN, job_count=3,
+               last_seen=now),                                  # has live jobs
+        _board("join-off", ats=JobSource.JOIN, job_count=0,
+               last_seen=now, is_active=False),                 # retired
+        _board("gh-dead", job_count=0, last_seen=now),          # other ATS
+    }
+
+    ids = _candidates()
+    assert ids == sorted(ids), "candidates must arrive in ascending id order"
+    assert [i for i in ids if i in mine] == [polled_dead], (
+        "only the polled-and-never-yielded join.com board qualifies")
+    _cleanup()
 
 
 # ── the shared deadlock retry ────────────────────────────────────────────────

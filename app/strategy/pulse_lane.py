@@ -57,6 +57,18 @@ log = logging.getLogger(__name__)
 # ~150 statements to 1-2.
 _POLL_FLUSH_BATCH = 50
 
+# Last VOLATILE signature per board id (process-local; reset on deploy — the
+# worst case is one extra changed-path pass per unstable board after a boot).
+# A board whose fetch is DETERMINISTICALLY partial (pagination that always
+# dies at the same point) never updates its stored baseline, so without this
+# every poll would compare volatile-vs-baseline, read as changed, and pay the
+# full upsert path forever. Remembering the last volatile hash turns "same
+# truncation as last time" back into an unchanged poll at zero schema cost.
+_VOLATILE_SIGS: dict[int, str] = {}
+
+# Rows per watchlist pull-forward transaction (see pull_boards_forward).
+_PULL_FORWARD_BATCH = 500
+
 
 def _pctl_ms(values: list) -> dict:
     """p50/p75/p90/p95 + total, in milliseconds, from a list of seconds.
@@ -391,13 +403,20 @@ def pull_boards_forward(terms: set[str], now: Optional[datetime] = None) -> int:
     if not due:
         return 0
     due.sort(key=lambda r: r["id"])
+    # Bounded transactions: a generic ≥4-char term ("data", "tech") can match
+    # thousands of boards, and one transaction would hold that many row locks
+    # against the pulse lane's own write path until commit. Each chunk stays
+    # ascending (the global sort is chunk-preserving), so the fixed lock order
+    # holds within every transaction.
+    for start in range(0, len(due), _PULL_FORWARD_BATCH):
+        chunk = due[start:start + _PULL_FORWARD_BATCH]
 
-    def _write():
-        with get_session() as session:
-            session.execute(_update(CompanyRegistry), due)
-            session.commit()
+        def _write(c=chunk):
+            with get_session() as session:
+                session.execute(_update(CompanyRegistry), c)
+                session.commit()
 
-    run_with_deadlock_retry("watchlist pull-forward", _write)
+        run_with_deadlock_retry("watchlist pull-forward", _write)
     return len(due)
 
 
@@ -876,20 +895,42 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             sig_stable = meta.get("sig_stable")
             if sig_stable is None:
                 sig_stable = meta.get("complete", True)
-            persist_hash = sig if (sig_stable or not board.poll_hash) \
+            # The signature can describe MORE than we ingested: an N+1
+            # adapter's listing can succeed while every detail GET fails
+            # (raw=[], entries=100). Recording that signature as ingested —
+            # baseline or volatile memo — would send the next poll (details
+            # recovered, listing unchanged) down the zero-work path, and those
+            # 100 postings would never be upserted until the listing itself
+            # changed. INVARIANT: a stored hash always denotes fully-ingested
+            # content, so it only advances when parsed_all — the volatile
+            # bootstrap included (a never-fully-parsed board keeps NO
+            # baseline, and the changed path below retries ingestion every
+            # poll until one sticks). The unchanged COMPARISON deliberately
+            # does not require parsed_all: sig matching a stored hash means
+            # this exact content was already ingested in full, so a poll that
+            # merely dropped a detail fetch of it stays zero-work.
+            parsed_all = (not entries) or (len(raw) >= len(entries))
+            persist_hash = sig if (parsed_all
+                                   and (sig_stable or not board.poll_hash)) \
                 else board.poll_hash
+            bid = getattr(board, "id", None)
+            same_volatile = (not sig_stable and bid is not None
+                             and _VOLATILE_SIGS.get(bid) == sig)
+            if not sig_stable and bid is not None and parsed_all:
+                _VOLATILE_SIGS[bid] = sig
             # Listing size beats parsed size for the board's census count: an
             # N+1 adapter's raw list shrinks with every failed detail GET, and
             # stamping a live Workday board job_count=0 on a bad afternoon
             # would demote it to the 72h zero-yield tier.
             board_count = len(entries) if entries else len(raw)
-            if (raw or entries) and sig == (board.poll_hash or ""):
+            if (raw or entries) and (sig == (board.poll_hash or "")
+                                     or same_volatile):
                 # Unchanged board — zero downstream work. This is the common
                 # case that makes the hourly floor affordable.
                 stats["unchanged"] += 1
                 poll_records.append({
-                    "id": getattr(board, "id", None), "job_count": board_count,
-                    "new_jobs": 0, "poll_hash": sig,
+                    "id": bid, "job_count": board_count,
+                    "new_jobs": 0, "poll_hash": persist_hash,
                     "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
                 })
                 if len(poll_records) >= _POLL_FLUSH_BATCH:

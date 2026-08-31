@@ -42,6 +42,11 @@ def _candidates() -> list[int]:
             .where((CompanyRegistry.job_count == 0)
                    | (CompanyRegistry.job_count == None))  # noqa: E711
             .where(CompanyRegistry.last_new_job_at == None)  # noqa: E711
+            # Only boards we have actually fetched at least once: a
+            # freshly-seeded board has job_count NULL because it was never
+            # polled, not because it never yielded — parking it would hide a
+            # possibly-live company for a month before its first probe.
+            .where(CompanyRegistry.last_seen != None)  # noqa: E711
             .order_by(CompanyRegistry.id.asc())
         ).all()
     return list(rows)
