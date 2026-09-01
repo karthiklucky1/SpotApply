@@ -456,6 +456,34 @@ _EEO_SAFE_DECLINES: dict[str, str] = {
 }
 
 
+def _eeo_field_answers() -> dict[str, str]:
+    """Greenhouse EEO dropdown answers for the current fill.
+
+    A non-founder fill gets neutral declines UNCONDITIONALLY — the store the
+    else-branch reads is the founder's own answers.yaml, and its ``eeo:``
+    block used to be filled into every tenant's EEO section (the
+    "decline by default" comment only described the .get() fallbacks, which
+    never fired because the founder's keys exist). The founder keeps their
+    stored answers.
+    """
+    if _autofill_identity.get():
+        return {
+            "gender":             "Decline to self-identify",
+            "hispanic_ethnicity": "Decline To Self Identify",
+            "race":               "Decline to self-identify",
+            "veteran_status":     "I don't wish to answer",
+            "disability_status":  "I don't wish to answer",
+        }
+    eeo = qa_resolver.data.get("eeo", {}) or {}
+    return {
+        "gender":             eeo.get("gender", "Decline to self-identify"),
+        "hispanic_ethnicity": "No" if not eeo.get("hispanic_latino", False) else "Yes",
+        "race":               eeo.get("race", "Decline to self-identify"),
+        "veteran_status":     eeo.get("veteran_status", "I don't wish to answer"),
+        "disability_status":  eeo.get("disability_status", "I don't wish to answer"),
+    }
+
+
 # ── Per-application owner scope for AnswerMemory (cross-tenant leak guard) ─────
 # _check_memory and the memory-write sites live inside deeply-nested Playwright
 # fill functions, so the owning user_id is threaded via a ContextVar set once at
@@ -544,10 +572,25 @@ def _scope_answer_memory(query, owner: str | None):
 
 
 def _check_memory(label: str, job: Job | None = None) -> str | None:
-    # 1. Resolve with the canonical QAResolver (the owner's stored answers)
-    ans, conf = qa_resolver.resolve(label, job)
-    if conf >= 0.7:
-        return ans
+    # 1. Canonical store — FOUNDER/LOCAL PATH ONLY. The process-global
+    # qa_resolver reads answers.yaml, which is the founder's own store;
+    # consulting it for another owner typed the founder's identity,
+    # demographics, school and employment into that tenant's form. A
+    # non-founder fill answers identity/fact questions from THEIR profile.
+    if _autofill_identity.get():
+        try:
+            from app.autofill.answer_pack import (_get_or_create_profile,
+                                                  _profile_fact_answer)
+            p = _get_or_create_profile(user_id=_autofill_owner.get())
+            fact = _profile_fact_answer(label, p)
+            if fact:  # "" = their field is empty → fall through, never guess
+                return fact
+        except Exception:
+            pass
+    else:
+        ans, conf = qa_resolver.resolve(label, job)
+        if conf >= 0.7:
+            return ans
 
     # 2. Check DB memory
     norm = label.lower().strip()
@@ -1049,18 +1092,7 @@ async def _fill_greenhouse(page: Page, resume_docx: str, cover_text: str, job: J
     # Some fields (e.g. race) only appear after a prior answer (hispanic_ethnicity=No).
     # Multi-pass: after each fill, wait for DOM to settle, then re-check remaining fields.
     # Any EEO field present on the page but not fillable is added to unknown for bot report.
-    data = qa_resolver.data
-    eeo = data.get("eeo", {})
-    eeo_fields = {
-        # Decline by default — never inject one user's (or the founder's)
-        # demographics into another's EEO form. Declining is also the
-        # recommended, bias-neutral answer.
-        "gender":             eeo.get("gender", "Decline to self-identify"),
-        "hispanic_ethnicity": "No" if not eeo.get("hispanic_latino", False) else "Yes",
-        "race":               eeo.get("race", "Decline to self-identify"),
-        "veteran_status":     eeo.get("veteran_status", "I am not a protected veteran"),
-        "disability_status":  eeo.get("disability_status", "No, I do not have a disability, or history/record of having a disability"),
-    }
+    eeo_fields = _eeo_field_answers()
     eeo_filled: set = set()
 
     for _pass in range(4):  # up to 4 passes to catch dynamically revealed fields
@@ -1332,15 +1364,39 @@ def _lever_radio_answer(label_text: str, job: Job | None = None) -> str | None:
     always clicks Submit anyway).
     """
     low = label_text.lower()
-    # Sponsorship first, before ANY rule can fire — covers the compound trap
-    # ("authorized to work WITHOUT sponsorship?") that a work-auth rule would
-    # otherwise answer "Yes" for an OPT holder.
-    if "sponsor" in low or any(kw in low for kw in _SPONSORSHIP_KWS):
-        log.info("Lever radio: sponsorship question routed to human: %r", label_text[:80])
+    # Sponsorship / immigration first, before ANY rule can fire — and WIDER
+    # than the literal token: review found compound phrasings ("requiring a
+    # visa in the future", "visa support", "immigration petition", "work
+    # authorization support") slipping past a token-only guard into the
+    # eligibility rule below. Over-routing costs the human one click;
+    # under-routing is the misrepresentation risk.
+    if ("sponsor" in low or "immigration" in low
+            or any(kw in low for kw in _SPONSORSHIP_KWS)
+            or ("visa" in low and any(t in low for t in (
+                "future", "support", "petition", "need", "require", "now or")))
+            or ("work authorization" in low
+                and ("future" in low or "support" in low))):
+        log.info("Lever radio: sponsorship/immigration question routed to human: %r",
+                 label_text[:80])
         return None
-    # Eligibility phrasings the resolver's keyword set doesn't carry — answered
-    # from the SAME stored fact the resolver uses, never a hardcoded "Yes".
+    # Eligibility phrasings the resolver's keyword set doesn't carry —
+    # answered from the OWNER's stored status, never a hardcoded "Yes".
     if "currently eligible" in low or all(kw in low for kw in ("eligible", "work", "country")):
+        if _autofill_identity.get():
+            # Non-founder: derive from THEIR profile; an unset status must
+            # route to the human (assess_profile defaults authorized_now=True
+            # for an empty profile, which would attest eligibility blind).
+            try:
+                from app.autofill.answer_pack import _get_or_create_profile
+                from app.intelligence.work_auth import assess_profile
+                p = _get_or_create_profile(user_id=_autofill_owner.get())
+                blob = ((getattr(p, "work_authorization", "") or "")
+                        + (getattr(p, "visa_status", "") or "")).strip()
+                if not blob:
+                    return None
+                return "Yes" if assess_profile(p).authorized_now else "No"
+            except Exception:
+                return None
         auth = (qa_resolver.data.get("work_authorization", {}) or {}).get("authorized_to_work_us")
         if auth is None:
             return None
@@ -1433,6 +1489,28 @@ async def _fill_lever_radio_buttons(page: Page, job: Job) -> None:
 
 # ---------- Lever handler ----------
 
+def _lever_org_value() -> str:
+    """Value for Lever's ``org`` (current organization) field.
+
+    Owner-scoped: a non-founder fill reads THEIR latest employer or school
+    from their own profile; the founder reads their store. An empty value is
+    skipped by the fill loop — it used to be a hardcoded school (and after
+    the first de-hardcoding pass, the founder store's school), filled into
+    every fill regardless of whose form it was.
+    """
+    if _autofill_identity.get():
+        try:
+            from app.autofill.answer_pack import _get_or_create_profile
+            p = _get_or_create_profile(user_id=_autofill_owner.get())
+            exp = getattr(p, "experience_json", None) or []
+            company = exp[0].get("company", "") if exp and isinstance(exp[0], dict) else ""
+            return (company or getattr(p, "university", "") or "").strip()
+        except Exception:
+            return ""
+    return ((qa_resolver.data.get("employment", {}) or {}).get("current_employer")
+            or (qa_resolver.data.get("education", {}) or {}).get("university") or "")
+
+
 async def _fill_lever(page: Page, resume_docx: str, cover_text: str, job: Job, resume_text: str) -> List[UnknownField]:
     from urllib.parse import urlparse, urlunparse
     parsed = urlparse(page.url)
@@ -1444,11 +1522,7 @@ async def _fill_lever(page: Page, resume_docx: str, cover_text: str, job: Job, r
         await page.wait_for_timeout(2000)
 
     pf = _personal_fields()
-    # Current organization from the owner's store — an empty value is simply
-    # skipped by the loop below (it used to be a hardcoded school, filled into
-    # every fill regardless of whose form it was).
-    org = ((qa_resolver.data.get("employment", {}) or {}).get("current_employer")
-           or (qa_resolver.data.get("education", {}) or {}).get("university") or "")
+    org = _lever_org_value()
     selectors = {
         "input[name='name']":           pf["first_name"] + " " + pf["last_name"],
         "input[name='email']":          pf["email"],

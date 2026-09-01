@@ -200,3 +200,126 @@ def test_question_prompt_from_empty_store_names_nobody(monkeypatch, tmp_path):
     for lit in _FOUNDER_LITERALS:
         assert lit not in prompt, (
             f"empty-store prompt still introduces the candidate as {lit!r}")
+
+
+# ── the founder store answers FOUNDER fills only ─────────────────────────────
+# answers.yaml is by design one person's store; the process-global qa_resolver
+# must never answer for a different fill owner. Review of the first fix found
+# four paths where it still did (identity/EEO/state via _check_memory, the
+# Greenhouse eeo: block, the Lever eligibility radio, the Lever org field).
+
+from types import SimpleNamespace
+
+
+def _tenant_scope(monkeypatch, profile):
+    """Enter a non-founder fill scope with the given owner profile."""
+    from app.autofill import agent
+    import app.autofill.answer_pack as ap
+    tok_i = agent._autofill_identity.set(
+        {"first_name": "Dana", "last_name": "Ruiz", "email": "dana@example.com"})
+    tok_o = agent._autofill_owner.set("tenant-x")
+    monkeypatch.setattr(ap, "_get_or_create_profile", lambda user_id=None: profile)
+    return tok_i, tok_o
+
+
+def _reset_scope(tok_i, tok_o):
+    from app.autofill import agent
+    agent._autofill_identity.reset(tok_i)
+    agent._autofill_owner.reset(tok_o)
+
+
+def test_check_memory_never_answers_a_tenant_from_the_founder_store(monkeypatch):
+    from app.autofill import agent
+    from app.db.init_db import init_db
+    init_db()
+    profile = SimpleNamespace(first_name="Dana", last_name="Ruiz",
+                              email="dana@example.com", phone="", linkedin_url="",
+                              github_url="", portfolio_url="", current_title="",
+                              location="", university="Rutgers University",
+                              graduation_year=2020, years_experience=4)
+    toks = _tenant_scope(monkeypatch, profile)
+    try:
+        # The founder's yaml IS present (repo file) — it must still not answer.
+        assert agent._check_memory("Email") == "dana@example.com"
+        assert agent._check_memory("What university did you attend?") == "Rutgers University"
+        assert agent._check_memory("Gender") == "Decline to self-identify"
+        assert agent._check_memory("Race/Ethnicity") == "Decline to self-identify"
+        state = agent._check_memory("What state do you currently reside in?")
+        assert state != "Ohio" and state is None
+        for q in ("LinkedIn Profile", "Phone number", "Current employer"):
+            ans = agent._check_memory(q)
+            assert not ans or "amruthaluri" not in str(ans).lower(), (
+                f"{q!r} answered a tenant's form from the founder store: {ans!r}")
+            assert ans != "Open to work. Previously at Home Depot."
+    finally:
+        _reset_scope(*toks)
+
+
+def test_greenhouse_eeo_answers_are_declines_for_tenant_fills(monkeypatch):
+    from app.autofill import agent
+    # Founder path: their stored answers
+    agent._autofill_identity.set(None)
+    founder = agent._eeo_field_answers()
+    assert founder["gender"] == "Male"  # from the founder's own store — theirs to give
+    # Tenant path: declines unconditionally, never the founder's demographics
+    toks = _tenant_scope(monkeypatch, SimpleNamespace())
+    try:
+        tenant = agent._eeo_field_answers()
+        assert tenant["gender"] == "Decline to self-identify"
+        assert tenant["race"] == "Decline to self-identify"
+        assert "wish to answer" in tenant["veteran_status"].lower()
+        assert "wish to answer" in tenant["disability_status"].lower()
+        assert "Male" not in tenant.values() and "Asian" not in tenant.values()
+    finally:
+        _reset_scope(*toks)
+
+
+def test_lever_radio_compound_sponsorship_phrasings_route_to_human(monkeypatch):
+    """Phrasings that dodge the literal 'sponsor' token but still ask the
+    knockout question — found leaking 'Yes' in review."""
+    from app.autofill import agent
+    for phrasing in (
+        "Are you currently eligible to work in this country without requiring a visa in the future?",
+        "Are you legally eligible to work in the country this role is based in? Will you need visa support now or in the future?",
+        "Are you eligible to work in this country? Do you need an employer to file an immigration petition for you?",
+        "Do you now or in the future require work authorization support?",
+    ):
+        assert agent._lever_radio_answer(phrasing, None) is None, (
+            f"compound sponsorship phrasing auto-answered: {phrasing!r}")
+
+
+def test_lever_eligibility_is_owner_scoped(monkeypatch):
+    from app.autofill import agent
+    q = "Are you currently eligible to work in the United States?"
+    # Tenant with a stored status → answered from THEIR status
+    toks = _tenant_scope(monkeypatch, SimpleNamespace(
+        work_authorization="US Citizen", visa_status="", requires_sponsorship=False))
+    try:
+        assert agent._lever_radio_answer(q, None) == "Yes"
+    finally:
+        _reset_scope(*toks)
+    # Tenant with NO stored status → human (never the founder's, never a
+    # default: assess_profile's empty-profile framing defaults authorized)
+    toks = _tenant_scope(monkeypatch, SimpleNamespace(
+        work_authorization="", visa_status=""))
+    try:
+        assert agent._lever_radio_answer(q, None) is None
+    finally:
+        _reset_scope(*toks)
+
+
+def test_lever_org_is_owner_scoped(monkeypatch):
+    from app.autofill import agent
+    toks = _tenant_scope(monkeypatch, SimpleNamespace(
+        experience_json=[{"company": "Acme Robotics"}], university="Rutgers University"))
+    try:
+        assert agent._lever_org_value() == "Acme Robotics"
+    finally:
+        _reset_scope(*toks)
+    toks = _tenant_scope(monkeypatch, SimpleNamespace(experience_json=[], university=""))
+    try:
+        assert agent._lever_org_value() == "", (
+            "an empty tenant profile must leave org blank, not borrow the "
+            "founder store's school")
+    finally:
+        _reset_scope(*toks)
