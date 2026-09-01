@@ -67,6 +67,17 @@ class QAResolver:
                 return default
         return curr
 
+    def _stored(self, keys: list[str]) -> tuple[str | None, float]:
+        """Store value → (value, 0.95); missing/empty → (None, 0.0) so the
+        caller routes the question to the human. NEVER a hardcoded person as
+        the fallback: these defaults used to be the founder's own identity,
+        which any deployment (or code path) missing a store key would have
+        typed into a stranger's application form."""
+        v = self._get_nested(keys, None)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None, 0.0
+        return v, 0.95
+
     def _get_state_from_location(self, location: str | None) -> str | None:
         if not location:
             return None
@@ -95,27 +106,33 @@ class QAResolver:
             log.info("QAResolver: Human route match for '%s'", question_text)
             return None, 0.0
 
-        # 1. Social links & Identity
+        # 1. Social links & Identity — STORE-ONLY. Every branch here used to
+        # carry the founder's real PII as its literal default, so a missing
+        # store key answered identity questions AS the founder for whoever's
+        # form was being filled. No stored value → route to the human; an
+        # identity is never guessed.
         if "linkedin" in low:
-            return self._get_nested(["identity", "linkedin"], "https://www.linkedin.com/in/amruthaluri/"), 0.95
+            return self._stored(["identity", "linkedin"])
         if "github" in low:
-            return self._get_nested(["identity", "github"], "https://github.com/karthiklucky1"), 0.95
+            return self._stored(["identity", "github"])
         if "website" in low or "portfolio" in low:
-            return self._get_nested(["identity", "github"], "https://github.com/karthiklucky1"), 0.95
+            return self._stored(["identity", "github"])
         if "preferred name" in low or "preferred  name" in low:
-            return self._get_nested(["identity", "first_name"], "Karthik"), 0.95
+            return self._stored(["identity", "first_name"])
         if "full name" in low:
-            first = self._get_nested(["identity", "first_name"], "Karthik")
-            last = self._get_nested(["identity", "last_name"], "Amruthaluri")
-            return f"{first} {last}".strip(), 0.95
+            first = self._get_nested(["identity", "first_name"], None)
+            last = self._get_nested(["identity", "last_name"], None)
+            if not first:
+                return None, 0.0
+            return f"{first} {last or ''}".strip(), 0.95
         if "first name" in low:
-            return self._get_nested(["identity", "first_name"], "Karthik"), 0.95
+            return self._stored(["identity", "first_name"])
         if "last name" in low:
-            return self._get_nested(["identity", "last_name"], "Amruthaluri"), 0.95
+            return self._stored(["identity", "last_name"])
         if "email" in low:
-            return self._get_nested(["identity", "email"], "karthikamruthaluri2002@gmail.com"), 0.95
+            return self._stored(["identity", "email"])
         if "phone" in low or "mobile" in low:
-            return self._get_nested(["identity", "phone"], "(513) 276-3950"), 0.95
+            return self._stored(["identity", "phone"])
 
         # 2. Work Authorization
         #
@@ -146,19 +163,27 @@ class QAResolver:
 
         auth_kws = ["authorized to work", "legally authorized", "legal right to work", "lawful right to work", "eligible to work in", "right to work", "work authorization", "work permit", "unrestricted work"]
         if any(kw in low for kw in auth_kws):
-            auth = self._get_nested(["work_authorization", "authorized_to_work_us"], True)
+            # A missing store value is NOT "authorized" — the old default True
+            # attested work authorization for anyone without the key.
+            auth = self._get_nested(["work_authorization", "authorized_to_work_us"], None)
+            if auth is None:
+                return None, 0.0
             return "Yes" if auth else "No", 0.95
 
         # 3. Security Clearance
         clearance_kws = ["security clearance", "active clearance", "clearance level", "government clearance", "active security clearance"]
         if any(kw in low for kw in clearance_kws):
-            req_clearance = self._get_nested(["general", "requires_clearance"], False)
+            req_clearance = self._get_nested(["general", "requires_clearance"], None)
+            if req_clearance is None:
+                return None, 0.0
             return "Yes" if req_clearance else "No", 0.95
 
         # 4. Relocation
         reloc_kws = ["willing to relocate", "willingness to relocate", "willing to move"]
         if any(kw in low for kw in reloc_kws):
-            reloc = self._get_nested(["preferences", "willing_to_relocate"], True)
+            reloc = self._get_nested(["preferences", "willing_to_relocate"], None)
+            if reloc is None:
+                return None, 0.0
             return "Yes" if reloc else "No", 0.95
 
         reloc_pref_kws = ["where in the united states will you be working from", "working location preference"]
@@ -168,15 +193,16 @@ class QAResolver:
             # hardcoded from the single-user era ("I do not currently live in
             # New York, San Francisco…"), which every tenant's form received
             # regardless of where they actually live.
-            return self._get_nested(["preferences", "relocation_details"],
-                                    "Open to relocation"), 0.95
+            return self._stored(["preferences", "relocation_details"])
 
-        # 5. Salary expectation
+        # 5. Salary expectation — "Negotiable" is a deliberate generic (it
+        # states no fact about the person), so it may remain a default.
         salary_kws = ["salary expectation", "desired salary", "salary requirement", "compensation expectation", "target salary", "salary requirements"]
         if any(kw in low for kw in salary_kws):
             return self._get_nested(["preferences", "salary_range"], "Negotiable"), 0.95
 
-        # 6. US Based
+        # 6. US Based — from the store, never an unconditional "Yes" (which
+        # was false for any non-US tenant).
         us_based_kws = [
             "based in the united states", "reside in the united states", "living in the united states",
             "based in the us", "currently based in the us", "currently based in the united states",
@@ -184,26 +210,41 @@ class QAResolver:
             "residing in the us", "residing in the united states", "are you based in the united states", "are you based in the us"
         ]
         if any(kw in low for kw in us_based_kws):
-            return "Yes", 0.95
+            us_based = self._get_nested(["general", "us_based"], None)
+            if us_based is None:
+                return None, 0.0
+            return "Yes" if us_based else "No", 0.95
 
         # 7. AI Policy Compliance
-        # Note: greenhouse has EEO/compliance dropdowns where "No" or "Yes" are selected
-        # If the question contains 'policy', return 'Yes' (to agree with the policy)
+        # Note: greenhouse has EEO/compliance dropdowns where "No" or "Yes" are selected.
+        # Agreement comes from the store — auto-agreeing to an arbitrary policy
+        # on someone's behalf is not a default.
         if "policy" in low and ("ai" in low or "artificial intelligence" in low):
-            return "Yes", 0.95
+            agrees = self._get_nested(["general", "agrees_ai_policy"], None)
+            if agrees is None:
+                return None, 0.0
+            return "Yes" if agrees else "No", 0.95
 
-        # 8. Referral Source / Hear about us
-        hear_kws = ["how did you hear", "hear about us", "source of referral"]
+        # 8. Referral Source / Hear about us — "LinkedIn" is a deliberate
+        # generic marketing answer, not an identity fact; it may remain.
+        hear_kws = ["how did you hear", "hear about us", "source of referral",
+                    "referral source", "how did you find", "hear about this"]
         if any(kw in low for kw in hear_kws):
             return self._get_nested(["general", "how_did_you_hear"], "LinkedIn"), 0.95
 
-        # 9. State Reside
-        state_kws = ["which state do you currently reside in", "what state do you currently reside in", "state of residence"]
-        if any(kw in low for kw in state_kws):
-            loc = self._get_nested(["identity", "location"], "Cincinnati, OH")
+        # 9. State Reside — derived from the STORED location only (the old
+        # default was the founder's own city, so an empty store answered with
+        # the founder's state for every tenant — as did the pre-resolver
+        # _EEOC_DEFAULTS dict).
+        state_kws = ["which state do you currently reside in", "what state do you currently reside in",
+                     "state of residence", "u.s state"]
+        label_exact = low.replace("?", "").rstrip("*").strip()
+        if any(kw in low for kw in state_kws) or label_exact in ("state", "current state"):
+            loc = self._get_nested(["identity", "location"], None)
             state_name = self._get_state_from_location(loc)
             if state_name:
                 return state_name, 0.95
+            return None, 0.0
         # 10. Office Location (Job Context)
         if job and (low == "location" or low == "city" or any(kw in low for kw in [
             "office location", "preferred location", "work location", "location you are interested in",
@@ -234,7 +275,7 @@ class QAResolver:
         company_kws = ["current company", "current employer", "company you work for", "employer name", "most recent employer", "most recent company"]
         if any(kw in low for kw in company_kws) or low == "company" or low == "employer":
             current_co = self._get_nested(["employment", "current_employer"], "")
-            previous_co = self._get_nested(["employment", "previous_employer"], "Home Depot")
+            previous_co = self._get_nested(["employment", "previous_employer"], "")
             if current_co:
                 return current_co, 0.95
             elif previous_co:
@@ -255,43 +296,56 @@ class QAResolver:
                    "years of professional experience", "years of work experience",
                    "how many years", "total years", "number of years"]
         if any(kw in low for kw in exp_kws):
-            yoe = self._get_nested(["experience", "total_yoe"], 3)
+            yoe = self._get_nested(["experience", "total_yoe"], None)
+            if yoe is None:
+                return None, 0.0
             return str(yoe), 0.95
 
-        # 13. Education
+        # 13. Education — store-only; the old defaults were the founder's own
+        # degree, school and graduation date.
         edu_grad_date_kws = ["graduation date", "date of graduation", "when did you graduate", "when did you complete your degree", "graduation month/year"]
         if any(kw in low for kw in edu_grad_date_kws):
-            return self._get_nested(["education", "graduation_date"], "April 30, 2026"), 0.95
+            return self._stored(["education", "graduation_date"])
 
         edu_grad_year_kws = ["graduation year", "year of graduation", "grad year"]
         if any(kw in low for kw in edu_grad_year_kws):
-            return str(self._get_nested(["education", "graduation_year"], 2026)), 0.95
+            year = self._get_nested(["education", "graduation_year"], None)
+            if year is None:
+                return None, 0.0
+            return str(year), 0.95
 
         edu_degree_kws = ["degree", "highest degree", "education level", "level of education", "type of degree"]
         if any(kw in low for kw in edu_degree_kws):
-            return self._get_nested(["education", "degree"], "Master of Engineering"), 0.95
+            return self._stored(["education", "degree"])
 
         edu_uni_kws = ["university", "school", "college", "undergrad", "graduate school"]
         if any(kw in low for kw in edu_uni_kws):
-            return self._get_nested(["education", "university"], "University of Cincinnati"), 0.95
+            return self._stored(["education", "university"])
 
         edu_major_kws = ["major", "field of study", "specialization", "program"]
         if any(kw in low for kw in edu_major_kws):
-            return "Engineering", 0.95
+            return self._stored(["education", "field"])
 
         # EEO Mappings (Greenhouse EEO/Voluntary disclosure values)
-        # Note: Check these before general Yes/No checks
+        # Note: Check these before general Yes/No checks. STORE-ONLY: the old
+        # defaults asserted one specific person's demographics ("Male",
+        # "Asian", not-a-veteran, no-disability) for anyone whose store lacked
+        # the keys. Unstored → (None, 0.0); the autofill layer then falls back
+        # to neutral decline-to-self-identify answers, which are truthful for
+        # everyone (see agent._EEO_SAFE_DECLINES).
         if "gender" in low:
-            return self._get_nested(["eeo", "gender"], "Male"), 0.95
+            return self._stored(["eeo", "gender"])
         if "hispanic" in low or "latino" in low:
-            hispanic = self._get_nested(["eeo", "hispanic_latino"], False)
+            hispanic = self._get_nested(["eeo", "hispanic_latino"], None)
+            if hispanic is None:
+                return None, 0.0
             return "No, I am not Hispanic/Latino" if not hispanic else "Yes", 0.95
         if "race" in low or "ethnicity" in low or "racial" in low:
-            return self._get_nested(["eeo", "race"], "Asian"), 0.95
+            return self._stored(["eeo", "race"])
         if "veteran" in low:
-            return self._get_nested(["eeo", "veteran_status"], "I am not a protected veteran"), 0.95
+            return self._stored(["eeo", "veteran_status"])
         if "disability" in low:
-            return self._get_nested(["eeo", "disability_status"], "No, I do not have a disability, or history/record of having a disability"), 0.95
+            return self._stored(["eeo", "disability_status"])
 
         # 13. General Yes/No Safety Checks
         yes_no_prefix = [
@@ -322,16 +376,24 @@ class QAResolver:
                 log.info("QAResolver: refusing to auto-answer sponsorship question '%s'", question_text)
                 return None, 0.0
             if any(kw in low for kw in clearance_kws):
-                req_clearance = self._get_nested(["general", "requires_clearance"], False)
+                req_clearance = self._get_nested(["general", "requires_clearance"], None)
+                if req_clearance is None:
+                    return None, 0.0
                 return "Yes" if req_clearance else "No", 0.95
                 
-            # Under 18 / minor checks -> No
+            # Under 18 / minor checks — from the store (an attestation about
+            # the person, not a universal fact)
             if any(kw in low for kw in ["under 18", "less than 18", "under the age of 18", "a minor"]):
-                return "No", 0.95
-                
-            # Criminal record check
+                minor = self._get_nested(["general", "under_18"], None)
+                if minor is None:
+                    return None, 0.0
+                return "Yes" if minor else "No", 0.95
+
+            # Criminal record check — never guessed; unstored routes to human
             if any(kw in low for kw in ["convicted", "felony", "criminal record", "criminal history", "misdemeanor"]):
-                has_record = self._get_nested(["general", "has_criminal_record"], False)
+                has_record = self._get_nested(["general", "has_criminal_record"], None)
+                if has_record is None:
+                    return None, 0.0
                 return "Yes" if has_record else "No", 0.95
             # Previous employment / interviewed with this company
             if any(kw in low for kw in [
@@ -339,14 +401,21 @@ class QAResolver:
                 "employed by us", "worked for us", "worked at this company", "prior employee", "worked here before",
                 "previously interviewed", "interviewed before", "interviewed at", "applied before", "previously applied"
             ]):
-                prev = self._get_nested(["general", "previously_employed_here"], False)
+                prev = self._get_nested(["general", "previously_employed_here"], None)
+                if prev is None:
+                    return None, 0.0
                 return "Yes" if prev else "No", 0.95
             if any(kw in low for kw in ["terminated for cause", "discharged from employment", "fired"]):
-                return "No", 0.95
+                term = self._get_nested(["general", "terminated_for_cause"], None)
+                if term is None:
+                    return None, 0.0
+                return "Yes" if term else "No", 0.95
 
             # Non-compete/conflict
             if any(kw in low for kw in ["non-compete", "conflict of interest", "subject to a non-compete", "restrictive covenant"]):
-                has_noncomp = self._get_nested(["general", "has_noncompete"], False)
+                has_noncomp = self._get_nested(["general", "has_noncompete"], None)
+                if has_noncomp is None:
+                    return None, 0.0
                 return "Yes" if has_noncomp else "No", 0.95
 
             # Remove blanket "Yes" default.

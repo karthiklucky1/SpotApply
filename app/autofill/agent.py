@@ -26,7 +26,7 @@ from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, PendingQuestion, AnswerMemory
 from app.matching.pipeline import _load_resume
-from app.qa_store.resolver import QAResolver
+from app.qa_store.resolver import QAResolver, _SPONSORSHIP_KWS
 
 log = logging.getLogger(__name__)
 
@@ -434,28 +434,25 @@ def _get_state_from_location(location: str | None) -> str | None:
             return name
     return None
 
-_EEOC_DEFAULTS: dict[str, str] = {
-    # State / location
-    "what u.s state do you currently reside in": "Ohio",
-    "what state do you currently reside in":     "Ohio",
-    "state":                                     "Ohio",
-    "current state":                             "Ohio",
-    # EEOC demographic — decline to self-identify (safest, avoids bias)
-    "gender":                                    "Decline to self-identify",
-    "gender identity":                           "Decline to self-identify",
-    "race":                                      "Decline to self-identify",
-    "race/ethnicity":                            "Decline to self-identify",
-    "ethnicity":                                 "Decline to self-identify",
-    "veteran status":                            "I am not a protected veteran",
-    "veteran":                                   "I am not a protected veteran",
-    "disability status":                         "No, I do not have a disability, or history/record of having a disability",
-    "disability":                                "No, I do not have a disability, or history/record of having a disability",
-    # Referral source
-    "how did you first hear about this opportunity": "LinkedIn",
-    "how did you hear about us":                 "LinkedIn",
-    "how did you hear about this role":          "LinkedIn",
-    "referral source":                           "LinkedIn",
-    "how did you find this job":                 "LinkedIn",
+# Neutral EEO fallbacks — TRUTHFUL FOR ANYONE. Consulted only AFTER the
+# owner's canonical store (qa_resolver) and their own AnswerMemory found
+# nothing, so real stored answers always win. Declining to self-identify is a
+# first-class option on every EEO form and asserts no fact about the person.
+# The dict this replaced (_EEOC_DEFAULTS) asserted a specific person's state
+# of residence ("Ohio") and veteran/disability status for every tenant, and
+# was checked BEFORE the stores it should have deferred to. State/referral
+# labels now live in the resolver, answered from the store.
+_EEO_SAFE_DECLINES: dict[str, str] = {
+    "gender":          "Decline to self-identify",
+    "gender identity": "Decline to self-identify",
+    "race":            "Decline to self-identify",
+    "race/ethnicity":  "Decline to self-identify",
+    "ethnicity":       "Decline to self-identify",
+    "hispanic":        "Decline to self-identify",
+    "veteran status":  "I don't wish to answer",
+    "veteran":         "I don't wish to answer",
+    "disability status": "I don't wish to answer",
+    "disability":      "I don't wish to answer",
 }
 
 
@@ -547,23 +544,17 @@ def _scope_answer_memory(query, owner: str | None):
 
 
 def _check_memory(label: str, job: Job | None = None) -> str | None:
-    # 0. EEOC / state defaults — check before QA resolver so they always match
-    norm_label = label.lower().strip().rstrip("*").strip()
-    for key, default_val in _EEOC_DEFAULTS.items():
-        if key in norm_label or norm_label == key:
-            return default_val
-
-    # 1. Resolve with canonical QAResolver
+    # 1. Resolve with the canonical QAResolver (the owner's stored answers)
     ans, conf = qa_resolver.resolve(label, job)
     if conf >= 0.7:
         return ans
 
     # 2. Check DB memory
     norm = label.lower().strip()
-    
+
     # Generic blocklist for memory retrieval to avoid cross-company contamination
     generic_blocklist = [
-        "additional information", "anything else", "cover letter", "comments", 
+        "additional information", "anything else", "cover letter", "comments",
         "additional context", "tell us more", "why are you interested", "statement of interest",
         "anything else you'd like us to know"
     ]
@@ -581,44 +572,95 @@ def _check_memory(label: str, job: Job | None = None) -> str | None:
             session.add(mem)
             session.commit()
             return mem.answer
+
+    # 3. Neutral EEO declines — only after both stores came up empty
+    norm_label = norm.rstrip("*").strip()
+    for key, decline in _EEO_SAFE_DECLINES.items():
+        if key in norm_label or norm_label == key:
+            return decline
     return None
 
 
-def _get_system_question_answerer_prompt() -> str:
+def _candidate_context_lines() -> list[str]:
+    """Candidate facts for the screening-question LLM prompt.
+
+    A non-founder fill (identity contextvar set by _set_fill_owner) reads the
+    OWNING USER's profile only. The founder/local path reads answers.yaml.
+    Neither path carries hardcoded fallbacks any more: a missing fact is
+    simply omitted from the prompt — it used to be replaced with the
+    founder's, which meant an unmatched free-text question on any tenant's
+    form could be answered AS the founder.
+    """
+    lines: list[str] = []
+    identity_ctx = _autofill_identity.get()
+    if identity_ctx:
+        name = f"{identity_ctx.get('first_name', '')} {identity_ctx.get('last_name', '')}".strip()
+        if name:
+            lines.append(f"- {name}")
+        contact = " | ".join(x for x in (
+            (identity_ctx.get("github", "") or "").replace("https://", "").replace("http://", ""),
+            identity_ctx.get("email", "")) if x)
+        if contact:
+            lines.append(f"- {contact}")
+        try:
+            from app.autofill.answer_pack import _get_or_create_profile
+            p = _get_or_create_profile(user_id=_autofill_owner.get())
+            edu = ", ".join(x for x in (
+                (getattr(p, "degree", "") or "").strip(),
+                (getattr(p, "university", "") or "").strip()) if x)
+            if edu:
+                lines.append(f"- Education: {edu}")
+            if getattr(p, "professional_summary", ""):
+                lines.append(f"- Experience: {p.professional_summary}")
+            if getattr(p, "years_experience", 0):
+                lines.append(f"- Years of experience: {p.years_experience}+")
+            if getattr(p, "key_skills", ""):
+                lines.append(f"- Tech Stack: {p.key_skills}")
+        except Exception:
+            pass
+        return lines
+
     data = qa_resolver.data
-    identity = data.get("identity", {})
-    edu = data.get("education", {})
-    exp = data.get("experience", {})
-    bg = data.get("background", {})
-    
-    first_name = identity.get("first_name", "Karthik")
-    last_name = identity.get("last_name", "Amruthaluri")
-    github = identity.get("github", "github.com/karthiklucky1").replace("https://", "").replace("http://", "")
-    email = identity.get("email", "karthikamruthaluri2002@gmail.com")
-    
-    uni = edu.get("university", "University of Cincinnati")
-    degree = edu.get("degree", "Master of Engineering")
-    grad_date = edu.get("graduation_date", "April 30, 2026")
-    grad_status = edu.get("graduation_status", "Graduated")
-    
-    exp_summary = bg.get("experience_summary", "")
-    flagship_project = bg.get("flagship_project", "")
-    tech_stack = bg.get("tech_stack", "")
-    yoe = exp.get("total_yoe", 3)
-    
+    identity = data.get("identity", {}) or {}
+    edu = data.get("education", {}) or {}
+    exp = data.get("experience", {}) or {}
+    bg = data.get("background", {}) or {}
+    name = f"{identity.get('first_name', '')} {identity.get('last_name', '')}".strip()
+    if name:
+        lines.append(f"- {name}")
+    contact = " | ".join(x for x in (
+        (identity.get("github", "") or "").replace("https://", "").replace("http://", ""),
+        identity.get("email", "") or "") if x)
+    if contact:
+        lines.append(f"- {contact}")
+    degree, uni = edu.get("degree", "") or "", edu.get("university", "") or ""
+    if degree or uni:
+        grad_bits = " ".join(x for x in (
+            edu.get("graduation_status", "") or "",
+            f"on {edu.get('graduation_date')}" if edu.get("graduation_date") else "") if x)
+        edu_line = ", ".join(x for x in (degree, uni) if x)
+        lines.append(f"- Education: {edu_line}" + (f" ({grad_bits})." if grad_bits else ""))
+    exp_summary, yoe = bg.get("experience_summary", "") or "", exp.get("total_yoe", None)
+    if exp_summary or yoe:
+        yoe_bit = f" ({yoe}+ years of experience)" if yoe else ""
+        lines.append(f"- Experience: {exp_summary}{yoe_bit}".rstrip())
+    if bg.get("flagship_project"):
+        lines.append(f"- Flagship Project: {bg['flagship_project']}")
+    if bg.get("tech_stack"):
+        lines.append(f"- Tech Stack: {bg['tech_stack']}")
+    return lines
+
+
+def _get_system_question_answerer_prompt() -> str:
     from datetime import datetime
     current_date = datetime.utcnow().strftime("%B %d, %Y")
-    
+    context = "\n".join(_candidate_context_lines())
+
     prompt = f"""You write short, professional, and honest answers to job application screening questions.
 
 Candidate Context:
 - Current Date: {current_date}
-- {first_name} {last_name}
-- Github: {github} | Email: {email}
-- Education: {degree}, {uni} ({grad_status} on {grad_date}).
-- Experience: {exp_summary} ({yoe}+ years of experience).
-- Flagship Project: {flagship_project}
-- Tech Stack: {tech_stack}
+{context}
 
 Rules:
 - Be honest. Do not invent or fabricate experience.
@@ -1268,28 +1310,46 @@ async def _fill_greenhouse(page: Page, resume_docx: str, cover_text: str, job: J
 
 
 # ---------- Lever radio button helper ----------
+# Answers come from the owner's stores only — never a hardcoded status.
 
-# Known work-auth questions and correct answers for Karthik's OPT status
-_LEVER_RADIO_MAP = [
-    # (keywords_that_must_all_appear_in_label_lower, answer_value_or_label)
-    (["eligible", "work", "country"],          "Yes"),   # eligible to work in the US
-    (["visa sponsorship", "require"],          "Yes"),   # requires future H-1B sponsorship
-    (["visa sponsorship", "future"],           "Yes"),
-    (["sponsorship", "continue working"],      "Yes"),
-    (["authorized to work"],                   "Yes"),
-    (["legally authorized"],                   "Yes"),
-    (["currently eligible"],                   "Yes"),
-    (["sponsorship", "now or in the future"],  "Yes"),
-]
+def _lever_radio_answer(label_text: str, job: Job | None = None) -> str | None:
+    """Decide one Lever radio group's answer, or None to leave it for the human.
+
+    This replaced _LEVER_RADIO_MAP, which hardcoded "Yes" for four sponsorship
+    phrasings AND for every work-authorization phrasing, checked BEFORE the
+    resolver — bypassing the resolver's rule that sponsorship questions are
+    NEVER auto-answered (they are the one genuine auto-reject gate, and a
+    false answer is wilful misrepresentation under INA 212(a)(6)(C)(i); see
+    qa_resolver.resolve()). It also defaulted every unmatched yes/no radio to
+    "Yes" — including, potentially, "have you been convicted…". Both are gone:
+    every answer now comes from the owner's stores via _check_memory, an
+    unknown radio is skipped, and the human answers it at review (the human
+    always clicks Submit anyway).
+    """
+    low = label_text.lower()
+    # Sponsorship first, before ANY rule can fire — covers the compound trap
+    # ("authorized to work WITHOUT sponsorship?") that a work-auth rule would
+    # otherwise answer "Yes" for an OPT holder.
+    if "sponsor" in low or any(kw in low for kw in _SPONSORSHIP_KWS):
+        log.info("Lever radio: sponsorship question routed to human: %r", label_text[:80])
+        return None
+    # Eligibility phrasings the resolver's keyword set doesn't carry — answered
+    # from the SAME stored fact the resolver uses, never a hardcoded "Yes".
+    if "currently eligible" in low or all(kw in low for kw in ("eligible", "work", "country")):
+        auth = (qa_resolver.data.get("work_authorization", {}) or {}).get("authorized_to_work_us")
+        if auth is None:
+            return None
+        return "Yes" if auth else "No"
+    return _check_memory(label_text, job)
 
 
 async def _fill_lever_radio_buttons(page: Page, job: Job) -> None:
-    """Answer all required radio button questions on a Lever apply form.
+    """Answer required radio button questions on a Lever apply form.
 
     Lever puts work-auth questions in cards with name like cards[UUID][fieldN].
     For each group of radios sharing a name, we read the nearest question text
-    and pick the correct Yes/No answer from _LEVER_RADIO_MAP.
-    Falls back to LLM if no keyword rule matches.
+    and answer via _lever_radio_answer (stores only — sponsorship and unknown
+    questions are left unchecked for the human).
     """
     try:
         # Group radio buttons by their name attribute
@@ -1326,22 +1386,7 @@ async def _fill_lever_radio_buttons(page: Page, job: Job) -> None:
                 const lbl = card.querySelector('label:not([for]),legend,h4,h3,p,[class*="label"]');
                 return (lbl || card).innerText.replace(/[\\n\\r]+/g, ' ').trim().substring(0, 300);
             }""")
-            low = label_text.lower()
-
-            # Match against known rules
-            answer = None
-            for keywords, ans in _LEVER_RADIO_MAP:
-                if all(kw in low for kw in keywords):
-                    answer = ans
-                    break
-
-            # Fallback: check memory / LLM
-            if not answer:
-                answer = _check_memory(label_text, job)
-            if not answer:
-                # Default Yes/No questions to Yes unless sponsorship-related
-                if "yes" in low and "no" in low:
-                    answer = "Yes"
+            answer = _lever_radio_answer(label_text, job)
 
             if not answer:
                 log.info("Lever radio: no answer found for %r — skipping", label_text[:80])
@@ -1394,11 +1439,16 @@ async def _fill_lever(page: Page, resume_docx: str, cover_text: str, job: Job, r
         await page.wait_for_timeout(2000)
 
     pf = _personal_fields()
+    # Current organization from the owner's store — an empty value is simply
+    # skipped by the loop below (it used to be a hardcoded school, filled into
+    # every fill regardless of whose form it was).
+    org = ((qa_resolver.data.get("employment", {}) or {}).get("current_employer")
+           or (qa_resolver.data.get("education", {}) or {}).get("university") or "")
     selectors = {
         "input[name='name']":           pf["first_name"] + " " + pf["last_name"],
         "input[name='email']":          pf["email"],
         "input[name='phone']":          pf["phone"],
-        "input[name='org']":            "University of Cincinnati",
+        "input[name='org']":            org,
         "input[name='urls[LinkedIn]']": pf["linkedin"],
         "input[name='urls[GitHub]']":   pf["github"],
     }
@@ -1419,8 +1469,10 @@ async def _fill_lever(page: Page, resume_docx: str, cover_text: str, job: Job, r
     # the hidden `selectedLocation` field that the backend validates.
     try:
         loc_input = await page.query_selector("input[name='location']")
-        if loc_input:
-            loc_val = pf.get("location") or "Cincinnati, OH"
+        # No stored location → leave the field for the human; the fallback
+        # used to be the founder's own city, typed into every tenant's form.
+        loc_val = pf.get("location") or ""
+        if loc_input and loc_val.strip():
             await loc_input.focus()
             await loc_input.type(loc_val.split(",")[0].strip(), delay=60)
             await page.wait_for_timeout(1500)

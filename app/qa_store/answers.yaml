@@ -56,10 +56,18 @@ general:
   has_criminal_record: false
   has_noncompete: false
   previously_employed_here: false
+  # These used to be UNCONDITIONAL answers hardcoded in resolver.py — true for
+  # this store's owner, not for everyone. The resolver now reads them from
+  # here and routes to the human when a store lacks the key.
+  us_based: true
+  agrees_ai_policy: true
+  under_18: false
+  terminated_for_cause: false
 
 education:
   university: "University of Cincinnati"
   degree: "Master of Engineering"
+  field: "Engineering"
   graduation_year: 2026
   graduation_date: "April 30, 2026"
   graduation_status: "Graduated"
