@@ -610,12 +610,17 @@ def _candidate_context_lines() -> list[str]:
                 (getattr(p, "university", "") or "").strip()) if x)
             if edu:
                 lines.append(f"- Education: {edu}")
+            # Truncated like every other consumer of these columns
+            # (answer_pack.py uses [:800]/[:400]): they are user-controlled
+            # TEXT with no length validation, and this block is interpolated
+            # into EVERY screening-question LLM call — un-clamped, a pasted
+            # résumé in the summary box would bill on each question.
             if getattr(p, "professional_summary", ""):
-                lines.append(f"- Experience: {p.professional_summary}")
+                lines.append(f"- Experience: {p.professional_summary[:800]}")
             if getattr(p, "years_experience", 0):
                 lines.append(f"- Years of experience: {p.years_experience}+")
             if getattr(p, "key_skills", ""):
-                lines.append(f"- Tech Stack: {p.key_skills}")
+                lines.append(f"- Tech Stack: {p.key_skills[:400]}")
         except Exception:
             pass
         return lines
