@@ -13,10 +13,12 @@ join.com is the largest ATS in the dataset (~23.5K companies) and throttles
 hard, so seven consecutive throttles is an ordinary afternoon — not a dead
 company. These tests pin the distinction at both layers.
 
-NOT covered here, because it cannot be verified from this environment: the page
-size, the pagination envelope's field name, and the safe page cap. Those encode
-observations about join.com's live API, and join.com is unreachable behind the
-egress proxy. They are deliberately left exactly as they were.
+The page size, the pagination envelope's field name and the page cap could not
+be checked from the dev environment (join.com is unreachable behind the egress
+proxy), so the scraper DISCOVERS them instead of hardcoding a guess — and
+production answered on 2026-09-02: pageSize=5, everything larger 422s. That is
+why every join board had been logging "0 jobs": the 429s were masking a total
+contract failure, not reporting empty companies.
 """
 from __future__ import annotations
 
@@ -201,18 +203,30 @@ def test_a_throttle_on_a_later_page_keeps_the_jobs_and_flags_partial(patch_clien
 
 def test_hitting_the_page_cap_flags_partial(patch_client):
     """Not an error — but still a subset, and the difference matters downstream."""
-    def h(url, params):
-        if "/api/" not in url:
-            return _Resp(200, _COMPANY_PAGE)
-        p = params.get("page", 1)
+    def jobs_h(params):
+        p = params["page"]
         return _Resp(200, payload={"items": [_job(p * 100 + i) for i in range(3)],
-                                   "pagination": {"totalPages": 99}})
+                                   "pagination": {"pageCount": 99}})
 
-    patch_client(h)
+    patch_client(_company_then(jobs_h))
     s = JoinScraper(_SLUG)
     jobs = s.fetch()
-    assert len(jobs) == 3 * join_mod._MAX_PAGES
+    expected_pages = join_mod._max_pages(join_mod._candidate_page_sizes()[0])
+    assert len(jobs) == 3 * expected_pages
     assert s.fetch_complete is False
+
+
+def test_the_page_cap_is_expressed_in_jobs_not_pages():
+    """A fixed page COUNT silently changes meaning when the page size changes.
+    At pageSize=100 a 5-page cap meant 500 jobs; at the pageSize=5 join.com
+    actually accepts it would mean 25 — and a board truncated at 25 looks
+    exactly like a board with 25 openings."""
+    assert join_mod._max_pages(5) * 5 >= 100
+    assert join_mod._max_pages(100) == 1
+    assert join_mod._max_pages(25) * 25 >= 100
+    assert join_mod._max_pages(1) <= join_mod._ABS_MAX_PAGES, (
+        "a tiny page size must not turn one board into hundreds of requests"
+    )
 
 
 # ── deduplication ────────────────────────────────────────────────────────────
@@ -325,7 +339,17 @@ def test_no_error_is_not_indeterminate():
 # something to hardcode from a note nobody could verify, so the scraper
 # discovers it and remembers.
 
-def test_a_422_makes_the_scraper_try_a_smaller_page_size(patch_client):
+@pytest.fixture
+def ladder(monkeypatch):
+    """Force a known ladder so these tests exercise the PROBE, not whichever
+    value production most recently verified as the best first guess."""
+    def apply(*sizes):
+        monkeypatch.setattr(join_mod, "_PAGE_SIZE_LADDER", tuple(sizes))
+    return apply
+
+
+def test_a_422_makes_the_scraper_try_a_smaller_page_size(patch_client, ladder):
+    ladder(100, 50, 25, 5)
     seen: list[int] = []
 
     def jobs(params):
@@ -337,13 +361,22 @@ def test_a_422_makes_the_scraper_try_a_smaller_page_size(patch_client):
     patch_client(_company_then(jobs))
     jobs_out = JoinScraper(_SLUG).fetch()
     assert [j.external_id for j in jobs_out] == ["1"]
-    assert seen[0] == 100, "the probe must start from the largest size"
+    assert seen[0] == 100, "the probe must start from the head of the ladder"
     assert seen[-1] <= 25, "it must land on a size the API accepts"
 
 
-def test_the_accepted_shape_is_reused_and_not_reprobed(patch_client):
+def test_the_ladder_leads_with_the_value_production_verified():
+    """join.com accepted pageSize=5 and rejected everything above it (measured
+    2026-09-02). Leading with it costs one request instead of five; the rest of
+    the ladder stays as the fallback for the day join.com changes its mind."""
+    assert join_mod._PAGE_SIZE_LADDER[0] == 5
+    assert len(join_mod._PAGE_SIZE_LADDER) > 1, "the fallback ladder was removed"
+
+
+def test_the_accepted_shape_is_reused_and_not_reprobed(patch_client, ladder):
     """The probe runs about once per PROCESS. Paying it per board would be its
     own outage: 23,547 companies times a six-request ladder."""
+    ladder(100, 50, 25, 5)
     calls: list[int] = []
 
     def jobs(params):

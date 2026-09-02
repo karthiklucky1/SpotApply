@@ -42,7 +42,24 @@ _BASE = "https://join.com"
 _API = "https://join.com/api/public"
 # The company object embedded in the Next.js page carries id + domain.
 _COMPANY_RE = re.compile(r'"company"\s*:\s*\{[^{}]*?"id"\s*:\s*(\d+)[^{}]*?"domain"\s*:\s*"([^"]+)"')
-_MAX_PAGES = 5
+# How deep to walk a board, expressed as JOBS rather than pages — because the
+# page size is discovered at runtime and a fixed page count silently changes
+# meaning with it. At the old pageSize=100 a 5-page cap meant 500 jobs; at the
+# pageSize=5 join.com actually accepts, the same constant would mean 25, and a
+# board truncated at 25 looks exactly like a board with 25 openings.
+#
+# Raising the cap is close to free: the walk stops as soon as a page comes back
+# empty or the envelope says there are no more pages, so a board with three
+# openings still costs one request. Only genuinely large boards pay for the
+# extra depth, and those are the ones worth paying for.
+_MAX_JOBS_PER_BOARD = 100
+_ABS_MAX_PAGES = 20          # hard request ceiling per board, whatever the page size
+
+
+def _max_pages(page_size: int) -> int:
+    if page_size <= 0:
+        return 1
+    return max(1, min(_ABS_MAX_PAGES, -(-_MAX_JOBS_PER_BOARD // page_size)))
 
 # Statuses that say "not now", never "not here". A board answering with any of
 # these is not evidence about the board.
@@ -64,7 +81,12 @@ _TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 # probe therefore runs about once per process, not once per board, and the
 # answer ends up in the logs where it can be pinned via JOIN_PAGE_SIZE and this
 # code deleted.
-_PAGE_SIZE_LADDER = (100, 50, 25, 10, 5, 1)
+# 5 is FIRST because production answered the question: the probe walked the
+# ladder on 2026-09-02 and join.com accepted pageSize=5 and rejected everything
+# above it. Leading with the verified value costs one request instead of five;
+# the rest of the ladder stays as the fallback for the day join.com changes its
+# mind, so this is a known-good default rather than a hardcoded guess.
+_PAGE_SIZE_LADDER = (5, 25, 50, 100, 10, 1)
 
 # Learned at runtime; None until the first successful request. A module global
 # on purpose — the discovery pool builds one JoinScraper per board, and paying
@@ -226,7 +248,10 @@ class JoinScraper:
             if not company_id:
                 return []
             page = 1
-            while page <= _MAX_PAGES:
+            # Depth is decided by the page size actually in use, so a smaller
+            # page size buys more pages rather than a shallower board.
+            max_pages = _max_pages(_candidate_page_sizes()[0])
+            while page <= max_pages:
                 try:
                     r = self._get_page(client, company_id, page)
                 except httpx.HTTPError as e:
@@ -337,13 +362,13 @@ class JoinScraper:
                                  sorted(pagination)[:8])
                 if page >= total_pages:
                     break
-                if page >= _MAX_PAGES:
+                if page >= max_pages:
                     # More pages exist than we walk. Not an error — but the
                     # result IS a subset, and saying so is what stops the
                     # postings on page 6 from being ghost-closed.
                     self.fetch_complete = False
                     log.info("Join[%s]: %d pages available, walked %d — partial result",
-                             self.board_slug, total_pages, _MAX_PAGES)
+                             self.board_slug, total_pages, max_pages)
                     break
                 page += 1
         log.info("Join[%s]: %d jobs (complete=%s)",
