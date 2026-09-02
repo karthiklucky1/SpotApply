@@ -123,9 +123,24 @@ def test_shadow_disabled_records_nothing(monkeypatch):
 # ── Shadow report math ────────────────────────────────────────────────────────
 def test_shadow_report_aggregates(monkeypatch):
     from scripts.shadow_report import report
+
+    # Pairs are placed RELATIVE to the shortlist bar rather than written as
+    # literals. The two aggregates measure different things — closeness of the
+    # scores, and agreement on the shortlist DECISION — and only bar-relative
+    # fixtures keep them separable when the bar moves. (At the old literals a
+    # (90, 60) pair agreed only because 60 sat exactly ON a 60 bar; raising the
+    # bar to 70 silently turned this into an agreement test that measured the
+    # threshold instead of the arithmetic.)
+    bar = settings.shortlist_score_threshold
+    pairs = [
+        (bar + 10, bar + 8),    # close, both shortlist
+        (bar - 20, bar - 15),   # close, neither shortlists
+        (bar + 30, bar + 5),    # FAR apart, but still both shortlist
+        (bar - 30, bar - 27),   # close, neither shortlists
+    ]
     with get_session() as session:
         session.exec(delete(FunnelEvent))
-        for llm, local in [(80, 78), (40, 45), (90, 60), (30, 33)]:
+        for llm, local in pairs:
             session.add(FunnelEvent(
                 job_id=1, stage="shadow_score", passed=abs(llm - local) <= 10,
                 reason="", metadata_json=json.dumps({"llm": llm, "local": local}),
@@ -136,7 +151,9 @@ def test_shadow_report_aggregates(monkeypatch):
     r = report(days=1)
     assert r["n"] == 4
     assert r["within10_pct"] == 75                    # 3 of 4 within 10 pts
-    # threshold=35: (80,78)✓ (40,45)✓ (90,60)✓ (30,33)✓ → all same side
+    # …yet all four land on the same side of the bar: a big score gap is not the
+    # same failure as a different shortlist decision, which is the whole reason
+    # both numbers are reported.
     assert r["shortlist_decision_agreement_pct"] == 100.0
 
 

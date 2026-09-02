@@ -58,12 +58,22 @@ def _clean_shadow():
 
 
 def test_full_loop_fit_certify_route(tmp_path, monkeypatch):
-    _seed_shadow(1500)
+    # Sized so an AUTO-IN zone is certifiable at all. t_hi needs a holdout
+    # slice whose Wilson LOWER bound clears 0.95, and a perfect 30-row slice
+    # only reaches ~0.885 — so the slice has to be ~75+ rows AND sit entirely
+    # above the bar. Raising the shortlist bar shrinks the share of rows that
+    # qualify (llm ~ U(5,95): 39% clear 60, only 28% clear 70), and at 1500 rows
+    # the holdout ran out of certifiable slice at 70. The fit refusing to
+    # certify is the correct fail-safe, but it left the routing assertions below
+    # measuring the threshold instead of the router.
+    _seed_shadow(3000)
     rc, out = _run_build(tmp_path, monkeypatch)
     assert rc == 0 and out.exists()
 
     cal = json.loads(out.read_text())
-    # thresholds exist and are ordered sanely around the 60 bar
+    # thresholds exist and straddle whatever the shortlist bar currently is
+    from app.config import settings
+    assert cal["bar"] == settings.shortlist_score_threshold
     assert cal["t_lo"] < cal["bar"] < cal["t_hi"] <= 101.0
     assert cal["n_holdout"] > 200
     assert cal["holdout_decision_agreement"] > 0.85
@@ -72,16 +82,24 @@ def test_full_loop_fit_certify_route(tmp_path, monkeypatch):
     ys = [y for _x, y in cal["isotonic"]]
     assert ys == sorted(ys)
 
-    # routing with the fitted file behaves as certified
+    # Routing with the fitted file behaves as certified. The probes are the
+    # EXTREMES of the score range, not literals near the old bar: t_hi is fitted
+    # from the data and moves with the shortlist bar, so a hardcoded 92 stopped
+    # auto-admitting the moment the bar rose to 70 — which read as a routing
+    # regression when nothing about the routing had changed. The isotonic map is
+    # monotone, so if anything auto-admits, the top of the range does.
     cal_loaded = load_calibration(str(out))
     assert cal_loaded is not None
-    top = assign_band(90.0, 92.0, 2.0, [], cal=cal_loaded)
-    bottom = assign_band(3.0, 5.0, 2.0, [], cal=cal_loaded)
+    top = assign_band(98.0, 100.0, 2.0, [], cal=cal_loaded)
+    bottom = assign_band(0.0, 1.0, 2.0, [], cal=cal_loaded)
     assert top.band == AUTO_IN
     assert bottom.band == AUTO_OUT
     # a certified-high score built mostly on inference still goes to Claude
-    wide = assign_band(60.0, 92.0, 32.0, [], cal=cal_loaded)
+    wide = assign_band(68.0, 100.0, 32.0, [], cal=cal_loaded)
     assert wide.band == BAND
+    assert "spread" in wide.reason, (
+        f"expected the wide-spread branch, got: {wide.reason}"
+    )
 
 
 def test_thin_data_yields_all_band_not_false_confidence(tmp_path, monkeypatch):

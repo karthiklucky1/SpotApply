@@ -130,9 +130,19 @@ class DoctorReport:
     llm_verdict: Optional[str] = None      # Haiku 2-sentence hiring signal
     fingerprint_flags: List[str] = field(default_factory=list)  # AI-writing 'tells'
     human_score: int = 100                 # 0–100, higher = reads more human
+    # A SEPARATE gate from `passed`, because the two failures deserve different
+    # consequences. `passed` covers integrity and findability — a résumé that
+    # fails it is wrong and must not ship. `human_passed` covers the
+    # anti-fingerprint tells; a résumé that fails it is honest but reads
+    # machine-written, so it earns a rebuild and, if the rebuild does not fix
+    # it, a delivery that is explicitly NOT reported as passing. Folding the two
+    # into one number is how résumés scoring 24/100 on "reads human" shipped
+    # with a PASS: the fingerprint penalty was diluted by ATS points it had
+    # nothing to do with.
+    human_passed: bool = True
 
     def summary(self) -> str:
-        lines = [f"Doctor Score: {self.score}/100 | ATS Coverage: {self.ats_coverage_pct:.0%} | Human: {self.human_score}/100 | {'PASS ✅' if self.passed else 'FAIL ❌'}"]
+        lines = [f"Doctor Score: {self.score}/100 | ATS Coverage: {self.ats_coverage_pct:.0%} | Human: {self.human_score}/100{'' if self.human_passed else ' (BELOW BAR)'} | {'PASS ✅' if self.passed else 'FAIL ❌'}"]
         for issue in self.issues:
             lines.append(f"  ⚠ {issue}")
         if self.llm_verdict:
@@ -198,6 +208,19 @@ class ResumeDoctor:
         # employment history.) A failing integrity check forces a rebuild.
         passed = score >= self.PASS_THRESHOLD and not integrity_issues
 
+        # The anti-fingerprint gate, kept apart from `passed` on purpose (see
+        # DoctorReport.human_passed). Failing it forces a rebuild with the tells
+        # named; it never blocks the application, because reading uniform is a
+        # style problem, not a false claim.
+        from app.config import settings as _settings
+        human_bar = int(getattr(_settings, "doctor_min_human_score", 55))
+        human_passed = human_score >= human_bar
+        if not human_passed:
+            issues.append(
+                f"Reads machine-written: human score {human_score}/100 is below "
+                f"the {human_bar} bar — vary bullet length and openings, and bold less"
+            )
+
         # ── Haiku LLM verdict (only on passing resumes — no point verdicting failures) ──
         verdict = None
         if passed:
@@ -214,12 +237,33 @@ class ResumeDoctor:
             llm_verdict=verdict,
             fingerprint_flags=fp_flags,
             human_score=human_score,
+            human_passed=human_passed,
         )
         log.info("ResumeDoctor: %s", report.summary())
         return report
 
     def _llm_verdict(self, tailored_md: str, jd_text: str) -> Optional[str]:
-        """Ask claude-haiku for a blunt 2-sentence hiring signal. Returns None on failure."""
+        """Ask claude-haiku for a blunt 2-sentence hiring signal. Returns None on failure.
+
+        Two things here are load-bearing, and both were bugs that put false
+        accusations in front of the user (measured audit, 2026-09-02):
+
+        1. The résumé is sent WHOLE. It used to be sliced at 3,000 characters
+           while real tailored résumés run 3,900-4,300, so the simulated
+           recruiter always saw a document ending mid-sentence and reported
+           "the resume is incomplete/cut off — looks sloppy" as the single
+           biggest rejection risk. That was our truncation, described back to
+           the user as their defect, in three verdicts out of four.
+
+        2. Today's date is stated. Without it the model reads employment dates
+           near or past its training cutoff as future-dated and calls them
+           fabricated — "any real recruiter will flag this as dishonest" — about
+           dates that are entirely in the past and entirely correct. Telling a
+           user their real résumé is fraudulent is the most damaging thing this
+           feature can output, and it was doing it by default.
+        """
+        from datetime import date
+
         from app.config import settings
         try:
             from app.common.llm import shared_anthropic
@@ -231,23 +275,32 @@ class ResumeDoctor:
 
         prompt = f"""You are a cynical technical recruiter doing a 30-second resume screen.
 
+TODAY'S DATE: {date.today().isoformat()}
+Any date on or before today is in the PAST and is normal. Do not describe a
+past date as future-dated, fabricated or dishonest. Only a date genuinely
+AFTER today's date is worth flagging, and an expected graduation date in the
+near future is normal on a student or recent-graduate resume.
+
 JOB DESCRIPTION (first 1500 chars):
 {jd_text[:1500]}
 
-TAILORED RESUME:
-{tailored_md[:3000]}
+TAILORED RESUME (complete document):
+{tailored_md}
 
 Write exactly 2 sentences:
 1. Would this resume pass an ATS keyword screen and a quick human review for this role? (yes/borderline/no + one reason)
 2. The single biggest risk that could get it rejected.
 
-Be blunt. No fluff."""
+Be blunt. No fluff. Finish both sentences."""
 
         try:
+            from app.common.llm import sampling
             resp = client.messages.create(
                 model=settings.doctor_model,
-                max_tokens=120,
+                max_tokens=int(getattr(settings, "doctor_verdict_max_tokens", 220)),
                 messages=[{"role": "user", "content": prompt}],
+                **sampling(settings.doctor_model,
+                           float(getattr(settings, "verifier_temperature", 0.0))),
             )
             return resp.content[0].text.strip()
         except Exception as e:

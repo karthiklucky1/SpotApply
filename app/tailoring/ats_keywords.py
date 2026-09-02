@@ -62,7 +62,7 @@ _STOP = {
 # Curated multi-word and single tech terms that should always be captured when
 # present in the JD — these are the terms a recruiter actually types into the
 # ATS boolean search, which is what makes a parsed resume surface at all.
-_TECH_PHRASES = [
+_TECH_PHRASES: List[str] = [
     # Languages / core
     "python", "typescript", "javascript", "golang", "java", "c++", "rust", "sql",
     # ML / AI
@@ -90,6 +90,7 @@ _TECH_PHRASES = [
     "agile", "scrum", "code review", "system design", "api design",
     "production systems", "scalable systems", "high availability",
 ]
+_TECH_PHRASE_SET = frozenset(_TECH_PHRASES)
 
 
 @dataclass
@@ -212,6 +213,73 @@ def _dedupe_contained(phrases: List[str]) -> List[str]:
     # Restore original ordering preference (tech/freq order) by sorting against input index
     order = {p: i for i, p in enumerate(phrases)}
     return sorted(kept, key=lambda x: order.get(x, 999))
+
+
+# ── which phrases are safe to hand a generator as "use these EXACT words" ────
+# The n-gram ranker is a frequency counter, so it happily returns fragments of
+# the job title and the marketing copy: "learning engineer ai", "engineer ai
+# platform", "ai platform company", "backbone for enterprise", "design and own",
+# "own ml systems". Those are fine as *coverage* signals — they are genuinely
+# what the JD repeats — but the tailor prompt tells the model to "incorporate
+# the EXACT phrasing", and a model told to work "design and own" and "GPU
+# clusters" into a résumé does exactly that. Lifting a JD responsibility line
+# into someone's employment history is precisely the fabrication grounding then
+# has to catch and pay to rebuild. So the tailor gets a filtered list; coverage
+# measurement keeps the full one.
+
+# Verbs and role/marketing nouns that make a phrase a sentence fragment rather
+# than a thing a person can have on their résumé.
+_NON_SKILL_TOKENS = frozenset({
+    "design", "designing", "own", "owning", "owns", "drive", "driving", "lead",
+    "leads", "leading", "collaborate", "collaborating", "partner", "write",
+    "writes", "writing", "ship", "ships", "shipping", "deliver", "delivers",
+    "support", "supporting", "improve", "improving", "grow", "growing",
+    "scale", "scaling", "hire", "hiring", "mentor", "mentoring", "want",
+    "wants", "need", "needs", "love", "loves", "care", "make", "makes",
+    "company", "companies", "startup", "mission", "culture", "customers",
+    "customer", "clients", "product", "products", "business", "opportunity",
+    "candidate", "candidates", "applicants", "benefits", "compensation",
+    "salary", "equity", "bonus", "backbone", "world", "future", "impact",
+    "everything", "anything", "someone", "people", "person", "day", "days",
+})
+# Job-title words. A phrase built out of these is describing the req, not a skill.
+_TITLE_TOKENS = frozenset({
+    "engineer", "engineers", "engineering", "developer", "developers",
+    "manager", "scientist", "scientists", "architect", "analyst", "intern",
+    "lead", "senior", "junior", "staff", "principal", "director", "head",
+    "specialist", "consultant", "contractor", "founding",
+})
+
+
+def is_skill_like(phrase: str) -> bool:
+    """True when a phrase names something a candidate can actually possess.
+
+    Curated technology terms always qualify. Anything else must be free of
+    sentence glue, generic verbs, marketing nouns and job-title words.
+    """
+    p = (phrase or "").strip().lower()
+    if not p:
+        return False
+    if p in _TECH_PHRASE_SET:
+        return True
+    tokens = p.split()
+    if not tokens:
+        return False
+    # Mid-phrase stop words are the tell for a clause fragment: the ranker
+    # already refuses to START or END on one, so "backbone for enterprise" and
+    # "design and own" are exactly what slips through.
+    if any(t in _STOP for t in tokens):
+        return False
+    if any(t in _NON_SKILL_TOKENS for t in tokens):
+        return False
+    if any(t in _TITLE_TOKENS for t in tokens):
+        return False
+    return True
+
+
+def skill_phrases(phrases: List[str]) -> List[str]:
+    """Filter a ranked phrase list down to the ones safe to target verbatim."""
+    return [p for p in phrases if is_skill_like(p)]
 
 
 def analyze(jd_text: str, resume_text: str, top_n: int = 18) -> ATSKeywordReport:
