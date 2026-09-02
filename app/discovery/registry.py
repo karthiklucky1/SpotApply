@@ -305,6 +305,38 @@ async def validate_slug(slug: str, ats: JobSource, career_url: Optional[str] = N
     return is_active, job_count, job_titles, error_msg
 
 
+# Statuses and transport failures that say "not now", never "not here".
+_TRANSIENT_STATUS = (408, 425, 429, 500, 502, 503, 504)
+_TRANSIENT_ERROR_MARKERS = (
+    "timeout", "timed out", "connection", "connect", "temporarily",
+    "reset by peer", "ssl", "eof occurred", "read error", "too many requests",
+)
+
+
+def is_indeterminate_error(error_msg: Optional[str]) -> bool:
+    """True when a validation error says nothing about whether the board is alive.
+
+    The validator treats "not active" as a strike, and seven strikes retire a
+    board for thirty days. But every non-200 was folded into that one bucket, so
+    a rate-limited board (429), a provider having a bad minute (502/503) and a
+    connection timeout all counted against a board that was working perfectly —
+    join.com throttles hard enough that seven consecutive strikes is an ordinary
+    afternoon, not a dead company. A 404 is evidence; a 429 is the absence of
+    evidence, and the two must not be scored the same way.
+
+    Conservative on purpose: an unrecognised error still counts as a strike, so
+    this can only ever spare a board, never keep a genuinely dead one alive
+    forever (the board is still re-probed, just without the strike).
+    """
+    if not error_msg:
+        return False
+    low = error_msg.lower()
+    for status in _TRANSIENT_STATUS:
+        if f"status {status}" in low:
+            return True
+    return any(marker in low for marker in _TRANSIENT_ERROR_MARKERS)
+
+
 async def check_h1b_sponsorship(company_name: str) -> str:
     """Query Tavily/Exa to check if the company has H-1B sponsorship history."""
     if not settings.tavily_api_key:
@@ -379,6 +411,23 @@ async def run_validation_loop(limit: int = 100) -> int:
         if is_active and (sponsorship == "Unknown" or not sponsorship):
             sponsorship = await check_h1b_sponsorship(company_name or slug)
             
+        # A board we could not reach is not a board we found empty. Re-probe it
+        # soon, without writing over what we last knew about it and without
+        # spending one of its seven lives.
+        if not is_active and is_indeterminate_error(error_msg):
+            with get_session() as session:
+                db_comp = session.get(CompanyRegistry, comp_id)
+                if db_comp:
+                    db_comp.last_error = error_msg
+                    db_comp.next_retry_at = datetime.utcnow() + timedelta(hours=6)
+                    session.add(db_comp)
+                    session.commit()
+            log.info("Company Registry: '%s' (%s) unreachable this pass (%s) — "
+                     "re-probing in 6h, not counted as a failure",
+                     slug, ats.value, error_msg)
+            validated_count += 1
+            continue
+
         with get_session() as session:
             db_comp = session.get(CompanyRegistry, comp_id)
             if db_comp:
