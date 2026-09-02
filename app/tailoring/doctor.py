@@ -208,18 +208,48 @@ class ResumeDoctor:
         # employment history.) A failing integrity check forces a rebuild.
         passed = score >= self.PASS_THRESHOLD and not integrity_issues
 
-        # The anti-fingerprint gate, kept apart from `passed` on purpose (see
-        # DoctorReport.human_passed). Failing it forces a rebuild with the tells
-        # named; it never blocks the application, because reading uniform is a
-        # style problem, not a false claim.
+        # ── The anti-fingerprint gate, measured as a DELTA ────────────────────
+        # An absolute bar does not work here, and the measurement is not close.
+        # Run this same detector over the three hand-written master résumés in
+        # data/profiles — documents no model has touched — and they score 24, 44
+        # and 24 out of 100. All three trip "bullets open with an action verb"
+        # (they are 92-100% verb-start, which is the résumé advice every guide
+        # has given for decades) and "low burstiness" (length-CV 0.13-0.14, what
+        # a person produces fitting twelve bullets on one page).
+        #
+        # So on the only human ground truth available the detector fires every
+        # time. An absolute bar set anywhere above those scores rejects the
+        # user's own résumé; set below them it catches nothing. Either way the
+        # warning stops carrying information, and a warning nobody can act on is
+        # noise attached to a document they are about to send to an employer.
+        #
+        # The question worth asking is not "is this uniform" but "did TAILORING
+        # make it more uniform than this person's own writing". That is a delta,
+        # it is measurable per user, and it needs no calibration constant. A
+        # candidate who writes 12/12 verb-start bullets and gets back 12/12 has
+        # not been harmed; one whose bursty master comes back uniform has.
         from app.config import settings as _settings
+        master_bullets = self._extract_bullets(master_md)
+        _, master_penalty = self._fingerprint_flags(master_bullets, master_md)
         human_bar = int(getattr(_settings, "doctor_min_human_score", 55))
-        human_passed = human_score >= human_bar
-        if not human_passed:
-            issues.append(
-                f"Reads machine-written: human score {human_score}/100 is below "
-                f"the {human_bar} bar — vary bullet length and openings, and bold less"
-            )
+        if len(master_bullets) >= 4:
+            human_passed = fp_penalty <= master_penalty
+            if not human_passed:
+                issues.append(
+                    f"Tailoring made this read more machine-written than your own "
+                    f"résumé (uniformity {master_penalty} → {fp_penalty}) — vary "
+                    f"bullet length and openings, and bold less"
+                )
+        else:
+            # Nothing comparable to measure against (a résumé we could not parse
+            # into bullets). Fall back to the absolute bar rather than passing
+            # by default — "no baseline" is not evidence of quality.
+            human_passed = human_score >= human_bar
+            if not human_passed:
+                issues.append(
+                    f"Reads machine-written: human score {human_score}/100 is below "
+                    f"the {human_bar} bar — vary bullet length and openings, and bold less"
+                )
 
         # ── Haiku LLM verdict (only on passing resumes — no point verdicting failures) ──
         verdict = None

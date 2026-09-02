@@ -172,11 +172,95 @@ def test_a_machine_reading_resume_does_not_report_as_passing(monkeypatch):
     """The gate. A résumé our own detector scores far below the bar used to
     clear PASS_THRESHOLD anyway, because the fingerprint penalty was folded into
     the same number as ATS coverage and diluted by points it had nothing to do
-    with."""
+    with. (_MASTER has too few bullets to form a baseline, so this exercises the
+    absolute-bar fallback.)"""
     report = _report(_UNIFORM, monkeypatch)
     assert report.human_score < settings.doctor_min_human_score
     assert report.human_passed is False
     assert any("machine-written" in i for i in report.issues)
+
+
+# ── the gate is a delta, not a level ─────────────────────────────────────────
+
+_BURSTY_MASTER = """# Alex Tenant
+
+## PROFESSIONAL EXPERIENCE
+**Backend Engineer** | Acme Corp | May 2022 - Aug 2024 | Remote
+- Owned the checkout service end to end.
+- Cut p99 latency 45% by tuning PostgreSQL query plans, connection pooling and the three slowest endpoints in the checkout path.
+- On-call rotation for the payments tier.
+- Wrote the migration runbook the team still uses, then ran the migration itself over two weekends without a rollback.
+- Mentored two juniors.
+"""
+
+_UNIFORM_MASTER = """# Alex Tenant
+
+## PROFESSIONAL EXPERIENCE
+**Backend Engineer** | Acme Corp | May 2022 - Aug 2024 | Remote
+""" + "\n".join(
+    f"- Optimized the {n} service pipeline reliably and efficiently every day."
+    for n in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
+)
+
+
+def _check(tailored, master, monkeypatch):
+    monkeypatch.setattr(ResumeDoctor, "_llm_verdict", lambda self, a, b: None)
+    return ResumeDoctor().check(tailored, master, "Backend engineer. Python, FastAPI.")
+
+
+def test_a_users_own_resume_never_fails_its_own_gate(monkeypatch):
+    """THE calibration fact, and the reason this gate is relative.
+
+    Run the fingerprint detector over the three hand-written master résumés in
+    data/profiles — documents no model has touched — and they score 24, 44 and
+    24 out of 100, tripping every flag. They are 92-100% verb-start (the résumé
+    advice every guide gives) with length-CV 0.13-0.14 (a person fitting twelve
+    bullets on one page). An absolute bar above those scores rejects the user's
+    own writing; below them it catches nothing.
+    """
+    from pathlib import Path
+    profiles = Path("data/profiles")
+    if not profiles.exists():
+        import pytest as _pytest
+        _pytest.skip("profile fixtures not present")
+    checked = 0
+    for path in sorted(profiles.glob("*.md")):
+        md = path.read_text()
+        report = _check(md, md, monkeypatch)
+        assert report.human_passed is True, (
+            f"{path.name} is human-written and fails our own machine-written "
+            f"gate (score {report.human_score}, flags {report.fingerprint_flags})"
+        )
+        checked += 1
+    assert checked >= 1
+
+
+def test_output_no_worse_than_the_master_passes(monkeypatch):
+    """A candidate who writes uniform bullets and gets uniform bullets back has
+    not been harmed, whatever the absolute score says."""
+    report = _check(_UNIFORM_MASTER, _UNIFORM_MASTER, monkeypatch)
+    assert report.human_passed is True
+    assert report.human_score < settings.doctor_min_human_score, (
+        "this fixture is supposed to score badly in absolute terms — that is "
+        "the whole point of measuring the delta instead"
+    )
+
+
+def test_tailoring_a_bursty_resume_into_a_uniform_one_fails(monkeypatch):
+    """The failure this gate exists for: the person wrote unevenly, and what
+    came back is machine-flat."""
+    slop = _BURSTY_MASTER.split("Remote\n")[0] + "Remote\n" + "\n".join(
+        f"- Optimized the {n} service pipeline reliably and efficiently every day."
+        for n in ("alpha", "beta", "gamma", "delta", "epsilon"))
+    report = _check(slop, _BURSTY_MASTER, monkeypatch)
+    assert report.human_passed is False
+    assert any("more machine-written than your own" in i for i in report.issues)
+
+
+def test_an_unparseable_master_falls_back_to_the_absolute_bar(monkeypatch):
+    """No baseline is not evidence of quality — it must not pass by default."""
+    report = _check(_UNIFORM, "just a sentence, no bullets at all", monkeypatch)
+    assert report.human_passed is False
 
 
 def test_the_human_gate_is_separate_from_the_quality_gate(monkeypatch):

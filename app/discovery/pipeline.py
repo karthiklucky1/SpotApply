@@ -767,15 +767,38 @@ THROTTLED_BOARD_BACKOFF_HOURS = 6
 
 
 def _is_throttled(error: str) -> bool:
-    """True when the board asked us to slow down rather than reporting a fault.
+    """True when the failure is not evidence that the board is dead.
 
-    Workday in particular 429s under the pulse lane's polling cadence. Counting
-    that toward BOARD_DEACTIVATE_AFTER_FAILURES meant five throttled polls in a
-    row permanently deactivated a healthy board with reason "unreachable x5" —
-    a quiet, cumulative loss of discovery coverage that nothing alerts on.
+    Retirement at BOARD_DEACTIVATE_AFTER_FAILURES is a thirty-day sentence
+    passed on five data points, so what counts as a data point matters. Three
+    kinds of failure say nothing about the board:
+
+      429 / rate limit — Workday and join.com both throttle under the pulse
+        lane's cadence. Five throttled polls in a row used to deactivate a
+        healthy board as "unreachable x5" — a quiet, cumulative loss of
+        coverage that nothing alerts on.
+
+      422 / 400 and other contract errors — the board rejected the SHAPE of our
+        request. That is our bug, not its death. join.com answers 422 to a
+        `pageSize` it does not accept, and retiring 23.5K companies because we
+        sent the wrong page size would be the most expensive possible way to
+        find out we sent the wrong page size. (Measured in production
+        2026-09-02: join board fetches return a mix of 429 and 422 and nothing
+        else.) Fixing the request is the fix; deleting the board is not.
+
+    5xx and transport failures are deliberately NOT spared — a board that
+    answers 500 forever is unusable whatever the cause, and
+    test_board_throttling pins that. A 404 still retires immediately, and an
+    unrecognised error still counts toward the threshold, so this can only
+    spare a board, never keep a genuinely dead one alive: a spared board is
+    backed off and re-polled, not trusted.
     """
     e = (error or "").lower()
-    return "429" in e or "too many requests" in e or "rate limit" in e
+    if "429" in e or "too many requests" in e or "rate limit" in e:
+        return True
+    # Contract errors, matched on the status token so "HTTP 422", "returned 422"
+    # and "status 422" all read the same.
+    return bool(re.search(r"\b(?:400|422)\b", e))
 
 
 def record_board_failure(source_name: str, slug: str | None, error: str) -> None:

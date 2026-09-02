@@ -291,3 +291,47 @@ def test_no_error_is_not_indeterminate():
     """A board that answered 200 with zero jobs really is inactive."""
     assert is_indeterminate_error(None) is False
     assert is_indeterminate_error("") is False
+
+
+# ── the OTHER retirement path ────────────────────────────────────────────────
+# The discovery pipeline retires a board after BOARD_DEACTIVATE_AFTER_FAILURES
+# failed fetches. Making the scraper RAISE routed join's throttles into that
+# counter for the first time — a regression the first production deploy of this
+# change surfaced within a minute: 429s were already spared, but 422s were not,
+# and five discovery runs would have retired the board.
+
+@pytest.mark.parametrize("error", [
+    "join jobs API returned 429",
+    "join jobs API returned 422",
+    "HTTP 422",
+    "API returned status 422",
+    "Too Many Requests",
+])
+def test_a_throttle_or_contract_error_never_retires_the_board(error):
+    """Retirement is a thirty-day sentence passed on five data points, so what
+    counts as a data point matters. A board that asked us to slow down, or that
+    rejected the SHAPE of our request, has told us nothing about whether it is
+    alive — and 23.5K join companies would have been retired for our page size."""
+    from app.discovery.pipeline import _is_throttled
+    assert _is_throttled(error) is True, error
+
+
+@pytest.mark.parametrize("error", [
+    "board_not_found (404)",
+    "API returned status 404",
+    "API returned status 403",
+    "No career URL available for manual ATS",
+    "XML parse error",
+    # 5xx and transport failures are deliberately NOT spared here: a board that
+    # answers 500 forever is unusable whatever the cause. test_board_throttling
+    # pins that policy; this test pins that widening the contract-error
+    # exemption did not quietly change it.
+    "HTTP 503",
+    "HTTP 500",
+    "connection timeout",
+])
+def test_a_real_fault_still_counts_toward_retirement(error):
+    """The exemption can only ever SPARE a board that answered. A dead one must
+    still retire, or the registry fills with slugs nobody can fetch."""
+    from app.discovery.pipeline import _is_throttled
+    assert _is_throttled(error) is False, error
