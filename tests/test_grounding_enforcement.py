@@ -43,7 +43,7 @@ def _fake_grounding_module(passed: bool, flagged=None, *, raise_on_init=False):
             if raise_on_init:
                 raise ImportError("No module named 'sentence_transformers'")
 
-        def check(self, master, tailored):
+        def check(self, master, tailored, *, use_cache=True):
             return _Result()
 
     mod.GroundingChecker = GroundingChecker
@@ -215,6 +215,99 @@ def test_grounding_required_defaults_ON_before_real_users():
     Pinned so a flip back is deliberate."""
     from app.config import settings
     assert settings.grounding_required is True
+
+
+def test_a_fabricated_fact_blocks_even_when_grounding_passes(app_id, tmp_path, monkeypatch):
+    """The deterministic guard outranks the model's opinion.
+
+    Grounding only inspects lines it recognises as achievement bullets, so an
+    invented employer sitting in an experience HEADER never reaches it — the
+    check passes and the résumé ships claiming a job the candidate never had.
+    Set difference over the master's own facts catches that without asking
+    anyone, and it must be able to block on its own.
+    """
+    from app.tailoring.tailor import tailor_for_application
+    monkeypatch.setitem(sys.modules, "app.tailoring.grounding",
+                        _fake_grounding_module(passed=True))
+    monkeypatch.setattr(
+        "app.tailoring.tailor.Tailor.tailor_resume",
+        lambda self, *a, **k: (
+            "# Alex Tenant\n\n## PROFESSIONAL EXPERIENCE\n"
+            "**Staff Engineer** | Stripe | May 2019 - Aug 2024 | Remote\n"
+            "- Built APIs in Python\n"
+        ),
+        raising=False)
+    tailor_for_application(app_id)
+
+    assert _status(app_id) == ApplicationStatus.ERROR
+    notes = _notes(app_id).lower()
+    assert "stripe" in notes, "the user must be told WHICH fact was invented"
+    r = _report(tmp_path, app_id)
+    assert r["fabrications"], "the report claimed a clean résumé"
+    assert {f["kind"] for f in r["fabrications"]} & {"employer", "job title", "employment date"}
+
+
+def test_a_style_failure_delivers_the_resume_instead_of_blocking(app_id, tmp_path, monkeypatch):
+    """Reading machine-written is not a false claim.
+
+    It earns a rebuild and an honest report, but it must never park a truthful
+    résumé at ERROR — that leaves the user with nothing to submit over a
+    bolding count, which is a worse outcome than the defect.
+    """
+    import types as _types
+
+    from app.tailoring.tailor import tailor_for_application
+    monkeypatch.setitem(sys.modules, "app.tailoring.grounding",
+                        _fake_grounding_module(passed=True))
+
+    doctor_mod = _fake_doctor_module()
+    doctor_mod.ResumeDoctor.check = lambda self, resume_md, master, jd: _types.SimpleNamespace(
+        score=80, ats_coverage_pct=0.8, llm_verdict="fine", weak_bullets=[],
+        banned_found=[], integrity_issues=[], human_score=24, fingerprint_flags=["uniform"],
+        issues=["reads machine-written"], passed=True, human_passed=False,
+    )
+    monkeypatch.setitem(sys.modules, "app.tailoring.doctor", doctor_mod)
+
+    tailor_for_application(app_id)
+
+    assert _status(app_id) == ApplicationStatus.TAILORED
+    r = _report(tmp_path, app_id)
+    assert r["human_passed"] is False
+    assert r["doctor_passed"] is False, (
+        "a résumé we score 24/100 on reading human was reported as passing"
+    )
+    assert "machine-written" in _notes(app_id).lower()
+
+
+def test_a_user_can_ask_for_a_fresh_check_of_a_delivered_resume(app_id, tmp_path, monkeypatch):
+    """The manual escape hatch.
+
+    Every delivered résumé was already verified, and re-asking normally returns
+    the verdict we have — which is why the automatic path reuses it. But "the
+    system is confident" is not "the user is", and someone about to put their
+    name on a document is entitled to make us look again.
+    """
+    from app.tailoring.tailor import reverify_application, tailor_for_application
+    monkeypatch.setitem(sys.modules, "app.tailoring.grounding",
+                        _fake_grounding_module(passed=True))
+    tailor_for_application(app_id)
+    assert (tmp_path / "tailored" / f"app_{app_id}" / "resume.md").exists(), (
+        "the markdown must be kept — re-verifying a lossy .docx reconstruction "
+        "would check a different document than the one we generated"
+    )
+
+    section = reverify_application(app_id)
+    assert section["grounding_status"] == "passed"
+    assert section["fabrications"] == []
+    assert "reverified_at" in section
+    assert _report(tmp_path, app_id)["reverified_at"] == section["reverified_at"]
+
+
+def test_a_recheck_without_a_delivered_resume_says_so(app_id):
+    """A clear refusal beats re-verifying nothing and reporting it clean."""
+    from app.tailoring.tailor import reverify_application
+    with pytest.raises(FileNotFoundError):
+        reverify_application(app_id)
 
 
 def test_zero_extractable_bullets_is_unverified_not_passed():

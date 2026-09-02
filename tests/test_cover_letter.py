@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from app.config import settings
 from app.tailoring.tailor import Tailor, COVER_SYSTEM
 
 
@@ -41,7 +42,10 @@ def test_cover_prompt_includes_structure_and_company():
     class _FakeClient:
         class messages:
             @staticmethod
-            def create(model, max_tokens, system, messages):
+            def create(model, max_tokens, system, messages, **kw):
+                # **kw so a new generation parameter (temperature, top_p) added
+                # to the real call does not fail this double instead of the code.
+                captured["kwargs"] = kw
                 captured["system"] = system
                 captured["user"] = messages[0]["content"]
                 resp = MagicMock()
@@ -53,6 +57,16 @@ def test_cover_prompt_includes_structure_and_company():
 
     out = tailor.write_cover_letter("master resume text", _JobSnap())
     assert out == "A grounded cover letter."
+
+    # Generation temperature is pinned, not left at the SDK default of 1.0.
+    # Unpinned, two runs of the same résumé against the same JD produced
+    # different honesty outcomes — one invented a claim grounding then caught,
+    # the other did not — so the guarantee was a coin flip and the cost varied
+    # with it.
+    #
+    # It travels in extra_body because the Python SDK dropped `temperature`
+    # from the typed Messages.create signature; see app/common/llm.sampling.
+    assert captured["kwargs"]["extra_body"]["temperature"] == settings.tailoring_temperature
 
     user_prompt = captured["user"].lower()
     # company name threaded into the prompt
@@ -82,7 +96,8 @@ def test_cover_letter_openai_fallback_path():
         class chat:
             class completions:
                 @staticmethod
-                def create(model, max_tokens, messages):
+                def create(model, max_tokens, messages, **kw):
+                    captured["kwargs"] = kw
                     captured["system"] = messages[0]["content"]
                     captured["user"] = messages[1]["content"]
                     resp = MagicMock()

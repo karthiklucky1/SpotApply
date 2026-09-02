@@ -767,3 +767,35 @@ class UserReview(SQLModel, table=True):
     is_featured: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
+class GroundingVerdict(SQLModel, table=True):
+    """One cached fact-check: "was THIS generated claim supported by THAT evidence".
+
+    The row is fully content-addressed and holds NO résumé text — only hashes,
+    a boolean and a version string. That is deliberate on two counts. It means
+    the same verdict is reusable across users without any tenancy question (the
+    key is the content, not the person), and it keeps the table off the
+    user-scoped deletion surface entirely: there is nothing here to delete when
+    an account goes, because nothing here identifies anyone.
+
+    There is NO expiry column and no TTL. The key already names every input the
+    verdict depends on — the source evidence, the generated text, and the
+    verifier's own version — so a stored verdict can only become wrong if one of
+    those changes, and any of those changes produces a different key. A
+    time-based refresh would re-buy an answer that is still correct. If a future
+    verifier ever depends on something outside this key (a live external source,
+    say), that dependency belongs IN the key, not behind a timer.
+    """
+    __tablename__ = "grounding_verdict"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # sha256 of the normalized master résumé the claim was judged against.
+    evidence_id: str = Field(index=True)
+    # Hash of (source span id + normalized generated text) — see evidence.patch_hash.
+    patch_hash: str = Field(index=True)
+    # Verifier identity: prompt/logic revision + model. Bumping it invalidates
+    # every prior verdict without touching a row.
+    verifier_version: str = Field(default="", index=True)
+    supported: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+

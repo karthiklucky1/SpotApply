@@ -41,17 +41,28 @@ Requirements: Python, FastAPI, PostgreSQL, REST APIs, CI/CD experience.
 Nice to have: Kubernetes, Redis.
 """
 
+# Reordered and re-emphasised, but every FACT is the master's own. The earlier
+# version of this fixture claimed "serving 50k RPM" — a number that appears
+# nowhere in FAKE_RESUME_MD — and the deterministic fabrication guard now
+# rejects it, correctly. A happy-path fixture must not contain the exact defect
+# the pipeline exists to catch, or the test asserts that we ship fabrications.
 FAKE_TAILORED_RESUME = """# Karthik Test — Tailored
 ## Summary
 - Senior Python engineer, FastAPI specialist
 
 ## Experience
 ### Senior Engineer — AcmeCorp (2021-2024)
-- Built high-scale REST APIs with **FastAPI** serving 50k RPM
+- Built high-scale REST APIs with **FastAPI**, reduced latency by 30%
 
 ## Skills
 Python, FastAPI, PostgreSQL, Docker, Kubernetes
 """
+
+# The same résumé with one invented metric grafted onto a real bullet — the
+# shape of fabrication that reads most plausibly and is caught deterministically.
+FAKE_TAILORED_WITH_FABRICATION = FAKE_TAILORED_RESUME.replace(
+    "reduced latency by 30%", "serving 50k RPM and cutting latency 30%"
+)
 
 FAKE_COVER = """You're building out scalable API infrastructure. At AcmeCorp I built FastAPI services that reduced latency by 30% at 50k RPM. This maps directly to your senior role."""
 

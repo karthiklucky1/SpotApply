@@ -79,8 +79,15 @@ def test_user_job_retention_outlives_the_shortlist_window():
 # ── the score thresholds ─────────────────────────────────────────────────────
 
 def test_shortlist_thresholds_are_the_calibrated_values():
-    assert settings.shortlist_score_threshold == 60
-    assert settings.shortlist_strong_threshold == 65
+    """The QUALIFIED bar. 35 -> 60 -> 70.
+
+    With a handful of users there is no sample to calibrate a finer cut on, so
+    the bar is set where the founder is willing to stand behind every row on the
+    board rather than where a distribution says the volume is. Lowering it to
+    fill a thin board is the one change this test exists to make deliberate.
+    """
+    assert settings.shortlist_score_threshold == 70
+    assert settings.shortlist_strong_threshold == 70
 
 
 def test_the_tier_one_gate_matches_the_banded_prompt():
@@ -110,6 +117,35 @@ def test_the_board_default_filter_is_not_stricter_than_the_shortlist_bar():
     """Shortlisting at 60 while the board's own default hides anything under 65
     is how ~1,800 jobs/user got shortlisted and then never shown."""
     assert settings.shortlist_strong_threshold >= settings.shortlist_score_threshold
+
+
+def test_the_alert_bar_never_sits_below_the_shortlist_bar():
+    """An alert for a job the board will not show is a notification to nowhere.
+
+    Below the shortlist bar nothing is shortlisted at all, so a lower alert
+    threshold cannot fire on anything that exists — it is dead config that
+    reads like a working feature."""
+    assert settings.fresh_alert_min_score >= settings.shortlist_score_threshold
+
+
+def test_no_per_day_count_cap_hides_qualified_jobs():
+    """Everything clearing the qualified bar reaches the user.
+
+    The bar is the filter; a count cap on top of it would silently drop
+    qualified jobs on a good day and be invisible on a bad one. Both existing
+    caps are backstops against runaway volume, and at a 70 bar they sit far
+    above anything a real user produces — 11.6% of production Claude finals
+    cleared even 65. If either is ever tightened toward the tens, it has stopped
+    being a backstop and become the allocation."""
+    assert settings.daily_shortlist_limit >= 100, (
+        f"daily_shortlist_limit={settings.daily_shortlist_limit} is low enough to "
+        f"become the real limit — qualified jobs would be dropped, not ranked"
+    )
+    assert settings.shortlist_render_cap >= settings.daily_shortlist_limit, (
+        f"the board renders {settings.shortlist_render_cap} cards but up to "
+        f"{settings.daily_shortlist_limit} can be shortlisted in a day — the "
+        f"difference is jobs the user is never shown"
+    )
 
 
 # ── per-user spend ───────────────────────────────────────────────────────────

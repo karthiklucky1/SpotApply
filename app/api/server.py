@@ -7230,6 +7230,30 @@ def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundT
     return {"started": "tailoring", "application_id": application_id, "usage": usage}
 
 
+@app.post("/run/reverify/{application_id}")
+@_rate_limit("6/minute")
+def trigger_reverify(application_id: int, request: Request) -> dict:
+    """Re-check a delivered résumé's claims from scratch, ignoring cached verdicts.
+
+    Every tailored résumé is already verified before it is handed over, and a
+    fact-check is a pure function of (master résumé, generated text, verifier
+    version) — so re-asking normally returns the answer we already have, which
+    is why the automatic path reuses it. This route exists for the case that
+    reasoning does not cover: the user is about to put their name on the
+    document and wants to see it checked again. Rare by design, rate-limited
+    accordingly, and it never costs the user a tailoring credit — asking us to
+    prove our own work should not be billed as new work.
+    """
+    _require_owned_application(request, application_id)
+    from app.tailoring.tailor import reverify_application
+    try:
+        return {"application_id": application_id, **reverify_application(application_id)}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 def _require_server_autofill_allowed(uid: str | None) -> None:
     """Refuse server-side autofill/preview for users the filler will not serve.
 

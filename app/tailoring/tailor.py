@@ -176,15 +176,26 @@ class Tailor:
         ats_block = ""
         try:
             from app.tailoring.ats_keywords import analyze as ats_analyze
+            from app.tailoring.ats_keywords import skill_phrases
             ats = ats_analyze(job.description or "", master_resume_md)
-            if ats.missing:
+            # Only phrases naming something a person can HAVE. The ranked list is
+            # a frequency count over the JD, so it also carries title and
+            # marketing fragments ("design and own", "ai platform company",
+            # "backbone for enterprise"). Telling a generator to work those in
+            # "using the EXACT phrasing" is how a JD responsibility line ends up
+            # in someone's employment history — the very fabrication grounding
+            # then has to catch and charge a rebuild for.
+            targets = skill_phrases(ats.missing)
+            if targets:
                 ats_block = (
                     "\n\nATS PRIORITY PHRASES — these exact terms appear in the JD but are "
                     "MISSING verbatim from the resume. Where the candidate's real experience "
                     "supports it, incorporate the EXACT phrasing below (do not paraphrase, "
-                    "do not invent experience):\n"
-                    + "\n".join(f"  - {p}" for p in ats.missing)
-                    + f"\n(Already covered: {', '.join(ats.matched[:8])})"
+                    "do not invent experience). If the candidate has no real experience with "
+                    "one of them, LEAVE IT OUT — a missing keyword costs a search hit, an "
+                    "invented one costs the interview:\n"
+                    + "\n".join(f"  - {p}" for p in targets)
+                    + f"\n(Already covered: {', '.join(skill_phrases(ats.matched)[:8])})"
                 )
         except Exception as e:
             log.warning("ATS keyword analysis failed (continuing without it): %s", e)
@@ -237,11 +248,13 @@ Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a se
                     {"type": "text", "text": TAILOR_SYSTEM, "cache_control": {"type": "ephemeral"}},
                     {"type": "text", "text": f"Master resume (markdown):\n---\n{master_resume_md}\n---", "cache_control": {"type": "ephemeral"}},
                 ]
+                from app.common.llm import sampling
                 resp = self._anthropic_client.messages.create(
                     model=settings.tailoring_model,
                     max_tokens=4000,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
+                    **sampling(settings.tailoring_model, settings.tailoring_temperature),
                 )
                 _register_llm_spend("tailor_resume")
                 return self._clean_tailored_resume(resp.content[0].text)
@@ -252,6 +265,7 @@ Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a se
             resp = self._openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=4000,
+                temperature=settings.tailoring_temperature,
                 messages=[
                     {"role": "system", "content": f"{TAILOR_SYSTEM}\n\nMaster resume (markdown):\n---\n{master_resume_md}\n---"},
                     {"role": "user", "content": prompt},
@@ -286,11 +300,13 @@ Ground every claim in the resume. Invent nothing."""
                     {"type": "text", "text": COVER_SYSTEM, "cache_control": {"type": "ephemeral"}},
                     {"type": "text", "text": f"Resume (markdown):\n{master_resume_md}", "cache_control": {"type": "ephemeral"}},
                 ]
+                from app.common.llm import sampling
                 resp = self._anthropic_client.messages.create(
                     model=settings.cover_letter_model,
                     max_tokens=600,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
+                    **sampling(settings.cover_letter_model, settings.tailoring_temperature),
                 )
                 _register_llm_spend("cover_letter")
                 return resp.content[0].text
@@ -301,6 +317,7 @@ Ground every claim in the resume. Invent nothing."""
             resp = self._openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=600,
+                temperature=settings.tailoring_temperature,
                 messages=[
                     {"role": "system", "content": f"{COVER_SYSTEM}\n\nResume (markdown):\n{master_resume_md}"},
                     {"role": "user", "content": prompt},
@@ -514,11 +531,38 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     job_snap = _JobSnapshot()
     cover = tailor.write_cover_letter(master, job_snap, custom_highlight_block=custom_highlight_block)
 
+    # ── L0: is there anything to gain? ──────────────────────────────────────
+    # When the master already matches most of what this JD asks for, a full
+    # regeneration cannot honestly add much — it can only re-word bullets that
+    # already work, which costs a tailor, costs a verification pass, and gives
+    # the model a fresh opportunity to fabricate. A measured audit found one
+    # pairing at 72% master coverage where tailoring produced +0 phrases for
+    # $0.066 and a grounding failure that forced a rebuild.
+    #
+    # This is a coverage bar, not a quality judgement: the résumé is already the
+    # right résumé for this job, so we ship it as-is and say so.
+    skipped_reason = None
+    master_coverage = None
+    try:
+        from app.tailoring.ats_keywords import analyze as _ats_analyze
+        master_coverage = _ats_analyze(job_description or "", master).coverage_pct
+        _skip_bar = float(getattr(settings, "tailor_skip_coverage_pct", 0.0) or 0.0)
+        if _skip_bar and master_coverage >= _skip_bar:
+            skipped_reason = (
+                f"Your résumé already covers {master_coverage:.0%} of this posting's "
+                f"key terms, so it was sent as-is rather than rewritten. Rewriting a "
+                f"résumé that already fits only makes it read machine-written."
+            )
+            log.info("Tailor app %d: L0 skip — master coverage %.0f%% >= %.0f%%",
+                     application_id, master_coverage * 100, _skip_bar * 100)
+    except Exception as _ce:
+        log.debug("coverage pre-check skipped for app %d: %s", application_id, _ce)
+
     # ── Generate → quality-check → rebuild loop ─────────────────────────────
     # If grounding or the Resume Doctor fails a draft, regenerate ONCE with the
     # reviewer's issues fed back into the prompt instead of blocking the
     # application on the first bad draft. Best draft wins.
-    MAX_TAILOR_ATTEMPTS = 2
+    MAX_TAILOR_ATTEMPTS = 1 if skipped_reason else 2
     resume_md = ""
     grounding_failed = False
     grounding_notes = None
@@ -532,18 +576,34 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     doctor_integrity = []      # integrity issues (unbacked claims)
     doctor_human = None        # 0-100 "reads human" score (anti-fingerprint)
     doctor_fingerprints = []   # AI-writing tells detected
+    human_failed = False       # anti-fingerprint gate — retries, never blocks
     locked_fields = []         # immutable sections restored verbatim from master
+    fabrications = []          # deterministic fact additions (employer/date/…)
+    bold_trimmed = 0           # inline emphasis removed after generation
+    grounding_tier = None      # L0 / L1 / L2 / L3
+    grounding_calls = 0        # batched verifier requests actually issued
+    grounding_cache_hits = 0
+    grounding_spans_changed = 0
+    grounding_spans_verified = 0
     attempts_used = 0
     revision_notes = None
 
     for attempt in range(1, MAX_TAILOR_ATTEMPTS + 1):
         attempts_used = attempt
-        resume_md = tailor.tailor_resume(
-            master, job_snap, variant=variant,
-            custom_highlight_block=custom_highlight_block,
-            revision_notes=revision_notes,
-            user_instruction=user_instruction,
-        )
+        if skipped_reason:
+            # L0 — ship the master. It still goes through the lock layer,
+            # grounding and the Doctor below, which is cheap: with nothing
+            # rewritten, grounding reports L0 and makes no LLM call at all.
+            resume_md = master
+            break_after_checks = True
+        else:
+            break_after_checks = False
+            resume_md = tailor.tailor_resume(
+                master, job_snap, variant=variant,
+                custom_highlight_block=custom_highlight_block,
+                revision_notes=revision_notes,
+                user_instruction=user_instruction,
+            )
 
         # ── Lock layer ────────────────────────────────────────────────────────
         # Restore immutable factual sections (Education: degree/school/dates)
@@ -557,6 +617,41 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                          application_id, ", ".join(locked_fields))
         except Exception as _le:
             log.warning("Lock layer skipped for app %d (non-fatal): %s", application_id, _le)
+
+        # ── Style repair ──────────────────────────────────────────────────────
+        # Cap inline emphasis deterministically. The prompt has asked for
+        # sparing bold since it was written and the model produced 51 spans
+        # anyway; removing emphasis changes no words and no facts, so this is
+        # the one AI tell we can simply delete instead of asking about.
+        try:
+            from app.tailoring.style import trim_bold
+            resume_md, bold_trimmed = trim_bold(resume_md)
+            if bold_trimmed:
+                log.info("Style: removed %d excess bold spans for app %d",
+                         bold_trimmed, application_id)
+        except Exception as _se:
+            log.warning("Style repair skipped for app %d (non-fatal): %s", application_id, _se)
+
+        # ── Deterministic fabrication guard ───────────────────────────────────
+        # Set difference in the ADDITION direction over employers, held titles,
+        # employment dates, degrees, institutions, certifications and numbers.
+        # No model, no threshold, no similarity score: a fact in the output that
+        # is not in the input was invented, and nothing about how plausible it
+        # reads changes that. This runs BEFORE grounding because it is free and
+        # because it catches the class of error grounding is weakest on — a
+        # fabricated credential sitting in a section grounding does not treat as
+        # a claim-bearing bullet.
+        try:
+            from app.tailoring.evidence import fabrication_violations
+            fabrications = fabrication_violations(master, resume_md)
+            if fabrications:
+                log.warning("Fabrication guard: app %d added %d fact(s) not in the "
+                            "master résumé: %s", application_id, len(fabrications),
+                            "; ".join(f"{k}: {v}" for k, v in fabrications[:5]))
+        except Exception as _fe:
+            fabrications = []
+            log.warning("Fabrication guard skipped for app %d (non-fatal): %s",
+                        application_id, _fe)
         grounding_failed = False
         grounding_notes = None
         # Three states, not two: passed / failed / never ran. Collapsing the third
@@ -577,6 +672,11 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             # never ran" — NOT a pass, and NOT a failure — so it flows into the
             # unverified path rather than shipping as verified.
             grounding_ran = not getattr(g_result, "unverified", False)
+            grounding_tier = getattr(g_result, "tier", None)
+            grounding_calls = int(getattr(g_result, "llm_calls", 0) or 0)
+            grounding_cache_hits = int(getattr(g_result, "cache_hits", 0) or 0)
+            grounding_spans_changed = int(getattr(g_result, "spans_changed", 0) or 0)
+            grounding_spans_verified = int(getattr(g_result, "spans_verified", 0) or 0)
             if grounding_ran and not g_result.passed:
                 grounding_failed = True
                 grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
@@ -585,7 +685,13 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 log.warning("Grounding FAILED for app %d: %d bullets flagged",
                             application_id, len(g_result.flagged_bullets))
             else:
-                log.info("Grounding PASSED for app %d", application_id)
+                log.info("Grounding PASSED for app %d (%s, %d/%d spans changed, "
+                         "%d verified, %d cache hits, %d LLM calls)",
+                         application_id, grounding_tier,
+                         grounding_spans_changed,
+                         int(getattr(g_result, "spans_total", 0) or 0),
+                         grounding_spans_verified, grounding_cache_hits,
+                         grounding_calls)
             # Feed the grounded ratio into the candidate's Trust Profile consistency
             # dimension (share of resume bullets supported by the master résumé).
             try:
@@ -619,19 +725,41 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             doctor_integrity = d_result.integrity_issues or []
             doctor_human = d_result.human_score
             doctor_fingerprints = d_result.fingerprint_flags or []
+            # A SEPARATE outcome from doctor_failed. Reading machine-written is a
+            # style defect, not a false claim, so it earns a rebuild but must
+            # never park a truthful résumé at ERROR — the user would be left
+            # with nothing to submit over a bolding count.
+            human_failed = not getattr(d_result, "human_passed", True)
             log.info("Doctor report app %d: %s", application_id, d_result.summary())
             if not d_result.passed:
                 doctor_failed = True
                 doctor_notes = f"Doctor score={d_result.score}/100.\n" + "\n".join(d_result.issues)
                 log.warning("Doctor FAILED for app %d (score=%d, attempt %d)",
                             application_id, d_result.score, attempt)
+            elif human_failed:
+                log.warning("Doctor: app %d reads machine-written (human=%d, attempt %d)",
+                            application_id, d_result.human_score, attempt)
         except Exception as e:
             log.warning("Failed to run resume doctor: %s", e)
 
-        if not grounding_failed and not doctor_failed:
+        # A fabricated fact is never shippable, and a rebuild is the only honest
+        # response — so it drives the retry exactly like a grounding failure.
+        fabrication_notes = None
+        if fabrications:
+            fabrication_notes = (
+                "Facts appeared in the tailored résumé that are NOT in the master "
+                "résumé. Remove or correct every one — use only what the master "
+                "actually says:\n"
+                + "\n".join(f"- invented {kind}: {value}" for kind, value in fabrications[:10])
+            )
+
+        if break_after_checks:
+            break                      # L0: nothing was generated, so nothing to rebuild
+        if not grounding_failed and not doctor_failed and not fabrications and not human_failed:
             break
         if attempt < MAX_TAILOR_ATTEMPTS:
-            revision_notes = "\n".join(n for n in (grounding_notes, doctor_notes) if n)
+            revision_notes = "\n".join(
+                n for n in (grounding_notes, doctor_notes, fabrication_notes) if n)
             log.info("Rebuilding tailored resume for app %d (attempt %d failed review)",
                      application_id, attempt)
 
@@ -665,6 +793,13 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     resume_path = out_dir / resume_filename
     cover_path = out_dir / cover_filename
     _md_to_docx(resume_md, resume_path)
+    # Keep the markdown the .docx was rendered from. Re-verifying a résumé by
+    # parsing its own .docx back would check a lossy reconstruction rather than
+    # the document we actually generated; the manual re-check below reads this.
+    try:
+        (out_dir / "resume.md").write_text(resume_md, encoding="utf-8")
+    except Exception as _me:
+        log.debug("tailored markdown not persisted: %s", _me)
 
     # Quality report for the Tailoring Studio UI (score dial, rebuilt badge,
     # keyword highlighting uses ats_keywords at read time).
@@ -672,7 +807,12 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         import json as _json
         (out_dir / "report.json").write_text(_json.dumps({
             "doctor_score": doctor_score,
-            "doctor_passed": not doctor_failed,
+            # A résumé that reads machine-written is NOT reported as passing.
+            # Folding the anti-fingerprint result in here is the difference
+            # between "we checked and it's fine" and "we checked, it isn't, and
+            # we shipped it anyway with a green tick" — which is what a 24/100
+            # human score used to get.
+            "doctor_passed": (not doctor_failed) and not human_failed,
             # None (not True) when the check never ran — the UI must be able to
             # tell "verified clean" apart from "not verified".
             "grounding_passed": (not grounding_failed) if grounding_ran else None,
@@ -688,7 +828,25 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             "banned_words": doctor_banned[:8],
             "integrity_issues": doctor_integrity[:5],
             "human_score": doctor_human,
+            "human_passed": not human_failed,
             "fingerprint_flags": doctor_fingerprints[:5],
+            # Deterministic fact additions — employers, held titles, employment
+            # dates, degrees, institutions, certifications, numbers. Empty is
+            # the only acceptable value on a delivered résumé.
+            "fabrications": [{"kind": k, "value": v} for k, v in fabrications[:10]],
+            # What verification actually cost, so "we ground once per claim" is
+            # a measurable statement rather than a design intention.
+            "grounding_tier": grounding_tier,
+            "grounding_llm_calls": grounding_calls,
+            "grounding_cache_hits": grounding_cache_hits,
+            "grounding_spans_changed": grounding_spans_changed,
+            "grounding_spans_verified": grounding_spans_verified,
+            "bold_spans_trimmed": bold_trimmed,
+            # L0: the master already covered this posting, so nothing was rewritten.
+            "tailoring_skipped": bool(skipped_reason),
+            "tailoring_skipped_reason": skipped_reason,
+            "master_coverage_pct": (round(master_coverage * 100)
+                                    if master_coverage is not None else None),
             # Immutable facts the Lock layer pinned to the master résumé (shown
             # in the UI as "locked", so the user sees their degree/dates are
             # protected rather than seeing a scary "altered credential" flag).
@@ -712,7 +870,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # on redeploy). Best-effort — never blocks the result write below.
     _persist_tailored_to_storage(
         app_user_id, application_id,
-        [resume_path, cover_path, out_dir / "report.json"])
+        [resume_path, cover_path, out_dir / "report.json", out_dir / "resume.md"])
 
     # --- Phase 3: write results in a short session ---
     with get_session() as session:
@@ -729,7 +887,27 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             "not run for this résumé (see server logs). Read every bullet against "
             "your master résumé before you submit."
         )
-        if grounding_failed:
+        _style_note = (
+            "⚠ This draft still reads machine-written (uniform bullet lengths and "
+            "openings). Every fact in it is verified against your master résumé — "
+            "but vary a couple of bullets in your own words before you submit."
+        )
+        if fabrications:
+            # The one failure with no benefit of the doubt: these facts are not in
+            # the user's résumé, so they are not the user's facts. Nothing about a
+            # deadline justifies handing someone a document that says they worked
+            # somewhere they did not.
+            app.status = ApplicationStatus.ERROR
+            app.notes = (
+                "Blocked: the tailored résumé asserted facts your master résumé "
+                "does not contain — "
+                + "; ".join(f"{kind} “{value}”" for kind, value in fabrications[:5])
+                + ". Nothing was delivered. Rebuild, or edit your master résumé if "
+                "these are real."
+            )
+            log.error("Application %d blocked at ERROR: %d fabricated fact(s)",
+                      application_id, len(fabrications))
+        elif grounding_failed:
             app.status = ApplicationStatus.ERROR
             app.notes = grounding_notes
             log.warning("Application %d blocked at ERROR: grounding failure", application_id)
@@ -748,15 +926,108 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                       "GROUNDING_REQUIRED is set", application_id)
         else:
             app.status = ApplicationStatus.TAILORED
+            notes = []
             if not grounding_ran:
                 # Delivered, but never silently: the human review step is the
                 # design's backstop and it can only work if the human is told.
-                app.notes = _unverified_note
+                notes.append(_unverified_note)
+            if human_failed:
+                notes.append(_style_note)
+            if skipped_reason:
+                notes.append(skipped_reason)
+            if notes:
+                app.notes = "\n\n".join(notes)
 
         session.add(app)
         session.commit()
 
     return resume_path, cover_path
+
+
+def reverify_application(application_id: int) -> dict:
+    """Re-run verification on an already-delivered résumé, ignoring the cache.
+
+    The cache exists because a fact-check is a pure function of (evidence,
+    claim, verifier) — ask the same question twice and the honest answer is the
+    stored one. But "the system is confident" is not the same as "the user is",
+    and a candidate about to put their name on a document is entitled to make us
+    look again. So this is the escape hatch: deterministic fact checks re-run
+    from scratch, every needed verdict recomputed rather than read back.
+
+    Exceptional by design. Nothing in the normal flow calls it, and the normal
+    flow is not weaker for that — the automatic check already ran on this exact
+    text before it was delivered.
+
+    Returns the refreshed verification section of the report.
+    """
+    import json as _json
+    from datetime import datetime
+
+    with get_session() as session:
+        app = session.get(Application, application_id)
+        if not app:
+            raise ValueError(f"Application {application_id} not found")
+        app_user_id = app.user_id
+        job = session.get(Job, app.job_id)
+        job_description = job.description if job else ""
+
+    out_dir = settings.data_dir / "tailored" / f"app_{application_id}"
+    md_path = out_dir / "resume.md"
+    if not md_path.exists():
+        raise FileNotFoundError(
+            "No tailored résumé markdown on file for this application — "
+            "re-run tailoring before requesting a re-check."
+        )
+    resume_md = md_path.read_text(encoding="utf-8")
+
+    from app.matching.pipeline import _load_resume
+    master = _load_resume(user_id=app_user_id)
+
+    from app.tailoring.evidence import fabrication_violations
+    fabrications = fabrication_violations(master, resume_md)
+
+    grounding_status = "unverified"
+    flagged: list[str] = []
+    calls = 0
+    try:
+        from app.tailoring.grounding import GroundingChecker
+        result = GroundingChecker().check(master, resume_md, use_cache=False)
+        calls = int(getattr(result, "llm_calls", 0) or 0)
+        if not getattr(result, "unverified", False):
+            grounding_status = "passed" if result.passed else "failed"
+            flagged = [fb["bullet"] for fb in result.flagged_bullets]
+    except Exception as e:
+        log.error("Manual re-verification could not run for app %d: %s", application_id, e)
+
+    doctor_ats = None
+    try:
+        from app.tailoring.doctor import ResumeDoctor
+        doctor_ats = ResumeDoctor().check(resume_md, master, job_description or "").ats_coverage_pct
+    except Exception as e:
+        log.debug("re-verify doctor pass skipped for app %d: %s", application_id, e)
+
+    section = {
+        "reverified_at": datetime.utcnow().isoformat(),
+        "grounding_status": grounding_status,
+        "grounding_passed": (grounding_status == "passed") if grounding_status != "unverified" else None,
+        "flagged_bullets": flagged[:10],
+        "fabrications": [{"kind": k, "value": v} for k, v in fabrications[:10]],
+        "grounding_llm_calls": calls,
+        "ats_coverage_pct": round(doctor_ats * 100) if doctor_ats is not None else None,
+    }
+
+    report_path = out_dir / "report.json"
+    try:
+        existing = _json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+        existing.update(section)
+        report_path.write_text(_json.dumps(existing), encoding="utf-8")
+        _persist_tailored_to_storage(app_user_id, application_id, [report_path])
+    except Exception as e:
+        log.debug("re-verify report update skipped for app %d: %s", application_id, e)
+
+    log.info("Manual re-verification of app %d: grounding=%s, %d fabrication(s), "
+             "%d LLM call(s)", application_id, grounding_status, len(fabrications), calls)
+    return section
 
 
 def tailor_all_shortlisted(user_id: str | None = None) -> int:

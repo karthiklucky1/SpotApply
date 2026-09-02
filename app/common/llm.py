@@ -49,3 +49,39 @@ def shared_anthropic(*, timeout: float | None = None, max_retries: int | None = 
 def shared_openai(*, timeout: float | None = None, max_retries: int | None = None):
     """The shared OpenAI client, or None when no key is configured."""
     return _with_options(shared_llm_clients()[1], timeout, max_retries)
+
+
+# Model families that REJECT sampling parameters with a 400. Anthropic removed
+# `temperature`/`top_p`/`top_k` from Opus 4.7 onward and from the Claude 5
+# family; adaptive thinking plus `output_config.effort` replaced them. The
+# Python SDK went further and dropped `temperature` from the typed
+# `Messages.create` signature entirely (1.x), so passing it as a named argument
+# is a TypeError on EVERY model regardless of what the wire API accepts.
+_NO_SAMPLING = (
+    "opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-5", "mythos-5",
+)
+
+
+def supports_sampling(model: str) -> bool:
+    """True when this model still accepts a temperature on the wire."""
+    m = (model or "").lower()
+    return not any(fam in m for fam in _NO_SAMPLING)
+
+
+def sampling(model: str, temperature: float | None) -> dict:
+    """Kwargs pinning generation temperature, or {} where it isn't accepted.
+
+    Returns an ``extra_body`` payload rather than a named argument because the
+    SDK no longer types one. Splatted at the call site
+    (``client.messages.create(..., **sampling(model, 0.0))``) so a model that
+    rejects sampling simply gets nothing — which is the right failure: a 400 on
+    every scoring call is a far worse outcome than an unpinned temperature, and
+    on those models `output_config.effort` is the equivalent lever.
+
+    This matters because it is what makes verification reproducible. Unpinned,
+    the tailoring stack ran at the SDK default of 1.0 and two runs of the same
+    résumé against the same JD reached different honesty verdicts.
+    """
+    if temperature is None or not supports_sampling(model):
+        return {}
+    return {"extra_body": {"temperature": float(temperature)}}
