@@ -389,7 +389,7 @@ class UserProfile(SQLModel, table=True):
 
 class PlanTier(str, Enum):
     FREE    = "free"
-    PRO     = "pro"        # $10/mo — the only paid plan
+    PRO     = "pro"        # $100/mo — the only paid plan (PLAN_PRICES)
     # Legacy tiers: kept ONLY so existing user_subscription rows keep
     # deserializing. New signups never get these; they resolve to PRO
     # limits/pricing below. Do not surface them in any UI.
@@ -399,7 +399,9 @@ class PlanTier(str, Enum):
 
 # Per-plan limits — THE single source of truth for pricing. Every surface
 # (pricing.html, the dashboard Plans modal, upsell strings in server.py)
-# must state these same two plans: Free $0 and Pro $10/mo. The old lineup
+# must state these same two plans: Free $0 and Pro at PLAN_PRICES[PRO]/mo —
+# and they READ the number from PLAN_PRICES (billing.payment_options, the
+# `pro_price` template variable) rather than restating it. The old lineup
 # ($19/$49/$99 in code vs $29/$99 on the pricing page) shipped three
 # contradictory prices at once — never let that happen again.
 #
@@ -425,11 +427,15 @@ PLAN_LIMITS = {
     PlanTier.AGENCY: {"tailor_daily": 25, "autofill_weekly": None, "finals_daily": 100},  # legacy → PRO limits
 }
 
+# USD per month. ONE paid plan: Pro, monthly, cancel any time (2026-09 launch
+# pricing; was $10 during the pre-revenue period). The Stripe Price object
+# behind STRIPE_PRICE_ID_PRO must carry this same amount — Stripe charges what
+# the Price says, this number is what the product SAYS it charges.
 PLAN_PRICES = {
     PlanTier.FREE:   0,
-    PlanTier.PRO:    10,
-    PlanTier.BASIC:  10,   # legacy rows count as Pro
-    PlanTier.AGENCY: 10,   # legacy rows count as Pro
+    PlanTier.PRO:    100,
+    PlanTier.BASIC:  100,  # legacy rows count as Pro
+    PlanTier.AGENCY: 100,  # legacy rows count as Pro
 }
 
 

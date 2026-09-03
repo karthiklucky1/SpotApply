@@ -1742,7 +1742,9 @@ def index(request: Request):
 
 @app.get("/pricing", response_class=HTMLResponse)
 def pricing_page(request: Request):
-    return templates.TemplateResponse(request=request, name="pricing.html", context={})
+    from app.billing import pro_price_usd
+    return templates.TemplateResponse(request=request, name="pricing.html",
+                                      context={"pro_price": pro_price_usd()})
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -3683,6 +3685,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "rejected": rejected,
             "ssr_authed": ssr_authed,
             "company_cap": settings.company_cap,
+            "pro_price": __import__("app.billing", fromlist=["pro_price_usd"]).pro_price_usd(),
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
@@ -6843,29 +6846,50 @@ def admin_page(request: Request):
     return HTMLResponse(_ADMIN_HTML)
 
 
+_GRANDFATHER_WARNED = [False]
+
+
 def _is_grandfathered(uid: str) -> bool:
-    """True when this user signed up before settings.plan_grandfather_until.
+    """True when this user keeps PRO without a subscription row.
 
     Exists so turning on payments is not a silent downgrade for the people who
-    were already using the product for free. Fails CLOSED (not grandfathered) if
-    the date is unset or the profile has no created_at — never hand out PRO by
-    accident.
+    were already using the product. PLAN_GRANDFATHER_UNTIL is the cutoff: a
+    user whose profile predates it keeps PRO. UNSET (the default) means the
+    cutoff has not been decided yet, and until it is EVERY user with a profile
+    keeps PRO — the safe side while Stripe runs in test mode and the beta is
+    being onboarded. The alternative was the cliff: the instant the STRIPE_*
+    vars were set, every existing user dropped to FREE (50 → 15 finals/day,
+    12 → 5 tailors/day, unlimited → 2 autofills/week) with no warning. An
+    unparseable value is treated as unset for the same reason — a fat-fingered
+    date at go-live must not lock the beta out — and both cases are logged as
+    a WARNING once per process so they cannot go unnoticed. A user with no
+    profile at all is never grandfathered.
     """
     raw = (getattr(settings, "plan_grandfather_until", "") or "").strip()
-    if not raw:
-        return False
     from datetime import datetime as _dt
 
     from app.db.models import UserProfile
-    try:
-        cutoff = _dt.fromisoformat(raw)
-    except ValueError:
-        log.warning("PLAN_GRANDFATHER_UNTIL=%r is not an ISO date — ignoring", raw)
-        return False
+    cutoff = None
+    if raw:
+        try:
+            cutoff = _dt.fromisoformat(raw)
+        except ValueError:
+            cutoff = None
+    if cutoff is None and not _GRANDFATHER_WARNED[0]:
+        _GRANDFATHER_WARNED[0] = True
+        log.warning(
+            "PLAN_GRANDFATHER_UNTIL is %s — every user with a profile resolves to "
+            "PRO without a subscription. Set it to the ISO date billing went live "
+            "so later signups are asked to pay.",
+            "unset" if not raw else f"not an ISO date ({raw!r})")
     with get_session() as session:
         prof = session.exec(
             select(UserProfile).where(UserProfile.user_id == uid)).first()
-    created = getattr(prof, "created_at", None) if prof else None
+    if not prof:
+        return False
+    if cutoff is None:
+        return True
+    created = getattr(prof, "created_at", None)
     return bool(created and created < cutoff)
 
 
@@ -6874,10 +6898,13 @@ def _get_user_plan(uid: str) -> PlanTier:
 
     Pre-revenue mode: while Stripe is NOT configured, everyone rides free on
     PRO (nothing to buy yet — limits must not lock people out of a product
-    that has no checkout). The moment STRIPE_* env vars are set, plans come
-    from user_subscription: paid rows are PRO, everyone else is FREE, and an
-    expired period (past current_period_end + 3-day grace) falls back to FREE.
-    Manual bank-transfer activations are the same rows, set via admin set-plan.
+    that has no checkout). Once the STRIPE_* env vars are set, plans come
+    from user_subscription: paid rows are PRO, an expired period (past
+    current_period_end + 3-day grace) falls back to FREE, and a user with no
+    row is PRO while grandfathered (_is_grandfathered: everyone with a
+    profile until PLAN_GRANDFATHER_UNTIL is set, earlier signups after) and
+    FREE otherwise. Manual bank-transfer activations are the same rows, set
+    via admin set-plan.
     """
     from datetime import datetime, timedelta
     from app.billing import stripe_enabled
@@ -6888,12 +6915,6 @@ def _get_user_plan(uid: str) -> PlanTier:
             select(UserSubscription).where(UserSubscription.user_id == uid)
         ).first()
     if not row:
-        # SWITCHING STRIPE ON IS A CLIFF: every existing user has no subscription
-        # row, so the instant STRIPE_SECRET_KEY + STRIPE_PRICE_ID_PRO are set they
-        # all drop PRO → FREE (50 → 15 finals/day, unlimited → 5 tailors/day,
-        # unlimited → 2 autofills/week) with no warning and no action on their part.
-        # Set PLAN_GRANDFATHER_UNTIL to an ISO date to keep users who signed up
-        # before then on PRO. Unset (default) = the cliff, i.e. current behaviour.
         if _is_grandfathered(uid):
             return PlanTier.PRO
         return PlanTier.FREE
@@ -6910,10 +6931,32 @@ def billing_options() -> dict:
     return payment_options()
 
 
+@app.post("/api/billing/portal")
+def billing_portal(request: Request) -> dict:
+    """Stripe Customer Portal for the signed-in user: update the card, see
+    invoices, cancel. This is "cancel any time" — nothing here cancels on the
+    user's behalf; Stripe does, and reports back through the webhook."""
+    uid = _require_user(request)
+    from app.billing import create_portal_session, stripe_enabled
+    if not stripe_enabled():
+        raise HTTPException(status_code=503, detail="Card billing isn't live yet.")
+    base = str(request.base_url).rstrip("/")
+    try:
+        url = create_portal_session(uid, base)
+    except LookupError:
+        raise HTTPException(status_code=404,
+                            detail="No card subscription on this account to manage.")
+    except Exception as e:
+        log.warning("Stripe portal failed for %s: %s", uid, e)
+        raise HTTPException(status_code=502, detail="Could not open billing — try again.")
+    return {"url": url}
+
+
 @app.post("/api/billing/checkout")
 def billing_checkout(request: Request) -> dict:
-    """Start a Stripe Checkout session for Pro ($10/mo). 503 when payments are
-    not configured yet — the UI then shows the manual payment options."""
+    """Start a Stripe Checkout session for Pro (PLAN_PRICES[PRO]/mo, monthly,
+    cancel any time). 503 when payments are not configured yet — the UI then
+    shows the manual payment options."""
     uid = _get_user_id(request)
     if not uid:
         raise HTTPException(status_code=401, detail="Sign in to upgrade.")
@@ -7042,9 +7085,10 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
         used = row.tailor_count
         session.commit()
     if used >= daily_limit:
+        from app.billing import pro_price_usd
         return False, (
             f"Daily tailoring limit reached ({used}/{daily_limit}). "
-            f"Resets at midnight UTC. Upgrade to Pro ($10/mo) for unlimited tailoring."
+            f"Resets at midnight UTC. Upgrade to Pro (${pro_price_usd()}/mo) for more."
         ), {"plan": plan, "used": used, "daily_limit": daily_limit}
     return True, "", {"plan": plan, "used": used, "daily_limit": daily_limit}
 
@@ -7071,17 +7115,19 @@ def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     weekly_limit = limits["autofill_weekly"]
     if weekly_limit is None:
         return True, "", {"plan": plan, "weekly_limit": None}
+    from app.billing import pro_price_usd
     if weekly_limit == 0:
         return False, (
             "Auto-fill is not available on the Free plan. "
-            "Upgrade to Pro ($10/mo) for unlimited auto-fills."
+            f"Upgrade to Pro (${pro_price_usd()}/mo) for unlimited auto-fills."
         ), {"plan": plan, "weekly_limit": 0}
     with get_session() as session:
         used = _get_week_autofill_count(session, uid)
     if used >= weekly_limit:
         return False, (
             f"Weekly auto-fill limit reached ({used}/{weekly_limit}). "
-            f"Resets Monday midnight UTC. Upgrade to Pro ($10/mo) for unlimited auto-fills."
+            f"Resets Monday midnight UTC. Upgrade to Pro (${pro_price_usd()}/mo) "
+            f"for unlimited auto-fills."
         ), {"plan": plan, "used": used, "weekly_limit": weekly_limit}
     return True, "", {"plan": plan, "used": used, "weekly_limit": weekly_limit}
 

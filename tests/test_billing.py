@@ -8,14 +8,19 @@ correctly (refuses with no secret, raises on a bad signature) and these tests
 keep it that way, because "we removed the verification to debug a webhook" is a
 very normal Tuesday.
 
-Plan resolution, which contains a cliff. `_get_user_plan` returns PRO for
+Plan resolution, which used to contain a cliff. `_get_user_plan` returns PRO for
 everyone while Stripe is unconfigured — correct pre-revenue, since there is
 nothing to buy — but no existing user has a user_subscription row, so the instant
-STRIPE_SECRET_KEY and STRIPE_PRICE_ID_PRO are set every one of them silently
-drops to FREE: 50 → 15 finals/day, unlimited → 5 tailors/day, unlimited → 2
-autofills/week. That is worth knowing before flipping the switch on a user base
-you spent months acquiring, so both sides of the flip are asserted explicitly and
-PLAN_GRANDFATHER_UNTIL exists to defuse it.
+STRIPE_SECRET_KEY and STRIPE_PRICE_ID_PRO were set every one of them silently
+dropped to FREE: 50 → 15 finals/day, 12 → 5 tailors/day, unlimited → 2
+autofills/week. For the 2026-09 friend beta that is the one thing that must not
+happen, so the default flipped: with PLAN_GRANDFATHER_UNTIL unset, everyone who
+has a profile keeps PRO without a subscription (and the app warns that the
+cutoff is unset); once it names the go-live date, only earlier signups keep it.
+
+And the price: ONE paid plan at PLAN_PRICES[PRO] = $100/month, read from that
+single constant by every surface — the $10 era shipped the number in eleven
+hard-coded places.
 """
 from __future__ import annotations
 
@@ -152,12 +157,28 @@ def test_everyone_is_pro_while_payments_are_not_live(monkeypatch):
     assert _get_user_plan("anyone-at-all") == PlanTier.PRO
 
 
-def test_turning_stripe_on_drops_users_without_a_subscription_to_free(monkeypatch):
-    """THE CLIFF, asserted so it is a known decision and not a surprise.
+def test_turning_stripe_on_does_not_drop_existing_users(monkeypatch, caplog):
+    """THE CLIFF, defused. With no cutoff set, a user who has a profile keeps
+    PRO the second the STRIPE_* vars land — and the app says so, once, so the
+    founder cannot forget to set the cutoff at go-live."""
+    import logging
+    from app.api import server
+    _set_stripe(monkeypatch, True)
+    monkeypatch.setattr(settings, "plan_grandfather_until", "", raising=False)
+    with get_session() as s:
+        s.add(UserProfile(user_id=_UID, created_at=datetime(2026, 8, 20)))
+        s.commit()
+    server._GRANDFATHER_WARNED[0] = False
+    with caplog.at_level(logging.WARNING, logger="app.api.server"):
+        assert server._get_user_plan(_UID) == PlanTier.PRO
+        assert server._get_user_plan(_UID) == PlanTier.PRO
+    warned = [r for r in caplog.records if "PLAN_GRANDFATHER_UNTIL" in r.getMessage()]
+    assert len(warned) == 1, "warn once per process, not once per plan lookup"
 
-    Flip these two env vars in production and every existing user loses 35
-    finals/day the same second.
-    """
+
+def test_an_account_with_no_profile_is_never_grandfathered(monkeypatch):
+    """'Everyone with a profile' is the rule — a bare uid that never onboarded
+    gets nothing for free."""
     from app.api.server import _get_user_plan
     _set_stripe(monkeypatch, True)
     monkeypatch.setattr(settings, "plan_grandfather_until", "", raising=False)
@@ -185,19 +206,40 @@ def test_grandfathering_does_not_cover_users_who_signed_up_after_the_cutoff(monk
 
 
 @pytest.mark.parametrize("raw", ["", "  ", "not-a-date", "01/08/2026"])
-def test_grandfathering_fails_closed_on_a_missing_or_unparseable_date(monkeypatch, raw):
-    """Never hand out PRO because a config value was fat-fingered."""
+def test_an_unset_or_unparseable_cutoff_keeps_existing_users_on_pro(monkeypatch, raw):
+    """The direction this fails in is deliberate: a fat-fingered date at
+    go-live must not lock the beta out. Free PRO for a while is a revenue
+    leak the WARNING makes visible; a locked-out user base is a broken
+    promise. (Set the date correctly and later signups are FREE — see the
+    cutoff tests above.)"""
     from app.api.server import _get_user_plan
     _set_stripe(monkeypatch, True)
     with get_session() as s:
         s.add(UserProfile(user_id=_UID, created_at=datetime(2020, 1, 1)))
         s.commit()
     monkeypatch.setattr(settings, "plan_grandfather_until", raw, raising=False)
-    assert _get_user_plan(_UID) == PlanTier.FREE
+    assert _get_user_plan(_UID) == PlanTier.PRO
 
 
-def test_grandfathering_is_off_by_default():
+def test_the_cutoff_is_unset_by_default_which_is_no_cliff():
+    """Unset = everyone with a profile keeps PRO when Stripe turns on. The
+    founder sets PLAN_GRANDFATHER_UNTIL to the go-live date; that is the one
+    billing step that is a decision, not a secret."""
     assert settings.plan_grandfather_until == ""
+
+
+def test_a_subscription_row_always_wins_over_grandfathering(monkeypatch):
+    """A grandfathered user who subscribed and then cancelled is FREE: the
+    row is the truth once it exists, or 'cancel' would mean nothing."""
+    from app.api.server import _get_user_plan
+    _set_stripe(monkeypatch, True)
+    monkeypatch.setattr(settings, "plan_grandfather_until", "", raising=False)
+    with get_session() as s:
+        s.add(UserProfile(user_id=_UID, created_at=datetime(2026, 8, 20)))
+        s.commit()
+    assert _get_user_plan(_UID) == PlanTier.PRO
+    billing.set_plan(_UID, PlanTier.FREE, stripe_subscription_id="sub_cancelled")
+    assert _get_user_plan(_UID) == PlanTier.FREE
 
 
 def test_a_paid_row_is_pro_and_an_expired_one_falls_back_to_free(monkeypatch):
@@ -253,3 +295,111 @@ def test_payment_options_never_leak_a_secret(monkeypatch):
     monkeypatch.setattr(settings, "stripe_webhook_secret", "whsec_SECRET", raising=False)
     blob = json.dumps(billing.payment_options())
     assert "SECRET" not in blob
+
+
+# ── one price, stated once ───────────────────────────────────────────────────
+
+def test_pro_is_one_hundred_dollars_a_month_and_every_surface_reads_it():
+    """PLAN_PRICES[PRO] is the single source; the pricing page, the dashboard
+    plans modal, the upsell strings and /api/billing/options all render from
+    it. A literal "$10" anywhere is the old price leaking back."""
+    import pathlib
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    from app.db.models import PLAN_PRICES
+
+    assert PLAN_PRICES[PlanTier.PRO] == 100
+    assert billing.pro_price_usd() == 100
+    assert billing.payment_options()["price_monthly_usd"] == 100
+
+    client = TestClient(app)
+    page = client.get("/pricing").text
+    assert "$100" in page and "$10/" not in page and "$10<" not in page
+    assert "cancel any time" in page.lower()
+
+    tpl_dir = pathlib.Path(__file__).resolve().parents[1] / "app" / "templates"
+    for name in ("pricing.html", "dashboard.html"):
+        src = (tpl_dir / name).read_text(encoding="utf-8")
+        assert "$10/" not in src and "$10<" not in src and "$10 " not in src, name
+        assert "pro_price" in src, f"{name} must render the price from PLAN_PRICES"
+
+
+def test_limit_messages_quote_the_real_price(monkeypatch):
+    """The 429 detail the dashboard shows when a Free user hits a cap."""
+    from app.api import server as srv
+    from app.db.models import PLAN_LIMITS
+    monkeypatch.setattr(srv, "_get_user_plan", lambda uid: PlanTier.FREE)
+    monkeypatch.setattr(srv, "_get_week_autofill_count",
+                        lambda session, uid: PLAN_LIMITS[PlanTier.FREE]["autofill_weekly"])
+    ok, msg, info = srv._check_autofill_limit(_UID)
+    assert not ok and "$100/mo" in msg and "$10/" not in msg
+
+
+# ── cancel any time: the Stripe Customer Portal ──────────────────────────────
+
+def _client(monkeypatch, uid):
+    from fastapi.testclient import TestClient
+    from app.api import server
+    monkeypatch.setattr(server, "_get_user_id", lambda request: uid)
+    return TestClient(server.app)
+
+
+def test_portal_is_unavailable_until_stripe_is_live(monkeypatch):
+    _set_stripe(monkeypatch, False)
+    r = _client(monkeypatch, _UID).post("/api/billing/portal")
+    assert r.status_code == 503
+
+
+def test_portal_needs_a_stripe_customer(monkeypatch, fake_stripe):
+    """Bank-transfer activations and grandfathered users have nothing to
+    manage in Stripe — say so instead of erroring."""
+    _set_stripe(monkeypatch, True)
+    r = _client(monkeypatch, _UID).post("/api/billing/portal")
+    assert r.status_code == 404
+    assert "subscription" in r.json()["detail"].lower()
+
+
+def test_portal_sends_a_subscriber_to_their_stripe_billing_page(monkeypatch, fake_stripe):
+    _set_stripe(monkeypatch, True)
+    calls = {}
+
+    class _Session:
+        @staticmethod
+        def create(**kw):
+            calls.update(kw)
+            return types.SimpleNamespace(url="https://billing.stripe.com/p/session_x")
+
+    sys.modules["stripe"].billing_portal = types.SimpleNamespace(Session=_Session)
+    billing.handle_webhook(_event("checkout.session.completed", {
+        "client_reference_id": _UID, "customer": "cus_42", "subscription": "sub_42"}), "sig")
+    r = _client(monkeypatch, _UID).post("/api/billing/portal")
+    assert r.status_code == 200 and r.json()["url"].startswith("https://billing.stripe.com/")
+    assert calls["customer"] == "cus_42"
+    assert calls["return_url"].endswith("/dashboard?billing=portal")
+
+
+def test_a_cancellation_from_the_portal_lands_as_free_at_period_end(fake_stripe):
+    """The user cancels in Stripe; Stripe tells us. We never cancel for them."""
+    billing.handle_webhook(_event("checkout.session.completed", {
+        "client_reference_id": _UID, "customer": "cus_1", "subscription": "sub_1"}), "sig")
+    # cancel_at_period_end: still active until the period runs out
+    billing.handle_webhook(_event("customer.subscription.updated", {
+        "id": "sub_1", "status": "active", "cancel_at_period_end": True,
+        "current_period_end": int((datetime.utcnow() + timedelta(days=9)).timestamp())}), "sig")
+    assert _plan_of(_UID) == PlanTier.PRO
+    billing.handle_webhook(_event("customer.subscription.deleted",
+                                  {"id": "sub_1", "status": "canceled"}), "sig")
+    assert _plan_of(_UID) == PlanTier.FREE
+
+
+def test_a_failed_renewal_keeps_access_during_dunning_then_falls_to_free(fake_stripe):
+    """past_due = Stripe is retrying the card: the user keeps PRO. unpaid or
+    deleted (Stripe gave up) = FREE. No code of ours decides the retry policy."""
+    billing.handle_webhook(_event("checkout.session.completed", {
+        "client_reference_id": _UID, "customer": "cus_1", "subscription": "sub_1"}), "sig")
+    billing.handle_webhook(_event("customer.subscription.updated",
+                                  {"id": "sub_1", "status": "past_due"}), "sig")
+    assert _plan_of(_UID) == PlanTier.PRO
+    billing.handle_webhook(_event("customer.subscription.updated",
+                                  {"id": "sub_1", "status": "unpaid"}), "sig")
+    assert _plan_of(_UID) == PlanTier.FREE

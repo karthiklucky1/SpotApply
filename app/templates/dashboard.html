@@ -3609,7 +3609,7 @@
                     const err = await r.json().catch(() => ({}));
                     btn.innerHTML = orig;
                     btn.disabled = false;
-                    alert(err.detail || 'Daily limit reached — upgrade to Pro ($10/mo) for unlimited tailoring.');
+                    alert(err.detail || 'Daily limit reached — upgrade to Pro (${{ pro_price }}/mo) for more.');
                     loadUsage();
                     return;
                 }
@@ -3661,7 +3661,7 @@
                     const err = await res.json().catch(() => ({}));
                     btn.innerHTML = orig;
                     btn.disabled = false;
-                    alert(err.detail || 'Daily limit reached — upgrade to Pro ($10/mo) for unlimited tailoring.');
+                    alert(err.detail || 'Weekly limit reached — upgrade to Pro (${{ pro_price }}/mo) for unlimited auto-fills.');
                     loadUsage();
                     return;
                 }
@@ -4558,7 +4558,7 @@
                 if (box) {
                     let html = '<p class="font-bold text-slate-300 mb-1">' + (err.detail || 'Card payments are not live yet.') + '</p>';
                     if (opts && opts.bank_details) {
-                        html += '<p class="mb-1">Pay $10 by bank transfer:</p><pre class="whitespace-pre-wrap text-slate-300 bg-black/20 rounded-lg p-2">' + opts.bank_details.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>';
+                        html += '<p class="mb-1">Pay $' + (opts.price_monthly_usd || {{ pro_price }}) + ' by bank transfer:</p><pre class="whitespace-pre-wrap text-slate-300 bg-black/20 rounded-lg p-2">' + opts.bank_details.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre>';
                     }
                     if (opts && opts.contact_email) {
                         html += '<p class="mt-1">Then email your receipt to <a class="text-indigo-400" href="mailto:' + opts.contact_email + '">' + opts.contact_email + '</a> — we activate Pro within a day.</p>';
@@ -4566,6 +4566,20 @@
                     box.innerHTML = html; box.classList.remove('hidden');
                 }
             } catch (e) { showToast('Could not start checkout — try again.', 'error'); }
+            finally { btn.disabled = false; btn.textContent = orig; }
+        }
+
+        // "Cancel any time" = the Stripe Customer Portal (card, invoices, cancel).
+        // We never cancel on the user's behalf; Stripe does and the webhook syncs.
+        async function openBillingPortal(btn) {
+            const orig = btn.textContent;
+            btn.disabled = true; btn.textContent = 'Opening billing…';
+            try {
+                const r = await fetch('/api/billing/portal', { method: 'POST', headers: authHeaders() });
+                if (r.ok) { const d = await r.json(); if (d.url) { window.location.href = d.url; return; } }
+                const err = await r.json().catch(() => ({}));
+                showToast(err.detail || 'No card subscription on this account to manage.', 'error');
+            } catch (e) { showToast('Could not open billing — try again.', 'error'); }
             finally { btn.disabled = false; btn.textContent = orig; }
         }
 
@@ -4588,8 +4602,8 @@
                   </div>
                   <div class="rounded-2xl border border-indigo-500/40 p-4 bg-indigo-500/5">
                     <div class="flex items-center justify-between mb-3">
-                      <div><p class="font-black text-white text-sm">Pro</p><p class="text-[10px] text-slate-500">Everything, no caps — cancel any time</p></div>
-                      <div class="text-right"><span class="text-2xl font-black text-white">$10</span><span class="text-slate-500 text-xs">/mo</span></div>
+                      <div><p class="font-black text-white text-sm">Pro</p><p class="text-[10px] text-slate-500">One plan, billed monthly — cancel any time</p></div>
+                      <div class="text-right"><span class="text-2xl font-black text-white">${{ pro_price }}</span><span class="text-slate-500 text-xs">/mo</span></div>
                     </div>
                     <ul class="space-y-1.5 text-xs text-slate-400">
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited tailored resumes &amp; cover letters</li>
@@ -4597,7 +4611,8 @@
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority matching queue</li>
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Full analytics &amp; funnel insights</li>
                     </ul>
-                    <button onclick="startProCheckout(this)" class="w-full text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — $10/mo</button>
+                    <button onclick="startProCheckout(this)" class="w-full text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — ${{ pro_price }}/mo</button>
+                    <button onclick="openBillingPortal(this)" class="w-full text-center mt-2 border border-slate-700/60 text-slate-300 hover:text-white font-bold py-2 rounded-xl text-xs transition">Manage or cancel subscription</button>
                     <div id="manual-pay-options" class="hidden mt-3 rounded-xl border border-slate-700/60 bg-white/[0.02] p-3 text-xs text-slate-400"></div>
                   </div>
                 </div>` },
@@ -4705,7 +4720,7 @@
                     }
                 }
                 if (opts.bank_transfer) {
-                    openComingSoonModal('Upgrade to Pro — $' + (opts.price_monthly_usd || 10) + '/mo',
+                    openComingSoonModal('Upgrade to Pro — $' + (opts.price_monthly_usd || {{ pro_price }}) + '/mo',
                         'Card checkout is almost live. To upgrade today via bank transfer: ' +
                         (opts.bank_details || '') + (opts.contact_email ? ' · Questions: ' + opts.contact_email : ''));
                     return;

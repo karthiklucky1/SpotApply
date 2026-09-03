@@ -187,7 +187,7 @@ Configure via `.env` (see `.env.example` for the full list):
 |-------|------|-------|
 | Database / Auth | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL` | Leave blank for local SQLite single-user mode. |
 | LLM | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (both optional) | Best scoring quality with Claude; with neither key set, free local models score everything (`LOCAL_SCORE_FALLBACK`). |
-| Payments | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID_PRO`, `STRIPE_WEBHOOK_SECRET`, `PAYMENT_BANK_DETAILS` | All empty = payments off, everyone gets Pro free. Set the Stripe vars to enable $10/mo checkout; `PAYMENT_BANK_DETAILS` shows a manual bank-transfer option. |
+| Payments | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID_PRO`, `STRIPE_WEBHOOK_SECRET`, `PAYMENT_BANK_DETAILS` | All empty = payments off, everyone gets Pro free. Set the Stripe vars to enable the $100/mo Pro checkout (test-mode keys first); `PLAN_GRANDFATHER_UNTIL` keeps earlier signups on Pro once billing is live (unset = everyone with a profile); `PAYMENT_BANK_DETAILS` shows a manual bank-transfer option. |
 | Freshness | `PULSE_LANE_ENABLED`, `PULSE_FAST_INTERVAL_MINUTES`, `PULSE_FLOOR_INTERVAL_MINUTES` | Defaults: on, 5 min fast lane, 60 min floor. |
 | Matching | `MIN_MATCH_SCORE`, `TOP_K_RERANK`, `LLM_RERANK_CAP`, `DAILY_APPLY_LIMIT` | Cascade and volume tuning. |
 | Discovery | `GREENHOUSE_BOARDS`, `LEVER_BOARDS`, `ASHBY_BOARDS` | Comma-separated slugs (registry-seeded boards cover the rest). |
@@ -245,7 +245,7 @@ scoping, and funnel analytics.
 ## Pricing
 
 Two plans, stated the same everywhere in the app: **Free** (5 tailored
-resumes/day, 2 auto-fills/week, full discovery + scoring) and **Pro — $10/month**
+resumes/day, 2 auto-fills/week, full discovery + scoring) and **Pro — $100/month, billed monthly, cancel any time**
 (no caps). While Stripe is not configured the app runs in pre-revenue mode and
 every account gets Pro for free.
 

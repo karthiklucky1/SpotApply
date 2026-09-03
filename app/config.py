@@ -258,18 +258,22 @@ class Settings(BaseSettings):
     # three STRIPE_* vars and real checkout/webhook plan enforcement turns on —
     # no code change needed. PAYMENT_BANK_DETAILS enables a manual path in the
     # meantime (shown on the upgrade screen; activate via admin set-plan).
-    stripe_secret_key: str = ""           # STRIPE_SECRET_KEY
-    stripe_price_id_pro: str = ""         # STRIPE_PRICE_ID_PRO — $10/mo recurring Price id
+    stripe_secret_key: str = ""           # STRIPE_SECRET_KEY — sk_test_… first (whole flow, nobody charged), sk_live_… at go-live
+    stripe_price_id_pro: str = ""         # STRIPE_PRICE_ID_PRO — monthly recurring Price id for PLAN_PRICES[PRO] ($100/mo); a test-mode Price with test keys, a live one with live keys
     stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
     # A branded address on customer-facing surfaces (receipts, billing help) —
     # a personal gmail on a payment screen reads as a scam.
     payment_contact_email: str = "support@spotapply.ai"  # PAYMENT_CONTACT_EMAIL
-    # Turning payments ON is a cliff: no existing user has a user_subscription row,
-    # so the instant the STRIPE_* vars are set they ALL drop PRO → FREE (50 → 15
-    # finals/day, unlimited → 5 tailors/day, unlimited → 2 autofills/week) with no
-    # warning. Set this to an ISO date (e.g. "2026-08-01") to keep everyone who
-    # signed up before then on PRO. Empty (default) = that cliff, unchanged.
+    # Turning payments ON used to be a cliff: no existing user has a
+    # user_subscription row, so the instant the STRIPE_* vars were set they ALL
+    # dropped PRO → FREE (50 → 15 finals/day, 12 → 5 tailors/day, unlimited → 2
+    # autofills/week) with no warning. Now: EMPTY (default) = no cutoff decided
+    # yet, so every user with a profile keeps PRO without a subscription (the
+    # safe side while Stripe runs in test mode and the beta is onboarded; logged
+    # as a WARNING once per process). Set it to the ISO date billing went live
+    # (e.g. "2026-09-20"): earlier signups keep PRO, later ones are FREE until
+    # they subscribe. An unparseable value is treated as unset, never as a cliff.
     plan_grandfather_until: str = ""       # PLAN_GRANDFATHER_UNTIL
     # How long a TAILORED / autofill-review application keeps its place on the
     # board. Longer than SHORTLIST_MAX_AGE_DAYS because the user put work into

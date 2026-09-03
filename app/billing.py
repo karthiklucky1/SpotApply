@@ -1,5 +1,6 @@
-"""Billing — Stripe subscription checkout for the $10/mo Pro plan, plus a
-manual bank-transfer path for the pre-Stripe period.
+"""Billing — Stripe subscription checkout for the ONE paid plan (Pro,
+PLAN_PRICES[PRO] per month, cancel any time), plus a manual bank-transfer
+path for the pre-Stripe period.
 
 Designed to be safe BEFORE the business entity exists:
 - Until STRIPE_SECRET_KEY is set, `stripe_enabled()` is False, every user
@@ -8,8 +9,27 @@ Designed to be safe BEFORE the business entity exists:
   (PAYMENT_BANK_DETAILS / PAYMENT_CONTACT_EMAIL) — activation is manual via
   the admin set-plan endpoint.
 - Once the LLC + Stripe account exist, setting STRIPE_SECRET_KEY,
-  STRIPE_PRICE_ID_PRO (a $10/mo recurring Price) and STRIPE_WEBHOOK_SECRET
-  turns on real checkout + webhook-driven plan sync. No code change needed.
+  STRIPE_PRICE_ID_PRO (a monthly recurring Price for PLAN_PRICES[PRO]) and
+  STRIPE_WEBHOOK_SECRET turns on real checkout + webhook-driven plan sync.
+  No code change needed. Test-mode keys (sk_test_/price_ from a test-mode
+  Price) exercise the whole flow without charging anyone.
+- Existing users are NOT dropped when that happens: server._is_grandfathered
+  keeps everyone with a profile on PRO until PLAN_GRANDFATHER_UNTIL names
+  the go-live date, after which only earlier signups keep it.
+
+Lifecycle, as Stripe drives it (handle_webhook):
+  checkout.session.completed            -> PRO (customer + subscription ids stored)
+  customer.subscription.updated         -> PRO with the new current_period_end
+                                           (renewal; also past_due during dunning —
+                                           the user keeps access while Stripe
+                                           retries the card)
+  ... status canceled/unpaid, or
+  customer.subscription.deleted         -> FREE (a portal cancellation lands
+                                           here at period end; "cancel any time"
+                                           is the Stripe Customer Portal,
+                                           create_portal_session)
+Entitlement is then server._get_user_plan: a PRO row is PRO until
+current_period_end + 3 days grace.
 
 The `stripe` package is imported lazily so the app boots even when the
 dependency isn't installed (e.g. a slim deployment that never enables it).
@@ -24,7 +44,7 @@ from sqlmodel import select
 
 from app.config import settings
 from app.db.init_db import get_session
-from app.db.models import PlanTier, UserSubscription
+from app.db.models import PLAN_PRICES, PlanTier, UserSubscription
 
 log = logging.getLogger(__name__)
 
@@ -33,10 +53,15 @@ def stripe_enabled() -> bool:
     return bool(settings.stripe_secret_key and settings.stripe_price_id_pro)
 
 
+def pro_price_usd() -> int:
+    """The one number every surface states: Pro's monthly price."""
+    return int(PLAN_PRICES[PlanTier.PRO])
+
+
 def payment_options() -> dict:
     """What the UI shows on the upgrade screen. Never includes secrets."""
     return {
-        "price_monthly_usd": 10,
+        "price_monthly_usd": pro_price_usd(),
         "stripe_enabled": stripe_enabled(),
         "bank_transfer": bool(settings.payment_bank_details.strip()),
         "bank_details": settings.payment_bank_details.strip() or None,
@@ -65,6 +90,29 @@ def create_checkout_session(user_id: str, email: Optional[str], base_url: str) -
         allow_promotion_codes=True,
     )
     return session.url
+
+
+def create_portal_session(user_id: str, base_url: str) -> str:
+    """Stripe Customer Portal URL for this user's subscription — where they
+    update the card, download invoices, or CANCEL. Nothing here cancels on
+    the user's behalf: Stripe does it and reports back through the webhook.
+    Raises LookupError when the user has no Stripe customer (bank-transfer
+    activations and grandfathered users have nothing to manage there)."""
+    if not stripe_enabled():
+        raise RuntimeError("Stripe is not configured")
+    with get_session() as session:
+        row = session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == user_id)
+        ).first()
+        customer = row.stripe_customer_id if row else None
+    if not customer:
+        raise LookupError("no Stripe customer for this user")
+    stripe = _stripe()
+    portal = stripe.billing_portal.Session.create(
+        customer=customer,
+        return_url=f"{base_url}/dashboard?billing=portal",
+    )
+    return portal.url
 
 
 def set_plan(user_id: str, plan: PlanTier,
