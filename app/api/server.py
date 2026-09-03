@@ -2859,7 +2859,10 @@ def shortlist(request: Request):
     """Top-scored jobs not yet processed — scoped to the authenticated user."""
     uid = _require_user(request)
     with get_session() as session:
-        q = select(Job).where(Job.rerank_score >= 70)
+        # The qualified bar, not a literal: the only site that still said "70"
+        # by hand, which is one settings change away from disagreeing with
+        # the board (tests/test_settings_defaults.py pins the bar itself).
+        q = select(Job).where(Job.rerank_score >= settings.shortlist_score_threshold)
         if uid != "local":
             q = q.where(Job.user_id == uid)
         # Cap the result — this had no limit, so a large scored pool returned
