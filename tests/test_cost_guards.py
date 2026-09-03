@@ -654,6 +654,49 @@ def test_user_counters_reset_on_day_roll():
     assert rr.user_finals_today("user-a") == 0  # rolled, not carried over
 
 
+def _prewarm_reranker(exc: Exception):
+    rk = _reranker_with(anthropic=True, openai=False)
+
+    class _Msgs:
+        @staticmethod
+        def create(**kw):
+            raise exc
+
+    rk._anthropic_client = type("F", (), {"messages": _Msgs()})()
+    return rk
+
+
+def test_a_credit_error_on_the_free_prewarm_trips_the_breaker(caplog):
+    """Production 2026-09-03: every scoring cycle's cache prewarm answered 400
+    ('credit balance is too low') at DEBUG, so the log showed nothing and the
+    lane kept paying Tier-1 prescores for finals that could not happen. The
+    prewarm is the same outage score() trips the breaker for — trip it here,
+    at the free call, and say so."""
+    import logging
+    rr._prewarm_warned[0] = 0.0
+    rk = _prewarm_reranker(Exception(
+        "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'Your credit balance is too low to access the Anthropic API.'}}"))
+    with caplog.at_level(logging.WARNING, logger="app.matching.reranker"):
+        assert rk.prewarm_cache("resume text " * 50) is False
+    assert not rr.provider_available("anthropic"), "the breaker must trip on a credit error"
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("credit balance" in m for m in msgs), msgs
+    assert any("marked DOWN" in m for m in msgs), msgs
+
+
+def test_a_transient_prewarm_failure_warns_once_and_keeps_the_provider(caplog):
+    import logging
+    rr._prewarm_warned[0] = 0.0
+    rk = _prewarm_reranker(Exception("Error code: 529 - overloaded_error"))
+    with caplog.at_level(logging.WARNING, logger="app.matching.reranker"):
+        assert rk.prewarm_cache("resume text " * 50) is False
+        assert rk.prewarm_cache("resume text " * 50) is False
+    assert rr.provider_available("anthropic"), "an overload is not a credit outage"
+    warned = [r for r in caplog.records if "prewarm failed" in r.getMessage()]
+    assert len(warned) == 1, "one warning per half hour, not one per cycle"
+
+
 def test_remaining_finals_is_bounded_by_plan_allowance(monkeypatch):
     from app.db.models import PlanTier
     monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)

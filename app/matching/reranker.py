@@ -43,6 +43,9 @@ def _is_exhaustion_error(error_str: str) -> bool:
     return any(kw in error_str for kw in _EXHAUSTION_MARKERS)
 
 
+_prewarm_warned = [0.0]     # monotonic-ish wall clock of the last prewarm warning
+
+
 def _mark_provider_down(name: str) -> None:
     mins = settings.llm_provider_cooldown_minutes
     if mins <= 0:
@@ -809,7 +812,24 @@ class Reranker:
             _track_anthropic_usage(resp)
             return True
         except Exception as e:
-            log.debug("cache prewarm skipped (%s) — first real call will write it", e)
+            # Not silent. This ran at DEBUG, and production spent an afternoon
+            # (2026-09-03) answering 400 to every prewarm — two per scoring
+            # cycle, 24 hours before the next paid final would have discovered
+            # WHY. A credit/quota failure here is the same outage score() trips
+            # the breaker for, and finding it out at the free call instead of
+            # the paid one is strictly better; anything else is worth one
+            # warning per half hour, never one per cycle.
+            err = str(e)
+            if _is_exhaustion_error(err.lower()) and provider_available("anthropic"):
+                log.warning("Reranker: cache prewarm failed with a credit/quota error: %s", err[:300])
+                _mark_provider_down("anthropic")
+            else:
+                now = time.time()
+                if now - _prewarm_warned[0] >= 1800:
+                    _prewarm_warned[0] = now
+                    log.warning("Reranker: cache prewarm failed (%s) — first real call will write "
+                                "it; repeated failures mean the provider is rejecting the request",
+                                err[:300])
             return False
 
     def _score_openai(self, resume_block: str, job_block: str) -> str:
