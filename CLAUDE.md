@@ -193,7 +193,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   Never chase a target: 6 good jobs means 6. The queue is promise-ordered
   (`_user_queue`: freshness filters, prescore sorts) so the money buys the best
   candidates, not the newest. `LLM_DAILY_FINAL_CAP` (5000) / `_HOURLY_` (400) are now
-  only a runaway backstop + burst smoothing — raise as users grow.
+  only a runaway backstop + burst smoothing — raise as users grow. **Paced**
+  (2026-09): every budget is RELEASED along a curve (`day_fraction`: 15% head
+  start at 00:00 UTC then linear; `week_fraction`: one day's worth Monday 00:00
+  then linear) — production spent 100% of the day's finals in the 00:xx hour
+  and the founder hit the weekly cap on Wednesday. Size unchanged, timing
+  fixed; burst can only spend what the week has already released. Reasons
+  starting `paced`/`yield` are the budget working (`budget_paced_users`), not
+  a stall (`plan_capped_users`). `FINALS_PACE_ENABLED=0` = all at midnight.
 - **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
   OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);
   credit/quota circuit breaker `LLM_PROVIDER_COOLDOWN_MINUTES` (30) — trips on

@@ -136,6 +136,22 @@ def _reset_process_globals():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _pin_finals_budget_clock(monkeypatch):
+    """The finals budget releases its money along a curve over the UTC day and
+    week (finals_budget.day_fraction / week_fraction). Pin its clock to the
+    last second of a week, where every curve reads the FULL budget: pacing
+    changes WHEN a user may spend, never how much, and the tests that pin how
+    much were written against the unpaced numbers. Pacing tests re-pin the
+    clock themselves (tests/test_adaptive_finals_budget.py)."""
+    try:
+        from app.matching import finals_budget as _fb
+    except ImportError:
+        return
+    from datetime import datetime as _dt
+    monkeypatch.setattr(_fb, "_utc_now", lambda: _dt(2026, 9, 6, 23, 59, 59))  # a Sunday
+
+
 # True only when the real sentence-transformers/torch stack is installed.
 _HAS_REAL_ST = importlib.util.find_spec("torch") is not None
 

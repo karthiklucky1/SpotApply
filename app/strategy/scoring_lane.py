@@ -902,7 +902,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         log.debug("new-user priority ordering skipped: %s", e)
 
     queues: List[List[Tuple[Optional[str], int]]] = []
-    capped_out = 0
+    capped_out = 0      # hard stops: weekly spent, burst ceiling, prescore allowance
+    paced_out = 0       # the budget working: waiting on its release curve / yield test
     gate_by_user: dict = {}
     drain_users: set = set()
     for uid in users:
@@ -913,7 +914,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         # left contributes nothing to this cycle's work list.
         allow = _finals_allowance(uid, settings.scoring_per_user_cap)
         if allow.n <= 0:
-            capped_out += 1
+            # A "paced" (or yield-closed) user has money that the release
+            # curve has not handed out YET — most cycles of a normal day look
+            # like this now, and it is not the stall the warning below exists
+            # for. Count the two apart so the stats say which one happened.
+            if allow.reason.startswith(("paced", "yield")):
+                paced_out += 1
+            else:
+                capped_out += 1
             log.debug("Scoring: %s gets no slice this cycle (%s)", uid, allow.reason)
             # DRAIN-ONLY slice: a spent finals budget used to drop the user from
             # the cycle entirely, which also stopped the ~$0.0002 Tier-1 drain —
@@ -939,6 +947,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             queues.append(q)
     if capped_out:
         stats["plan_capped_users"] = capped_out
+    if paced_out:
+        stats["budget_paced_users"] = paced_out
     items: List[Tuple[Optional[str], int]] = []
     depth = 0
     while len(items) < settings.scoring_global_cap and any(depth < len(q) for q in queues):

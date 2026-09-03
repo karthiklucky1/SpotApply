@@ -33,10 +33,26 @@ DURABILITY. The counters that bound money are persisted to `UserUsage`
 cannot hold a weekly budget: every deploy would grant a fresh week, and that is
 exactly why the Aug 14-21 stall appeared to "heal" on restart. The ledger is the
 source of truth; a tiny per-process cache keeps the hot path off the database.
+
+PACING (2026-09-03). The three numbers above say how much a user may spend; on
+their own they said nothing about WHEN, and the answer in production was "all
+of it in the first hour". Both active users' finals for 2026-09-02 and 09-03
+were spent in the 00:xx UTC hour (176 and 87 finals) and the other 23 hours
+scored nothing — every posting that appeared during the US working day
+(13:00-01:00 UTC) waited for the next midnight, and the founder account then
+hit the weekly ceiling on Wednesday and scored nothing Thu-Sun. So each budget
+is now RELEASED along a curve (`day_fraction` / `week_fraction`): a head start
+at 00:00 UTC, the rest linearly through the day; one day's worth at Monday
+00:00, the rest linearly through the week. What is not spent stays available
+— the curve only ever bounds spend from above, and at 24:00 / Sunday night it
+reads the full budget, so HOW MUCH a user may spend is unchanged. Bursting is
+thereby limited to money the week has already released: a strong Tuesday
+spends what a quiet Monday left, and a strong Monday cannot borrow Thursday.
 """
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -59,8 +75,14 @@ _DAY_CACHE_TTL = 30.0           # seconds
 _WEEK_CACHE_TTL = 60.0
 
 
+def _utc_now() -> datetime:
+    """THE clock: the ledger's day key and the pacing curves both read it, so a
+    test that pins it moves the whole budget to that moment consistently."""
+    return datetime.utcnow()
+
+
 def _utc_day() -> date:
-    return datetime.utcnow().date()
+    return _utc_now().date()
 
 
 def _week_start(d: Optional[date] = None) -> date:
@@ -262,6 +284,61 @@ def recent_hit_rate(user_id: Optional[str]) -> float:
     return 1.0
 
 
+# ── Pacing: WHEN the money is available ──────────────────────────────────────
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def day_fraction(now: Optional[datetime] = None) -> float:
+    """Share of a DAY budget released by ``now`` (UTC), in 0..1.
+
+    head + (1 - head) x elapsed/24h. The head start (`finals_pace_head_start`,
+    PRO: 15% = 8 finals) is available at 00:00 so postings that arrive overnight
+    are not frozen out; the rest accrues linearly (PRO: ~1.8 finals/hour). It
+    is a ceiling on cumulative spend, never a quota per hour: a quiet morning's
+    unspent share is still there for the afternoon. Pacing off -> 1.0, which
+    is the pre-2026-09 behaviour (everything available at 00:00).
+    """
+    if not settings.finals_pace_enabled:
+        return 1.0
+    now = now or _utc_now()
+    head = _clamp01(settings.finals_pace_head_start)
+    elapsed = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
+    return _clamp01(head + (1.0 - head) * elapsed)
+
+
+def week_fraction(now: Optional[datetime] = None) -> float:
+    """Share of the WEEK budget released by ``now``: one day's worth at Monday
+    00:00, the rest linearly to Sunday 24:00.
+
+    This is what bounds the burst zone to money the week has actually made
+    available. Without it a run of strong days spent 100/day and exhausted the
+    350 by Wednesday (founder account, week of 2026-08-31) — four days of
+    nothing, which is the daily failure at a larger scale.
+    """
+    if not settings.finals_pace_enabled:
+        return 1.0
+    now = now or _utc_now()
+    head = 1.0 / 7.0
+    since_monday = (now.weekday() * 86400 + now.hour * 3600
+                    + now.minute * 60 + now.second)
+    return _clamp01(head + (1.0 - head) * (since_monday / (7 * 86400.0)))
+
+
+def paced(total: int, fraction: float) -> int:
+    """How much of ``total`` the curve has released so far.
+
+    Rounded UP so the first final is available as soon as any share is, and
+    the epsilon keeps float noise (0.3 x 50 = 15.000000000000002) from
+    releasing a final early; never above ``total``.
+    """
+    total = max(0, int(total))
+    if total == 0:
+        return 0
+    return max(0, min(total, int(math.ceil(total * _clamp01(fraction) - 1e-9))))
+
+
 # ── The decision ─────────────────────────────────────────────────────────────
 
 class Allowance:
@@ -291,32 +368,51 @@ def burst_gate() -> int:
 def allowance(user_id: Optional[str], per_cycle_cap: int, soft_cap: int) -> Allowance:
     """The whole policy, in one place.
 
-    A slice never straddles the soft boundary: below it the slice is clipped at
-    the boundary, so the next cycle re-decides with the strict gate rather than
-    spending burst money under everyday rules.
+    Every budget is read THROUGH its pacing curve: `soft_now`/`burst_now` are
+    the shares of the day's soft/burst released so far, `week_now` the share of
+    the week's. A slice never straddles the (paced) soft boundary: below it the
+    slice is clipped at the boundary, so the next cycle re-decides with the
+    strict gate rather than spending burst money under everyday rules.
+
+    Reasons beginning with "paced" mean the money exists but has not been
+    released yet — the lane treats those as the budget working, not as a
+    stall (scoring_lane counts them separately from hard stops).
     """
     soft, burst, weekly = budgets(soft_cap)
     if soft <= 0:
         return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
 
     spent_day, _hits = day_counts(user_id)
-    week_left = weekly - week_finals(user_id)
-    if week_left <= 0:
+    spent_week = week_finals(user_id)
+    if spent_week >= weekly:
         return Allowance(0, normal_gate(), "weekly budget spent")
 
-    if spent_day < soft:
-        n = min(per_cycle_cap, soft - spent_day, week_left)
+    dfrac, wfrac = day_fraction(), week_fraction()
+    soft_now, burst_now = paced(soft, dfrac), paced(burst, dfrac)
+    week_now = paced(weekly, wfrac)
+    week_left = week_now - spent_week
+    week_paced = f"paced: week {spent_week}/{week_now} released ({wfrac:.0%} of week)"
+
+    if spent_day < soft_now:
+        if week_left <= 0:
+            return Allowance(0, normal_gate(), week_paced)
+        n = min(per_cycle_cap, soft_now - spent_day, week_left)
         return Allowance(max(0, n), normal_gate(), "within soft budget")
 
     if spent_day >= burst:
         return Allowance(0, burst_gate(), "daily burst ceiling")
+    if spent_day >= burst_now:
+        return Allowance(0, burst_gate(),
+                         f"paced: day {spent_day}/{burst_now} released ({dfrac:.0%} of day)")
 
     rate = recent_hit_rate(user_id)
     if rate < settings.finals_yield_continue_rate:
         return Allowance(0, burst_gate(),
                          f"yield {rate:.0%} below {settings.finals_yield_continue_rate:.0%}")
+    if week_left <= 0:
+        return Allowance(0, burst_gate(), week_paced)
 
-    n = min(per_cycle_cap, burst - spent_day, week_left)
+    n = min(per_cycle_cap, burst_now - spent_day, week_left)
     return Allowance(max(0, n), burst_gate(), f"burst earned (yield {rate:.0%})")
 
 

@@ -168,6 +168,27 @@ def test_the_global_caps_are_only_a_backstop_not_the_allocation():
     )
 
 
+def test_the_marginal_yield_rate_is_in_lockstep_with_the_qualified_bar():
+    """Test B keeps the burst zone open while >= this share of the last N finals
+    cleared shortlist_score_threshold. Of real Claude finals only 11.6% cleared
+    65 and fewer clear 70, so a continue-rate above that is a burst zone that
+    is nominally open and practically never — production 2026-09-02 closed on
+    "yield 10% below 20%". One hit in the window is the floor (so it must be
+    reachable), and zero hits must still stop the spend (so it stays > 0)."""
+    rate, window = settings.finals_yield_continue_rate, settings.finals_yield_window
+    assert 0 < rate <= 0.10, f"finals_yield_continue_rate={rate} cannot be met at a 70 bar"
+    assert rate <= 1.0 / window + 1e-9, "one hit in the yield window must be enough"
+
+
+def test_the_finals_budget_is_released_across_the_day_not_at_midnight():
+    """Production 2026-09-01..03: 100% of both users' finals were spent in the
+    00:xx UTC hour and the other 23 hours scored nothing. The pacing curve
+    (finals_budget.day_fraction) is what stops that; a head start too small
+    freezes overnight postings, too large brings the drain back."""
+    assert settings.finals_pace_enabled is True
+    assert 0.05 <= settings.finals_pace_head_start <= 0.35, settings.finals_pace_head_start
+
+
 # ── memory + safety ──────────────────────────────────────────────────────────
 
 def test_only_one_headless_browser_at_a_time():

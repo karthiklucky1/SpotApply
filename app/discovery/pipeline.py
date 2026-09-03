@@ -1227,9 +1227,12 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         try:
             return scraper, scraper.fetch(), None
         except Exception as e:
-            # 404s are expected churn (companies move/rename boards) — one
-            # warning line, not a full traceback per dead board.
-            if "404" in str(e):
+            # 404s are expected churn (companies move/rename boards), and a
+            # throttle or contract error says nothing about the board at all
+            # (_is_throttled) — one warning line each, not a full traceback.
+            # join.com alone answered 429 to ~75% of a run's fetches, which as
+            # tracebacks buried every real error in the deploy log.
+            if "404" in str(e) or _is_throttled(str(e)):
                 log.warning("Scraper %s failed: %s", scraper.name, e)
             else:
                 log.exception("Scraper %s failed: %s", scraper.name, e)

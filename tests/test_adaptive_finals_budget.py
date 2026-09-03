@@ -16,6 +16,8 @@ ever breaks, the design has quietly become a price increase.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.config import settings
@@ -252,3 +254,142 @@ def test_the_queue_spends_on_the_most_promising_not_the_most_recent():
                 if obj:
                     session.delete(obj)
             session.commit()
+
+
+# ── pacing: WHEN the money is available ──────────────────────────────────────
+#
+# Production, 2026-09-01 -> 09-03 (Railway "Scoring cycle" stats, per UTC hour):
+# both users' finals for the day were spent in the 00:xx hour — 176 on 09-02,
+# 87 on 09-03 — and the other 23 hours scored 0 (drain-only). Everything posted
+# during the US working day waited for the next midnight, and the founder
+# account then hit the weekly ceiling on Wednesday. These tests pin the release
+# curves that replace that. The budgets are unchanged in SIZE; they arrive
+# across the day (and the week) instead of at 00:00.
+
+MONDAY = datetime(2026, 9, 7)                  # 2026-09-07 is a Monday
+SUNDAY_NIGHT = datetime(2026, 9, 13, 23, 59, 59)
+
+
+def _at(monkeypatch, when: datetime) -> None:
+    monkeypatch.setattr(fb, "_utc_now", lambda: when)
+
+
+def _drain(uid: str, hit: bool = False) -> int:
+    """Spend everything the budget allows right now — what successive lane
+    cycles do within one accrual step. Returns the total bought."""
+    total = 0
+    for _ in range(20):
+        a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
+        if a.n <= 0:
+            return total
+        _spend(uid, a.n, hit=hit)
+        total += a.n
+    raise AssertionError("allowance never closed")
+
+
+def test_the_curves_release_the_full_budget_by_the_end_of_the_day_and_week(monkeypatch):
+    """Pacing changes WHEN, never HOW MUCH: at Sunday 23:59:59 every curve reads
+    its whole budget — which is why every other test in this file (pinned
+    there by conftest) still sees soft/burst/weekly = 50/100/350."""
+    _at(monkeypatch, SUNDAY_NIGHT)
+    assert fb.paced(50, fb.day_fraction()) == 50
+    assert fb.paced(100, fb.day_fraction()) == 100
+    assert fb.paced(350, fb.week_fraction()) == 350
+    _at(monkeypatch, MONDAY)
+    assert fb.paced(50, fb.day_fraction()) == 8, "the 15% head start of 50"
+    assert fb.paced(350, fb.week_fraction()) == 50, "one day's worth at Monday 00:00"
+
+
+def test_just_after_midnight_only_the_head_start_is_available(monkeypatch):
+    """00:10 UTC, PRO, bottomless backlog: 8 at the everyday gate (15% of 50),
+    then at most the released share of burst (16 = 15% of 100) — not 100."""
+    uid = "u-pace-0010"
+    _at(monkeypatch, MONDAY.replace(minute=10))
+    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
+    assert a.n == 8 and a.gate == fb.normal_gate(), "8 = 15% of 50, not the cycle cap of 40"
+    assert _drain(uid) == 16
+    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
+    assert a.n == 0 and a.reason.startswith("paced"), a.reason
+
+
+def test_the_budget_keeps_arriving_through_the_us_posting_day(monkeypatch):
+    """Lane cycles every 30 minutes against a bottomless backlog of weak
+    candidates (every final a miss): the 00:xx hour can no longer take the
+    day, 13:00-22:00 UTC gets its share, and the day totals the soft budget."""
+    uid = "u-pace-day"
+    by_hour: dict = {}
+    for tick in range(48):
+        now = MONDAY + timedelta(minutes=30 * tick)
+        _at(monkeypatch, now)
+        by_hour[now.hour] = by_hour.get(now.hour, 0) + _drain(uid)
+    assert sum(by_hour.values()) == 50, by_hour
+    assert by_hour[0] <= 16, f"00:xx spent {by_hour[0]} — the midnight drain is back"
+    us_day = sum(v for h, v in by_hour.items() if 13 <= h <= 22)
+    assert us_day >= 16, f"13:00-22:00 UTC got only {us_day} finals: {by_hour}"
+    assert max(v for h, v in by_hour.items() if h > 0) <= 3, by_hour
+
+
+def test_unspent_morning_money_is_still_there_in_the_afternoon(monkeypatch):
+    """The curve is a ceiling on cumulative spend, not an hourly quota: a user
+    whose queue was empty all morning has the whole released share at 18:00."""
+    _at(monkeypatch, MONDAY.replace(hour=18))
+    assert fb.paced(50, fb.day_fraction()) == 40        # 0.15 + 0.85 x 18/24 -> 39.4 -> 40
+    a = fb.allowance("u-pace-1800", per_cycle_cap=40, soft_cap=50)
+    assert a.n == 40 and a.gate == fb.normal_gate()
+
+
+def test_strong_candidates_can_burst_at_any_hour_within_the_released_share(monkeypatch):
+    """Burst is paced too: at noon a hot user (every final a hit) may spend up
+    to the released burst share — twice the released soft — not the whole 100."""
+    uid = "u-pace-burst"
+    _at(monkeypatch, MONDAY.replace(hour=12))
+    soft_now, burst_now = fb.paced(50, fb.day_fraction()), fb.paced(100, fb.day_fraction())
+    assert (soft_now, burst_now) == (29, 58)
+    _spend(uid, soft_now, hit=True)
+    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
+    assert a.gate == fb.burst_gate() and a.n == burst_now - soft_now
+    _spend(uid, a.n, hit=True)
+    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
+    assert a.n == 0 and a.reason.startswith("paced: day"), a.reason
+
+
+def test_a_hot_start_cannot_exhaust_the_week_by_wednesday(monkeypatch):
+    """Founder account, week of 2026-08-31: burst-level days Mon-Wed hit the
+    350 and Thu-Sun scored nothing. With the weekly curve, seven hot days
+    (every final a hit, so burst is always earned) spend the same 350 — and
+    every day, Sunday included, still has a working budget."""
+    uid = "u-pace-week"
+    per_day = [0] * 7
+    for day in range(7):
+        for hour in range(0, 24, 2):
+            _at(monkeypatch, MONDAY + timedelta(days=day, hours=hour))
+            per_day[day] += _drain(uid, hit=True)
+    assert 340 <= sum(per_day) <= 350, per_day         # the same money, still spent
+    assert max(per_day) <= 100, per_day                # the burst ceiling holds
+    assert min(per_day) >= 30, per_day                 # no starved day
+    assert per_day[0] > per_day[1], per_day            # Monday's head start is the burst
+
+
+def test_pacing_off_restores_everything_at_midnight(monkeypatch):
+    monkeypatch.setattr(settings, "finals_pace_enabled", False)
+    _at(monkeypatch, MONDAY.replace(minute=10))
+    assert fb.allowance("u-pace-off", per_cycle_cap=40, soft_cap=50).n == 40
+
+
+def test_paced_users_are_not_reported_as_a_stall(monkeypatch, caplog):
+    """The 'no finals allowance' warning exists for the Aug 14-21 class of
+    stall. A user waiting on the release curve is the budget working: the
+    cycle counts them apart from hard stops and stays quiet."""
+    import logging
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
+    monkeypatch.setattr(sl, "_finals_allowance",
+                        lambda uid, cap: fb.Allowance(0, 40, "paced: day 8/8 released (15% of day)"))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    sl._last_capped_log[0] = float("-inf")
+    with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
+        stats = sl._run_scoring_cycle(None)
+    assert stats.get("budget_paced_users") == 2
+    assert "plan_capped_users" not in stats
+    assert not any("no finals allowance" in r.getMessage() for r in caplog.records)

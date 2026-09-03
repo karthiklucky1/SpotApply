@@ -10,6 +10,20 @@ reference is a real call site.*
 > `_user_queue`. Guard tests: `tests/test_adaptive_finals_budget.py`. Two things changed
 > during the build and are worth knowing: the drain gate and the spend gate had to be
 > **separated** (§6a), and the ledger increment had to become atomic SQL (§6b).
+>
+> **Amendment 2026-09-03 — pacing.** The three numbers bound HOW MUCH; nothing bounded
+> WHEN, and production answered "all of it in the first hour": per-hour "Scoring cycle"
+> stats for 2026-09-01→03 show 176 finals (09-02) and 87 (09-03) in the 00:xx UTC hour
+> and **zero** in the other 23 hours of each day — every posting from the US working day
+> waited for the next midnight, and the founder account then hit the weekly 350 on
+> Wednesday (`weekly budget spent`, nothing Thu–Sun). `finals_budget.allowance` now reads
+> every budget through a release curve: `day_fraction` (15% head start at 00:00, linear to
+> 24:00; `FINALS_PACE_HEAD_START`) and `week_fraction` (one day's worth at Monday 00:00,
+> linear to Sunday). Unspent release carries within the period; at 24:00 / Sunday night
+> the curves read the full budget, so the money is unchanged and §3 still holds. Burst is
+> therefore limited to money the week has already released. `FINALS_YIELD_CONTINUE_RATE`
+> moved 0.20 → 0.10 in lockstep with the 70 bar (§4's 0.20 was written at a 60 bar).
+> Guard tests: the "pacing" section of `tests/test_adaptive_finals_budget.py`.
 
 ## 1. What is wrong with the flat cap
 
