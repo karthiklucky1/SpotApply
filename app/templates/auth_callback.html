@@ -5,31 +5,112 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotApply — Signing in...</title>
     <style>
-        :root { --canvas: #F4F1EA; --sage: #2FB4A6; --ink: #2E2A24; --muted: #8C857A; }
-        body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        :root { --canvas: #F4F1EA; --sage: #2FB4A6; --ink: #2E2A24; --muted: #8C857A; --line: #E2DDD2; }
+        body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
         .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sage); display: inline-block; animation: pulse 1.2s ease-in-out infinite; }
         .dot:nth-child(2) { animation-delay: .2s; } .dot:nth-child(3) { animation-delay: .4s; }
         @keyframes pulse { 0%,80%,100% { transform: scale(0.7); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .dot { animation: none; opacity: .8; } }
+        .wrap { text-align: center; max-width: 380px; padding: 0 20px; }
+        .msg { font-weight: 600; font-size: 15px; color: var(--muted); margin: 0; }
+        .detail { font-size: 13.5px; color: var(--muted); line-height: 1.5; margin: 10px 0 0; }
+        .actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+        .btn { font: inherit; font-size: 13.5px; font-weight: 600; padding: 9px 16px; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); text-decoration: none; cursor: pointer; }
+        .btn.primary { background: var(--sage); border-color: var(--sage); color: #fff; }
+        [hidden] { display: none !important; }
     </style>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div style="text-align:center;">
-        <div style="display:flex;gap:8px;justify-content:center;margin-bottom:14px;">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <div class="wrap">
+        <div id="waiting">
+            <div style="display:flex;gap:8px;justify-content:center;margin-bottom:14px;">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+            <p class="msg">Signing you in…</p>
         </div>
-        <p style="font-weight:600;font-size:15px;color:var(--muted);">Signing you in…</p>
+        <div id="stuck" hidden>
+            <p class="msg" id="stuck-title">This is taking longer than usual</p>
+            <p class="detail" id="stuck-detail"></p>
+            <div class="actions">
+                <a class="btn primary" id="stuck-go" href="/dashboard">Open dashboard</a>
+                <a class="btn" href="/login">Back to sign-in</a>
+            </div>
+        </div>
     </div>
     <script type="module">
         import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
         const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
-        
+
+        // NOTHING in this page may wait forever. Production, 2026-09-04
+        // 17:01-17:04 UTC: sign-in itself worked every time — /auth/callback
+        // 200 in 211ms, /api/profile 200 in 1.3s — and then `/dashboard`
+        // exceeded the database statement timeout and never answered (499
+        // after 48s, 104s). A browser keeps painting the CURRENT page until
+        // the next document arrives, so the user sat watching "Signing you
+        // in…" for minutes: no error, no retry, no way forward, and nothing
+        // on this page was even running. Every await below is bounded and
+        // every outcome ends in a screen that says what happened.
+        // 3.5s per profile call: the normal round-trip is ~1.3s, and the two
+        // calls are sequential, so the worst case stays under SIGNIN_MS and the
+        // watchdog can never fire on a sign-in that is about to succeed.
+        const BOOTSTRAP_MS = 3500;    // per profile call
+        const SIGNIN_MS = 12000;      // session extraction + bootstrap
+        const NAV_MS = 20000;         // waiting for /dashboard to respond
+
         let redirected = false;
-        
+        let timer = setTimeout(() => stuck(
+            'Sign-in did not complete. Your connection may have dropped part-way.'), SIGNIN_MS);
+
+        function stuck(detail, title) {
+            clearTimeout(timer);
+            const w = document.getElementById('waiting');
+            const s = document.getElementById('stuck');
+            if (!w || !s) return;
+            if (title) document.getElementById('stuck-title').textContent = title;
+            document.getElementById('stuck-detail').textContent = detail;
+            w.hidden = true;
+            s.hidden = false;
+        }
+
+        // An aborted fetch rejects, so a hung request can never hold the
+        // sign-in open — it fails fast into the catch below and we carry on.
+        function bounded(ms) {
+            const c = new AbortController();
+            setTimeout(() => c.abort(), ms);
+            return c.signal;
+        }
+
+        function goToDashboard() {
+            clearTimeout(timer);
+            // The dashboard may be slow to answer; say so rather than leave a
+            // spinner running against a page that is still loading.
+            timer = setTimeout(() => stuck(
+                'You are signed in, but the dashboard is not responding yet. '
+                + 'It is usually a busy moment on our side — try again in a minute.',
+                'Signed in — dashboard is slow'), NAV_MS);
+            window.location.href = '/dashboard';
+        }
+
+        // The provider reports failures in the URL, not through the SDK: an
+        // access-denied or expired link arrives as #error=… (implicit) or
+        // ?error=… (PKCE). Untreated, both fell through to the silent
+        // "no session" branch and bounced to /login with no explanation.
+        {
+            const q = new URLSearchParams(location.search);
+            const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+            const err = q.get('error') || h.get('error');
+            if (err) {
+                const desc = q.get('error_description') || h.get('error_description') || '';
+                redirected = true;   // stop the SDK path from racing this
+                stuck((desc || err).replace(/\+/g, ' ') + '.', 'Google could not sign you in');
+            }
+        }
+
         sb.auth.onAuthStateChange(async (event, session) => {
             if (session && !redirected) {
                 redirected = true;
-                localStorage.setItem('sb_token', session.access_token)
+                try { localStorage.setItem('sb_token', session.access_token) } catch (e) {}
                 // Cookie so the server-rendered /dashboard can authenticate this
                 // navigation (browser sends no Authorization header on page loads).
                 {
@@ -50,7 +131,7 @@
                                    'Authorization': `Bearer ${session.access_token}` };
                     let existing = {};
                     try {
-                        const pr = await fetch('/api/profile', { headers: hdrs });
+                        const pr = await fetch('/api/profile', { headers: hdrs, signal: bounded(BOOTSTRAP_MS) });
                         if (pr.ok) existing = await pr.json();
                     } catch(e) {}
                     const body = {};
@@ -62,18 +143,27 @@
                         body.email = session.user.email;
                     }
                     if (Object.keys(body).length) {
+                        // keepalive: the write survives the navigation below, so
+                        // filling in a name never delays reaching the dashboard.
                         await fetch('/api/profile', { method: 'PUT', headers: hdrs,
-                                                      body: JSON.stringify(body) });
+                                                      body: JSON.stringify(body),
+                                                      keepalive: true,
+                                                      signal: bounded(BOOTSTRAP_MS) });
                     }
                 } catch(e) {
+                    // A failed or slow bootstrap is not a failed sign-in: the
+                    // session is already stored, so go to the dashboard anyway
+                    // and let the user fill their name in there.
                     console.error("Error bootstrapping profile:", e);
                 }
-                
-                window.location.href = '/dashboard'
+
+                goToDashboard()
             } else if (event === 'INITIAL_SESSION' && !session && !redirected) {
                 // Allow a small delay for URL hash parsing to finish in case it's in progress
                 setTimeout(() => {
                     if (!redirected) {
+                        redirected = true;
+                        clearTimeout(timer);
                         window.location.href = '/login'
                     }
                 }, 1000);
