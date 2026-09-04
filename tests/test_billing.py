@@ -141,6 +141,156 @@ def test_an_unrelated_event_type_is_ignored(fake_stripe):
     assert _plan_of(_UID) is None
 
 
+# ── the REAL Stripe SDK, end to end ──────────────────────────────────────────
+#
+# Every test above this line feeds `handle_webhook` a hand-built dict through a
+# fake `stripe` module. That is why the suite was green while production
+# returned HTTP 500 to every `checkout.session.completed` (2026-09-04 16:35
+# UTC, evt_1UC054…): the real SDK hands the handler a TYPED StripeObject, and
+# `Session.get(...)` raises `AttributeError: 'get' is a dict method, but a
+# Session is not a dict`. The dict double could not reproduce it.
+#
+# These tests use the real installed SDK with no stripe mocking at all: a real
+# HMAC signature, the real `Webhook.construct_event`, and the real typed
+# objects it builds. They fail on the pre-fix parsing.
+
+_WHSEC = "whsec_regression_secret"
+
+
+def _real_stripe(monkeypatch):
+    """The genuine `stripe` module, with our two settings pointed at it."""
+    import stripe
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_regression", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_id_pro", "price_regression", raising=False)
+    monkeypatch.setattr(settings, "stripe_webhook_secret", _WHSEC, raising=False)
+    return stripe
+
+
+def _signed(payload: bytes, secret: str = _WHSEC) -> str:
+    """A signature Stripe's own verifier accepts — same scheme Stripe signs with."""
+    import hashlib
+    import hmac
+    import time
+    ts = int(time.time())
+    mac = hmac.new(secret.encode(), b"%d.%s" % (ts, payload), hashlib.sha256)
+    return f"t={ts},v1={mac.hexdigest()}"
+
+
+def _deliver(event_type: str, obj: dict) -> dict:
+    """Deliver one event exactly as Stripe does: signed JSON over the wire."""
+    payload = _event(event_type, obj)
+    return billing.handle_webhook(payload, _signed(payload))
+
+
+def test_the_sdk_object_rejects_the_dict_access_that_broke_production(monkeypatch):
+    """Pin the SDK behaviour itself, so this is a named fact and not folklore:
+    a checkout Session answers subscripting and attributes, and refuses
+    `.get()`. If a future SDK makes it a dict again, this test says so."""
+    stripe = _real_stripe(monkeypatch)
+    session = stripe.checkout.Session.construct_from(
+        {"id": "cs_1", "object": "checkout.session", "client_reference_id": _UID},
+        "sk_test_regression")
+    assert not isinstance(session, dict)
+    assert session["client_reference_id"] == _UID
+    with pytest.raises(AttributeError, match="is a dict method"):
+        session.get("client_reference_id")
+    assert billing._field(session, "client_reference_id") == _UID
+    assert billing._field(session, "absent", "fallback") == "fallback"
+
+
+def test_a_real_signed_checkout_session_grants_pro(monkeypatch):
+    """THE PRODUCTION FAILURE. Pre-fix this raised AttributeError inside
+    handle_webhook — a 500 to Stripe, retried forever, user stuck on Free."""
+    _real_stripe(monkeypatch)
+    out = _deliver("checkout.session.completed", {
+        "id": "cs_test_real", "object": "checkout.session",
+        "client_reference_id": _UID, "customer": "cus_real",
+        "subscription": "sub_real", "payment_status": "paid", "status": "complete"})
+    assert out == {"received": True, "type": "checkout.session.completed"}
+    with get_session() as s:
+        row = s.exec(select(UserSubscription).where(
+            UserSubscription.user_id == _UID)).first()
+    assert row is not None, "the paid checkout never reached the database"
+    assert row.plan == PlanTier.PRO
+    assert row.stripe_customer_id == "cus_real"
+    assert row.stripe_subscription_id == "sub_real"
+
+
+def test_the_webhook_route_answers_a_real_signed_event_with_2xx(monkeypatch):
+    """What Stripe actually measures: the HTTP status of the delivery."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app as fastapp
+    _real_stripe(monkeypatch)
+    payload = _event("checkout.session.completed", {
+        "id": "cs_route", "object": "checkout.session",
+        "client_reference_id": _UID, "customer": "cus_route",
+        "subscription": "sub_route"})
+    r = TestClient(fastapp).post(
+        "/api/billing/webhook", content=payload,
+        headers={"stripe-signature": _signed(payload),
+                 "content-type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert r.json()["received"] is True
+    assert _plan_of(_UID) == PlanTier.PRO
+
+
+def test_a_real_renewal_stores_the_period_end_from_the_subscription_items(monkeypatch):
+    """Stripe moved `current_period_end` onto the subscription ITEMS in API
+    version 2025-03-31.basil; this account is on 2026-08-26.dahlia. Reading
+    only the top level stored no expiry at all."""
+    _real_stripe(monkeypatch)
+    _deliver("checkout.session.completed", {
+        "id": "cs_r", "object": "checkout.session", "client_reference_id": _UID,
+        "customer": "cus_r", "subscription": "sub_r"})
+    period_end = int((datetime.utcnow() + timedelta(days=30)).timestamp())
+    _deliver("customer.subscription.updated", {
+        "id": "sub_r", "object": "subscription", "status": "active",
+        "items": {"object": "list", "data": [
+            {"id": "si_1", "object": "subscription_item",
+             "current_period_end": period_end}]}})
+    with get_session() as s:
+        row = s.exec(select(UserSubscription).where(
+            UserSubscription.user_id == _UID)).first()
+    assert row.plan == PlanTier.PRO
+    assert row.current_period_end is not None, "renewal stored no expiry"
+    assert abs((row.current_period_end
+                - datetime.utcfromtimestamp(period_end)).total_seconds()) < 2
+
+
+def test_a_real_cancellation_downgrades_to_free(monkeypatch):
+    _real_stripe(monkeypatch)
+    _deliver("checkout.session.completed", {
+        "id": "cs_c", "object": "checkout.session", "client_reference_id": _UID,
+        "customer": "cus_c", "subscription": "sub_c"})
+    assert _plan_of(_UID) == PlanTier.PRO
+    _deliver("customer.subscription.deleted", {
+        "id": "sub_c", "object": "subscription", "status": "canceled"})
+    assert _plan_of(_UID) == PlanTier.FREE
+
+
+def test_a_real_event_with_a_forged_signature_is_refused(monkeypatch):
+    """The real verifier, not our double, rejects a bad signature — and the
+    route turns that into 400, never a 500 Stripe would retry."""
+    _real_stripe(monkeypatch)
+    payload = _event("checkout.session.completed", {
+        "id": "cs_f", "object": "checkout.session", "client_reference_id": _UID})
+    with pytest.raises(ValueError, match="verification failed"):
+        billing.handle_webhook(payload, _signed(payload, "whsec_wrong_secret"))
+    assert _plan_of(_UID) is None
+
+
+def test_a_paid_user_resolves_as_pro_afterwards(monkeypatch):
+    """End to end: the webhook that failed in production now lands the user on
+    PRO through the same `_get_user_plan` the dashboard reads."""
+    from app.api.server import _get_user_plan
+    _real_stripe(monkeypatch)
+    _deliver("checkout.session.completed", {
+        "id": "cs_plan", "object": "checkout.session", "client_reference_id": _UID,
+        "customer": "cus_plan", "subscription": "sub_plan"})
+    assert billing.stripe_enabled() is True
+    assert _get_user_plan(_UID) == PlanTier.PRO
+
+
 # ── plan resolution ──────────────────────────────────────────────────────────
 
 def _set_stripe(monkeypatch, on: bool):

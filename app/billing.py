@@ -138,10 +138,46 @@ def set_plan(user_id: str, plan: PlanTier,
     log.info("Billing: user %s set to plan %s", user_id, plan.value)
 
 
+def _field(obj, key, default=None):
+    """Read one field out of a Stripe webhook payload object.
+
+    `event["data"]["object"]` is a TYPED StripeObject in production —
+    `checkout.Session`, `Subscription` — and since stripe-python 12 those are
+    no longer dict subclasses. `.get()` on one raises
+
+        AttributeError: 'get' is a dict method, but a Session is not a dict.
+
+    so EVERY real `checkout.session.completed` returned HTTP 500 and Stripe
+    kept retrying a webhook that could never succeed (production, 2026-09-04
+    16:35 UTC, evt_1UC054…). The suite stayed green throughout because its
+    stripe double returned `json.loads(payload)` — a plain dict, on which
+    `.get()` works. Subscripting is the one access that behaves identically on
+    both, so every payload read goes through here and the test double is now
+    the real SDK object (tests/test_billing.py).
+    """
+    try:
+        value = obj[key]
+    except (KeyError, IndexError, AttributeError, TypeError):
+        return default
+    return default if value is None else value
+
+
 def _period_end(sub) -> Optional[datetime]:
-    ts = getattr(sub, "current_period_end", None) or (
-        sub.get("current_period_end") if isinstance(sub, dict) else None)
-    return datetime.utcfromtimestamp(ts) if ts else None
+    """When the paid period runs out — the value `_get_user_plan` expires on.
+
+    Read from the subscription's top level, then from its first item: Stripe
+    moved `current_period_end` onto the subscription ITEMS in API version
+    2025-03-31.basil, and this account is on 2026-08-26.dahlia, so the
+    top-level field is simply absent and every renewal would store no expiry
+    at all.
+    """
+    ts = _field(sub, "current_period_end")
+    if ts is None:
+        data = _field(sub, "items", {})
+        data = _field(data, "data", []) or []
+        if data:
+            ts = _field(data[0], "current_period_end")
+    return datetime.utcfromtimestamp(int(ts)) if ts else None
 
 
 def handle_webhook(payload: bytes, signature: str) -> dict:
@@ -155,21 +191,22 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
     except Exception as e:  # bad payload or signature — reject, never guess
         raise ValueError(f"webhook verification failed: {e}") from e
 
-    etype = event["type"]
-    obj = event["data"]["object"]
+    etype = _field(event, "type")
+    obj = _field(event, "data", {})
+    obj = _field(obj, "object", {})
 
     if etype == "checkout.session.completed":
-        user_id = obj.get("client_reference_id")
+        user_id = _field(obj, "client_reference_id")
         if user_id:
             set_plan(user_id, PlanTier.PRO,
-                     stripe_customer_id=obj.get("customer"),
-                     stripe_subscription_id=obj.get("subscription"))
+                     stripe_customer_id=_field(obj, "customer"),
+                     stripe_subscription_id=_field(obj, "subscription"))
         else:
             log.warning("Billing webhook: checkout completed without client_reference_id")
 
     elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
-        sub_id = obj.get("id")
-        status = obj.get("status")
+        sub_id = _field(obj, "id")
+        status = _field(obj, "status")
         with get_session() as session:
             row = session.exec(select(UserSubscription).where(
                 UserSubscription.stripe_subscription_id == sub_id)).first()
