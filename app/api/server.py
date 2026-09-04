@@ -3413,6 +3413,59 @@ def _dashboard_load_options():
     )
 
 
+class _BoundedReads:
+    """Read queries that fail fast and degrade, instead of hanging the page.
+
+    The dashboard is the page every sign-in lands on, so its queries are the
+    ones that must never be able to outlive a user's patience. On 2026-09-04
+    they did: the open-jobs count over the 764k-row job table stopped
+    finishing inside Postgres's own 120s statement timeout while discovery
+    was writing, `/dashboard` never answered (Railway: 499 after 48s, then
+    104s), and sign-in appeared to hang because the browser was still showing
+    the auth callback page underneath.
+
+    Each read gets `settings.dashboard_query_timeout_seconds` and, on expiry,
+    the caller's default instead of an exception. `SET LOCAL` scopes the bound
+    to this transaction, so a pooled connection never carries it to another
+    request; a timed-out statement aborts its transaction, so the rollback and
+    re-arm are what let the REMAINING panels still load.
+    """
+    __slots__ = ("session", "ms", "degraded")
+
+    def __init__(self, session, seconds: int):
+        self.session = session
+        self.ms = max(0, int(seconds or 0)) * 1000
+        self.degraded = False
+        self._arm()
+
+    def _arm(self) -> None:
+        if not self.ms:
+            return
+        try:
+            if self.session.get_bind().dialect.name == "postgresql":
+                from sqlalchemy import text as _text
+                self.session.execute(_text(f"SET LOCAL statement_timeout = {self.ms}"))
+        except Exception as e:                      # never fail a page over this
+            log.debug("statement_timeout not armed: %s", e)
+
+    def get(self, default, fn):
+        if not self.ms:
+            return fn()
+        from sqlalchemy.exc import OperationalError
+        try:
+            return fn()
+        except OperationalError as e:
+            self.degraded = True
+            log.warning("dashboard read exceeded its %dms budget — panel degraded: %s",
+                        self.ms, str(e).splitlines()[0][:200])
+            try:
+                self.session.rollback()
+            except Exception:
+                pass
+            self._arm()
+            return default
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, all_submitted: bool = False):
     """Kanban board UI for tracking application progress."""
@@ -3433,11 +3486,13 @@ def dashboard(request: Request, all_submitted: bool = False):
     manual_queue = []
     total_submitted_count = 0
     total_shortlisted_count = 0
+    board_degraded = False
 
     if not (settings.use_supabase and not uid):
         _AUTOFILL_REVIEW_STATUSES = list(_AUTOFILL_REVIEW_STATUSES_CONST)
 
         with get_session() as session:
+            reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
             # 1. Fetch Shortlisted. Render cap covers a full day's shortlisting
             # (settings.shortlist_render_cap) — the old hard 100 HID jobs: with 161
             # shortlisted the board showed 100 while the header/live count said 161,
@@ -3464,7 +3519,7 @@ def dashboard(request: Request, all_submitted: bool = False):
                 q_short = q_short.where(_fresh_ok)
             if _uid_filter:
                 q_short = q_short.where(Application.user_id == uid)
-            shortlisted = list(session.exec(q_short).all())
+            shortlisted = reads.get([], lambda: list(session.exec(q_short).all()))
 
             # True (uncapped) shortlist size — the honest total shown on the header
             # pill, tab and section badge, and the baseline the live "new matches"
@@ -3479,7 +3534,11 @@ def dashboard(request: Request, all_submitted: bool = False):
                 q_short_total = q_short_total.where(_fresh_ok)
             if _uid_filter:
                 q_short_total = q_short_total.where(Application.user_id == uid)
-            total_shortlisted_count = _scalar(session.exec(q_short_total).first() or 0)
+            # Falls back to what actually rendered — an honest lower bound, and
+            # one the "new matches" banner compares against safely (it can only
+            # under-report, never invent jobs the board cannot show).
+            total_shortlisted_count = reads.get(
+                len(shortlisted), lambda: _scalar(session.exec(q_short_total).first() or 0))
 
             # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
             q_sub = select(Application, Job).join(Job).options(
@@ -3500,11 +3559,14 @@ def dashboard(request: Request, all_submitted: bool = False):
             )
             if _uid_filter:
                 q_sub_count = q_sub_count.where(Application.user_id == uid)
-            total_submitted_count = session.exec(q_sub_count).first() or 0
 
             if not all_submitted:
                 q_sub = q_sub.limit(20)
-            submitted = list(session.exec(q_sub).all())
+            # Load the rows BEFORE the count, so a timed-out count can fall back
+            # to the number actually on the page instead of a bare 0.
+            submitted = reads.get([], lambda: list(session.exec(q_sub).all()))
+            total_submitted_count = reads.get(
+                len(submitted), lambda: session.exec(q_sub_count).first() or 0)
 
             # 3. Fetch Interviewing (uncapped since active interviews are few)
             q_int = select(Application, Job).join(Job).options(
@@ -3516,7 +3578,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             ).order_by(Application.updated_at.desc())
             if _uid_filter:
                 q_int = q_int.where(Application.user_id == uid)
-            interviewing = list(session.exec(q_int).all())
+            interviewing = reads.get([], lambda: list(session.exec(q_int).all()))
 
             # 4. Fetch Rejected (limit to 20 by default)
             q_rej = select(Application, Job).join(Job).options(
@@ -3528,7 +3590,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             ).order_by(Application.updated_at.desc()).limit(20)
             if _uid_filter:
                 q_rej = q_rej.where(Application.user_id == uid)
-            rejected = list(session.exec(q_rej).all())
+            rejected = reads.get([], lambda: list(session.exec(q_rej).all()))
 
             # 5. Fetch Skipped (limit to 20)
             q_skip = select(Application, Job).join(Job).options(
@@ -3540,7 +3602,8 @@ def dashboard(request: Request, all_submitted: bool = False):
             ).order_by(Application.updated_at.desc()).limit(20)
             if _uid_filter:
                 q_skip = q_skip.where(Application.user_id == uid)
-            skipped = list(session.exec(q_skip).all())
+            skipped = reads.get([], lambda: list(session.exec(q_skip).all()))
+            board_degraded = reads.degraded
 
     from datetime import datetime as _dt
 
@@ -3687,6 +3750,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "skipped": skipped,
             "rejected": rejected,
             "ssr_authed": ssr_authed,
+            "board_degraded": board_degraded,
             "company_cap": settings.company_cap,
             "pro_price": __import__("app.billing", fromlist=["pro_price_usd"]).pro_price_usd(),
             "visa_framing": visa_framing,
@@ -3723,12 +3787,20 @@ def pipeline_live(request: Request) -> dict:
     counts = {"pool": 0, "shortlisted": 0, "submitted": 0, "rejected": 0}
     shortlist: list[dict] = []
     with get_session() as session:
+        # Bounded for the same reason the dashboard is: this endpoint is polled
+        # from the board, and the pool count below is the exact statement that
+        # stopped finishing inside Postgres's 120s timeout on 2026-09-04
+        # (500s at 123.7s and 120.3s). A tile nobody can read beats a page
+        # nobody can load.
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
         # Open jobs only — same definition as /api/stats total_jobs and the
         # All Jobs list, so the Pool card reads identically everywhere.
         pq = select(func.count(Job.id)).where(Job.is_closed == False)
         if _uid_filter:
             pq = pq.where(Job.user_id == uid)
-        counts["pool"] = _scalar(session.exec(pq).one())
+        # None, not 0: the board leaves the tile at its last value rather than
+        # telling the user their pool emptied.
+        counts["pool"] = reads.get(None, lambda: _scalar(session.exec(pq).one()))
 
         # Same aggregator-redirect ghost exclusion as the dashboard pipeline, so
         # the live-updated header tiles agree with the board's numbers.
@@ -3754,7 +3826,7 @@ def pipeline_live(request: Request) -> dict:
             q = q.where(Application.user_id == uid)
         for (app_id, st, apply_track, apply_url,
              j_title, j_company, j_location, j_remote,
-             j_rerank, j_url) in session.exec(q).all():
+             j_rerank, j_url) in reads.get([], lambda: list(session.exec(q).all())):
             if st in _SHORTLIST or st in _INPROGRESS:
                 counts["shortlisted"] += 1
                 shortlist.append({
@@ -3787,7 +3859,8 @@ def pipeline_live(request: Request) -> dict:
     except Exception:
         running = False
 
-    return {"counts": counts, "shortlist": shortlist, "running": running}
+    return {"counts": counts, "shortlist": shortlist, "running": running,
+            "degraded": reads.degraded}
 
 
 def _rehydrate_tailored_file(local_path: str | None, uid: str | None) -> str | None:

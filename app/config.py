@@ -304,6 +304,16 @@ class Settings(BaseSettings):
     # engine. Lock-free (cheap gates + GPT->Claude cascade, no FAISS), so it runs
     # continuously alongside discovery. The 5-min matching lane stays as the
     # FAISS-retrieval + reshortlist + self-heal backstop.
+    # How long the dashboard's own reads may take before the page gives up on
+    # them and renders what it has. A FAIL-SAFE, not a tuning knob: on
+    # 2026-09-04 the open-jobs count over the 764k-row job table stopped
+    # finishing inside Postgres's 120s statement timeout while discovery was
+    # writing, so /dashboard never answered — and because a browser keeps
+    # painting the previous page until the next one arrives, sign-in presented
+    # as an endless "Signing you in…" (see app/templates/auth_callback.html).
+    # A bounded read makes a slow database cost a degraded panel instead of a
+    # login nobody can complete. 0 disables the bound (pre-2026-09 behaviour).
+    dashboard_query_timeout_seconds: int = 5   # DASHBOARD_QUERY_TIMEOUT_SECONDS
     scoring_lane_enabled: bool = True      # SCORING_LANE_ENABLED
     scoring_lane_interval_seconds: int = 90  # cadence; 0 disables
     scoring_workers: int = 20              # GLOBAL concurrent LLM scoring workers (size to your Anthropic/OpenAI rate limit, not user count)

@@ -1409,6 +1409,19 @@
                 #shortlisted-container .jr-actions .jbtn:hover { border-color: rgba(var(--sage-rgb),0.5); box-shadow: 0 0 0 3px rgba(var(--sage-rgb),0.12); }
             </style>
             <div data-tour="shortlist" class="flex flex-col gap-3">
+                {#- The board's reads are time-bounded (settings.dashboard_query_
+                    timeout_seconds) so a slow database costs a panel, not the
+                    whole page — and never a sign-in nobody can complete. Say so
+                    plainly when it happens, rather than showing an empty board
+                    as if the user had no matches. Inline styles on purpose: no
+                    new Tailwind classes, so the committed CSS stays valid. -#}
+                {% if board_degraded %}
+                <div style="border:1px solid rgba(234,179,8,0.35);background:rgba(234,179,8,0.10);color:#EAB308;border-radius:12px;padding:10px 14px;font-size:12px;font-weight:600;">
+                    Some panels could not load in time — the database is busy right now.
+                    Counts below may be incomplete.
+                    <button type="button" onclick="location.reload()" style="text-decoration:underline;font-weight:800;">Retry</button>
+                </div>
+                {% endif %}
                 {#- Explains the tab-count vs visible-cards gap: the min-fit filter
                     (default shortlist_strong_threshold) hides weaker cards, but the
                     tab badge counts EVERY shortlisted job. -#}
@@ -6791,7 +6804,9 @@
             if (!r.ok) return;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            set('stat-pool', _fmtK(d.counts.pool));
+            // null = the count timed out server-side (degraded read). Leave the
+            // tile at its last value rather than reporting an empty pool.
+            set('stat-pool', d.counts.pool == null ? null : _fmtK(d.counts.pool));
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
@@ -6844,7 +6859,9 @@
             if (!r.ok) return;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            set('stat-pool', _fmtK(d.counts.pool));
+            // null = the count timed out server-side (degraded read). Leave the
+            // tile at its last value rather than reporting an empty pool.
+            set('stat-pool', d.counts.pool == null ? null : _fmtK(d.counts.pool));
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
