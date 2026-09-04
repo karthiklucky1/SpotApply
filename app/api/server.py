@@ -1737,7 +1737,11 @@ def clear_all_notifications(request: Request) -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse(request=request, name="landing.html", context={})
+    # The price comes from PLAN_PRICES like every other surface — the landing
+    # page is where a stale hard-coded number is most expensive.
+    from app.billing import pro_price_usd
+    return templates.TemplateResponse(request=request, name="landing.html",
+                                      context={"pro_price": pro_price_usd()})
 
 
 @app.get("/pricing", response_class=HTMLResponse)

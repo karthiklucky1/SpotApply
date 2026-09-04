@@ -35,9 +35,14 @@ def test_compiled_css_covers_landing_classes():
     # Distinctive utilities the template actually uses (incl. recently added
     # responsive variants). A miss means the stylesheet wasn't rebuilt after a
     # template edit — the class would silently render unstyled in prod.
-    for cls in (".text-4xl", ".rounded-2xl", ".backdrop-blur-sm",
-                r".sm\:grid-cols-5", r".sm\:col-span-2", r".lg\:col-span-8",
-                r".sm\:flex-row", r".sm\:text-xs", r".lg\:grid-cols-2"):
+    # Re-pinned for the 2026-09 landing rebuild. Every entry must be a class the
+    # CURRENT template really uses, or the guard stops detecting a stale
+    # stylesheet and just fails forever. `.text-4xl` and `.sm\:col-span-2` went
+    # with the old hero demo; the heading sizes are now set by the page's own
+    # `.h2` clamp() rather than by Tailwind size utilities.
+    for cls in (".text-xs", ".rounded-2xl", ".backdrop-blur-sm",
+                r".sm\:grid-cols-5", r".lg\:col-span-4", r".lg\:col-span-8",
+                r".lg\:grid-cols-12", r".sm\:flex-row", r".lg\:grid-cols-2"):
         assert cls in css, f"{cls} missing from compiled CSS — run `npm run build`"
 
 

@@ -1,1918 +1,648 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpotApply — Your AI Job Search Copilot</title>
-    <meta name="description" content="SpotApply finds fresh jobs straight from 1,000+ company boards, ranks each one against your résumé, and preps tailored applications — you review everything and click Submit.">
-    <link rel="canonical" href="https://spotapply.ai/">
-    <meta property="og:title" content="SpotApply — Your AI Job Search Copilot">
-    <meta property="og:description" content="Fresh jobs from 1,000+ company boards — ranked against your résumé, tailored and prefilled for you. You always click Submit.">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://spotapply.ai/">
-    <meta property="og:image" content="https://spotapply.ai/static/og-card.png">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="SpotApply — Your AI Job Search Copilot">
-    <meta name="twitter:description" content="Fresh jobs from 1,000+ company boards — ranked against your résumé. You always click Submit.">
-    <meta name="twitter:image" content="https://spotapply.ai/static/og-card.png">
-    <meta name="theme-color" content="#2FB4A6">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-title" content="SpotApply">
-    <link rel="manifest" href="/static/manifest.json">
-    <link rel="apple-touch-icon" href="/static/icon-192.svg">
-    <link rel="icon" href="/favicon.ico" sizes="any">
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <!-- Compiled Tailwind (landing page only — replaces the Play CDN script).
-         IMPORTANT: after adding/changing Tailwind classes in THIS file, rebuild
-         with `npm run build` (output is committed; prod needs no node). -->
-    <link rel="stylesheet" href="/static/tailwind-landing.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-    <!-- AOS Animations (self-hosted — was unpkg, a third-party point of failure) -->
-    <link href="/static/vendor/aos.css" rel="stylesheet">
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "SoftwareApplication",
-      "name": "SpotApply",
-      "url": "https://spotapply.ai/",
-      "applicationCategory": "BusinessApplication",
-      "operatingSystem": "Web",
-      "description": "AI job-search copilot that discovers fresh roles from public company job boards, ranks them against your résumé, and preps tailored applications you review and submit yourself.",
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Free to start — no card required" }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpotApply — Only apply to jobs that actually fit you</title>
+<meta name="description" content="SpotApply monitors company career pages, scores roles against your real experience, and prepares a grounded tailored résumé for your strongest matches.">
+<link rel="canonical" href="https://app.spotapply.ai/">
+<meta property="og:title" content="SpotApply — Only apply to jobs that actually fit you">
+<meta property="og:description" content="Continuous discovery across company career pages, honest match scoring, and tailored résumés grounded in your real experience.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://app.spotapply.ai/">
+<meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/tailwind-landing.css">
+<link rel="stylesheet" href="/static/vendor/aos.css">
+<style>
+    :root {
+        /* Light, deliberate, single-accent. Green is reserved for verified /
+           success states only — it never carries brand or decoration. */
+        --canvas: #FFFFFF;
+        --surface: #F8FAFC;
+        --surface-2: #F1F5F9;
+        --ink: #0F172A;
+        --ink-soft: #334155;
+        --muted: #64748B;
+        --border: #E2E8F0;
+        --border-strong: #CBD5E1;
+        --accent: #4F46E5;
+        --accent-700: #4338CA;
+        --accent-tint: #EEF2FF;
+        --ok: #047857;
+        --ok-tint: #ECFDF5;
+        --ok-border: #A7F3D0;
+        --radius: 14px;
+        --shadow-sm: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06);
+        --shadow-lg: 0 24px 48px -24px rgba(15,23,42,.18), 0 2px 8px rgba(15,23,42,.04);
     }
-    </script>
-    <style>
-        :root {
-            --canvas: #F4F1EA; --surface: #FCFAF5; --surface-2: #EFEaDf;
-            /* --muted was #8C857A (3.2:1 on the canvas — fails WCAG AA for body
-               copy); #6E675C keeps the warm tone at 4.95:1. */
-            --ink: #2E2A24; --ink-soft: #4A453C; --muted: #6E675C; --border: #E6E0D3;
-            --sage: #2FB4A6; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E7F5F2;
-        }
-        html, body { overflow-x: hidden; scroll-behavior: smooth; }
-        /* Respect reduced-motion: kill the ambient loops (marquee, pulse,
-           lasers, floats) and let AOS content render in place. */
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after {
-                animation-duration: 0.01ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: 0.01ms !important;
-                scroll-behavior: auto !important;
-            }
-            [data-aos] { opacity: 1 !important; transform: none !important; }
-        }
-        .blur-teaser {
-            filter: blur(4.5px);
-            user-select: none;
-            cursor: not-allowed;
-            opacity: 0.7;
-            display: inline-block;
-        }
-        body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); }
-        .gradient-text {
-            background: linear-gradient(135deg, var(--sage) 0%, var(--sage-700) 100%);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-        }
-        .gradient-text-green {
-            background: linear-gradient(135deg, var(--sage) 0%, var(--sage-600) 100%);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-        }
-        .glass {
-            background: rgba(252,250,245,0.92);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--border);
-        }
-        .btn-primary {
-            /* sage-700, not sage: white on #2FB4A6 is 2.56:1 (fails AA);
-               white on #16847A is 4.55:1. The glow keeps the brand hue. */
-            background: var(--sage-700);
-            box-shadow: 0 4px 20px rgba(47,180,166,0.35);
-            transition: all 0.2s ease;
-            color: white;
-        }
-        .btn-primary:hover {
-            background: var(--sage-600);
-            box-shadow: 0 6px 28px rgba(47,180,166,0.5);
-            transform: translateY(-1px);
-        }
-        @keyframes pulse-glow {
-            0% { box-shadow: 0 4px 20px rgba(47,180,166,0.35); }
-            50% { box-shadow: 0 4px 28px rgba(47,180,166,0.65), 0 0 0 6px rgba(47,180,166,0.15); }
-            100% { box-shadow: 0 4px 20px rgba(47,180,166,0.35); }
-        }
-        .btn-pulse {
-            animation: pulse-glow 3s infinite ease-in-out;
-        }
-        .feature-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            box-shadow: 0 1px 3px rgba(46,42,36,0.04);
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .feature-card.lift:hover {
-            border-color: var(--sage);
-            box-shadow: 0 12px 30px rgba(47,180,166,0.08), 0 1px 3px rgba(46,42,36,0.02);
-            transform: translateY(-6px);
-        }
-        .feature-card .w-11 {
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .feature-card:hover .w-11 {
-            transform: translateY(-2px) scale(1.06);
-            box-shadow: 0 6px 16px rgba(47,180,166,0.12);
-        }
-        .feature-card svg {
-            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .feature-card:hover svg {
-            transform: scale(1.1);
-        }
-        .step-line { background: linear-gradient(180deg, rgba(47,180,166,0.4), transparent); }
-        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
-        .float-anim { animation: float 4s ease-in-out infinite; }
-        @keyframes fade-up { from { opacity:0; transform:translateY(24px); } to { opacity:1; transform:translateY(0); } }
-        .fade-up { animation: fade-up 0.6s ease forwards; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+        font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        background: var(--canvas);
+        color: var(--ink);
+        margin: 0;
+        -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
 
-        /* Section heading kicker */
-        .kicker { display:inline-block; font-size:12px; font-weight:800; letter-spacing:0.12em;
-            text-transform:uppercase; color:var(--sage-700); margin-bottom:14px; }
+    /* ── layout ─────────────────────────────────────────────────────────── */
+    .wrap { max-width: 1200px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+    .section { padding: 104px 0; }
+    .section-tight { padding: 72px 0; }
+    @media (max-width: 768px) {
+        .section { padding: 64px 0; }
+        .section-tight { padding: 48px 0; }
+    }
+    .rule { border-top: 1px solid var(--border); }
+    .bg-soft { background: var(--surface); }
 
-        /* Browser-frame product mockup */
-        .browser { border-radius:18px; overflow:hidden; border:1px solid var(--border);
-            background:var(--surface); box-shadow:0 30px 80px -24px rgba(46,42,36,0.35), 0 8px 24px rgba(46,42,36,0.08); }
-        .browser-bar { display:flex; align-items:center; gap:7px; padding:11px 14px;
-            background:var(--surface-2); border-bottom:1px solid var(--border); }
-        .browser-dot { width:11px; height:11px; border-radius:50%; }
-        .mock-card { background:var(--surface); border:1px solid var(--border); border-radius:14px;
-            padding:12px 14px; box-shadow:0 1px 3px rgba(46,42,36,0.04); }
-        .mock-pill { display:inline-flex; align-items:center; gap:3px; font-size:9px; font-weight:800;
-            text-transform:uppercase; letter-spacing:0.04em; padding:3px 8px; border-radius:9999px; }
-        .mock-strong { color:#16847A; background:var(--sage-tint); border:1px solid rgba(47,180,166,0.4); }
-        .mock-good { color:#6366f1; background:rgba(99,102,241,0.10); border:1px solid rgba(99,102,241,0.28); }
-        .mock-col-tag { font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:0.08em; }
+    /* ── type ───────────────────────────────────────────────────────────── */
+    h1, h2, h3 { margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
+    .h1 { font-size: clamp(38px, 6.4vw, 68px); line-height: 1.04; font-weight: 800; }
+    .h2 { font-size: clamp(28px, 3.4vw, 44px); line-height: 1.1; font-weight: 700; }
+    .h3 { font-size: 19px; line-height: 1.3; font-weight: 700; }
+    .lede { font-size: clamp(17px, 1.35vw, 20px); line-height: 1.6; color: var(--ink-soft); max-width: 62ch; }
+    .body { font-size: 15.5px; line-height: 1.65; color: var(--ink-soft); }
+    .eyebrow {
+        font-size: 12px; font-weight: 700; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--accent);
+    }
+    .num { font-variant-numeric: tabular-nums; }
 
-        /* Logo marquee */
-        .marquee { display:flex; gap:42px; align-items:center; animation:scroll-x 26s linear infinite; }
-        @keyframes scroll-x { from { transform:translateX(0); } to { transform:translateX(-50%); } }
-        .marquee span { font-weight:800; font-size:15px; color:var(--muted); white-space:nowrap; opacity:0.8; }
+    /* ── controls ───────────────────────────────────────────────────────── */
+    .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        font-weight: 600; font-size: 15px; padding: 13px 24px;
+        border-radius: 12px; border: 1px solid transparent;
+        text-decoration: none; cursor: pointer; transition: background .15s, border-color .15s, color .15s;
+        white-space: nowrap;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-700); }
+    .btn-secondary { background: var(--canvas); color: var(--ink); border-color: var(--border-strong); }
+    .btn-secondary:hover { border-color: var(--muted); }
+    .btn-sm { padding: 9px 16px; font-size: 14px; border-radius: 10px; }
+    a:focus-visible, button:focus-visible, summary:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px;
+    }
 
-        .lift { transition:transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
-        .lift:hover { transform:translateY(-3px); }
+    /* ── surfaces ───────────────────────────────────────────────────────── */
+    .card {
+        background: var(--canvas); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 28px;
+    }
+    .nav {
+        position: sticky; top: 0; z-index: 50;
+        background: rgba(255,255,255,.82);
+        border-bottom: 1px solid var(--border);
+    }
+    .mark {
+        width: 30px; height: 30px; border-radius: 9px; background: var(--accent);
+        display: inline-flex; align-items: center; justify-content: center; flex: none;
+    }
 
-        /* Interactive Simulator Styles */
-        @keyframes scan-laser {
-            0% { top: 0%; opacity: 0.8; }
-            50% { top: 100%; opacity: 0.8; }
-            100% { top: 0%; opacity: 0.8; }
-        }
-        .laser-scanner {
-            animation: scan-laser 3s infinite ease-in-out;
-        }
-        .demo-panel {
-            animation: fade-in-panel 0.4s ease forwards;
-        }
-        @keyframes fade-in-panel {
-            from { opacity: 0; transform: scale(0.98); }
-            to { opacity: 1; transform: scale(1); }
-        }
-        .step-card {
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            background: var(--surface);
-            box-shadow: 0 1px 3px rgba(46,42,36,0.04);
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .step-card-active {
-            border-color: var(--sage) !important;
-            box-shadow: 0 12px 30px rgba(47,180,166,0.12) !important;
-            transform: scale(1.03) translateY(-4px);
-            opacity: 1 !important;
-        }
-    </style>
+    /* ── product screenshot frames ──────────────────────────────────────── */
+    /* Each .shot-frame is a drop-in slot. To use a real screenshot, replace the
+       inline <svg class="shot-ph"> with:
+           <img src="/static/shots/<name>.png" alt="..." loading="lazy">
+       The frame fixes the aspect ratio, so swapping causes no layout shift. */
+    .shot-frame {
+        border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+        background: var(--surface); box-shadow: var(--shadow-lg);
+    }
+    .shot-bar {
+        display: flex; align-items: center; gap: 6px;
+        padding: 10px 14px; background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+    }
+    .shot-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); }
+    .shot-url {
+        margin-left: 10px; font-size: 11.5px; color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .shot-frame img { display: block; width: 100%; height: auto; }
+    .shot-ph { display: block; width: 100%; height: auto; background: var(--canvas); }
+    figure { margin: 0; }
+    figcaption { font-size: 13.5px; color: var(--muted); margin-top: 14px; }
+
+    /* ── verified / evidence ────────────────────────────────────────────── */
+    .evidence {
+        border: 1px solid var(--border); border-radius: 12px;
+        background: var(--canvas); padding: 18px 20px;
+    }
+    .evidence-label {
+        font-size: 11.5px; font-weight: 700; letter-spacing: .07em;
+        text-transform: uppercase; color: var(--muted); margin-bottom: 8px;
+    }
+    .evidence-text { font-size: 15px; line-height: 1.55; color: var(--ink); }
+    .verified {
+        display: inline-flex; align-items: center; gap: 7px;
+        background: var(--ok-tint); color: var(--ok); border: 1px solid var(--ok-border);
+        border-radius: 999px; padding: 6px 13px; font-size: 13px; font-weight: 600;
+    }
+    .blocked {
+        border-left: 3px solid var(--border-strong); padding-left: 16px;
+        font-size: 14.5px; line-height: 1.6; color: var(--muted);
+    }
+
+    /* ── faq ────────────────────────────────────────────────────────────── */
+    details.faq { border-bottom: 1px solid var(--border); padding: 22px 0; }
+    details.faq summary {
+        list-style: none; cursor: pointer; display: flex; align-items: center;
+        justify-content: space-between; gap: 20px;
+        font-weight: 600; font-size: 16.5px; color: var(--ink);
+    }
+    details.faq summary::-webkit-details-marker { display: none; }
+    details.faq summary::after {
+        content: ""; flex: none; width: 10px; height: 10px;
+        border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+        transform: rotate(45deg); transition: transform .18s;
+    }
+    details.faq[open] summary::after { transform: rotate(-135deg); }
+    details.faq p { margin: 12px 0 0; }
+</style>
 </head>
 <body>
 
-<!-- Scroll Progress Bar -->
-<div id="scroll-progress" class="fixed top-16 left-0 h-[2px] bg-[var(--sage)] z-50 pointer-events-none transition-all duration-75" style="width: 0%;"></div>
-
-<!-- Nav -->
-<nav class="fixed top-0 left-0 right-0 z-50 glass" style="border-bottom:1px solid var(--border);">
-    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-            <div class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="12" r="1.5" fill="rgba(255,255,255,0.85)"/></svg>
-            </div>
-            <span class="font-black text-lg gradient-text">SpotApply</span>
-        </div>
-        <div class="hidden sm:flex items-center gap-8 text-sm font-semibold" style="color:var(--muted);">
-            <a href="#features" class="hover:underline transition-colors" style="color:var(--ink-soft);">Features</a>
-            <a href="#how-it-works" class="hover:underline transition-colors" style="color:var(--ink-soft);">How it works</a>
-            <a href="/pricing" class="hover:underline transition-colors" style="color:var(--ink-soft);">Pricing</a>
-        </div>
-        <div class="flex items-center gap-2 sm:gap-3">
-            <a href="/login" class="hidden sm:block text-sm font-bold transition-colors px-2 sm:px-4 py-2 whitespace-nowrap" style="color:var(--ink-soft);">Sign in</a>
-            <a href="/login?mode=signup" class="btn-primary text-sm font-black px-4 sm:px-5 py-2.5 rounded-xl whitespace-nowrap">Get started free</a>
-            <button id="mobile-nav-btn" onclick="toggleMobileNav()" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-nav-menu" class="sm:hidden p-2 rounded-lg border" style="border-color:var(--border);color:var(--ink-soft);background:var(--surface);">
-                <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
-            </button>
-        </div>
-    </div>
-    <!-- Mobile menu panel -->
-    <div id="mobile-nav-menu" class="hidden sm:hidden glass px-4 py-3 flex flex-col gap-1 text-sm font-bold" style="border-top:1px solid var(--border);">
-        <a href="#features" onclick="toggleMobileNav()" class="py-2.5 px-2 rounded-lg" style="color:var(--ink-soft);">Features</a>
-        <a href="#how-it-works" onclick="toggleMobileNav()" class="py-2.5 px-2 rounded-lg" style="color:var(--ink-soft);">How it works</a>
-        <a href="/pricing" class="py-2.5 px-2 rounded-lg" style="color:var(--ink-soft);">Pricing</a>
-        <a href="/login" class="py-2.5 px-2 rounded-lg" style="color:var(--sage-700);">Sign in</a>
-    </div>
-    <script>
-    function toggleMobileNav() {
-        const menu = document.getElementById('mobile-nav-menu');
-        const btn = document.getElementById('mobile-nav-btn');
-        const open = menu.classList.toggle('hidden') === false;
-        if (btn) btn.setAttribute('aria-expanded', String(open));
-    }
-    </script>
-</nav>
-
-<!-- Hero -->
-<section class="relative pt-28 pb-16 px-4 overflow-hidden">
-    <!-- Background glows -->
-    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[520px] rounded-full opacity-20 pointer-events-none" style="background:radial-gradient(ellipse,rgba(47,180,166,0.4),transparent 70%);"></div>
-    <div class="absolute top-44 left-1/4 w-64 h-64 rounded-full opacity-10 pointer-events-none" style="background:radial-gradient(circle,rgba(47,180,166,0.5),transparent 70%);"></div>
-
-    <div class="max-w-6xl mx-auto relative z-10 grid lg:grid-cols-2 gap-12 items-center">
-        <!-- Left: copy -->
-        <div class="text-center lg:text-left">
-            <div data-aos="fade-up" data-aos-duration="600" class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold mb-7" style="background:var(--sage-tint);border:1px solid rgba(47,180,166,0.25);color:var(--sage-700);">
-                <span class="relative flex h-1.5 w-1.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span><span class="relative inline-flex rounded-full h-1.5 w-1.5" style="background:var(--sage);"></span></span>
-                AI agent running 24/7 · 1000+ job boards
-            </div>
-            <h1 data-aos="fade-up" data-aos-delay="100" data-aos-duration="600" class="text-4xl sm:text-6xl font-black tracking-tight leading-[1.05] mb-5" style="color:var(--ink);">
-                Stop scrolling<br>job boards.<br>
-                <span class="gradient-text">Let AI find &amp; rank the jobs.</span>
-            </h1>
-            <p data-aos="fade-up" data-aos-delay="200" data-aos-duration="600" class="text-lg max-w-xl mx-auto lg:mx-0 mb-8" style="color:var(--muted);">
-                SpotApply scans 1,000+ boards, scores every role against your résumé, and surfaces only the matches worth your time — with tailored résumés and one-click auto-fill. You always click Submit.
-            </p>
-            <div data-aos="fade-up" data-aos-delay="300" data-aos-duration="600" class="flex flex-col sm:flex-row gap-3 justify-center lg:justify-start mb-8">
-                <a href="/login?mode=signup" class="btn-primary btn-pulse font-black text-base px-8 py-4 rounded-2xl flex items-center justify-center gap-2">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                    Start free — no card
-                </a>
-                <a href="#how-it-works" class="font-bold text-base px-8 py-4 rounded-2xl border transition-all flex items-center justify-center gap-2 lift" style="border-color:var(--border);color:var(--ink-soft);background:var(--surface);">
-                    See how it works
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
-                </a>
-            </div>
-            <div data-aos="fade-up" data-aos-delay="400" data-aos-duration="600" class="flex flex-wrap items-center gap-x-4 gap-y-2 justify-center lg:justify-start text-xs font-semibold" style="color:var(--muted);">
-                <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> Free to start</span>
-                <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> Resume-aware ranking</span>
-                <span class="flex items-center gap-1.5"><span style="color:var(--sage);">✓</span> You approve every apply</span>
-            </div>
-            <!-- Live freshness proof — measured, populated by /api/public/freshness; hidden until real data exists -->
-            <div id="freshness-strip" data-aos="fade-up" data-aos-delay="500" class="mt-6 hidden flex-wrap items-center gap-x-6 gap-y-2 justify-center lg:justify-start">
-                <div class="flex flex-col"><span class="text-2xl font-black" style="color:var(--ink);" id="fr-boards">—</span><span class="text-[11px] font-bold uppercase tracking-wider" style="color:var(--muted);">Company boards live</span></div>
-                <div class="flex flex-col" id="fr-alert-wrap" style="display:none"><span class="text-2xl font-black gradient-text" id="fr-alert">—</span><span class="text-[11px] font-bold uppercase tracking-wider" style="color:var(--muted);">Median post → alert</span></div>
-                <div class="flex flex-col" id="fr-24h-wrap" style="display:none"><span class="text-2xl font-black" style="color:var(--sage);" id="fr-24h">—</span><span class="text-[11px] font-bold uppercase tracking-wider" style="color:var(--muted);">Found within 24h</span></div>
-            </div>
-        </div>
-        <script>
-        (function () {
-            fetch('/api/public/freshness').then(r => r.ok ? r.json() : null).then(f => {
-                if (!f || !f.active_boards) return;
-                var strip = document.getElementById('freshness-strip');
-                document.getElementById('fr-boards').textContent = f.active_boards.toLocaleString();
-                if (f.median_post_to_alert_min != null) {
-                    document.getElementById('fr-alert').textContent =
-                        f.median_post_to_alert_min < 120 ? Math.round(f.median_post_to_alert_min) + 'm'
-                                                         : Math.round(f.median_post_to_alert_min / 60) + 'h';
-                    document.getElementById('fr-alert-wrap').style.display = 'flex';
-                }
-                if (f.detected_within_24h_pct != null) {
-                    document.getElementById('fr-24h').textContent = f.detected_within_24h_pct + '%';
-                    document.getElementById('fr-24h-wrap').style.display = 'flex';
-                }
-                strip.classList.remove('hidden');
-                strip.classList.add('flex');
-            }).catch(function () {});
-        })();
-        </script>
-
-        <!-- Right: Interactive Demo Workspace -->
-        <div data-aos="fade-left" data-aos-delay="200" data-aos-duration="800">
-            <div class="browser relative">
-                <div class="browser-bar">
-                    <span class="browser-dot" style="background:#f87171;"></span>
-                    <span class="browser-dot" style="background:#fbbf24;"></span>
-                    <span class="browser-dot" style="background:#34d399;"></span>
-                    <span class="ml-3 text-xs font-bold" style="color:var(--muted);">app.spotapply.ai/demo-workspace</span>
-                </div>
-                <div id="demo-container" class="p-5 flex flex-col justify-between min-h-[500px] relative overflow-hidden" style="background:var(--canvas);">
-                    
-                    <!-- State 1: Input form -->
-                    <div id="demo-state-input" class="space-y-4 flex-1 flex flex-col justify-between">
-                        <div class="text-center mb-2">
-                            <span class="text-[10px] font-extrabold uppercase tracking-widest text-[#16847A] bg-[var(--sage-tint)] px-3 py-1 rounded-full border border-emerald-100">Try Interactive Demo</span>
-                            <h3 class="text-sm font-black text-[var(--ink)] mt-3">See how your résumé matches real jobs</h3>
-                            <p class="text-[11px] text-[var(--muted)] mt-1">Get an instant match score, a clear fit verdict, and ready-to-send outreach drafts.</p>
-                        </div>
-                        <div class="flex-1 flex flex-col min-h-[180px]">
-                            <!-- Tab Bar -->
-                            <div class="flex border-b border-[var(--border)] mb-3 text-[10px] font-black uppercase tracking-wider">
-                                <button onclick="switchDemoTab('upload')" id="demo-tab-upload" type="button" class="pb-2 border-b-2 border-[var(--sage)] text-[var(--sage-700)] mr-4 focus:outline-none">📄 Upload Resume</button>
-                                <button onclick="switchDemoTab('paste')" id="demo-tab-paste" type="button" class="pb-2 text-[var(--muted)] hover:text-[var(--ink-soft)] focus:outline-none">✍️ Paste Text</button>
-                            </div>
-                            
-                            <!-- Tab 1: Upload File -->
-                            <div id="demo-area-upload" role="button" tabindex="0" aria-label="Upload your resume file" class="flex-1 flex flex-col items-center justify-center p-4 border border-dashed border-[var(--border)] rounded-xl bg-[var(--surface)] hover:border-[var(--sage)] focus:border-[var(--sage)] focus:outline-none transition cursor-pointer relative min-h-[140px]" onclick="triggerDemoFileInput(event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();triggerDemoFileInput(event);}">
-                                <input type="file" id="demo-file-input" accept=".pdf,.docx,.txt,.md" class="hidden" onchange="demoFileSelected(this)">
-                                <svg class="w-7 h-7 text-[var(--muted)] mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-                                <p id="demo-upload-text" class="text-[10px] font-bold text-[var(--ink-soft)] text-center">Drag & drop your resume file or click to browse</p>
-                                <p class="text-[8px] text-[var(--muted)] mt-0.5">PDF, DOCX, TXT, or MD up to 4MB</p>
-                            </div>
-                            
-                            <!-- Tab 2: Paste Text (hidden by default) -->
-                            <div id="demo-area-paste" class="hidden flex-1 flex flex-col">
-                                <textarea id="demo-resume" class="w-full text-base sm:text-xs p-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition flex-1 resize-none h-36" placeholder="Education: University of Cincinnati. Experience: 3 years as AI Engineer..."></textarea>
-                            </div>
-                            <div class="flex items-center justify-between mt-1.5">
-                                <button type="button" onclick="fillDemoSample()" class="text-[10px] font-bold text-[var(--sage-700)] hover:underline">No résumé handy? Try a sample →</button>
-                                <span class="text-[9px] text-[var(--muted)]">🔒 Used only for matching — never shared.</span>
-                            </div>
-                            <p id="demo-error" class="hidden text-[10px] font-bold text-rose-600 mt-1.5" role="alert"></p>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2 items-end">
-                            <div class="col-span-2">
-                                <label class="block text-[10px] font-extrabold uppercase tracking-wide text-[var(--muted)] mb-1">Target Role</label>
-                                <input id="demo-role" type="text" class="w-full text-base sm:text-xs px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] placeholder-[var(--muted)] focus:outline-none focus:border-[var(--sage)] transition" placeholder="e.g. AI Engineer, Backend Developer" value="AI Engineer">
-                            </div>
-                            <div>
-                                <button id="demo-btn-submit" onclick="submitDemoMatch()" class="w-full btn-primary font-black text-xs py-2.5 rounded-xl text-center">See my matches</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- State 2: Scanning laser animation -->
-                    <div id="demo-state-scanning" class="hidden flex-1 flex flex-col items-center justify-center py-12 relative overflow-hidden">
-                        <div class="relative w-32 h-32 border border-[var(--border)] rounded-2xl flex items-center justify-center bg-[var(--surface)] shadow-md overflow-hidden mb-4">
-                            <div class="absolute inset-x-0 h-0.5 bg-[var(--sage)] shadow-[0_0_12px_var(--sage)] laser-scanner"></div>
-                            <svg class="w-14 h-14 text-[var(--sage-700)] opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                        </div>
-                        <div class="text-center space-y-1">
-                            <p id="demo-scan-status" class="text-xs font-bold text-[var(--ink)]">Analyzing skills & experience...</p>
-                            <p class="text-[10px] text-[var(--muted)]">Matching against active job boards...</p>
-                        </div>
-                    </div>
-
-                    <!-- State 3: Interactive Dashboard -->
-                    <div id="demo-state-results" class="hidden flex-1 flex flex-col justify-between min-h-[460px]">
-                        <!-- Top header -->
-                        <div class="flex items-center justify-between pb-3 border-b border-[var(--border)] mb-3">
-                            <span class="text-[11px] font-black px-2.5 py-1 rounded-full text-white" style="background:var(--sage);">📋 Demo Dashboard</span>
-                            <button onclick="resetDemoForm()" class="text-[11px] font-extrabold text-[var(--sage-700)] hover:underline">← Start Over</button>
-                        </div>
-                        <!-- Split View (stacks on phones; side-by-side from sm:) -->
-                        <div class="grid grid-cols-1 sm:grid-cols-5 gap-3 flex-1">
-                            <!-- Left: 3 cards (takes 2 cols) -->
-                            <div id="demo-job-cards" class="sm:col-span-2 space-y-2 max-h-[160px] sm:max-h-[400px] overflow-y-auto pr-1"></div>
-                            <!-- Right: detail pane (takes 3 cols) -->
-                            <div id="demo-detail-pane" class="sm:col-span-3 rounded-xl p-3 border border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] text-[11px] overflow-y-auto max-h-[280px] sm:max-h-[400px]"></div>
-                        </div>
-                    </div>
-
-                    <!-- Auth Lock Overlay (hidden by default) -->
-                    <div id="demo-auth-gate" role="dialog" aria-modal="true" aria-labelledby="demo-gate-title" class="hidden absolute inset-0 bg-black/85 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center">
-                        <div class="w-11 h-11 rounded-full bg-[var(--sage-tint)] flex items-center justify-center mb-3">
-                            <svg class="w-5 h-5 text-[var(--sage-700)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                        </div>
-                        <h4 id="demo-gate-title" class="text-xs font-bold text-white mb-1.5 uppercase tracking-wider">Unlock Your Personal Copilot</h4>
-                        <p class="text-[10px] text-slate-300 mb-5 max-w-[280px]">
-                            You've previewed your top matches. Sign up free to unlock your full job board, auto-tailored résumés, and referral introductions.
-                        </p>
-                        <button onclick="redirectToSignUp()" class="btn-primary text-[10px] font-black px-6 py-3 rounded-xl w-full max-w-[240px] mb-3">
-                            Sign Up & Import Resume
-                        </button>
-                        <button onclick="closeAuthGate()" class="text-[9px] text-slate-400 hover:text-white transition">
-                            Maybe later
-                        </button>
-                    </div>
-
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- Logo / trust marquee -->
-<section data-aos="fade-up" data-aos-duration="800" class="py-8 px-4 overflow-hidden" style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);">
-    <div class="max-w-6xl mx-auto">
-        <p class="text-center text-[11px] font-bold uppercase tracking-widest mb-5" style="color:var(--muted);">Where we find roles — public company boards &amp; job feeds</p>
-        <div style="overflow:hidden;mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);">
-            <div class="marquee">
-                <span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>LinkedIn</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
-                <span>Greenhouse</span><span>Lever</span><span>Ashby</span><span>Workday</span><span>LinkedIn</span><span>Remotive</span><span>RemoteOK</span><span>HN Hiring</span><span>The Muse</span><span>SmartRecruiters</span>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- Stats band -->
-<section class="py-14 px-4">
-    <div class="max-w-5xl mx-auto grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
-        <div data-aos="fade-up" data-aos-delay="0"><div class="text-4xl font-black gradient-text">1,000+</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Job boards scanned</div></div>
-        <div data-aos="fade-up" data-aos-delay="100"><div class="text-4xl font-black gradient-text-green">5-stage</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">AI ranking pipeline</div></div>
-        <div data-aos="fade-up" data-aos-delay="200"><div class="text-4xl font-black" style="color:#C07733;">24/7</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Always-on agent</div></div>
-        <div data-aos="fade-up" data-aos-delay="300"><div class="text-4xl font-black gradient-text">≤ 60 min</div><div class="text-xs font-semibold mt-1 uppercase tracking-wider" style="color:var(--muted);">Live boards re-checked</div></div>
-    </div>
-</section>
-
-<!-- Interactive Pipeline Showcase -->
-<section id="how-it-works-showcase" class="relative py-20 px-4" style="background: var(--surface); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
-    <div class="max-w-6xl mx-auto">
-        <!-- Section Header -->
-        <div data-aos="fade-up" class="text-center mb-12">
-            <span class="kicker">Under the hood</span>
-            <h2 class="text-4xl font-black mb-4" style="color:var(--ink);">Inside the AI agent's engine</h2>
-            <p class="text-lg max-w-2xl mx-auto" style="color:var(--muted);">
-                See exactly how SpotApply processes your resume, rates jobs, auto-fills forms, and helps you secure referrals.
-            </p>
-        </div>
-
-        <!-- Unified Hover / Auto-Rotate Tab Grid -->
-        <div class="grid lg:grid-cols-12 gap-8 lg:items-stretch items-center">
-            
-            <!-- Left: Card selector tabs -->
-            <div class="lg:col-span-4 space-y-4 order-2 lg:order-1">
-                <!-- Card 1 -->
-                <div id="step-desc-0" onmouseenter="handleShowcaseMouseEnter(0)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(0, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="0">
-                    <div class="flex items-center gap-3 mb-2">
-                        <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-[var(--sage)] bg-[var(--sage-tint)]">1</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">1. Resume Scanner</h3>
-                    </div>
-                    <p class="text-xs leading-relaxed text-[var(--muted)]">Upload your resume PDF. The agent scans it to automatically parse your skills, job history, and preferences to build your custom matching profile.</p>
-                </div>
-
-                <!-- Card 2 -->
-                <div id="step-desc-1" onmouseenter="handleShowcaseMouseEnter(1)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(1, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="1">
-                    <div class="flex items-center gap-3 mb-2">
-                        <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-indigo-500 bg-indigo-50">2</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">2. AI Match Rating</h3>
-                    </div>
-                    <p class="text-xs leading-relaxed text-[var(--muted)]">Scores every job board role on skills, experience, location, and sponsorship fit, showing you a clear match breakdown and rating.</p>
-                </div>
-
-                <!-- Card 3 -->
-                <div id="step-desc-2" onmouseenter="handleShowcaseMouseEnter(2)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(2, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="2">
-                    <div class="flex items-center gap-3 mb-2">
-                        <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-emerald-500 bg-emerald-50">3</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">3. Smart Auto-Fill</h3>
-                    </div>
-                    <p class="text-xs leading-relaxed text-[var(--muted)]">
-                        Pre-fills Greenhouse, Lever, Ashby and Workday job forms in a single click directly from your parsed matching resume, ready for you to review.
-                    </p>
-                </div>
-
-                <!-- Card 4 -->
-                <div id="step-desc-3" onmouseenter="handleShowcaseMouseEnter(3)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(3, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="3">
-                    <div class="flex items-center gap-3 mb-2">
-                        <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-[#C07733] bg-amber-50">4</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">4. Referral Copilot</h3>
-                    </div>
-                    <p class="text-xs leading-relaxed text-[var(--muted)]">
-                        Spots likely referrers at your target companies, labels H-1B sponsors, and drafts referral request messages — you review and send them yourself.
-                    </p>
-                </div>
-
-                <!-- Card 5 -->
-                <div id="step-desc-4" onmouseenter="handleShowcaseMouseEnter(4)" onmouseleave="handleShowcaseMouseLeave()" onclick="showShowcaseTab(4, true)" class="step-card p-5 cursor-pointer opacity-60 transition-all duration-300" data-step="4">
-                    <div class="flex items-center gap-3 mb-2">
-                        <span class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs text-rose-500 bg-rose-50">5</span>
-                        <h3 class="font-extrabold text-base text-[var(--ink)]">5. Recruiter Network</h3>
-                    </div>
-                    <p class="text-xs leading-relaxed text-[var(--muted)]">
-                        Communicate directly with interested recruiters. Build a verified profile with real-time trust metrics and secure DM intros.
-                    </p>
-                </div>
-            </div>
-
-            <!-- Right: Browser simulator -->
-            <div class="lg:col-span-8 order-1 lg:order-2 mb-6 lg:mb-0">
-                <div class="browser lg:h-full flex flex-col">
-                    <div class="browser-bar flex items-center justify-between">
-                        <div class="flex items-center gap-1.5">
-                            <span class="browser-dot" style="background:#f87171;"></span>
-                            <span class="browser-dot" style="background:#fbbf24;"></span>
-                            <span class="browser-dot" style="background:#34d399;"></span>
-                            <span id="simulator-url" class="ml-3 text-xs font-mono font-bold" style="color:var(--muted);">app.spotapply.ai/pipeline/parser</span>
-                        </div>
-                        <button id="autoplay-toggle" onclick="toggleAutoplay(event)" class="text-[10px] font-black px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-soft)] flex items-center gap-1 hover:border-[var(--sage)] transition-colors focus:outline-none shrink-0" title="Toggle Auto-Cycle">
-                            <span id="autoplay-icon" class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                            <span id="autoplay-text">Auto</span>
-                        </button>
-                    </div>
-
-                    <!-- Simulator viewport -->
-                    <div class="p-6 min-h-[300px] lg:min-h-0 flex-1 flex items-center justify-center" style="background:var(--canvas);" id="simulator-viewport">
-                        <!-- Panel 0: Resume Scanner -->
-                        <div id="panel-0" class="w-full flex flex-col sm:flex-row gap-4 items-stretch demo-panel">
-                            <div class="w-full sm:w-1/2 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 relative overflow-hidden shadow-sm flex flex-col justify-between min-h-[200px] sm:min-h-[260px]">
-                                <div class="absolute left-0 w-full h-[2px] bg-[var(--sage)] shadow-[0_0_8px_var(--sage)] laser-scanner" style="top: 0%;"></div>
-                                <div class="space-y-2">
-                                    <div class="h-4 w-2/3 bg-slate-200 rounded"></div>
-                                    <div class="h-3 w-full bg-slate-100 rounded"></div>
-                                    <div class="h-3 w-5/6 bg-slate-100 rounded"></div>
-                                    <div class="h-4 w-1/2 bg-slate-200 rounded mt-4"></div>
-                                    <div class="h-3 w-full bg-slate-100 rounded"></div>
-                                    <div class="h-3 w-4/5 bg-slate-100 rounded"></div>
-                                    <div class="h-3 w-2/3 bg-slate-100 rounded"></div>
-                                </div>
-                                <div class="text-[9px] font-bold uppercase tracking-wider text-[var(--muted)] flex items-center gap-1 mt-4">
-                                    <span class="inline-block w-2 h-2 rounded-full bg-[var(--sage)] animate-pulse"></span>
-                                    Parsing resume.pdf...
-                                </div>
-                            </div>
-                            <div class="w-full sm:w-1/2 flex flex-col justify-center space-y-2.5">
-                                <div class="text-xs font-bold text-[var(--ink-soft)] uppercase tracking-wider mb-1">Extracted profile tags:</div>
-                                <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
-                                    <span class="text-xs">💻</span>
-                                    <span class="text-xs font-bold text-[var(--ink)]">React &amp; JavaScript</span>
-                                </div>
-                                <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
-                                    <span class="text-xs">⚡</span>
-                                    <span class="text-xs font-bold text-[var(--ink)]">Python &amp; FastAPI</span>
-                                </div>
-                                <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
-                                    <span class="text-xs">🤖</span>
-                                    <span class="text-xs font-bold text-[var(--ink)]">Machine Learning</span>
-                                </div>
-                                <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
-                                    <span class="text-xs">⚙️</span>
-                                    <span class="text-xs font-bold text-[var(--ink)]">System Design</span>
-                                </div>
-                                <div class="tag-pill bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2 shadow-sm">
-                                    <span class="text-xs">🐳</span>
-                                    <span class="text-xs font-bold text-[var(--ink)]">Docker &amp; AWS</span>
-                                </div>
-                                <div class="mt-2 pt-2 border-t border-[var(--border)] flex justify-between items-center text-[10px] font-extrabold text-[var(--ink-soft)]">
-                                    <span>Profile Score:</span>
-                                    <span class="text-[var(--sage-700)]">95% Complete</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Panel 1: AI Match Rating -->
-                        <div id="panel-1" class="w-full hidden flex flex-col gap-5 demo-panel">
-                            <div class="flex flex-col sm:flex-row gap-6 items-center w-full">
-                                <div class="relative w-32 h-32 flex items-center justify-center shrink-0">
-                                    <svg class="w-full h-full -rotate-90">
-                                        <circle cx="64" cy="64" r="54" stroke="var(--border)" stroke-width="8" fill="none"></circle>
-                                        <circle id="score-ring" cx="64" cy="64" r="54" stroke="url(#scoreGrad)" stroke-dasharray="340" stroke-dashoffset="20.4" stroke-width="8" stroke-linecap="round" fill="none" class="transition-all duration-1000 ease-out"></circle>
-                                        <defs>
-                                            <linearGradient id="scoreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                                                <stop offset="0%" stop-color="var(--sage)" />
-                                                <stop offset="100%" stop-color="var(--sage-700)" />
-                                            </linearGradient>
-                                        </defs>
-                                    </svg>
-                                    <div class="absolute flex flex-col items-center justify-center text-center">
-                                        <span class="text-2xl font-black tracking-tight" id="score-text" style="color:var(--ink);">94%</span>
-                                        <span class="text-[8px] font-bold text-white uppercase px-2 py-0.5 rounded-full mt-0.5" style="background:var(--sage);">Strong Fit</span>
-                                    </div>
-                                </div>
-                                <div class="flex-1 space-y-2">
-                                    <div class="text-[10px] font-bold text-[var(--ink-soft)] uppercase tracking-wider">Evaluation Breakdown:</div>
-                                    <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2 shadow-sm flex items-center justify-between text-xs">
-                                        <span class="font-semibold text-[var(--ink)]">Skills Alignment</span>
-                                        <span class="font-black text-[var(--sage-700)]">98% Match</span>
-                                    </div>
-                                    <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2 shadow-sm flex items-center justify-between text-xs">
-                                        <span class="font-semibold text-[var(--ink)]">Work Experience</span>
-                                        <span class="font-black text-[var(--sage-700)]">92% Match</span>
-                                    </div>
-                                    <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2 shadow-sm flex items-center justify-between text-xs">
-                                        <span class="font-semibold text-[var(--ink)]">Sponsorship Support</span>
-                                        <span class="font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full font-bold">Cap-Exempt</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 shadow-sm text-xs">
-                                <div class="font-extrabold text-[var(--ink)] mb-1 flex items-center gap-1.5">
-                                    <span>💡</span> AI Engine Insight
-                                </div>
-                                <p class="text-[11px] text-[var(--muted)] leading-relaxed">
-                                    Perfect technical stack match for the React/FastAPI role. Cap-exempt sponsorship matches candidate preferences. Strong recommendation to proceed with tailoring.
-                                </p>
-                            </div>
-                        </div>
-
-                        <!-- Panel 2: Smart Auto-Fill -->
-                        <div id="panel-2" class="w-full hidden flex flex-col sm:flex-row gap-4 items-stretch demo-panel">
-                            <!-- Left: Mock Extension Overlay -->
-                            <div class="w-full sm:w-[150px] sm:shrink-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 shadow-sm flex flex-col justify-between">
-                                <div>
-                                    <div class="flex items-center gap-1.5 pb-2 border-b border-[var(--border)] mb-3">
-                                        <div class="w-4 h-4 rounded flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
-                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                        </div>
-                                        <span class="text-[10px] font-black text-[var(--ink)]">SpotApply Helper</span>
-                                    </div>
-                                    <div class="text-[9px] font-bold text-[var(--muted)] uppercase tracking-wider mb-2">Form Helper:</div>
-                                    <div class="space-y-1.5 text-[9px] font-bold text-[var(--ink-soft)]">
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Name</div>
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Email</div>
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Phone</div>
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> LinkedIn</div>
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> GitHub</div>
-                                        <div class="flex items-center gap-1"><span class="text-emerald-500">✓</span> Resume</div>
-                                    </div>
-                                </div>
-                                <div class="text-[8px] font-extrabold text-emerald-600 bg-emerald-50 px-1.5 py-1 rounded text-center">
-                                    6 fields filled ✓
-                                </div>
-                            </div>
-                            
-                            <!-- Right: Form card -->
-                            <div class="flex-1 bg-white border border-[var(--border)] rounded-xl p-4 shadow-sm text-[10px] space-y-3 flex flex-col justify-between">
-                                <div>
-                                    <div class="flex justify-between items-center pb-2 border-b border-[var(--border)] mb-2.5">
-                                        <span class="font-extrabold text-[var(--ink)]">Northwind Labs — Application Form</span>
-                                        <span class="text-[8px] font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                            <span class="w-1 h-1 rounded-full bg-emerald-500 animate-pulse"></span>
-                                            Active
-                                        </span>
-                                    </div>
-                                    <div class="space-y-2">
-                                        <div class="grid grid-cols-2 gap-2">
-                                            <div>
-                                                <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">Full Name</label>
-                                                <div class="h-6 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center text-[9px] font-bold text-[var(--ink)]" id="fill-name"></div>
-                                            </div>
-                                            <div>
-                                                <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">Email Address</label>
-                                                <div class="h-6 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center text-[9px] font-bold text-[var(--ink)]" id="fill-email"></div>
-                                            </div>
-                                        </div>
-                                        <div class="grid grid-cols-2 gap-2">
-                                            <div>
-                                                <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">Phone Number</label>
-                                                <div class="h-6 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center text-[9px] font-bold text-[var(--ink)]" id="fill-phone"></div>
-                                            </div>
-                                            <div>
-                                                <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">LinkedIn Profile</label>
-                                                <div class="h-6 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center text-[9px] font-bold text-[var(--ink)]" id="fill-linkedin"></div>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">GitHub URL</label>
-                                            <div class="h-6 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center text-[9px] font-bold text-[var(--ink)]" id="fill-github"></div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div>
-                                    <label class="block text-[8px] font-bold text-[var(--muted)] mb-0.5">Resume PDF</label>
-                                    <div class="h-7 border border-[var(--border)] bg-slate-50 rounded-lg px-2 flex items-center justify-between text-[9px] font-bold text-[var(--ink)]">
-                                        <span id="fill-resume"></span>
-                                        <span class="text-[8px] text-emerald-600 font-bold" id="fill-resume-status"></span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Panel 3: LinkedIn Referrals -->
-                        <div id="panel-3" class="w-full hidden space-y-3 demo-panel">
-                            <div class="flex items-center gap-3 bg-white border border-[var(--border)] rounded-xl p-3 shadow-sm text-xs">
-                                <div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center font-bold text-xs">SJ</div>
-                                <div>
-                                    <div class="text-xs font-extrabold text-[var(--ink)]">Sarah Jenkins</div>
-                                    <div class="text-[9px] text-[var(--muted)]">1st Degree · Software Engineer at Northwind Labs</div>
-                                </div>
-                                <span class="ml-auto text-[9px] font-black text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                                    Active
-                                </span>
-                            </div>
-                            <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3.5 shadow-inner min-h-[110px] flex flex-col justify-between">
-                                <div class="text-xs font-mono text-[var(--ink-soft)] leading-relaxed" id="ref-typewriter-text"></div>
-                                <div class="flex justify-between items-center mt-2 pt-2 border-t border-[var(--border)]">
-                                    <span class="text-[8px] font-bold text-[var(--muted)] font-sans">Drafted by SpotApply AI</span>
-                                    <button class="text-[9px] font-black text-white px-2.5 py-1 rounded-lg btn-primary shadow-sm">
-                                        Send Message
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="space-y-1.5">
-                                <div class="text-[9px] font-bold text-[var(--muted)] uppercase tracking-wider">Other referral contacts found:</div>
-                                <div class="flex items-center justify-between bg-white border border-[var(--border)] rounded-xl px-3 py-1.5 shadow-sm text-xs">
-                                    <div class="flex items-center gap-2">
-                                        <div class="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center font-bold text-[10px]">DC</div>
-                                        <div>
-                                            <div class="text-[10px] font-extrabold text-[var(--ink)]">David Chen</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Northwind Labs</div>
-                                        </div>
-                                    </div>
-                                    <span class="text-[8px] font-bold text-[var(--sage-700)] bg-[var(--sage-tint)] px-2 py-0.5 rounded">2nd Degree</span>
-                                </div>
-                                <div class="flex items-center justify-between bg-white border border-[var(--border)] rounded-xl px-3 py-1.5 shadow-sm text-xs">
-                                    <div class="flex items-center gap-2">
-                                        <div class="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center font-bold text-[10px]">ET</div>
-                                        <div>
-                                            <div class="text-[10px] font-extrabold text-[var(--ink)]">Emily Taylor</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Engineering Manager at Northwind Labs</div>
-                                        </div>
-                                    </div>
-                                    <span class="text-[8px] font-bold text-[var(--sage-700)] bg-[var(--sage-tint)] px-2 py-0.5 rounded">2nd Degree</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Panel 4: Recruiter Network -->
-                        <div id="panel-4" class="w-full hidden space-y-3 demo-panel">
-                            <div class="flex items-center gap-3 bg-white border border-[var(--border)] rounded-xl p-3 shadow-sm text-xs">
-                                <span style="width:34px;height:34px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(16,185,129,0.4);box-shadow:0 0 8px rgba(16, 185, 129, 0.2);flex-shrink:0;">
-                                    <span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:15px;font-weight:800;color:#10b981;background:linear-gradient(135deg,rgba(16,185,129,0.22),rgba(16,185,129,0.10));letter-spacing:-0.5px;">K</span>
-                                </span>
-                                <div>
-                                    <div class="text-xs font-extrabold text-[var(--ink)]">Karthik</div>
-                                    <div class="text-[8px] text-[var(--muted)]">Software Engineer Candidate</div>
-                                </div>
-                                <span class="ml-2 text-[9px] font-black rounded-full w-[17px] h-[17px] flex items-center justify-center shadow-sm" style="background: #10b981; color: #ffffff; box-shadow: 0 2px 6px rgba(16, 185, 129, 0.4); flex-shrink: 0; line-height: 1;" title="Verified Profile">✓</span>
-                                <span class="ml-auto text-[9px] font-black text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
-                                    Trust Score: 98
-                                </span>
-                            </div>
-                            <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3.5 shadow-inner min-h-[110px] flex flex-col justify-between">
-                                <div class="text-xs font-mono text-[var(--ink-soft)] leading-relaxed" id="recruiter-chat-text"></div>
-                                <div class="flex justify-between items-center mt-2 pt-2 border-t border-[var(--border)]">
-                                    <span class="text-[8px] font-bold text-[var(--muted)] font-sans">Real-time Recruiter DM</span>
-                                    <span class="text-[9px] font-black text-white px-2.5 py-1 rounded-lg bg-emerald-600 shadow-sm animate-pulse">
-                                        Online
-                                    </span>
-                                </div>
-                            </div>
-                            <div class="space-y-1.5">
-                                <div class="text-[9px] font-bold text-[var(--muted)] uppercase tracking-wider">Interested Recruiters reaching out:</div>
-                                <div class="flex items-center justify-between bg-white border border-[var(--border)] rounded-xl px-3 py-1.5 shadow-sm text-xs">
-                                    <div class="flex items-center gap-2">
-                                        <div class="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[10px]">LM</div>
-                                        <div>
-                                            <div class="text-[10px] font-extrabold text-[var(--ink)]">Lauren Miller</div>
-                                            <div class="text-[8px] text-[var(--muted)]">Technical Recruiter at Acme AI</div>
-                                        </div>
-                                    </div>
-                                    <span class="text-[8px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">Connected</span>
-                                </div>
-                            </div>
-                        </div><!-- /panel-4 -->
-                    </div><!-- /simulator-viewport -->
-                </div><!-- /browser -->
-            </div><!-- /lg:col-span-8 -->
-        </div><!-- /grid -->
-    </div><!-- /max-w-6xl -->
-</section>
-
-<!-- Features -->
-<section id="features" class="py-20 px-4">
-    <div class="max-w-6xl mx-auto">
-        <div data-aos="fade-up" class="text-center mb-14">
-            <span class="kicker">Everything in one place</span>
-            <h2 class="text-4xl font-black mb-4" style="color:var(--ink);">From discovery to submitted — handled</h2>
-            <p class="text-lg max-w-2xl mx-auto" style="color:var(--muted);">An end-to-end pipeline that does the busywork so you only spend time on roles that fit.</p>
-        </div>
-        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-
-            <div data-aos="fade-up" data-aos-delay="0" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:var(--sage-tint);border:1px solid rgba(47,180,166,0.2);">
-                    <svg class="w-5 h-5" style="color:var(--sage);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">Multi-board discovery</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">Scans Greenhouse, Lever, Ashby, Workday, LinkedIn, Remotive, HN Hiring and 1,000+ company boards — filtered to your country and target roles.</p>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="100" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:rgba(47,180,166,0.08);border:1px solid rgba(47,180,166,0.18);">
-                    <svg class="w-5 h-5" style="color:var(--sage-600);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">Resume-aware ranking</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">A 5-stage pipeline scores every role against <em>your</em> résumé and shows a clear Strong / Good / Fair match — with a skills, experience, location &amp; work-auth breakdown.</p>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="200" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:rgba(192,119,51,0.10);border:1px solid rgba(192,119,51,0.2);">
-                    <svg class="w-5 h-5" style="color:#C07733;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">Smart auto-fill</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">A browser helper fills Greenhouse, Lever, Ashby and Workday forms from your profile. You always review before anything is submitted.</p>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="0" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:rgba(43,125,200,0.08);border:1px solid rgba(43,125,200,0.18);">
-                    <svg class="w-5 h-5" style="color:#2B7DC8;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">Tailored resume &amp; cover letter</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">For every shortlisted role, AI generates a résumé and cover letter matched to that job description — keyword-aligned to pass ATS screens.</p>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="100" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:rgba(46,139,87,0.08);border:1px solid rgba(46,139,87,0.18);">
-                    <svg class="w-5 h-5" style="color:#2E8B57;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">H-1B &amp; sponsorship intel</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">Built-in USCIS H-1B data flags cap-exempt and known-sponsor employers, and finds people who can refer you — surfaced right on each role.</p>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="200" class="feature-card lift rounded-2xl p-6">
-                <div class="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style="background:rgba(47,180,166,0.06);border:1px solid rgba(47,180,166,0.15);">
-                    <svg class="w-5 h-5" style="color:var(--sage-700);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10"/></svg>
-                </div>
-                <h3 class="font-black mb-2" style="color:var(--ink);">Live pipeline tracking</h3>
-                <p class="text-sm leading-relaxed" style="color:var(--muted);">A Kanban board tracks every role from shortlisted to submitted, updating live as the agent ranks — no refreshing required.</p>
-            </div>
-
-        </div>
-    </div>
-</section>
-
-<!-- How it works -->
-<section id="how-it-works" class="py-20 px-4" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="max-w-3xl mx-auto">
-        <div data-aos="fade-up" class="text-center mb-14">
-            <span class="kicker">How it works</span>
-            <h2 class="text-4xl font-black mb-4" style="color:var(--ink);">Up and running in minutes</h2>
-            <p class="text-lg" style="color:var(--muted);">Four steps to a job search that runs itself.</p>
-        </div>
-
-        <div class="space-y-6">
-            <div data-aos="fade-up" data-aos-delay="0" class="flex gap-5">
-                <div class="flex flex-col items-center">
-                    <div class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 font-black text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));">1</div>
-                    <div class="step-line w-0.5 flex-1 mt-3"></div>
-                </div>
-                <div class="pb-8">
-                    <h3 class="font-black text-lg mb-1" style="color:var(--ink);">Upload your résumé</h3>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">Drop your PDF or DOCX. AI extracts your skills, experience, target roles, location and work-authorization automatically — no forms.</p>
-                </div>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="100" class="flex gap-5">
-                <div class="flex flex-col items-center">
-                    <div class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 font-black text-white" style="background:linear-gradient(135deg,var(--sage-600),var(--sage-700));">2</div>
-                    <div class="step-line w-0.5 flex-1 mt-3"></div>
-                </div>
-                <div class="pb-8">
-                    <h3 class="font-black text-lg mb-1" style="color:var(--ink);">The agent discovers &amp; ranks</h3>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">SpotApply scans 1,000+ boards in your country, scores each role against your résumé, and shortlists only the strong matches — live on your board.</p>
-                </div>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="200" class="flex gap-5">
-                <div class="flex flex-col items-center">
-                    <div class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 font-black text-white" style="background:linear-gradient(135deg,#2B7DC8,#1F5E9E);">3</div>
-                    <div class="step-line w-0.5 flex-1 mt-3"></div>
-                </div>
-                <div class="pb-8">
-                    <h3 class="font-black text-lg mb-1" style="color:var(--ink);">AI tailors your application</h3>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">For each shortlisted role, it generates a tailored résumé + cover letter and pre-fills the application form for you to review.</p>
-                </div>
-            </div>
-
-            <div data-aos="fade-up" data-aos-delay="300" class="flex gap-5">
-                <div class="flex flex-col items-center">
-                    <div class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 font-black text-white" style="background:linear-gradient(135deg,#C07733,#A0622A);">4</div>
-                </div>
-                <div>
-                    <h3 class="font-black text-lg mb-1" style="color:var(--ink);">You review &amp; apply</h3>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">Open a role, see exactly why it matched, and apply in a click. Mark it submitted and track it through to interview — nothing goes out without you.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- Social proof -->
-<section class="py-20 px-4">
-    <div class="max-w-5xl mx-auto">
-        <div data-aos="fade-up" class="text-center mb-12">
-            <span class="kicker">Built for job seekers, by one</span>
-            <h2 class="text-3xl sm:text-4xl font-black" style="color:var(--ink);">Less busywork. More interviews.</h2>
-        </div>
-        <div class="grid md:grid-cols-3 gap-5" id="testimonials-grid">
-            <div data-aos="fade-up" data-aos-delay="0" class="feature-card rounded-2xl p-6">
-                <div class="text-2xl mb-3">🎯</div>
-                <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft);">"I stopped opening ten job boards a day. SpotApply just shows me the roles that actually fit my résumé."</p>
-                <p class="text-xs font-bold" style="color:var(--muted);">— Early user, ML Engineer</p>
-            </div>
-            <div data-aos="fade-up" data-aos-delay="100" class="feature-card rounded-2xl p-6">
-                <div class="text-2xl mb-3">⚡</div>
-                <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft);">"The tailored résumé per role is the part I'd always skip. Having it done for me changed how many I actually apply to."</p>
-                <p class="text-xs font-bold" style="color:var(--muted);">— Early user, Backend Engineer</p>
-            </div>
-            <div data-aos="fade-up" data-aos-delay="200" class="feature-card rounded-2xl p-6">
-                <div class="text-2xl mb-3">🛂</div>
-                <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft);">"The H-1B sponsor flags saved me from wasting time on roles that would never sponsor."</p>
-                <p class="text-xs font-bold" style="color:var(--muted);">— Early user, Data Scientist</p>
-            </div>
-        </div>
-        <div data-aos="fade-up" data-aos-delay="300" class="text-center mt-10">
-            <span class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold" style="background:var(--sage-tint);border:1px solid rgba(47,180,166,0.25);color:var(--sage-700);">
-                🌱 Founding users get extended Premium — join early
+<!-- ── 1. Navbar ─────────────────────────────────────────────────────────── -->
+<header class="nav backdrop-blur-sm">
+    <div class="wrap" style="display:flex;align-items:center;justify-content:space-between;height:64px;">
+        <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;">
+            <span class="mark">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </span>
+            <span style="font-weight:700;font-size:17px;color:var(--ink);letter-spacing:-0.01em;">SpotApply</span>
+        </a>
+
+        <nav class="hidden sm:flex" style="align-items:center;gap:30px;" aria-label="Main">
+            <a href="#how-it-works" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">How it works</a>
+            <a href="#tailoring" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">Tailoring</a>
+            <a href="#pricing" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">Pricing</a>
+        </nav>
+
+        <div class="hidden sm:flex" style="align-items:center;gap:10px;">
+            <a href="/login" class="btn btn-secondary btn-sm">Sign in</a>
+            <a href="/login?mode=signup" class="btn btn-primary btn-sm">Start free</a>
+        </div>
+
+        <button id="mobile-nav-btn" onclick="toggleMobileNav()" aria-label="Open menu"
+                aria-expanded="false" aria-controls="mobile-nav-menu" class="sm:hidden"
+                style="padding:8px;border-radius:10px;border:1px solid var(--border);background:var(--canvas);color:var(--ink-soft);cursor:pointer;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+    </div>
+
+    <div id="mobile-nav-menu" class="hidden sm:hidden" style="border-top:1px solid var(--border);padding:14px 24px 18px;background:var(--canvas);">
+        <a href="#how-it-works" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">How it works</a>
+        <a href="#tailoring" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">Tailoring</a>
+        <a href="#pricing" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">Pricing</a>
+        <div style="display:flex;gap:10px;margin-top:12px;">
+            <a href="/login" class="btn btn-secondary btn-sm" style="flex:1;">Sign in</a>
+            <a href="/login?mode=signup" class="btn btn-primary btn-sm" style="flex:1;">Start free</a>
+        </div>
+    </div>
+</header>
+
+<!-- ── 2. Hero ───────────────────────────────────────────────────────────── -->
+<section class="section" style="padding-top:88px;padding-bottom:56px;">
+    <div class="wrap" style="text-align:center;">
+        <h1 class="h1" data-aos="fade-up" style="max-width:16ch;margin:0 auto;">
+            Only apply to jobs that actually fit you.
+        </h1>
+        <p class="lede" data-aos="fade-up" data-aos-delay="80" style="margin:26px auto 0;">
+            SpotApply monitors company career pages, scores roles against your real
+            experience, and prepares a grounded tailored résumé for your strongest matches.
+        </p>
+        <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="140"
+             style="gap:12px;justify-content:center;margin-top:34px;">
+            <a href="/login?mode=signup" class="btn btn-primary">Start free</a>
+            <a href="#how-it-works" class="btn btn-secondary">See how it works</a>
+        </div>
+        <p style="font-size:13.5px;color:var(--muted);margin-top:18px;">
+            No card required to start. You review and submit every application yourself.
+        </p>
+    </div>
+
+    <div class="wrap" data-aos="fade-up" data-aos-delay="200" style="margin-top:64px;">
+        <figure>
+            <div class="shot-frame">
+                <div class="shot-bar">
+                    <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
+                    <span class="shot-url">app.spotapply.ai/dashboard</span>
+                </div>
+                <!-- DROP-IN: replace this <svg> with
+                     <img src="/static/shots/dashboard.png" alt="The SpotApply dashboard showing qualified matches" loading="lazy"> -->
+                <svg class="shot-ph" viewBox="0 0 1200 620" role="img"
+                     aria-label="Placeholder for a screenshot of the SpotApply dashboard">
+                    <rect width="1200" height="620" fill="#FFFFFF"/>
+                    <rect x="40" y="40" width="1120" height="540" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
+                    <text x="600" y="300" text-anchor="middle" font-family="Outfit, sans-serif" font-size="19" font-weight="600" fill="#64748B">Screenshot: qualified matches dashboard</text>
+                    <text x="600" y="330" text-anchor="middle" font-family="Outfit, sans-serif" font-size="14" fill="#64748B">/static/shots/dashboard.png</text>
+                </svg>
+            </div>
+        </figure>
+    </div>
+</section>
+
+<!-- ── 3. Product proof ──────────────────────────────────────────────────── -->
+<section class="section-tight bg-soft rule" style="border-bottom:1px solid var(--border);">
+    <div class="wrap">
+        <div class="grid grid-cols-2 lg:grid-cols-4" style="gap:32px;">
+            <div>
+                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">14</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">ATS &amp; job-board providers</div>
+            </div>
+            <div>
+                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">70+</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">Qualified-match score floor</div>
+            </div>
+            <div>
+                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">24/7</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">Continuous discovery</div>
+            </div>
+            <div>
+                <div style="font-size:32px;font-weight:800;color:var(--ink);">Grounded</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">Every tailored claim verified</div>
+            </div>
+        </div>
+        <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:28px;">
+            Currently tracking <span id="fr-boards" class="num" style="font-weight:600;color:var(--ink-soft);"></span> company boards.
+        </p>
+    </div>
+</section>
+
+<!-- ── 4. Three core features ────────────────────────────────────────────── -->
+<section id="how-it-works" class="section">
+    <div class="wrap">
+        <div data-aos="fade-up" style="max-width:60ch;">
+            <span class="eyebrow">How it works</span>
+            <h2 class="h2" style="margin-top:14px;">Find the right roles. Understand the fit. Apply stronger.</h2>
+        </div>
+        <div class="grid lg:grid-cols-3" data-aos="fade-up" data-aos-delay="80" style="gap:24px;margin-top:56px;">
+            <div class="card rounded-2xl">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#4F46E5" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#4F46E5" stroke-width="2" stroke-linecap="round"/></svg>
+                <h3 class="h3" style="margin-top:18px;">Find</h3>
+                <p class="body" style="margin-top:10px;">
+                    Continuously monitor company career pages and surface strong matches —
+                    not a feed of everything that was posted today.
+                </p>
+            </div>
+            <div class="card rounded-2xl">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18M3.5 8.5h17M3.5 15.5h17" stroke="#4F46E5" stroke-width="2" stroke-linecap="round"/></svg>
+                <h3 class="h3" style="margin-top:18px;">Understand</h3>
+                <p class="body" style="margin-top:10px;">
+                    See why each role fits: skills, experience, seniority, and
+                    sponsorship eligibility, with the match reasoning written out.
+                </p>
+            </div>
+            <div class="card rounded-2xl">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4.5 4.5V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="#4F46E5" stroke-width="2" stroke-linejoin="round"/><path d="M13.5 4v5h5" stroke="#4F46E5" stroke-width="2" stroke-linejoin="round"/></svg>
+                <h3 class="h3" style="margin-top:18px;">Apply stronger</h3>
+                <p class="body" style="margin-top:10px;">
+                    Produce ATS-safe, truthful tailored résumés built only from evidence
+                    already in your experience.
+                </p>
+            </div>
         </div>
     </div>
 </section>
 
-<!-- Recruiter & Trust Ecosystem Section -->
-<section class="py-20 px-4 bg-[var(--surface-2)]" style="border-top:1px solid var(--border);">
-    <div class="max-w-6xl mx-auto">
-        <div class="grid lg:grid-cols-12 gap-12 items-center">
-            
-            <!-- Left: Feature Explanations -->
-            <div class="lg:col-span-5 space-y-8" data-aos="fade-right">
+<!-- ── 5. Real product ───────────────────────────────────────────────────── -->
+<section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
+    <div class="wrap">
+        <div data-aos="fade-up" style="max-width:60ch;">
+            <span class="eyebrow">The product</span>
+            <h2 class="h2" style="margin-top:14px;">Scored, ranked, and explained.</h2>
+            <p class="lede" style="margin-top:18px;">
+                Every role on your board cleared a 70 match score against your own résumé.
+                Open one and you can read exactly why.
+            </p>
+        </div>
+
+        <div class="grid lg:grid-cols-2" data-aos="fade-up" data-aos-delay="80" style="gap:32px;margin-top:56px;">
+            <figure>
+                <div class="shot-frame">
+                    <div class="shot-bar">
+                        <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
+                        <span class="shot-url">app.spotapply.ai/dashboard</span>
+                    </div>
+                    <!-- DROP-IN: <img src="/static/shots/qualified-board.png" alt="Qualified jobs board with match scores" loading="lazy"> -->
+                    <svg class="shot-ph" viewBox="0 0 800 520" role="img" aria-label="Placeholder for the qualified jobs board screenshot">
+                        <rect width="800" height="520" fill="#FFFFFF"/>
+                        <rect x="28" y="28" width="744" height="464" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
+                        <text x="400" y="250" text-anchor="middle" font-family="Outfit, sans-serif" font-size="17" font-weight="600" fill="#64748B">Screenshot: qualified jobs board</text>
+                        <text x="400" y="278" text-anchor="middle" font-family="Outfit, sans-serif" font-size="13" fill="#64748B">/static/shots/qualified-board.png</text>
+                    </svg>
+                </div>
+                <figcaption>Qualified jobs board — only roles scoring 70 or above.</figcaption>
+            </figure>
+            <figure>
+                <div class="shot-frame">
+                    <div class="shot-bar">
+                        <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
+                        <span class="shot-url">app.spotapply.ai/application</span>
+                    </div>
+                    <!-- DROP-IN: <img src="/static/shots/why-it-matches.png" alt="Job detail with the why-it-matches breakdown" loading="lazy"> -->
+                    <svg class="shot-ph" viewBox="0 0 800 520" role="img" aria-label="Placeholder for the why-it-matches breakdown screenshot">
+                        <rect width="800" height="520" fill="#FFFFFF"/>
+                        <rect x="28" y="28" width="744" height="464" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
+                        <text x="400" y="250" text-anchor="middle" font-family="Outfit, sans-serif" font-size="17" font-weight="600" fill="#64748B">Screenshot: why-it-matches breakdown</text>
+                        <text x="400" y="278" text-anchor="middle" font-family="Outfit, sans-serif" font-size="13" fill="#64748B">/static/shots/why-it-matches.png</text>
+                    </svg>
+                </div>
+                <figcaption>Job detail — skills, experience, seniority and eligibility, scored.</figcaption>
+            </figure>
+        </div>
+    </div>
+</section>
+
+<!-- ── 6. Grounded résumé tailoring ──────────────────────────────────────── -->
+<section id="tailoring" class="section">
+    <div class="wrap">
+        <div class="grid lg:grid-cols-12" style="gap:48px;">
+            <div class="lg:col-span-8" data-aos="fade-up">
+                <span class="eyebrow">Grounded tailoring</span>
+                <h2 class="h2" style="margin-top:14px;">Tailored, not fabricated.</h2>
+                <p class="lede" style="margin-top:18px;">
+                    SpotApply does not invent experience to match a job. It rewords what you
+                    have already done so the relevant parts are easier to find — and every
+                    changed line is checked back against your original résumé.
+                </p>
+
+                <div style="display:flex;flex-direction:column;gap:14px;margin-top:36px;">
+                    <div class="evidence">
+                        <div class="evidence-label">Original evidence</div>
+                        <p class="evidence-text">“Built FastAPI APIs supporting 50k requests/day.”</p>
+                    </div>
+                    <div aria-hidden="true" style="display:flex;justify-content:center;color:var(--border-strong);">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 5v14m0 0 5-5m-5 5-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <div class="evidence" style="border-color:var(--ok-border);">
+                        <div class="evidence-label">Job-specific wording</div>
+                        <p class="evidence-text">“Built <strong style="font-weight:600;">production</strong> FastAPI APIs supporting 50k requests/day.”</p>
+                        <div style="margin-top:14px;">
+                            <span class="verified">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                Verified against original experience
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="blocked" style="margin-top:32px;">
+                    A claim your résumé cannot support is blocked before delivery — not softened,
+                    not shipped with a warning. Tailoring that cannot be grounded does not go out.
+                </p>
+            </div>
+
+            <div class="lg:col-span-4" data-aos="fade-up" data-aos-delay="80">
+                <figure>
+                    <div class="shot-frame">
+                        <div class="shot-bar">
+                            <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
+                            <span class="shot-url">résumé diff</span>
+                        </div>
+                        <!-- DROP-IN: <img src="/static/shots/resume-diff.png" alt="Master résumé compared with the tailored version" loading="lazy"> -->
+                        <svg class="shot-ph" viewBox="0 0 460 560" role="img" aria-label="Placeholder for the master-to-tailored résumé diff screenshot">
+                            <rect width="460" height="560" fill="#FFFFFF"/>
+                            <rect x="24" y="24" width="412" height="512" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
+                            <text x="230" y="272" text-anchor="middle" font-family="Outfit, sans-serif" font-size="15" font-weight="600" fill="#64748B">Screenshot: résumé diff</text>
+                            <text x="230" y="298" text-anchor="middle" font-family="Outfit, sans-serif" font-size="12" fill="#64748B">/static/shots/resume-diff.png</text>
+                        </svg>
+                    </div>
+                    <figcaption>Master résumé beside the tailored version, change by change.</figcaption>
+                </figure>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── 7. Application workflow ───────────────────────────────────────────── -->
+<section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
+    <div class="wrap">
+        <div data-aos="fade-up" style="max-width:60ch;">
+            <span class="eyebrow">Applying</span>
+            <h2 class="h2" style="margin-top:14px;">Filled in your browser. Submitted by you.</h2>
+            <p class="lede" style="margin-top:18px;">
+                SpotApply prepares the application and fills the form in your own browser.
+                You review every field and click Submit yourself — nothing is ever sent on
+                your behalf.
+            </p>
+        </div>
+
+        <ol class="grid grid-cols-1 sm:grid-cols-5" data-aos="fade-up" data-aos-delay="80"
+            style="gap:20px;margin-top:56px;padding:0;list-style:none;counter-reset:step;">
+            <li class="card rounded-2xl" style="padding:22px;">
+                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">01</div>
+                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Discover</h3>
+                <p class="body" style="font-size:14px;margin-top:6px;">Company boards polled around the clock.</p>
+            </li>
+            <li class="card rounded-2xl" style="padding:22px;">
+                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">02</div>
+                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Score</h3>
+                <p class="body" style="font-size:14px;margin-top:6px;">Each role rated against your résumé.</p>
+            </li>
+            <li class="card rounded-2xl" style="padding:22px;">
+                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">03</div>
+                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Tailor</h3>
+                <p class="body" style="font-size:14px;margin-top:6px;">A grounded résumé for the strong matches.</p>
+            </li>
+            <li class="card rounded-2xl" style="padding:22px;">
+                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">04</div>
+                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Autofill</h3>
+                <p class="body" style="font-size:14px;margin-top:6px;">The form is filled in your browser.</p>
+            </li>
+            <li class="card rounded-2xl" style="padding:22px;border-color:var(--ok-border);background:var(--ok-tint);">
+                <div class="num text-xs" style="font-weight:700;color:var(--ok);letter-spacing:.08em;">05</div>
+                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">You submit</h3>
+                <p class="body" style="font-size:14px;margin-top:6px;">You review, then click Submit.</p>
+            </li>
+        </ol>
+    </div>
+</section>
+
+<!-- ── 8. Pricing ────────────────────────────────────────────────────────── -->
+<section id="pricing" class="section">
+    <div class="wrap">
+        <div data-aos="fade-up" style="text-align:center;max-width:56ch;margin:0 auto;">
+            <span class="eyebrow">Pricing</span>
+            <h2 class="h2" style="margin-top:14px;">One plan. Cancel anytime.</h2>
+        </div>
+
+        <div class="card rounded-2xl" data-aos="fade-up" data-aos-delay="80"
+             style="max-width:560px;margin:48px auto 0;padding:40px;box-shadow:var(--shadow-lg);">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;">
                 <div>
-                    <span class="kicker" style="color:var(--sage-700);">Bonus — once you're in</span>
-                    <h2 class="text-3xl sm:text-4xl font-black tracking-tight leading-[1.1] mt-2 mb-4" style="color:var(--ink);">
-                        Recruiters can find you, too.
-                    </h2>
-                    <p class="text-sm leading-relaxed" style="color:var(--muted);">
-                        SpotApply is a verified professional ecosystem that translates your raw resume into trusted, search-optimized candidate profiles that recruiters can discover and chat with directly.
-                    </p>
+                    <div class="h3">SpotApply Pro</div>
+                    <div class="body" style="font-size:14px;margin-top:4px;">Everything, billed monthly.</div>
                 </div>
-
-                <!-- Feature 1 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-[var(--sage-tint)] border border-[rgba(47,180,166,0.15)] flex items-center justify-center shrink-0 text-lg">
-                        ✨
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">AI Skills Harvesting</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Our parsing engine extracts and maps your technical stack, projects, and work history. It indexes your expertise into standardized tags, making your profile immediately discoverable in recruiter searches.
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Feature 2 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0 text-lg">
-                        🛡️
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Verified Candidate Trust Badge</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Profiles are verified against real evidence — email, GitHub activity, and résumé-consistency checks. A solid green check badge appears on your profile and search cards, showing recruiters that your skills and background have been verified.
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Feature 3 -->
-                <div class="flex gap-4">
-                    <div class="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0 text-lg">
-                        💬
-                    </div>
-                    <div>
-                        <h3 class="font-extrabold text-base mb-1" style="color:var(--ink);">Direct Recruiter Portals &amp; DMs</h3>
-                        <p class="text-xs leading-relaxed" style="color:var(--muted);">
-                            Approved tech recruiters access candidate profiles directly. They can instantly search by verified skills, inspect matching scores, and open secure chat dialogues for interviews without leaving the platform.
-                        </p>
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- Right: Browser Simulator Showcase -->
-            <div class="lg:col-span-7" data-aos="fade-left">
-                <div class="browser">
-                    <div class="browser-bar">
-                        <span class="browser-dot" style="background:#f87171;"></span>
-                        <span class="browser-dot" style="background:#fbbf24;"></span>
-                        <span class="browser-dot" style="background:#34d399;"></span>
-                        <span class="ml-3 text-xs font-mono font-bold" style="color:var(--muted);">app.spotapply.ai/recruiter/candidates</span>
-                    </div>
-
-                    <!-- Simulator Viewport -->
-                    <div class="p-6 space-y-4 shadow-inner" style="background:var(--canvas);">
-                        
-                        <!-- Search Bar Mockup -->
-                        <div class="flex items-center gap-3 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-2.5 shadow-sm">
-                            <span class="text-slate-400 text-xs">🔍</span>
-                            <div class="flex flex-wrap gap-1.5 flex-1 items-center">
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">React</span>
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">FastAPI</span>
-                                <span class="text-[9px] font-black bg-[var(--sage-tint)] text-[var(--sage-700)] border border-emerald-200 px-2.5 py-0.5 rounded-full">ML Engineering</span>
-                                <span class="animate-pulse w-[1.5px] h-3 bg-slate-400"></span>
-                            </div>
-                            <span class="text-[9px] font-bold text-[var(--muted)]">1 candidate found</span>
-                        </div>
-
-                        <!-- Candidate Card Results Mockup -->
-                        <div class="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 shadow-sm space-y-3 relative overflow-hidden transition-all duration-300 hover:border-emerald-500/30">
-                            
-                            <!-- Card Header: Profile Info -->
-                            <div class="flex items-center gap-3">
-                                <div class="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center border-2 border-emerald-500/30 bg-emerald-50 text-emerald-600 font-extrabold text-base relative flex-shrink-0">
-                                    K
-                                    <!-- Trust Badge in Top Right Corner Overlay (just like notification style) -->
-                                    <span class="absolute -top-0.5 -right-0.5 text-[8px] font-black rounded-full w-[15px] h-[15px] flex items-center justify-center shadow-sm border border-[var(--surface)]" style="background: #10b981; color: #ffffff; line-height: 1;">✓</span>
-                                </div>
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex items-center gap-2">
-                                        <span class="text-sm font-black" style="color:var(--ink);">Karthik</span>
-                                        <span class="text-[8px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 px-2 py-0.5 rounded-full uppercase tracking-wider">Verified Candidate</span>
-                                    </div>
-                                    <div class="text-[10px]" style="color:var(--muted);">Software Engineer · USA</div>
-                                </div>
-                                <div class="text-right">
-                                    <div class="text-xs font-black text-emerald-600">98% Match</div>
-                                    <div class="text-[8px] font-bold text-[var(--muted)]">Trust Score: 98/100</div>
-                                </div>
-                            </div>
-
-                            <!-- Skills harvested dynamically -->
-                            <div class="border-t border-b border-[var(--border)] py-2.5 space-y-1.5">
-                                <div class="text-[8px] font-bold uppercase tracking-wider text-[var(--muted)]">AI Harvested Skills:</div>
-                                <div class="flex flex-wrap gap-1.5">
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">React</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">FastAPI</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Python</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">Machine Learning</span>
-                                    <span class="text-[9px] font-bold bg-[var(--canvas)] border border-[var(--border)] px-2.5 py-0.5 rounded text-[var(--ink-soft)]">PostgreSQL</span>
-                                </div>
-                            </div>
-
-                            <!-- Recruiter Message exchange dialogue -->
-                            <div class="bg-[var(--surface-2)] border border-[var(--border)] rounded-xl p-3 space-y-2.5">
-                                <div class="flex items-center gap-1.5 text-[8px] font-extrabold text-[var(--muted)] uppercase tracking-wider">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                                    Recruiter DM Introduction
-                                </div>
-                                <div class="space-y-2">
-                                    <!-- Recruiter Message -->
-                                    <div class="flex gap-2">
-                                        <div class="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[9px] shrink-0">LM</div>
-                                        <div class="text-[10px] bg-white border border-[var(--border)] p-2 rounded-lg rounded-tl-none max-w-[85%] shadow-sm text-[var(--ink-soft)] leading-relaxed">
-                                            Hi Karthik! Loved your verified FastAPI experience. We have a matching role open at Acme AI. Are you open for a call?
-                                        </div>
-                                    </div>
-                                    <!-- Candidate Message Mockup typing animation -->
-                                    <div class="flex gap-2 justify-end">
-                                        <div class="text-[10px] bg-emerald-600 text-white p-2 rounded-lg rounded-tr-none max-w-[80%] shadow-sm leading-relaxed min-h-[30px] flex items-center" id="recruiter-page-reply">
-                                            Hi Lauren! Yes, I am free this Thursday afternoon.
-                                        </div>
-                                        <div class="w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-[9px] shrink-0">K</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                        </div>
-
-                    </div>
+                <div style="display:flex;align-items:baseline;gap:4px;">
+                    <span class="num" style="font-size:44px;font-weight:800;color:var(--ink);letter-spacing:-0.03em;">${{ pro_price }}</span>
+                    <span class="body" style="font-size:15px;">/month</span>
                 </div>
             </div>
 
+            <ul style="list-style:none;padding:0;margin:32px 0 0;display:flex;flex-direction:column;gap:13px;">
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Continuous job discovery</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Qualified match scoring</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Grounded tailored résumés</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application autofill</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Sponsorship intelligence</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application tracking</span></li>
+            </ul>
+
+            <a href="/login?mode=signup" class="btn btn-primary" style="width:100%;margin-top:32px;">Start free</a>
+            <p style="font-size:13.5px;color:var(--muted);text-align:center;margin:16px 0 0;">
+                The Free plan is the trial — the full pipeline with daily caps, no card required.
+                Upgrade when you want the caps removed.
+            </p>
         </div>
     </div>
 </section>
 
-<!-- FAQ -->
-<section id="faq" class="py-20 px-4" style="background:var(--surface);border-top:1px solid var(--border);">
-    <div class="max-w-3xl mx-auto">
-        <div data-aos="fade-up" class="text-center mb-10">
-            <span class="kicker">Questions, answered</span>
-            <h2 class="text-4xl font-black mb-3" style="color:var(--ink);">Frequently asked</h2>
-        </div>
-        <div class="space-y-3">
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Does SpotApply apply to jobs for me automatically?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">No — and that's deliberate. The agent finds and ranks roles, tailors your r&eacute;sum&eacute; and cover letter, and pre-fills the application form. You review everything and click Submit yourself. Nothing is ever sent without you.</p>
+<!-- ── 9. FAQ ────────────────────────────────────────────────────────────── -->
+<section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
+    <div class="wrap" style="max-width:800px;">
+        <h2 class="h2" data-aos="fade-up">Questions</h2>
+        <div style="margin-top:36px;" data-aos="fade-up" data-aos-delay="60">
+            <details class="faq">
+                <summary>Does SpotApply submit applications for me?</summary>
+                <p class="body">
+                    No. SpotApply prepares your documents and fills the form in your own
+                    browser. You review everything and click Submit yourself. Nothing is
+                    ever sent on your behalf.
+                </p>
             </details>
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Is it really free to start?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Yes — upload your r&eacute;sum&eacute; and get your ranked job board with no card required. Paid plans raise the daily tailoring and auto-fill limits; see <a href="/pricing" class="font-bold underline" style="color:var(--sage-700);">pricing</a>.</p>
+            <details class="faq">
+                <summary>Where do the jobs come from?</summary>
+                <p class="body">
+                    Public company career pages and ATS providers — Greenhouse, Lever,
+                    Ashby, Workday, SmartRecruiters, Workable, Personio, Rippling,
+                    BambooHR, Teamtailor, Recruitee, Breezy, Pinpoint and join.com —
+                    polled continuously.
+                </p>
             </details>
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">Where do the jobs come from?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Public company career boards and ATS feeds — Greenhouse, Lever, Ashby, Workday and 1,000+ more — re-checked throughout the day, so postings reach you while they're fresh and link straight to the company's own application page.</p>
+            <details class="faq">
+                <summary>How does the match score work?</summary>
+                <p class="body">
+                    Each role is read against your résumé and scored 0–100 on skills,
+                    experience, seniority and eligibility. Only roles scoring 70 or above
+                    reach your board, and each one carries the reasoning behind its score.
+                </p>
             </details>
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">How does the match score work?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">A multi-stage AI pipeline reads each posting against your actual r&eacute;sum&eacute; — skills, experience level, location and work authorization — and shows you the score with its reasoning, so you can see exactly why a role surfaced.</p>
+            <details class="faq">
+                <summary>Will the tailored résumé say things I did not do?</summary>
+                <p class="body">
+                    No. Tailoring only rewords evidence already in your résumé, and every
+                    changed line is verified against the original. Anything unsupported is
+                    blocked rather than shipped. The output is ATS-safe and keyword-aligned —
+                    which is not the same as a guarantee that any particular system or
+                    recruiter will advance you.
+                </p>
             </details>
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">I need visa sponsorship — does it help?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">Yes. Built-in public USCIS H-1B data flags likely sponsors and cap-exempt employers directly on each role, so you stop wasting applications on companies that never sponsor.</p>
+            <details class="faq">
+                <summary>I need visa sponsorship — does that help or hurt?</summary>
+                <p class="body">
+                    It is part of the score. Roles that state they will not sponsor are
+                    filtered out, and cap-exempt and known-sponsor employers are surfaced,
+                    so your board reflects where you can actually be hired.
+                </p>
             </details>
-            <details class="feature-card rounded-2xl p-5 group">
-                <summary class="font-black cursor-pointer list-none flex justify-between items-center" style="color:var(--ink);">What happens to my r&eacute;sum&eacute;?<span class="text-[var(--sage-700)] group-open:rotate-45 transition-transform text-xl leading-none">+</span></summary>
-                <p class="text-sm leading-relaxed mt-3" style="color:var(--muted);">It's used to rank jobs and generate your tailored documents — nothing else. It isn't sold or shared with third parties, and tailored documents stay grounded in your real experience. See our <a href="/privacy" class="font-bold underline" style="color:var(--sage-700);">privacy policy</a>.</p>
+            <details class="faq">
+                <summary>What happens to my résumé?</summary>
+                <p class="body">
+                    It is stored privately to your account and used only to match and
+                    prepare your own applications. It is never sold or shared with third
+                    parties for advertising. You can replace or delete it at any time.
+                </p>
             </details>
         </div>
     </div>
 </section>
-<script type="application/ld+json">
-{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
-{"@type":"Question","name":"Does SpotApply apply to jobs for me automatically?","acceptedAnswer":{"@type":"Answer","text":"No — the agent finds and ranks roles, tailors your resume and cover letter, and pre-fills the application form, but you review everything and click Submit yourself. Nothing is sent without you."}},
-{"@type":"Question","name":"Is it really free to start?","acceptedAnswer":{"@type":"Answer","text":"Yes — upload your resume and get your ranked job board with no card required. Paid plans raise the daily tailoring and auto-fill limits."}},
-{"@type":"Question","name":"Where do the jobs come from?","acceptedAnswer":{"@type":"Answer","text":"Public company career boards and ATS feeds — Greenhouse, Lever, Ashby, Workday and 1,000+ more — re-checked throughout the day and linking straight to the company's own application page."}},
-{"@type":"Question","name":"How does the match score work?","acceptedAnswer":{"@type":"Answer","text":"A multi-stage AI pipeline reads each posting against your actual resume — skills, experience level, location and work authorization — and shows the score with its reasoning."}},
-{"@type":"Question","name":"I need visa sponsorship — does it help?","acceptedAnswer":{"@type":"Answer","text":"Yes. Built-in public USCIS H-1B data flags likely sponsors and cap-exempt employers directly on each role."}},
-{"@type":"Question","name":"What happens to my resume?","acceptedAnswer":{"@type":"Answer","text":"It's used to rank jobs and generate your tailored documents — nothing else. It isn't sold or shared with third parties."}}
-]}
-</script>
 
-<!-- CTA -->
-<section data-aos="fade-up" class="py-20 px-4">
-    <div class="max-w-3xl mx-auto text-center">
-        <div class="rounded-3xl p-10 sm:p-14 relative overflow-hidden" style="background:linear-gradient(135deg,var(--sage-tint),var(--surface));border:1px solid rgba(47,180,166,0.25);">
-            <div class="absolute -top-16 -right-16 w-64 h-64 rounded-full opacity-30 pointer-events-none" style="background:radial-gradient(circle,rgba(47,180,166,0.35),transparent 70%);"></div>
-            <h2 class="text-3xl sm:text-4xl font-black mb-4 relative" style="color:var(--ink);">Your next role is already posted.</h2>
-            <p class="mb-8 text-lg relative" style="color:var(--muted);">Upload your résumé and let the agent find it. Free to start — no card required.</p>
-            <a href="/login?mode=signup" class="btn-primary font-black text-lg px-10 py-4 rounded-2xl inline-flex items-center gap-2 relative">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                Get started — it's free
-            </a>
+<!-- ── 10. Final CTA ─────────────────────────────────────────────────────── -->
+<section class="section" style="text-align:center;">
+    <div class="wrap">
+        <h2 class="h2" data-aos="fade-up" style="max-width:20ch;margin:0 auto;">
+            Your next role is already posted.
+        </h2>
+        <p class="lede" data-aos="fade-up" data-aos-delay="60" style="margin:22px auto 0;">
+            Upload your résumé and see which roles clear the bar.
+        </p>
+        <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="120"
+             style="gap:12px;justify-content:center;margin-top:32px;">
+            <a href="/login?mode=signup" class="btn btn-primary">Start free</a>
+            <a href="/pricing" class="btn btn-secondary">See pricing</a>
         </div>
     </div>
 </section>
 
-<!-- Footer -->
-<footer class="py-10 px-4" style="border-top:1px solid var(--border);">
-    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div class="flex items-center gap-2">
-            <div class="w-6 h-6 rounded-lg flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </div>
-            <span class="font-black text-sm gradient-text">SpotApply</span>
-            <span class="text-xs ml-2" style="color:var(--muted);">© 2026</span>
+<!-- ── 11. Footer ────────────────────────────────────────────────────────── -->
+<footer style="border-top:1px solid var(--border);padding:40px 0;">
+    <div class="wrap flex flex-col sm:flex-row" style="align-items:center;justify-content:space-between;gap:18px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <span class="mark" style="width:24px;height:24px;border-radius:7px;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span style="font-weight:700;font-size:14.5px;color:var(--ink);">SpotApply</span>
+            <span style="font-size:13px;color:var(--muted);margin-left:6px;">© 2026</span>
         </div>
-        <div class="flex items-center gap-6 text-sm" style="color:var(--muted);">
-            <a href="#features" class="hover:underline" style="color:var(--muted);">Features</a>
-            <a href="/pricing" class="hover:underline" style="color:var(--muted);">Pricing</a>
-            <a href="/privacy" class="hover:underline" style="color:var(--muted);">Privacy</a>
-            <a href="/terms" class="hover:underline" style="color:var(--muted);">Terms</a>
-            <a href="/login" class="hover:underline" style="color:var(--muted);">Sign in</a>
+        <div style="display:flex;align-items:center;gap:24px;font-size:14px;flex-wrap:wrap;justify-content:center;">
+            <a href="#how-it-works" style="color:var(--muted);text-decoration:none;">How it works</a>
+            <a href="/pricing" style="color:var(--muted);text-decoration:none;">Pricing</a>
+            <a href="/privacy" style="color:var(--muted);text-decoration:none;">Privacy</a>
+            <a href="/terms" style="color:var(--muted);text-decoration:none;">Terms</a>
+            <a href="/login" style="color:var(--muted);text-decoration:none;">Sign in</a>
         </div>
     </div>
 </footer>
 
-<!-- Interactive Showcase Player Script -->
-<script>
-(function() {
-    let activeShowcaseStep = -1;
-    let typewriterInterval = null;
-    let autoCycleInterval = null;
-    let isUserInteracted = false;
-
-    const urls = [
-        'app.spotapply.ai/pipeline/parser',
-        'app.spotapply.ai/pipeline/ranker',
-        'app.spotapply.ai/pipeline/autofill',
-        'app.spotapply.ai/pipeline/referrals',
-        'app.spotapply.ai/networking/recruiter'
-    ];
-
-    window.runShowcaseAnimation = function(stepIdx) {
-        if (activeShowcaseStep === stepIdx) return;
-        activeShowcaseStep = stepIdx;
-
-        // Update URL
-        const urlEl = document.getElementById('simulator-url');
-        if (urlEl) urlEl.innerText = urls[stepIdx];
-
-        // Toggle panels
-        for (let i = 0; i < 5; i++) {
-            const panel = document.getElementById('panel-' + i);
-            if (panel) {
-                if (i === stepIdx) {
-                    panel.classList.remove('hidden');
-                } else {
-                    panel.classList.add('hidden');
-                }
-            }
-        }
-
-        // Run animations
-        if (stepIdx === 0) {
-            // Reset and trigger laser scanner
-            const laser = document.querySelector('#panel-0 .laser-scanner');
-            if (laser) {
-                laser.style.animation = 'none';
-                laser.offsetHeight; // trigger reflow
-                laser.style.animation = 'scan-laser 3s infinite ease-in-out';
-            }
-
-            // Reset and stagger tags
-            const tags = document.querySelectorAll('#panel-0 .tag-pill');
-            tags.forEach((tag, idx) => {
-                tag.classList.add('opacity-0', 'translate-x-4');
-                setTimeout(() => {
-                    tag.classList.remove('opacity-0', 'translate-x-4');
-                }, 300 + idx * 400);
-            });
-
-        } else if (stepIdx === 1) {
-            // Reset and animate score ring
-            const ring = document.getElementById('score-ring');
-            const scoreText = document.getElementById('score-text');
-            if (ring) {
-                // dasharray is 340 (r=54 → circumference ≈ 339.3); start fully
-                // hidden, animate to 94%: 340 * (1 - 0.94) = 20.4
-                ring.style.strokeDashoffset = '340';
-                setTimeout(() => {
-                    ring.style.strokeDashoffset = '20.4';
-                }, 100);
-            }
-
-            // Count up score text
-            if (scoreText) {
-                let count = 0;
-                const target = 94;
-                scoreText.innerText = '0%';
-                const countInterval = setInterval(() => {
-                    count += 2;
-                    if (count >= target) {
-                        count = target;
-                        clearInterval(countInterval);
-                    }
-                    scoreText.innerText = count + '%';
-                }, 20);
-            }
-
-        } else if (stepIdx === 2) {
-            // Animate Smart Auto-Fill fields typing
-            const nameEl = document.getElementById('fill-name');
-            const emailEl = document.getElementById('fill-email');
-            const resumeEl = document.getElementById('fill-resume');
-            const statusEl = document.getElementById('fill-resume-status');
-
-            if (nameEl && emailEl && resumeEl && statusEl) {
-                nameEl.innerText = '';
-                emailEl.innerText = '';
-                resumeEl.innerText = '';
-                statusEl.innerText = '';
-
-                if (typewriterInterval) clearInterval(typewriterInterval);
-
-                const nameStr = "Alex River";
-                const emailStr = "alex.river@gmail.com";
-                const resumeStr = "resume_alex.pdf";
-                
-                let phase = 0; // 0: typing name, 1: typing email, 2: attaching resume
-                let charIdx = 0;
-
-                typewriterInterval = setInterval(() => {
-                    if (phase === 0) {
-                        nameEl.innerHTML = nameStr.substring(0, charIdx) + '<span class="animate-pulse">|</span>';
-                        charIdx++;
-                        if (charIdx > nameStr.length) {
-                            nameEl.innerText = nameStr;
-                            phase = 1;
-                            charIdx = 0;
-                        }
-                    } else if (phase === 1) {
-                        emailEl.innerHTML = emailStr.substring(0, charIdx) + '<span class="animate-pulse">|</span>';
-                        charIdx++;
-                        if (charIdx > emailStr.length) {
-                            emailEl.innerText = emailStr;
-                            phase = 2;
-                            charIdx = 0;
-                            statusEl.innerText = "Attaching...";
-                        }
-                    } else if (phase === 2) {
-                        resumeEl.innerText = resumeStr;
-                        statusEl.innerText = "✓ Attached";
-                        clearInterval(typewriterInterval);
-                    }
-                }, 50);
-            }
-
-        } else if (stepIdx === 3) {
-            // Typewriter referral message
-            const typewriter = document.getElementById('ref-typewriter-text');
-            if (typewriter) {
-                typewriter.innerHTML = '';
-                if (typewriterInterval) clearInterval(typewriterInterval);
-
-                const message = "Hi Sarah! I saw an opening for the ML Engineer role at Northwind Labs and would love to get your advice on the team. Could you refer me?";
-                let charIdx = 0;
-                
-                typewriterInterval = setInterval(() => {
-                    typewriter.innerHTML = message.substring(0, charIdx) + '<span class="animate-pulse font-sans">|</span>';
-                    charIdx++;
-                    if (charIdx > message.length) {
-                        typewriter.innerHTML = message;
-                        clearInterval(typewriterInterval);
-                    }
-                }, 35);
-            }
-
-        } else if (stepIdx === 4) {
-            // Typewriter recruiter chat message
-            const typewriter = document.getElementById('recruiter-chat-text');
-            if (typewriter) {
-                typewriter.innerHTML = '';
-                if (typewriterInterval) clearInterval(typewriterInterval);
-
-                const message = "Hi Karthik! I saw your verified profile on SpotApply and loved your React & FastAPI experience. Are you open for a call this Thursday at 2 PM?";
-                let charIdx = 0;
-                
-                typewriterInterval = setInterval(() => {
-                    typewriter.innerHTML = message.substring(0, charIdx) + '<span class="animate-pulse font-sans">|</span>';
-                    charIdx++;
-                    if (charIdx > message.length) {
-                        typewriter.innerHTML = message;
-                        clearInterval(typewriterInterval);
-                    }
-                }, 35);
-            }
-        }
-    };
-
-    window.showShowcaseTab = function(stepIdx, isManual = false) {
-        if (isManual) {
-            isUserInteracted = true;
-            if (autoCycleInterval) {
-                clearInterval(autoCycleInterval);
-                autoCycleInterval = null;
-            }
-            updateAutoplayUI(false);
-        }
-
-        // Highlight step card
-        for (let i = 0; i < 5; i++) {
-            const card = document.getElementById('step-desc-' + i);
-            if (card) {
-                if (i === stepIdx) {
-                    card.classList.remove('opacity-60');
-                    card.classList.add('opacity-100', 'step-card-active');
-                } else {
-                    card.classList.remove('step-card-active', 'opacity-100');
-                    card.classList.add('opacity-60');
-                }
-            }
-        }
-        runShowcaseAnimation(stepIdx);
-    };
-
-    window.handleShowcaseMouseEnter = function(stepIdx) {
-        // Temporarily pause autoCycle on hover so user can read/inspect
-        if (autoCycleInterval) {
-            clearInterval(autoCycleInterval);
-            autoCycleInterval = null;
-        }
-        // Switch to the hovered tab
-        showShowcaseTab(stepIdx, false);
-    };
-
-    window.handleShowcaseMouseLeave = function() {
-        // If the user hasn't manually clicked to pause permanently, resume auto-cycling
-        if (!isUserInteracted) {
-            startAutoCycle();
-        }
-    };
-
-    function startAutoCycle() {
-        if (autoCycleInterval) clearInterval(autoCycleInterval);
-        autoCycleInterval = setInterval(() => {
-            if (isUserInteracted) return;
-            let nextStep = (activeShowcaseStep + 1) % 5;
-            showShowcaseTab(nextStep);
-        }, 6000);
-        updateAutoplayUI(true);
-    }
-
-    window.toggleAutoplay = function(event) {
-        if (event) event.stopPropagation();
-        
-        if (autoCycleInterval) {
-            clearInterval(autoCycleInterval);
-            autoCycleInterval = null;
-            isUserInteracted = true;
-            updateAutoplayUI(false);
-        } else {
-            isUserInteracted = false;
-            startAutoCycle();
-        }
-    };
-
-    // --- Recruiter Showcase Typewriter ---
-    function initRecruiterShowcaseTyping() {
-        const replyEl = document.getElementById('recruiter-page-reply');
-        if (!replyEl) return;
-        
-        const message = "Hi Lauren! Yes, I am free this Thursday afternoon.";
-        let charIdx = 0;
-        let isWaiting = false;
-        
-        setInterval(() => {
-            if (isWaiting) return;
-            if (charIdx <= message.length) {
-                replyEl.innerHTML = message.substring(0, charIdx) + '<span class="animate-pulse font-sans">|</span>';
-                charIdx++;
-            } else {
-                replyEl.innerText = message;
-                isWaiting = true;
-                setTimeout(() => {
-                    charIdx = 0;
-                    replyEl.innerText = '';
-                    isWaiting = false;
-                }, 3000);
-            }
-        }, 85);
-    }
-
-    function updateAutoplayUI(isPlaying) {
-        const icon = document.getElementById('autoplay-icon');
-        const text = document.getElementById('autoplay-text');
-        if (icon) {
-            if (isPlaying) {
-                icon.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping';
-            } else {
-                icon.className = 'w-1.5 h-1.5 rounded-full bg-slate-400';
-            }
-        }
-        if (text) {
-            text.innerText = isPlaying ? 'Auto' : 'Paused';
-        }
-    }
-
-    async function loadDynamicTestimonials() {
-        // User-authored content goes through innerHTML — escape it (a review
-        // name/body containing markup would otherwise execute: stored XSS).
-        const esc = (s) => String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-        try {
-            const res = await fetch('/api/reviews');
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.reviews && data.reviews.length >= 3) {
-                const grid = document.getElementById('testimonials-grid');
-                if (!grid) return;
-                grid.innerHTML = data.reviews.map((r, i) => {
-                    const delay = i * 100;
-                    const rating = Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0));
-                    const ratingStars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
-                    return `
-                        <div data-aos="fade-up" data-aos-delay="${delay}" class="feature-card rounded-2xl p-6">
-                            <div class="text-amber-500 text-sm mb-3" style="letter-spacing: 2px;">${ratingStars}</div>
-                            <p class="text-sm leading-relaxed mb-4" style="color:var(--ink-soft); font-weight: 500;">"${esc(r.content)}"</p>
-                            <p class="text-xs font-bold" style="color:var(--muted);">— ${esc(r.user_name)}</p>
-                        </div>
-                    `;
-                }).join('');
-            }
-        } catch (e) {
-            console.error('Failed to load dynamic testimonials', e);
-        }
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-        // Initial setup
-        showShowcaseTab(0);
-        initRecruiterShowcaseTyping();
-        loadDynamicTestimonials();
-
-        // Setup IntersectionObserver for the showcase section to pause/resume autoCycle
-        const section = document.getElementById('how-it-works-showcase');
-        if (section) {
-            const observer = new IntersectionObserver((entries) => {
-                entries.forEach(entry => {
-                    if (entry.isIntersecting) {
-                        if (!isUserInteracted) startAutoCycle();
-                    } else {
-                        if (autoCycleInterval) {
-                            clearInterval(autoCycleInterval);
-                            autoCycleInterval = null;
-                        }
-                    }
-                });
-            }, { threshold: 0.1 });
-            observer.observe(section);
-        }
-
-        // Setup Scroll Progress Bar (passive + rAF-throttled: one style write
-        // per frame instead of one per scroll event)
-        let progressTicking = false;
-        window.addEventListener('scroll', () => {
-            if (progressTicking) return;
-            progressTicking = true;
-            requestAnimationFrame(() => {
-                progressTicking = false;
-                const scrollTop = window.scrollY || document.documentElement.scrollTop;
-                const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
-                const scrollPercent = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
-                const progressEl = document.getElementById('scroll-progress');
-                if (progressEl) {
-                    progressEl.style.width = scrollPercent + '%';
-                }
-            });
-        }, { passive: true });
-
-        // Keyboard access for the showcase step selectors (they're divs driven
-        // by hover/click — give them button semantics and Enter/Space support).
-        document.querySelectorAll('.step-card').forEach((card, idx) => {
-            card.setAttribute('tabindex', '0');
-            card.setAttribute('role', 'button');
-            card.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    showShowcaseTab(idx, true);
-                }
-            });
-            card.addEventListener('focus', () => showShowcaseTab(idx, false));
-        });
-    });
-})();
-</script>
-
-<!-- AOS Animation Script (self-hosted) -->
 <script src="/static/vendor/aos.js"></script>
 <script>
-    AOS.init({
-        duration: 800,
-        easing: 'ease-out-quad',
-        // once:false replayed every entrance animation on every scroll pass —
-        // janky on phones and hostile to motion-sensitive users.
-        once: true,
-        offset: 100,
-        disable: window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    });
-</script>
-
-<script>
-// Redirect already-logged-in users to dashboard
-(function() {
-    try {
-        const token = localStorage.getItem('sb_token');
-        if (token) {
-            // Update all CTA links to point to dashboard
-            document.querySelectorAll('a[href="/login"]').forEach(a => a.setAttribute('href', '/dashboard'));
-        }
-    } catch(e) {}
-})();
-</script>
-
-<script>
-// Interactive Demo Workspace logic
-(function() {
-    let demoData = null;
-    let clickCount = 0;
-    let activeTab = 'upload'; // 'upload' or 'paste'
-
-    window.switchDemoTab = function(tab) {
-        activeTab = tab;
-        const uploadTab = document.getElementById('demo-tab-upload');
-        const pasteTab = document.getElementById('demo-tab-paste');
-        const uploadArea = document.getElementById('demo-area-upload');
-        const pasteArea = document.getElementById('demo-area-paste');
-        
-        if (tab === 'upload') {
-            uploadTab.classList.add('border-b-2', 'border-[var(--sage)]', 'text-[var(--sage-700)]');
-            uploadTab.classList.remove('text-[var(--muted)]');
-            pasteTab.classList.remove('border-b-2', 'border-[var(--sage)]', 'text-[var(--sage-700)]');
-            pasteTab.classList.add('text-[var(--muted)]');
-            
-            uploadArea.classList.remove('hidden');
-            pasteArea.classList.add('hidden');
-        } else {
-            pasteTab.classList.add('border-b-2', 'border-[var(--sage)]', 'text-[var(--sage-700)]');
-            pasteTab.classList.remove('text-[var(--muted)]');
-            uploadTab.classList.remove('border-b-2', 'border-[var(--sage)]', 'text-[var(--sage-700)]');
-            uploadTab.classList.add('text-[var(--muted)]');
-            
-            pasteArea.classList.remove('hidden');
-            uploadArea.classList.add('hidden');
-        }
-    };
-
-    window.triggerDemoFileInput = function(e) {
-        if (e.target.id === 'demo-file-input') return;
-        document.getElementById('demo-file-input').click();
-    };
-
-    function showDemoError(msg) {
-        const el = document.getElementById('demo-error');
-        if (!el) return;
-        el.textContent = msg;
-        el.classList.remove('hidden');
-    }
-    function clearDemoError() {
-        const el = document.getElementById('demo-error');
-        if (el) { el.textContent = ''; el.classList.add('hidden'); }
+    function toggleMobileNav() {
+        var menu = document.getElementById('mobile-nav-menu');
+        var btn = document.getElementById('mobile-nav-btn');
+        if (!menu || !btn) return;
+        var open = menu.classList.toggle('hidden') === false;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
 
-    const SAMPLE_RESUME = [
-        'Jordan Lee — AI Engineer, Austin TX. jordan.lee@example.com',
-        'Experience: 3 years building ML products. AI Engineer @ HealthTech startup:',
-        'built a RAG pipeline (Python, FastAPI, LangChain) serving 40k queries/day;',
-        'fine-tuned transformer models for clinical text; shipped feature store on AWS.',
-        'Previously: Backend Engineer — Python, PostgreSQL, Docker, Kubernetes, CI/CD.',
-        'Education: BS Computer Science, University of Texas at Austin.',
-        'Skills: Python, PyTorch, FastAPI, SQL, AWS, Docker, MLOps, LLM fine-tuning.'
-    ].join(' ');
-
-    window.fillDemoSample = function() {
-        clearDemoError();
-        switchDemoTab('paste');
-        document.getElementById('demo-resume').value = SAMPLE_RESUME;
-        const role = document.getElementById('demo-role');
-        if (role && !role.value.trim()) role.value = 'AI Engineer';
-        submitDemoMatch();
-    };
-
-    window.demoFileSelected = function(input) {
-        const file = input.files[0];
-        const textEl = document.getElementById('demo-upload-text');
-        if (file) {
-            textEl.innerHTML = `📄 <span class="text-[var(--sage-700)] font-black">${escapeHtml(file.name)}</span> selected`;
-        } else {
-            textEl.textContent = 'Drag & drop your resume file or click to browse';
+    // Close the mobile menu after following an in-page link.
+    document.getElementById('mobile-nav-menu').addEventListener('click', function (e) {
+        if (e.target.tagName === 'A') {
+            document.getElementById('mobile-nav-menu').classList.add('hidden');
+            document.getElementById('mobile-nav-btn').setAttribute('aria-expanded', 'false');
         }
-    };
-
-    // Setup drag-and-drop event listeners
-    document.addEventListener('DOMContentLoaded', () => {
-        const dz = document.getElementById('demo-area-upload');
-        if (!dz) return;
-        
-        dz.addEventListener('dragover', e => {
-            e.preventDefault();
-            dz.style.borderColor = 'var(--sage)';
-            dz.style.background = 'var(--sage-tint)';
-        });
-        
-        dz.addEventListener('dragleave', () => {
-            dz.style.borderColor = '';
-            dz.style.background = '';
-        });
-        
-        dz.addEventListener('drop', e => {
-            e.preventDefault();
-            dz.style.borderColor = '';
-            dz.style.background = '';
-            
-            const file = e.dataTransfer.files[0];
-            if (file) {
-                const input = document.getElementById('demo-file-input');
-                const dt = new DataTransfer();
-                dt.items.add(file);
-                input.files = dt.files;
-                demoFileSelected(input);
-            }
-        });
     });
 
-    window.submitDemoMatch = async function() {
-        const targetRole = document.getElementById('demo-role').value.trim();
-        const fd = new FormData();
-        fd.append('target_role', targetRole);
-        
-        clearDemoError();
-        if (activeTab === 'upload') {
-            const fileInput = document.getElementById('demo-file-input');
-            if (!fileInput.files || !fileInput.files[0]) {
-                showDemoError('Please add your résumé file first — or try the sample below.');
-                return;
-            }
-            fd.append('file', fileInput.files[0]);
-        } else {
-            const resumeText = document.getElementById('demo-resume').value.trim();
-            if (!resumeText) {
-                showDemoError('Please paste your résumé text first — or try the sample below.');
-                return;
-            }
-            fd.append('resume_text', resumeText);
-        }
-        
-        // Save target role
-        try {
-            localStorage.setItem('hp_temp_role', targetRole);
-        } catch(e) {}
-        
-        // Switch to state 2 (scanning)
-        const inputState = document.getElementById('demo-state-input');
-        const scanningState = document.getElementById('demo-state-scanning');
-        const resultsState = document.getElementById('demo-state-results');
-        
-        inputState.classList.add('hidden');
-        scanningState.classList.remove('hidden');
-        resultsState.classList.add('hidden');
-        
-        // Scan status text rotation
-        const statusEl = document.getElementById('demo-scan-status');
-        const statuses = [
-            'Parsing your experience & education...',
-            'Checking fit against screening filters...',
-            'Drafting outreach messages...',
-            'Finalizing matches...'
-        ];
-        
-        let statusIdx = 0;
-        const interval = setInterval(() => {
-            if (statusIdx < statuses.length) {
-                statusEl.textContent = statuses[statusIdx++];
-            }
-        }, 800);
-        
-        try {
-            const res = await fetch('/api/public/demo-match', {
-                method: 'POST',
-                body: fd
-            });
-            clearInterval(interval);
-            
-            if (!res.ok) {
-                resetDemoForm();
-                showDemoError('Demo matching failed. Please try again.');
-                return;
-            }
-            
-            demoData = await res.json();
-            
-            // Save processed resume text back to localStorage so onboarding is fully prefilled!
-            try {
-                if (demoData.resume_text) {
-                    localStorage.setItem('hp_temp_resume', demoData.resume_text);
-                }
-            } catch(e) {}
-            
-            renderDemoResults(demoData);
-        } catch (e) {
-            clearInterval(interval);
-            console.error('Demo match error:', e);
-            resetDemoForm();
-            showDemoError('Network error. Please try again.');
-        }
-    };
-
-    window.resetDemoForm = function() {
-        document.getElementById('demo-state-input').classList.remove('hidden');
-        document.getElementById('demo-state-scanning').classList.add('hidden');
-        document.getElementById('demo-state-results').classList.add('hidden');
-        document.getElementById('demo-auth-gate').classList.add('hidden');
-        clickCount = 0;
-        
-        // Clear file input
-        const fileInput = document.getElementById('demo-file-input');
-        if (fileInput) fileInput.value = '';
-        const uploadText = document.getElementById('demo-upload-text');
-        if (uploadText) uploadText.textContent = 'Drag & drop your resume file or click to browse';
-    };
-
-    function renderDemoResults(data) {
-        document.getElementById('demo-state-scanning').classList.add('hidden');
-        document.getElementById('demo-state-results').classList.remove('hidden');
-        
-        const cardsContainer = document.getElementById('demo-job-cards');
-        const detailContainer = document.getElementById('demo-detail-pane');
-        
-        cardsContainer.innerHTML = '';
-        detailContainer.innerHTML = '';
-        
-        (data.jobs || []).forEach((j, index) => {
-            const isMatch = !j.wrong_door;
-            const badgeClass = isMatch ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200';
-            const badgeText = isMatch ? '✨ Match' : 'Wrong Door';
-            
-            const card = document.createElement('div');
-            card.className = 'rounded-xl p-3 border border-[var(--border)] bg-[var(--surface)] shadow-sm cursor-pointer hover:border-[var(--sage)] transition text-left';
-            card.dataset.index = index;
-            card.onclick = () => selectJobCard(index);
-            card.innerHTML = `
-                <div class="flex justify-between items-center gap-1">
-                    <div class="font-black text-xs text-[var(--ink)] truncate max-w-[120px]">${escapeHtml(j.company)}</div>
-                    <span class="text-[9px] font-black px-1.5 py-0.5 rounded-full border ${badgeClass}">${badgeText}</span>
-                </div>
-                <div class="text-[10px] text-[var(--ink-soft)] truncate mt-1 font-semibold">${escapeHtml(j.title)}</div>
-                <div class="text-[9px] mt-1.5 flex justify-between items-center">
-                    <span class="font-black text-[var(--sage-700)]">${j.match_score}% Match Score</span>
-                </div>
-            `;
-            cardsContainer.appendChild(card);
-        });
-        
-        // Auto-select first job (programmatic — doesn't count against the gate)
-        if (data.jobs && data.jobs.length) {
-            selectJobCard(0, false);
-        }
+    if (window.AOS) {
+        AOS.init({ duration: 500, once: true, offset: 40,
+                   disable: window.matchMedia('(prefers-reduced-motion: reduce)').matches });
     }
 
-    function selectJobCard(index, fromUser = true) {
-        // Gate on the 4th deliberate interaction: with 3 demo jobs the user can
-        // open every card once before the sign-up wall. The programmatic
-        // auto-select doesn't count (it used to eat one of the allowed views,
-        // so users hit the wall after a single click of their own).
-        if (fromUser) {
-            clickCount++;
-            if (clickCount > 3) {
-                document.getElementById('demo-auth-gate').classList.remove('hidden');
-                return;
-            }
-        }
-        
-        const cards = document.getElementById('demo-job-cards').children;
-        for (let i = 0; i < cards.length; i++) {
-            if (i === index) {
-                cards[i].classList.add('border-[var(--sage)]', 'shadow-md');
-                cards[i].style.background = 'var(--sage-tint)';
-            } else {
-                cards[i].classList.remove('border-[var(--sage)]', 'shadow-md');
-                cards[i].style.background = '';
-            }
-        }
-        
-        const j = demoData.jobs[index];
-        const detailContainer = document.getElementById('demo-detail-pane');
-        
-        let findingsHtml = '';
-        (j.findings || []).forEach(f => {
-            const color = f.status === 'BLOCKER' ? '#f43f5e' : (f.status === 'MATCH' ? '#10b981' : '#f59e0b');
-            const icon = f.status === 'BLOCKER' ? '⛔' : (f.status === 'MATCH' ? '✅' : '🟡');
-            findingsHtml += `<div class="mb-1.5 flex items-start gap-1"><span class="shrink-0">${icon}</span><span><b>${f.dim}:</b> ${escapeHtml(f.note)}</span></div>`;
-        });
-        
-        let draftsHtml = '';
-        (j.drafts || []).forEach(d => {
-            let channelHtml = '';
-            if (d.channel) {
-                const parts = d.channel.split(/Find them via:|Search org:/i);
-                if (parts.length > 1) {
-                    channelHtml = `
-                        <div class="text-[9px] text-[var(--muted)] mb-1.5 flex items-center gap-1 select-none">
-                            <span>🔍 ${escapeHtml(parts[0].trim())}</span>
-                            <span class="blur-teaser bg-slate-300/35 px-1 rounded truncate max-w-[120px] pointer-events-none font-mono text-[8px]">${escapeHtml(parts[1].trim())}</span>
-                        </div>
-                    `;
-                } else {
-                    channelHtml = `<div class="text-[9px] text-[var(--muted)] mb-1.5">${escapeHtml(d.channel)}</div>`;
-                }
-            }
-            draftsHtml += `
-                <div class="mt-2.5 p-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-                    <div class="flex justify-between items-center mb-1">
-                        <span class="font-extrabold text-[9px] text-[var(--sage-700)] uppercase tracking-wider">${escapeHtml(d.label)}</span>
-                        <button onclick="triggerAuthGate()" class="text-[9px] text-slate-500 hover:text-slate-700">Copy</button>
-                    </div>
-                    ${channelHtml}
-                    <p class="text-[10px] text-slate-600 leading-normal">${escapeHtml(d.body)}</p>
-                </div>
-            `;
-        });
-        
-        detailContainer.innerHTML = `
-            <div class="pb-2 border-b border-[var(--border)] mb-2">
-                <h4 class="font-black text-sm text-[var(--ink)]">${escapeHtml(j.company)}</h4>
-                <p class="text-[10px] text-[var(--muted)]">${escapeHtml(j.title)} · ${escapeHtml(j.location)}</p>
-            </div>
-            
-            <div class="mb-3">
-                <span class="font-extrabold text-[10px] text-slate-500 uppercase tracking-wider block mb-1">🔍 Rejection Autopsy</span>
-                <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-                    <div class="font-extrabold text-[11px] mb-1.5 uppercase tracking-wide" style="color: ${j.wrong_door ? '#f43f5e' : '#10b981'};">
-                        ${j.wrong_door ? '⛔ WRONG DOOR' : '✅ RIGHT DOOR'}
-                    </div>
-                    ${findingsHtml}
-                    <div class="mt-2 text-[10px] text-slate-500 italic">
-                        <b>Right Door Recommendation:</b> ${escapeHtml(j.right_door)}
-                    </div>
-                </div>
-            </div>
-            
-            <div>
-                <span class="font-extrabold text-[10px] text-slate-500 uppercase tracking-wider block">🤝 Referral Copilot Drafts</span>
-                ${draftsHtml}
-            </div>
-        `;
-    }
-
-    window.triggerAuthGate = function() {
-        document.getElementById('demo-auth-gate').classList.remove('hidden');
-    };
-
-    window.closeAuthGate = function() {
-        document.getElementById('demo-auth-gate').classList.add('hidden');
-        clickCount = 0;
-    };
-
-    window.redirectToSignUp = function() {
-        window.location.href = '/login';
-    };
-
-    function escapeHtml(str) {
-        if (!str) return '';
-        return str
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
-    }
-})();
+    // Live board count — real production figure, shown only once it arrives so
+    // the page never displays a placeholder number as if it were measured.
+    fetch('/api/public/freshness')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (f) {
+            if (!f || !f.active_boards) return;
+            var el = document.getElementById('fr-boards');
+            var line = document.getElementById('freshness-line');
+            if (!el || !line) return;
+            el.textContent = Number(f.active_boards).toLocaleString();
+            line.classList.remove('hidden');
+        })
+        .catch(function () { /* the row above stands on its own */ });
 </script>
 </body>
 </html>
