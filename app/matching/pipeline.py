@@ -384,6 +384,8 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
     or their application was cleaned up). Direct DB query — these jobs used to
     be re-shortlisted only if they happened to win a retrieval slot, which also
     let them crowd fresh jobs out of the cross-encoder budget."""
+    from app.common.plan_limits import shortlist_daily_limit
+    _shortlist_cap = shortlist_daily_limit(user_id)
     shortlisted: List[int] = []
     with get_session() as session:
         # Any existing application blocks a re-shortlist, regardless of the
@@ -417,7 +419,7 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
         for job in session.exec(q).all():
             if job.id in applied_ids:
                 continue
-            if today_count >= settings.daily_shortlist_limit:
+            if today_count >= _shortlist_cap:
                 log.info("Daily shortlist limit reached — stopping re-shortlist of already-scored jobs.")
                 break
             if not _check_and_enforce_company_cap(session, job, job.rerank_score):
@@ -700,6 +702,8 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # client, so the slow network calls overlap instead of running one-by-one.
     rerank_results: dict[int, tuple] = {}
 
+    from app.common.plan_limits import shortlist_daily_limit
+    _shortlist_cap = shortlist_daily_limit(user_id)
     def _rerank_one(item):
         jid, _sim = item
         from app.common.inflight import claim
@@ -904,7 +908,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     select(Application).where(Application.job_id == job.id)
                 ).first()
                 if not existing:
-                    if today_count < settings.daily_shortlist_limit:
+                    if today_count < _shortlist_cap:
                         # ── Company cap + cooldown ──
                         if not _check_and_enforce_company_cap(session, job, score):
                             session.commit()
@@ -962,7 +966,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
                             except Exception as ne:
                                 log.warning("Failed to create high match notification: %s", ne)
                     else:
-                        log.info("Daily shortlist limit (%d) reached — skipping application creation for job %s.", settings.daily_shortlist_limit, job.title)
+                        log.info("Daily shortlist limit (%d) reached — skipping application creation for job %s.", _shortlist_cap, job.title)
 
             session.commit()
             log.info("Job %s @ %s: sim=%.3f rerank=%.0f — %s",

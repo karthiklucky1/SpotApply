@@ -6,12 +6,13 @@ day: it stopped a strong user at 50 while the 50th final was still returning
 are weak. This module replaces "a fixed number of results" with "a bounded
 amount of money, spent while the evidence says the next candidate is worth it".
 
-Three numbers, three different jobs (PRO shown; every plan scales the same way
-from PLAN_LIMITS["finals_daily"]):
+TWO numbers (PRO shown; every plan scales the same way from
+PLAN_LIMITS["finals_daily"]). This budget bounds COST. What a user is promised
+is now stated in PLAN_LIMITS["shortlist_daily"] — jobs delivered to the board —
+because that is the number they can see:
 
     soft   =  50/day    normal spending point — spent freely, no justification
     burst  = 100/day    absolute ceiling for one UTC day
-    weekly = 350/week   the real economic control (= 50/day average = today's cost)
 
 Past the SOFT point every extra final must be earned by two tests:
 
@@ -30,24 +31,31 @@ Nothing here chases a target — if the pool holds 6 good jobs, the user gets 6.
 
 DURABILITY. The counters that bound money are persisted to `UserUsage`
 (finals_count / finals_hits, one row per user per UTC day). In-memory counters
-cannot hold a weekly budget: every deploy would grant a fresh week, and that is
-exactly why the Aug 14-21 stall appeared to "heal" on restart. The ledger is the
-source of truth; a tiny per-process cache keeps the hot path off the database.
+reset on every deploy, which is exactly why the Aug 14-21 stall appeared to
+"heal" on restart. The ledger is the source of truth; a tiny per-process cache
+keeps the hot path off the database.
 
-PACING (2026-09-03). The three numbers above say how much a user may spend; on
-their own they said nothing about WHEN, and the answer in production was "all
-of it in the first hour". Both active users' finals for 2026-09-02 and 09-03
-were spent in the 00:xx UTC hour (176 and 87 finals) and the other 23 hours
-scored nothing — every posting that appeared during the US working day
-(13:00-01:00 UTC) waited for the next midnight, and the founder account then
-hit the weekly ceiling on Wednesday and scored nothing Thu-Sun. So each budget
-is now RELEASED along a curve (`day_fraction` / `week_fraction`): a head start
-at 00:00 UTC, the rest linearly through the day; one day's worth at Monday
-00:00, the rest linearly through the week. What is not spent stays available
-— the curve only ever bounds spend from above, and at 24:00 / Sunday night it
-reads the full budget, so HOW MUCH a user may spend is unchanged. Bursting is
-thereby limited to money the week has already released: a strong Tuesday
-spends what a quiet Monday left, and a strong Monday cannot borrow Thursday.
+PACING (2026-09-03). The numbers above say how much a user may spend; on their
+own they said nothing about WHEN, and the answer in production was "all of it
+in the first hour". Both active users' finals for 2026-09-02 and 09-03 were
+spent in the 00:xx UTC hour (176 and 87 finals) and the other 23 hours scored
+nothing, so every posting appearing during the US working day (13:00-01:00 UTC)
+waited for the next midnight. The DAY budget is therefore released along a
+curve (`day_fraction`): a head start at 00:00 UTC, the rest linearly through
+the day. What is not spent stays available — the curve only bounds spend from
+above, and at 24:00 it reads the full budget, so HOW MUCH is unchanged.
+
+NO WEEKLY CEILING (removed 2026-09-05). There was one, released along its own
+curve, and it took production to zero finals for four days. The curve was
+applied to a ledger that already held a front-loaded week: users who had spent
+normally under the previous all-at-midnight rules were instantly past what the
+week had "released" (300 spent against 158 released on the Wednesday) and
+stayed at zero until Sunday. Worse, `allowance` reported it as reason "paced",
+which the lane counts as the budget working rather than a stall — so the
+outage produced no warning at all. Two lessons, both encoded here now: a
+spend control must never be able to retroactively invalidate spend already
+made, and a reason that means "you get nothing" must never be filed under
+"healthy".
 """
 from __future__ import annotations
 
@@ -67,12 +75,10 @@ log = logging.getLogger(__name__)
 # value lives in UserUsage; this only avoids a SELECT per decision. Writes
 # increment the cached value in place, so within one process it never lags.
 _day_cache: dict = {}
-_week_cache: dict = {}          # user_id -> {"week": date, "finals": n, "at": monotonic}
 _recent: dict = {}              # user_id -> deque[bool], the last N final outcomes
 _lock = threading.Lock()
 
 _DAY_CACHE_TTL = 30.0           # seconds
-_WEEK_CACHE_TTL = 60.0
 
 
 def _utc_now() -> datetime:
@@ -86,6 +92,8 @@ def _utc_day() -> date:
 
 
 def _week_start(d: Optional[date] = None) -> date:
+    """Monday of that week. No longer a budget boundary — it only stamps
+    UserUsage.week_start so weekly spend stays reportable."""
     d = d or _utc_day()
     return d - timedelta(days=d.weekday())      # Monday
 
@@ -97,17 +105,20 @@ def _ledgerable(user_id: Optional[str]) -> bool:
 
 # ── Plan → the three budgets ─────────────────────────────────────────────────
 
-def budgets(soft_cap: int) -> Tuple[int, int, int]:
-    """(soft, burst, weekly) derived from the plan's daily allowance.
+def budgets(soft_cap: int) -> Tuple[int, int]:
+    """(soft, burst) derived from the plan's daily allowance.
 
-    Multipliers rather than three numbers per plan: a plan is one dial, and the
-    burst/weekly relationship (weekly = 7x soft = the same money the flat cap
-    already spent) has to hold for every tier or the economics drift apart.
+    There is no weekly ceiling any more. It was removed 2026-09-05 after it
+    took production to zero finals for four days: the weekly release curve was
+    applied to a ledger that already held a front-loaded week, so users who had
+    spent normally under the previous rules were instantly past what the week
+    had "released" and stayed there until the curve caught up. A control that
+    can retroactively invalidate spend already made is the wrong shape, and the
+    per-day soft/burst pair bounds cost on its own.
     """
     soft = max(0, int(soft_cap))
     burst = int(round(soft * max(1.0, settings.finals_burst_multiplier)))
-    weekly = int(round(soft * max(1.0, settings.finals_weekly_multiplier)))
-    return soft, burst, weekly
+    return soft, burst
 
 
 # ── The ledger ───────────────────────────────────────────────────────────────
@@ -127,19 +138,6 @@ def _read_day(user_id: str, day: date) -> Tuple[int, int]:
             return 0, 0
         return int(row.finals_count or 0), int(row.finals_hits or 0)
 
-
-def _read_week(user_id: str, week_start: date) -> int:
-    from sqlmodel import select
-    from app.db.init_db import get_session
-    from app.db.models import UserUsage
-    with get_session() as session:
-        rows = session.exec(
-            select(UserUsage).where(
-                UserUsage.user_id == user_id,
-                UserUsage.week_start == week_start,
-            )
-        ).all()
-        return sum(int(r.finals_count or 0) for r in rows)
 
 
 def _write(user_id: str, day: date, finals: int = 0, hits: int = 0) -> None:
@@ -212,20 +210,6 @@ def day_counts(user_id: Optional[str]) -> Tuple[int, int]:
     return finals, hits
 
 
-def week_finals(user_id: Optional[str]) -> int:
-    if not _ledgerable(user_id):
-        return 0
-    ws = _week_start()
-    now = time.monotonic()
-    with _lock:
-        c = _week_cache.get(user_id)
-        if c and c["week"] == ws and (now - c["at"]) < _WEEK_CACHE_TTL:
-            return c["finals"]
-    n = _read_week(user_id, ws)
-    with _lock:
-        _week_cache[user_id] = {"week": ws, "finals": n, "at": now}
-    return n
-
 
 def record_final(user_id: Optional[str]) -> None:
     """One authoritative Tier-2 call was paid for. Called from the reranker the
@@ -238,9 +222,6 @@ def record_final(user_id: Optional[str]) -> None:
         c = _day_cache.get(user_id)
         if c and c["day"] == day:
             c["finals"] += 1
-        w = _week_cache.get(user_id)
-        if w and w["week"] == _week_start(day):
-            w["finals"] += 1
     _write(user_id, day, finals=1)
 
 
@@ -270,8 +251,9 @@ def recent_hit_rate(user_id: Optional[str]) -> float:
 
     Returns 1.0 ("no evidence against") when too few finals have been scored to
     judge — a fresh process mid-day, or a user just starting their day. The
-    burst zone is still bounded by burst and weekly, so an optimistic default
-    cannot run away; a pessimistic one would silently cap every restart at soft.
+    burst zone is still bounded by the daily burst ceiling, so an optimistic
+    default cannot run away; a pessimistic one would silently cap every restart
+    at soft.
     """
     window = max(1, settings.finals_yield_window)
     with _lock:
@@ -307,23 +289,6 @@ def day_fraction(now: Optional[datetime] = None) -> float:
     elapsed = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
     return _clamp01(head + (1.0 - head) * elapsed)
 
-
-def week_fraction(now: Optional[datetime] = None) -> float:
-    """Share of the WEEK budget released by ``now``: one day's worth at Monday
-    00:00, the rest linearly to Sunday 24:00.
-
-    This is what bounds the burst zone to money the week has actually made
-    available. Without it a run of strong days spent 100/day and exhausted the
-    350 by Wednesday (founder account, week of 2026-08-31) — four days of
-    nothing, which is the daily failure at a larger scale.
-    """
-    if not settings.finals_pace_enabled:
-        return 1.0
-    now = now or _utc_now()
-    head = 1.0 / 7.0
-    since_monday = (now.weekday() * 86400 + now.hour * 3600
-                    + now.minute * 60 + now.second)
-    return _clamp01(head + (1.0 - head) * (since_monday / (7 * 86400.0)))
 
 
 def paced(total: int, fraction: float) -> int:
@@ -368,35 +333,27 @@ def burst_gate() -> int:
 def allowance(user_id: Optional[str], per_cycle_cap: int, soft_cap: int) -> Allowance:
     """The whole policy, in one place.
 
-    Every budget is read THROUGH its pacing curve: `soft_now`/`burst_now` are
-    the shares of the day's soft/burst released so far, `week_now` the share of
-    the week's. A slice never straddles the (paced) soft boundary: below it the
-    slice is clipped at the boundary, so the next cycle re-decides with the
-    strict gate rather than spending burst money under everyday rules.
+    Both budgets are read THROUGH the day's pacing curve: `soft_now`/`burst_now`
+    are the shares released so far. A slice never straddles the (paced) soft
+    boundary: below it the slice is clipped at the boundary, so the next cycle
+    re-decides with the strict gate rather than spending burst money under
+    everyday rules.
 
-    Reasons beginning with "paced" mean the money exists but has not been
-    released yet — the lane treats those as the budget working, not as a
-    stall (scoring_lane counts them separately from hard stops).
+    A "paced" reason means the money exists but today has not released it yet.
+    It can only ever hold a user back until later the SAME day — the curve
+    reaches 100% at 24:00 — which is what makes it safe for scoring_lane to
+    count separately from hard stops.
     """
-    soft, burst, weekly = budgets(soft_cap)
+    soft, burst = budgets(soft_cap)
     if soft <= 0:
         return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
 
     spent_day, _hits = day_counts(user_id)
-    spent_week = week_finals(user_id)
-    if spent_week >= weekly:
-        return Allowance(0, normal_gate(), "weekly budget spent")
-
-    dfrac, wfrac = day_fraction(), week_fraction()
+    dfrac = day_fraction()
     soft_now, burst_now = paced(soft, dfrac), paced(burst, dfrac)
-    week_now = paced(weekly, wfrac)
-    week_left = week_now - spent_week
-    week_paced = f"paced: week {spent_week}/{week_now} released ({wfrac:.0%} of week)"
 
     if spent_day < soft_now:
-        if week_left <= 0:
-            return Allowance(0, normal_gate(), week_paced)
-        n = min(per_cycle_cap, soft_now - spent_day, week_left)
+        n = min(per_cycle_cap, soft_now - spent_day)
         return Allowance(max(0, n), normal_gate(), "within soft budget")
 
     if spent_day >= burst:
@@ -409,10 +366,8 @@ def allowance(user_id: Optional[str], per_cycle_cap: int, soft_cap: int) -> Allo
     if rate < settings.finals_yield_continue_rate:
         return Allowance(0, burst_gate(),
                          f"yield {rate:.0%} below {settings.finals_yield_continue_rate:.0%}")
-    if week_left <= 0:
-        return Allowance(0, burst_gate(), week_paced)
 
-    n = min(per_cycle_cap, burst_now - spent_day, week_left)
+    n = min(per_cycle_cap, burst_now - spent_day)
     return Allowance(max(0, n), burst_gate(), f"burst earned (yield {rate:.0%})")
 
 
@@ -420,5 +375,4 @@ def reset_state() -> None:
     """Drop every in-process cache. For tests and the day roll."""
     with _lock:
         _day_cache.clear()
-        _week_cache.clear()
         _recent.clear()

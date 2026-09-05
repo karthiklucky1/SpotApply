@@ -230,3 +230,41 @@ def test_grounding_never_silently_reports_a_pass_it_did_not_verify():
     tests/test_grounding_enforcement.py."""
     assert isinstance(settings.grounding_required, bool)
     assert settings.grounding_required is True
+
+
+def test_a_plan_is_stated_in_what_the_user_receives():
+    """The plan numbers are shortlisted jobs and tailors per day — things a
+    person can count on their own board — not Tier-2 finals, which is an
+    internal LLM count that says nothing about what arrives.
+
+    finals_daily stays, but it is now purely the COST guard: it bounds what a
+    user's scoring may spend, while shortlist_daily bounds what they are shown.
+    Those are different jobs and conflating them is what made "50/day" mean
+    neither 50 jobs nor a knowable amount of money.
+    """
+    from app.db.models import PLAN_LIMITS, PlanTier
+    free, pro = PLAN_LIMITS[PlanTier.FREE], PLAN_LIMITS[PlanTier.PRO]
+    assert (free["shortlist_daily"], free["tailor_daily"]) == (20, 5)
+    assert (pro["shortlist_daily"], pro["tailor_daily"]) == (35, 35)
+
+    for tier, limits in PLAN_LIMITS.items():
+        assert limits["shortlist_daily"] > 0, tier
+        # Tailoring is per-application, so nobody can tailor more than they are
+        # shown. A tailor limit above the shortlist limit is unreachable config.
+        assert limits["tailor_daily"] <= limits["shortlist_daily"], (
+            f"{tier}: tailor_daily {limits['tailor_daily']} exceeds "
+            f"shortlist_daily {limits['shortlist_daily']} — unreachable")
+        # Paid tiers must not deliver less than Free.
+        if tier is not PlanTier.FREE:
+            assert limits["shortlist_daily"] >= free["shortlist_daily"], tier
+
+
+def test_the_board_can_render_a_full_day_for_every_plan():
+    """shortlist_render_cap has to clear the largest plan's daily delivery, or
+    the board hides jobs it just paid to score — the 100-cap bug, again."""
+    from app.db.models import PLAN_LIMITS
+    biggest = max(l["shortlist_daily"] for l in PLAN_LIMITS.values())
+    assert settings.shortlist_render_cap >= biggest
+    assert settings.daily_shortlist_limit >= biggest, (
+        "the global fallback must sit above every plan — an unknown plan falls "
+        "back to it and must not get LESS than a known one")

@@ -644,12 +644,17 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             if j and (j.rerank_reasoning or "").startswith(LOCAL_REASON_PREFIX):
                 local_jids.add(jid)
 
+    # The plan's ceiling on what may reach the board today, not the old flat
+    # 200 for everyone. Resolved once per call: it cannot change mid-loop.
+    from app.common.plan_limits import shortlist_daily_limit
+    _shortlist_cap = shortlist_daily_limit(uid)
+
     shortlisted: List[int] = []
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
         is_local = jid in local_jids
         if score < shortlist_threshold(is_local):
             continue
-        if today_count >= settings.daily_shortlist_limit:
+        if today_count >= _shortlist_cap:
             break
         with get_session() as session:
             job = session.get(Job, jid)

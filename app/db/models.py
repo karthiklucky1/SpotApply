@@ -414,17 +414,26 @@ class PlanTier(str, Enum):
 # roughly a quarter — so ~50 finals/day yields ~10-12 strong matches/day, and
 # ~100 yields ~20-25. At ~$0.0033/final that is ~$5/user/month at PRO.
 PLAN_LIMITS = {
-    PlanTier.FREE:   {"tailor_daily": 5,  "autofill_weekly": 2,    "finals_daily": 15},
-    # tailor_daily is a REAL number on PRO, not None. "Unlimited apart from the
-    # abuse ceiling" meant every user could spend 25 tailors/day (~$1.25/user/day
-    # on Haiku) with nothing in the product saying so — and while Stripe is
-    # unconfigured _get_user_plan puts EVERYONE on PRO, so that was the default
-    # for every invited friend. 12/day is past real human use (nobody tailors a
-    # dozen résumés in a day) and leaves the 25/day abuse cap as the backstop it
-    # was written to be, not as the only limit.
-    PlanTier.PRO:    {"tailor_daily": 12, "autofill_weekly": None, "finals_daily": 50},
-    PlanTier.BASIC:  {"tailor_daily": 12, "autofill_weekly": None, "finals_daily": 50},   # legacy → PRO limits
-    PlanTier.AGENCY: {"tailor_daily": 25, "autofill_weekly": None, "finals_daily": 100},  # legacy → PRO limits
+    # WHAT A PLAN BUYS is now stated in the thing the user can see: qualified
+    # jobs delivered to the board per day, and tailored resumes per day. It used
+    # to be stated in Tier-2 finals — an internal LLM count nobody outside this
+    # repo could interpret, and one that says nothing about what arrives.
+    #
+    #   shortlist_daily  jobs that may reach the board in one UTC day. A CEILING,
+    #                    never a target: if the pool holds four jobs clearing the
+    #                    70 bar, the user gets four (see the note below).
+    #   tailor_daily     tailored resume + cover letter generations per day.
+    #   finals_daily     UNCHANGED IN MEANING and still the money guard — the
+    #                    soft point of the adaptive spend budget. It bounds cost;
+    #                    shortlist_daily bounds what is shown.
+    PlanTier.FREE:   {"shortlist_daily": 20, "tailor_daily": 5,
+                      "autofill_weekly": 2,    "finals_daily": 15},
+    PlanTier.PRO:    {"shortlist_daily": 35, "tailor_daily": 35,
+                      "autofill_weekly": None, "finals_daily": 50},
+    PlanTier.BASIC:  {"shortlist_daily": 35, "tailor_daily": 35,
+                      "autofill_weekly": None, "finals_daily": 50},    # legacy -> PRO
+    PlanTier.AGENCY: {"shortlist_daily": 35, "tailor_daily": 35,
+                      "autofill_weekly": None, "finals_daily": 100},   # legacy -> PRO
 }
 
 # USD per month. ONE paid plan: Pro, monthly, cancel any time (2026-09 launch

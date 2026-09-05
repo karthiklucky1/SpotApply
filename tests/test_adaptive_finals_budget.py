@@ -41,22 +41,20 @@ def _spend(uid, n, hit=False):
 
 # ── the three budgets ────────────────────────────────────────────────────────
 
-def test_the_three_budgets_come_from_one_plan_dial():
-    soft, burst, weekly = fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"])
-    assert (soft, burst, weekly) == (50, 100, 350)
-    soft, burst, weekly = fb.budgets(PLAN_LIMITS[PlanTier.FREE]["finals_daily"])
-    assert (soft, burst, weekly) == (15, 30, 105)
+def test_the_two_budgets_come_from_one_plan_dial():
+    assert fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"]) == (50, 100)
+    assert fb.budgets(PLAN_LIMITS[PlanTier.FREE]["finals_daily"]) == (15, 30)
 
-
-def test_bursting_costs_the_same_money_as_the_flat_cap():
-    """weekly == 7 x soft, i.e. a 50/day average. Burst reallocates spend across
-    the week; it must never ADD any. Raising finals_weekly_multiplier is the one
-    change here that increases what a user costs."""
-    assert settings.finals_weekly_multiplier == 7.0
+def test_burst_is_a_ceiling_not_an_allowance():
+    """Burst is 2x soft for every tier — one dial per plan. There is no weekly
+    number to keep in step any more; the day is the only window."""
+    assert settings.finals_burst_multiplier == 2.0
     for tier in (PlanTier.FREE, PlanTier.PRO, PlanTier.AGENCY):
-        soft, _burst, weekly = fb.budgets(PLAN_LIMITS[tier]["finals_daily"])
-        assert weekly == soft * 7
-
+        soft, burst = fb.budgets(PLAN_LIMITS[tier]["finals_daily"])
+        assert burst == soft * 2
+    assert not hasattr(settings, "finals_weekly_multiplier"), (
+        "the weekly ceiling was removed 2026-09-05 — a setting nothing reads is "
+        "a control someone will wire back up without reading why it went")
 
 def test_the_promise_floor_sits_between_the_gate_and_the_shortlist_bar():
     """At or below the everyday advance gate it does nothing; at or above the
@@ -70,7 +68,7 @@ def test_the_promise_floor_sits_between_the_gate_and_the_shortlist_bar():
 def test_the_global_backstop_still_clears_a_bursting_user_base():
     """LLM_DAILY_FINAL_CAP has to sit above what real users can now spend in a
     day, or the platform backstop silently becomes the allocation again."""
-    _s, burst, _w = fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"])
+    _s, burst = fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"])
     assert settings.llm_daily_final_cap >= burst * 50
 
 
@@ -112,22 +110,30 @@ def test_burst_is_a_hard_ceiling_however_strong_the_day_is():
     assert a.n == 0 and a.reason == "daily burst ceiling"
 
 
-def test_the_weekly_budget_binds_across_days():
-    """Four strong days at burst would be 400 finals; the week allows 350."""
-    uid = "u-week"
-    for _ in range(340):
+def test_no_control_can_invalidate_spend_already_made(monkeypatch):
+    """The 2026-09-03 outage, pinned.
+
+    A weekly release curve was applied to a ledger that already held a
+    front-loaded week. A user at 300 finals was past what the curve said the
+    week had "released" (158 by Wednesday) and got ZERO for four days — while
+    `allowance` reported reason "paced", which the lane files under "the budget
+    working" rather than a stall, so nothing warned.
+
+    Any budget window longer than the pacing curve can do this again. The day
+    is now the only window: whatever a user spent before, a new UTC day starts
+    them at the head of the curve with a working allowance.
+    """
+    uid = "u-yesterday"
+    _at(monkeypatch, MONDAY + timedelta(hours=12))
+    for _ in range(400):                     # a very heavy Monday
         fb.record_final(uid)
         fb.record_outcome(uid, 90.0)
-    # Same UTC day here, so the day ceiling would bite first — check the weekly
-    # arithmetic directly against the ledger the day counters share.
-    assert fb.week_finals(uid) == 340
+    # Tuesday. The ledger is keyed by UTC day, so the new day reads its own row.
+    _at(monkeypatch, MONDAY + timedelta(days=1, hours=12))
+    fb.reset_state()
     a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.n == 0
-    for _ in range(20):
-        fb.record_final(uid)
-    assert fb.week_finals(uid) == 360
-    assert fb.allowance(uid, per_cycle_cap=40, soft_cap=50).reason == "weekly budget spent"
-
+    assert a.n > 0, f"a fresh day must have a budget, got {a!r}"
+    assert not a.reason.startswith("paced"), a.reason
 
 def test_no_evidence_yet_is_not_evidence_against():
     """A fresh process mid-day has an empty outcome ring. Defaulting pessimistic
@@ -287,18 +293,15 @@ def _drain(uid: str, hit: bool = False) -> int:
     raise AssertionError("allowance never closed")
 
 
-def test_the_curves_release_the_full_budget_by_the_end_of_the_day_and_week(monkeypatch):
-    """Pacing changes WHEN, never HOW MUCH: at Sunday 23:59:59 every curve reads
-    its whole budget — which is why every other test in this file (pinned
-    there by conftest) still sees soft/burst/weekly = 50/100/350."""
+def test_the_curve_releases_the_full_budget_by_the_end_of_the_day(monkeypatch):
+    """Pacing changes WHEN, never HOW MUCH: at 23:59:59 the curve reads the
+    whole budget — which is why every other test in this file (pinned there by
+    conftest) still sees soft/burst = 50/100."""
     _at(monkeypatch, SUNDAY_NIGHT)
     assert fb.paced(50, fb.day_fraction()) == 50
     assert fb.paced(100, fb.day_fraction()) == 100
-    assert fb.paced(350, fb.week_fraction()) == 350
     _at(monkeypatch, MONDAY)
     assert fb.paced(50, fb.day_fraction()) == 8, "the 15% head start of 50"
-    assert fb.paced(350, fb.week_fraction()) == 50, "one day's worth at Monday 00:00"
-
 
 def test_just_after_midnight_only_the_head_start_is_available(monkeypatch):
     """00:10 UTC, PRO, bottomless backlog: 8 at the everyday gate (15% of 50),
@@ -353,22 +356,18 @@ def test_strong_candidates_can_burst_at_any_hour_within_the_released_share(monke
     assert a.n == 0 and a.reason.startswith("paced: day"), a.reason
 
 
-def test_a_hot_start_cannot_exhaust_the_week_by_wednesday(monkeypatch):
-    """Founder account, week of 2026-08-31: burst-level days Mon-Wed hit the
-    350 and Thu-Sun scored nothing. With the weekly curve, seven hot days
-    (every final a hit, so burst is always earned) spend the same 350 — and
-    every day, Sunday included, still has a working budget."""
+def test_every_day_of_a_hot_week_still_has_a_budget(monkeypatch):
+    """Seven back-to-back hot days (every final a hit, so burst is always
+    earned). Each day is bounded by its own burst ceiling and NO day is starved
+    by what an earlier one spent — the failure the weekly ceiling produced."""
     uid = "u-pace-week"
     per_day = [0] * 7
     for day in range(7):
         for hour in range(0, 24, 2):
             _at(monkeypatch, MONDAY + timedelta(days=day, hours=hour))
             per_day[day] += _drain(uid, hit=True)
-    assert 340 <= sum(per_day) <= 350, per_day         # the same money, still spent
     assert max(per_day) <= 100, per_day                # the burst ceiling holds
-    assert min(per_day) >= 30, per_day                 # no starved day
-    assert per_day[0] > per_day[1], per_day            # Monday's head start is the burst
-
+    assert min(per_day) >= 90, per_day                 # no day starved by an earlier one
 
 def test_pacing_off_restores_everything_at_midnight(monkeypatch):
     monkeypatch.setattr(settings, "finals_pace_enabled", False)

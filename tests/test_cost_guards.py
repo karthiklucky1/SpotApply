@@ -255,11 +255,32 @@ def test_tailor_spend_never_raises(monkeypatch):
 
 
 def test_tailor_abuse_cap_bounds_a_single_account():
-    """At ~$0.045-0.17/tailor the old default of 150/day allowed $6.75-25.50
-    from ONE account — multiples of the whole platform scoring budget."""
-    assert settings.tailor_abuse_daily_cap > 0, "an unlimited cap is an unlimited bill"
-    worst_case = settings.tailor_abuse_daily_cap * 0.17
-    assert worst_case <= 5.0, f"cap allows ${worst_case:.2f}/user/day"
+    """The ceiling has to sit above the product limit and below the point where
+    one account costs more than it pays.
+
+    Pro is $100/month and buys 35 tailors/day. A tailor costs ~$0.045 typical
+    and ~$0.17 worst case (long resume + cover letter + a grounding retry), so:
+
+        typical, every single day   35 x $0.045 x 30 = $47/month   sustainable
+        worst case, every day       40 x $0.17  x 30 = $204/month  underwater
+
+    The worst case is not human behaviour — nobody tailors 40 resumes a day for
+    a month — which is exactly why this cap exists: it bounds a SCRIPT, not a
+    user. 40 keeps a scripted account inside one order of magnitude of revenue
+    while leaving the per-plan number (35) as the limit a person actually meets.
+    If the typical cost ever approaches the worst case, this cap is the thing to
+    cut, not the plan.
+    """
+    cap = settings.tailor_abuse_daily_cap
+    assert cap > 0, "an unlimited cap is an unlimited bill"
+    from app.db.models import PLAN_LIMITS, PlanTier
+    assert cap > PLAN_LIMITS[PlanTier.PRO]["tailor_daily"], (
+        "the abuse ceiling must sit ABOVE the product limit, or it silently "
+        "becomes the product limit")
+    assert cap * 0.045 * 30 <= 100.0, (
+        f"typical usage at the cap costs ${cap * 0.045 * 30:.0f}/month against "
+        f"$100 revenue — the plan is underwater before any scoring spend")
+    assert cap * 0.17 <= 7.0, f"worst case allows ${cap * 0.17:.2f}/user/day"
 
 
 def test_resume_block_is_deterministic():

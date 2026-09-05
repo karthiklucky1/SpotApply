@@ -432,6 +432,7 @@ def _fast_path_user(uid: str, score_budget: int,
     FAISS/embedding model. Anything left unscored (budget, errors) is picked up
     by the 5-min matching lane, so this can only make things faster, never drop
     a job."""
+    from app.common.plan_limits import shortlist_daily_limit
     from app.matching.pipeline import (
         _AUTOFILL_SOURCES, _check_and_enforce_company_cap, _load_resume,
     )
@@ -633,7 +634,7 @@ def _fast_path_user(uid: str, score_budget: int,
                 session.add(job)
 
                 if score >= settings.shortlist_score_threshold \
-                        and today_count < settings.daily_shortlist_limit:
+                        and today_count < shortlist_daily_limit(uid):
                     existing = session.exec(
                         select(Application).where(Application.job_id == job.id)
                     ).first()

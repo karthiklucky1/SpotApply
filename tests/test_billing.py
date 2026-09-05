@@ -436,7 +436,7 @@ def test_plan_limits_are_the_documented_numbers():
     # A real number, not None: "unlimited apart from the 25/day abuse ceiling"
     # was the default for every user while Stripe is unconfigured, because
     # _get_user_plan puts everyone on PRO. 12/day is past real human use.
-    assert PLAN_LIMITS[PlanTier.PRO]["tailor_daily"] == 12
+    assert PLAN_LIMITS[PlanTier.PRO]["tailor_daily"] == 35
     assert PLAN_LIMITS[PlanTier.FREE]["autofill_weekly"] == 2
 
 
