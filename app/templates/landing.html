@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SpotApply — Only apply to jobs that actually fit you</title>
-<meta name="description" content="SpotApply monitors company career pages, scores roles against your real experience, and prepares a grounded tailored résumé for your strongest matches.">
+<title>SpotApply — Apply only where you actually fit</title>
+<meta name="description" content="SpotApply watches 50,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored résumé for the ones worth your time.">
 <link rel="canonical" href="https://app.spotapply.ai/">
-<meta property="og:title" content="SpotApply — Only apply to jobs that actually fit you">
-<meta property="og:description" content="Continuous discovery across company career pages, honest match scoring, and tailored résumés grounded in your real experience.">
+<meta property="og:title" content="SpotApply — Apply only where you actually fit">
+<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 32 ATS providers and job feeds, honest match scoring, and tailored résumés grounded in your real experience.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://app.spotapply.ai/">
 <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
@@ -16,24 +16,28 @@
 <link rel="manifest" href="/static/manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/tailwind-landing.css">
 <link rel="stylesheet" href="/static/vendor/aos.css">
 <style>
     :root {
         /* Light, deliberate, single-accent. Green is reserved for verified /
-           success states only — it never carries brand or decoration. */
+           success states only — it never carries brand or decoration.
+           The accent is a light purple at 5.3:1 on white, so it can carry
+           button labels and the 12px eyebrow without failing AA. The two
+           lighter purples below are tints only — never text. */
         --canvas: #FFFFFF;
-        --surface: #F8FAFC;
-        --surface-2: #F1F5F9;
-        --ink: #0F172A;
-        --ink-soft: #334155;
-        --muted: #64748B;
-        --border: #E2E8F0;
-        --border-strong: #CBD5E1;
-        --accent: #4F46E5;
-        --accent-700: #4338CA;
-        --accent-tint: #EEF2FF;
+        --surface: #FAFAFC;
+        --surface-2: #F2F1F8;
+        --ink: #17151F;
+        --ink-soft: #3B3747;
+        --muted: #6B6779;
+        --border: #E7E5EE;
+        --border-strong: #CFCBDC;
+        --accent: #6C4BF5;
+        --accent-700: #5A38DE;
+        --accent-tint: #F3F0FF;
+        --accent-line: #DED5FF;
         --ok: #047857;
         --ok-tint: #ECFDF5;
         --ok-border: #A7F3D0;
@@ -68,8 +72,18 @@
 
     /* ── type ───────────────────────────────────────────────────────────── */
     h1, h2, h3 { margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
-    .h1 { font-size: clamp(38px, 6.4vw, 68px); line-height: 1.04; font-weight: 800; }
-    .h2 { font-size: clamp(28px, 3.4vw, 44px); line-height: 1.1; font-weight: 700; }
+    .h1 { font-size: clamp(40px, 6.6vw, 72px); line-height: 1.02; font-weight: 800; letter-spacing: -0.035em; }
+    .h2 { font-size: clamp(28px, 3.4vw, 44px); line-height: 1.1; font-weight: 700; letter-spacing: -0.028em; }
+    /* The one editorial note on the page. Instrument Serif italic sets the
+       phrase the whole headline turns on; everything else stays Outfit, so
+       this reads as emphasis rather than a second brand. */
+    .serif {
+        font-family: 'Instrument Serif', 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+        font-style: italic; font-weight: 400;
+        letter-spacing: -0.012em;
+        /* Instrument Serif runs small against Outfit at the same size. */
+        font-size: 1.1em; line-height: 0.9;
+    }
     .h3 { font-size: 19px; line-height: 1.3; font-weight: 700; }
     .lede { font-size: clamp(17px, 1.35vw, 20px); line-height: 1.6; color: var(--ink-soft); max-width: 62ch; }
     .body { font-size: 15.5px; line-height: 1.65; color: var(--ink-soft); }
@@ -151,6 +165,33 @@
     .blocked {
         border-left: 3px solid var(--border-strong); padding-left: 16px;
         font-size: 14.5px; line-height: 1.6; color: var(--muted);
+    }
+
+    /* ── source strip ───────────────────────────────────────────────────── */
+    /* A slow marquee of the providers actually integrated in app/discovery.
+       The reduced-motion block above kills the animation outright, which
+       leaves a plain horizontally-scrollable row — so the names stay
+       reachable either way. */
+    .strip { overflow: hidden; position: relative; }
+    .strip::before, .strip::after {
+        content: ""; position: absolute; top: 0; bottom: 0; width: 88px; z-index: 2;
+        pointer-events: none;
+    }
+    .strip::before { left: 0; background: linear-gradient(90deg, var(--canvas), transparent); }
+    .strip::after { right: 0; background: linear-gradient(270deg, var(--canvas), transparent); }
+    .strip-track {
+        display: flex; align-items: center; gap: 44px; width: max-content;
+        animation: strip-scroll 46s linear infinite;
+    }
+    .strip:hover .strip-track { animation-play-state: paused; }
+    @keyframes strip-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    .strip-item {
+        font-size: 16px; font-weight: 600; color: var(--muted);
+        letter-spacing: -0.01em; white-space: nowrap;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .strip { overflow-x: auto; }
+        .strip::before, .strip::after { display: none; }
     }
 
     /* ── demo form ──────────────────────────────────────────────────────── */
@@ -239,12 +280,13 @@
 <!-- ── 2. Hero ───────────────────────────────────────────────────────────── -->
 <section class="section" style="padding-top:88px;padding-bottom:56px;">
     <div class="wrap" style="text-align:center;">
-        <h1 class="h1" data-aos="fade-up" style="max-width:16ch;margin:0 auto;">
-            Only apply to jobs that actually fit you.
+        <h1 class="h1" data-aos="fade-up" style="max-width:15ch;margin:0 auto;">
+            Apply only where you <span class="serif">actually fit.</span>
         </h1>
-        <p class="lede" data-aos="fade-up" data-aos-delay="80" style="margin:26px auto 0;">
-            SpotApply monitors company career pages, scores roles against your real
-            experience, and prepares a grounded tailored résumé for your strongest matches.
+        <p class="lede" data-aos="fade-up" data-aos-delay="80" style="margin:28px auto 0;">
+            SpotApply watches company career pages around the clock, scores every role
+            against your real experience, and prepares a grounded tailored résumé for
+            the ones worth your time.
         </p>
         <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="140"
              style="gap:12px;justify-content:center;margin-top:34px;">
@@ -283,34 +325,82 @@
     </div>
 </section>
 
-<!-- ── 3. Product proof ──────────────────────────────────────────────────── -->
+<!-- ── 3. Where the roles come from ──────────────────────────────────────── -->
+<!-- Every name here is a provider with an integration in app/discovery or
+     app/discovery/sources — nothing aspirational. -->
+<section aria-label="Job sources SpotApply reads" style="padding:56px 0 64px;">
+    <div class="wrap">
+        <p style="text-align:center;font-size:13px;color:var(--muted);margin:0 0 26px;">
+            Reading postings straight from the systems companies actually hire on
+        </p>
+    </div>
+    <div class="strip">
+        <div class="strip-track" aria-hidden="true">
+            <span class="strip-item">Greenhouse</span><span class="strip-item">Lever</span>
+            <span class="strip-item">Ashby</span><span class="strip-item">Workday</span>
+            <span class="strip-item">SmartRecruiters</span><span class="strip-item">Workable</span>
+            <span class="strip-item">BambooHR</span><span class="strip-item">Teamtailor</span>
+            <span class="strip-item">Rippling</span><span class="strip-item">Recruitee</span>
+            <span class="strip-item">Personio</span><span class="strip-item">Breezy</span>
+            <span class="strip-item">Pinpoint</span><span class="strip-item">join.com</span>
+            <span class="strip-item">LinkedIn</span><span class="strip-item">Google Jobs</span>
+            <span class="strip-item">Remotive</span><span class="strip-item">RemoteOK</span>
+            <span class="strip-item">The Muse</span><span class="strip-item">WeWorkRemotely</span>
+            <span class="strip-item">Arbeitnow</span><span class="strip-item">Jobicy</span>
+            <span class="strip-item">Adzuna</span><span class="strip-item">Reed</span>
+            <span class="strip-item">Jooble</span><span class="strip-item">HN Who&#39;s Hiring</span>
+            <span class="strip-item">Y&nbsp;Combinator</span>
+
+            <span class="strip-item">Greenhouse</span><span class="strip-item">Lever</span>
+            <span class="strip-item">Ashby</span><span class="strip-item">Workday</span>
+            <span class="strip-item">SmartRecruiters</span><span class="strip-item">Workable</span>
+            <span class="strip-item">BambooHR</span><span class="strip-item">Teamtailor</span>
+            <span class="strip-item">Rippling</span><span class="strip-item">Recruitee</span>
+            <span class="strip-item">Personio</span><span class="strip-item">Breezy</span>
+            <span class="strip-item">Pinpoint</span><span class="strip-item">join.com</span>
+            <span class="strip-item">LinkedIn</span><span class="strip-item">Google Jobs</span>
+            <span class="strip-item">Remotive</span><span class="strip-item">RemoteOK</span>
+            <span class="strip-item">The Muse</span><span class="strip-item">WeWorkRemotely</span>
+            <span class="strip-item">Arbeitnow</span><span class="strip-item">Jobicy</span>
+            <span class="strip-item">Adzuna</span><span class="strip-item">Reed</span>
+            <span class="strip-item">Jooble</span><span class="strip-item">HN Who&#39;s Hiring</span>
+            <span class="strip-item">Y&nbsp;Combinator</span>
+        </div>
+    </div>
+</section>
+
+<!-- ── 4. Product proof ──────────────────────────────────────────────────── -->
 <section class="section-tight bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap">
         <div class="grid grid-cols-2 lg:grid-cols-4" style="gap:32px;">
             <div>
-                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">14</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">ATS &amp; job-board providers</div>
+                <!-- Static value is a conservative floor that is true on its own;
+                     the script upgrades it to the exact live registry count, so a
+                     failed fetch never leaves a placeholder standing as measured. -->
+                <div class="num" id="fr-boards" style="font-size:34px;font-weight:800;color:var(--ink);">50,000+</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">Company boards tracked</div>
             </div>
             <div>
-                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">70+</div>
+                <div class="num" style="font-size:34px;font-weight:800;color:var(--ink);">32</div>
+                <div class="body" style="font-size:14px;margin-top:4px;">ATS providers &amp; job feeds</div>
+            </div>
+            <div>
+                <div class="num" style="font-size:34px;font-weight:800;color:var(--ink);">70+</div>
                 <div class="body" style="font-size:14px;margin-top:4px;">Qualified-match score floor</div>
             </div>
             <div>
-                <div class="num" style="font-size:32px;font-weight:800;color:var(--ink);">24/7</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">Continuous discovery</div>
-            </div>
-            <div>
-                <div style="font-size:32px;font-weight:800;color:var(--ink);">Grounded</div>
+                <div style="font-size:34px;font-weight:800;color:var(--ink);">Grounded</div>
                 <div class="body" style="font-size:14px;margin-top:4px;">Every tailored claim verified</div>
             </div>
         </div>
-        <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:28px;">
-            Currently tracking <span id="fr-boards" class="num" style="font-weight:600;color:var(--ink-soft);"></span> company boards.
+        <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:26px;">
+            <span class="num" id="fr-jobs" style="font-weight:600;color:var(--ink-soft);"></span>
+            new postings picked up in the last seven days.
         </p>
     </div>
 </section>
 
-<!-- ── 4. Three core features ────────────────────────────────────────────── -->
+<!-- ── 5. Three core features ────────────────────────────────────────────── -->
 <section id="how-it-works" class="section">
     <div class="wrap">
         <div data-aos="fade-up" style="max-width:60ch;">
@@ -319,7 +409,7 @@
         </div>
         <div class="grid lg:grid-cols-3" data-aos="fade-up" data-aos-delay="80" style="gap:24px;margin-top:56px;">
             <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#4F46E5" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="#4F46E5" stroke-width="2" stroke-linecap="round"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                 <h3 class="h3" style="margin-top:18px;">Find</h3>
                 <p class="body" style="margin-top:10px;">
                     Continuously monitor company career pages and surface strong matches —
@@ -327,7 +417,7 @@
                 </p>
             </div>
             <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v18M3.5 8.5h17M3.5 15.5h17" stroke="#4F46E5" stroke-width="2" stroke-linecap="round"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><path d="M12 3v18M3.5 8.5h17M3.5 15.5h17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                 <h3 class="h3" style="margin-top:18px;">Understand</h3>
                 <p class="body" style="margin-top:10px;">
                     See why each role fits: skills, experience, seniority, and
@@ -335,7 +425,7 @@
                 </p>
             </div>
             <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h7l4.5 4.5V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="#4F46E5" stroke-width="2" stroke-linejoin="round"/><path d="M13.5 4v5h5" stroke="#4F46E5" stroke-width="2" stroke-linejoin="round"/></svg>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><path d="M7 4h7l4.5 4.5V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.5 4v5h5" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
                 <h3 class="h3" style="margin-top:18px;">Apply stronger</h3>
                 <p class="body" style="margin-top:10px;">
                     Produce ATS-safe, truthful tailored résumés built only from evidence
@@ -346,7 +436,7 @@
     </div>
 </section>
 
-<!-- ── 5. Real product ───────────────────────────────────────────────────── -->
+<!-- ── 6. Real product ───────────────────────────────────────────────────── -->
 <section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap">
         <div data-aos="fade-up" style="max-width:60ch;">
@@ -375,7 +465,7 @@
     </div>
 </section>
 
-<!-- ── 6. Grounded résumé tailoring ──────────────────────────────────────── -->
+<!-- ── 7. Grounded résumé tailoring ──────────────────────────────────────── -->
 <section id="tailoring" class="section">
     <div class="wrap">
         <div class="grid lg:grid-cols-12" style="gap:48px;">
@@ -444,7 +534,7 @@
     </div>
 </section>
 
-<!-- ── 7. Application workflow ───────────────────────────────────────────── -->
+<!-- ── 8. Application workflow ───────────────────────────────────────────── -->
 <section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap">
         <div data-aos="fade-up" style="max-width:60ch;">
@@ -488,7 +578,7 @@
     </div>
 </section>
 
-<!-- ── 8. Try it ─────────────────────────────────────────────────────────── -->
+<!-- ── 9. Try it ─────────────────────────────────────────────────────────── -->
 <section id="try" class="section">
     <div class="wrap">
         <div data-aos="fade-up" style="text-align:center;max-width:62ch;margin:0 auto;">
@@ -552,7 +642,7 @@
     </div>
 </section>
 
-<!-- ── 9. Pricing ────────────────────────────────────────────────────────── -->
+<!-- ── 10. Pricing ────────────────────────────────────────────────────────── -->
 <section id="pricing" class="section">
     <div class="wrap">
         <div data-aos="fade-up" style="text-align:center;max-width:56ch;margin:0 auto;">
@@ -591,7 +681,7 @@
     </div>
 </section>
 
-<!-- ── 10. FAQ ────────────────────────────────────────────────────────────── -->
+<!-- ── 11. FAQ ────────────────────────────────────────────────────────────── -->
 <section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:800px;">
         <h2 class="h2" data-aos="fade-up">Questions</h2>
@@ -607,9 +697,14 @@
             <details class="faq">
                 <summary>Where do the jobs come from?</summary>
                 <p class="body">
-                    Public company career pages and ATS providers — Greenhouse, Lever,
-                    Ashby, Workday, SmartRecruiters, Workable, Personio, Rippling,
-                    BambooHR, Teamtailor, Recruitee, Breezy, Pinpoint and join.com —
+                    Two ways. Straight from the ATS a company hires on — Greenhouse,
+                    Lever, Ashby, Workday, SmartRecruiters, Workable, Personio,
+                    Rippling, BambooHR, Teamtailor, Recruitee, Breezy, Pinpoint and
+                    join.com — which is where a posting appears first. And from public
+                    job feeds and aggregators, including Remotive, RemoteOK, The Muse,
+                    WeWorkRemotely, Arbeitnow, Jobicy, Adzuna, Reed, Jooble, Hacker
+                    News Who&#39;s Hiring, Y&nbsp;Combinator, Google Jobs and LinkedIn.
+                    32 providers in total, across more than 50,000 company boards
                     polled continuously.
                 </p>
             </details>
@@ -651,7 +746,7 @@
     </div>
 </section>
 
-<!-- ── 11. Final CTA ─────────────────────────────────────────────────────── -->
+<!-- ── 12. Final CTA ─────────────────────────────────────────────────────── -->
 <section class="section" style="text-align:center;">
     <div class="wrap">
         <h2 class="h2" data-aos="fade-up" style="max-width:20ch;margin:0 auto;">
@@ -668,7 +763,7 @@
     </div>
 </section>
 
-<!-- ── 12. Footer ────────────────────────────────────────────────────────── -->
+<!-- ── 13. Footer ────────────────────────────────────────────────────────── -->
 <footer style="border-top:1px solid var(--border);padding:40px 0;">
     <div class="wrap flex flex-col sm:flex-row" style="align-items:center;justify-content:space-between;gap:18px;">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -857,19 +952,28 @@
         });
     })();
 
-    // Live board count — real production figure, shown only once it arrives so
-    // the page never displays a placeholder number as if it were measured.
+    // Live production figures. The board tile already carries a conservative
+    // floor that is true on its own, so a failed fetch degrades to an honest
+    // number rather than a placeholder; the 7-day line only appears once it
+    // has a measured value to show.
     fetch('/api/public/freshness')
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (f) {
-            if (!f || !f.active_boards) return;
-            var el = document.getElementById('fr-boards');
+            if (!f) return;
+            var boards = document.getElementById('fr-boards');
+            if (boards && f.active_boards) {
+                boards.textContent = Number(f.active_boards).toLocaleString();
+            }
+            var jobs = document.getElementById('fr-jobs');
             var line = document.getElementById('freshness-line');
-            if (!el || !line) return;
-            el.textContent = Number(f.active_boards).toLocaleString();
-            line.classList.remove('hidden');
+            // A tiny count is worse than no count — a dev database or a quiet
+            // window would put "6 new postings" under a 50,000-board claim.
+            if (jobs && line && f.jobs_tracked_7d >= 500) {
+                jobs.textContent = Number(f.jobs_tracked_7d).toLocaleString();
+                line.classList.remove('hidden');
+            }
         })
-        .catch(function () { /* the row above stands on its own */ });
+        .catch(function () { /* the stat row stands on its own */ });
 </script>
 </body>
 </html>
