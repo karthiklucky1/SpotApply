@@ -21,27 +21,27 @@
 <link rel="stylesheet" href="/static/vendor/aos.css">
 <style>
     :root {
-        /* Light, deliberate, single-accent. Green is reserved for verified /
-           success states only — it never carries brand or decoration.
-           The accent is a light purple at 5.3:1 on white, so it can carry
-           button labels and the 12px eyebrow without failing AA. The two
-           lighter purples below are tints only — never text. */
+        /* One accent, on white. Starbucks Green at 6.15:1 carries buttons, the
+           12px eyebrow and links. House Green (#1E3932, 12.4:1) is the ink,
+           and also the verified mark — one step deeper than the accent, so
+           "this is a button" and "this was checked" stay separable even
+           though both are green. Red is validation only. */
         --canvas: #FFFFFF;
-        --surface: #FAFAFC;
-        --surface-2: #F2F1F8;
-        --ink: #17151F;
-        --ink-soft: #3B3747;
-        --muted: #6B6779;
-        --border: #E7E5EE;
-        --border-strong: #CFCBDC;
-        --accent: #6C4BF5;
-        --accent-700: #5A38DE;
-        --accent-tint: #F3F0FF;
-        --accent-line: #DED5FF;
+        --surface: #FAFAF9;
+        --surface-2: #F1F3F1;
+        --ink: #1E3932;
+        --ink-soft: #2C4A40;
+        --muted: #5F6B65;
+        --border: #E3E7E3;
+        --border-strong: #C7D0CB;
+        --accent: #00704A;
+        --accent-700: #006241;
+        --accent-tint: #D4E9E2;
+        --accent-line: #B9DCCE;
         --warn: #B42318;        /* validation only — 6.6:1 on white */
-        --ok: #047857;
-        --ok-tint: #ECFDF5;
-        --ok-border: #A7F3D0;
+        --ok: #1E3932;
+        --ok-tint: #E6F4EE;
+        --ok-border: #A8CFC0;
         --radius: 14px;
         --shadow-sm: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06);
         --shadow-lg: 0 24px 48px -24px rgba(15,23,42,.18), 0 2px 8px rgba(15,23,42,.04);
@@ -733,12 +733,12 @@
             </div>
 
             <ul style="list-style:none;padding:0;margin:32px 0 0;display:flex;flex-direction:column;gap:13px;">
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Continuous job discovery</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Qualified match scoring</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Grounded tailored resumes</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application autofill</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Sponsorship intelligence</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application tracking</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Continuous job discovery</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Qualified match scoring</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Grounded tailored resumes</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application autofill</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Sponsorship intelligence</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#1E3932" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application tracking</span></li>
             </ul>
 
             <a href="/login?mode=signup" class="btn btn-primary" style="width:100%;margin-top:32px;">Start free</a>
