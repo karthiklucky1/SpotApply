@@ -19,19 +19,29 @@ Scoring runs at full speed until the target is met, then stops. No curve, no
 drip, no per-hour release. A quiet pool costs nothing because there is nothing
 to score; a rich morning is spent in the morning, which is the point.
 
-WHICH STOP ACTUALLY FIRES — do not read the target as a promise. A hit rate of
-~10% (of 57,309 real Claude finals, 11.6% cleared 65 and fewer clear 70) means
-35 delivered jobs costs on the order of 350 finals, and the Pro ceiling is 250.
-So on a rich day the CEILING is what stops a user, at roughly 25 delivered, and
-the target is an early-out for the days when the pool is unusually good. That is
-the honest reading, and it is why the ceiling is sized as an allocation you can
-afford every day rather than as a rare-disaster bound. Raising delivery means
-raising `finals_daily` and paying for it; only better Tier-1 precision makes it
-free.
+DO NOT READ THE TARGET AS A PROMISE, and do not read the ceiling as unreachable
+either. MEASURED in production 2026-09-05, over the first 5 hours of this
+design (215 finals, 33 jobs delivered to two boards):
 
-Promise-ordering (scoring_lane._user_queue) is what decides WHICH 250 you buy —
-it does not make 350 cost less. It matters most exactly because the ceiling
-binds: the finals that never happen are the bottom of the queue, not a random
+    finals per delivered job   6.5      (15.3% of finals clear the 70 bar
+                                         AND survive the company cap)
+    cost per final             $0.0025  (measured from the reranker's own
+                                         token telemetry at Haiku 4.5 list)
+
+So 35 delivered costs ~228 finals — inside the 250 ceiling, not past it. Either
+stop can fire: a rich day lands the target first, a thin one runs into the
+ceiling. Both are fine outcomes. What the numbers rule out is the pessimistic
+reading this docstring shipped with, which assumed a 10% hit rate and a
+$0.010 final and concluded the ceiling always binds at ~25 delivered.
+
+Sizing, at the measured rate: 250 finals/day is $0.63/day, ~$19/month against a
+$100/month plan. There is room to raise it — 500 would buy ~77 jobs/day at
+~$37/month — but do that only when someone actually wants more than the plan's
+`shortlist_daily`, because the cap on what is SHOWN would bind first anyway.
+
+Promise-ordering (scoring_lane._user_queue) decides WHICH finals you buy — it
+does not make a final cheaper. It matters most on the days the ceiling binds:
+the finals that never happen are then the bottom of the queue, not a random
 tail.
 
 THREE STOPS, in order:

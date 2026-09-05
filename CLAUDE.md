@@ -184,10 +184,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   2026-09-05): scoring runs FLAT OUT until `PLAN_LIMITS["shortlist_daily"]`
   (Free 20 / Pro 35) jobs reach the board today, then stops. Three stops:
   delivered ≥ target (success); spent ≥ `finals_daily` (Free 120 / Pro 250 — the
-  cost ceiling); yield collapsed. **At the ~10% hit rate the CEILING is what
-  usually stops a day** (35 delivered ≈ 350 finals), so read `finals_daily` as
-  the daily allocation and the target as an early-out — raising delivery costs
-  money, only better Tier-1 precision is free. **No window is longer than a day
+  cost ceiling); yield collapsed. **MEASURED 2026-09-05** (first 5h of this
+  design): **6.5 finals per delivered job, 15.3% hit rate, $0.0025/final** —
+  so Pro's 35 costs ~228 finals, inside the ceiling, at ~$19/month against a
+  $100 plan. Either stop can fire; neither is a failure. (`spend.py`'s old
+  $0.010/final was 4.1x high — the Tier-1 prescore estimate there is still
+  UNMEASURED.) **No window is longer than a day
   and nothing is paced**: the weekly ceiling + release curves paced PRO to 1.77
   finals/hour (prescore→final p50 685 min) and on 09-03 the weekly curve applied
   to an already-spent week took production to zero finals for 39 hours while

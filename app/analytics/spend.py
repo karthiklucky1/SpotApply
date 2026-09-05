@@ -22,7 +22,20 @@ log = logging.getLogger(__name__)
 
 # Flat per-call estimates (USD). Tune as models/prices change.
 EST_COST_PER_CALL = {
-    "score_final": 0.010,     # Claude final (cached prefix keeps it cheap)
+    # MEASURED 2026-09-05 from the reranker's own token telemetry ("Claude
+    # usage (last N finals cumulative)") over 250 production calls, priced at
+    # Haiku 4.5 list ($1.00/$5.00 per MTok, cache write 1.25x in, read 0.10x):
+    #   uncached_in 102,163  cache_read 1,167,451  cache_write 116,735
+    #   out 49,942           =>  $0.6145 / 250 = $0.00246
+    # The old 0.010 came from nowhere and was 4.1x high. It is quoted in
+    # docs/CAPACITY.md and in the ceiling arithmetic behind
+    # PLAN_LIMITS["finals_daily"], so a wrong number here mis-sizes real limits.
+    "score_final": 0.0025,    # Claude final — the cached résumé prefix is why
+    # UNMEASURED, unlike score_final: the Tier-1 path logs no token counts, so
+    # nothing has ever checked this. Back-of-envelope on gpt-4o-mini
+    # ($0.15/$0.60 per MTok, ~2.5k in + ~60 out) says ~$0.0004, i.e. this may
+    # be ~2.5x high too — but an estimate is not a measurement. To settle it,
+    # add the same cumulative-usage log to Reranker.prescore.
     "score_prescore": 0.001,  # Tier-1 mini-model bulk score
     "score_local": 0.0,       # local fallback — free
     "tailor": 0.05,           # résumé + cover letter generation pass

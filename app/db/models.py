@@ -425,16 +425,16 @@ PLAN_LIMITS = {
     #   tailor_daily     tailored resume + cover letter generations per day.
     #   finals_daily     the COST CEILING behind the target, and nothing else —
     #                    not a pace, not a soft point. Scoring runs flat out
-    #                    until shortlist_daily is delivered OR this is reached,
-    #                    and at the measured ~10% hit rate (docs/CAPACITY.md
-    #                    §3.3) it is usually THIS that stops the day: 35
-    #                    delivered would take ~350 finals. Treat it as the daily
-    #                    allocation, sized against a $100/month plan — Pro 250 =
-    #                    $0.83/day at CAPACITY's warm-cache Haiku figure
-    #                    ($0.0033/final), $2.50/day at the repo ledger's flat
-    #                    $0.010 estimate, which CAPACITY §3.3 says over-states
-    #                    Tier-2 by ~3x. Raising delivery means raising this and
-    #                    paying for it; only better Tier-1 precision is free.
+    #                    until shortlist_daily is delivered OR this is reached.
+    #                    MEASURED in production 2026-09-05 (first 5 hours of the
+    #                    delivery budget, 215 finals -> 33 jobs on two boards):
+    #                    6.5 finals per delivered job, 15.3% hit rate,
+    #                    $0.0025/final from the reranker's own token telemetry.
+    #                    So Pro's 35 costs ~228 finals — INSIDE 250 — at
+    #                    $0.63/day, ~$19/month against a $100/month plan. Either
+    #                    stop can fire; neither is a failure. Raising this is
+    #                    cheap, but shortlist_daily caps what is SHOWN, so
+    #                    raising one without the other changes nothing.
     PlanTier.FREE:   {"shortlist_daily": 20, "tailor_daily": 5,
                       "autofill_weekly": 2,    "finals_daily": 120},
     PlanTier.PRO:    {"shortlist_daily": 35, "tailor_daily": 35,
