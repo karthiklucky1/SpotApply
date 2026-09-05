@@ -41,12 +41,15 @@ def test_compiled_css_covers_landing_classes():
     # stylesheet and just fails forever. `.text-4xl` and `.sm\:col-span-2` went
     # with the old hero demo; the heading sizes are now set by the page's own
     # `.h2` clamp() rather than by Tailwind size utilities. `.lg\:grid-cols-2`
-    # went with the paired screenshot frames, now a single centred figure.
+    # went with the paired screenshot frames, now a single centred figure, and
+    # `.text-xs` / `.sm\:grid-cols-5` / `.lg\:grid-cols-3` went with the two
+    # rows of matching cards that the hairline steps and the process rail
+    # replaced.
     used = set(re.findall(r'class="([^"]+)"', LANDING))
-    for cls in (".text-xs", ".rounded-2xl", ".backdrop-blur-sm",
-                r".sm\:grid-cols-5", r".lg\:col-span-4", r".lg\:col-span-8",
-                r".lg\:grid-cols-12", r".sm\:flex-row", r".lg\:grid-cols-3",
-                r".lg\:grid-cols-4"):
+    for cls in (".rounded-2xl", ".backdrop-blur-sm", ".grid-cols-3",
+                r".lg\:col-span-4", r".lg\:col-span-5", r".lg\:col-span-7",
+                r".lg\:col-span-8", r".lg\:grid-cols-12", r".sm\:flex-row",
+                r".sm\:hidden"):
         plain = cls.lstrip(".").replace("\\", "")
         assert any(plain in group.split() for group in used), (
             f"{cls} is pinned here but the template no longer uses it — "

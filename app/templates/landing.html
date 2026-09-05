@@ -167,6 +167,45 @@
         font-size: 14.5px; line-height: 1.6; color: var(--muted);
     }
 
+    /* ── numbered steps ─────────────────────────────────────────────────── */
+    /* Hairline-separated rows rather than a row of matching cards: the copy
+       lengths differ, so equal boxes would only advertise the padding. */
+    .step { display: flex; gap: 28px; padding: 26px 0; border-top: 1px solid var(--border); }
+    .step:first-child { border-top: none; padding-top: 0; }
+    .step:last-child { padding-bottom: 0; }
+    .step-n {
+        flex: none; width: 30px; font-size: 13px; font-weight: 700;
+        color: var(--accent); letter-spacing: .04em; padding-top: 3px;
+    }
+    @media (max-width: 640px) { .step { gap: 18px; } }
+
+    /* ── process rail ───────────────────────────────────────────────────── */
+    /* One line through five points, the last one green because it is the
+       human. Vertical below 720px so the labels never crush. */
+    .rail { position: relative; display: flex; margin: 60px 0 0; padding: 0; list-style: none; }
+    .rail::before {
+        content: ""; position: absolute; top: 6px; left: 7px; right: 7px;
+        height: 1px; background: var(--border-strong);
+    }
+    .rail-step { flex: 1; padding-right: 26px; }
+    .rail-dot {
+        display: block; width: 13px; height: 13px; border-radius: 50%;
+        background: var(--surface); border: 1.5px solid var(--border-strong);
+        position: relative; z-index: 1;
+    }
+    .rail-you .rail-dot { background: var(--ok); border-color: var(--ok); }
+    .rail-h { font-size: 15.5px; font-weight: 700; margin-top: 20px; }
+    .rail-you .rail-h { color: var(--ok); }
+    .rail-p { font-size: 13.5px; line-height: 1.55; color: var(--muted); margin: 6px 0 0; }
+    @media (max-width: 720px) {
+        .rail { flex-direction: column; margin-top: 44px; }
+        .rail::before { top: 7px; bottom: 7px; left: 6px; right: auto; width: 1px; height: auto; }
+        .rail-step { padding: 0 0 26px 30px; position: relative; }
+        .rail-step:last-child { padding-bottom: 0; }
+        .rail-dot { position: absolute; left: 0; top: 1px; }
+        .rail-h { margin-top: 0; }
+    }
+
     /* ── source strip ───────────────────────────────────────────────────── */
     /* A slow marquee of the providers actually integrated in app/discovery.
        The reduced-motion block above kills the animation outright, which
@@ -372,65 +411,83 @@
 <!-- ── 4. Product proof ──────────────────────────────────────────────────── -->
 <section class="section-tight bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap">
-        <div class="grid grid-cols-2 lg:grid-cols-4" style="gap:32px;">
-            <div>
-                <!-- Static value is a conservative floor that is true on its own;
-                     the script upgrades it to the exact live registry count, so a
-                     failed fetch never leaves a placeholder standing as measured. -->
-                <div class="num" id="fr-boards" style="font-size:34px;font-weight:800;color:var(--ink);">50,000+</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">Company boards tracked</div>
+        <!-- One number leads and the rest support it. Four equal tiles would
+             give the score floor the same weight as the size of the pool. -->
+        <div class="grid lg:grid-cols-12" style="gap:40px;align-items:end;">
+            <div class="lg:col-span-5">
+                <div class="num" id="fr-boards"
+                     style="font-size:clamp(48px,5.4vw,64px);font-weight:800;color:var(--ink);line-height:1;letter-spacing:-0.04em;">50,000+</div>
+                <div class="body" style="font-size:15px;margin-top:10px;">
+                    Company career boards, polled continuously
+                </div>
+                <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:14px;">
+                    <span class="num" id="fr-jobs" style="font-weight:600;color:var(--ink-soft);"></span>
+                    new postings picked up in the last seven days.
+                </p>
             </div>
-            <div>
-                <div class="num" style="font-size:34px;font-weight:800;color:var(--ink);">32</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">ATS providers &amp; job feeds</div>
-            </div>
-            <div>
-                <div class="num" style="font-size:34px;font-weight:800;color:var(--ink);">70+</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">Qualified-match score floor</div>
-            </div>
-            <div>
-                <div style="font-size:34px;font-weight:800;color:var(--ink);">Grounded</div>
-                <div class="body" style="font-size:14px;margin-top:4px;">Every tailored claim verified</div>
+
+            <div class="lg:col-span-7 grid grid-cols-3" style="gap:28px;">
+                <div>
+                    <div class="num" style="font-size:26px;font-weight:700;color:var(--ink);">32</div>
+                    <div class="body" style="font-size:13.5px;margin-top:4px;">ATS providers and job feeds</div>
+                </div>
+                <div>
+                    <div class="num" style="font-size:26px;font-weight:700;color:var(--ink);">70+</div>
+                    <div class="body" style="font-size:13.5px;margin-top:4px;">Minimum score to reach your board</div>
+                </div>
+                <div>
+                    <div style="font-size:26px;font-weight:700;color:var(--ink);">Every line</div>
+                    <div class="body" style="font-size:13.5px;margin-top:4px;">Of a tailored résumé, checked against your own</div>
+                </div>
             </div>
         </div>
-        <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:26px;">
-            <span class="num" id="fr-jobs" style="font-weight:600;color:var(--ink-soft);"></span>
-            new postings picked up in the last seven days.
-        </p>
     </div>
 </section>
 
 <!-- ── 5. Three core features ────────────────────────────────────────────── -->
 <section id="how-it-works" class="section">
     <div class="wrap">
-        <div data-aos="fade-up" style="max-width:60ch;">
-            <span class="eyebrow">How it works</span>
-            <h2 class="h2" style="margin-top:14px;">Find the right roles. Understand the fit. Apply stronger.</h2>
-        </div>
-        <div class="grid lg:grid-cols-3" data-aos="fade-up" data-aos-delay="80" style="gap:24px;margin-top:56px;">
-            <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                <h3 class="h3" style="margin-top:18px;">Find</h3>
-                <p class="body" style="margin-top:10px;">
-                    Continuously monitor company career pages and surface strong matches —
-                    not a feed of everything that was posted today.
+        <div class="grid lg:grid-cols-12" style="gap:48px;">
+            <div class="lg:col-span-5" data-aos="fade-up">
+                <h2 class="h2">Three jobs, done properly.</h2>
+                <p class="lede" style="margin-top:20px;">
+                    Most tools do the first one and call it a product. The other two are
+                    where the hours actually go.
                 </p>
             </div>
-            <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><path d="M12 3v18M3.5 8.5h17M3.5 15.5h17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                <h3 class="h3" style="margin-top:18px;">Understand</h3>
-                <p class="body" style="margin-top:10px;">
-                    See why each role fits: skills, experience, seniority, and
-                    sponsorship eligibility, with the match reasoning written out.
-                </p>
-            </div>
-            <div class="card rounded-2xl">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent);"><path d="M7 4h7l4.5 4.5V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.5 4v5h5" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-                <h3 class="h3" style="margin-top:18px;">Apply stronger</h3>
-                <p class="body" style="margin-top:10px;">
-                    Produce ATS-safe, truthful tailored résumés built only from evidence
-                    already in your experience.
-                </p>
+
+            <div class="lg:col-span-7" data-aos="fade-up" data-aos-delay="80">
+                <div class="step">
+                    <div class="step-n num">01</div>
+                    <div>
+                        <h3 class="h3">Find</h3>
+                        <p class="body" style="margin-top:8px;">
+                            Company career pages, polled around the clock. What reaches you
+                            is a short list of strong matches, not a feed of everything
+                            posted today.
+                        </p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-n num">02</div>
+                    <div>
+                        <h3 class="h3">Understand</h3>
+                        <p class="body" style="margin-top:8px;">
+                            Skills, experience, seniority, sponsorship. Each role arrives
+                            with the reasoning written out, so you can disagree with it.
+                        </p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-n num">03</div>
+                    <div>
+                        <h3 class="h3">Apply stronger</h3>
+                        <p class="body" style="margin-top:8px;">
+                            An ATS-safe résumé for the ones worth the effort, built only
+                            from evidence already in yours.
+                        </p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -443,8 +500,8 @@
             <span class="eyebrow">The product</span>
             <h2 class="h2" style="margin-top:14px;">Scored, ranked, and explained.</h2>
             <p class="lede" style="margin-top:18px;">
-                Every role on your board cleared a 70 match score against your own résumé.
-                Open one and you can read exactly why.
+                Nothing reaches your board under a 70. Open any role and the reasoning
+                behind its score is sitting right there.
             </p>
         </div>
 
@@ -458,8 +515,8 @@
                           matched, and a sponsorship status of not stated.">
             </div>
             <figcaption>
-                The match report on a single role — the score, the reasoning behind it,
-                and where sponsorship stands.
+                One role's match report: the score, the reasoning behind it, and where
+                sponsorship stands.
             </figcaption>
         </figure>
     </div>
@@ -473,9 +530,9 @@
                 <span class="eyebrow">Grounded tailoring</span>
                 <h2 class="h2" style="margin-top:14px;">Tailored, not fabricated.</h2>
                 <p class="lede" style="margin-top:18px;">
-                    SpotApply does not invent experience to match a job. It rewords what you
-                    have already done so the relevant parts are easier to find — and every
-                    changed line is checked back against your original résumé.
+                    SpotApply does not invent experience to match a job. It rewords what
+                    you have already done so a screener finds the relevant parts faster.
+                    Every changed line is then checked back against your original.
                 </p>
 
                 <div style="display:flex;flex-direction:column;gap:14px;margin-top:36px;">
@@ -499,12 +556,13 @@
                 </div>
 
                 <p class="blocked" style="margin-top:32px;">
-                    A claim your résumé cannot support is blocked before delivery — not softened,
-                    not shipped with a warning. Tailoring that cannot be grounded does not go out.
+                    A claim your résumé cannot support is blocked before delivery. It is not
+                    softened, and it does not ship with a warning attached.
                 </p>
             </div>
 
-            <div class="lg:col-span-4" data-aos="fade-up" data-aos-delay="80">
+            <div class="lg:col-span-4" data-aos="fade-up" data-aos-delay="80"
+                 style="align-self:center;">
                 <div class="card rounded-2xl" style="background:var(--surface);">
                     <div class="evidence-label" style="margin-bottom:14px;">What gets blocked</div>
                     <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:16px;">
@@ -537,42 +595,40 @@
 <!-- ── 8. Application workflow ───────────────────────────────────────────── -->
 <section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap">
-        <div data-aos="fade-up" style="max-width:60ch;">
-            <span class="eyebrow">Applying</span>
-            <h2 class="h2" style="margin-top:14px;">Filled in your browser. Submitted by you.</h2>
-            <p class="lede" style="margin-top:18px;">
+        <div data-aos="fade-up" style="max-width:56ch;">
+            <h2 class="h2">Filled in your browser. Submitted by you.</h2>
+            <p class="lede" style="margin-top:20px;">
                 SpotApply prepares the application and fills the form in your own browser.
-                You review every field and click Submit yourself — nothing is ever sent on
-                your behalf.
+                You read every field before it goes anywhere. Nothing is ever sent on your
+                behalf, and there is no setting that changes that.
             </p>
         </div>
 
-        <ol class="grid grid-cols-1 sm:grid-cols-5" data-aos="fade-up" data-aos-delay="80"
-            style="gap:20px;margin-top:56px;padding:0;list-style:none;counter-reset:step;">
-            <li class="card rounded-2xl" style="padding:22px;">
-                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">01</div>
-                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Discover</h3>
-                <p class="body" style="font-size:14px;margin-top:6px;">Company boards polled around the clock.</p>
+        <ol class="rail" data-aos="fade-up" data-aos-delay="80">
+            <li class="rail-step">
+                <span class="rail-dot" aria-hidden="true"></span>
+                <h3 class="rail-h">Discover</h3>
+                <p class="rail-p">Boards polled around the clock.</p>
             </li>
-            <li class="card rounded-2xl" style="padding:22px;">
-                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">02</div>
-                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Score</h3>
-                <p class="body" style="font-size:14px;margin-top:6px;">Each role rated against your résumé.</p>
+            <li class="rail-step">
+                <span class="rail-dot" aria-hidden="true"></span>
+                <h3 class="rail-h">Score</h3>
+                <p class="rail-p">Every role read against your résumé.</p>
             </li>
-            <li class="card rounded-2xl" style="padding:22px;">
-                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">03</div>
-                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Tailor</h3>
-                <p class="body" style="font-size:14px;margin-top:6px;">A grounded résumé for the strong matches.</p>
+            <li class="rail-step">
+                <span class="rail-dot" aria-hidden="true"></span>
+                <h3 class="rail-h">Tailor</h3>
+                <p class="rail-p">A grounded résumé for the strong ones.</p>
             </li>
-            <li class="card rounded-2xl" style="padding:22px;">
-                <div class="num text-xs" style="font-weight:700;color:var(--accent);letter-spacing:.08em;">04</div>
-                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">Autofill</h3>
-                <p class="body" style="font-size:14px;margin-top:6px;">The form is filled in your browser.</p>
+            <li class="rail-step">
+                <span class="rail-dot" aria-hidden="true"></span>
+                <h3 class="rail-h">Autofill</h3>
+                <p class="rail-p">The form filled in your own browser.</p>
             </li>
-            <li class="card rounded-2xl" style="padding:22px;border-color:var(--ok-border);background:var(--ok-tint);">
-                <div class="num text-xs" style="font-weight:700;color:var(--ok);letter-spacing:.08em;">05</div>
-                <h3 style="font-size:16px;font-weight:700;margin-top:10px;">You submit</h3>
-                <p class="body" style="font-size:14px;margin-top:6px;">You review, then click Submit.</p>
+            <li class="rail-step rail-you">
+                <span class="rail-dot" aria-hidden="true"></span>
+                <h3 class="rail-h">You submit</h3>
+                <p class="rail-p">The last step is yours. Always.</p>
             </li>
         </ol>
     </div>
@@ -629,9 +685,9 @@
             <div id="demo-cards" style="display:flex;flex-direction:column;gap:14px;margin-top:16px;"></div>
             <div class="demo-divider" style="text-align:center;">
                 <p class="body" style="font-size:14.5px;max-width:58ch;margin:0 auto;">
-                    This preview compares your stated experience against what each posting
-                    asks for. On your account, every role is read in full and scored 0–100
-                    with written reasoning, and the strong matches get a grounded tailored
+                    This preview only compares your stated experience against what each
+                    posting asks for. On an account, every role gets read in full and scored
+                    0–100 with the reasoning written out, and the strong ones get a tailored
                     résumé.
                 </p>
                 <a href="/login?mode=signup" class="btn btn-primary" style="margin-top:22px;">
@@ -697,7 +753,7 @@
             <details class="faq">
                 <summary>Where do the jobs come from?</summary>
                 <p class="body">
-                    Two ways. Straight from the ATS a company hires on — Greenhouse,
+                    Two ways. Straight from the ATS a company hires on: Greenhouse,
                     Lever, Ashby, Workday, SmartRecruiters, Workable, Personio,
                     Rippling, BambooHR, Teamtailor, Recruitee, Breezy, Pinpoint and
                     join.com — which is where a posting appears first. And from public
@@ -721,9 +777,9 @@
                 <p class="body">
                     No. Tailoring only rewords evidence already in your résumé, and every
                     changed line is verified against the original. Anything unsupported is
-                    blocked rather than shipped. The output is ATS-safe and keyword-aligned —
-                    which is not the same as a guarantee that any particular system or
-                    recruiter will advance you.
+                    blocked rather than shipped. The output is ATS-safe and keyword-aligned.
+                    That is not the same as a promise that any particular system or recruiter
+                    will move you forward, and we will not pretend otherwise.
                 </p>
             </details>
             <details class="faq">
@@ -753,7 +809,7 @@
             Your next role is already posted.
         </h2>
         <p class="lede" data-aos="fade-up" data-aos-delay="60" style="margin:22px auto 0;">
-            Upload your résumé and see which roles clear the bar.
+            Upload your résumé. Find out which roles clear the bar.
         </p>
         <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="120"
              style="gap:12px;justify-content:center;margin-top:32px;">
