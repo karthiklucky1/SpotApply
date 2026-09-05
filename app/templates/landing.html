@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SpotApply — Apply only where you actually fit</title>
-<meta name="description" content="SpotApply watches 50,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored résumé for the ones worth your time.">
+<meta name="description" content="SpotApply watches 50,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored resume for the ones worth your time.">
 <link rel="canonical" href="https://app.spotapply.ai/">
 <meta property="og:title" content="SpotApply — Apply only where you actually fit">
-<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 32 ATS providers and job feeds, honest match scoring, and tailored résumés grounded in your real experience.">
+<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 32 ATS providers and job feeds, honest match scoring, and tailored resumes grounded in your real experience.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://app.spotapply.ai/">
 <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
@@ -38,6 +38,7 @@
         --accent-700: #5A38DE;
         --accent-tint: #F3F0FF;
         --accent-line: #DED5FF;
+        --warn: #B42318;        /* validation only — 6.6:1 on white */
         --ok: #047857;
         --ok-tint: #ECFDF5;
         --ok-border: #A7F3D0;
@@ -245,7 +246,15 @@
         padding: 12px 14px;
     }
     .field::placeholder { color: var(--muted); }
+    .field-err {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 13px; color: var(--warn); margin: 8px 0 0;
+    }
     .field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    .field[aria-invalid="true"],
+    .field[aria-invalid="true"]:focus-visible {
+        border-color: var(--warn); outline-color: var(--warn);
+    }
     textarea.field { resize: vertical; min-height: 140px; }
     input[type="file"].field { padding: 10px 12px; font-size: 14px; color: var(--ink-soft); }
     .pill {
@@ -324,7 +333,7 @@
         </h1>
         <p class="lede" data-aos="fade-up" data-aos-delay="80" style="margin:28px auto 0;">
             SpotApply watches company career pages around the clock, scores every role
-            against your real experience, and prepares a grounded tailored résumé for
+            against your real experience, and prepares a grounded tailored resume for
             the ones worth your time.
         </p>
         <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="140"
@@ -356,7 +365,7 @@
                          fetchpriority="high" decoding="async"
                          alt="The SpotApply board showing qualified roles, each with a match
                               score from 73 to 94 percent, the company, where it was found,
-                              how long ago it was posted, and actions to tailor a résumé or
+                              how long ago it was posted, and actions to tailor a resume or
                               auto-fill the application.">
                 </picture>
             </div>
@@ -437,7 +446,7 @@
                 </div>
                 <div>
                     <div style="font-size:26px;font-weight:700;color:var(--ink);">Every line</div>
-                    <div class="body" style="font-size:13.5px;margin-top:4px;">Of a tailored résumé, checked against your own</div>
+                    <div class="body" style="font-size:13.5px;margin-top:4px;">Of a tailored resume, checked against your own</div>
                 </div>
             </div>
         </div>
@@ -483,7 +492,7 @@
                     <div>
                         <h3 class="h3">Apply stronger</h3>
                         <p class="body" style="margin-top:8px;">
-                            An ATS-safe résumé for the ones worth the effort, built only
+                            An ATS-safe resume for the ones worth the effort, built only
                             from evidence already in yours.
                         </p>
                     </div>
@@ -511,7 +520,7 @@
                      loading="lazy" decoding="async"
                      alt="The match report for a Senior Backend Engineer role: a score of 94
                           with the note that Claude read the full job description and scored
-                          it against the résumé, a plain-language explanation of why it
+                          it against the resume, a plain-language explanation of why it
                           matched, and a sponsorship status of not stated.">
             </div>
             <figcaption>
@@ -522,7 +531,7 @@
     </div>
 </section>
 
-<!-- ── 7. Grounded résumé tailoring ──────────────────────────────────────── -->
+<!-- ── 7. Grounded resume tailoring ──────────────────────────────────────── -->
 <section id="tailoring" class="section">
     <div class="wrap">
         <div class="grid lg:grid-cols-12" style="gap:48px;">
@@ -556,7 +565,7 @@
                 </div>
 
                 <p class="blocked" style="margin-top:32px;">
-                    A claim your résumé cannot support is blocked before delivery. It is not
+                    A claim your resume cannot support is blocked before delivery. It is not
                     softened, and it does not ship with a warning attached.
                 </p>
             </div>
@@ -569,13 +578,13 @@
                         <li>
                             <p class="evidence-text" style="font-size:14.5px;">“Led a team of eight engineers.”</p>
                             <p class="body" style="font-size:13.5px;margin-top:5px;">
-                                No team size anywhere in the résumé. Blocked.
+                                No team size anywhere in the resume. Blocked.
                             </p>
                         </li>
                         <li style="border-top:1px solid var(--border);padding-top:16px;">
                             <p class="evidence-text" style="font-size:14.5px;">“Five years of Kubernetes.”</p>
                             <p class="body" style="font-size:13.5px;margin-top:5px;">
-                                The résumé says Kubernetes, never five years. Blocked.
+                                The resume says Kubernetes, never five years. Blocked.
                             </p>
                         </li>
                         <li style="border-top:1px solid var(--border);padding-top:16px;">
@@ -613,12 +622,12 @@
             <li class="rail-step">
                 <span class="rail-dot" aria-hidden="true"></span>
                 <h3 class="rail-h">Score</h3>
-                <p class="rail-p">Every role read against your résumé.</p>
+                <p class="rail-p">Every role read against your resume.</p>
             </li>
             <li class="rail-step">
                 <span class="rail-dot" aria-hidden="true"></span>
                 <h3 class="rail-h">Tailor</h3>
-                <p class="rail-p">A grounded résumé for the strong ones.</p>
+                <p class="rail-p">A grounded resume for the strong ones.</p>
             </li>
             <li class="rail-step">
                 <span class="rail-dot" aria-hidden="true"></span>
@@ -641,26 +650,30 @@
             <span class="eyebrow">Try it</span>
             <h2 class="h2" style="margin-top:14px;">See what SpotApply finds for you.</h2>
             <p class="lede" style="margin:18px auto 0;">
-                Paste your résumé and the role you are after. You will see open postings
+                Paste your resume and the role you are after. You will see open postings
                 SpotApply is tracking right now, and how your experience lines up against
                 what each one asks for.
             </p>
         </div>
 
-        <form id="demo-form" data-aos="fade-up" data-aos-delay="80"
+        <form id="demo-form" novalidate data-aos="fade-up" data-aos-delay="80"
               class="card rounded-2xl"
               style="max-width:720px;margin:44px auto 0;padding:32px;box-shadow:var(--shadow-lg);">
             <div>
                 <label class="field-label" for="demo-role">Role you are targeting</label>
                 <input class="field" id="demo-role" name="target_role" type="text" required
                        maxlength="80" autocomplete="off"
+                       aria-describedby="demo-role-err"
                        placeholder="Backend Engineer">
+                <p class="field-err hidden" id="demo-role-err"></p>
             </div>
 
             <div style="margin-top:20px;">
-                <label class="field-label" for="demo-resume">Your résumé</label>
+                <label class="field-label" for="demo-resume">Your resume</label>
                 <textarea class="field" id="demo-resume" name="resume_text"
-                          placeholder="Paste your résumé here — experience, skills, education."></textarea>
+                          aria-describedby="demo-resume-err"
+                          placeholder="Paste your resume here. Experience, skills, education."></textarea>
+                <p class="field-err hidden" id="demo-resume-err"></p>
             </div>
 
             <div style="margin-top:14px;">
@@ -676,7 +689,7 @@
                style="font-size:14px;color:var(--ink-soft);text-align:center;margin:16px 0 0;"></p>
 
             <p style="font-size:13px;color:var(--muted);text-align:center;margin:16px 0 0;">
-                This preview does not create an account and your résumé is not stored.
+                This preview does not create an account and your resume is not stored.
             </p>
         </form>
 
@@ -688,7 +701,7 @@
                     This preview only compares your stated experience against what each
                     posting asks for. On an account, every role gets read in full and scored
                     0–100 with the reasoning written out, and the strong ones get a tailored
-                    résumé.
+                    resume.
                 </p>
                 <a href="/login?mode=signup" class="btn btn-primary" style="margin-top:22px;">
                     Create your account
@@ -722,7 +735,7 @@
             <ul style="list-style:none;padding:0;margin:32px 0 0;display:flex;flex-direction:column;gap:13px;">
                 <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Continuous job discovery</span></li>
                 <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Qualified match scoring</span></li>
-                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Grounded tailored résumés</span></li>
+                <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Grounded tailored resumes</span></li>
                 <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application autofill</span></li>
                 <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Sponsorship intelligence</span></li>
                 <li style="display:flex;gap:11px;align-items:flex-start;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:2px;" aria-hidden="true"><path d="m5 13 4 4L19 7" stroke="#047857" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="body" style="color:var(--ink);">Application tracking</span></li>
@@ -767,15 +780,15 @@
             <details class="faq">
                 <summary>How does the match score work?</summary>
                 <p class="body">
-                    Each role is read against your résumé and scored 0–100 on skills,
+                    Each role is read against your resume and scored 0–100 on skills,
                     experience, seniority and eligibility. Only roles scoring 70 or above
                     reach your board, and each one carries the reasoning behind its score.
                 </p>
             </details>
             <details class="faq">
-                <summary>Will the tailored résumé say things I did not do?</summary>
+                <summary>Will the tailored resume say things I did not do?</summary>
                 <p class="body">
-                    No. Tailoring only rewords evidence already in your résumé, and every
+                    No. Tailoring only rewords evidence already in your resume, and every
                     changed line is verified against the original. Anything unsupported is
                     blocked rather than shipped. The output is ATS-safe and keyword-aligned.
                     That is not the same as a promise that any particular system or recruiter
@@ -791,7 +804,7 @@
                 </p>
             </details>
             <details class="faq">
-                <summary>What happens to my résumé?</summary>
+                <summary>What happens to my resume?</summary>
                 <p class="body">
                     It is stored privately to your account and used only to match and
                     prepare your own applications. It is never sold or shared with third
@@ -809,7 +822,7 @@
             Your next role is already posted.
         </h2>
         <p class="lede" data-aos="fade-up" data-aos-delay="60" style="margin:22px auto 0;">
-            Upload your résumé. Find out which roles clear the bar.
+            Upload your resume. Find out which roles clear the bar.
         </p>
         <div class="flex flex-col sm:flex-row" data-aos="fade-up" data-aos-delay="120"
              style="gap:12px;justify-content:center;margin-top:32px;">
@@ -865,7 +878,7 @@
     // ── Public preview ──────────────────────────────────────────────────────
     // Renders only what the endpoint can honestly claim: the real posting
     // (company, title, location, which ATS it came from) and the one comparison
-    // actually grounded in the résumé the visitor pasted — the years it states
+    // actually grounded in the resume the visitor pasted — the years it states
     // against the years the posting asks for. /api/public/demo-match also
     // returns a heuristic score and outreach drafts built on hard-coded
     // assumptions about the candidate (work authorisation, home metro, domain);
@@ -904,6 +917,31 @@
             msg.textContent = text;
             msg.classList.remove('hidden');
         }
+
+        // The form carries novalidate: the browser's own "Please fill out this
+        // field" bubble is OS-drawn and cannot be styled, so it is suppressed
+        // and the same checks run here against the page's own error styling.
+        // `required` stays on the input for assistive tech.
+        var FIELDS = ['demo-role', 'demo-resume', 'demo-file'];
+        function clearErrors() {
+            FIELDS.forEach(function (id) {
+                var el = document.getElementById(id);
+                if (el) el.removeAttribute('aria-invalid');
+            });
+            var slots = form.querySelectorAll('.field-err');
+            for (var i = 0; i < slots.length; i++) slots[i].classList.add('hidden');
+        }
+        function fieldError(inputId, text) {
+            var input = document.getElementById(inputId);
+            var slot = document.getElementById(inputId + '-err');
+            if (slot) { slot.textContent = text; slot.classList.remove('hidden'); }
+            if (input) { input.setAttribute('aria-invalid', 'true'); input.focus(); }
+        }
+        // Clear as soon as they start fixing it, not on the next submit.
+        FIELDS.forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('input', clearErrors);
+        });
 
         function card(job) {
             var exp = (job.findings || []).filter(function (f) {
@@ -952,7 +990,7 @@
             var samples = jobs.filter(function (j) { return j.sample; }).length;
             var years = data.candidate && data.candidate.years;
             var lead = years ? 'We read about ' + esc(years) +
-                               ' years of experience from your résumé. ' : '';
+                               ' years of experience from your resume. ' : '';
             var tail;
             if (samples === 0) {
                 tail = 'Here ' + (jobs.length === 1 ? 'is 1 open posting' : 'are ' + jobs.length +
@@ -976,8 +1014,15 @@
             var role = document.getElementById('demo-role').value.trim();
             var text = document.getElementById('demo-resume').value.trim();
             var file = document.getElementById('demo-file').files[0];
-            if (!role) { say('Tell us the role you are targeting.'); return; }
-            if (!text && !file) { say('Paste your résumé or upload a file.'); return; }
+            clearErrors();
+            if (!role) {
+                fieldError('demo-role', 'Tell us which role you are targeting.');
+                return;
+            }
+            if (!text && !file) {
+                fieldError('demo-resume', 'Paste your resume here, or upload a file below.');
+                return;
+            }
 
             var data = new FormData();
             data.append('target_role', role);
@@ -986,7 +1031,7 @@
             btn.disabled = true;
             btn.textContent = 'Finding roles…';
             out.classList.add('hidden');
-            say('Reading your résumé and checking open postings…');
+            say('Reading your resume and checking open postings…');
 
             fetch('/api/public/demo-match', { method: 'POST', body: data })
                 .then(function (r) {
