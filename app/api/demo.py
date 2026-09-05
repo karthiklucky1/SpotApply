@@ -292,6 +292,13 @@ def run_demo_match(req: PublicDemoRequest) -> dict:
             "title": job["title"],
             "location": job["location"],
             "description": job["description"],
+            # Provenance. The pool lookup can come up empty (an unusual target
+            # role, a clean dev database), in which case get_demo_jobs falls
+            # back to invented postings — the caller has to be able to tell the
+            # two apart, or a preview of fictional roles reads as live openings.
+            "source": job.get("source") or "",
+            "url": job.get("url") or "",
+            "sample": (job.get("source") == "demo") or int(job.get("id") or 0) < 0,
             "match_score": match_score,
             "wrong_door": verdict.wrong_door,
             "top_reason": verdict.top_reason,
