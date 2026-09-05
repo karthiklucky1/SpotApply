@@ -68,3 +68,48 @@ def test_public_demo_endpoint_file():
     assert data["candidate"]["university"] == "Georgia Institute of Technology"
     assert "resume_text" in data
     assert "Georgia Institute of Technology" in data["resume_text"]
+
+
+def test_demo_results_carry_provenance():
+    """The landing preview labels each posting by where it came from.
+
+    get_demo_jobs falls back to INVENTED postings when the shared pool has no
+    open match for the target role, so the response has to say which it is —
+    without that flag the preview shows fictional companies as live openings.
+    """
+    response = client.post("/api/public/demo-match", data={
+        "resume_text": "Backend engineer with 6 years of experience.",
+        # A title nothing in the pool can match, forcing the fallback path.
+        "target_role": "Zzz Nonexistent Role Qqq",
+    })
+    assert response.status_code == 200
+    jobs = response.json()["jobs"]
+    assert jobs
+    for job in jobs:
+        assert "sample" in job and isinstance(job["sample"], bool)
+        assert "source" in job
+        assert "url" in job
+    assert all(job["sample"] for job in jobs), (
+        "fallback postings are invented and must be flagged as samples")
+
+
+def test_landing_wires_the_public_preview():
+    """The landing page's preview section posts to the real endpoint.
+
+    It renders only the résumé-grounded EXPERIENCE LEVEL finding: the heuristic
+    match_score and the outreach drafts are built from hard-coded assumptions
+    about the candidate (OPT work authorisation, a fixed home metro), so
+    showing them would put claims about the visitor on the page.
+    """
+    from pathlib import Path
+    landing = (Path(__file__).resolve().parents[1]
+               / "app" / "templates" / "landing.html").read_text()
+    assert 'id="demo-form"' in landing
+    assert "/api/public/demo-match" in landing
+    assert "EXPERIENCE LEVEL" in landing
+    # Read as property accesses, so the prose explaining WHY these are withheld
+    # doesn't trip the guard.
+    import re as _re
+    for leaked in ("match_score", "drafts", "right_door", "top_reason"):
+        assert not _re.search(r"[.\[]\s*['\"]?" + leaked, landing), (
+            f"{leaked} is not grounded in the visitor's résumé — do not render it")

@@ -112,10 +112,9 @@
     }
 
     /* ── product screenshot frames ──────────────────────────────────────── */
-    /* Each .shot-frame is a drop-in slot. To use a real screenshot, replace the
-       inline <svg class="shot-ph"> with:
-           <img src="/static/shots/<name>.png" alt="..." loading="lazy">
-       The frame fixes the aspect ratio, so swapping causes no layout shift. */
+    /* Real captures of the running app live in app/static/shots/. Every <img>
+       carries width/height so the frame reserves its box before the file
+       lands — no reflow, and the hero shot stays a stable LCP. */
     .shot-frame {
         border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
         background: var(--surface); box-shadow: var(--shadow-lg);
@@ -131,7 +130,6 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .shot-frame img { display: block; width: 100%; height: auto; }
-    .shot-ph { display: block; width: 100%; height: auto; background: var(--canvas); }
     figure { margin: 0; }
     figcaption { font-size: 13.5px; color: var(--muted); margin-top: 14px; }
 
@@ -154,6 +152,29 @@
         border-left: 3px solid var(--border-strong); padding-left: 16px;
         font-size: 14.5px; line-height: 1.6; color: var(--muted);
     }
+
+    /* ── demo form ──────────────────────────────────────────────────────── */
+    .field-label {
+        display: block; font-size: 13px; font-weight: 600;
+        color: var(--ink-soft); margin-bottom: 7px;
+    }
+    .field {
+        width: 100%; font-family: inherit; font-size: 15px; line-height: 1.55;
+        color: var(--ink); background: var(--canvas);
+        border: 1px solid var(--border-strong); border-radius: 12px;
+        padding: 12px 14px;
+    }
+    .field::placeholder { color: var(--muted); }
+    .field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    textarea.field { resize: vertical; min-height: 140px; }
+    input[type="file"].field { padding: 10px 12px; font-size: 14px; color: var(--ink-soft); }
+    .pill {
+        display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+        border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+        border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600;
+    }
+    .pill-ok { background: var(--ok-tint); color: var(--ok); border-color: var(--ok-border); }
+    .demo-divider { border-top: 1px solid var(--border); margin-top: 22px; padding-top: 22px; }
 
     /* ── faq ────────────────────────────────────────────────────────────── */
     details.faq { border-bottom: 1px solid var(--border); padding: 22px 0; }
@@ -187,6 +208,7 @@
         <nav class="hidden sm:flex" style="align-items:center;gap:30px;" aria-label="Main">
             <a href="#how-it-works" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">How it works</a>
             <a href="#tailoring" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">Tailoring</a>
+            <a href="#try" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">Try it</a>
             <a href="#pricing" style="font-size:15px;font-weight:500;color:var(--ink-soft);text-decoration:none;">Pricing</a>
         </nav>
 
@@ -205,6 +227,7 @@
     <div id="mobile-nav-menu" class="hidden sm:hidden" style="border-top:1px solid var(--border);padding:14px 24px 18px;background:var(--canvas);">
         <a href="#how-it-works" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">How it works</a>
         <a href="#tailoring" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">Tailoring</a>
+        <a href="#try" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">Try it</a>
         <a href="#pricing" style="display:block;padding:9px 0;font-weight:500;color:var(--ink-soft);text-decoration:none;">Pricing</a>
         <div style="display:flex;gap:10px;margin-top:12px;">
             <a href="/login" class="btn btn-secondary btn-sm" style="flex:1;">Sign in</a>
@@ -240,15 +263,21 @@
                     <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
                     <span class="shot-url">app.spotapply.ai/dashboard</span>
                 </div>
-                <!-- DROP-IN: replace this <svg> with
-                     <img src="/static/shots/dashboard.png" alt="The SpotApply dashboard showing qualified matches" loading="lazy"> -->
-                <svg class="shot-ph" viewBox="0 0 1200 620" role="img"
-                     aria-label="Placeholder for a screenshot of the SpotApply dashboard">
-                    <rect width="1200" height="620" fill="#FFFFFF"/>
-                    <rect x="40" y="40" width="1120" height="540" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
-                    <text x="600" y="300" text-anchor="middle" font-family="Outfit, sans-serif" font-size="19" font-weight="600" fill="#64748B">Screenshot: qualified matches dashboard</text>
-                    <text x="600" y="330" text-anchor="middle" font-family="Outfit, sans-serif" font-size="14" fill="#64748B">/static/shots/dashboard.png</text>
-                </svg>
+                <!-- The LCP element: eager, high priority, explicit dimensions so
+                     nothing reflows once it lands. Phones get a narrower crop of
+                     the same board — the two-column desktop shot is illegible in
+                     a 342px column. -->
+                <picture>
+                    <source media="(max-width: 640px)"
+                            srcset="/static/shots/qualified-board-narrow.png"
+                            width="548" height="495">
+                    <img src="/static/shots/qualified-board.png" width="1278" height="700"
+                         fetchpriority="high" decoding="async"
+                         alt="The SpotApply board showing qualified roles, each with a match
+                              score from 73 to 94 percent, the company, where it was found,
+                              how long ago it was posted, and actions to tailor a résumé or
+                              auto-fill the application.">
+                </picture>
             </div>
         </figure>
     </div>
@@ -329,40 +358,20 @@
             </p>
         </div>
 
-        <div class="grid lg:grid-cols-2" data-aos="fade-up" data-aos-delay="80" style="gap:32px;margin-top:56px;">
-            <figure>
-                <div class="shot-frame">
-                    <div class="shot-bar">
-                        <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
-                        <span class="shot-url">app.spotapply.ai/dashboard</span>
-                    </div>
-                    <!-- DROP-IN: <img src="/static/shots/qualified-board.png" alt="Qualified jobs board with match scores" loading="lazy"> -->
-                    <svg class="shot-ph" viewBox="0 0 800 520" role="img" aria-label="Placeholder for the qualified jobs board screenshot">
-                        <rect width="800" height="520" fill="#FFFFFF"/>
-                        <rect x="28" y="28" width="744" height="464" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
-                        <text x="400" y="250" text-anchor="middle" font-family="Outfit, sans-serif" font-size="17" font-weight="600" fill="#64748B">Screenshot: qualified jobs board</text>
-                        <text x="400" y="278" text-anchor="middle" font-family="Outfit, sans-serif" font-size="13" fill="#64748B">/static/shots/qualified-board.png</text>
-                    </svg>
-                </div>
-                <figcaption>Qualified jobs board — only roles scoring 70 or above.</figcaption>
-            </figure>
-            <figure>
-                <div class="shot-frame">
-                    <div class="shot-bar">
-                        <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
-                        <span class="shot-url">app.spotapply.ai/application</span>
-                    </div>
-                    <!-- DROP-IN: <img src="/static/shots/why-it-matches.png" alt="Job detail with the why-it-matches breakdown" loading="lazy"> -->
-                    <svg class="shot-ph" viewBox="0 0 800 520" role="img" aria-label="Placeholder for the why-it-matches breakdown screenshot">
-                        <rect width="800" height="520" fill="#FFFFFF"/>
-                        <rect x="28" y="28" width="744" height="464" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
-                        <text x="400" y="250" text-anchor="middle" font-family="Outfit, sans-serif" font-size="17" font-weight="600" fill="#64748B">Screenshot: why-it-matches breakdown</text>
-                        <text x="400" y="278" text-anchor="middle" font-family="Outfit, sans-serif" font-size="13" fill="#64748B">/static/shots/why-it-matches.png</text>
-                    </svg>
-                </div>
-                <figcaption>Job detail — skills, experience, seniority and eligibility, scored.</figcaption>
-            </figure>
-        </div>
+        <figure data-aos="fade-up" data-aos-delay="80" style="margin-top:56px;">
+            <div class="shot-frame">
+                <img src="/static/shots/why-it-matches.png" width="1152" height="432"
+                     loading="lazy" decoding="async"
+                     alt="The match report for a Senior Backend Engineer role: a score of 94
+                          with the note that Claude read the full job description and scored
+                          it against the résumé, a plain-language explanation of why it
+                          matched, and a sponsorship status of not stated.">
+            </div>
+            <figcaption>
+                The match report on a single role — the score, the reasoning behind it,
+                and where sponsorship stands.
+            </figcaption>
+        </figure>
     </div>
 </section>
 
@@ -406,22 +415,30 @@
             </div>
 
             <div class="lg:col-span-4" data-aos="fade-up" data-aos-delay="80">
-                <figure>
-                    <div class="shot-frame">
-                        <div class="shot-bar">
-                            <span class="shot-dot"></span><span class="shot-dot"></span><span class="shot-dot"></span>
-                            <span class="shot-url">résumé diff</span>
-                        </div>
-                        <!-- DROP-IN: <img src="/static/shots/resume-diff.png" alt="Master résumé compared with the tailored version" loading="lazy"> -->
-                        <svg class="shot-ph" viewBox="0 0 460 560" role="img" aria-label="Placeholder for the master-to-tailored résumé diff screenshot">
-                            <rect width="460" height="560" fill="#FFFFFF"/>
-                            <rect x="24" y="24" width="412" height="512" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6 6"/>
-                            <text x="230" y="272" text-anchor="middle" font-family="Outfit, sans-serif" font-size="15" font-weight="600" fill="#64748B">Screenshot: résumé diff</text>
-                            <text x="230" y="298" text-anchor="middle" font-family="Outfit, sans-serif" font-size="12" fill="#64748B">/static/shots/resume-diff.png</text>
-                        </svg>
-                    </div>
-                    <figcaption>Master résumé beside the tailored version, change by change.</figcaption>
-                </figure>
+                <div class="card rounded-2xl" style="background:var(--surface);">
+                    <div class="evidence-label" style="margin-bottom:14px;">What gets blocked</div>
+                    <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:16px;">
+                        <li>
+                            <p class="evidence-text" style="font-size:14.5px;">“Led a team of eight engineers.”</p>
+                            <p class="body" style="font-size:13.5px;margin-top:5px;">
+                                No team size anywhere in the résumé. Blocked.
+                            </p>
+                        </li>
+                        <li style="border-top:1px solid var(--border);padding-top:16px;">
+                            <p class="evidence-text" style="font-size:14.5px;">“Five years of Kubernetes.”</p>
+                            <p class="body" style="font-size:13.5px;margin-top:5px;">
+                                The résumé says Kubernetes, never five years. Blocked.
+                            </p>
+                        </li>
+                        <li style="border-top:1px solid var(--border);padding-top:16px;">
+                            <p class="evidence-text" style="font-size:14.5px;">“Reduced costs by 45%.”</p>
+                            <p class="body" style="font-size:13.5px;margin-top:5px;">
+                                A number that appears in no bullet cannot be introduced by
+                                rewording one. Blocked.
+                            </p>
+                        </li>
+                    </ul>
+                </div>
             </div>
         </div>
     </div>
@@ -471,7 +488,71 @@
     </div>
 </section>
 
-<!-- ── 8. Pricing ────────────────────────────────────────────────────────── -->
+<!-- ── 8. Try it ─────────────────────────────────────────────────────────── -->
+<section id="try" class="section">
+    <div class="wrap">
+        <div data-aos="fade-up" style="text-align:center;max-width:62ch;margin:0 auto;">
+            <span class="eyebrow">Try it</span>
+            <h2 class="h2" style="margin-top:14px;">See what SpotApply finds for you.</h2>
+            <p class="lede" style="margin:18px auto 0;">
+                Paste your résumé and the role you are after. You will see open postings
+                SpotApply is tracking right now, and how your experience lines up against
+                what each one asks for.
+            </p>
+        </div>
+
+        <form id="demo-form" data-aos="fade-up" data-aos-delay="80"
+              class="card rounded-2xl"
+              style="max-width:720px;margin:44px auto 0;padding:32px;box-shadow:var(--shadow-lg);">
+            <div>
+                <label class="field-label" for="demo-role">Role you are targeting</label>
+                <input class="field" id="demo-role" name="target_role" type="text" required
+                       maxlength="80" autocomplete="off"
+                       placeholder="Backend Engineer">
+            </div>
+
+            <div style="margin-top:20px;">
+                <label class="field-label" for="demo-resume">Your résumé</label>
+                <textarea class="field" id="demo-resume" name="resume_text"
+                          placeholder="Paste your résumé here — experience, skills, education."></textarea>
+            </div>
+
+            <div style="margin-top:14px;">
+                <label class="field-label" for="demo-file">Or upload a file (PDF, DOCX or TXT, up to 4MB)</label>
+                <input class="field" id="demo-file" name="file" type="file"
+                       accept=".pdf,.docx,.txt,.md">
+            </div>
+
+            <button id="demo-submit" type="submit" class="btn btn-primary"
+                    style="width:100%;margin-top:24px;">Show me matching roles</button>
+
+            <p id="demo-message" class="hidden" role="status"
+               style="font-size:14px;color:var(--ink-soft);text-align:center;margin:16px 0 0;"></p>
+
+            <p style="font-size:13px;color:var(--muted);text-align:center;margin:16px 0 0;">
+                This preview does not create an account and your résumé is not stored.
+            </p>
+        </form>
+
+        <div id="demo-results" class="hidden" style="max-width:720px;margin:28px auto 0;">
+            <p id="demo-summary" class="body" style="font-size:14.5px;"></p>
+            <div id="demo-cards" style="display:flex;flex-direction:column;gap:14px;margin-top:16px;"></div>
+            <div class="demo-divider" style="text-align:center;">
+                <p class="body" style="font-size:14.5px;max-width:58ch;margin:0 auto;">
+                    This preview compares your stated experience against what each posting
+                    asks for. On your account, every role is read in full and scored 0–100
+                    with written reasoning, and the strong matches get a grounded tailored
+                    résumé.
+                </p>
+                <a href="/login?mode=signup" class="btn btn-primary" style="margin-top:22px;">
+                    Create your account
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── 9. Pricing ────────────────────────────────────────────────────────── -->
 <section id="pricing" class="section">
     <div class="wrap">
         <div data-aos="fade-up" style="text-align:center;max-width:56ch;margin:0 auto;">
@@ -510,7 +591,7 @@
     </div>
 </section>
 
-<!-- ── 9. FAQ ────────────────────────────────────────────────────────────── -->
+<!-- ── 10. FAQ ────────────────────────────────────────────────────────────── -->
 <section class="section bg-soft rule" style="border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:800px;">
         <h2 class="h2" data-aos="fade-up">Questions</h2>
@@ -570,7 +651,7 @@
     </div>
 </section>
 
-<!-- ── 10. Final CTA ─────────────────────────────────────────────────────── -->
+<!-- ── 11. Final CTA ─────────────────────────────────────────────────────── -->
 <section class="section" style="text-align:center;">
     <div class="wrap">
         <h2 class="h2" data-aos="fade-up" style="max-width:20ch;margin:0 auto;">
@@ -587,7 +668,7 @@
     </div>
 </section>
 
-<!-- ── 11. Footer ────────────────────────────────────────────────────────── -->
+<!-- ── 12. Footer ────────────────────────────────────────────────────────── -->
 <footer style="border-top:1px solid var(--border);padding:40px 0;">
     <div class="wrap flex flex-col sm:flex-row" style="align-items:center;justify-content:space-between;gap:18px;">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -629,6 +710,152 @@
         AOS.init({ duration: 500, once: true, offset: 40,
                    disable: window.matchMedia('(prefers-reduced-motion: reduce)').matches });
     }
+
+    // ── Public preview ──────────────────────────────────────────────────────
+    // Renders only what the endpoint can honestly claim: the real posting
+    // (company, title, location, which ATS it came from) and the one comparison
+    // actually grounded in the résumé the visitor pasted — the years it states
+    // against the years the posting asks for. /api/public/demo-match also
+    // returns a heuristic score and outreach drafts built on hard-coded
+    // assumptions about the candidate (work authorisation, home metro, domain);
+    // those are claims about a person nothing here has read, so they are not
+    // shown.
+    (function () {
+        var form = document.getElementById('demo-form');
+        if (!form) return;
+        var btn = document.getElementById('demo-submit');
+        var msg = document.getElementById('demo-message');
+        var out = document.getElementById('demo-results');
+        var summary = document.getElementById('demo-summary');
+        var cards = document.getElementById('demo-cards');
+
+        var ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        function esc(v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return ENTITIES[c]; });
+        }
+        // The API phrases its notes with **emphasis**. Escape first, then let
+        // that one construct through — nothing else in the response is markup.
+        function emph(v) { return esc(v).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>'); }
+        function sentence(v) {
+            var s = String(v || '').trim();
+            return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+        }
+
+        var PROVIDERS = {
+            greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday',
+            smartrecruiters: 'SmartRecruiters', workable: 'Workable', personio: 'Personio',
+            rippling: 'Rippling', bamboohr: 'BambooHR', teamtailor: 'Teamtailor',
+            recruitee: 'Recruitee', breezy: 'Breezy', pinpoint: 'Pinpoint'
+        };
+        var LABELS = { MATCH: 'Experience matches', STRETCH: 'Slight stretch' };
+
+        function say(text) {
+            msg.textContent = text;
+            msg.classList.remove('hidden');
+        }
+
+        function card(job) {
+            var exp = (job.findings || []).filter(function (f) {
+                return f.dim === 'EXPERIENCE LEVEL';
+            })[0];
+            var provider = job.sample
+                ? 'Example posting'
+                : (PROVIDERS[String(job.source || '').toLowerCase()] || 'Company board');
+            var note = exp ? sentence(exp.note)
+                           : 'This posting does not state a years-of-experience bar.';
+            var label = exp ? (LABELS[exp.status] || 'Above your stated years') : 'Not stated';
+            var pill = exp && exp.status === 'MATCH' ? 'pill pill-ok' : 'pill';
+
+            var head = esc(job.title || 'Role');
+            if (!job.sample && /^https?:\/\//i.test(job.url || '')) {
+                head = '<a href="' + esc(job.url) + '" target="_blank" rel="noopener nofollow"' +
+                       ' style="color:var(--ink);text-decoration:none;' +
+                       'border-bottom:1px solid var(--border-strong);">' + head + '</a>';
+            }
+
+            return '<article class="card rounded-2xl" style="padding:22px;">' +
+                     '<div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;">' +
+                       '<div>' +
+                         '<h3 style="font-size:16.5px;font-weight:700;line-height:1.35;">' + head + '</h3>' +
+                         '<p class="body" style="font-size:14px;margin:5px 0 0;">' +
+                           esc(job.company || 'Company not stated') + ' · ' +
+                           esc(job.location || 'Location not stated') +
+                         '</p>' +
+                       '</div>' +
+                       '<span class="pill">' + esc(provider) + '</span>' +
+                     '</div>' +
+                     '<div style="display:flex;gap:10px;align-items:flex-start;margin-top:16px;flex-wrap:wrap;">' +
+                       '<span class="' + pill + '">' + esc(label) + '</span>' +
+                       '<p class="body" style="font-size:14px;margin:2px 0 0;flex:1 1 260px;">' +
+                         emph(note) + '</p>' +
+                     '</div>' +
+                   '</article>';
+        }
+
+        function render(data) {
+            var jobs = (data && data.jobs) || [];
+            if (!jobs.length) {
+                say('Nothing matched that title right now — try a broader one.');
+                return;
+            }
+            var samples = jobs.filter(function (j) { return j.sample; }).length;
+            var years = data.candidate && data.candidate.years;
+            var lead = years ? 'We read about ' + esc(years) +
+                               ' years of experience from your résumé. ' : '';
+            var tail;
+            if (samples === 0) {
+                tail = 'Here ' + (jobs.length === 1 ? 'is 1 open posting' : 'are ' + jobs.length +
+                       ' open postings') + ' SpotApply is tracking.';
+            } else if (samples === jobs.length) {
+                tail = 'Nothing in the live pool matches that title at the moment, so these are ' +
+                       'example postings.';
+            } else {
+                tail = 'The postings marked as examples are not live openings.';
+            }
+            summary.innerHTML = lead + tail;
+            cards.innerHTML = jobs.map(card).join('');
+            msg.classList.add('hidden');
+            out.classList.remove('hidden');
+            var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            out.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
+        }
+
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var role = document.getElementById('demo-role').value.trim();
+            var text = document.getElementById('demo-resume').value.trim();
+            var file = document.getElementById('demo-file').files[0];
+            if (!role) { say('Tell us the role you are targeting.'); return; }
+            if (!text && !file) { say('Paste your résumé or upload a file.'); return; }
+
+            var data = new FormData();
+            data.append('target_role', role);
+            if (file) { data.append('file', file); } else { data.append('resume_text', text); }
+
+            btn.disabled = true;
+            btn.textContent = 'Finding roles…';
+            out.classList.add('hidden');
+            say('Reading your résumé and checking open postings…');
+
+            fetch('/api/public/demo-match', { method: 'POST', body: data })
+                .then(function (r) {
+                    return r.json().catch(function () { return {}; }).then(function (b) {
+                        if (r.ok) return b;
+                        throw new Error(b.detail || (r.status === 429
+                            ? 'That is a few too many tries in a minute — give it a moment.'
+                            : 'The preview is unavailable right now. Please try again.'));
+                    });
+                })
+                .then(render)
+                .catch(function (err) {
+                    say(err && err.message ? err.message : 'Something went wrong. Please try again.');
+                })
+                .then(function () {
+                    btn.disabled = false;
+                    btn.textContent = 'Show me matching roles';
+                });
+        });
+    })();
 
     // Live board count — real production figure, shown only once it arrives so
     // the page never displays a placeholder number as if it were measured.
