@@ -180,27 +180,39 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   round-trip): `prescored_at`, `scored_at`, `expired_at`. Count with
   `genuinely_scored_expr()` / `expired_without_scoring_expr()`, never the raw
   NULL check. Stage latency: `scripts/stage_latency.py`.
-- **Spend is a per-user BUDGET, not a result cap** (`matching/finals_budget.py`):
-  `PLAN_LIMITS["finals_daily"]` (Free 15 / Pro 50 / Agency 100) is the SOFT
-  point; past it a user keeps scoring only while candidates are strong
-  (`FINALS_PROMISE_FLOOR`=55 raises the Tier-1 gate in burst territory) AND the
-  last `FINALS_YIELD_WINDOW` finals still clear the bar
-  (`FINALS_YIELD_CONTINUE_RATE`). Bounded by burst (×2/day) and weekly (×7 =
-  the SAME money the flat cap cost — bursting reallocates, never adds). Decided
-  in `scoring_lane._finals_allowance` (slice + gate), inherited by the pulse
-  fast path; plan lookup fails OPEN. Counters live in `UserUsage.finals_count/
-  finals_hits` — **persisted**, because in-memory ones reset on every deploy.
-  Never chase a target: 6 good jobs means 6. The queue is promise-ordered
-  (`_user_queue`: freshness filters, prescore sorts) so the money buys the best
-  candidates, not the newest. `LLM_DAILY_FINAL_CAP` (5000) / `_HOURLY_` (400) are now
-  only a runaway backstop + burst smoothing — raise as users grow. **Paced**
-  (2026-09): every budget is RELEASED along a curve (`day_fraction`: 15% head
-  start at 00:00 UTC then linear; `week_fraction`: one day's worth Monday 00:00
-  then linear) — production spent 100% of the day's finals in the 00:xx hour
-  and the founder hit the weekly cap on Wednesday. Size unchanged, timing
-  fixed; burst can only spend what the week has already released. Reasons
-  starting `paced`/`yield` are the budget working (`budget_paced_users`), not
-  a stall (`plan_capped_users`). `FINALS_PACE_ENABLED=0` = all at midnight.
+- **Spend aims at a DELIVERY target, not a call count** (`matching/finals_budget.py`,
+  2026-09-05): scoring runs FLAT OUT until `PLAN_LIMITS["shortlist_daily"]`
+  (Free 20 / Pro 35) jobs reach the board today, then stops. Three stops:
+  delivered ≥ target (success); spent ≥ `finals_daily` (Free 120 / Pro 250 — the
+  cost ceiling); yield collapsed. **At the ~10% hit rate the CEILING is what
+  usually stops a day** (35 delivered ≈ 350 finals), so read `finals_daily` as
+  the daily allocation and the target as an early-out — raising delivery costs
+  money, only better Tier-1 precision is free. **No window is longer than a day
+  and nothing is paced**: the weekly ceiling + release curves paced PRO to 1.77
+  finals/hour (prescore→final p50 685 min) and on 09-03 the weekly curve applied
+  to an already-spent week took production to zero finals for 39 hours while
+  reporting itself healthy. Two rules from that, pinned by test: a spend control
+  must never retroactively invalidate spend already made, and a reason meaning
+  "you get nothing" is never filed under healthy (only `delivered` is quiet =
+  `target_met_users`; everything else warns = `plan_capped_users`). The **yield
+  stop** needs a real sample — hits/finals TODAY, judged only past
+  `FINALS_YIELD_WINDOW` (50) finals, continue at ≥2%: at a 10% true rate zero
+  hits in 10 finals happens 35% of the time, and the first version read an
+  in-process ring only a purchased final could refill, so a coin-flip left users
+  at zero finals until the next deploy. **Promise ordering** decides WHICH
+  finals you buy: `_user_queue` orders the user's whole unscored queue by
+  `prescore` in SQL, unknowns ranked AT the advance gate (never 100 — that let
+  an unjudged job pre-empt a genuine 90). It only works because the matching
+  lane now PERSISTS the prescores it cuts at `_tier2_cap`; every other writer
+  sets `Job.prescore` as a job leaves the queue, so dropping them left the whole
+  waiting corpus NULL and the ORDER BY collapsed to arrival order. Never chase
+  the target: 6 good jobs means 6. `delivered_today()` is the ONE definition of
+  what reached the board (email imports excluded) — the budget and all three
+  shortlist caps read it. Plan lookup fails open to the widest plan ceiling,
+  never to unbounded; counters persist in `UserUsage`. `LLM_DAILY_FINAL_CAP`
+  (15000) / `_HOURLY_` (2000) are platform backstops — Anthropic Tier-1
+  prescores charge the same counter, which is why `PRESCORE_BUDGET_MULTIPLIER`
+  is 2.
 - **LLM cost guards** (`reranker.py` + `scoring_lane.py`): dual-provider finals
   OFF by default (gpt-4o was ~2.5x Haiku for no quality gain — `DUAL_SCORE_ENABLED`);
   credit/quota circuit breaker `LLM_PROVIDER_COOLDOWN_MINUTES` (30) — trips on

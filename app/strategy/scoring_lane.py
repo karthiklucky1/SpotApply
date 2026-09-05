@@ -37,7 +37,7 @@ import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 from sqlmodel import select
@@ -239,38 +239,44 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
     return users
 
 
-# How much of the freshness window to look at before picking the most promising
-# jobs in it. 3x keeps the SQL a bounded index walk while still giving the sort
-# something to choose from; the ceiling stops a large per-cycle cap from pulling
-# a big slice back for a Python sort.
-_QUEUE_OVERSAMPLE = 3
-_QUEUE_FETCH_MAX = 400
-
-
 def _user_queue(user_id: Optional[str], cap: int,
                 only_unprescored: bool = False) -> List[int]:
-    """A user's queued (unscored) job ids: the freshest `cap × _QUEUE_OVERSAMPLE`,
-    re-ordered most-promising-first, then cut to `cap`.
+    """A user's queued (unscored) job ids, MOST PROMISING FIRST across the whole
+    queue, cut to ``cap``.
 
-    Spending the expensive model in ARRIVAL order was the quiet half of the flat
-    cap's problem — the day's finals went to whatever showed up first rather
-    than to the best candidates. Promise is the Tier-1 `prescore` where one
-    exists; a job that has never been prescored sorts FIRST (COALESCE to 100),
-    because "unknown" is worth the $0.0002 it costs to find out and the cascade
-    drains it for free if it comes back weak.
+    This used to fetch the newest ``cap x 3`` rows by ``first_seen`` and sort
+    THOSE by prescore in Python. Measured against production: a 342-job queue
+    with a 120-row window meant 65% of it was invisible to every cycle, and a
+    prescore-92 job sitting 150th by recency lost to a prescore-65 job sitting
+    20th — the strongest candidate was not merely deprioritised, it was never
+    fetched. With finals now spent until the day's shortlist target is met
+    rather than until a call counter runs out, that ordering decides whether
+    the target is reached in 40 calls or 300, so it has to be global.
 
-    The freshness window stays as the index-friendly SQL (ix_job_unscored rides
-    `first_seen DESC` with a LIMIT); only the small oversampled slice is sorted,
-    in Python. Ordering by the COALESCE in SQL would defeat that index and turn
-    a bounded walk into a full sort of the user's unscored corpus.
+    The old docstring defended the window: ordering in SQL "would defeat that
+    index and turn a bounded walk into a full sort of the user's unscored
+    corpus". ``ix_job_unscored`` is PARTIAL — ``(user_id, first_seen) WHERE
+    rerank_score IS NULL`` — so that corpus is one user's unscored rows (342 in
+    production), not the 1.6M-row table. Postgres walks the partial index for
+    the user and sorts a few hundred small rows. The objection was written
+    against a cost the partial index already removes.
 
-    Attempt-ceiling deferred jobs are excluded IN THE QUERY (not after the
-    LIMIT) so a window of deferred fresh jobs can't crowd valid older jobs out
-    of the capped slice and starve them indefinitely."""
+    Promise is the Tier-1 ``prescore``. A job that has never been prescored
+    ranks at the advance gate, NOT at 100: the old COALESCE-to-100 let an
+    unknown outrank a genuine 90, which is the same defect one level down.
+    Unknown is worth investigating, never worth pre-empting a known-strong
+    candidate. Ties break newest-first, so a fresh job beats stale backlog of
+    equal promise — the "apply early" promise, expressed as an ordering.
+    """
+    from sqlalchemy import func
+    from app.matching.finals_budget import normal_gate
     deferred = _deferred_ids()
-    fetch = max(cap, min(cap * _QUEUE_OVERSAMPLE, _QUEUE_FETCH_MAX))
+    # Rank unknowns AT the gate: above every job Tier-1 has judged a misfit,
+    # below every job it has judged a candidate.
+    unknown_rank = float(normal_gate())
     with get_session() as session:
-        q = select(Job.id, Job.prescore).where(
+        promise = func.coalesce(Job.prescore, unknown_rank)
+        q = select(Job.id).where(
             Job.user_id == user_id,
             Job.rerank_score == None,  # noqa: E711
             Job.is_closed == False,    # noqa: E712
@@ -286,27 +292,42 @@ def _user_queue(user_id: Optional[str], cap: int,
         # post-filtering only if the deferred set is pathologically large.
         if deferred and len(deferred) <= 2000:
             q = q.where(Job.id.notin_(deferred))
-        q = q.order_by(Job.first_seen.desc()).limit(fetch)
-        rows = list(session.exec(q).all())
-    # Stable sort: equal promise keeps the freshest-first order the query gave.
-    rows.sort(key=lambda r: (r[1] if r[1] is not None else 100.0), reverse=True)
-    jids = [r[0] for r in rows][:cap]
+        # Cheap insurance, and NOT a new age rule: this is the same KNOWN bound
+        # the scoring gate already applies, built from app/common/freshness.py
+        # like every other consumer (never a hand-rolled date expression — see
+        # tests/test_expiry_semantics.py). `_expire_stale_unscored` normally
+        # stamps these rows out of the queue anyway, so it should match nothing.
+        # It earns its keep when that sweep stalls: its failure path is a
+        # log.warning, and sorting by `coalesce(prescore, ...)` means the LIMIT
+        # can no longer stop the walk early, so an unbounded backlog would turn
+        # this 90-second query into a full sort of the user's whole unscored
+        # corpus. Both hotspot incidents recorded in this file started there.
+        _known = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+        if _known > 0:
+            from app.common.freshness import known_ref
+            q = q.where(known_ref() >= datetime.utcnow() - timedelta(days=_known))
+        q = q.order_by(promise.desc(), Job.first_seen.desc()).limit(cap)
+        jids = [r for r in session.exec(q).all()]
     return jids if len(deferred) <= 2000 else _drop_deferred(jids)
 
 
 class _Ctx:
     """Per-user, per-cycle scoring context.
 
-    TWO Tier-1 thresholds, and the difference is load-bearing:
+    TWO Tier-1 thresholds. They are EQUAL under the current budget, and the
+    distinction is kept because it is what makes them safe to separate again:
       ``gate``       — below it a job is a misfit: stamped with its prescore and
                        drained out of the queue for good. Never moves.
-      ``spend_gate`` — at or above it the job is worth a final RIGHT NOW. In the
-                       burst zone this is higher (finals_budget.burst_gate), so
-                       between the two a job is neither drained nor scored: it
-                       stays Queued for a cycle inside the soft budget, which is
-                       when everyday money pays for it. Draining that band
-                       instead would mean an identical job's fate depended on
-                       what time of day it happened to be picked up.
+      ``spend_gate`` — at or above it the job is worth a final RIGHT NOW. Any
+                       raise applies to this one only: between the two a job is
+                       neither drained nor scored, it simply stays Queued with
+                       its prescore until the budget reopens. Raising ``gate``
+                       instead would DESTROY those jobs — an identical posting's
+                       fate deciding on what time of day it was picked up.
+
+    The old promise floor raised ``spend_gate`` inside a "burst zone". That
+    zone is gone with the pacing that created it (finals_budget), so today
+    ``allow.gate`` is the everyday gate and the band is empty.
     """
     __slots__ = ("resume", "reranker", "use_prescore", "gate", "spend_gate",
                  "drain_only")
@@ -387,13 +408,13 @@ def _keep_prescore(jid: int, pre: Tuple[float, str]) -> None:
     """A prescored job is STAYING in the queue: memoize it AND persist it.
 
     The memo makes the retry free. The database write is what makes the
-    promise-ordered queue real. `_user_queue` sorts the freshest slice by
+    promise-ordered queue real. `_user_queue` orders the whole queue by
     `Job.prescore`, but every other writer of that column (`_stamp_job`, the
     matching lane's final stamp, the pulse fast path) sets it TOGETHER with
     `rerank_score` — i.e. as the job LEAVES the queue. A job kept in the queue
-    (waiting in the burst band, or whose final failed) therefore read NULL —
-    "unknown", sorts first — so it re-entered the freshest slice every cycle
-    and the ordering never saw a real number in production.
+    (waiting for budget, or whose final failed) therefore read NULL — "unknown"
+    — so it re-entered the queue unranked every cycle and the ordering never
+    saw a real number in production.
 
     Idempotent and best-effort: a lost write costs one cheap re-prescore.
     """
@@ -486,12 +507,17 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
             _keep_prescore(jid, pre)
             return ("prescored", jid, None, None)
         if pre is not None and pre[0] < ctx.spend_gate:
-            # Burst money only buys finals on strong candidates. This job is not
-            # a misfit — do NOT stamp it — it simply waits for the soft budget,
-            # where the everyday gate applies. Keep the prescore (memo AND row)
-            # so the wait is free and the queue can sort it by what it is worth.
+            # A raised spend gate (none today — see _Ctx) would land here. The
+            # job is NOT a misfit, so it must not be stamped; it waits, with its
+            # prescore kept so the wait is free and the queue can rank it.
             _keep_prescore(jid, pre)
             return None
+        # Anything still here gets its final in a moment, and `_stamp_job`
+        # writes the prescore with it — one round-trip, not two. This lane
+        # scores everything it prescores, so it is NOT where the queue's
+        # promise ordering comes from: that is the matching lane, which
+        # prescores far more than it can score and persists the remainder
+        # (pipeline._persist_kept_prescores).
     else:
         pre = None
 
@@ -564,41 +590,54 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     return ("scored", jid, float(score), provider)
 
 
-def _plan_finals_cap(uid: Optional[str]) -> Optional[int]:
-    """This user's plan allowance of Tier-2 finals per UTC day, or None if the
-    plan is unknown (fail OPEN — a billing hiccup must never stall scoring).
+def _plan_budget(uid: Optional[str]) -> tuple[Optional[int], int]:
+    """(cost ceiling, shortlist target) for this user.
+
+    FAIL OPEN TO A NUMBER, never to infinity. `_get_user_plan` runs an uncached
+    SELECT against `user_subscription` on every user of every cycle, so a
+    Supabase blip lands here — and returning "no ceiling" would remove the only
+    money guard at the moment the database is already unhappy: 40 finals per
+    cycle at a 90s cadence is 38,400/user/day, stopped only by the platform
+    backstop. The unknown-plan fallback is therefore the most generous PLAN
+    ceiling, which never under-serves a paying user for our outage and still
+    bounds the day. (app/common/plan_limits.py fails open the same way, to a
+    real number.) The TARGET falls back to 0 = "unknown", which only disables
+    the early-out; the ceiling still stops the spend.
 
     Imported lazily: server.py imports this module, so a top-level import would
     be circular. By the time a lane cycle runs, server is fully loaded."""
     if not uid or uid == "local":
-        return None
+        return None, 0
     try:
         from app.api.server import _get_user_plan
         from app.db.models import PLAN_LIMITS
-        return PLAN_LIMITS[_get_user_plan(uid)].get("finals_daily")
+        limits = PLAN_LIMITS[_get_user_plan(uid)]
+        return limits.get("finals_daily"), int(limits.get("shortlist_daily") or 0)
     except Exception as e:
-        log.debug("plan lookup failed for %s (%s) — no per-user cap this cycle", uid, e)
-        return None
+        from app.db.models import PLAN_LIMITS
+        fallback = max((int(p.get("finals_daily") or 0) for p in PLAN_LIMITS.values()),
+                       default=0) or None
+        log.debug("plan lookup failed for %s (%s) — falling back to the widest "
+                  "plan ceiling (%s finals)", uid, e, fallback)
+        return fallback, 0
 
 
 def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     """How many jobs of ``uid``'s queue this cycle may take, and how promising a
     candidate must be to earn a final.
 
-    The plan's `finals_daily` is the SOFT point, not a ceiling: past it the
-    adaptive budget keeps spending only while the remaining candidates are
-    strong (Test A) and recent finals are still producing matches (Test B),
-    bounded by the daily burst and the weekly budget
-    (`app/matching/finals_budget.py`). Returning 0 removes the user from the
+    The plan's `shortlist_daily` is the TARGET: scoring runs at full speed until
+    that many jobs have reached the board today, then stops. `finals_daily` is
+    only the cost ceiling behind it. Returning 0 removes the user from the
     FINALS work list; the cycle may still give them a Tier-1-only drain slice
-    (settings.scoring_drain_cap) so the backlog keeps shrinking while the
-    budget is closed — see _run_scoring_cycle.
+    (settings.scoring_drain_cap) so the backlog keeps shrinking while the budget
+    is closed — see _run_scoring_cycle.
     """
     from app.matching.finals_budget import Allowance, allowance, normal_gate
-    cap = _plan_finals_cap(uid)
-    if cap is None or cap <= 0:
+    ceiling, target = _plan_budget(uid)
+    if ceiling is None and target <= 0:
         return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
-    allow = allowance(uid, per_cycle_cap, cap)
+    allow = allowance(uid, per_cycle_cap, int(ceiling or 0), target)
     # Every queue item costs a Tier-1 prescore before it can become a final, so
     # the slice is also bounded by the user's ANTHROPIC prescore allowance.
     # Prescores are counted separately from finals on purpose — see
@@ -606,9 +645,9 @@ def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
     # user's whole day within 15 minutes of 00:00 UTC while OpenAI was out of
     # credits. OpenAI prescores are not counted at all ($0.0002 each).
     mult = int(getattr(settings, "prescore_budget_multiplier", 10) or 0)
-    if mult > 0:
+    if mult > 0 and ceiling:
         from app.matching.reranker import user_prescores_today
-        headroom = cap * mult - user_prescores_today(uid)
+        headroom = int(ceiling) * mult - user_prescores_today(uid)
         if headroom < allow.n:
             return Allowance(max(0, headroom), allow.gate, "anthropic prescore allowance")
     return allow
@@ -626,12 +665,10 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
     uid_arg = None if (not uid or uid == "local") else uid
 
-    with get_session() as session:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        q = select(Application).where(Application.created_at >= today_start)
-        q = q.where(Application.user_id == uid_arg) if uid_arg \
-            else q.where(Application.user_id.is_(None))
-        today_count = len(session.exec(q).all())
+    # THE definition of "delivered today", shared with the finals budget: what
+    # this loop refuses to exceed has to be the same number the budget stops at.
+    from app.matching.finals_budget import delivered_today
+    today_count = delivered_today(uid, cached=False)
 
     # Which of these scores came from the local fallback (no AI review). Those
     # are held to the degraded bar and flagged provisional — see strategy/degraded.py.
@@ -907,24 +944,23 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         log.debug("new-user priority ordering skipped: %s", e)
 
     queues: List[List[Tuple[Optional[str], int]]] = []
-    capped_out = 0      # hard stops: weekly spent, burst ceiling, prescore allowance
-    paced_out = 0       # the budget working: waiting on its release curve / yield test
+    capped_out = 0      # stopped short: cost ceiling, collapsed yield, prescore allowance
+    delivered_out = 0   # finished: the day's promised jobs are already on the board
     gate_by_user: dict = {}
     drain_users: set = set()
     for uid in users:
-        # The adaptive budget decides BOTH how many finals this user may buy now
-        # and how promising a candidate has to be to earn one: inside the soft
-        # budget the everyday Tier-1 gate applies, past it only strong
-        # candidates qualify (finals_budget.burst_gate). A user with nothing
-        # left contributes nothing to this cycle's work list.
+        # The budget decides BOTH how many finals this user may buy now and how
+        # promising a candidate has to be to earn one. It aims at the plan's
+        # shortlist target and stops when that target is DELIVERED, so a user
+        # with nothing left contributes nothing to this cycle's work list.
         allow = _finals_allowance(uid, settings.scoring_per_user_cap)
         if allow.n <= 0:
-            # A "paced" (or yield-closed) user has money that the release
-            # curve has not handed out YET — most cycles of a normal day look
-            # like this now, and it is not the stall the warning below exists
-            # for. Count the two apart so the stats say which one happened.
-            if allow.reason.startswith(("paced", "yield")):
-                paced_out += 1
+            # Two very different zeros, and conflating them is what let the
+            # 2026-09-03 outage run silently for 39 hours. "delivered" means the
+            # user HAS their day's jobs — success, and the normal state of a
+            # good afternoon. Everything else means they stopped short.
+            if allow.reason.startswith("delivered"):
+                delivered_out += 1
             else:
                 capped_out += 1
             log.debug("Scoring: %s gets no slice this cycle (%s)", uid, allow.reason)
@@ -952,8 +988,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             queues.append(q)
     if capped_out:
         stats["plan_capped_users"] = capped_out
-    if paced_out:
-        stats["budget_paced_users"] = paced_out
+    if delivered_out:
+        stats["target_met_users"] = delivered_out
     items: List[Tuple[Optional[str], int]] = []
     depth = 0
     while len(items) < settings.scoring_global_cap and any(depth < len(q) for q in queues):
@@ -976,11 +1012,12 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             if now - _last_capped_log[0] >= 1800:
                 _last_capped_log[0] = now
                 log.warning(
-                    "Scoring cycle: %d scorable user(s) have no finals allowance — "
-                    "queued jobs wait for the budget to reopen (soft/burst/weekly "
-                    "per PLAN_LIMITS × FINALS_*_MULTIPLIER, or the marginal-yield "
-                    "test; DEBUG logs the per-user reason)",
-                    capped_out)
+                    "Scoring cycle: %d scorable user(s) stopped SHORT of their "
+                    "day's shortlist target — the cost ceiling "
+                    "(PLAN_LIMITS['finals_daily']), the marginal-yield test, or "
+                    "the Anthropic prescore allowance. Not the same as a user "
+                    "whose jobs are already delivered; DEBUG logs the per-user "
+                    "reason", capped_out)
         return stats
 
     # Per-user context (résumé + reranker), loaded ONCE and shared across workers.

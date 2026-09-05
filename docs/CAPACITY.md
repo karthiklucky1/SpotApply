@@ -8,12 +8,13 @@
 > change. Four of its inputs have since moved, so the §2–§3 arithmetic is a
 > record of the old regime, not current behaviour:
 >
-> | | Then | Now |
+> | | Then | Now (2026-09-05) |
 > |---|---|---|
-> | Tier-2 allocation | one global `LLM_DAILY_FINAL_CAP = 1500` | **per user**, `PLAN_LIMITS["finals_daily"]` (Free 15 / Pro 50 / Agency 100) |
-> | `LLM_DAILY_FINAL_CAP` | the binding constraint | a runaway **backstop** (5000) |
-> | `LLM_HOURLY_FINAL_CAP` | 150 | 400 |
-> | `SHORTLIST_SCORE_THRESHOLD` / `PRESCORE_ADVANCE_THRESHOLD` | 35 / 35 | **60 / 60** |
+> | What bounds Tier-2 | a call count: one global `LLM_DAILY_FINAL_CAP = 1500` | a **delivery target**: score until `PLAN_LIMITS["shortlist_daily"]` jobs reach the board (Free 20 / Pro 35), then stop |
+> | `PLAN_LIMITS["finals_daily"]` | — | the **cost ceiling** behind that target, nothing else (Free 120 / Pro 250) |
+> | `LLM_DAILY_FINAL_CAP` | the binding constraint | a platform runaway **backstop** (15000) |
+> | `LLM_HOURLY_FINAL_CAP` | 150 | 2000 |
+> | `SHORTLIST_SCORE_THRESHOLD` / `PRESCORE_ADVANCE_THRESHOLD` | 35 / 35 | **70 / 40** — no longer in lockstep: the gate was re-derived against the banded Tier-1 prompt |
 >
 > Also fixed since: the two uncapped Tier-1 leaks in §2.2 (both lanes now check
 > `llm_budget_exhausted()` before prescoring), and the retrieval `select(Job)`

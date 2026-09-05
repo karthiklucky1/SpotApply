@@ -429,9 +429,9 @@ def test_plan_limits_are_the_documented_numbers():
     """These drive per-user spend and feed straight into the CAPACITY arithmetic,
     so a silent edit is a silent change to unit economics."""
     from app.db.models import PLAN_LIMITS
-    assert PLAN_LIMITS[PlanTier.FREE]["finals_daily"] == 15
-    assert PLAN_LIMITS[PlanTier.PRO]["finals_daily"] == 50
-    assert PLAN_LIMITS[PlanTier.AGENCY]["finals_daily"] == 100
+    assert PLAN_LIMITS[PlanTier.FREE]["finals_daily"] == 120
+    assert PLAN_LIMITS[PlanTier.PRO]["finals_daily"] == 250
+    assert PLAN_LIMITS[PlanTier.AGENCY]["finals_daily"] == 250
     assert PLAN_LIMITS[PlanTier.FREE]["tailor_daily"] == 5
     # A real number, not None: "unlimited apart from the 25/day abuse ceiling"
     # was the default for every user while Stripe is unconfigured, because

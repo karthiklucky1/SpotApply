@@ -1,16 +1,15 @@
 """The promise-ordered queue only works if a queued job's prescore reaches the
 database — and the ledger only bounds spend if no increment is lost.
 
-`_user_queue` sorts the freshest slice by `Job.prescore` (NULL = "unknown",
-sorts first). But every other writer of that column — `_stamp_job`, the
-matching lane's final stamp, the pulse fast path — writes it TOGETHER with
-`rerank_score`, i.e. as the job LEAVES the queue. A job prescored and KEPT
-(waiting in the burst band, or whose final failed) had its prescore only in
-`_prescore_memo`, so in the database it still read NULL: to the sort it was
-"unknown", it re-entered the freshest slice every cycle, and the ordering the
-adaptive budget depends on never saw a real number in production. The original
-ordering test passed only because it seeded `prescore` directly, which nothing
-in production does.
+`_user_queue` orders the whole queue by `Job.prescore`. But every other writer
+of that column — `_stamp_job`, the matching lane's final stamp, the pulse fast
+path — writes it TOGETHER with `rerank_score`, i.e. as the job LEAVES the
+queue. A job prescored and KEPT (waiting in the queue, or whose final failed)
+had its prescore only in `_prescore_memo`, so in the database it still read
+NULL: to the sort it was "unknown", it re-entered the front of the queue every
+cycle, and the ordering the budget depends on never saw a real number in
+production. The original ordering test passed only because it seeded `prescore`
+directly, which nothing in production does.
 
 These run the real `_score_job_owned` against the real session, so the
 persistence is exercised end to end rather than asserted about.
@@ -66,12 +65,13 @@ class _RK:
         return False
 
 
-def test_a_job_waiting_in_the_burst_band_keeps_its_prescore_in_the_database():
-    """45 is above the drain gate (40) and below the burst gate (55): the job is
-    neither scored nor stamped, and its Tier-1 verdict must survive on the row."""
+def test_a_job_whose_final_never_returned_keeps_its_prescore_in_the_database():
+    """45 clears the advance gate, so the job is not drained; Tier-2 then fails,
+    so no verdict is written. It stays Queued — and its Tier-1 number must
+    survive on the row, or next cycle it is "unknown" all over again."""
     jid = _make_job("wait-1")
     try:
-        ctx = sl._Ctx("resume", _RK(45.0), True, fb.normal_gate(), fb.burst_gate())
+        ctx = sl._Ctx("resume", _RK(45.0), True, fb.normal_gate(), fb.normal_gate())
         assert sl._score_job_owned(jid, ctx) is None
         with get_session() as session:
             row = session.get(Job, jid)
@@ -98,15 +98,38 @@ def test_a_job_whose_final_failed_keeps_its_prescore_in_the_database(monkeypatch
 
 def test_the_persisted_prescore_is_what_the_queue_sorts_on():
     """End to end: next cycle the stronger waiting job outranks the weaker one
-    even though it is older, and both rank below a never-prescored newcomer."""
+    even though it is older, and a never-prescored newcomer ranks AT THE GATE —
+    between them, not ahead of them.
+
+    The old fallback ranked an unknown at 100, so a job Tier-1 had never looked
+    at pre-empted one it had scored 90. Unknown means "worth investigating",
+    which is exactly the advance gate: above everything Tier-1 called a misfit,
+    below everything it called a candidate. Freshness only breaks ties.
+    """
     weak = _make_job("q-weak", minutes_old=5)
     strong = _make_job("q-strong", minutes_old=30)      # older: freshness alone would lose
     try:
-        gate, burst = fb.normal_gate(), fb.burst_gate()
-        sl._score_job_owned(weak, sl._Ctx("resume", _RK(45.0), True, gate, burst))
-        sl._score_job_owned(strong, sl._Ctx("resume", _RK(54.0), True, gate, burst))
+        gate = fb.normal_gate()                          # 40
+        sl._score_job_owned(weak, sl._Ctx("resume", _RK(45.0), True, gate, gate))
+        sl._score_job_owned(strong, sl._Ctx("resume", _RK(54.0), True, gate, gate))
         unknown = _make_job("q-unknown", minutes_old=0)  # freshest, never prescored
-        assert sl._user_queue(USER, 3) == [unknown, strong, weak]
+        assert sl._user_queue(USER, 3) == [strong, weak, unknown]
+    finally:
+        _cleanup()
+
+
+def test_an_unknown_outranks_a_job_tier1_judged_a_misfit():
+    """The other half of ranking unknowns at the gate: a prescore BELOW it is
+    evidence against, and must not sit ahead of a job nobody has judged."""
+    misfit = _make_job("q-misfit", minutes_old=30)
+    try:
+        with get_session() as session:
+            row = session.get(Job, misfit)
+            row.prescore = fb.normal_gate() - 10.0        # judged, and found wanting
+            session.add(row)
+            session.commit()
+        unknown = _make_job("q-unjudged", minutes_old=5)
+        assert sl._user_queue(USER, 2) == [unknown, misfit]
     finally:
         _cleanup()
 
@@ -138,6 +161,35 @@ def test_the_matching_lane_consults_the_finals_allowance():
     assert "_tier2_cap = min(settings.llm_rerank_cap, _allow.n)" in src, (
         "the Tier-2 cap must be the smaller of the per-pass ceiling and what the "
         "user's budget still allows"
+    )
+
+
+def test_prescores_cut_by_the_tier2_cap_are_kept_not_thrown_away():
+    """WHERE THE QUEUE'S RANKING ACTUALLY COMES FROM, and it used to be dropped.
+
+    The scoring lane scores everything it prescores, so it ranks nothing. The
+    matching lane is the spreader: Tier-1 prescores up to `prescore_cap` (600)
+    candidates and Tier-2 buys at most `llm_rerank_cap`/allowance (~100) of
+    them. The ~500 cut by that ceiling stay Queued and each already HAS a real
+    Tier-1 number — but the cut simply truncated the list, so those numbers were
+    discarded and the rows kept `prescore = NULL`.
+
+    Every other writer of that column sets it as a job LEAVES the queue, so the
+    whole waiting corpus read NULL, tied at the gate in `_user_queue`'s
+    ORDER BY, and the promise ordering silently degraded to arrival order —
+    the exact thing it was written to replace, and the thing the finals budget
+    now depends on being real.
+
+    Source-level: a real pass needs FAISS and the ML stack.
+    """
+    import inspect
+    from app.matching import pipeline
+
+    src = inspect.getsource(pipeline.run_matching)
+    cut = src.split("_tier2_cap = min(", 1)[1].split("if to_rerank:", 1)[0]
+    assert "to_rerank[_tier2_cap:]" in cut and "prescore_kept.append" in cut, (
+        "the candidates cut by the Tier-2 cap must have their prescores kept — "
+        "otherwise the promise-ordered queue has nothing to sort on"
     )
 
 

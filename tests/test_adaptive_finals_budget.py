@@ -1,24 +1,29 @@
-"""The adaptive finals budget: spend on evidence, never on a counter.
+"""The finals budget: spend until the day's jobs are DELIVERED.
 
-The flat per-plan cap was wrong in both directions on the same day — it stopped
-a strong user at 50 while finals were still landing 70-fits, and spent 50 finals
-on a Saturday proving 20 weak jobs are weak. These tests pin the replacement:
+Two designs have now failed here, and every test below pins the reason one of
+them failed. Both were budgets of CALLS:
 
-  soft   = PLAN_LIMITS["finals_daily"]      spent freely
-  burst  = soft x FINALS_BURST_MULTIPLIER   hard daily ceiling
-  weekly = soft x FINALS_WEEKLY_MULTIPLIER  the real economic control
+  1. a flat per-plan cap  — wrong in both directions on the same day: it stopped
+     a strong user at 50 while finals were still landing 70-fits, and spent 50
+     finals on a Saturday proving 20 weak jobs are weak.
+  2. soft / burst / WEEKLY, released along a curve — paced a PRO user to 1.77
+     finals/hour (measured prescore->final p50: 685 minutes, p90: 55 hours), and
+     on 2026-09-03 the weekly curve, applied to a week whose spend had already
+     happened, took production to zero finals for 39 hours while reporting
+     itself as "paced", i.e. healthy.
 
-and the two tests that gate the burst zone (promise floor, marginal yield).
-
-The invariant that matters most is the LAST one: weekly = 7 x soft means a
-bursting user costs exactly what the flat cap already cost. If that relation
-ever breaks, the design has quietly become a price increase.
+What replaced them asks one question — has this user received the jobs their
+plan promises today? — and the invariants that matter most are the ones those
+outages produced: no window is longer than a day, no control may retroactively
+invalidate spend already made, and a reason meaning "you get nothing" is never
+filed under healthy.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
 import pytest
+from sqlmodel import select
 
 from app.config import settings
 from app.db.models import PLAN_LIMITS, PlanTier
@@ -39,75 +44,122 @@ def _spend(uid, n, hit=False):
         fb.record_outcome(uid, 90.0 if hit else 10.0)
 
 
-# ── the three budgets ────────────────────────────────────────────────────────
-
-def test_the_two_budgets_come_from_one_plan_dial():
-    assert fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"]) == (50, 100)
-    assert fb.budgets(PLAN_LIMITS[PlanTier.FREE]["finals_daily"]) == (15, 30)
-
-def test_burst_is_a_ceiling_not_an_allowance():
-    """Burst is 2x soft for every tier — one dial per plan. There is no weekly
-    number to keep in step any more; the day is the only window."""
-    assert settings.finals_burst_multiplier == 2.0
-    for tier in (PlanTier.FREE, PlanTier.PRO, PlanTier.AGENCY):
-        soft, burst = fb.budgets(PLAN_LIMITS[tier]["finals_daily"])
-        assert burst == soft * 2
-    assert not hasattr(settings, "finals_weekly_multiplier"), (
-        "the weekly ceiling was removed 2026-09-05 — a setting nothing reads is "
-        "a control someone will wire back up without reading why it went")
-
-def test_the_promise_floor_sits_between_the_gate_and_the_shortlist_bar():
-    """At or below the everyday advance gate it does nothing; at or above the
-    shortlist bar it demands Tier-1 already know the answer Tier-2 is paid for."""
-    assert settings.prescore_advance_threshold < settings.finals_promise_floor
-    assert settings.finals_promise_floor < settings.shortlist_score_threshold
-    assert fb.burst_gate() == settings.finals_promise_floor
-    assert fb.normal_gate() == 40
+MONDAY = datetime(2026, 9, 7)                  # 2026-09-07 is a Monday
 
 
-def test_the_global_backstop_still_clears_a_bursting_user_base():
-    """LLM_DAILY_FINAL_CAP has to sit above what real users can now spend in a
-    day, or the platform backstop silently becomes the allocation again."""
-    _s, burst = fb.budgets(PLAN_LIMITS[PlanTier.PRO]["finals_daily"])
-    assert settings.llm_daily_final_cap >= burst * 50
+def _at(monkeypatch, when: datetime) -> None:
+    """Move THE clock. The ledger is keyed by UTC day, so this is how a test
+    crosses a day boundary deliberately instead of waiting for one."""
+    monkeypatch.setattr(fb, "_utc_now", lambda: when)
 
 
-# ── inside the soft budget ───────────────────────────────────────────────────
+# ── what a plan promises ─────────────────────────────────────────────────────
 
-def test_inside_the_soft_budget_we_spend_freely_at_the_everyday_gate():
-    a = fb.allowance("u-soft", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 40 and a.gate == fb.normal_gate()
-
-    _spend("u-soft", 30)                       # 30 spent, all misses
-    a = fb.allowance("u-soft", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 20, "the slice must stop AT the soft boundary, not straddle it"
-    assert a.gate == fb.normal_gate(), "everyday rules still apply below soft"
-
-
-# ── the burst zone ───────────────────────────────────────────────────────────
-
-def test_a_strong_day_earns_burst_at_the_strict_gate():
-    """Monday: finals keep landing matches, so spending continues past soft —
-    but only on candidates that clear the promise floor."""
-    _spend("u-strong", 50, hit=True)
-    a = fb.allowance("u-strong", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 40
-    assert a.gate == fb.burst_gate() > fb.normal_gate()
+def test_a_plan_is_a_target_and_a_ceiling():
+    """A plan states what the user RECEIVES and what that is allowed to cost.
+    There is no soft point, no burst, no pace — those described a budget of
+    calls, and calls are not what anybody buys."""
+    pro, free = PLAN_LIMITS[PlanTier.PRO], PLAN_LIMITS[PlanTier.FREE]
+    assert (pro["shortlist_daily"], pro["finals_daily"]) == (35, 250)
+    assert (free["shortlist_daily"], free["finals_daily"]) == (20, 120)
+    for tier, limits in PLAN_LIMITS.items():
+        assert limits["finals_daily"] > limits["shortlist_daily"], (
+            f"{tier}: the ceiling must leave room to MISS — a final that scores "
+            f"below the bar still cost money and still has to be affordable")
 
 
-def test_a_weak_day_stops_at_soft_even_with_jobs_left():
-    """Saturday: the queue is not empty, but recent finals are not producing
-    matches. Stop — never keep paying to reach a target number."""
-    _spend("u-weak", 50, hit=False)
-    a = fb.allowance("u-weak", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 0
-    assert "yield" in a.reason
+def test_the_pacing_machinery_is_gone_not_merely_disabled():
+    """Pacing released ~1.77 finals/hour and produced a measured p50 of 685
+    minutes from prescore to final. A disabled knob is a knob someone re-enables
+    without reading why it went."""
+    for gone in ("finals_pace_enabled", "finals_pace_head_start",
+                 "finals_burst_multiplier", "finals_promise_floor"):
+        assert not hasattr(settings, gone), gone
+    for gone in ("day_fraction", "paced", "budgets", "burst_gate", "week_fraction"):
+        assert not hasattr(fb, gone), gone
 
 
-def test_burst_is_a_hard_ceiling_however_strong_the_day_is():
-    _spend("u-hot", 100, hit=True)
-    a = fb.allowance("u-hot", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 0 and a.reason == "daily burst ceiling"
+def test_there_is_exactly_one_tier_one_gate():
+    """Two gates existed so the burst zone could demand a stronger candidate.
+    With no burst zone, a second gate would only make a job's fate depend on
+    what time of day it was picked up."""
+    assert fb.normal_gate() == min(settings.prescore_advance_threshold,
+                                   settings.shortlist_score_threshold)
+    a = fb.allowance("u-gate", per_cycle_cap=10, ceiling=250, target=35)
+    assert a.gate == fb.normal_gate()
+
+
+def test_the_global_backstop_still_clears_the_user_base():
+    """LLM_DAILY_FINAL_CAP is the PLATFORM runaway guard. It has to sit above
+    what real users can now spend in a day, or it silently becomes the
+    allocation again — which is what it was before the per-user budget existed."""
+    ceiling = max(l["finals_daily"] for l in PLAN_LIMITS.values())
+    assert settings.llm_daily_final_cap >= ceiling * 50
+
+
+# ── the objective ────────────────────────────────────────────────────────────
+
+def test_scoring_runs_flat_out_until_the_days_jobs_are_delivered(monkeypatch):
+    """The whole point. No drip: while the board is short of its target, every
+    cycle gets a full slice."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 0)
+    a = fb.allowance("u-flat", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 40 and a.reason == "delivering 0/35"
+
+
+def test_delivering_the_target_stops_the_spend(monkeypatch):
+    """The cheapest stop, and the only one that means success. A user with
+    their 35 jobs on the board buys nothing more today however rich the pool."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 35)
+    a = fb.allowance("u-done", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 0 and "on the board" in a.reason
+
+
+def test_the_cost_ceiling_bounds_a_day_that_never_reaches_the_target(monkeypatch):
+    """A pool with nothing good in it must not spend forever looking. The
+    target is never reached, so the ceiling is what stops it."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 2)
+    monkeypatch.setattr(fb, "day_counts", lambda uid: (250, 2))
+    a = fb.allowance("u-poor", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 0 and "cost ceiling" in a.reason and "2/35 delivered" in a.reason
+
+
+def test_the_yield_stop_needs_a_real_sample_before_it_may_fire(monkeypatch):
+    """The version of this guard that was nearly shipped was ABSORBING, and got
+    there by coin-flip: a 10-final window at a 10% continue rate, read from an
+    in-process ring that only a PURCHASED FINAL can append to. At the true hit
+    rate (~10%), ten consecutive misses happens 35% of the time — and once it
+    fired the user could buy no final, so nothing could ever refresh the
+    evidence. Zero finals for that user until the next deploy, from the guard
+    whose whole purpose is preventing all-day stalls.
+
+    The sample gate is what makes a stop mean something rather than mean noise.
+    """
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 0)
+    window = settings.finals_yield_window
+    monkeypatch.setattr(fb, "day_counts", lambda uid: (window - 1, 0))
+    assert fb.allowance("u-thin", 40, 250, 35).n > 0, (
+        "a sample under the window is not a verdict — an unlucky opening run "
+        "must not end the day")
+    monkeypatch.setattr(fb, "day_counts", lambda uid: (window, 0))
+    assert fb.allowance("u-dead", 40, 250, 35).n == 0, (
+        "zero hits in a full sample IS the fault this guard exists for")
+
+
+def test_the_yield_stop_cannot_outlive_the_day_that_earned_it(monkeypatch):
+    """Within a day the stop is terminal by construction — no finals, no new
+    evidence — and that is the intended meaning of "this user's Tier-1 is
+    broken today". What must never happen again is it surviving the day: the
+    ring version was absorbing until a DEPLOY. The ledger is keyed by UTC day,
+    so tomorrow starts clean whatever today looked like."""
+    uid = "u-yield-day"
+    _at(monkeypatch, MONDAY + timedelta(hours=6))
+    for _ in range(settings.finals_yield_window):
+        fb.record_final(uid)                        # finals, and not one hit
+    assert fb.allowance(uid, 40, 250, 35).n == 0, "a dead day must stop"
+    _at(monkeypatch, MONDAY + timedelta(days=1, hours=6))
+    fb.reset_state()
+    assert fb.allowance(uid, 40, 250, 35).n == 40, "a new day must open clean"
 
 
 def test_no_control_can_invalidate_spend_already_made(monkeypatch):
@@ -119,9 +171,9 @@ def test_no_control_can_invalidate_spend_already_made(monkeypatch):
     `allowance` reported reason "paced", which the lane files under "the budget
     working" rather than a stall, so nothing warned.
 
-    Any budget window longer than the pacing curve can do this again. The day
-    is now the only window: whatever a user spent before, a new UTC day starts
-    them at the head of the curve with a working allowance.
+    Any budget window longer than a day can do this again. The day is now the
+    only window: whatever a user spent before, a new UTC day opens with a full
+    allowance, because yesterday's spend is written to yesterday's row.
     """
     uid = "u-yesterday"
     _at(monkeypatch, MONDAY + timedelta(hours=12))
@@ -131,27 +183,29 @@ def test_no_control_can_invalidate_spend_already_made(monkeypatch):
     # Tuesday. The ledger is keyed by UTC day, so the new day reads its own row.
     _at(monkeypatch, MONDAY + timedelta(days=1, hours=12))
     fb.reset_state()
-    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.n > 0, f"a fresh day must have a budget, got {a!r}"
-    assert not a.reason.startswith("paced"), a.reason
+    a = fb.allowance(uid, per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 40, f"a fresh day must have a full allowance, got {a!r}"
+    assert a.reason.startswith("delivering"), a.reason
+
 
 def test_no_evidence_yet_is_not_evidence_against():
-    """A fresh process mid-day has an empty outcome ring. Defaulting pessimistic
-    would cap every restart at soft; burst and weekly still bound the risk."""
-    assert fb.recent_hit_rate("u-fresh") == 1.0
+    """A user who has scored nothing today has no yield to judge. Defaulting
+    pessimistic would stop them before their first final; the daily cost ceiling
+    still bounds the risk of defaulting the other way."""
+    assert fb.recent_hit_rate("u-fresh") == (1.0, False)
 
 
 # ── durability: the reason this is not in-memory ─────────────────────────────
 
 def test_spend_survives_a_process_restart():
     """In-memory counters reset on every deploy — which is exactly why the
-    Aug 14-21 stall appeared to heal on restart. A weekly budget cannot be
+    Aug 14-21 stall appeared to heal on restart. A cost ceiling cannot be
     honoured by state a deploy erases."""
     _spend("u-restart", 42)
     fb.reset_state()                    # simulate a fresh process
     finals, _hits = fb.day_counts("u-restart")
     assert finals == 42
-    assert fb.allowance("u-restart", per_cycle_cap=40, soft_cap=50).n == 8
+    assert fb.allowance("u-restart", per_cycle_cap=40, ceiling=50, target=0).n == 8
 
 
 def test_local_and_anonymous_users_are_never_ledgered():
@@ -161,65 +215,85 @@ def test_local_and_anonymous_users_are_never_ledgered():
     assert fb.day_counts(None) == (0, 0)
 
 
+# ── one definition of "delivered today" ──────────────────────────────────────
+
+def _app(uid: str, track: str = "manual"):
+    from app.db.init_db import get_session
+    from app.db.models import Application, ApplicationStatus, Job, JobSource
+    with get_session() as session:
+        j = Job(user_id=uid, source=JobSource.GREENHOUSE, external_id=f"d-{track}-{uid}",
+                company="Acme", title="Engineer", url="https://e.com/d", description="x")
+        session.add(j)
+        session.commit()
+        session.refresh(j)
+        # Dated on the budget's clock, which conftest pins: the day boundary
+        # comes from fb._utc_now(), so a row stamped with the real utcnow()
+        # would land on a different day and never be counted.
+        session.add(Application(job_id=j.id, user_id=uid, apply_track=track,
+                                status=ApplicationStatus.SHORTLISTED,
+                                created_at=fb._utc_now()))
+        session.commit()
+        return j.id
+
+
+def test_an_email_import_is_not_a_job_we_delivered():
+    """Importing a Gmail history writes Application rows dated TODAY for
+    applications made elsewhere months ago. Counting them would let one import
+    fill the day's quota and switch the user's feed off — the budget would stop
+    buying finals and all three shortlist caps would stop accepting jobs."""
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+    uid = "u-delivered"
+    ids = [_app(uid, "manual"), _app(uid, "email_import")]
+    try:
+        assert fb.delivered_today(uid, cached=False) == 1
+    finally:
+        with get_session() as session:
+            for jid in ids:
+                for a in session.exec(
+                        select(Application).where(Application.job_id == jid)).all():
+                    session.delete(a)
+                obj = session.get(Job, jid)
+                if obj:
+                    session.delete(obj)
+            session.commit()
+
+
+def test_every_shortlist_cap_uses_the_budgets_definition():
+    """Four places decide "how many has this user had today?": the budget and
+    the three lanes that shortlist. They were four copies of one query, and the
+    budget's whole job is to buy finals for jobs the caps will ACCEPT — a
+    definition that drifts makes it pay for jobs that are then refused.
+
+    Source-level: running all three lanes needs FAISS and the ML stack."""
+    import inspect
+    from app.matching import pipeline
+    from app.strategy import pulse_lane
+    for mod in (pipeline, pulse_lane, sl):
+        src = inspect.getsource(mod)
+        assert "delivered_today(" in src, f"{mod.__name__} counts deliveries itself"
+        assert "Application.created_at" not in src, (
+            f"{mod.__name__} has its own day-count query again — put it in "
+            f"finals_budget.delivered_today so the cap and the budget agree")
+
+
 # ── the lane reads the policy ────────────────────────────────────────────────
 
 def test_the_lane_slice_and_gate_come_from_the_budget(monkeypatch):
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+    """The lane asks the budget; it does not keep its own counter. 50 finals in
+    is well inside Pro's 250 ceiling and short of the 35 target, so the slice is
+    the full per-cycle cap at the one gate."""
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (250, 35))
     monkeypatch.setattr(settings, "prescore_budget_multiplier", 0)
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 0)
     _spend("u-lane", 50, hit=True)
     allow = sl._finals_allowance("u-lane", 40)
-    assert allow.n == 40 and allow.gate == fb.burst_gate()
+    assert allow.n == 40 and allow.gate == fb.normal_gate()
     assert sl._remaining_finals_today("u-lane", 40) == 40
 
 
-def test_burst_never_drains_the_middle_band():
-    """A job whose prescore sits between the drain gate and the burst gate is
-    NOT a misfit. Stamping it there would make an identical job's fate depend on
-    what time of day it was picked up — it must stay Queued for the soft budget.
-    """
-    ctx = sl._Ctx("resume", None, True, fb.normal_gate(), fb.burst_gate())
-    assert ctx.gate == 40 and ctx.spend_gate == 55
-
-    seen = {}
-    stamped = []
-
-    class _RK:
-        @staticmethod
-        def prescore(resume, job):
-            return (45.0, "adjacent role")     # above drain gate, below burst gate
-    ctx.reranker = _RK()
-
-    import app.strategy.scoring_lane as _sl
-    orig_stamp = _sl._stamp_job
-    _sl._stamp_job = lambda *a, **k: stamped.append(a) or True
-    orig_session = _sl.get_session
-    try:
-        from app.db.models import Job, JobSource
-        job = Job(id=99123, user_id="u", source=JobSource.GREENHOUSE, external_id="mid",
-                  company="Acme", title="Engineer", url="https://e.com/x", description="x")
-
-        class _S:
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def get(self, *a): return job
-            def expunge(self, *a): pass
-        _sl.get_session = lambda: _S()
-        _sl._prescore_memo.pop(99123, None)
-        out = _sl._score_job_owned(99123, ctx)
-    finally:
-        _sl._stamp_job = orig_stamp
-        _sl.get_session = orig_session
-        seen.clear()
-
-    assert out is None, "must not be scored — burst money is for strong candidates"
-    assert not stamped, "and must NOT be drained: it is not a misfit"
-    assert _sl._prescore_memo.get(99123) == (45.0, "adjacent role"), \
-        "the prescore is memoized so waiting for the soft budget costs nothing"
-    _sl._prescore_memo.pop(99123, None)
-
-
 def test_no_plan_cap_fails_open(monkeypatch):
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: None)
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (None, 0))
     allow = sl._finals_allowance("u-nocap", 40)
     assert allow.n == 40 and allow.gate == fb.normal_gate()
 
@@ -229,8 +303,11 @@ def test_no_plan_cap_fails_open(monkeypatch):
 def test_the_queue_spends_on_the_most_promising_not_the_most_recent():
     """Arrival order was the quiet half of the flat cap's problem: the day's
     finals went to whatever showed up first. Freshness is the filter; the
-    Tier-1 prescore is the sort. Never-prescored jobs sort first — 'unknown' is
-    worth $0.0002 to resolve, and the cascade drains it free if it is weak."""
+    Tier-1 prescore is the sort, applied across the WHOLE queue rather than
+    inside a freshness window. A never-prescored job ranks AT the advance gate:
+    worth investigating, never worth pre-empting a job Tier-1 has already
+    called strong. The old COALESCE-to-100 put unknowns ahead of a genuine 90,
+    which is the same defect the window had, one level down."""
     from datetime import datetime, timedelta
     from app.db.init_db import get_session
     from app.db.models import Job, JobSource
@@ -251,7 +328,8 @@ def test_the_queue_spends_on_the_most_promising_not_the_most_recent():
     try:
         got = sl._user_queue(uid, 4)
         by_id = dict(made)
-        assert [by_id[i] for i in got] == [None, 80.0, 45.0, 20.0]
+        # 80 > 45 > unknown(ranks at the 40 gate) > 20
+        assert [by_id[i] for i in got] == [80.0, 45.0, None, 20.0]
         assert sl._user_queue(uid, 2) == got[:2], "the cap cuts the WEAKEST, not the oldest"
     finally:
         with get_session() as session:
@@ -262,133 +340,45 @@ def test_the_queue_spends_on_the_most_promising_not_the_most_recent():
             session.commit()
 
 
-# ── pacing: WHEN the money is available ──────────────────────────────────────
-#
-# Production, 2026-09-01 -> 09-03 (Railway "Scoring cycle" stats, per UTC hour):
-# both users' finals for the day were spent in the 00:xx hour — 176 on 09-02,
-# 87 on 09-03 — and the other 23 hours scored 0 (drain-only). Everything posted
-# during the US working day waited for the next midnight, and the founder
-# account then hit the weekly ceiling on Wednesday. These tests pin the release
-# curves that replace that. The budgets are unchanged in SIZE; they arrive
-# across the day (and the week) instead of at 00:00.
+# ── the lane's two very different zeros ──────────────────────────────────────
 
-MONDAY = datetime(2026, 9, 7)                  # 2026-09-07 is a Monday
-SUNDAY_NIGHT = datetime(2026, 9, 13, 23, 59, 59)
+def test_a_delivered_user_is_not_reported_as_a_stall(monkeypatch, caplog):
+    """The lane's warning exists for the Aug 14-21 class of stall. A user whose
+    day's jobs are already ON THE BOARD is the opposite of that — success — so
+    the cycle counts them apart from users who stopped short, and stays quiet.
 
-
-def _at(monkeypatch, when: datetime) -> None:
-    monkeypatch.setattr(fb, "_utc_now", lambda: when)
-
-
-def _drain(uid: str, hit: bool = False) -> int:
-    """Spend everything the budget allows right now — what successive lane
-    cycles do within one accrual step. Returns the total bought."""
-    total = 0
-    for _ in range(20):
-        a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-        if a.n <= 0:
-            return total
-        _spend(uid, a.n, hit=hit)
-        total += a.n
-    raise AssertionError("allowance never closed")
-
-
-def test_the_curve_releases_the_full_budget_by_the_end_of_the_day(monkeypatch):
-    """Pacing changes WHEN, never HOW MUCH: at 23:59:59 the curve reads the
-    whole budget — which is why every other test in this file (pinned there by
-    conftest) still sees soft/burst = 50/100."""
-    _at(monkeypatch, SUNDAY_NIGHT)
-    assert fb.paced(50, fb.day_fraction()) == 50
-    assert fb.paced(100, fb.day_fraction()) == 100
-    _at(monkeypatch, MONDAY)
-    assert fb.paced(50, fb.day_fraction()) == 8, "the 15% head start of 50"
-
-def test_just_after_midnight_only_the_head_start_is_available(monkeypatch):
-    """00:10 UTC, PRO, bottomless backlog: 8 at the everyday gate (15% of 50),
-    then at most the released share of burst (16 = 15% of 100) — not 100."""
-    uid = "u-pace-0010"
-    _at(monkeypatch, MONDAY.replace(minute=10))
-    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.n == 8 and a.gate == fb.normal_gate(), "8 = 15% of 50, not the cycle cap of 40"
-    assert _drain(uid) == 16
-    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.n == 0 and a.reason.startswith("paced"), a.reason
-
-
-def test_the_budget_keeps_arriving_through_the_us_posting_day(monkeypatch):
-    """Lane cycles every 30 minutes against a bottomless backlog of weak
-    candidates (every final a miss): the 00:xx hour can no longer take the
-    day, 13:00-22:00 UTC gets its share, and the day totals the soft budget."""
-    uid = "u-pace-day"
-    by_hour: dict = {}
-    for tick in range(48):
-        now = MONDAY + timedelta(minutes=30 * tick)
-        _at(monkeypatch, now)
-        by_hour[now.hour] = by_hour.get(now.hour, 0) + _drain(uid)
-    assert sum(by_hour.values()) == 50, by_hour
-    assert by_hour[0] <= 16, f"00:xx spent {by_hour[0]} — the midnight drain is back"
-    us_day = sum(v for h, v in by_hour.items() if 13 <= h <= 22)
-    assert us_day >= 16, f"13:00-22:00 UTC got only {us_day} finals: {by_hour}"
-    assert max(v for h, v in by_hour.items() if h > 0) <= 3, by_hour
-
-
-def test_unspent_morning_money_is_still_there_in_the_afternoon(monkeypatch):
-    """The curve is a ceiling on cumulative spend, not an hourly quota: a user
-    whose queue was empty all morning has the whole released share at 18:00."""
-    _at(monkeypatch, MONDAY.replace(hour=18))
-    assert fb.paced(50, fb.day_fraction()) == 40        # 0.15 + 0.85 x 18/24 -> 39.4 -> 40
-    a = fb.allowance("u-pace-1800", per_cycle_cap=40, soft_cap=50)
-    assert a.n == 40 and a.gate == fb.normal_gate()
-
-
-def test_strong_candidates_can_burst_at_any_hour_within_the_released_share(monkeypatch):
-    """Burst is paced too: at noon a hot user (every final a hit) may spend up
-    to the released burst share — twice the released soft — not the whole 100."""
-    uid = "u-pace-burst"
-    _at(monkeypatch, MONDAY.replace(hour=12))
-    soft_now, burst_now = fb.paced(50, fb.day_fraction()), fb.paced(100, fb.day_fraction())
-    assert (soft_now, burst_now) == (29, 58)
-    _spend(uid, soft_now, hit=True)
-    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.gate == fb.burst_gate() and a.n == burst_now - soft_now
-    _spend(uid, a.n, hit=True)
-    a = fb.allowance(uid, per_cycle_cap=40, soft_cap=50)
-    assert a.n == 0 and a.reason.startswith("paced: day"), a.reason
-
-
-def test_every_day_of_a_hot_week_still_has_a_budget(monkeypatch):
-    """Seven back-to-back hot days (every final a hit, so burst is always
-    earned). Each day is bounded by its own burst ceiling and NO day is starved
-    by what an earlier one spent — the failure the weekly ceiling produced."""
-    uid = "u-pace-week"
-    per_day = [0] * 7
-    for day in range(7):
-        for hour in range(0, 24, 2):
-            _at(monkeypatch, MONDAY + timedelta(days=day, hours=hour))
-            per_day[day] += _drain(uid, hit=True)
-    assert max(per_day) <= 100, per_day                # the burst ceiling holds
-    assert min(per_day) >= 90, per_day                 # no day starved by an earlier one
-
-def test_pacing_off_restores_everything_at_midnight(monkeypatch):
-    monkeypatch.setattr(settings, "finals_pace_enabled", False)
-    _at(monkeypatch, MONDAY.replace(minute=10))
-    assert fb.allowance("u-pace-off", per_cycle_cap=40, soft_cap=50).n == 40
-
-
-def test_paced_users_are_not_reported_as_a_stall(monkeypatch, caplog):
-    """The 'no finals allowance' warning exists for the Aug 14-21 class of
-    stall. A user waiting on the release curve is the budget working: the
-    cycle counts them apart from hard stops and stays quiet."""
+    The 2026-09-03 outage was the same bug pointed the other way: a reason that
+    meant "you get nothing" was filed under "the budget working", so 39 hours of
+    zero finals produced no warning at all. Only "delivered" is quiet.
+    """
     import logging
     monkeypatch.setattr(sl, "_expire_stale_unscored",
                         lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
-    monkeypatch.setattr(sl, "_finals_allowance",
-                        lambda uid, cap: fb.Allowance(0, 40, "paced: day 8/8 released (15% of day)"))
+    monkeypatch.setattr(sl, "_finals_allowance", lambda uid, cap: fb.Allowance(
+        0, 40, "delivered 35/35 — the day's jobs are on the board"))
     monkeypatch.setattr(settings, "scoring_drain_cap", 0)
     sl._last_capped_log[0] = float("-inf")
     with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
         stats = sl._run_scoring_cycle(None)
-    assert stats.get("budget_paced_users") == 2
+    assert stats.get("target_met_users") == 2
     assert "plan_capped_users" not in stats
-    assert not any("no finals allowance" in r.getMessage() for r in caplog.records)
+    assert not any("stopped SHORT" in r.getMessage() for r in caplog.records)
+
+
+def test_a_user_stopped_by_the_cost_ceiling_is_reported(monkeypatch, caplog):
+    """The other side of the same taxonomy, and the one the outage needed: a
+    user who did NOT get their day's jobs is a warning, every time."""
+    import logging
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a"])
+    monkeypatch.setattr(sl, "_finals_allowance", lambda uid, cap: fb.Allowance(
+        0, 40, "daily cost ceiling (250/250 finals) at 9/35 delivered"))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    sl._last_capped_log[0] = float("-inf")
+    with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
+        stats = sl._run_scoring_cycle(None)
+    assert stats.get("plan_capped_users") == 1
+    assert "target_met_users" not in stats
+    assert any("stopped SHORT" in r.getMessage() for r in caplog.records)

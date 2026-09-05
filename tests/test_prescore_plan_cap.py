@@ -47,7 +47,7 @@ def _haiku_reranker(user_id="user-a"):
 def test_anthropic_prescore_does_not_consume_the_users_plan_finals(monkeypatch):
     monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
     monkeypatch.setattr(settings, "llm_hourly_final_cap", 0)
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)   # PRO
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (50, 35))   # PRO
     rk = _haiku_reranker("user-a")
 
     assert sl._remaining_finals_today("user-a", 40) == 40
@@ -76,7 +76,7 @@ def test_prescores_have_their_own_bounded_per_user_allowance(monkeypatch):
     monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
     monkeypatch.setattr(settings, "llm_hourly_final_cap", 0)
     monkeypatch.setattr(settings, "prescore_budget_multiplier", 2)   # 50 × 2 = 100
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (50, 35))
     rk = _haiku_reranker("user-a")
     for _ in range(100):
         rk.prescore("resume", _job())
@@ -95,7 +95,7 @@ def test_openai_prescores_are_not_capped_per_user(monkeypatch):
     monkeypatch.setattr(settings, "llm_daily_final_cap", 0)
     monkeypatch.setattr(settings, "llm_hourly_final_cap", 0)
     monkeypatch.setattr(settings, "prescore_budget_multiplier", 2)   # 50 × 2 = 100
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (50, 35))
 
     profile = type("P", (), {"user_id": "user-a"})()
     rk = Reranker(profile=profile)
@@ -126,9 +126,9 @@ def test_plan_capped_cycle_is_logged_not_silent(monkeypatch, caplog):
                         lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
     monkeypatch.setattr(sl, "_finals_allowance",
-                        lambda uid, cap: Allowance(0, 40, "weekly budget spent"))
+                        lambda uid, cap: Allowance(0, 40, "anthropic prescore allowance"))
     sl._last_capped_log[0] = float("-inf")
     with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
         stats = sl._run_scoring_cycle(None)
     assert stats["plan_capped_users"] == 2
-    assert any("no finals allowance" in r.getMessage() for r in caplog.records)
+    assert any("stopped SHORT" in r.getMessage() for r in caplog.records)

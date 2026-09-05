@@ -1,71 +1,79 @@
-"""Adaptive finals budget — spend Claude on evidence, not on a counter.
+"""When to keep buying final scores — measured in jobs DELIVERED, not calls made.
 
-The flat per-plan `finals_daily` cap was wrong in both directions on the same
-day: it stopped a strong user at 50 while the 50th final was still returning
-70-fits, and it happily spent 50 finals on a Saturday proving that 20 weak jobs
-are weak. This module replaces "a fixed number of results" with "a bounded
-amount of money, spent while the evidence says the next candidate is worth it".
+THE OBJECTIVE (2026-09-05). This used to pace a fixed number of Tier-2 calls
+across the day: PRO got 50 finals, released at ~1.77/hour, and the lane stopped
+when the counter ran out. That optimises the wrong thing. Nobody wants 50 LLM
+calls; they want the day's qualified jobs on their board, early. The measured
+result of pacing calls was a p50 of 685 minutes from prescore to final score —
+a job found at 09:00 waited until evening for a slot it shared with last week's
+backlog, against a product whose whole promise is applying first.
 
-TWO numbers (PRO shown; every plan scales the same way from
-PLAN_LIMITS["finals_daily"]). This budget bounds COST. What a user is promised
-is now stated in PLAN_LIMITS["shortlist_daily"] — jobs delivered to the board —
-because that is the number they can see:
+So the budget now asks one question:
 
-    soft   =  50/day    normal spending point — spent freely, no justification
-    burst  = 100/day    absolute ceiling for one UTC day
+    has this user received the jobs their plan promises today?
 
-Past the SOFT point every extra final must be earned by two tests:
+    target   PLAN_LIMITS[plan]["shortlist_daily"]   20 Free / 35 Pro
+    ceiling  PLAN_LIMITS[plan]["finals_daily"]      the money guard, nothing else
 
-    Test A — promise floor (free). The Tier-1 prescore already runs immediately
-      before the final. In burst territory the bar rises from the normal advance
-      gate (40) to `finals_promise_floor` (55): only genuinely strong candidates
-      get the expensive look. Costs nothing — the prescore was already paid.
+Scoring runs at full speed until the target is met, then stops. No curve, no
+drip, no per-hour release. A quiet pool costs nothing because there is nothing
+to score; a rich morning is spent in the morning, which is the point.
 
-    Test B — marginal yield. Over the last `yield_window` finals, the share that
-      cleared the shortlist bar must be >= `yield_continue_rate`. This is the
-      guard against a miscalibrated Tier-1: if prescore keeps promising 70s and
-      Claude keeps answering 40s, we stop even though Test A is passing.
+WHICH STOP ACTUALLY FIRES — do not read the target as a promise. A hit rate of
+~10% (of 57,309 real Claude finals, 11.6% cleared 65 and fewer clear 70) means
+35 delivered jobs costs on the order of 350 finals, and the Pro ceiling is 250.
+So on a rich day the CEILING is what stops a user, at roughly 25 delivered, and
+the target is an early-out for the days when the pool is unusually good. That is
+the honest reading, and it is why the ceiling is sized as an allocation you can
+afford every day rather than as a rare-disaster bound. Raising delivery means
+raising `finals_daily` and paying for it; only better Tier-1 precision makes it
+free.
 
-Neither test can ever ADD spend: they only decide whether the burst zone opens.
-Nothing here chases a target — if the pool holds 6 good jobs, the user gets 6.
+Promise-ordering (scoring_lane._user_queue) is what decides WHICH 250 you buy —
+it does not make 350 cost less. It matters most exactly because the ceiling
+binds: the finals that never happen are the bottom of the queue, not a random
+tail.
+
+THREE STOPS, in order:
+
+    1. delivered >= target   the goal is met. The cheapest possible stop, and
+                             the only one that means success.
+    2. spent >= ceiling      the money guard, and the usual stop. Bounds the
+                             day at a price the plan can carry.
+    3. yield collapsed       today's hits/finals below `finals_yield_continue_
+                             rate`, judged only once `finals_yield_window`
+                             finals have actually been scored today. Catches a
+                             Tier-1 that has started promising jobs Claude
+                             rejects. Read `recent_hit_rate` before touching
+                             either number: an under-powered version of this
+                             guard fires on healthy users by coin-flip.
+
+Nothing here chases the target. If the pool holds six jobs worth showing, the
+user gets six and the rest of the ceiling is never spent.
 
 DURABILITY. The counters that bound money are persisted to `UserUsage`
 (finals_count / finals_hits, one row per user per UTC day). In-memory counters
-reset on every deploy, which is exactly why the Aug 14-21 stall appeared to
-"heal" on restart. The ledger is the source of truth; a tiny per-process cache
-keeps the hot path off the database.
+reset on every deploy, which is why the Aug 14-21 stall appeared to "heal" on
+restart. The ledger is the source of truth; a small per-process cache keeps the
+hot path off the database.
 
-PACING (2026-09-03). The numbers above say how much a user may spend; on their
-own they said nothing about WHEN, and the answer in production was "all of it
-in the first hour". Both active users' finals for 2026-09-02 and 09-03 were
-spent in the 00:xx UTC hour (176 and 87 finals) and the other 23 hours scored
-nothing, so every posting appearing during the US working day (13:00-01:00 UTC)
-waited for the next midnight. The DAY budget is therefore released along a
-curve (`day_fraction`): a head start at 00:00 UTC, the rest linearly through
-the day. What is not spent stays available — the curve only bounds spend from
-above, and at 24:00 it reads the full budget, so HOW MUCH is unchanged.
-
-NO WEEKLY CEILING (removed 2026-09-05). There was one, released along its own
-curve, and it took production to zero finals for four days. The curve was
-applied to a ledger that already held a front-loaded week: users who had spent
-normally under the previous all-at-midnight rules were instantly past what the
-week had "released" (300 spent against 158 released on the Wednesday) and
-stayed at zero until Sunday. Worse, `allowance` reported it as reason "paced",
-which the lane counts as the budget working rather than a stall — so the
-outage produced no warning at all. Two lessons, both encoded here now: a
-spend control must never be able to retroactively invalidate spend already
-made, and a reason that means "you get nothing" must never be filed under
-"healthy".
+NO WINDOW LONGER THAN A DAY. There was a weekly ceiling, released along its own
+curve, and on 2026-09-03 it took production to zero finals for 39 hours: the
+curve was applied to a ledger that already held a front-loaded week, so users
+who had spent normally were instantly past what the week had "released" and
+stayed there. `allowance` reported it as reason "paced", which the lane counts
+as the budget working rather than a stall, so the outage produced no warning at
+all. Two rules came out of that, both pinned by test: a spend control must never
+be able to retroactively invalidate spend already made, and a reason that means
+"you get nothing" must never be filed under "healthy".
 """
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
-from collections import deque
 from datetime import date, datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional
 
 from app.config import settings
 
@@ -75,15 +83,15 @@ log = logging.getLogger(__name__)
 # value lives in UserUsage; this only avoids a SELECT per decision. Writes
 # increment the cached value in place, so within one process it never lags.
 _day_cache: dict = {}
-_recent: dict = {}              # user_id -> deque[bool], the last N final outcomes
+_delivered_cache: dict = {}     # user_id -> {"day": date, "n": int, "at": monotonic}
 _lock = threading.Lock()
 
 _DAY_CACHE_TTL = 30.0           # seconds
+_DELIVERED_TTL = 20.0           # shorter: this one decides when to STOP
 
 
 def _utc_now() -> datetime:
-    """THE clock: the ledger's day key and the pacing curves both read it, so a
-    test that pins it moves the whole budget to that moment consistently."""
+    """THE clock. A test that pins it moves the whole budget consistently."""
     return datetime.utcnow()
 
 
@@ -92,10 +100,10 @@ def _utc_day() -> date:
 
 
 def _week_start(d: Optional[date] = None) -> date:
-    """Monday of that week. No longer a budget boundary — it only stamps
+    """Monday of that week. NOT a budget boundary — it only stamps
     UserUsage.week_start so weekly spend stays reportable."""
     d = d or _utc_day()
-    return d - timedelta(days=d.weekday())      # Monday
+    return d - timedelta(days=d.weekday())
 
 
 def _ledgerable(user_id: Optional[str]) -> bool:
@@ -103,27 +111,9 @@ def _ledgerable(user_id: Optional[str]) -> bool:
     return bool(user_id) and user_id != "local"
 
 
-# ── Plan → the three budgets ─────────────────────────────────────────────────
-
-def budgets(soft_cap: int) -> Tuple[int, int]:
-    """(soft, burst) derived from the plan's daily allowance.
-
-    There is no weekly ceiling any more. It was removed 2026-09-05 after it
-    took production to zero finals for four days: the weekly release curve was
-    applied to a ledger that already held a front-loaded week, so users who had
-    spent normally under the previous rules were instantly past what the week
-    had "released" and stayed there until the curve caught up. A control that
-    can retroactively invalidate spend already made is the wrong shape, and the
-    per-day soft/burst pair bounds cost on its own.
-    """
-    soft = max(0, int(soft_cap))
-    burst = int(round(soft * max(1.0, settings.finals_burst_multiplier)))
-    return soft, burst
-
-
 # ── The ledger ───────────────────────────────────────────────────────────────
 
-def _read_day(user_id: str, day: date) -> Tuple[int, int]:
+def _read_day(user_id: str, day: date) -> tuple[int, int]:
     from sqlmodel import select
     from app.db.init_db import get_session
     from app.db.models import UserUsage
@@ -139,15 +129,13 @@ def _read_day(user_id: str, day: date) -> Tuple[int, int]:
         return int(row.finals_count or 0), int(row.finals_hits or 0)
 
 
-
 def _write(user_id: str, day: date, finals: int = 0, hits: int = 0) -> None:
     """Add the deltas to one day row, creating it if needed.
 
-    The increment is an ATOMIC `SET x = x + n` statement, never a read-modify-
-    write: 20 scoring workers finish finals concurrently, and read-then-write
-    loses increments under exactly that concurrency. A lost increment on a
-    money counter means overspend, which is the one direction this must not
-    fail in.
+    The increment is an ATOMIC `SET x = x + n`, never a read-modify-write: 20
+    scoring workers finish finals concurrently and read-then-write loses
+    increments under exactly that concurrency. A lost increment on a money
+    counter means overspend, which is the one direction this must not fail in.
 
     Best-effort otherwise — a ledger write must never fail a score the user has
     already paid for.
@@ -159,9 +147,8 @@ def _write(user_id: str, day: date, finals: int = 0, hits: int = 0) -> None:
     # TWO attempts, because of the first final of a user's day: there is no row
     # to UPDATE, so several workers finishing together all see rowcount 0 and
     # all INSERT. uq_user_usage_date lets exactly one win, and a loser that
-    # simply swallowed the IntegrityError would DROP its increment — on the
-    # 00:00 UTC burst, every day, in the overspend direction. The loser retries
-    # the UPDATE against the row the winner just created.
+    # simply swallowed the IntegrityError would DROP its increment. The loser
+    # retries the UPDATE against the row the winner just created.
     for attempt in range(2):
         try:
             with get_session() as session:
@@ -194,7 +181,7 @@ def _write(user_id: str, day: date, finals: int = 0, hits: int = 0) -> None:
             return
 
 
-def day_counts(user_id: Optional[str]) -> Tuple[int, int]:
+def day_counts(user_id: Optional[str]) -> tuple[int, int]:
     """(finals, hits) charged to this user so far today, ledger-backed."""
     if not _ledgerable(user_id):
         return 0, 0
@@ -209,6 +196,70 @@ def day_counts(user_id: Optional[str]) -> Tuple[int, int]:
         _day_cache[user_id] = {"day": day, "finals": finals, "hits": hits, "at": now}
     return finals, hits
 
+
+def delivered_today(user_id: Optional[str], cached: bool = True) -> int:
+    """Jobs SpotApply put on this user's board today.
+
+    THE definition, for everyone. It is what the budget aims at AND what the
+    three shortlist caps enforce (matching/pipeline, strategy/pulse_lane,
+    strategy/scoring_lane), and those two must agree exactly: the budget's whole
+    job is to buy finals for jobs the cap will actually accept. They were four
+    separate copies of the same query, which is three chances to drift.
+
+    Counted from `application` rather than kept as a counter, so it is
+    self-healing — a lost increment would silently buy a user a second day's
+    worth of scoring. func.count, never len(all()): the lanes' copies each
+    materialised every row of the day on a hot path.
+
+    EMAIL IMPORTS DO NOT COUNT. Importing your Gmail history writes Application
+    rows dated today for applications you made elsewhere, months ago. Counting
+    those would let one import fill the day's quota and switch the feed off —
+    and the dashboard already labels them "applied outside SpotApply".
+
+    ``cached=False`` for the shortlist loops, which increment a local count as
+    they go and must not read a value from 20 seconds ago.
+    """
+    day = _utc_day()
+    now = time.monotonic()
+    key = user_id or "__anon__"
+    if cached:
+        with _lock:
+            c = _delivered_cache.get(key)
+            if c and c["day"] == day and (now - c["at"]) < _DELIVERED_TTL:
+                return c["n"]
+    try:
+        from sqlalchemy import func
+        from sqlmodel import select
+        from app.db.init_db import get_session
+        from app.db.models import Application
+        uid_arg = user_id if _ledgerable(user_id) else None
+        start = datetime.combine(day, datetime.min.time())
+        with get_session() as session:
+            q = select(func.count(Application.id)).where(
+                Application.created_at >= start,
+                Application.apply_track != "email_import",
+            )
+            q = q.where(Application.user_id == uid_arg) if uid_arg \
+                else q.where(Application.user_id.is_(None))
+            v = session.exec(q).one()
+            n = int(v[0] if isinstance(v, tuple) else v)
+    except Exception as e:                                  # pragma: no cover
+        # A read failure must not stop scoring, and must not stop a job reaching
+        # the board — but "fail open to 0" alone is wrong in BOTH consumers: it
+        # removes the budget's first stop (leaving the ceiling to bound a day
+        # 7x larger) and it removes the shortlist cap. So prefer today's last
+        # known value, however stale, and only fall back to 0 when there has
+        # never been one. Deliberately does NOT refresh the cache timestamp: the
+        # next call retries the query rather than settling on a stale number.
+        with _lock:
+            c = _delivered_cache.get(key)
+            last = c["n"] if c and c["day"] == day else 0
+        log.debug("delivered_today failed for %s (%s) — using last known %d",
+                  user_id, e, last)
+        return last
+    with _lock:
+        _delivered_cache[key] = {"day": day, "n": n, "at": now}
+    return n
 
 
 def record_final(user_id: Optional[str]) -> None:
@@ -229,79 +280,54 @@ def record_outcome(user_id: Optional[str], score: float) -> None:
     """The final's verdict. A 'hit' is a score at or above the shortlist bar —
     the only definition that matches what the user actually receives."""
     hit = float(score) >= float(settings.shortlist_score_threshold)
-    if not _ledgerable(user_id):
+    if not _ledgerable(user_id) or not hit:
         return
-    window = max(1, settings.finals_yield_window)
+    day = _utc_day()
     with _lock:
-        ring = _recent.get(user_id)
-        if ring is None or ring.maxlen != window:
-            ring = deque(maxlen=window)
-            _recent[user_id] = ring
-        ring.append(hit)
-        day = _utc_day()
         c = _day_cache.get(user_id)
-        if c and c["day"] == day and hit:
+        if c and c["day"] == day:
             c["hits"] += 1
-    if hit:
-        _write(user_id, _utc_day(), hits=1)
+    _write(user_id, day, hits=1)
 
 
-def recent_hit_rate(user_id: Optional[str]) -> float:
-    """Share of recent finals that cleared the shortlist bar.
+def recent_hit_rate(user_id: Optional[str]) -> tuple[float, bool]:
+    """(hit rate today, is that a verdict?) from the DAY LEDGER.
 
-    Returns 1.0 ("no evidence against") when too few finals have been scored to
-    judge — a fresh process mid-day, or a user just starting their day. The
-    burst zone is still bounded by the daily burst ceiling, so an optimistic
-    default cannot run away; a pessimistic one would silently cap every restart
-    at soft.
+    THE SAMPLE GATE IS THE WHOLE DESIGN. Below `finals_yield_window` finals
+    today there is no verdict and the caller must not stop: read the arithmetic
+    before changing either number.
+
+    A hit is a final at or above `shortlist_score_threshold` (70). Of 57,309
+    real Claude finals only 11.6% cleared 65, so call the true rate ~8-10%. A
+    run of consecutive misses is therefore ORDINARY, not evidence:
+
+        P(0 hits in 10 finals | p=0.10) = 0.9^10  = 35%
+        P(0 hits in 50 finals | p=0.10) = 0.9^50  = 0.5%
+
+    The first version of this guard used a 10-final window at a 10% continue
+    rate — i.e. it fired on roughly a third of perfectly healthy users, and it
+    read a LIVE in-process ring that only a purchased final can append to. Once
+    it fired, the user could buy no final, so nothing could ever refresh the
+    evidence: zero finals for that user until the next deploy. An absorbing
+    state reached by coin-flip, in the guard whose stated job is preventing
+    all-day stalls.
+
+    Two properties fix that and both are load-bearing:
+      * the ledger, not a ring — it is per UTC DAY, so a new day always reopens
+        the spend no matter what yesterday looked like, and a restart mid-day
+        reads the true picture instead of an empty one;
+      * a sample gate large enough that a stop means something. Within a day
+        the stop is still terminal by construction (no finals => no new
+        evidence), which is exactly what "this user's Tier-1 is broken today"
+        should mean — and unlike the ring version it is bounded by the day, and
+        the lane reports it as a user who stopped SHORT (a warning), never as
+        healthy.
     """
     window = max(1, settings.finals_yield_window)
-    with _lock:
-        ring = _recent.get(user_id)
-        if ring is not None and len(ring) >= window:
-            return sum(1 for h in ring if h) / float(len(ring))
     finals, hits = day_counts(user_id)
-    if finals >= window:
-        return hits / float(finals)
-    return 1.0
-
-
-# ── Pacing: WHEN the money is available ──────────────────────────────────────
-
-def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, float(x)))
-
-
-def day_fraction(now: Optional[datetime] = None) -> float:
-    """Share of a DAY budget released by ``now`` (UTC), in 0..1.
-
-    head + (1 - head) x elapsed/24h. The head start (`finals_pace_head_start`,
-    PRO: 15% = 8 finals) is available at 00:00 so postings that arrive overnight
-    are not frozen out; the rest accrues linearly (PRO: ~1.8 finals/hour). It
-    is a ceiling on cumulative spend, never a quota per hour: a quiet morning's
-    unspent share is still there for the afternoon. Pacing off -> 1.0, which
-    is the pre-2026-09 behaviour (everything available at 00:00).
-    """
-    if not settings.finals_pace_enabled:
-        return 1.0
-    now = now or _utc_now()
-    head = _clamp01(settings.finals_pace_head_start)
-    elapsed = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
-    return _clamp01(head + (1.0 - head) * elapsed)
-
-
-
-def paced(total: int, fraction: float) -> int:
-    """How much of ``total`` the curve has released so far.
-
-    Rounded UP so the first final is available as soon as any share is, and
-    the epsilon keeps float noise (0.3 x 50 = 15.000000000000002) from
-    releasing a final early; never above ``total``.
-    """
-    total = max(0, int(total))
-    if total == 0:
-        return 0
-    return max(0, min(total, int(math.ceil(total * _clamp01(fraction) - 1e-9))))
+    if finals < window:
+        return 1.0, False
+    return hits / float(finals), True
 
 
 # ── The decision ─────────────────────────────────────────────────────────────
@@ -321,58 +347,44 @@ class Allowance:
 
 
 def normal_gate() -> int:
-    """The everyday Tier-1 advance gate: min(advance, shortlist)."""
+    """The Tier-1 advance gate: min(advance, shortlist). Below it a job is a
+    misfit and is drained; at or above it it is worth an authoritative look.
+    ONE gate — there is no burst zone to raise it for any more."""
     return min(settings.prescore_advance_threshold, settings.shortlist_score_threshold)
 
 
-def burst_gate() -> int:
-    """Test A. Above the soft point only strong candidates are worth a final."""
-    return max(normal_gate(), settings.finals_promise_floor)
+def allowance(user_id: Optional[str], per_cycle_cap: int,
+              ceiling: int, target: int) -> Allowance:
+    """The whole policy.
 
-
-def allowance(user_id: Optional[str], per_cycle_cap: int, soft_cap: int) -> Allowance:
-    """The whole policy, in one place.
-
-    Both budgets are read THROUGH the day's pacing curve: `soft_now`/`burst_now`
-    are the shares released so far. A slice never straddles the (paced) soft
-    boundary: below it the slice is clipped at the boundary, so the next cycle
-    re-decides with the strict gate rather than spending burst money under
-    everyday rules.
-
-    A "paced" reason means the money exists but today has not released it yet.
-    It can only ever hold a user back until later the SAME day — the curve
-    reaches 100% at 24:00 — which is what makes it safe for scoring_lane to
-    count separately from hard stops.
+    ``ceiling`` is the plan's hard daily cost cap (finals_daily); ``target`` is
+    the plan's daily shortlist promise (shortlist_daily). Full speed until the
+    target lands, then stop.
     """
-    soft, burst = budgets(soft_cap)
-    if soft <= 0:
-        return Allowance(per_cycle_cap, normal_gate(), "no plan cap")
+    delivered = delivered_today(user_id)
+    if target > 0 and delivered >= target:
+        return Allowance(0, normal_gate(),
+                         f"delivered {delivered}/{target} — the day's jobs are on the board")
 
-    spent_day, _hits = day_counts(user_id)
-    dfrac = day_fraction()
-    soft_now, burst_now = paced(soft, dfrac), paced(burst, dfrac)
+    spent, _hits = day_counts(user_id)
+    if ceiling > 0 and spent >= ceiling:
+        return Allowance(0, normal_gate(),
+                         f"daily cost ceiling ({spent}/{ceiling} finals) at "
+                         f"{delivered}/{target} delivered")
 
-    if spent_day < soft_now:
-        n = min(per_cycle_cap, soft_now - spent_day)
-        return Allowance(max(0, n), normal_gate(), "within soft budget")
+    rate, evidenced = recent_hit_rate(user_id)
+    if evidenced and rate < settings.finals_yield_continue_rate:
+        return Allowance(0, normal_gate(),
+                         f"yield {rate:.1%} below {settings.finals_yield_continue_rate:.1%} "
+                         f"over {spent} finals today "
+                         f"— Tier-1 is promising jobs the final score rejects")
 
-    if spent_day >= burst:
-        return Allowance(0, burst_gate(), "daily burst ceiling")
-    if spent_day >= burst_now:
-        return Allowance(0, burst_gate(),
-                         f"paced: day {spent_day}/{burst_now} released ({dfrac:.0%} of day)")
-
-    rate = recent_hit_rate(user_id)
-    if rate < settings.finals_yield_continue_rate:
-        return Allowance(0, burst_gate(),
-                         f"yield {rate:.0%} below {settings.finals_yield_continue_rate:.0%}")
-
-    n = min(per_cycle_cap, burst_now - spent_day)
-    return Allowance(max(0, n), burst_gate(), f"burst earned (yield {rate:.0%})")
+    n = per_cycle_cap if ceiling <= 0 else min(per_cycle_cap, ceiling - spent)
+    return Allowance(max(0, n), normal_gate(), f"delivering {delivered}/{target}")
 
 
 def reset_state() -> None:
     """Drop every in-process cache. For tests and the day roll."""
     with _lock:
         _day_cache.clear()
-        _recent.clear()
+        _delivered_cache.clear()

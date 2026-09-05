@@ -4,7 +4,20 @@
 budget plus a quality-driven stop rule. Written against the current code; every file
 reference is a real call site.*
 
-> **Status: SHIPPED.** Implemented in `app/matching/finals_budget.py` with the ledger on
+> **Status: SUPERSEDED 2026-09-05 — historical record.** The soft/burst/**weekly**
+> structure this specifies, and the release curves added on top of it, are gone. They
+> paced a PRO user to 1.77 finals/hour (measured prescore→final p50 685 min) and on
+> 09-03 the weekly curve, applied to a week whose spend had already happened, stopped
+> production's finals for 39 hours while reporting itself healthy. The budget now aims
+> at a DELIVERY target — score flat out until the plan's `shortlist_daily` jobs are on
+> the board — with `finals_daily` demoted to a pure cost ceiling and no window longer
+> than a day. What SURVIVES from this spec and is still live: the persisted ledger
+> (§6b), the drain-gate/spend-gate separation (§6a), the marginal-yield stop, and
+> promise-ordering in `_user_queue` (now global, in SQL). Read
+> `app/matching/finals_budget.py` for the current policy; keep this for the reasoning
+> behind the parts that stayed.
+
+> **Status when written: SHIPPED.** Implemented in `app/matching/finals_budget.py` with the ledger on
 > `UserUsage.finals_count/finals_hits`, the policy read by
 > `scoring_lane._finals_allowance` (slice **and** Tier-1 gate), and promise-ordering in
 > `_user_queue`. Guard tests: `tests/test_adaptive_finals_budget.py`. Two things changed

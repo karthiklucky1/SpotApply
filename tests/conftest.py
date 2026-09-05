@@ -138,12 +138,14 @@ def _reset_process_globals():
 
 @pytest.fixture(autouse=True)
 def _pin_finals_budget_clock(monkeypatch):
-    """The finals budget releases its money along a curve over the UTC day and
-    week (finals_budget.day_fraction / week_fraction). Pin its clock to the
-    last second of a week, where every curve reads the FULL budget: pacing
-    changes WHEN a user may spend, never how much, and the tests that pin how
-    much were written against the unpaced numbers. Pacing tests re-pin the
-    clock themselves (tests/test_adaptive_finals_budget.py)."""
+    """The finals ledger is keyed by UTC day, so an unpinned clock makes every
+    spend test depend on what time the suite happens to run: a cycle that
+    starts at 23:59:59 writes one day and reads the next, and the failure
+    appears once a day in CI and never locally. Pinning it also lets a test
+    ADVANCE the day deliberately (see tests/test_adaptive_finals_budget.py).
+
+    The pacing this originally worked around is gone — the budget no longer
+    releases money along a curve — but a deterministic day is worth keeping."""
     try:
         from app.matching import finals_budget as _fb
     except ImportError:

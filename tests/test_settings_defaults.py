@@ -150,12 +150,14 @@ def test_no_per_day_count_cap_hides_qualified_jobs():
 
 # ── per-user spend ───────────────────────────────────────────────────────────
 
-def test_plan_finals_allowances_are_per_user_and_unchanged():
+def test_the_plan_cost_ceilings_are_the_documented_numbers():
     """Spend is allocated per user per plan; one global pool divided by N users
-    meant every signup thinned every existing user's feed."""
-    assert PLAN_LIMITS[PlanTier.FREE]["finals_daily"] == 15
-    assert PLAN_LIMITS[PlanTier.PRO]["finals_daily"] == 50
-    assert PLAN_LIMITS[PlanTier.AGENCY]["finals_daily"] == 100
+    meant every signup thinned every existing user's feed. These are CEILINGS on
+    a day's cost, not allowances to spend: the budget aims at shortlist_daily
+    and normally stops well below them (app/matching/finals_budget.py)."""
+    assert PLAN_LIMITS[PlanTier.FREE]["finals_daily"] == 120
+    assert PLAN_LIMITS[PlanTier.PRO]["finals_daily"] == 250
+    assert PLAN_LIMITS[PlanTier.AGENCY]["finals_daily"] == 250
 
 
 def test_the_global_caps_are_only_a_backstop_not_the_allocation():
@@ -169,24 +171,28 @@ def test_the_global_caps_are_only_a_backstop_not_the_allocation():
 
 
 def test_the_marginal_yield_rate_is_in_lockstep_with_the_qualified_bar():
-    """Test B keeps the burst zone open while >= this share of the last N finals
+    """The yield stop keeps scoring while >= this share of the last N finals
     cleared shortlist_score_threshold. Of real Claude finals only 11.6% cleared
-    65 and fewer clear 70, so a continue-rate above that is a burst zone that
-    is nominally open and practically never — production 2026-09-02 closed on
-    "yield 10% below 20%". One hit in the window is the floor (so it must be
-    reachable), and zero hits must still stop the spend (so it stays > 0)."""
+    65 and fewer clear 70, so a continue-rate above that is a stop that fires on
+    healthy days — production 2026-09-02 stopped on "yield 10% below 20%". One
+    hit in the window is the floor (so it must be reachable), and zero hits must
+    still stop the spend (so it stays > 0)."""
     rate, window = settings.finals_yield_continue_rate, settings.finals_yield_window
     assert 0 < rate <= 0.10, f"finals_yield_continue_rate={rate} cannot be met at a 70 bar"
     assert rate <= 1.0 / window + 1e-9, "one hit in the yield window must be enough"
 
 
-def test_the_finals_budget_is_released_across_the_day_not_at_midnight():
-    """Production 2026-09-01..03: 100% of both users' finals were spent in the
-    00:xx UTC hour and the other 23 hours scored nothing. The pacing curve
-    (finals_budget.day_fraction) is what stops that; a head start too small
-    freezes overnight postings, too large brings the drain back."""
-    assert settings.finals_pace_enabled is True
-    assert 0.05 <= settings.finals_pace_head_start <= 0.35, settings.finals_pace_head_start
+def test_the_finals_budget_has_no_window_longer_than_a_day():
+    """Every control here bounds ONE UTC day. A longer window can retroactively
+    invalidate spend already made, which is what zeroed production for 39 hours
+    on 2026-09-03, and a release curve inside the day produced a 685-minute p50
+    from prescore to final. Both are gone; this fails if either comes back."""
+    import app.matching.finals_budget as fb
+    for gone in ("week_fraction", "week_finals", "day_fraction", "paced", "budgets"):
+        assert not hasattr(fb, gone), f"{gone} is back — read the module docstring first"
+    for gone in ("finals_weekly_multiplier", "finals_burst_multiplier",
+                 "finals_pace_enabled", "finals_pace_head_start"):
+        assert not hasattr(settings, gone), gone
 
 
 # ── memory + safety ──────────────────────────────────────────────────────────

@@ -486,6 +486,15 @@ _PERF_INDEXES = [
     ("ix_job_user_discovered", "job", "(user_id, discovered_at)"),
     ("ix_app_user_id", "application", "(user_id)"),
     ("ix_app_job_id", "application", "(job_id)"),
+    # "How many jobs has SpotApply put on this user's board today?"
+    # (finals_budget.delivered_today) is now the single busiest small query in
+    # the system: it decides both when to stop buying finals and when to stop
+    # shortlisting, so every scoring cycle, every matching pass and every pulse
+    # fast path asks it. On ix_app_user_id alone that is an index scan of the
+    # user's ENTIRE application history plus a heap fetch per row to test
+    # created_at — and its failure path is a silent fallback that removes the
+    # budget's first stop.
+    ("ix_app_user_created", "application", "(user_id, created_at)"),
     ("ix_funnel_stage_created", "funnel_events", "(stage, created_at)"),
     # Scoring lane scans `rerank_score IS NULL` across ALL users every cycle and
     # per user fetches the freshest unscored jobs — a partial index keeps that

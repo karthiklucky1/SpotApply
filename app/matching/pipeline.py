@@ -564,13 +564,11 @@ def run_matching(user_id: str | None = None) -> List[int]:
     reranker = Reranker(profile=_user_profile, feedback=_feedback)
     shortlisted: List[int] = []
 
-    # Count applications already created today (scoped to user)
-    with get_session() as session:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        q = select(Application).where(Application.created_at >= today_start)
-        if user_id:
-            q = q.where(Application.user_id == user_id)
-        today_count = len(session.exec(q).all())
+    # What SpotApply has already put on this user's board today. THE shared
+    # definition (app/matching/finals_budget.py): the cap this lane enforces has
+    # to be the same number the finals budget stops buying at.
+    from app.matching.finals_budget import delivered_today
+    today_count = delivered_today(user_id, cached=False)
 
     # (Re)shortlist already-scored jobs via a direct query — they no longer
     # pass through retrieval at all.
@@ -839,6 +837,20 @@ def run_matching(user_id: str | None = None) -> List[int]:
             "LLM gate: %d candidates for Claude — capping to top %d (fresh-first, "
             "budget: %s)", len(to_rerank), _tier2_cap, _allow.reason,
         )
+        # THIS is where the queue's promise ordering comes from, and it used to
+        # be thrown away. Tier-1 prescores up to `prescore_cap` (600) candidates
+        # and Tier-2 buys at most ~100 of them; the ~500 cut here stay Queued,
+        # and every one of them already HAS a real Tier-1 number. Dropping those
+        # numbers left `Job.prescore` NULL on every waiting row — because every
+        # other writer sets it as the job LEAVES the queue — so the whole
+        # unscored corpus tied at the gate and `scoring_lane._user_queue`'s
+        # ORDER BY silently degraded to arrival order, which is exactly what the
+        # promise ordering exists to replace. They cost $0.0002 each; persisting
+        # them is what makes tomorrow's finals buy the best candidates.
+        for _jid, _sim in to_rerank[_tier2_cap:]:
+            _pv = prescore_by_jid.get(_jid)
+            if _pv is not None:
+                prescore_kept.append((_jid, _pv))
         to_rerank = to_rerank[:_tier2_cap]
 
     if to_rerank:

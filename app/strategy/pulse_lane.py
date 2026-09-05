@@ -499,11 +499,10 @@ def _fast_path_user(uid: str, score_budget: int,
                 (Job.posted_at == None) | (Job.posted_at >= posted_cut),  # noqa: E711
             ).order_by(Job.first_seen.desc()).limit(max(score_budget * 6, 60))
         ).all()
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        q = select(Application).where(Application.created_at >= today_start)
-        q = q.where(Application.user_id == uid_arg) if uid_arg \
-            else q.where(Application.user_id.is_(None))
-        today_count = len(session.exec(q).all())
+    # THE definition of "delivered today", shared with the finals budget — the
+    # fast path must stop at the same number the budget stops buying for.
+    from app.matching.finals_budget import delivered_today
+    today_count = delivered_today(uid, cached=False)
 
     # Relevance-first: score titles matching the user's target roles before the
     # off-role remainder (still newest-first within each group). Off-role fresh

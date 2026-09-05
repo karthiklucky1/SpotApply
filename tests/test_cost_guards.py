@@ -13,6 +13,7 @@ import pytest
 from sqlmodel import delete
 
 import app.matching.reranker as rr
+import app.matching.finals_budget as fb
 import app.strategy.scoring_lane as sl
 from app.config import settings
 from app.db.init_db import get_session
@@ -720,34 +721,43 @@ def test_a_transient_prewarm_failure_warns_once_and_keeps_the_provider(caplog):
 
 def test_remaining_finals_is_bounded_by_plan_allowance(monkeypatch):
     from app.db.models import PlanTier
-    monkeypatch.setattr(sl, "_plan_finals_cap", lambda uid: 50)
+    monkeypatch.setattr(sl, "_plan_budget", lambda uid: (50, 35))
     assert sl._remaining_finals_today("u", 40) == 40      # per-cycle cap binds
     for _ in range(30):
         rr._register_final_call("u")
-    assert sl._remaining_finals_today("u", 40) == 20      # plan allowance binds
+        fb.record_outcome("u", 90.0)                      # hits, so yield stays open
+    assert sl._remaining_finals_today("u", 40) == 20      # the cost ceiling binds
     for _ in range(20):
         rr._register_final_call("u")
-    assert sl._remaining_finals_today("u", 40) == 0       # spent for the day
+        fb.record_outcome("u", 90.0)
+    assert sl._remaining_finals_today("u", 40) == 0       # ceiling spent for the day
     assert PlanTier.PRO  # plan enum still resolvable
 
 
-def test_plan_lookup_failure_fails_open(monkeypatch):
-    """A billing hiccup must never stall scoring — no cap beats no feed."""
+def test_plan_lookup_failure_fails_open_to_a_number_not_to_infinity(monkeypatch):
+    """A billing hiccup must never stall scoring — no cap beats no feed. But
+    "no cap" cannot mean NO CEILING: `_get_user_plan` runs an uncached SELECT
+    per user per cycle, so a Supabase blip lands here, and an unbounded
+    allowance is 40 finals x 960 cycles = 38,400/user/day at the exact moment
+    the database is already unhappy. Fall back to the widest PLAN ceiling: it
+    never under-serves a paying user for our outage, and it is still a bound."""
+    from app.db.models import PLAN_LIMITS
+
     def _boom(uid):
         raise RuntimeError("supabase down")
-    monkeypatch.setattr(sl, "_plan_finals_cap", _boom)
+    monkeypatch.setattr(sl, "_plan_budget", _boom)
     with pytest.raises(RuntimeError):
-        sl._plan_finals_cap("u")
-    # The real helper swallows it and returns None → no per-user cap.
+        sl._plan_budget("u")
     monkeypatch.undo()
     monkeypatch.setattr("app.api.server._get_user_plan", _boom, raising=False)
-    assert sl._plan_finals_cap("u") is None
-    assert sl._remaining_finals_today("u", 40) == 40
+    widest = max(p["finals_daily"] for p in PLAN_LIMITS.values())
+    assert sl._plan_budget("u") == (widest, 0)
+    assert sl._remaining_finals_today("u", 40) == 40   # a cycle slice, not the day
 
 
 def test_local_dev_user_has_no_plan_cap():
-    assert sl._plan_finals_cap("local") is None
-    assert sl._plan_finals_cap(None) is None
+    assert sl._plan_budget("local") == (None, 0)
+    assert sl._plan_budget(None) == (None, 0)
 
 
 def test_every_plan_declares_a_finals_allowance():

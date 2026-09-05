@@ -423,17 +423,26 @@ PLAN_LIMITS = {
     #                    never a target: if the pool holds four jobs clearing the
     #                    70 bar, the user gets four (see the note below).
     #   tailor_daily     tailored resume + cover letter generations per day.
-    #   finals_daily     UNCHANGED IN MEANING and still the money guard — the
-    #                    soft point of the adaptive spend budget. It bounds cost;
-    #                    shortlist_daily bounds what is shown.
+    #   finals_daily     the COST CEILING behind the target, and nothing else —
+    #                    not a pace, not a soft point. Scoring runs flat out
+    #                    until shortlist_daily is delivered OR this is reached,
+    #                    and at the measured ~10% hit rate (docs/CAPACITY.md
+    #                    §3.3) it is usually THIS that stops the day: 35
+    #                    delivered would take ~350 finals. Treat it as the daily
+    #                    allocation, sized against a $100/month plan — Pro 250 =
+    #                    $0.83/day at CAPACITY's warm-cache Haiku figure
+    #                    ($0.0033/final), $2.50/day at the repo ledger's flat
+    #                    $0.010 estimate, which CAPACITY §3.3 says over-states
+    #                    Tier-2 by ~3x. Raising delivery means raising this and
+    #                    paying for it; only better Tier-1 precision is free.
     PlanTier.FREE:   {"shortlist_daily": 20, "tailor_daily": 5,
-                      "autofill_weekly": 2,    "finals_daily": 15},
+                      "autofill_weekly": 2,    "finals_daily": 120},
     PlanTier.PRO:    {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 50},
+                      "autofill_weekly": None, "finals_daily": 250},
     PlanTier.BASIC:  {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 50},    # legacy -> PRO
+                      "autofill_weekly": None, "finals_daily": 250},    # legacy -> PRO
     PlanTier.AGENCY: {"shortlist_daily": 35, "tailor_daily": 35,
-                      "autofill_weekly": None, "finals_daily": 100},   # legacy -> PRO
+                      "autofill_weekly": None, "finals_daily": 250},   # legacy -> PRO
 }
 
 # USD per month. ONE paid plan: Pro, monthly, cancel any time (2026-09 launch
