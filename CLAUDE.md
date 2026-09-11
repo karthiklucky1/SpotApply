@@ -56,7 +56,9 @@ app/
   tailoring/        # tailor, ats_keywords, grounding (anti-hallucination), doctor
   autofill/         # Playwright filler + answer_pack
   intelligence/     # sponsorship/H1B, work_auth, urgency, referral,
-                    # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
+                    # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check),
+                    # hiring_contacts (evidence-typed people/org assertions from JD text +
+                    # ATS payloads; docs/research/hiring-contacts-2026-09.md)
   strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, realign, degraded, hygiene
   analytics/        # funnel, reporter
   qa_store/         # canonical answers (answers.yaml) + resolver
