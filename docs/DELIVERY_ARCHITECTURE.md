@@ -3,7 +3,9 @@
 > Written 2026-09-12 from a full read of the pipeline against six days of production
 > logs (deploy 28a77eeb, 2026-09-05 → 09-11). Supersedes the parts of
 > docs/CAPACITY.md and CLAUDE.md that describe the daily target as a stop.
-> The audit that produced the evidence is summarised in docs/AUDIT_2026_09_11.md.
+> The evidence is the Railway deploy log for service `jobagent` over those six
+> days, read alongside the code; every production number quoted below comes
+> from it. Nothing in that read was modified.
 
 ## 0. The objective, stated so it can be optimised
 
@@ -62,21 +64,31 @@ billing mode, badge semantics).
 
 ## 2. Eligibility is deterministic and happens once, before money
 
-One function, `app.matching.eligibility.eligible(job_like, prefs)`, returns a
-verdict and a reason. Every door into a user's pool calls it: full discovery,
-adoption, the pulse lane's per-user route, and the re-shortlist backstop.
+`_upsert` is already the only writer into a user's pool and it already holds the
+gate. The bug was never a missing filter — it was that the gate is driven by
+what the CALLER passes, and the three callers passed different things. So the
+fix is not a new module; it is that every door passes the same four arguments:
 
-Order, cheapest first, all deterministic:
+    _upsert(raw, user_id=..., preferred_country=..., remote_ok=...,
+            user_keywords=..., role_gate_terms=...)
+
+and that the country comes from ONE resolution,
+`app.common.tenant_prefs.effective_country`, which the scoring PROMPT reads too.
+A new `eligibility` module would have been a fourth place for the same rule to
+drift.
+
+Order inside `_upsert`, cheapest first, all deterministic:
 
 1. **Profession** — the junk/other-department kill list (unchanged semantics).
-2. **Role family** — `role_title_match`, now without weak standalone tokens.
+2. **Role family** — `matches_title` against the caller's role gate, now without
+   the weak domain tokens.
 3. **Location / work authorisation** — `location_allowed`, now ordered correctly.
-4. **Validity** — closed, ghost-flagged, or expired.
-5. **Duplicate** — same canonical requisition already in this user's pool.
 
 Nothing here calls an LLM, an embedding model, or the network. A candidate that
 fails is never written into the user's pool, so it can never consume a Tier-1
-call, a Tier-2 call, a queue slot or a row of egress.
+call, a Tier-2 call, a queue slot or a row of egress. Validity (closed, ghost,
+expired) and duplicate suppression stay where they already are — the ghost
+detector at scrape time and the dedupe keys inside `_upsert`.
 
 ### 2.1 Location, restated
 
@@ -205,6 +217,50 @@ a real employer after five busy afternoons.
 
 ## 6. What this does not do
 
-It does not add a lane, a timer or a feature flag. It removes the duplicated
-shortlist cap from three lanes into one module, removes the second final-purchase
-ordering policy, and turns one stop into one gate.
+It does not add a lane, a timer, or a background process. It removes the
+duplicated shortlist cap from three lanes into one module, removes the second
+final-purchase ordering policy, and turns one stop into one gate.
+
+It does add four settings, all of them thresholds on behaviour that already
+existed rather than new machinery: `slate_displace_margin`,
+`slate_overflow_margin`, `slate_overflow_daily`, and `slate_challenge_enabled`
+— a kill switch, because this changes what the product does every evening and a
+revert should not need a deploy. `default_intake_country` is a fifth, and exists
+so the gate and the prompt cannot disagree again.
+
+## 7. What shipped, and what did not
+
+Implemented and under test (2026-09-12):
+
+* eligibility at every door, the tiered country resolution, the domain-token
+  fix and the eight role families (§2);
+* FILL/CHALLENGE, `slate.place()` as the one placement path, `viewed_at`, the
+  challenger gate (§3);
+* one final-purchase ordering across both lanes (`order_by_promise`);
+* `first_seen` carried through every copy (§2, RC4);
+* fetch outcomes and the 429 rule (§5, the correction only — not the full
+  adaptive priority scheduler);
+* batched shared-pool retention off the event loop, and a cached failure on the
+  public freshness route;
+* score-kind semantics on the board;
+* dormancy: paid searches keep running, free users are told.
+
+DESIGNED HERE, NOT IMPLEMENTED — deliberately, and each for the same reason:
+
+* **§4, the utility function.** The multipliers (validity, diversity, the
+  staffing penalty) are guesses until they are fitted against real outcomes.
+  Shipping guessed weights would move which jobs get delivered, and the one
+  quality number we have — 15.2% of finals clearing the 70 bar — currently
+  matches the design. Fit V and D against `Application` outcomes first, then
+  turn it on for the slate ordering and the cutoff.
+* **§5, the priority scheduler** (`user_demand x expected_yield x freshness_need
+  / fetch_cost`) and the HOT/WARM/COLD/ZERO_YIELD classes as a stored column.
+  The 429 correction removes the destructive half; the rest needs the registry
+  census (how many boards sit in each tier, and what each actually yields),
+  which is a query against production, not a code change.
+* **Requisition canonicalisation across ATS + aggregator copies.** Needs a
+  fingerprint experiment on real duplicates before a key is chosen; picking one
+  wrong merges distinct reqs, which is worse than showing two.
+* **The per-1000-jobs funnel counters.** `FunnelEvent` already has stages
+  nothing writes; adding more before reconciling that would make the analytics
+  less trustworthy, not more.

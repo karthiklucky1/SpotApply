@@ -180,24 +180,40 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   round-trip): `prescored_at`, `scored_at`, `expired_at`. Count with
   `genuinely_scored_expr()` / `expired_without_scoring_expr()`, never the raw
   NULL check. Stage latency: `scripts/stage_latency.py`.
-- **Spend aims at a DELIVERY target, not a call count** (`matching/finals_budget.py`,
-  2026-09-05): scoring runs FLAT OUT until `PLAN_LIMITS["shortlist_daily"]`
-  (Free 20 / Pro 35) jobs reach the board today, then stops. Three stops:
-  delivered ≥ target (success); spent ≥ `finals_daily` (Free 120 / Pro 250 — the
-  cost ceiling); yield collapsed. **MEASURED 2026-09-05** (first 5h of this
-  design): **6.5 finals per delivered job, 15.3% hit rate, $0.0025/final** —
-  so Pro's 35 costs ~228 finals, inside the ceiling, at ~$19/month against a
-  $100 plan. Either stop can fire; neither is a failure. (`spend.py`'s old
-  $0.010/final was 4.1x high — the Tier-1 prescore estimate there is still
-  UNMEASURED.) **No window is longer than a day
-  and nothing is paced**: the weekly ceiling + release curves paced PRO to 1.77
-  finals/hour (prescore→final p50 685 min) and on 09-03 the weekly curve applied
-  to an already-spent week took production to zero finals for 39 hours while
-  reporting itself healthy. Two rules from that, pinned by test: a spend control
-  must never retroactively invalidate spend already made, and a reason meaning
-  "you get nothing" is never filed under healthy (only `delivered` is quiet =
-  `target_met_users`; everything else warns = `plan_capped_users`). The **yield
-  stop** needs a real sample — hits/finals TODAY, judged only past
+- **FILL then CHALLENGE — the day's count ends delivery, not the search**
+  (`strategy/slate.py` + `matching/finals_budget.py`, 2026-09-12;
+  docs/DELIVERY_ARCHITECTURE.md). Until `PLAN_LIMITS["shortlist_daily"]` (Free
+  20 / Pro 35) jobs reach the board, scoring runs FLAT OUT. After that the
+  budget does NOT return 0 — it raises `Allowance.gate` to the day's **cutoff**
+  (the fit score of the weakest entry a challenger could replace, floored at
+  the shortlist bar), and that gate already reaches all three lanes as
+  `spend_gate`. Discovery, routing and Tier-1 continue; only Tier-2 narrows.
+  Returning 0 was a kill switch: the pulse fast path (70% of shortlists)
+  returned BEFORE Tier-1, so on 3 of 6 days the board filled 18:00-22:00 UTC and
+  a 15:12 posting worth 92 waited behind 35 jobs scoring 71-73.
+  **`slate.place()` is the ONLY writer of a SHORTLISTED application** (guard:
+  test_daily_slate) — capacity, the company cap and the challenger rule live
+  there, because three lanes each carrying their own `today_count < cap` check
+  had already drifted. A challenger beating the cutoff by `slate_displace_margin`
+  (5) replaces the weakest **replaceable** entry = SHORTLISTED, delivered today,
+  `viewed_at IS NULL`; anything opened/tailored/applied/dismissed is permanent.
+  If nothing is replaceable, `slate_overflow_margin` (15) delivers it anyway, up
+  to `slate_overflow_daily` (5). Challenge spend is bounded by what is LEFT of
+  `finals_daily` — no second counter. `SLATE_CHALLENGE_ENABLED=0` restores the
+  old stop. Remaining stops: spent ≥ `finals_daily` (Free 120 / Pro 250 — the
+  cost ceiling); yield collapsed. **MEASURED over six days
+  2026-09-05..11** (supersedes the 5-hour sample that claimed 6.5): hit rate
+  held at **15.2%** (738 finals → 112 shortlists) but **finals per delivered job
+  was 15.6** for the user who hit the ceiling — 2.4x the design number, because
+  the queue was 73% ineligible, not because the bar was wrong. Fix supply, not
+  the ceiling. $0.0025/final measured; `spend.py`'s old $0.010 was 4.1x high and
+  its Tier-1 estimate is still UNMEASURED. **No window is longer than a day and
+  nothing is paced**: the weekly ceiling + release curve took production to zero
+  finals for 39 hours on 09-03 while reporting itself healthy. Two rules from
+  that, pinned by test: a spend control must never retroactively invalidate
+  spend already made, and a reason meaning "you get nothing" is never filed
+  under healthy (only `delivered` is quiet = `target_met_users`; everything else
+  warns = `plan_capped_users`). The **yield stop** needs a real sample — hits/finals TODAY, judged only past
   `FINALS_YIELD_WINDOW` (50) finals, continue at ≥2%: at a 10% true rate zero
   hits in 10 finals happens 35% of the time, and the first version read an
   in-process ring only a purchased final could refill, so a coin-flip left users
@@ -230,6 +246,26 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `matcher._candidate_columns()` (6 cols, description truncated in SQL — nothing
   reads past ~800 chars). Full descriptions put Supabase at 205% of its egress
   quota on 2 MB of stored data (tests/test_retrieval_egress.py).
+- **Eligibility is ONE deterministic gate, applied at EVERY door**
+  (2026-09-12): `_upsert` only filters when the caller passes
+  `preferred_country`/`role_gate_terms`, and the three doors passed different
+  things — the pulse lane's per-user route passed NEITHER, which is why the lane
+  that delivers 70% of shortlists was the one with no location filter. All doors
+  now pass both, and `app/common/tenant_prefs.effective_country` is the ONE
+  resolution the scoring PROMPT also reads: a blank profile country meant "no
+  gate" at intake while Claude was still told the candidate wants the US and
+  scored everything else 0-30, so we admitted foreign postings for free and paid
+  to reject them (73% Tier-1 drain). `geo.detect_country` resolves in tiers — US
+  signal > foreign country NAME > `, XX` US state code > foreign city — because
+  city-before-state made Dublin OH Irish and Melbourne FL Australian. Role terms
+  drop DOMAIN tokens (`_DOMAIN_TOKENS`: "full" matched every "Full Time", "data"
+  matched "Data Entry"); `_STRUCTURAL_TOKENS` is the smaller set preference
+  learning reads, where "sales" IS the signal.
+- **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
+  by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
+  that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —
+  labelled New, back inside the 5-day scoring window, against a promise to be
+  first to apply.
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.

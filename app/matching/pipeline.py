@@ -413,21 +413,22 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
                 Job.rerank_score >= settings.shortlist_score_threshold,
-                # The backstop has to deliver jobs the board will actually SHOW.
-                # Without the render window it re-shortlisted postings past
-                # shortlist_max_age_days — the slot was consumed, hygiene pruned
-                # the row on the next pass, and the user saw nothing for it. The
-                # same two bounds the render filter uses (app/common/freshness).
-                *([_fresh] if (_fresh := is_fresh_expr(
-                    settings.shortlist_max_age_days,
-                    settings.shortlist_max_posted_age_days,
-                    for_render=True)) is not None else []),
-                # ...and never a posting the ghost detector already wrote off.
+                # Never a posting the ghost or expiry sweep already wrote off:
+                # both sentinels sit below the bar today, but only by arithmetic.
                 Job.rerank_score.notin_(SENTINEL_SCORES),
             )
             .order_by(Job.rerank_score.desc())
             .limit(500)
         )
+        # The backstop has to deliver jobs the board will actually SHOW. Without
+        # the render window it re-shortlisted postings past shortlist_max_age_days:
+        # the slot was consumed, hygiene pruned the row on the next pass, and the
+        # user saw nothing for it. Same two bounds the render filter uses.
+        _fresh = is_fresh_expr(settings.shortlist_max_age_days,
+                               settings.shortlist_max_posted_age_days,
+                               for_render=True)
+        if _fresh is not None:
+            q = q.where(_fresh)
         for job in session.exec(q).all():
             if job.id in applied_ids:
                 continue
