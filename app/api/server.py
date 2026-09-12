@@ -3048,12 +3048,41 @@ _JOB_LIST_COLS = (
     Job.posted_at, Job.first_seen, Job.discovered_at,
     Job.similarity_score, Job.rerank_score, Job.hire_probability_score,
     Job.blended_score, Job.rerank_reasoning, Job.is_closed, Job.closed_reason,
+    # WHAT KIND of number rerank_score is. The column is overloaded — it carries
+    # real 0-100 Claude verdicts AND the ghost (5.0) and age-expiry (8.0)
+    # sentinels AND Tier-1 prescore stamps — so the board was rendering "5%" and
+    # "32%" as if the AI had judged the fit and found it poor. Lifecycle lives in
+    # its own columns (CLAUDE.md); these three are what let the UI tell them
+    # apart without re-deriving the rule in JavaScript.
+    Job.scored_at, Job.prescored_at, Job.expired_at,
     Application.id.label("app_id"),
     Application.status.label("app_status"),
     Application.apply_track.label("app_track"),
     Application.created_at.label("app_created"),
     Application.updated_at.label("app_updated"),
 )
+
+
+def _score_kind(rerank, scored_at, prescored_at, expired_at) -> str:
+    """Name the kind of number in ``rerank_score``.
+
+    ``rerank_score IS NOT NULL`` has never meant "was scored": production's
+    "621k scored jobs" was mostly expiry stamps. The lifecycle columns are the
+    reliable form and the sentinel values are the legacy fallback for rows
+    written before they shipped.
+    """
+    from app.common.freshness import EXPIRY_SENTINEL_SCORE, GHOST_SENTINEL_SCORE
+    if rerank is None:
+        return "queued"
+    if scored_at is not None:
+        return "final"
+    if expired_at is not None or rerank == EXPIRY_SENTINEL_SCORE:
+        return "expired"
+    if rerank == GHOST_SENTINEL_SCORE:
+        return "ghost"
+    if prescored_at is not None:
+        return "prescore"
+    return "final"        # legacy row scored before the lifecycle columns
 
 
 @app.get("/api/jobs")
@@ -3303,6 +3332,7 @@ def api_jobs(
              jposted_at, jfirst_seen, jdiscovered_at,
              jsimilarity, jrerank, jhire_prob, jblended, jreason,
              jis_closed, jclosed_reason,
+             jscored_at, jprescored_at, jexpired_at,
              app_id, app_status, app_track, app_created, app_updated) = row
             _posted = jposted_at or jfirst_seen
             _seen = _tz_naive(jfirst_seen or jdiscovered_at)
@@ -3325,6 +3355,12 @@ def api_jobs(
                 "is_new": bool(_seen and _seen > _new_cutoff),
                 "similarity": jsimilarity,
                 "rerank": jrerank,
+                # "final"    a real Claude verdict — the only one that is a fit %
+                # "prescore" a cheap Tier-1 estimate that ended the job's queue life
+                # "ghost"    the 5.0 sentinel: a dead or fake posting
+                # "expired"  the 8.0 sentinel: aged out before anyone scored it
+                # "queued"   no number yet
+                "score_kind": _score_kind(jrerank, jscored_at, jprescored_at, jexpired_at),
                 "hire_probability": jhire_prob,
                 "blended": jblended,
                 "reason": jreason,
@@ -3739,6 +3775,12 @@ def dashboard(request: Request, all_submitted: bool = False):
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
             "shortlist_strong_threshold": settings.shortlist_strong_threshold,
+            # The bar the AI score is judged against. The board used to
+            # hard-code 35 in its status copy, which stopped being the bar
+            # when it moved to 70 — so every job scoring 40-69 was labelled
+            # "above the bar, awaiting a slot" when it had in fact been
+            # rejected.
+            "shortlist_score_threshold": settings.shortlist_score_threshold,
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
