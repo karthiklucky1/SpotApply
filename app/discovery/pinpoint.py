@@ -13,7 +13,13 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_ORG_ENTITY,
+    EVIDENCE_TEAM_OR_DEPARTMENT,
+    EVIDENCE_TITLE_ONLY,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +81,22 @@ class PinpointScraper:
                     posted_dt = datetime.fromisoformat(str(published).replace("Z", "+00:00"))
                 except ValueError:
                     pass
+            # Pinpoint exposes the richest org unit of the boards we poll.
+            # `reporting_to` is a TITLE on this endpoint, never a person, so it
+            # lands in reporting_title with TITLE_ONLY evidence.
+            ctx: dict = {}
+            put(ctx, "department", _text(attrs.get("department")),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "attributes.department")
+            put(ctx, "division", _text(attrs.get("division")),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "attributes.division")
+            put(ctx, "team", _text(attrs.get("team")),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "attributes.team")
+            put(ctx, "reporting_title", _text(attrs.get("reporting_to")),
+                EVIDENCE_TITLE_ONLY, "attributes.reporting_to")
+            put(ctx, "requisition_id",
+                _text(attrs.get("reference")) or _text(attrs.get("requisition_id")),
+                EVIDENCE_ORG_ENTITY, "attributes.reference")
+            put(ctx, "ats", "pinpoint", EVIDENCE_ORG_ENTITY, "scraper")
             jobs.append(
                 RawJob(
                     source="pinpoint",
@@ -87,6 +109,8 @@ class PinpointScraper:
                         or f"https://{self.board_slug}.pinpointhq.com/postings/{ext_id}",
                     description=_strip_html(attrs.get("description") or ""),
                     posted_at=posted_dt,
+                    origin="pinpoint",
+                    context=ctx,
                 )
             )
         log.info("Pinpoint[%s]: %d jobs", self.board_slug, len(jobs))

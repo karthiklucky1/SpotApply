@@ -167,6 +167,8 @@ class HNJobsSource:
                                 url=url or f"https://news.ycombinator.com/item?id={item_id}",
                                 description=description or f"HN Job: {title}",
                                 posted_at=posted_at,
+                                origin="hn_jobs",
+                                origin_provider=f"Hacker News item {item_id}",
                             ))
                         except Exception as e:
                             log.debug("HN Jobs: parse error: %s", e)

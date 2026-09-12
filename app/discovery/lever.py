@@ -11,7 +11,12 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_ORG_ENTITY,
+    EVIDENCE_TEAM_OR_DEPARTMENT,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +60,15 @@ class LeverScraper:
             for lst in lists:
                 desc += "\n\n" + (lst.get("text", "") + "\n" + _strip_html(lst.get("content", "")))
 
+            # `categories` already carries the org unit; only location and
+            # commitment were ever read out of it.
+            ctx: dict = {}
+            put(ctx, "team", cats.get("team"), EVIDENCE_TEAM_OR_DEPARTMENT,
+                "categories.team")
+            put(ctx, "department", cats.get("department"),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "categories.department")
+            put(ctx, "ats", "lever", EVIDENCE_ORG_ENTITY, "scraper")
+
             jobs.append(
                 RawJob(
                     source="lever",
@@ -66,6 +80,8 @@ class LeverScraper:
                     url=j.get("hostedUrl", ""),
                     description=desc.strip(),
                     posted_at=posted_dt,
+                    origin="lever",
+                    context=ctx,
                 )
             )
         log.info("Lever[%s]: %d jobs", self.company_slug, len(jobs))

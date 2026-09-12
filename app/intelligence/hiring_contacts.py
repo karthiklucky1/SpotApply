@@ -143,6 +143,22 @@ _TEAM = re.compile(
     r"(?P<team>[A-Z][\w&/+-]*(?:\s+[A-Z&][\w&/+-]*){0,4})\s+(?:team|org|organization|organisation|group|squad)\b",
 )
 
+# A department is a different level of the org from a team, and conflating the
+# two put "Team: Engineering" on cards whose posting said department. Two
+# shapes: the labelled template field, and the prose form. The prose form
+# requires the literal word department/division/function so that "in the New
+# York office" can never be read as an org unit.
+_TEAM_LABEL = re.compile(
+    r"^[ \t]*(?i:team)[ \t]*[:\-][ \t]*(?P<t_label>[^\n|•]{2,60})", re.M)
+
+_DEPARTMENT = re.compile(
+    r"(?:^[ \t]*(?i:department|dept)[ \t]*[:\-][ \t]*(?P<d_label>[^\n|•]{2,60})"
+    r"|\b(?i:in|within|part of|sits? in|joins?)\s+(?:the\s+|our\s+)?"
+    r"(?P<d_prose>[A-Z][\w&/+-]*(?:\s+[A-Z&][\w&/+-]*){0,3})\s+"
+    r"(?i:department|division|business unit)\b)",
+    re.M,
+)
+
 # Things that look like reporting lines and are not.
 _NEGATIVE = re.compile(
     r"direct reports|reports? to work|report to the office|reporting tools?|"
@@ -178,6 +194,35 @@ def _split_named_target(target: str) -> tuple[str | None, str | None]:
 
 def _looks_like_title(s: str) -> bool:
     return bool(re.search(_TITLE_WORDS, s, re.IGNORECASE))
+
+
+# A reporting line whose target is a pronoun ("...will report directly to me")
+# names a person the sentence does not identify. The old code stored the
+# pronoun itself as the reporting TITLE, which put "Reports to: me" on the
+# card. The self-identification pass below is the only place allowed to resolve
+# such a sentence, and only when the author actually gives a name.
+_PRONOUN_TARGET = re.compile(
+    r"^(?:me|us|them|him|her|you|they|it|myself|yourself|him/her|them/they|"
+    r"this person|the above|the same)\b[.,!?]?$",
+    re.IGNORECASE,
+)
+
+
+def _is_pronoun_target(target: str) -> bool:
+    return bool(_PRONOUN_TARGET.match((target or "").strip()))
+
+
+# Bug 2 guard: an organisation capture must not run past the end of its own
+# sentence. "recruiting for Qrendo. Recruitment consultant: Oscar" produced the
+# hiring company "Qrendo. Recruitment" because the name pattern happily crossed
+# the full stop.
+def _trim_org(name: str) -> str:
+    """Cut an organisation name at the first sentence break or connective."""
+    n = _clean(name)
+    n = re.split(r"[.;:!?]", n, maxsplit=1)[0]
+    n = re.split(r"\s+(?:and|who|which|is|was|for|to)\b", n, maxsplit=1,
+                 flags=re.IGNORECASE)[0]
+    return _clean(n)
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -218,6 +263,9 @@ def extract_from_text(text: str, *, source_url: str = "", field_name: str = "des
             window = sent[max(0, m.start() - 40): m.end() + 40]
             if _NEGATIVE.search(window):
                 continue
+            if _is_pronoun_target(m.group("target")):
+                # Handled by the self-identification pass, which needs a name.
+                continue
             name, title = _split_named_target(m.group("target"))
             qual = None
             if re.search(r"\binitially\b", sent, re.IGNORECASE):
@@ -246,19 +294,38 @@ def extract_from_text(text: str, *, source_url: str = "", field_name: str = "des
 
     # 4. Agency / client split
     for m in _AGENCY_SELF.finditer(text):
-        add(Assertion(relationship="recruiting_agency", evidence_type="named_for_this_job",
-                      quote=_clean(m.group(0)), field=field_name,
-                      organization=_clean(m.group("agency")), source_url=source_url))
+        org = _trim_org(m.group("agency"))
+        if org:
+            add(Assertion(relationship="recruiting_agency", evidence_type="named_for_this_job",
+                          quote=_clean(m.group(0)), field=field_name,
+                          organization=org, source_url=source_url))
     for m in _ON_BEHALF.finditer(text):
-        add(Assertion(relationship="hiring_company_named_in_ad", evidence_type="named_for_this_job",
-                      quote=_clean(text[max(0, m.start() - 30): m.end() + 30]), field=field_name,
-                      organization=_clean(m.group("client")), source_url=source_url))
+        org = _trim_org(m.group("client"))
+        if org:
+            add(Assertion(relationship="hiring_company_named_in_ad", evidence_type="named_for_this_job",
+                          quote=_clean(text[max(0, m.start() - 30): m.end() + 30]), field=field_name,
+                          organization=org, source_url=source_url))
 
     # 5. Team names
     for m in _TEAM.finditer(text):
         add(Assertion(relationship="team", evidence_type="named_for_this_job",
                       quote=_clean(m.group(0)), field=field_name,
                       organization=_clean(m.group("team")), source_url=source_url))
+
+    for m in _TEAM_LABEL.finditer(text):
+        t = _clean(m.group("t_label"))
+        if t:
+            add(Assertion(relationship="team", evidence_type="named_for_this_job",
+                          quote=_clean(m.group(0))[:200], field=field_name,
+                          organization=t, source_url=source_url))
+
+    # 5b. Department — a distinct level of the org, never merged into `team`.
+    for m in _DEPARTMENT.finditer(text):
+        dept = _clean(m.group("d_label") or m.group("d_prose") or "")
+        if dept:
+            add(Assertion(relationship="department", evidence_type="named_for_this_job",
+                          quote=_clean(m.group(0))[:200], field=field_name,
+                          organization=dept, source_url=source_url))
 
     # 6. Emails (never a person by themselves)
     for m in _EMAIL.finditer(text):

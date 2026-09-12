@@ -325,6 +325,12 @@ def init_db() -> None:
         ("prescored_at", "DATETIME"),
         ("scored_at", "DATETIME"),
         ("expired_at", "DATETIME"),
+        # True provenance, kept beside the routing bucket in `source` rather
+        # than inside it — see the comment on Job.origin. Both nullable with no
+        # backfill and no default, so on Postgres these are metadata-only
+        # ALTERs: they do not rewrite the ~1.47M existing rows.
+        ("origin", "VARCHAR"),
+        ("origin_provider", "VARCHAR"),
     ]:
         add_column_if_missing("job", col, col_type)
         

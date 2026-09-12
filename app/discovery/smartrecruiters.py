@@ -12,7 +12,15 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_DIRECT_PERSON,
+    EVIDENCE_ORG_ENTITY,
+    EVIDENCE_STRUCTURED_PERSON,
+    EVIDENCE_TEAM_OR_DEPARTMENT,
+    EVIDENCE_TITLE_ONLY,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +57,77 @@ def _is_obvious_non_tech(title: str) -> bool:
 
 def _strip_html(html: str) -> str:
     return BeautifulSoup(html or "", "html.parser").get_text(separator="\n").strip()
+
+
+
+def _label(value) -> str:
+    """SmartRecruiters returns taxonomy values as {id,label} objects, but some
+    tenants return a bare string for the same key. Accept both, reject the
+    rest."""
+    if isinstance(value, dict):
+        return value.get("label") or value.get("name") or ""
+    return value if isinstance(value, str) else ""
+
+
+# Custom-field labels worth reading. Tenants name these freely, so an
+# unrecognised label is ignored rather than guessed at.
+_CUSTOM_KEYS = {
+    "hiring manager": ("reporting_manager_name", EVIDENCE_DIRECT_PERSON),
+    "recruiter": ("recruiter_name", EVIDENCE_DIRECT_PERSON),
+    "reports to": ("reporting_title", EVIDENCE_TITLE_ONLY),
+    "reporting to": ("reporting_title", EVIDENCE_TITLE_ONLY),
+    "team": ("team", EVIDENCE_TEAM_OR_DEPARTMENT),
+    "division": ("division", EVIDENCE_TEAM_OR_DEPARTMENT),
+    "business unit": ("division", EVIDENCE_TEAM_OR_DEPARTMENT),
+    "legal entity": ("hiring_entity", EVIDENCE_ORG_ENTITY),
+    "requisition id": ("requisition_id", EVIDENCE_ORG_ENTITY),
+}
+
+
+def _creator_name(node) -> str:
+    """`creator` is documented as the employee who CREATED the posting. It is
+    stored as posting_creator_name and never as a hiring manager. The live
+    audit found it populated on 0 of 4 postings, so nothing may depend on it."""
+    if not isinstance(node, dict):
+        return ""
+    name = node.get("name") or " ".join(
+        x for x in (node.get("firstName"), node.get("lastName")) if isinstance(x, str))
+    return name.strip() if isinstance(name, str) else ""
+
+
+def _context_for(listing: dict, detail: dict) -> dict:
+    """Org unit + requisition + creator, all from responses already fetched."""
+    ctx: dict = {}
+    for src_name, src in (("detail", detail), ("listing", listing)):
+        if not isinstance(src, dict):
+            continue
+        put(ctx, "department", _label(src.get("department")),
+            EVIDENCE_TEAM_OR_DEPARTMENT, f"{src_name}.department.label")
+        put(ctx, "division", _label(src.get("function")),
+            EVIDENCE_TEAM_OR_DEPARTMENT, f"{src_name}.function.label")
+        put(ctx, "requisition_id", src.get("refNumber"),
+            EVIDENCE_ORG_ENTITY, f"{src_name}.refNumber")
+        put(ctx, "hiring_entity", (src.get("company") or {}).get("name")
+            if isinstance(src.get("company"), dict) else None,
+            EVIDENCE_ORG_ENTITY, f"{src_name}.company.name")
+        put(ctx, "posting_creator_name", _creator_name(src.get("creator")),
+            EVIDENCE_STRUCTURED_PERSON, f"{src_name}.creator")
+        raw_custom = src.get("customField") or src.get("customFields") or []
+        if isinstance(raw_custom, dict):
+            raw_custom = [raw_custom]
+        for entry in raw_custom:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("fieldLabel") or entry.get("label")
+                        or entry.get("fieldId") or "").strip().lower()
+            mapped = _CUSTOM_KEYS.get(label)
+            if not mapped:
+                continue
+            target, evidence = mapped
+            put(ctx, target, entry.get("valueLabel") or entry.get("value"),
+                evidence, f"{src_name}.customField[{label}]")
+    put(ctx, "ats", "smartrecruiters", EVIDENCE_ORG_ENTITY, "scraper")
+    return ctx
 
 
 class SmartRecruitersScraper:
@@ -167,6 +246,8 @@ class SmartRecruitersScraper:
                     url=apply_url,
                     description=description,
                     posted_at=posted_dt,
+                    origin="smartrecruiters",
+                    context=_context_for(p, d),
                 )
             )
             

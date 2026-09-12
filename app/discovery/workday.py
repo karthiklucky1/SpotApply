@@ -13,7 +13,11 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_ORG_ENTITY,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -204,6 +208,23 @@ class WorkdayScraper:
                             
                     apply_url = f"https://{domain}/{site}{ext_path}"
                     
+                    # `hiringOrganization` is documented for schema.org job
+                    # postings but was NOT confirmed present in a live CXS
+                    # response, so it is read defensively and simply absent
+                    # when the tenant does not send it. Nothing depends on it.
+                    ctx: dict = {}
+                    hiring_org = info.get("hiringOrganization")
+                    if isinstance(hiring_org, dict):
+                        hiring_org = hiring_org.get("name")
+                    put(ctx, "hiring_entity", hiring_org, EVIDENCE_ORG_ENTITY,
+                        "jobPostingInfo.hiringOrganization.name")
+                    # jobReqId is already the external_id; storing it as the
+                    # requisition too is what lets a later canonicalisation
+                    # layer join on it without knowing Workday's id scheme.
+                    put(ctx, "requisition_id", info.get("jobReqId"),
+                        EVIDENCE_ORG_ENTITY, "jobPostingInfo.jobReqId")
+                    put(ctx, "ats", "workday", EVIDENCE_ORG_ENTITY, "scraper")
+
                     jobs.append(
                         RawJob(
                             source="workday",
@@ -215,6 +236,8 @@ class WorkdayScraper:
                             url=apply_url,
                             description=description,
                             posted_at=posted_dt,
+                            origin="workday",
+                            context=ctx,
                         )
                     )
                     
