@@ -792,6 +792,15 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             return board, None, "unsupported", time.monotonic() - t0, None
         try:
             raw = scraper.fetch()
+            # An adapter that swallows HTTP errors reports them here rather than
+            # by raising (app/discovery/base.py). Greenhouse, Lever and Ashby all
+            # return [] for a 429 or a 503, and treating that as "an empty board"
+            # wrote job_count=0 — the value that demotes a live employer to the
+            # 72-hour zero-yield cadence.
+            from app.discovery.base import fetch_error
+            soft_err = fetch_error(scraper)
+            if soft_err and not raw:
+                return board, None, soft_err, time.monotonic() - t0, None
             meta = {
                 "complete": bool(getattr(scraper, "fetch_complete", True)),
                 "entries": getattr(scraper, "signature_entries", None),

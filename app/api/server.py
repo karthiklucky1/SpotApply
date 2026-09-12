@@ -641,52 +641,30 @@ async def _registry_maintenance_once(cycle: int) -> None:
     await asyncio.to_thread(_seed_missing_ats_datasets)
     validated = await run_validation_loop(limit=150)
     _log.info("Registry maintenance: validated %d boards", validated)
-    # Shared-pool retention: close shared postings older than 45 days so the
-    # scrape-once pool doesn't grow unbounded (adoption ignores closed rows).
-    # A bulk UPDATE (not a load-then-set loop) so retention itself doesn't stream
-    # full job rows out of Postgres.
-    try:
-        from datetime import datetime as _rdt, timedelta as _rtd
-        from sqlalchemy import update as _sqlupdate
-        from app.db.models import Job as _Job
-        from app.discovery.pipeline import SHARED_POOL_USER
-        cutoff = _rdt.utcnow() - _rtd(days=45)
-        with get_session() as session:
-            res = session.exec(
-                _sqlupdate(_Job)
-                .where(_Job.user_id == SHARED_POOL_USER,
-                       _Job.is_closed == False,  # noqa: E712
-                       _Job.first_seen < cutoff)
-                .values(is_closed=True, closed_reason="shared-pool retention (45d)")
-            )
-            session.commit()
-            if getattr(res, "rowcount", 0):
-                _log.info("Shared-pool retention: closed %d old postings", res.rowcount)
-    except Exception as e:
-        _log.warning("Shared-pool retention failed: %s", e)
-    # Per-user retention: age-close open per-user rows nobody acted on — the
-    # missing half of retention (shared rows closed above; per-user copies
-    # previously never closed by age, so the job table grew unbounded).
-    try:
-        from app.strategy.job_retention import close_stale_user_jobs
-        close_stale_user_jobs(days=settings.user_job_close_age_days)
-    except Exception as e:
-        _log.warning("Per-user job retention failed: %s", e)
-    # Blank the JD text on stale rows nobody acted on. Runs BEFORE the purge:
-    # the description is the bulk of the disk (3.3 GB of a 5.76 GB table) and
-    # goes dead long before the row itself is safe to delete.
-    try:
-        from app.strategy.job_retention import strip_dead_descriptions
-        strip_dead_descriptions(days=settings.job_description_strip_age_days)
-    except Exception as e:
-        _log.warning("Job description strip failed: %s", e)
-    # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
-    # egress) stays bounded — closed rows were accumulating forever.
-    try:
-        from app.strategy.job_retention import purge_old_closed_jobs
-        purge_old_closed_jobs(days=settings.job_purge_max_age_days)
-    except Exception as e:
-        _log.warning("Job retention purge failed: %s", e)
+    # Retention, in order: close shared rows, close per-user rows, blank the JD
+    # text, then hard-delete. Each is BATCHED (no single statement can outrun
+    # Supabase's statement timeout) and each runs in a THREAD.
+    #
+    # Both of those were learned the hard way. The shared-pool close was one
+    # unbounded UPDATE written inline here and it timed out every single night
+    # from 09-05 to 09-11, so shared rows never closed and therefore never
+    # purged. And all four ran directly on the asyncio event loop: multi-minute
+    # blocking DB work in the same thread that serves every HTTP request, once
+    # a night, for as long as the backlog took.
+    from app.strategy.job_retention import (
+        close_stale_shared_jobs, close_stale_user_jobs, purge_old_closed_jobs,
+        strip_dead_descriptions,
+    )
+    for _label, _fn, _days in (
+        ("shared-pool close", close_stale_shared_jobs, 45),
+        ("per-user close", close_stale_user_jobs, settings.user_job_close_age_days),
+        ("description strip", strip_dead_descriptions, settings.job_description_strip_age_days),
+        ("purge", purge_old_closed_jobs, settings.job_purge_max_age_days),
+    ):
+        try:
+            await asyncio.to_thread(_fn, _days)
+        except Exception as e:
+            _log.warning("Job retention (%s) failed: %s", _label, e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
@@ -5054,6 +5032,42 @@ def public_freshness() -> dict:
     def _naive(dt):
         return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
+    try:
+        result = _public_freshness_uncached(now, now_ts)
+        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 300, result)
+        globals()["_PUBLIC_FRESHNESS_LAST"] = result
+        return result
+    except Exception as e:
+        # THE FAILURE IS THE EXPENSIVE PART. This route is public, unauthenticated
+        # and un-rate-limited, and it runs a full-table COUNT the schema has no
+        # usable index for; it hit the statement timeout on 2026-09-09 01:33.
+        # Because the cache was only written on SUCCESS, every landing-page hit
+        # after that re-ran the same heavy queries against a database that had
+        # just told us it could not answer them. Cache the failure too — briefly,
+        # so a transient stall costs one slow request rather than a stampede.
+        _log = logging.getLogger("api")
+        _log.warning("public freshness aggregate failed (%s) — serving the last "
+                     "known figures for 60s", e)
+        stale = globals().get("_PUBLIC_FRESHNESS_LAST")
+        fallback = stale if stale else {
+            "active_boards": None, "jobs_tracked_7d": None,
+            "median_detection_latency_hours": None, "detected_within_24h_pct": None,
+            "fresh_alerts_7d": None, "median_post_to_alert_min": None,
+        }
+        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 60, fallback)
+        return fallback
+
+
+def _public_freshness_uncached(now, now_ts) -> dict:
+    """The aggregate itself. Split out so the caller can cache a FAILURE."""
+    import statistics
+    import json as _json
+    from datetime import timedelta
+    from app.db.models import CompanyRegistry, FunnelEvent
+
+    def _naive(dt):
+        return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
+
     with get_session() as session:
         boards = session.exec(
             select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)  # noqa: E712
@@ -5110,7 +5124,6 @@ def public_freshness() -> dict:
         "fresh_alerts_7d": len(alert_min),
         "median_post_to_alert_min": med(alert_min),
     }
-    globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 300, result)
     return result
 
 

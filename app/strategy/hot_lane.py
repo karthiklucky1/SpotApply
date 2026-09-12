@@ -267,7 +267,15 @@ def _run_hot_lane_cycle() -> dict:
         if scraper is None:
             return board, None, "unsupported"
         try:
-            return board, scraper.fetch(), None  # ONE network call, shared across all users
+            raw = scraper.fetch()  # ONE network call, shared across all users
+            # Adapters that swallow HTTP errors report them on the instance
+            # (app/discovery/base.py). Without this an empty list from a
+            # throttled board read as "this company has no openings".
+            from app.discovery.base import fetch_error
+            soft_err = fetch_error(scraper)
+            if soft_err and not raw:
+                return board, None, soft_err
+            return board, raw, None
         except Exception as e:
             return board, None, str(e)
 
@@ -447,7 +455,9 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
     Computed here, inside the same transaction that increments the counter, so
     the delay always matches the failure count it is derived from.
     """
-    from app.discovery.pipeline import BOARD_DEACTIVATE_AFTER_FAILURES
+    from app.discovery.pipeline import (
+        BOARD_DEACTIVATE_AFTER_FAILURES, THROTTLED_BOARD_BACKOFF_HOURS, _is_throttled,
+    )
     try:
         with get_session() as session:
             row = session.exec(
@@ -464,6 +474,20 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 row.new_jobs_last_poll = new_jobs
                 if new_jobs > 0:
                     row.last_new_job_at = datetime.utcnow()
+            elif _is_throttled(error):
+                # A rate limit says "slow down", not "this company is gone".
+                # failure_count is deliberately NOT incremented: Workday and
+                # join.com both throttle under the pulse cadence, and letting
+                # 429s accumulate toward BOARD_DEACTIVATE_AFTER_FAILURES retires
+                # a healthy board as "unreachable x5" — a quiet, cumulative loss
+                # of coverage nothing alerts on. The full lane has spared these
+                # since 2026-09-02 (pipeline.record_board_failure); the lane
+                # that does ~288k polls a day did not.
+                row.last_error = (error or "")[:300]
+                row.next_poll_at = datetime.utcnow() + timedelta(
+                    hours=THROTTLED_BOARD_BACKOFF_HOURS)
+                log.info("Board %s/%s throttled — backing off %dh, not retiring",
+                         ats, slug, THROTTLED_BOARD_BACKOFF_HOURS)
             else:
                 row.failure_count = (row.failure_count or 0) + 1
                 row.last_error = (error or "")[:300]
@@ -486,5 +510,9 @@ def _mark_polled(slug: str, ats, job_count: Optional[int], ok: bool,
                 row.poll_hash = poll_hash
             session.add(row)
             session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        # Best-effort by design — a bookkeeping failure must not take out the
+        # tick — but NOT silent: this is the only writer of the registry's
+        # health record, so swallowing it made a board that never updated look
+        # exactly like a board nothing had polled.
+        log.warning("Poll record failed for %s/%s: %s", ats, slug, e)

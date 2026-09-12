@@ -30,10 +30,14 @@ class LeverScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.company_slug}?mode=json"
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
         except httpx.HTTPError as e:
+            # See app/discovery/base.py: an empty list with no last_error is a
+            # genuinely empty board; one with a last_error is a failed poll.
+            self.last_error = f"{type(e).__name__}: {e}"
             log.warning("Lever fetch failed for %s: %s", self.company_slug, e)
             return []
 

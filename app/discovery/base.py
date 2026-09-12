@@ -31,6 +31,27 @@ class RawJob:
 
 class Scraper(Protocol):
     name: str
+    # Why the last fetch returned what it did. "" means the fetch succeeded —
+    # an EMPTY list with an empty last_error is a genuinely empty board.
+    #
+    # This attribute exists because the two are not the same thing and the
+    # lanes were treating them as one (2026-09-12 audit). The big ATS adapters
+    # return [] for every httpx.HTTPError, so a 429 from Workday or a 503 from
+    # Greenhouse arrived at the pulse lane indistinguishable from "this company
+    # has no openings". The lane then wrote job_count=0, which is the value
+    # that demotes a board to the 72-hour zero-yield cadence: five busy
+    # afternoons could push a live employer off the schedule for three days.
+    # Callers read it through ``fetch_error(scraper)``.
+    last_error: str
 
     def fetch(self) -> List[RawJob]:
         ...
+
+
+def fetch_error(scraper) -> str:
+    """The reason the last fetch came back empty, or "" if it simply was.
+
+    Tolerates adapters that predate the convention: no attribute means the
+    adapter raises on failure, so an empty list from it is a real empty board.
+    """
+    return (getattr(scraper, "last_error", "") or "").strip()
