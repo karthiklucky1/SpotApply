@@ -614,12 +614,17 @@ def _plan_budget(uid: Optional[str]) -> tuple[Optional[int], int]:
         limits = PLAN_LIMITS[_get_user_plan(uid)]
         return limits.get("finals_daily"), int(limits.get("shortlist_daily") or 0)
     except Exception as e:
-        from app.db.models import PLAN_LIMITS
-        fallback = max((int(p.get("finals_daily") or 0) for p in PLAN_LIMITS.values()),
-                       default=0) or None
+        # Fall back to the widest REAL plan, in both numbers. Returning target=0
+        # here disabled the delivery target entirely, so an unresolvable plan
+        # during a billing or Supabase blip meant the day never switched out of
+        # fill mode and kept buying finals until the cost ceiling stopped it.
+        # The ceiling bounded the money; nothing bounded the delivery.
+        from app.common.plan_limits import widest_plan_limit
+        fallback = widest_plan_limit("finals_daily", 0) or None
+        target = widest_plan_limit("shortlist_daily", 0)
         log.debug("plan lookup failed for %s (%s) — falling back to the widest "
-                  "plan ceiling (%s finals)", uid, e, fallback)
-        return fallback, 0
+                  "plan (%s finals, %s jobs)", uid, e, fallback, target)
+        return fallback, target
 
 
 def _finals_allowance(uid: Optional[str], per_cycle_cap: int):

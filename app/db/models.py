@@ -389,6 +389,10 @@ class UserProfile(SQLModel, table=True):
     # Gates background spend: lanes skip users dormant past
     # dormant_user_grace_days. NULL = predates tracking → treated as active.
     last_active_at: Optional[datetime] = None
+    # When we last told this user their feed had been paused for inactivity.
+    # Stamped once per dormancy episode (cleared implicitly by a later
+    # last_active_at), so the notice is not re-sent on every lane tick.
+    dormancy_notified_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

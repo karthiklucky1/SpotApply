@@ -404,6 +404,7 @@ def init_db() -> None:
         ("opt_unemployment_days_used", "INTEGER DEFAULT 0"),
         ("stem_opt", "BOOLEAN DEFAULT FALSE"),
         ("last_active_at", "DATETIME"),
+        ("dormancy_notified_at", "DATETIME"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
 

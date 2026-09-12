@@ -327,8 +327,48 @@ def _lane_user_ids() -> list:
     from app.db.models import UserProfile
     with get_session() as session:
         users = session.exec(select(UserProfile)).all()
-    return [u.user_id for u in users
-            if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
+    out = []
+    for u in users:
+        if not u.user_id:
+            continue
+        if not _user_is_active(u):
+            # Their board stops refilling from here. Say so — this used to be
+            # completely silent, and there is no email or push channel for them
+            # to hear it on any other way.
+            _notify_if_newly_dormant(u)
+            continue
+        if _user_has_resume(u.user_id):
+            out.append(u.user_id)
+    return out
+
+
+def _user_paid_search_is_live(profile) -> bool:
+    """True when this user is PAYING for the search right now.
+
+    A paid subscriber is buying a continuously-running job search, not a
+    dashboard habit. Pausing theirs because they did not open the app for three
+    weeks is the product silently not doing the thing they are being charged
+    for — and because there is no email or push channel, they would have no way
+    to find out. Their spend is bounded by their own plan either way.
+
+    Deliberately consulted ONLY for a user who would otherwise be dormant, so
+    the extra plan lookup happens for a handful of profiles rather than on
+    every lane tick for everyone.
+    """
+    uid = getattr(profile, "user_id", None)
+    if not uid or uid == "local":
+        return False
+    try:
+        from app.billing import stripe_enabled
+        if not stripe_enabled():
+            return False          # pre-revenue: nobody is paying, gate applies
+        from app.db.models import PlanTier
+        return _get_user_plan(uid) != PlanTier.FREE
+    except Exception as e:                                  # pragma: no cover
+        # An unresolvable plan must not pause a search we may be charging for.
+        logging.getLogger("api").debug(
+            "dormancy: plan lookup failed for %s (%s) — keeping the feed on", uid, e)
+        return True
 
 
 def _user_is_active(profile) -> bool:
@@ -339,6 +379,12 @@ def _user_is_active(profile) -> bool:
     spent on them until they come back (the next visit re-stamps and the next
     lane tick picks them up again). NULL last_active_at (rows predating
     tracking, backfilled at startup) and a disabled gate (0) count as active.
+
+    A LIVE PAID SUBSCRIPTION overrides the gate entirely: see
+    _user_paid_search_is_live. A free user who crosses the line is told, once
+    (_notify_if_newly_dormant) — the old behaviour removed a user from every
+    lane on 2026-09-10 with no notification of any kind, while shortlist hygiene
+    carried on emptying their board.
     """
     days = settings.dormant_user_grace_days
     if days <= 0:
@@ -350,7 +396,54 @@ def _user_is_active(profile) -> bool:
     if la.tzinfo is not None:
         from datetime import timezone as _tz2
         la = la.astimezone(_tz2.utc).replace(tzinfo=None)
-    return la >= _dt2.utcnow() - _td2(days=days)
+    if la >= _dt2.utcnow() - _td2(days=days):
+        return True
+    return _user_paid_search_is_live(profile)
+
+
+def _notify_if_newly_dormant(profile) -> bool:
+    """Tell a user, once, that their feed has been paused. Returns True if sent.
+
+    Called from the lane user-list builders, not from the predicate: a gate
+    that writes rows is a gate you cannot call twice. Stamped on the profile so
+    a user who stays away for months is told once, not every 60 seconds, and a
+    later visit (which moves last_active_at past the stamp) re-arms the notice
+    for the next episode.
+    """
+    uid = getattr(profile, "user_id", None)
+    if not uid or uid == "local":
+        return False
+    la = getattr(profile, "last_active_at", None)
+    notified = getattr(profile, "dormancy_notified_at", None)
+    if notified is not None and (la is None or notified >= la):
+        return False              # already told them about THIS episode
+    from datetime import datetime as _dtn
+    try:
+        from app.db.models import UserNotification, UserProfile as _UP
+        days = settings.dormant_user_grace_days
+        with get_session() as session:
+            session.add(UserNotification(
+                user_id=uid,
+                title="Your job feed is paused",
+                message=(f"We haven't seen you in {days} days, so we've paused the "
+                         "search to avoid filling your board with jobs that will be "
+                         "stale by the time you look. Open SpotApply and it starts "
+                         "again within a few minutes."),
+                type="feed_paused",
+                link="/dashboard",
+            ))
+            row = session.exec(select(_UP).where(_UP.user_id == uid)).first()
+            if row is not None:
+                row.dormancy_notified_at = _dtn.utcnow()
+                session.add(row)
+            session.commit()
+        logging.getLogger("api").info(
+            "Dormancy: paused the feed for %s after %d days and told them", uid, days)
+        return True
+    except Exception as e:                                  # pragma: no cover
+        logging.getLogger("api").warning(
+            "Dormancy notice failed for %s: %s", uid, e)
+        return False
 
 
 def _user_has_resume(uid: str | None) -> bool:
