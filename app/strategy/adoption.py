@@ -116,18 +116,22 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
     from app.discovery.base import RawJob
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert
 
-    # Location preferences — same defaults run_discovery uses.
-    country, remote_ok = "United States", True
+    # Location preferences — resolved through the ONE helper the scoring prompt
+    # also reads (app/common/tenant_prefs). A blank profile country used to mean
+    # "no country gate here", while the prompt still told Claude the candidate
+    # wants United States and scored everything else 0-30 — so we admitted
+    # foreign postings for free and paid the LLM to reject them.
+    from app.common.tenant_prefs import effective_country, effective_remote_ok
+    country, remote_ok = effective_country(None, user_id), True
     p = None
     try:
         from app.autofill.answer_pack import _get_or_create_profile
         p = _get_or_create_profile(user_id=user_id)
         if p:
-            # Empty = user hasn't chosen a country → no country gate (None).
-            country = (getattr(p, "preferred_country", "") or "").strip() or None
-            remote_ok = bool(getattr(p, "remote_ok", True))
+            country = effective_country(p, user_id)
+            remote_ok = effective_remote_ok(p)
     except Exception as e:
-        log.debug("adoption: profile unavailable (default US): %s", e)
+        log.debug("adoption: profile unavailable (default %s): %s", country, e)
 
     roles = [r.lower() for r in (_get_target_roles(user_id or "local") or [])]
     if not roles:
@@ -219,6 +223,12 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
         url=j.url,
         description=j.description or "",
         posted_at=j.posted_at,
+        # Carry the SHARED row's first sighting into the user's copy. Without
+        # this the copy was stamped first_seen=now, so a posting we had held for
+        # three weeks entered the board as "found today": it re-entered the
+        # 5-day scoring window, re-entered the render window, and the freshness
+        # promise measured the age of a DB copy instead of the age of the job.
+        first_seen=j.first_seen or j.discovered_at,
     ) for j in candidates]
 
     inserted = _upsert(raw, user_id=user_id, preferred_country=country,

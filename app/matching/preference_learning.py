@@ -48,7 +48,12 @@ DISMISS_COMPANY_THRESHOLD = 2
 
 
 def _title_tokens(title: str) -> list[str]:
-    from app.discovery.title_filter import _GENERIC_TOKENS
+    # STRUCTURAL words only. The routing filter also treats domain words
+    # ("sales", "data", "software") as generic, because as standalone
+    # routing terms they match whole unrelated professions — but here they
+    # are the signal: "sales" in two dismissed titles is precisely what the
+    # user is telling us.
+    from app.discovery.title_filter import _STRUCTURAL_TOKENS as _GENERIC_TOKENS
     import re
     toks = re.split(r"[^a-z0-9+#]+", (title or "").lower())
     return [t for t in toks if len(t) >= 4 and t not in _GENERIC_TOKENS]

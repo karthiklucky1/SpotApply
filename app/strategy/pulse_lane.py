@@ -954,8 +954,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 if not relevant:
                     continue
                 try:
+                    # SAME gate as every other door into a user's pool. Without
+                    # preferred_country this route admitted EU-only remote roles
+                    # and foreign on-site postings to US users, and without
+                    # role_gate_terms it admitted whole-company board dumps that
+                    # _title_matches let through — then charged the user's finals
+                    # budget to reject them (2026-09-12 audit).
                     n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]),
-                                user_keywords=u["roles"] or None)
+                                preferred_country=u.get("preferred_country") or None,
+                                remote_ok=bool(u.get("remote_ok", True)),
+                                user_keywords=u["roles"] or None,
+                                role_gate_terms=u["roles"] or None)
                     if n:
                         users_touched.add(u["user_id"])
                         new_here += n

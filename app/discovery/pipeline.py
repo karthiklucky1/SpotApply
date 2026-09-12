@@ -261,7 +261,10 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
         url=r.url,
         description=r.description,
         posted_at=r.posted_at,
-        first_seen=now,
+        # A copier (adoption, pulse per-user routing) carries the ORIGINAL
+        # sighting forward; a scraper leaves it None because it IS the first
+        # sighting. Never let a copy look fresher than the posting.
+        first_seen=r.first_seen or now,
         last_seen=now,
         content_hash=content_hash,
         cross_source_slug=slug,

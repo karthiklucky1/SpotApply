@@ -57,7 +57,19 @@ def _active_users() -> list[dict]:
                     _get_or_create_profile(user_id=uid if uid != "local" else None))]
             except Exception:
                 pass
-        out.append({"user_id": uid, "roles": roles})
+        # Location preferences travel WITH the user, because the lanes that
+        # route postings into a user's pool have to apply the same country gate
+        # discovery does. The pulse lane used to call _upsert with only
+        # user_id + roles, so the one door that delivers ~70% of shortlists was
+        # also the only door with no location filter at all (2026-09-12 audit).
+        # These columns are already on the profile row — no extra query.
+        from app.common.tenant_prefs import effective_country, effective_remote_ok
+        out.append({
+            "user_id": uid,
+            "roles": roles,
+            "preferred_country": effective_country(p, uid),
+            "remote_ok": effective_remote_ok(p),
+        })
     return out
 
 
