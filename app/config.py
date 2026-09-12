@@ -401,6 +401,13 @@ class Settings(BaseSettings):
     # so the stronger role takes the slot. Applications the user or agent has
     # invested effort in (TAILORED and beyond) are NEVER displaced.
     company_cap_displace_enabled: bool = True  # COMPANY_CAP_DISPLACE_ENABLED
+    # ── The daily slate (docs/DELIVERY_ARCHITECTURE.md) ──────────────────────
+    # Reaching the plan's daily count ends DELIVERY for the day; it does not end
+    # the search. Once the slate is full a later job competes for a place on it.
+    slate_challenge_enabled: bool = True       # SLATE_CHALLENGE_ENABLED — 0 restores the old behaviour, where delivered >= target returned a zero finals allowance and every scorer stopped until 00:00 UTC. Keep it on: the stop is what made a 15:12 posting scoring 92 wait behind thirty-five jobs scoring 71-73.
+    slate_displace_margin: int = 5             # SLATE_DISPLACE_MARGIN — a challenger must beat the weakest UNVIEWED slate entry by this much to take its place. Hysteresis, not taste: at 0 a 71.4 would evict a 71.0 and the board would churn all afternoon for no user-visible gain. Matched to company_cap_displace_margin, which has run at 5 since August.
+    slate_overflow_margin: int = 15            # SLATE_OVERFLOW_MARGIN — when NOTHING on the slate is replaceable (the user has opened or acted on all of it), a job this far above the weakest entry is delivered anyway rather than lost. Deliberately much larger than the displace margin: overflow grows the day's count past what the plan promises, so it is reserved for a job that is clearly exceptional, not merely better.
+    slate_overflow_daily: int = 5              # SLATE_OVERFLOW_DAILY — hard cap on those extra jobs per user per UTC day. 0 disables overflow entirely (a fully-read slate then simply holds).
     company_cap_displace_margin: int = 5       # COMPANY_CAP_DISPLACE_MARGIN — new job must beat the weakest shortlisted holder by at least this many points (hysteresis against churn)
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user

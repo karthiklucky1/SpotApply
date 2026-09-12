@@ -6322,6 +6322,23 @@
         renderJobDetail(card);
         document.getElementById('jobModalOverlay').classList.add('open');
         document.body.style.overflow = 'hidden';
+        markViewed(card.dataset.appId);
+    }
+
+    // Tell the server the user has actually SEEN this recommendation. Once the
+    // day's count is full a later, stronger job can take the place of a weaker
+    // one — but only one that was never opened. Fire-and-forget: a failed
+    // request must never interrupt reading a job, and the worst case is that an
+    // entry stays replaceable a little longer.
+    const _viewedSent = new Set();
+    function markViewed(appId) {
+        if (!appId || _viewedSent.has(appId)) return;
+        _viewedSent.add(appId);
+        const _t = localStorage.getItem('sb_token');
+        fetch('/application/' + appId + '/viewed', {
+            method: 'POST',
+            headers: _t ? { 'Authorization': 'Bearer ' + _t } : {},
+        }).catch(() => _viewedSent.delete(appId));
     }
 
     function renderJobDetail(card) {

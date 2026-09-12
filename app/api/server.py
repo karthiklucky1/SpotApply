@@ -5425,6 +5425,33 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
     return {"success": True, "application_id": application_id}
 
 
+@app.post("/application/{application_id}/viewed")
+def mark_application_viewed(application_id: int, request: Request) -> dict:
+    """Record that the user actually opened this recommendation.
+
+    This is the line between "we put it on the board" and "they have seen it",
+    and the daily slate depends on it: once the day's count is full, a later,
+    stronger job may take the place of a weaker one — but only one the user has
+    never opened (app/strategy/slate.py). Without this signal every entry looks
+    untouched, and a job someone read this morning could vanish while they were
+    deciding about it.
+
+    Idempotent and first-write-wins: the interesting timestamp is when they
+    FIRST saw it, and re-opening a job must not restart that clock.
+    """
+    from datetime import datetime
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if application.viewed_at is None:
+            application.viewed_at = datetime.utcnow()
+            session.add(application)
+            session.commit()
+    return {"success": True, "application_id": application_id}
+
+
 @app.post("/application/{application_id}/skip")
 def skip_application(application_id: int, request: Request) -> dict:
     from datetime import datetime

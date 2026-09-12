@@ -208,6 +208,12 @@ class Application(SQLModel, table=True):
     # strategy/degraded.py re-scores exactly these once credits return and
     # drops the ones that don't hold up.
     provisional: bool = Field(default=False, index=True)
+    # When the user actually LOOKED at this recommendation. It is the line
+    # between "we put it on the board" and "they have seen it", and the daily
+    # slate needs that line: a late, stronger job may take the place of a
+    # weaker one the user has not opened, and must never take the place of one
+    # they have. NULL means unseen. See app/strategy/slate.py.
+    viewed_at: Optional[datetime] = Field(default=None, index=True)
 
 
 class PendingQuestion(SQLModel, table=True):

@@ -45,7 +45,7 @@ from sqlmodel import select
 from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
-from app.db.models import Application, ApplicationStatus, FunnelEvent, Job
+from app.db.models import Application, FunnelEvent, Job
 
 log = logging.getLogger(__name__)
 
@@ -661,9 +661,7 @@ def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     """Serial, cap-safe: shortlist a user's freshly-scored fits + fire alerts."""
-    from app.matching.pipeline import _AUTOFILL_SOURCES, _check_and_enforce_company_cap
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
-    uid_arg = None if (not uid or uid == "local") else uid
 
     # THE definition of "delivered today", shared with the finals budget: what
     # this loop refuses to exceed has to be the same number the budget stops at.
@@ -681,34 +679,29 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             if j and (j.rerank_reasoning or "").startswith(LOCAL_REASON_PREFIX):
                 local_jids.add(jid)
 
-    # The plan's ceiling on what may reach the board today, not the old flat
-    # 200 for everyone. Resolved once per call: it cannot change mid-loop.
-    from app.common.plan_limits import shortlist_daily_limit
-    _shortlist_cap = shortlist_daily_limit(uid)
+    from app.strategy import slate as _slate
 
     shortlisted: List[int] = []
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
         is_local = jid in local_jids
         if score < shortlist_threshold(is_local):
             continue
-        if today_count >= _shortlist_cap:
-            break
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
                 continue
             if session.exec(select(Application).where(Application.job_id == jid)).first():
                 continue
-            if not _check_and_enforce_company_cap(session, job, score):
-                session.commit()
-                continue
-            track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-            session.add(Application(
-                job_id=jid, status=ApplicationStatus.SHORTLISTED,
-                apply_url=job.url, apply_track=track, user_id=uid_arg,
-                provisional=is_local,
-            ))
+            # ONE placement path (app/strategy/slate.py): capacity, the company
+            # cap and the challenger rule. This loop is score-ordered, so once
+            # the slate refuses a job for being below today's cutoff, nothing
+            # after it can qualify either.
+            res = _slate.place(session, job, score, user_id=uid, is_local=is_local)
             session.commit()
+            if not res.created:
+                if res.outcome == "below_cutoff":
+                    break
+                continue
             shortlisted.append(jid)
             today_count += 1
     stats["shortlisted"] += len(shortlisted)

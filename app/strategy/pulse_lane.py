@@ -45,7 +45,7 @@ from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import (
-    Application, ApplicationStatus, CompanyRegistry, FunnelEvent, Job, UserProfile,
+    Application, CompanyRegistry, FunnelEvent, Job, UserProfile,
 )
 
 log = logging.getLogger(__name__)
@@ -432,9 +432,8 @@ def _fast_path_user(uid: str, score_budget: int,
     FAISS/embedding model. Anything left unscored (budget, errors) is picked up
     by the 5-min matching lane, so this can only make things faster, never drop
     a job."""
-    from app.common.plan_limits import shortlist_daily_limit
     from app.matching.pipeline import (
-        _AUTOFILL_SOURCES, _check_and_enforce_company_cap, _load_resume,
+        _load_resume,
     )
     from app.matching.reranker import Reranker, llm_budget_exhausted
     from app.matching.filters import score_ghost
@@ -632,19 +631,21 @@ def _fast_path_user(uid: str, score_budget: int,
                     pass
                 session.add(job)
 
-                if score >= settings.shortlist_score_threshold \
-                        and today_count < shortlist_daily_limit(uid):
+                if score >= settings.shortlist_score_threshold:
                     existing = session.exec(
                         select(Application).where(Application.job_id == job.id)
                     ).first()
-                    if not existing and _check_and_enforce_company_cap(session, job, score):
-                        track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-                        session.add(Application(
-                            job_id=job.id, status=ApplicationStatus.SHORTLISTED,
-                            apply_url=job.url, apply_track=track, user_id=uid_arg,
-                        ))
-                        shortlisted.append(job.id)
-                        today_count += 1
+                    if not existing:
+                        # ONE placement path (app/strategy/slate.py). The fast
+                        # path is where a genuinely fresh, genuinely strong job
+                        # arrives after the board is already full, so this is
+                        # the route that most needed a challenger rule rather
+                        # than a daily count check.
+                        from app.strategy import slate as _slate
+                        res = _slate.place(session, job, score, user_id=uid)
+                        if res.created:
+                            shortlisted.append(job.id)
+                            today_count += 1
                 session.commit()
 
     alerts = 0

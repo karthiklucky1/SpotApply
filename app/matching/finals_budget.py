@@ -363,20 +363,54 @@ def normal_gate() -> int:
     return min(settings.prescore_advance_threshold, settings.shortlist_score_threshold)
 
 
+def challenger_gate(user_id: Optional[str]) -> int:
+    """The Tier-1 bar once the slate is full: beat what is already on the board.
+
+    Tier-1 and Tier-2 are asked for the same 0-100 fit judgement, so the day's
+    cutoff transfers directly to the prescore scale: a candidate Tier-1 rates
+    below the weakest replaceable entry cannot win a slot, and buying its final
+    only proves what we already know.
+
+    Deliberately does NOT add ``slate_displace_margin`` on top. Tier-1 is a
+    cheap estimate of the score Tier-2 will return, and the product cost of
+    being too strict here is the whole reason this code exists — a good late
+    job that never got looked at. The margin is applied at DELIVERY, where the
+    authoritative score is in hand.
+
+    Floors at the shortlist bar: below it nothing can be delivered at all.
+    """
+    floor = int(settings.shortlist_score_threshold)
+    try:
+        from app.strategy.slate import cutoff as _slate_cutoff
+        c = _slate_cutoff(user_id)
+    except Exception as e:                                  # pragma: no cover
+        log.debug("challenger gate fell back to the shortlist bar for %s: %s", user_id, e)
+        c = None
+    return floor if c is None else int(max(floor, c))
+
+
 def allowance(user_id: Optional[str], per_cycle_cap: int,
               ceiling: int, target: int) -> Allowance:
     """The whole policy.
 
     ``ceiling`` is the plan's hard daily cost cap (finals_daily); ``target`` is
-    the plan's daily shortlist promise (shortlist_daily). Full speed until the
-    target lands, then stop.
-    """
-    delivered = delivered_today(user_id)
-    if target > 0 and delivered >= target:
-        return Allowance(0, normal_gate(),
-                         f"delivered {delivered}/{target} — the day's jobs are on the board")
+    the plan's daily shortlist promise (shortlist_daily).
 
+    Full speed until the target lands. Then the day switches from FILL to
+    CHALLENGE: we keep discovering, routing and prescoring exactly as before —
+    those are cheap, and they are how we learn a better job exists — but a
+    final is only bought for a candidate Tier-1 rates at or above what is
+    already on the board. See docs/DELIVERY_ARCHITECTURE.md.
+
+    The money ceiling is checked FIRST because it now bounds both modes: what
+    challenge mode may spend is whatever is left of the plan's ceiling, and on
+    a day that filled the slate early there is not much of it left. That, plus
+    a gate at or above the shortlist bar, is the whole cost control — no second
+    counter, no second window.
+    """
     spent, _hits = day_counts(user_id)
+    delivered = delivered_today(user_id)
+
     if ceiling > 0 and spent >= ceiling:
         return Allowance(0, normal_gate(),
                          f"daily cost ceiling ({spent}/{ceiling} finals) at "
@@ -390,6 +424,16 @@ def allowance(user_id: Optional[str], per_cycle_cap: int,
                          f"— Tier-1 is promising jobs the final score rejects")
 
     n = per_cycle_cap if ceiling <= 0 else min(per_cycle_cap, ceiling - spent)
+
+    if target > 0 and delivered >= target:
+        if not settings.slate_challenge_enabled:
+            return Allowance(0, normal_gate(),
+                             f"delivered {delivered}/{target} — the day's jobs are on the board")
+        gate = challenger_gate(user_id)
+        return Allowance(max(0, n), gate,
+                         f"slate full at {delivered}/{target} — still watching, but a "
+                         f"final is only worth buying at prescore >= {gate}")
+
     return Allowance(max(0, n), normal_gate(), f"delivering {delivered}/{target}")
 
 

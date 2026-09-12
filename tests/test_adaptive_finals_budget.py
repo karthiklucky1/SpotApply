@@ -107,11 +107,52 @@ def test_scoring_runs_flat_out_until_the_days_jobs_are_delivered(monkeypatch):
     assert a.n == 40 and a.reason == "delivering 0/35"
 
 
-def test_delivering_the_target_stops_the_spend(monkeypatch):
-    """The cheapest stop, and the only one that means success. A user with
-    their 35 jobs on the board buys nothing more today however rich the pool."""
+def test_delivering_the_target_raises_the_bar_instead_of_stopping(monkeypatch):
+    """Reaching the day's count ends DELIVERY, not the search.
+
+    This used to return an allowance of zero, which every lane read as "the day
+    is over" — the pulse fast path returned before it had even run Tier-1. On
+    three of six observed production days the board filled between 18:00 and
+    22:00 UTC and a 15:12 posting worth 92 waited behind thirty-five jobs
+    scoring 71-73. Now the day switches to CHALLENGE: cheap work continues and
+    a final is bought only for a candidate that could actually take a slot.
+    """
     monkeypatch.setattr(fb, "delivered_today", lambda uid: 35)
+    monkeypatch.setattr(fb, "challenger_gate", lambda uid: 76)
     a = fb.allowance("u-done", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n > 0, "reaching the target must not switch the scorers off"
+    assert a.gate == 76, "the bar becomes what is already on the board"
+    assert "slate full" in a.reason and "still watching" in a.reason
+
+
+def test_challenge_mode_never_drops_below_the_shortlist_bar(monkeypatch):
+    """An empty or unreadable slate must not hand back a gate of 0 — that would
+    make the full-board state CHEAPER to score than the filling state."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 35)
+    from app.strategy import slate
+    monkeypatch.setattr(slate, "cutoff", lambda uid, session=None: None)
+    a = fb.allowance("u-nocut", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.gate == settings.shortlist_score_threshold
+
+
+def test_challenge_mode_is_still_bounded_by_the_money_ceiling(monkeypatch):
+    """Challenge mode spends what is LEFT of the plan's ceiling and not a final
+    more. There is deliberately no second counter: the ceiling already is one,
+    and a day that filled its slate early has little of it left."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 35)
+    monkeypatch.setattr(fb, "day_counts", lambda uid: (248, 30))
+    a = fb.allowance("u-tight", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 2
+    monkeypatch.setattr(fb, "day_counts", lambda uid: (250, 30))
+    a = fb.allowance("u-spent", per_cycle_cap=40, ceiling=250, target=35)
+    assert a.n == 0 and "cost ceiling" in a.reason
+
+
+def test_the_old_stop_is_one_setting_away(monkeypatch):
+    """A kill switch, because this changes what the product does all evening."""
+    monkeypatch.setattr(fb, "delivered_today", lambda uid: 35)
+    monkeypatch.setattr(settings, "slate_challenge_enabled", False)
+    a = fb.allowance("u-off", per_cycle_cap=40, ceiling=250, target=35)
     assert a.n == 0 and "on the board" in a.reason
 
 
