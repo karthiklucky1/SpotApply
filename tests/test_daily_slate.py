@@ -276,3 +276,19 @@ def test_only_the_slate_creates_a_shortlisted_application():
         f"through app/strategy/slate.place(): {offenders}. Capacity, the company "
         "cap and the challenger rule all live there; a second path means a job "
         "can reach the board without competing for its place.")
+
+
+# ── The backstop must deliver jobs the board will show ───────────────────────
+
+def test_the_reshortlist_backstop_respects_the_render_window():
+    """It re-shortlists already-scored jobs that never got an application. It
+    had no freshness filter, so it could deliver a posting older than
+    shortlist_max_age_days: the slot was consumed, hygiene pruned the row on the
+    next pass, and the user saw nothing for it."""
+    import inspect
+    from app.matching import pipeline
+    src = inspect.getsource(pipeline._reshortlist_scored_jobs)
+    assert "is_fresh_expr" in src, "the backstop can deliver jobs the board hides"
+    assert "SENTINEL_SCORES" in src, (
+        "ghost and expiry stamps sit above the shortlist bar on the raw column "
+        "only by accident — exclude them explicitly")

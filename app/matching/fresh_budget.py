@@ -48,6 +48,26 @@ def order_fresh_first(to_rerank, tier_of, priority_of):
     )
 
 
+def order_by_promise(to_rerank, prescore_of, gate: int):
+    """THE final-purchase ordering. Most promising first, freshest within ties.
+
+    There is exactly one of these, and there used to be two. The scoring lane
+    ordered a user's whole unscored queue by Tier-1 prescore
+    (``scoring_lane._user_queue``); the matching lane ordered by freshness and
+    then cut to its Tier-2 cap, so the jobs it dropped were the ones Tier-1
+    rated highest and the jobs it bought were merely the newest adjacent ones.
+    Two lanes spending the same per-user budget under opposite policies is not a
+    tuning difference — it means which lane happened to reach a job decided
+    whether it was ever authoritatively scored.
+
+    Promise is the Tier-1 prescore. A job with no prescore ranks AT the advance
+    gate, never at 100: unknown is worth investigating, never worth pre-empting
+    a known-strong candidate. Ties keep the order they came in, which is
+    freshest-first, so "apply early" survives as the tie-break.
+    """
+    return sorted(to_rerank, key=lambda t: -float(prescore_of.get(t[0], gate)))
+
+
 def reserve_fresh_slice(corpus_ordered, ranked_by_relevance, ce_cap, key):
     """Choose which candidates reach the expensive cross-encoder when the corpus
     is larger than ``ce_cap``. Reserve HALF the budget for the freshest items and

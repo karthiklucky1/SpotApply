@@ -17,7 +17,7 @@ from typing import List
 from sqlalchemy.orm import load_only
 from sqlmodel import select
 
-from app.common.freshness import GHOST_SENTINEL_SCORE
+from app.common.freshness import GHOST_SENTINEL_SCORE, SENTINEL_SCORES, is_fresh_expr
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource
@@ -25,7 +25,9 @@ from app.matching.matcher import Matcher
 from app.matching.reranker import Reranker
 from app.matching.filters import RuleFilter, EmbeddingFilter, score_ghost
 from app.matching.hire_probability import score_hire_probability, blended_score as compute_blended
-from app.matching.fresh_budget import freshness_tier, order_fresh_first, order_fit_first
+from app.matching.fresh_budget import (
+    freshness_tier, order_by_promise, order_fresh_first, order_fit_first,
+)
 
 # Sources where the bot can fill the form automatically
 _AUTOFILL_SOURCES = {JobSource.GREENHOUSE, JobSource.LEVER, JobSource.ASHBY, JobSource.WORKDAY, JobSource.SMARTRECRUITERS}
@@ -411,6 +413,17 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
                 Job.rerank_score >= settings.shortlist_score_threshold,
+                # The backstop has to deliver jobs the board will actually SHOW.
+                # Without the render window it re-shortlisted postings past
+                # shortlist_max_age_days — the slot was consumed, hygiene pruned
+                # the row on the next pass, and the user saw nothing for it. The
+                # same two bounds the render filter uses (app/common/freshness).
+                *([_fresh] if (_fresh := is_fresh_expr(
+                    settings.shortlist_max_age_days,
+                    settings.shortlist_max_posted_age_days,
+                    for_render=True)) is not None else []),
+                # ...and never a posting the ghost detector already wrote off.
+                Job.rerank_score.notin_(SENTINEL_SCORES),
             )
             .order_by(Job.rerank_score.desc())
             .limit(500)
@@ -771,11 +784,14 @@ def run_matching(user_id: str | None = None) -> List[int]:
     drain_gate = min(settings.prescore_advance_threshold,
                      settings.shortlist_score_threshold)
     keep_gate = max(drain_gate, int(_allow.gate))
+    # Bound outside the Tier-1 block: the promise ordering below reads it, and
+    # relying on a name that only exists when prescoring happened to run is the
+    # kind of scoping accident that surfaces as a NameError in production.
+    advance_gate = keep_gate
     prescore_kept: list[tuple[int, float]] = []   # (jid, prescore) — stay Queued
     if (settings.prescore_enabled and to_rerank
             and reranker.has_prescore_backend()
             and not llm_budget_exhausted()):
-        advance_gate = keep_gate
         prescore_pool = to_rerank[: settings.prescore_cap]
         log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
                  len(prescore_pool), advance_gate)
@@ -828,9 +844,18 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # ── Cascade Tier-2: Claude (authoritative) score, capped by the smaller of
     # the per-pass ceiling and what this user's budget still allows ────────────
     _tier2_cap = min(settings.llm_rerank_cap, _allow.n) if _allow.n > 0 else 0
+    # ONE final-purchase ordering, shared with the scoring lane: most promising
+    # first, freshest within ties (app/matching/fresh_budget.order_by_promise).
+    # This list arrives fresh-first, which is the right order for deciding WHAT
+    # TO PRESCORE — a brand-new posting deserves the cheap look first. It is the
+    # wrong order for deciding what to BUY: after Tier-1 has spoken, the cut
+    # below dropped the candidates it rated highest and kept the newest adjacent
+    # ones. The sort is stable, so freshness still breaks ties.
+    if prescore_by_jid:
+        to_rerank = order_by_promise(to_rerank, prescore_by_jid, advance_gate)
     if len(to_rerank) > _tier2_cap:
         log.info(
-            "LLM gate: %d candidates for Claude — capping to top %d (fresh-first, "
+            "LLM gate: %d candidates for Claude — capping to top %d (promise-first, "
             "budget: %s)", len(to_rerank), _tier2_cap, _allow.reason,
         )
         # THIS is where the queue's promise ordering comes from, and it used to

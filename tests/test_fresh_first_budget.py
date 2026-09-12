@@ -149,3 +149,45 @@ def test_reserve_noop_when_budget_covers_corpus():
     ranked = sorted(corpus, key=lambda p: p[1], reverse=True)
     out = _reserve_fresh_slice(corpus, ranked, 50, key=_idkey)
     assert out == ranked
+
+
+# ── ONE final-purchase ordering ──────────────────────────────────────────────
+
+def test_promise_ordering_puts_the_strongest_candidate_first():
+    """The matching lane cut its Tier-2 list fresh-first, so the candidates it
+    dropped were the ones Tier-1 rated highest and the ones it bought were the
+    newest adjacent jobs. The scoring lane has always ordered by promise. Two
+    lanes spending the same per-user budget under opposite policies meant which
+    lane happened to reach a job decided whether it was ever properly scored.
+    """
+    from app.matching.fresh_budget import order_by_promise
+    # Arrives fresh-first: newest (weak) at the head.
+    candidates = [(1, 0.9), (2, 0.8), (3, 0.7)]
+    prescores = {1: 42.0, 2: 91.0, 3: 60.0}
+    assert [j for j, _ in order_by_promise(candidates, prescores, 40)] == [2, 3, 1]
+
+
+def test_an_unprescored_job_ranks_at_the_gate_not_at_the_top():
+    """Unknown is worth investigating, never worth pre-empting a known-strong
+    candidate — the same rule the scoring lane's queue uses."""
+    from app.matching.fresh_budget import order_by_promise
+    candidates = [(1, 0.9), (2, 0.8), (3, 0.7)]
+    prescores = {1: 90.0, 3: 20.0}          # 2 was never prescored
+    assert [j for j, _ in order_by_promise(candidates, prescores, 40)] == [1, 2, 3]
+
+
+def test_freshness_still_breaks_a_tie():
+    """The input is fresh-first and the sort is stable, so equal promise keeps
+    the apply-early ordering."""
+    from app.matching.fresh_budget import order_by_promise
+    candidates = [(1, 0.9), (2, 0.8), (3, 0.7)]   # 1 is freshest
+    prescores = {1: 70.0, 2: 70.0, 3: 70.0}
+    assert [j for j, _ in order_by_promise(candidates, prescores, 40)] == [1, 2, 3]
+
+
+def test_the_matching_lane_uses_it():
+    import inspect
+    from app.matching import pipeline
+    src = inspect.getsource(pipeline.run_matching)
+    assert "order_by_promise(to_rerank, prescore_by_jid" in src, (
+        "the matching lane is buying finals under its own ordering again")
