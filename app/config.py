@@ -328,6 +328,14 @@ class Settings(BaseSettings):
     # Hard per-request bound. A slow board must degrade to UNKNOWN (delivered)
     # rather than stall the placement loop.
     liveness_check_timeout_seconds: float = 6.0   # LIVENESS_CHECK_TIMEOUT_SECONDS
+    # Wall-clock budget for pre-delivery checks within ONE scoring cycle, per
+    # user. The scoring lane runs every `scoring_lane_interval_seconds` (90),
+    # and a user can have up to `shortlist_daily` (35) deliveries: 35 serial
+    # checks at the 6s timeout would be 210s and the lane would overlap itself.
+    # Past the budget the lane stops CHECKING and falls back to cached evidence
+    # only — jobs still deliver, they are just delivered unverified, which is
+    # the same fail-open direction as every other inconclusive result.
+    liveness_budget_seconds_per_cycle: float = 20.0  # LIVENESS_BUDGET_SECONDS_PER_CYCLE
     liveness_user_agent: str = (
         "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
     )

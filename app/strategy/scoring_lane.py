@@ -685,10 +685,14 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                 local_jids.add(jid)
 
     from app.strategy import slate as _slate
+    from app.strategy.delivery_gate import CycleBudget as _CycleBudget
     from app.strategy.delivery_gate import verified_dead as _verified_dead
 
     shortlisted: List[int] = []
     dead_skipped = 0
+    # Bounds the wall-clock this delivery pass may spend verifying, so the
+    # lane can never overlap itself waiting on slow boards.
+    _live_budget = _CycleBudget()
 
     def _liveness_pair(job_id: int):
         """(source, external_id, url) for one job — a tiny projected read."""
@@ -710,7 +714,7 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
         # already cleared the score bar, so a request is only ever spent on a
         # posting that would otherwise reach someone's board.
         _pair = _liveness_pair(jid)
-        if _pair and _verified_dead(*_pair):
+        if _pair and _verified_dead(*_pair, budget=_live_budget):
             dead_skipped += 1
             continue                      # try the next candidate; do not stop
         with get_session() as session:

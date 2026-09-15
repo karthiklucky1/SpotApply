@@ -228,11 +228,52 @@ def verify_for_delivery(source, external_id: str, url: str) -> Tuple[str, str]:
         event.set()
 
 
-def verified_dead(source, external_id: str, url: str) -> bool:
+class CycleBudget:
+    """A wall-clock allowance for checks inside one delivery cycle.
+
+    Requirement: the gate must never stall the shortlist pipeline. A user with
+    35 deliveries, each hitting the 6s timeout, would add 210s to a lane that
+    runs every 90s. Once the budget is spent the lane stops making requests and
+    decides on cached evidence alone — which still blocks anything already
+    known dead, and still delivers everything else.
+    """
+
+    def __init__(self, seconds: Optional[float] = None):
+        self.limit = float(settings.liveness_budget_seconds_per_cycle
+                           if seconds is None else seconds)
+        self.spent = 0.0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.limit > 0 and self.spent >= self.limit
+
+    def charge(self, seconds: float) -> None:
+        self.spent += max(0.0, seconds)
+
+
+def verified_dead(source, external_id: str, url: str,
+                  budget: "Optional[CycleBudget]" = None) -> bool:
     """Convenience for the lanes: True only when the posting is conclusively
-    gone and must not be delivered."""
+    gone and must not be delivered.
+
+    With a `budget`, a cycle that has already spent its allowance answers from
+    cached evidence instead of making another request.
+    """
     from app.discovery.liveness import is_dead
-    state, _how = verify_for_delivery(source, external_id, url)
+
+    if budget is not None and budget.exhausted:
+        _bump("checks_skipped_cycle_budget")
+        src = source.value if hasattr(source, "value") else str(source)
+        state, _checked = _cached(src, str(external_id))
+        dead = is_dead(state)
+        if dead:
+            _bump("blocked_before_delivery")
+        return dead
+
+    started = time.monotonic()
+    state, how = verify_for_delivery(source, external_id, url)
+    if budget is not None and how in ("checked", "deduped"):
+        budget.charge(time.monotonic() - started)
     dead = is_dead(state)
     if dead:
         _bump("blocked_before_delivery")

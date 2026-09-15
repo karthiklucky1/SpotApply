@@ -424,3 +424,53 @@ def test_the_fetch_is_ssrf_guarded():
     src = inspect.getsource(gate._fetch)
     assert "guarded_request" in src
     assert "follow_redirects=False" in src
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 9. The gate can never stall the delivery pipeline
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_a_spent_cycle_budget_stops_making_requests(monkeypatch):
+    calls = {"n": 0}
+
+    def _slow(url, timeout):
+        calls["n"] += 1
+        time.sleep(0.06)
+        return 200, url, "", None
+
+    monkeypatch.setattr(gate, "_fetch", _slow)
+    budget = gate.CycleBudget(seconds=0.05)          # one check exhausts it
+    assert gate.verified_dead(JobSource.GREENHOUSE, f"{_PREFIX}bud1",
+                              "https://x/jobs/1", budget=budget) is False
+    assert budget.exhausted
+    # Every later candidate in this cycle is decided on cached evidence only.
+    for i in range(5):
+        assert gate.verified_dead(JobSource.GREENHOUSE, f"{_PREFIX}bud-{i}",
+                                  "https://x/jobs/2", budget=budget) is False
+    assert calls["n"] == 1
+    assert gate.metrics_snapshot()["checks_skipped_cycle_budget"] == 5
+
+
+def test_a_spent_budget_still_blocks_a_posting_already_known_dead(monkeypatch):
+    """Falling back to cached evidence must not mean falling back to nothing."""
+    def _boom(url, timeout):
+        raise AssertionError("budget exhausted: no request may be made")
+
+    monkeypatch.setattr(gate, "_fetch", _boom)
+    ext = f"{_PREFIX}bud-dead"
+    lv.record("greenhouse", ext, JobLivenessState.REMOVED.value, reason="http_404")
+    budget = gate.CycleBudget(seconds=0.0001)
+    budget.charge(10.0)
+    assert budget.exhausted
+    assert gate.verified_dead(JobSource.GREENHOUSE, ext, "https://x/jobs/1",
+                              budget=budget) is True
+
+
+def test_a_zero_budget_means_unlimited_not_disabled(monkeypatch):
+    """limit<=0 disables the bound rather than disabling checking."""
+    _patch_fetch(monkeypatch, status=200, body="ok")
+    budget = gate.CycleBudget(seconds=0)
+    budget.charge(999.0)
+    assert budget.exhausted is False
+    assert gate.verified_dead(JobSource.GREENHOUSE, f"{_PREFIX}bud-zero",
+                              "https://x/jobs/1", budget=budget) is False
