@@ -112,6 +112,8 @@ class RemoteOKSource:
                             url=apply_url or f"https://remoteok.com/remote-jobs/{job_id}",
                             description=description,
                             posted_at=posted_at,
+                            origin="remoteok",
+                            origin_provider="RemoteOK",
                         ))
                     except Exception as e:
                         log.debug("RemoteOK: failed to parse item: %s", e)

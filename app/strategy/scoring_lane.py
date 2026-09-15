@@ -685,12 +685,34 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                 local_jids.add(jid)
 
     from app.strategy import slate as _slate
+    from app.strategy.delivery_gate import verified_dead as _verified_dead
 
     shortlisted: List[int] = []
+    dead_skipped = 0
+
+    def _liveness_pair(job_id: int):
+        """(source, external_id, url) for one job — a tiny projected read."""
+        try:
+            with get_session() as s:
+                row = s.exec(select(Job.source, Job.external_id, Job.url)
+                             .where(Job.id == job_id)).first()
+            return (row[0], row[1], row[2]) if row else None
+        except Exception:
+            return None
+
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
         is_local = jid in local_jids
         if score < shortlist_threshold(is_local):
             continue
+        # Liveness is established HERE, outside the session, because the check
+        # can make a network request and this codebase never holds a pooled
+        # connection across network I/O. It runs only for jobs that have
+        # already cleared the score bar, so a request is only ever spent on a
+        # posting that would otherwise reach someone's board.
+        _pair = _liveness_pair(jid)
+        if _pair and _verified_dead(*_pair):
+            dead_skipped += 1
+            continue                      # try the next candidate; do not stop
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
@@ -709,6 +731,8 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                 continue
             shortlisted.append(jid)
             today_count += 1
+    if dead_skipped:
+        stats["dead_before_delivery"] = stats.get("dead_before_delivery", 0) + dead_skipped
     stats["shortlisted"] += len(shortlisted)
     if shortlisted:
         try:

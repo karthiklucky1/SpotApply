@@ -29,7 +29,8 @@ from typing import List, Optional, Tuple
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import EVIDENCE_SELF_IDENTIFIED, RawJob
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +181,17 @@ class HNWhoIsHiringSource:
                     apply_url = _first_url(text) or f"https://news.ycombinator.com/item?id={comment_id}"
                     ext_id = hashlib.md5(f"hn_whoishiring_{comment_id}".encode()).hexdigest()
 
+                    # The author was previously read only as a deleted-comment
+                    # guard and then dropped. This thread's rules require the
+                    # poster to be personally part of the hiring company, which
+                    # makes it the most direct people signal any source gives
+                    # us. It is an account handle, not a verified legal name,
+                    # so it is stored as the POSTING CREATOR with self-identified
+                    # evidence and the UI labels it as a Hacker News account.
+                    ctx: dict = {}
+                    put(ctx, "posting_creator_name", c.get("author"),
+                        EVIDENCE_SELF_IDENTIFIED, "hn.author")
+
                     jobs.append(RawJob(
                         source="indeed",  # manual-apply bucket (no ATS autofill for HN comments)
                         external_id=ext_id,
@@ -190,6 +202,15 @@ class HNWhoIsHiringSource:
                         url=apply_url,
                         description=text[:5000],
                         posted_at=posted_at,
+                        # The `source` bucket above stays "indeed" so no existing
+                        # analytics query changes meaning; these two say what
+                        # this row ACTUALLY is. The comment id is preserved here
+                        # because external_id is an md5 of it and the apply URL
+                        # is usually the employer's own link, so without this
+                        # the thread reference was unrecoverable.
+                        origin="hn_whoishiring",
+                        origin_provider=f"Hacker News comment {comment_id}",
+                        context=ctx,
                     ))
         except Exception as e:
             log.warning("HN WhoIsHiring: fetch failed: %s", e)

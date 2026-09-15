@@ -14,7 +14,12 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_ORG_ENTITY,
+    EVIDENCE_TEAM_OR_DEPARTMENT,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +65,14 @@ class AshbyScraper:
                 posted_dt = datetime.fromisoformat(published.replace("Z", "+00:00")) if published else None
             except Exception:
                 posted_dt = None
+            # Org unit, already in this response — no extra request. Ashby names
+            # both, and they are genuinely different levels: `department` is the
+            # function ("Engineering"), `team` the squad ("Applied AI").
+            ctx: dict = {}
+            put(ctx, "department", j.get("department"),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "department")
+            put(ctx, "team", j.get("team"), EVIDENCE_TEAM_OR_DEPARTMENT, "team")
+            put(ctx, "ats", "ashby", EVIDENCE_ORG_ENTITY, "scraper")
             jobs.append(
                 RawJob(
                     source="ashby",
@@ -71,6 +84,8 @@ class AshbyScraper:
                     url=j.get("jobUrl", ""),
                     description=_strip_html(j.get("descriptionHtml", "")),
                     posted_at=posted_dt,
+                    origin="ashby",
+                    context=ctx,
                 )
             )
         log.info("Ashby[%s]: %d jobs", self.org_slug, len(jobs))

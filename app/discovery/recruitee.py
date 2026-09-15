@@ -13,7 +13,12 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import (
+    EVIDENCE_ORG_ENTITY,
+    EVIDENCE_TEAM_OR_DEPARTMENT,
+    RawJob,
+)
+from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +73,18 @@ class RecruiteeScraper:
                 except ValueError:
                     pass
             desc = " ".join(_strip_html(j.get(f) or "") for f in ("description", "requirements"))
+            # Recruitee returns ~50 fields per offer; only 14 were ever read.
+            # `department` is a plain string on this endpoint. Tags are a free
+            # -text list, so they are NOT treated as an org unit — a tag is not
+            # a team, and mislabelling one would put a guess on the card.
+            ctx: dict = {}
+            put(ctx, "department", j.get("department"),
+                EVIDENCE_TEAM_OR_DEPARTMENT, "department")
+            put(ctx, "requisition_id", j.get("reference") or j.get("requisition_id"),
+                EVIDENCE_ORG_ENTITY, "reference")
+            put(ctx, "hiring_entity", j.get("company_name"),
+                EVIDENCE_ORG_ENTITY, "company_name")
+            put(ctx, "ats", "recruitee", EVIDENCE_ORG_ENTITY, "scraper")
             jobs.append(
                 RawJob(
                     source="recruitee",
@@ -80,6 +97,8 @@ class RecruiteeScraper:
                         or f"https://{self.board_slug}.recruitee.com/o/{j.get('slug') or ext_id}",
                     description=desc.strip(),
                     posted_at=posted_dt,
+                    origin="recruitee",
+                    context=ctx,
                 )
             )
         log.info("Recruitee[%s]: %d jobs", self.board_slug, len(jobs))

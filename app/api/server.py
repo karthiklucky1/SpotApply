@@ -4349,6 +4349,69 @@ def application_description(application_id: int, request: Request) -> dict:
     return {"description": _cleantext_filter(text or "")}
 
 
+@app.get("/application/{application_id}/hiring-context")
+@_rate_limit("30/minute")
+def application_hiring_context(application_id: int, request: Request) -> dict:
+    """People & Team: the hiring context this posting actually stated.
+
+    Reads `job_hiring_context`, which is keyed by (source, external_id) and so
+    is shared by every user's copy of the posting. Nothing here is inferred at
+    request time and nothing calls an LLM — every value was captured at ingest
+    from a field the ATS response already contained or from a sentence in the
+    description, and each carries the evidence class that says which.
+
+    Deliberately NOT called "hiring manager": across the 45-job live audit,
+    0 postings named one. The endpoint returns what the posting proves.
+    """
+    import json as _json
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        row = session.exec(
+            select(Job.source, Job.external_id, Job.url, Job.origin, Job.origin_provider)
+            .join(Application, Application.job_id == Job.id)
+            .where(Application.id == application_id)
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    source, external_id, job_url, origin, origin_provider = row
+    source_v = source.value if hasattr(source, "value") else str(source)
+
+    from app.discovery.hiring_context import load_context
+    ctx = load_context([(source_v, external_id)]).get((source_v, external_id))
+    if not ctx:
+        return {"available": False, "origin": origin or source_v,
+                "origin_provider": origin_provider}
+
+    evidence = ctx.get("evidence") or {}
+    # Only fields that were actually established are returned. A key with no
+    # evidence entry is dropped rather than shipped as an empty row, because an
+    # empty row on the card reads as "we checked and there is none" when in
+    # fact nothing was ever recorded for it.
+    fields = {}
+    for key in ("department", "team", "division", "hiring_entity", "recruiting_agency",
+                "requisition_id", "reporting_title", "reporting_manager_name",
+                "recruiter_name", "posting_creator_name", "contact_email"):
+        value = ctx.get(key)
+        if not value:
+            continue
+        meta = evidence.get(key) or {}
+        fields[key] = {
+            "value": value,
+            "evidence": meta.get("evidence") or "NONE",
+            "field": meta.get("field") or "",
+            "quote": meta.get("quote") or "",
+        }
+    return {
+        "available": bool(fields),
+        "fields": fields,
+        "ats": ctx.get("ats") or source_v,
+        "origin": origin or source_v,
+        "origin_provider": origin_provider,
+        "source_url": ctx.get("source_url") or job_url,
+        "observed_at": ctx.get("observed_at").isoformat() if ctx.get("observed_at") else None,
+    }
+
+
 @app.get("/application/{application_id}/insights")
 @_rate_limit("20/minute")
 def application_insights(application_id: int, request: Request) -> dict:

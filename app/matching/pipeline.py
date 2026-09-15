@@ -964,6 +964,23 @@ def run_matching(user_id: str | None = None) -> List[int]:
                             job.is_closed = True
                             job.closed_reason = f"Deactivated ({dead_reason})"
                             session.add(job)
+                            # Share the verdict. This path pre-dates JobLiveness
+                            # and closed only THIS user's copy, so eleven other
+                            # tenants kept re-verifying and re-delivering the
+                            # same corpse. check_job_alive is already
+                            # conservative — it reports alive for every timeout,
+                            # blocked host and non-404/410 status — so reaching
+                            # here means a 404/410 or a careers-page redirect.
+                            try:
+                                from app.discovery import liveness as _lv
+                                _lv.record(
+                                    job.source.value if hasattr(job.source, "value")
+                                    else str(job.source),
+                                    job.external_id,
+                                    _lv.JobLivenessState.REMOVED.value,
+                                    reason="verify_link_dead", checked_url=job.url)
+                            except Exception:
+                                pass
                             session.commit()
                             log.info("Job %s @ %s dead at shortlist time: %s",
                                      job.title, job.company, dead_reason)

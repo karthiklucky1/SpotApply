@@ -269,6 +269,11 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
         content_hash=content_hash,
         cross_source_slug=slug,
         user_id=user_id,
+        # True provenance beside the routing bucket. Defaults to the bucket, so
+        # a source that has not been taught to set it is still self-describing
+        # rather than NULL. See the comment on Job.origin.
+        origin=(r.origin or r.source),
+        origin_provider=r.origin_provider,
         # Answer the board's "my roles" question once, here, instead of with
         # ~20 unindexable ILIKEs on every keystroke (twice — page and count).
         # None when the owner has no roles set.
@@ -432,8 +437,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     """
     from app.analytics.funnel import FunnelTracker
     from app.discovery.title_filter import keyword_hit, matches_title
-    from app.strategy.on_role import compute as _on_role_for
-    from app.strategy.job_facets import compute as _job_facets
+    from app.discovery.hiring_context import (
+        apply_text_extraction as _apply_text_extraction,
+        record_context as _record_context,
+    )
     from datetime import datetime
     inserted = 0
 
@@ -466,6 +473,28 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                  _role_dropped, user_id)
     if not candidates:
         return 0
+
+    # ── Hiring context, captured once per POSTING ────────────────────────────
+    # Placed here on purpose:
+    #   * after the cheap gates, so nothing is extracted for a posting we are
+    #     about to drop;
+    #   * before the per-user dedupe, because context belongs to the posting,
+    #     not to this user's copy of it — a job the user already has still has
+    #     context worth recording the first time any lane sees it;
+    #   * on r.description, which is the FULL text. The retrieval path only
+    #     ever sees the first 800 characters (`matcher._candidate_columns`),
+    #     and most reporting lines sit past that.
+    # Both calls are CPU-only and both swallow their own failures: capturing
+    # context must never be able to stop discovery from storing jobs.
+    if settings.hiring_context_enabled:
+        try:
+            _hc_text = _apply_text_extraction(candidates)
+            _hc_rows = _record_context(candidates)
+            if _hc_rows:
+                log.info("Hiring context: %d posting(s) recorded, %d enriched from text",
+                         _hc_rows, _hc_text)
+        except Exception as e:
+            log.warning("Hiring context capture skipped: %s", e)
 
     # Snapshot existing dedupe keys — SCOPED TO THE INCOMING BATCH.
     #
@@ -968,7 +997,9 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         )
         if user_id is not None:
             q = q.where(Job.user_id == user_id)
-        to_close = [jid for jid, ext in session.exec(q).all() if ext not in active]
+        rows = session.exec(q).all()
+        to_close = [jid for jid, ext in rows if ext not in active]
+        gone_ext = [ext for _jid, ext in rows if ext not in active]
 
         closed_count = 0
         source_name = source.value if hasattr(source, "value") else str(source)
@@ -989,6 +1020,24 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
                 app_model.status = ApplicationStatus.SKIPPED
                 app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
                 session.add(app_model)
+
+        # Free liveness evidence. This function is only ever reached for a
+        # fetch the caller already proved COMPLETE (`fetch_complete`), and a
+        # posting absent from a complete board listing is genuinely gone. It
+        # costs no request, it is shared by every tenant's copy through the
+        # (source, external_id) key, and it is what lets the pre-delivery gate
+        # skip a network check for most postings it would otherwise verify.
+        # Deliberately AFTER the close loop and outside it: recording evidence
+        # must never be able to stop a job from being closed.
+        _gone = sorted(set(gone_ext))
+        if _gone:
+            try:
+                from app.discovery import liveness as _lv
+                _lv.record_board_absence(source_name, present_ids=active,
+                                         known_ids=_gone, board_complete=True)
+            except Exception as _e:
+                log.debug("liveness board-absence record skipped for %s: %s",
+                          source_name, _e)
 
         session.commit()
         if closed_count > 0:

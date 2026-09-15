@@ -310,6 +310,27 @@ class Settings(BaseSettings):
     # A bounded read makes a slow database cost a degraded panel instead of a
     # login nobody can complete. 0 disables the bound (pre-2026-09 behaviour).
     dashboard_query_timeout_seconds: int = 5   # DASHBOARD_QUERY_TIMEOUT_SECONDS
+    # Capture hiring context (department / team / requisition / recruiter) from
+    # fields the ATS responses ALREADY contain, plus deterministic extraction
+    # from the full description. Zero extra HTTP requests and no LLM call, so
+    # the only cost is CPU at ingest. HIRING_CONTEXT_ENABLED=0 turns the whole
+    # capture path off without touching the adapters.
+    hiring_context_enabled: bool = True    # HIRING_CONTEXT_ENABLED
+    # Re-check a posting is still live before it is delivered to a user, when
+    # the last conclusive check is older than this. 0 disables the pre-delivery
+    # check entirely (needs_check returns False for everything).
+    liveness_recheck_hours: int = 12       # LIVENESS_RECHECK_HOURS
+    # Master switch for the pre-delivery gate (app/strategy/delivery_gate.py).
+    # Off = no request is ever made and nothing is ever blocked; the cached
+    # backstop in slate.place() still refuses a posting already known dead,
+    # because that costs nothing and is always correct.
+    liveness_gate_enabled: bool = True     # LIVENESS_GATE_ENABLED
+    # Hard per-request bound. A slow board must degrade to UNKNOWN (delivered)
+    # rather than stall the placement loop.
+    liveness_check_timeout_seconds: float = 6.0   # LIVENESS_CHECK_TIMEOUT_SECONDS
+    liveness_user_agent: str = (
+        "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
+    )
     scoring_lane_enabled: bool = True      # SCORING_LANE_ENABLED
     scoring_lane_interval_seconds: int = 90  # cadence; 0 disables
     scoring_workers: int = 20              # GLOBAL concurrent LLM scoring workers (size to your Anthropic/OpenAI rate limit, not user count)

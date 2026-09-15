@@ -93,6 +93,22 @@ class Job(SQLModel, table=True):
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.
     user_id: Optional[str] = Field(default=None, index=True)
     source: JobSource
+    # `source` is a ROUTING bucket, not a provenance record, and several
+    # producers deliberately borrow another bucket: both HN sources write
+    # source="indeed" (hn_whoishiring.py:184, hn_jobs.py:161), RemoteOK writes
+    # source="remotive" (remoteok.py:106), and SerpAPI picks linkedin/indeed/
+    # serpapi from the `via` string it then throws away (serpapi.py:142-143).
+    # That makes "where did this job actually come from?" unanswerable, which
+    # breaks both hiring-context provenance and dedup. These two columns record
+    # it without moving any existing row between buckets, so every current
+    # analytics query keyed on `source` keeps returning exactly what it did.
+    #   origin          the discovery module that produced the row
+    #                   ("hn_whoishiring", "remoteok", "serpapi", "greenhouse")
+    #   origin_provider the upstream board the posting actually lives on when
+    #                   it differs from origin (SerpAPI `via`: "LinkedIn", …)
+    # NULL on every pre-migration row; readers use coalesce(origin, source).
+    origin: Optional[str] = Field(default=None, index=True)
+    origin_provider: Optional[str] = Field(default=None)
     external_id: str = Field(index=True)
     company: str
     title: str
@@ -761,6 +777,119 @@ class CardMatchShadow(SQLModel, table=True):
     breakdown: Optional[str] = None     # JSON g() four-factor breakdown
     card_key: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class EvidenceClass(str, Enum):
+    """What a hiring-context value is actually PROVEN to be.
+
+    The product rule this enum exists to enforce: never let a weak inference be
+    displayed as a fact. A posting creator is not a hiring manager; a department
+    head found elsewhere is not this vacancy's manager. Each value carries the
+    strength of its own evidence, and the UI renders the label from the class,
+    not from the field name.
+    """
+    DIRECT_PERSON = "DIRECT_PERSON"            # the posting names a person for THIS job
+    STRUCTURED_PERSON = "STRUCTURED_PERSON"    # an ATS field named a person (e.g. creator)
+    TITLE_ONLY = "TITLE_ONLY"                  # a reporting line naming a title, no person
+    TEAM_OR_DEPARTMENT = "TEAM_OR_DEPARTMENT"  # org unit for this vacancy
+    ORG_ENTITY = "ORG_ENTITY"                  # hiring/legal/agency organisation
+    SELF_IDENTIFIED = "SELF_IDENTIFIED"        # first-person author ("reports to me")
+    SUGGESTED = "SUGGESTED"                    # inferred, NOT job-specific proof
+    NONE = "NONE"                              # looked, found nothing
+
+
+class JobLivenessState(str, Enum):
+    """Why a posting did or did not answer. A blocked or rate-limited endpoint
+    is NOT evidence that the job is gone — only REMOVED and EXPIRED are."""
+    LIVE = "LIVE"
+    REMOVED = "REMOVED"            # 404 on the exact posting, or an explicit "no longer active"
+    EXPIRED = "EXPIRED"            # 410 Gone
+    WRONG_PAGE = "WRONG_PAGE"      # redirected to a careers index, not this posting
+    RATE_LIMITED = "RATE_LIMITED"  # 429 — retry, never mark dead
+    BLOCKED = "BLOCKED"            # 401/403/bot wall — unknown, never mark dead
+    UNKNOWN = "UNKNOWN"            # never checked, timeout, transport error
+
+
+class JobHiringContext(SQLModel, table=True):
+    """Hiring context for ONE distinct posting, shared by every tenant.
+
+    Keyed by (source, external_id) — NOT job.id — for the same reason
+    `JobCardRow` is keyed by its card key: production holds ~1.47M job rows of
+    which ~544k are per-user copies of the same posting across ~12 users.
+    Copies preserve source and external_id verbatim (`strategy/adoption.py:212`
+    rebuilds the RawJob with the same external_id), so this pair is a genuine
+    cross-tenant identity and one context row serves all copies. Writing this
+    per user would duplicate identical facts ~12x and widen the hottest table
+    in the system.
+
+    Every value is nullable and every value that is set has an entry in
+    `evidence_json` saying how it was established. A field with no evidence
+    entry must not be rendered as a fact.
+    """
+    __tablename__ = "job_hiring_context"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_jhc_source_external_id"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str = Field(index=True)
+    external_id: str = Field(index=True)
+
+    # ── org unit (the volume: 64.4% of the live sample had one of these) ──
+    department: Optional[str] = Field(default=None)
+    team: Optional[str] = Field(default=None)
+    division: Optional[str] = Field(default=None)        # business unit / group
+    # The employer as the ATS states it, which is NOT always Job.company —
+    # 12 of 14 scrapers derive Job.company from the board slug.
+    hiring_entity: Optional[str] = Field(default=None)
+    recruiting_agency: Optional[str] = Field(default=None)
+
+    # ── identity / canonicalisation inputs (Phase 5) ──
+    requisition_id: Optional[str] = Field(default=None, index=True)
+    ats: Optional[str] = Field(default=None)             # greenhouse | lever | ashby | …
+
+    # ── people. Deliberately narrow. ──
+    reporting_title: Optional[str] = Field(default=None)   # "Director of ML" — a TITLE
+    reporting_manager_name: Optional[str] = Field(default=None)  # only with DIRECT_PERSON
+    recruiter_name: Optional[str] = Field(default=None)
+    posting_creator_name: Optional[str] = Field(default=None)    # NEVER a hiring manager
+    contact_email: Optional[str] = Field(default=None)           # only when publicly printed
+
+    # ── provenance ──
+    # JSON: {field: {"evidence": EvidenceClass, "field": "<upstream key>",
+    #                "quote": "<verbatim>", "url": "<source url>"}}
+    evidence_json: str = Field(default="{}")
+    source_url: Optional[str] = Field(default=None)
+    observed_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Bumped when the extractor changes, so a later pass can re-run only stale
+    # rows instead of re-reading the whole corpus.
+    extractor_version: int = Field(default=1)
+
+
+class JobLiveness(SQLModel, table=True):
+    """Is this posting still real? One row per distinct posting, shared like
+    JobHiringContext.
+
+    Separate from JobHiringContext on purpose: context is written once at
+    ingest, liveness is re-checked over the posting's life. Sharing one row
+    would churn the context row on every poll.
+    """
+    __tablename__ = "job_liveness"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_jlive_source_external_id"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str = Field(index=True)
+    external_id: str = Field(index=True)
+    state: str = Field(default=JobLivenessState.UNKNOWN.value, index=True)
+    http_status: Optional[int] = Field(default=None)
+    reason: Optional[str] = Field(default=None)      # short machine-readable cause
+    checked_at: Optional[datetime] = Field(default=None, index=True)
+    # Consecutive INCONCLUSIVE results (429/403/timeout). A posting is never
+    # closed on these; the counter exists so a permanently blocked board can be
+    # reported rather than silently retried forever.
+    inconclusive_streak: int = Field(default=0)
+    checked_url: Optional[str] = Field(default=None)
 
 
 class Coupon(SQLModel, table=True):

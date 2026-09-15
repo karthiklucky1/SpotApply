@@ -139,7 +139,8 @@ class SerpAPISource:
                 posted_at = _parse_posted_at(ext.get("posted_at"))
                 apply_url = _best_apply_url(item.get("apply_options") or [])
 
-                via = (item.get("via") or "").lower()
+                via_raw = (item.get("via") or "").strip()
+                via = via_raw.lower()
                 source = "linkedin" if "linkedin" in via else ("indeed" if "indeed" in via else "serpapi")
 
                 jobs.append(RawJob(
@@ -147,6 +148,13 @@ class SerpAPISource:
                     location=location, remote=remote,
                     url=apply_url or f"https://www.google.com/search?q={title}+{company}+jobs",
                     description=description, posted_at=posted_at,
+                    # `via` is the only field that says which board this posting
+                    # actually came from. It used to be read to choose the
+                    # bucket above and then discarded, which is what made the
+                    # "indeed" bucket unattributable — it holds SerpAPI rows,
+                    # Indeed RSS rows and both HN sources at once.
+                    origin="serpapi",
+                    origin_provider=via_raw.removeprefix("via ").strip() or None,
                 ))
             except Exception as e:
                 log.debug("SerpAPI: failed to parse item: %s", e)

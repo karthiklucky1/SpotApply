@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
 
@@ -161,8 +161,28 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     """
     from app.common.plan_limits import shortlist_daily_limit
     from app.matching.pipeline import _AUTOFILL_SOURCES, _check_and_enforce_company_cap
+    from app.strategy import delivery_gate as _delivery_gate
 
     uid_arg = user_id if (user_id and user_id != "local") else None
+
+    # ── Dead postings never reach a board ───────────────────────────────────
+    # Cached read only: this runs with `session` open and the codebase never
+    # holds a pooled connection across network I/O. The network refresh happens
+    # in the lanes, just before they call us (app/strategy/delivery_gate.py).
+    # This is the backstop that cannot be bypassed — it refuses a posting we
+    # already have CONCLUSIVE evidence is gone (REMOVED/EXPIRED only; a 429 or
+    # a 403 is not evidence of anything and never lands here).
+    #
+    # Returning a non-created Placement rather than raising matters: the caller
+    # continues with the next candidate, so one dead job does not stop the
+    # slate from being filled by other legitimate ones — and does not force
+    # delivery of anything weaker to hit the count either, because the score
+    # bar and the cutoff are unchanged.
+    blocked, _state = _delivery_gate.blocks_delivery(session, job.source, job.external_id)
+    if blocked:
+        log.info("Slate: refused '%s' — posting is %s before delivery", job.title, _state)
+        return Placement(False, "dead")
+
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)
     visible = len(entries)

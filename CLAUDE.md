@@ -56,7 +56,8 @@ app/
   tailoring/        # tailor, ats_keywords, grounding (anti-hallucination), doctor
   autofill/         # Playwright filler + answer_pack
   intelligence/     # sponsorship/H1B, work_auth, urgency, referral,
-                    # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check)
+                    # skill_gap (JD vs resume/GitHub advice), job_check (free ghost/fit check),
+                    # hiring_contacts (evidence-typed people/org assertions from JD text)
   strategy/         # scoring_lane, pulse_lane/hot_lane, adoption, realign, degraded, hygiene
   analytics/        # funnel, reporter
   qa_store/         # canonical answers (answers.yaml) + resolver
@@ -298,6 +299,28 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   purpose (stateful interactive sessions; server-side autofill is founder-only
   via `autofill_multi_user_enabled`, everyone else fills via the MV3 extension).
   New page-rendering code belongs in the client, NOT a fresh `pw.chromium.launch`.
+- **Hiring context is keyed by the POSTING, not the tenant**
+  (`discovery/hiring_context.py`; `JobHiringContext`/`JobLiveness` keyed by
+  `(source, external_id)`, which per-user copies preserve — `adoption.py:212`).
+  12 users adopting one posting write ONE context row, same rule as `JobCardRow`.
+  Every value carries an `EvidenceClass`; no evidence entry = never rendered as
+  fact, and a weaker claim never overwrites a stronger one (`merge_into`).
+  Adapters read keys the responses ALREADY contain (zero extra HTTP);
+  `apply_text_extraction` runs at ingest on the FULL description because
+  retrieval only projects 800 chars. Measured on 45 live shortlisted jobs:
+  64.4% department/team, 35.6% requisition id, 2.2% named recruiter, **0/45
+  named manager** — hence the UI says "People & team", never "hiring manager",
+  and a posting creator is never relabelled as one.
+- **Liveness: only REMOVED/EXPIRED mean dead** (`discovery/liveness.py`). 429 =
+  RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
+  the vacancy, and treating it as death would close live jobs whenever a board
+  throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
+  an incomplete fetch records nothing.
+- **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
+  `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
+  `Job.origin`/`origin_provider` record the real producer without moving rows
+  between buckets, so existing analytics keep their meaning. Read
+  `coalesce(origin, source)`.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 
