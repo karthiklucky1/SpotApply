@@ -70,6 +70,59 @@ def close_stale_user_jobs(days: int = 45, batch: int = 2000, max_batches: int = 
     return closed
 
 
+def close_stale_shared_jobs(days: int = 45, batch: int = 2000, max_batches: int = 200) -> int:
+    """Age-close shared-pool rows, in bounded batches.
+
+    This was one unbounded ``UPDATE job SET is_closed = true WHERE user_id =
+    '__shared__' AND first_seen < cutoff`` written inline in the maintenance
+    job, and it hit Supabase's statement timeout EVERY night from at least
+    2026-09-05 to 09-11. Nothing downstream noticed, because the failure was
+    caught and logged at WARNING: shared rows were never closed, so they were
+    never purged either, and the table (and every scan's egress) grew without
+    bound while the job reported itself as merely "failed".
+
+    The per-user close beside it has been batched since it shipped. This is the
+    same shape: select a page of ids, update exactly those, commit, repeat —
+    so no single statement can outrun the timeout, and a run that dies halfway
+    has still closed everything it touched.
+    """
+    from app.db.init_db import get_session
+    from app.db.models import Job
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    if days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    closed = 0
+    for _ in range(max_batches):
+        with get_session() as session:
+            ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.id)
+                .where(
+                    Job.user_id == SHARED_POOL_USER,
+                    Job.is_closed == False,          # noqa: E712
+                    Job.first_seen < cutoff,
+                )
+                .limit(batch)
+            ).all()]
+            if not ids:
+                break
+            session.exec(
+                update(Job)
+                .where(Job.id.in_(ids))
+                .values(is_closed=True,
+                        closed_reason=f"shared-pool retention ({days}d)")
+            )
+            session.commit()
+            closed += len(ids)
+        if len(ids) < batch:
+            break
+    if closed:
+        log.info("Job retention: closed %d stale shared-pool posting(s) older than %dd",
+                 closed, days)
+    return closed
+
+
 def purge_old_closed_jobs(days: int = 60, batch: int = 2000, max_batches: int = 100) -> int:
     """Delete CLOSED jobs older than ``days`` that have no Application attached.
 

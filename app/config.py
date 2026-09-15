@@ -317,8 +317,20 @@ class Settings(BaseSettings):
     # capture path off without touching the adapters.
     hiring_context_enabled: bool = True    # HIRING_CONTEXT_ENABLED
     # Re-check a posting is still live before it is delivered to a user, when
-    # the last check is older than this. 0 disables the pre-delivery check.
+    # the last conclusive check is older than this. 0 disables the pre-delivery
+    # check entirely (needs_check returns False for everything).
     liveness_recheck_hours: int = 12       # LIVENESS_RECHECK_HOURS
+    # Master switch for the pre-delivery gate (app/strategy/delivery_gate.py).
+    # Off = no request is ever made and nothing is ever blocked; the cached
+    # backstop in slate.place() still refuses a posting already known dead,
+    # because that costs nothing and is always correct.
+    liveness_gate_enabled: bool = True     # LIVENESS_GATE_ENABLED
+    # Hard per-request bound. A slow board must degrade to UNKNOWN (delivered)
+    # rather than stall the placement loop.
+    liveness_check_timeout_seconds: float = 6.0   # LIVENESS_CHECK_TIMEOUT_SECONDS
+    liveness_user_agent: str = (
+        "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
+    )
     scoring_lane_enabled: bool = True      # SCORING_LANE_ENABLED
     scoring_lane_interval_seconds: int = 90  # cadence; 0 disables
     scoring_workers: int = 20              # GLOBAL concurrent LLM scoring workers (size to your Anthropic/OpenAI rate limit, not user count)
@@ -366,6 +378,7 @@ class Settings(BaseSettings):
     fresh_alert_min_score: int = 70      # FRESH_ALERT_MIN_SCORE — min fit (rerank or blended) to push a "Fresh match" notification. Kept level with shortlist_score_threshold: below it nothing is shortlisted, so a lower alert bar is dead config that can only ever push a job the board will not show.
     fresh_alert_daily_cap: int = 10      # FRESH_ALERT_DAILY_CAP — max fresh-match notifications per user per UTC day (lanes fire every few minutes; the per-pass cap alone allows dozens/day). 0 disables the cap.
     fresh_alert_max_posted_age_days: int = 30  # FRESH_ALERT_MAX_POSTED_AGE_DAYS — the POSTED-age (loose) half of the alert gate, matching scoring_/shortlist_max_posted_age_days. The alert's real trigger is the KNOWN age (fresh_alerts.FRESH_ALERT_MAX_AGE_HOURS = 24: we found it today); this exists ONLY to suppress evergreen/ancient reqs, exactly as app/common/freshness.py prescribes. Until Aug 2026 the alert gate was `posted_at or first_seen`, i.e. the single-bound expression that module exists to eliminate — so a posting discovered minutes ago whose ATS dated it 3 days back produced no alert at all, and production measured 0 alerts against 2 shortlists. Widening this does NOT mean more pushes: fresh_alert_daily_cap and MAX_ALERTS_PER_PASS still bound the volume, and the copy only claims "posted Xh ago / be one of the first" when the source date is itself inside the 24h window.
+    default_intake_country: str = "United States"  # DEFAULT_INTAKE_COUNTRY — the country assumed when a profile has none. It MUST be the same value the Tier-1/Tier-2 prompt assumes (app/matching/reranker.py defaults the same way), because the two disagreeing is the expensive failure: a blank profile meant "no country gate" at intake while the scorer was still told "the candidate wants jobs in United States" and scored every foreign posting 0-30. We paid Tier-1 (and sometimes Claude) to reject postings our own free filter could have dropped — a measured 73% of the queue was drained below the gate. Set to "" ONLY if the prompt is changed to match; the gate and the prompt are one decision.
     lanes_enabled: bool = True           # LANES_ENABLED — set 0 on extra web replicas: every lane lock, LLM budget counter, and in-flight claim is process-local, so a second lane-running process silently DOUBLES scraping, LLM spend, and alerts. Exactly ONE process should run lanes.
     tailor_abuse_daily_cap: int = 40     # TAILOR_ABUSE_DAILY_CAP — per-user hard ceiling on tailors/day that applies even to "unlimited" plans. The ABUSE backstop, NOT the product limit: PLAN_LIMITS[...]["tailor_daily"] (5 Free / 35 Pro) is what a normal user meets first, and this must stay above the highest of those or it silently becomes the real limit. Raised 25 -> 50 in lockstep with Pro's 12 -> 35. Tailoring runs on tailoring_model (Haiku 4.5, ~$0.025-0.05 per tailor incl. the cover letter) and is deliberately OUTSIDE the finals budget, so this is the only thing bounding it: 50/day is ~$2.50/user/day worst case. 0 disables.
     dormant_user_grace_days: int = 21    # DORMANT_USER_GRACE_DAYS — users with no authenticated request for this many days are skipped by adoption/matching/scoring/alerts (their pool stops refilling, so no LLM money is spent on them); the next visit re-activates them within one lane tick. Profiles that predate activity tracking (last_active_at NULL) are grandfathered as active. 0 disables the gate.
@@ -409,6 +422,13 @@ class Settings(BaseSettings):
     # so the stronger role takes the slot. Applications the user or agent has
     # invested effort in (TAILORED and beyond) are NEVER displaced.
     company_cap_displace_enabled: bool = True  # COMPANY_CAP_DISPLACE_ENABLED
+    # ── The daily slate (docs/DELIVERY_ARCHITECTURE.md) ──────────────────────
+    # Reaching the plan's daily count ends DELIVERY for the day; it does not end
+    # the search. Once the slate is full a later job competes for a place on it.
+    slate_challenge_enabled: bool = True       # SLATE_CHALLENGE_ENABLED — 0 restores the old behaviour, where delivered >= target returned a zero finals allowance and every scorer stopped until 00:00 UTC. Keep it on: the stop is what made a 15:12 posting scoring 92 wait behind thirty-five jobs scoring 71-73.
+    slate_displace_margin: int = 5             # SLATE_DISPLACE_MARGIN — a challenger must beat the weakest UNVIEWED slate entry by this much to take its place. Hysteresis, not taste: at 0 a 71.4 would evict a 71.0 and the board would churn all afternoon for no user-visible gain. Matched to company_cap_displace_margin, which has run at 5 since August.
+    slate_overflow_margin: int = 15            # SLATE_OVERFLOW_MARGIN — when NOTHING on the slate is replaceable (the user has opened or acted on all of it), a job this far above the weakest entry is delivered anyway rather than lost. Deliberately much larger than the displace margin: overflow grows the day's count past what the plan promises, so it is reserved for a job that is clearly exceptional, not merely better.
+    slate_overflow_daily: int = 5              # SLATE_OVERFLOW_DAILY — hard cap on those extra jobs per user per UTC day. 0 disables overflow entirely (a fully-read slate then simply holds).
     company_cap_displace_margin: int = 5       # COMPANY_CAP_DISPLACE_MARGIN — new job must beat the weakest shortlisted holder by at least this many points (hysteresis against churn)
     discovery_cooldown_hours: int = 24    # min hours between manual discovery runs (saves API calls + tokens)
     discovery_interval_hours: int = 6     # scheduler cadence for automatic discovery+matching per user

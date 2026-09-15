@@ -3154,26 +3154,47 @@
                         ageHtml = `<span class="text-[10px] ${est ? 'text-slate-600 italic' : 'text-slate-500'} font-medium ml-2 shrink-0" title="${tip}">· ${label}</span>`;
                     }
                     
+                    // rerank_score is OVERLOADED: it carries real Claude verdicts
+                    // AND the ghost (5.0) / expiry (8.0) sentinels AND Tier-1
+                    // prescore stamps. Rendering all of them as "N%" told the user
+                    // the AI had read a job and scored it 5 when in fact nobody had
+                    // read it at all. score_kind comes from the lifecycle columns
+                    // (see _score_kind in app/api/server.py); only a "final" is a
+                    // fit percentage.
+                    const kind = j.score_kind || (j.rerank == null ? 'queued' : 'final');
                     let scoreBadge = `<span class="text-slate-500 font-mono">-</span>`;
                     let rowHigh = '';
-                    if (j.rerank !== null) {
+                    if (kind === 'final' && j.rerank !== null) {
                         const rank = Math.round(j.rerank);
                         if (rank >= 80) { scoreBadge = `<span class="border px-2 py-0.5 rounded-full font-mono font-black match-badge-strong"> ${rank}%</span>`; rowHigh = ' row-high-match'; }
                         else if (rank >= 60) scoreBadge = `<span class="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full font-mono font-black">${rank}%</span>`;
                         else if (rank >= 40) scoreBadge = `<span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full font-mono font-bold">${rank}%</span>`;
                         else scoreBadge = `<span class="bg-rose-500/10 text-rose-500 border border-rose-500/10 px-2 py-0.5 rounded-full font-mono">${rank}%</span>`;
+                    } else if (kind === 'prescore') {
+                        scoreBadge = `<span class="bg-slate-800/60 text-slate-400 border border-slate-700/40 px-2 py-0.5 rounded-full font-mono text-[9.5px]" title="A fast first-pass check ruled this out before the full AI review — it is not a fit score">screened out</span>`;
+                    } else if (kind === 'ghost') {
+                        scoreBadge = `<span class="bg-slate-800/60 text-slate-400 border border-slate-700/40 px-2 py-0.5 rounded-full font-mono text-[9.5px]" title="This posting looks dead or duplicated, so it was never scored">not live</span>`;
+                    } else if (kind === 'expired') {
+                        scoreBadge = `<span class="bg-slate-800/60 text-slate-400 border border-slate-700/40 px-2 py-0.5 rounded-full font-mono text-[9.5px]" title="This posting aged out of the queue before it reached the AI — it was never scored">aged out</span>`;
                     }
 
-                    // No application yet — but "unprocessed" hid two different truths:
-                    // no score = still waiting in the queue; a score = the AI already
-                    // reviewed it and it landed below the shortlist bar.
+                    // No application yet — but "unprocessed" hid several different
+                    // truths, and the copy here still quoted a shortlist bar of 35
+                    // that has not existed since the bar moved to 70.
+                    const BAR = {{ shortlist_score_threshold or 70 }};
                     let statusBadge;
-                    if (j.rerank == null) {
+                    if (kind === 'queued') {
                         statusBadge = `<span class="text-slate-500 font-medium" title="Waiting in the scoring queue — the AI hasn't read this one yet">Queued</span>`;
-                    } else if (Math.round(j.rerank) < 35) {
-                        statusBadge = `<span class="text-slate-600 font-medium" title="Scored below the shortlist bar (35) — the reason is shown under the title. Click Shortlist to override.">Reviewed · below bar</span>`;
+                    } else if (kind === 'prescore') {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="A fast first-pass check ruled this out before the full AI review. Click Shortlist to override.">Screened out</span>`;
+                    } else if (kind === 'ghost') {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="The posting looks dead or duplicated, so it was never scored">Not live</span>`;
+                    } else if (kind === 'expired') {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="Aged out of the queue before it was scored">Aged out</span>`;
+                    } else if (Math.round(j.rerank) < BAR) {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="The AI reviewed this and scored it below the shortlist bar (${BAR}) — the reason is shown under the title. Click Shortlist to override.">Reviewed · below bar</span>`;
                     } else {
-                        statusBadge = `<span class="text-slate-500 font-medium" title="Scored above the bar — awaiting a shortlist slot (daily/company caps)">Reviewed</span>`;
+                        statusBadge = `<span class="text-slate-500 font-medium" title="Scored at or above the bar — waiting for a place on today's board">Reviewed</span>`;
                     }
                     if (j.application) {
                         const status = j.application.status;
@@ -6322,6 +6343,23 @@
         renderJobDetail(card);
         document.getElementById('jobModalOverlay').classList.add('open');
         document.body.style.overflow = 'hidden';
+        markViewed(card.dataset.appId);
+    }
+
+    // Tell the server the user has actually SEEN this recommendation. Once the
+    // day's count is full a later, stronger job can take the place of a weaker
+    // one — but only one that was never opened. Fire-and-forget: a failed
+    // request must never interrupt reading a job, and the worst case is that an
+    // entry stays replaceable a little longer.
+    const _viewedSent = new Set();
+    function markViewed(appId) {
+        if (!appId || _viewedSent.has(appId)) return;
+        _viewedSent.add(appId);
+        const _t = localStorage.getItem('sb_token');
+        fetch('/application/' + appId + '/viewed', {
+            method: 'POST',
+            headers: _t ? { 'Authorization': 'Bearer ' + _t } : {},
+        }).catch(() => _viewedSent.delete(appId));
     }
 
     function renderJobDetail(card) {

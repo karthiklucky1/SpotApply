@@ -312,7 +312,11 @@ def _profile_system_prompt(profile) -> str:
     roles = (getattr(profile, "target_roles", "") or "").strip() \
         or (getattr(profile, "current_title", "") or "").strip() or "not specified"
     summary = (getattr(profile, "professional_summary", "") or "").strip()
-    country = (getattr(profile, "preferred_country", "") or "United States").strip()
+    # ONE resolution of the intake country, shared with every ingestion gate
+    # (app/common/tenant_prefs). When this default and the gate disagreed we
+    # admitted foreign postings for free and paid Claude to reject them.
+    from app.common.tenant_prefs import effective_country
+    country = effective_country(profile)
     remote_ok = bool(getattr(profile, "remote_ok", True))
     needs_sponsor = bool(getattr(profile, "requires_sponsorship", False))
     work_auth = (getattr(profile, "work_authorization", "")
@@ -447,7 +451,8 @@ def _prescore_system_prompt(profile=None) -> str:
         skills = (getattr(profile, "key_skills", "") or "").strip() or "not specified"
         roles = (getattr(profile, "target_roles", "") or "").strip() \
             or (getattr(profile, "current_title", "") or "").strip() or "not specified"
-        country = (getattr(profile, "preferred_country", "") or "United States").strip()
+        from app.common.tenant_prefs import effective_country
+        country = effective_country(profile)
         needs_sponsor = bool(getattr(profile, "requires_sponsorship", False))
         sponsor = (" The candidate needs visa sponsorship — score low only if the posting "
                    "explicitly refuses sponsorship or requires citizenship/clearance. "

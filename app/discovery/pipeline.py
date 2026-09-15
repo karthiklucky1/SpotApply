@@ -261,7 +261,10 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
         url=r.url,
         description=r.description,
         posted_at=r.posted_at,
-        first_seen=now,
+        # A copier (adoption, pulse per-user routing) carries the ORIGINAL
+        # sighting forward; a scraper leaves it None because it IS the first
+        # sighting. Never let a copy look fresher than the posting.
+        first_seen=r.first_seen or now,
         last_seen=now,
         content_hash=content_hash,
         cross_source_slug=slug,
@@ -994,7 +997,9 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         )
         if user_id is not None:
             q = q.where(Job.user_id == user_id)
-        to_close = [jid for jid, ext in session.exec(q).all() if ext not in active]
+        rows = session.exec(q).all()
+        to_close = [jid for jid, ext in rows if ext not in active]
+        gone_ext = [ext for _jid, ext in rows if ext not in active]
 
         closed_count = 0
         source_name = source.value if hasattr(source, "value") else str(source)
@@ -1015,6 +1020,24 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
                 app_model.status = ApplicationStatus.SKIPPED
                 app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
                 session.add(app_model)
+
+        # Free liveness evidence. This function is only ever reached for a
+        # fetch the caller already proved COMPLETE (`fetch_complete`), and a
+        # posting absent from a complete board listing is genuinely gone. It
+        # costs no request, it is shared by every tenant's copy through the
+        # (source, external_id) key, and it is what lets the pre-delivery gate
+        # skip a network check for most postings it would otherwise verify.
+        # Deliberately AFTER the close loop and outside it: recording evidence
+        # must never be able to stop a job from being closed.
+        _gone = sorted(set(gone_ext))
+        if _gone:
+            try:
+                from app.discovery import liveness as _lv
+                _lv.record_board_absence(source_name, present_ids=active,
+                                         known_ids=_gone, board_complete=True)
+            except Exception as _e:
+                log.debug("liveness board-absence record skipped for %s: %s",
+                          source_name, _e)
 
         session.commit()
         if closed_count > 0:

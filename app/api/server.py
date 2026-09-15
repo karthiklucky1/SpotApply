@@ -327,8 +327,48 @@ def _lane_user_ids() -> list:
     from app.db.models import UserProfile
     with get_session() as session:
         users = session.exec(select(UserProfile)).all()
-    return [u.user_id for u in users
-            if u.user_id and _user_is_active(u) and _user_has_resume(u.user_id)]
+    out = []
+    for u in users:
+        if not u.user_id:
+            continue
+        if not _user_is_active(u):
+            # Their board stops refilling from here. Say so — this used to be
+            # completely silent, and there is no email or push channel for them
+            # to hear it on any other way.
+            _notify_if_newly_dormant(u)
+            continue
+        if _user_has_resume(u.user_id):
+            out.append(u.user_id)
+    return out
+
+
+def _user_paid_search_is_live(profile) -> bool:
+    """True when this user is PAYING for the search right now.
+
+    A paid subscriber is buying a continuously-running job search, not a
+    dashboard habit. Pausing theirs because they did not open the app for three
+    weeks is the product silently not doing the thing they are being charged
+    for — and because there is no email or push channel, they would have no way
+    to find out. Their spend is bounded by their own plan either way.
+
+    Deliberately consulted ONLY for a user who would otherwise be dormant, so
+    the extra plan lookup happens for a handful of profiles rather than on
+    every lane tick for everyone.
+    """
+    uid = getattr(profile, "user_id", None)
+    if not uid or uid == "local":
+        return False
+    try:
+        from app.billing import stripe_enabled
+        if not stripe_enabled():
+            return False          # pre-revenue: nobody is paying, gate applies
+        from app.db.models import PlanTier
+        return _get_user_plan(uid) != PlanTier.FREE
+    except Exception as e:                                  # pragma: no cover
+        # An unresolvable plan must not pause a search we may be charging for.
+        logging.getLogger("api").debug(
+            "dormancy: plan lookup failed for %s (%s) — keeping the feed on", uid, e)
+        return True
 
 
 def _user_is_active(profile) -> bool:
@@ -339,6 +379,12 @@ def _user_is_active(profile) -> bool:
     spent on them until they come back (the next visit re-stamps and the next
     lane tick picks them up again). NULL last_active_at (rows predating
     tracking, backfilled at startup) and a disabled gate (0) count as active.
+
+    A LIVE PAID SUBSCRIPTION overrides the gate entirely: see
+    _user_paid_search_is_live. A free user who crosses the line is told, once
+    (_notify_if_newly_dormant) — the old behaviour removed a user from every
+    lane on 2026-09-10 with no notification of any kind, while shortlist hygiene
+    carried on emptying their board.
     """
     days = settings.dormant_user_grace_days
     if days <= 0:
@@ -350,7 +396,54 @@ def _user_is_active(profile) -> bool:
     if la.tzinfo is not None:
         from datetime import timezone as _tz2
         la = la.astimezone(_tz2.utc).replace(tzinfo=None)
-    return la >= _dt2.utcnow() - _td2(days=days)
+    if la >= _dt2.utcnow() - _td2(days=days):
+        return True
+    return _user_paid_search_is_live(profile)
+
+
+def _notify_if_newly_dormant(profile) -> bool:
+    """Tell a user, once, that their feed has been paused. Returns True if sent.
+
+    Called from the lane user-list builders, not from the predicate: a gate
+    that writes rows is a gate you cannot call twice. Stamped on the profile so
+    a user who stays away for months is told once, not every 60 seconds, and a
+    later visit (which moves last_active_at past the stamp) re-arms the notice
+    for the next episode.
+    """
+    uid = getattr(profile, "user_id", None)
+    if not uid or uid == "local":
+        return False
+    la = getattr(profile, "last_active_at", None)
+    notified = getattr(profile, "dormancy_notified_at", None)
+    if notified is not None and (la is None or notified >= la):
+        return False              # already told them about THIS episode
+    from datetime import datetime as _dtn
+    try:
+        from app.db.models import UserNotification, UserProfile as _UP
+        days = settings.dormant_user_grace_days
+        with get_session() as session:
+            session.add(UserNotification(
+                user_id=uid,
+                title="Your job feed is paused",
+                message=(f"We haven't seen you in {days} days, so we've paused the "
+                         "search to avoid filling your board with jobs that will be "
+                         "stale by the time you look. Open SpotApply and it starts "
+                         "again within a few minutes."),
+                type="feed_paused",
+                link="/dashboard",
+            ))
+            row = session.exec(select(_UP).where(_UP.user_id == uid)).first()
+            if row is not None:
+                row.dormancy_notified_at = _dtn.utcnow()
+                session.add(row)
+            session.commit()
+        logging.getLogger("api").info(
+            "Dormancy: paused the feed for %s after %d days and told them", uid, days)
+        return True
+    except Exception as e:                                  # pragma: no cover
+        logging.getLogger("api").warning(
+            "Dormancy notice failed for %s: %s", uid, e)
+        return False
 
 
 def _user_has_resume(uid: str | None) -> bool:
@@ -641,52 +734,30 @@ async def _registry_maintenance_once(cycle: int) -> None:
     await asyncio.to_thread(_seed_missing_ats_datasets)
     validated = await run_validation_loop(limit=150)
     _log.info("Registry maintenance: validated %d boards", validated)
-    # Shared-pool retention: close shared postings older than 45 days so the
-    # scrape-once pool doesn't grow unbounded (adoption ignores closed rows).
-    # A bulk UPDATE (not a load-then-set loop) so retention itself doesn't stream
-    # full job rows out of Postgres.
-    try:
-        from datetime import datetime as _rdt, timedelta as _rtd
-        from sqlalchemy import update as _sqlupdate
-        from app.db.models import Job as _Job
-        from app.discovery.pipeline import SHARED_POOL_USER
-        cutoff = _rdt.utcnow() - _rtd(days=45)
-        with get_session() as session:
-            res = session.exec(
-                _sqlupdate(_Job)
-                .where(_Job.user_id == SHARED_POOL_USER,
-                       _Job.is_closed == False,  # noqa: E712
-                       _Job.first_seen < cutoff)
-                .values(is_closed=True, closed_reason="shared-pool retention (45d)")
-            )
-            session.commit()
-            if getattr(res, "rowcount", 0):
-                _log.info("Shared-pool retention: closed %d old postings", res.rowcount)
-    except Exception as e:
-        _log.warning("Shared-pool retention failed: %s", e)
-    # Per-user retention: age-close open per-user rows nobody acted on — the
-    # missing half of retention (shared rows closed above; per-user copies
-    # previously never closed by age, so the job table grew unbounded).
-    try:
-        from app.strategy.job_retention import close_stale_user_jobs
-        close_stale_user_jobs(days=settings.user_job_close_age_days)
-    except Exception as e:
-        _log.warning("Per-user job retention failed: %s", e)
-    # Blank the JD text on stale rows nobody acted on. Runs BEFORE the purge:
-    # the description is the bulk of the disk (3.3 GB of a 5.76 GB table) and
-    # goes dead long before the row itself is safe to delete.
-    try:
-        from app.strategy.job_retention import strip_dead_descriptions
-        strip_dead_descriptions(days=settings.job_description_strip_age_days)
-    except Exception as e:
-        _log.warning("Job description strip failed: %s", e)
-    # Hard-delete long-closed, unreferenced jobs so the table (and every scan's
-    # egress) stays bounded — closed rows were accumulating forever.
-    try:
-        from app.strategy.job_retention import purge_old_closed_jobs
-        purge_old_closed_jobs(days=settings.job_purge_max_age_days)
-    except Exception as e:
-        _log.warning("Job retention purge failed: %s", e)
+    # Retention, in order: close shared rows, close per-user rows, blank the JD
+    # text, then hard-delete. Each is BATCHED (no single statement can outrun
+    # Supabase's statement timeout) and each runs in a THREAD.
+    #
+    # Both of those were learned the hard way. The shared-pool close was one
+    # unbounded UPDATE written inline here and it timed out every single night
+    # from 09-05 to 09-11, so shared rows never closed and therefore never
+    # purged. And all four ran directly on the asyncio event loop: multi-minute
+    # blocking DB work in the same thread that serves every HTTP request, once
+    # a night, for as long as the backlog took.
+    from app.strategy.job_retention import (
+        close_stale_shared_jobs, close_stale_user_jobs, purge_old_closed_jobs,
+        strip_dead_descriptions,
+    )
+    for _label, _fn, _days in (
+        ("shared-pool close", close_stale_shared_jobs, 45),
+        ("per-user close", close_stale_user_jobs, settings.user_job_close_age_days),
+        ("description strip", strip_dead_descriptions, settings.job_description_strip_age_days),
+        ("purge", purge_old_closed_jobs, settings.job_purge_max_age_days),
+    ):
+        try:
+            await asyncio.to_thread(_fn, _days)
+        except Exception as e:
+            _log.warning("Job retention (%s) failed: %s", _label, e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
@@ -3070,12 +3141,41 @@ _JOB_LIST_COLS = (
     Job.posted_at, Job.first_seen, Job.discovered_at,
     Job.similarity_score, Job.rerank_score, Job.hire_probability_score,
     Job.blended_score, Job.rerank_reasoning, Job.is_closed, Job.closed_reason,
+    # WHAT KIND of number rerank_score is. The column is overloaded — it carries
+    # real 0-100 Claude verdicts AND the ghost (5.0) and age-expiry (8.0)
+    # sentinels AND Tier-1 prescore stamps — so the board was rendering "5%" and
+    # "32%" as if the AI had judged the fit and found it poor. Lifecycle lives in
+    # its own columns (CLAUDE.md); these three are what let the UI tell them
+    # apart without re-deriving the rule in JavaScript.
+    Job.scored_at, Job.prescored_at, Job.expired_at,
     Application.id.label("app_id"),
     Application.status.label("app_status"),
     Application.apply_track.label("app_track"),
     Application.created_at.label("app_created"),
     Application.updated_at.label("app_updated"),
 )
+
+
+def _score_kind(rerank, scored_at, prescored_at, expired_at) -> str:
+    """Name the kind of number in ``rerank_score``.
+
+    ``rerank_score IS NOT NULL`` has never meant "was scored": production's
+    "621k scored jobs" was mostly expiry stamps. The lifecycle columns are the
+    reliable form and the sentinel values are the legacy fallback for rows
+    written before they shipped.
+    """
+    from app.common.freshness import EXPIRY_SENTINEL_SCORE, GHOST_SENTINEL_SCORE
+    if rerank is None:
+        return "queued"
+    if scored_at is not None:
+        return "final"
+    if expired_at is not None or rerank == EXPIRY_SENTINEL_SCORE:
+        return "expired"
+    if rerank == GHOST_SENTINEL_SCORE:
+        return "ghost"
+    if prescored_at is not None:
+        return "prescore"
+    return "final"        # legacy row scored before the lifecycle columns
 
 
 @app.get("/api/jobs")
@@ -3325,6 +3425,7 @@ def api_jobs(
              jposted_at, jfirst_seen, jdiscovered_at,
              jsimilarity, jrerank, jhire_prob, jblended, jreason,
              jis_closed, jclosed_reason,
+             jscored_at, jprescored_at, jexpired_at,
              app_id, app_status, app_track, app_created, app_updated) = row
             _posted = jposted_at or jfirst_seen
             _seen = _tz_naive(jfirst_seen or jdiscovered_at)
@@ -3347,6 +3448,12 @@ def api_jobs(
                 "is_new": bool(_seen and _seen > _new_cutoff),
                 "similarity": jsimilarity,
                 "rerank": jrerank,
+                # "final"    a real Claude verdict — the only one that is a fit %
+                # "prescore" a cheap Tier-1 estimate that ended the job's queue life
+                # "ghost"    the 5.0 sentinel: a dead or fake posting
+                # "expired"  the 8.0 sentinel: aged out before anyone scored it
+                # "queued"   no number yet
+                "score_kind": _score_kind(jrerank, jscored_at, jprescored_at, jexpired_at),
                 "hire_probability": jhire_prob,
                 "blended": jblended,
                 "reason": jreason,
@@ -3761,6 +3868,12 @@ def dashboard(request: Request, all_submitted: bool = False):
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
             "shortlist_strong_threshold": settings.shortlist_strong_threshold,
+            # The bar the AI score is judged against. The board used to
+            # hard-code 35 in its status copy, which stopped being the bar
+            # when it moved to 70 — so every job scoring 40-69 was labelled
+            # "above the bar, awaiting a slot" when it had in fact been
+            # rejected.
+            "shortlist_score_threshold": settings.shortlist_score_threshold,
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
@@ -5117,6 +5230,42 @@ def public_freshness() -> dict:
     def _naive(dt):
         return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
+    try:
+        result = _public_freshness_uncached(now, now_ts)
+        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 300, result)
+        globals()["_PUBLIC_FRESHNESS_LAST"] = result
+        return result
+    except Exception as e:
+        # THE FAILURE IS THE EXPENSIVE PART. This route is public, unauthenticated
+        # and un-rate-limited, and it runs a full-table COUNT the schema has no
+        # usable index for; it hit the statement timeout on 2026-09-09 01:33.
+        # Because the cache was only written on SUCCESS, every landing-page hit
+        # after that re-ran the same heavy queries against a database that had
+        # just told us it could not answer them. Cache the failure too — briefly,
+        # so a transient stall costs one slow request rather than a stampede.
+        _log = logging.getLogger("api")
+        _log.warning("public freshness aggregate failed (%s) — serving the last "
+                     "known figures for 60s", e)
+        stale = globals().get("_PUBLIC_FRESHNESS_LAST")
+        fallback = stale if stale else {
+            "active_boards": None, "jobs_tracked_7d": None,
+            "median_detection_latency_hours": None, "detected_within_24h_pct": None,
+            "fresh_alerts_7d": None, "median_post_to_alert_min": None,
+        }
+        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 60, fallback)
+        return fallback
+
+
+def _public_freshness_uncached(now, now_ts) -> dict:
+    """The aggregate itself. Split out so the caller can cache a FAILURE."""
+    import statistics
+    import json as _json
+    from datetime import timedelta
+    from app.db.models import CompanyRegistry, FunnelEvent
+
+    def _naive(dt):
+        return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
+
     with get_session() as session:
         boards = session.exec(
             select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)  # noqa: E712
@@ -5173,7 +5322,6 @@ def public_freshness() -> dict:
         "fresh_alerts_7d": len(alert_min),
         "median_post_to_alert_min": med(alert_min),
     }
-    globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 300, result)
     return result
 
 
@@ -5485,6 +5633,33 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
         application.updated_at = datetime.utcnow()
         session.add(application)
         session.commit()
+    return {"success": True, "application_id": application_id}
+
+
+@app.post("/application/{application_id}/viewed")
+def mark_application_viewed(application_id: int, request: Request) -> dict:
+    """Record that the user actually opened this recommendation.
+
+    This is the line between "we put it on the board" and "they have seen it",
+    and the daily slate depends on it: once the day's count is full, a later,
+    stronger job may take the place of a weaker one — but only one the user has
+    never opened (app/strategy/slate.py). Without this signal every entry looks
+    untouched, and a job someone read this morning could vanish while they were
+    deciding about it.
+
+    Idempotent and first-write-wins: the interesting timestamp is when they
+    FIRST saw it, and re-opening a job must not restart that clock.
+    """
+    from datetime import datetime
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if application.viewed_at is None:
+            application.viewed_at = datetime.utcnow()
+            session.add(application)
+            session.commit()
     return {"success": True, "application_id": application_id}
 
 

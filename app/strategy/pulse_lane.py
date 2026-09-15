@@ -45,7 +45,7 @@ from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import (
-    Application, ApplicationStatus, CompanyRegistry, FunnelEvent, Job, UserProfile,
+    Application, CompanyRegistry, FunnelEvent, Job, UserProfile,
 )
 
 log = logging.getLogger(__name__)
@@ -432,9 +432,8 @@ def _fast_path_user(uid: str, score_budget: int,
     FAISS/embedding model. Anything left unscored (budget, errors) is picked up
     by the 5-min matching lane, so this can only make things faster, never drop
     a job."""
-    from app.common.plan_limits import shortlist_daily_limit
     from app.matching.pipeline import (
-        _AUTOFILL_SOURCES, _check_and_enforce_company_cap, _load_resume,
+        _load_resume,
     )
     from app.matching.reranker import Reranker, llm_budget_exhausted
     from app.matching.filters import score_ghost
@@ -632,19 +631,21 @@ def _fast_path_user(uid: str, score_budget: int,
                     pass
                 session.add(job)
 
-                if score >= settings.shortlist_score_threshold \
-                        and today_count < shortlist_daily_limit(uid):
+                if score >= settings.shortlist_score_threshold:
                     existing = session.exec(
                         select(Application).where(Application.job_id == job.id)
                     ).first()
-                    if not existing and _check_and_enforce_company_cap(session, job, score):
-                        track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-                        session.add(Application(
-                            job_id=job.id, status=ApplicationStatus.SHORTLISTED,
-                            apply_url=job.url, apply_track=track, user_id=uid_arg,
-                        ))
-                        shortlisted.append(job.id)
-                        today_count += 1
+                    if not existing:
+                        # ONE placement path (app/strategy/slate.py). The fast
+                        # path is where a genuinely fresh, genuinely strong job
+                        # arrives after the board is already full, so this is
+                        # the route that most needed a challenger rule rather
+                        # than a daily count check.
+                        from app.strategy import slate as _slate
+                        res = _slate.place(session, job, score, user_id=uid)
+                        if res.created:
+                            shortlisted.append(job.id)
+                            today_count += 1
                 session.commit()
 
     alerts = 0
@@ -791,6 +792,15 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             return board, None, "unsupported", time.monotonic() - t0, None
         try:
             raw = scraper.fetch()
+            # An adapter that swallows HTTP errors reports them here rather than
+            # by raising (app/discovery/base.py). Greenhouse, Lever and Ashby all
+            # return [] for a 429 or a 503, and treating that as "an empty board"
+            # wrote job_count=0 — the value that demotes a live employer to the
+            # 72-hour zero-yield cadence.
+            from app.discovery.base import fetch_error
+            soft_err = fetch_error(scraper)
+            if soft_err and not raw:
+                return board, None, soft_err, time.monotonic() - t0, None
             meta = {
                 "complete": bool(getattr(scraper, "fetch_complete", True)),
                 "entries": getattr(scraper, "signature_entries", None),
@@ -954,8 +964,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 if not relevant:
                     continue
                 try:
+                    # SAME gate as every other door into a user's pool. Without
+                    # preferred_country this route admitted EU-only remote roles
+                    # and foreign on-site postings to US users, and without
+                    # role_gate_terms it admitted whole-company board dumps that
+                    # _title_matches let through — then charged the user's finals
+                    # budget to reject them (2026-09-12 audit).
                     n = _upsert(relevant, user_id=(None if u["user_id"] == "local" else u["user_id"]),
-                                user_keywords=u["roles"] or None)
+                                preferred_country=u.get("preferred_country") or None,
+                                remote_ok=bool(u.get("remote_ok", True)),
+                                user_keywords=u["roles"] or None,
+                                role_gate_terms=u["roles"] or None)
                     if n:
                         users_touched.add(u["user_id"])
                         new_here += n

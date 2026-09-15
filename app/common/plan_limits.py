@@ -9,10 +9,20 @@ The lazy import is load-bearing: server.py imports the lanes, so a top-level
 `from app.api.server import _get_user_plan` would be circular. By the time any
 lane cycle runs, server is fully loaded.
 
-FAIL OPEN, deliberately. A billing hiccup or a Supabase blip must never silently
-shrink someone's feed to zero — an unknown plan falls back to the global
-`settings.daily_shortlist_limit`, which is a ceiling well above any plan's.
-Failing closed here would look exactly like the product being broken.
+FAIL OPEN, TO THE WIDEST REAL PLAN. A billing hiccup or a Supabase blip must
+never silently shrink someone's feed to zero — failing closed here would look
+exactly like the product being broken. But it must not open the taps either:
+the fallback used to be `settings.daily_shortlist_limit` (200), which is 5.7x
+the most generous plan, so an outage in the billing lookup quietly authorised
+every affected user to receive — and to be scored for — nearly six times what
+anyone pays for. CLAUDE.md already described the intended behaviour ("fails open
+to the widest plan ceiling, never to unbounded") and the finals ceiling beside
+it already worked that way (scoring_lane._plan_budget); this is the shortlist
+half catching up.
+
+The widest plan is the right fallback in both directions: no paying customer
+loses anything during an outage, and the exposure is bounded by a number
+someone could actually have bought.
 """
 from __future__ import annotations
 
@@ -39,6 +49,20 @@ def plan_limit(user_id: str | None, key: str, default: int | None) -> int | None
     return default if value is None else value
 
 
+def widest_plan_limit(key: str, default: int) -> int:
+    """The largest value any real plan carries for ``key``.
+
+    THE fallback for an unresolvable plan. Computed from PLAN_LIMITS rather than
+    hard-coded so adding a bigger tier cannot leave this behind.
+    """
+    try:
+        from app.db.models import PLAN_LIMITS
+        vals = [int(p.get(key) or 0) for p in PLAN_LIMITS.values()]
+        return max(vals) or int(default)
+    except Exception:                                       # pragma: no cover
+        return int(default)
+
+
 def shortlist_daily_limit(user_id: str | None) -> int:
     """How many jobs may reach this user's board today.
 
@@ -46,6 +70,6 @@ def shortlist_daily_limit(user_id: str | None) -> int:
     it: a day whose pool holds six jobs clearing the shortlist bar delivers six.
     """
     from app.config import settings
-    fallback = int(settings.daily_shortlist_limit)
+    fallback = widest_plan_limit("shortlist_daily", settings.daily_shortlist_limit)
     value = plan_limit(user_id, "shortlist_daily", fallback)
     return max(0, int(value if value is not None else fallback))

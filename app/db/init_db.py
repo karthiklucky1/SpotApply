@@ -296,6 +296,9 @@ def init_db() -> None:
         # has never had a real AI review. The recheck pass re-scores exactly
         # these once credits return, and clears the flag either way.
         ("provisional", "BOOLEAN DEFAULT 0"),
+        # When the user opened this recommendation. NULL = never seen, which is
+        # what makes an entry replaceable by a later, stronger job.
+        ("viewed_at", "DATETIME"),
     ]:
         add_column_if_missing("application", col, col_type)
 
@@ -407,6 +410,7 @@ def init_db() -> None:
         ("opt_unemployment_days_used", "INTEGER DEFAULT 0"),
         ("stem_opt", "BOOLEAN DEFAULT FALSE"),
         ("last_active_at", "DATETIME"),
+        ("dormancy_notified_at", "DATETIME"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
 

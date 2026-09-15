@@ -26,24 +26,26 @@ def _job(title, ext="x"):
 def test_select_title_only_when_semantic_disabled(monkeypatch):
     monkeypatch.setattr(ad.settings, "adoption_semantic_enabled", False)
     jobs = [_job("Machine Learning Engineer", "1"),   # title match
-            _job("Applied Scientist", "2"),           # off-title
+            _job("Perception Engineer", "2"),         # off-title (no role family)
             _job("Warehouse Associate", "3")]         # off-title
     out = ad._select_adoptable(jobs, ["machine learning engineer"], "u", limit=50)
     titles = {j.title for j in out}
     assert "Machine Learning Engineer" in titles
-    assert "Applied Scientist" not in titles      # no semantic pass → dropped
+    assert "Perception Engineer" not in titles     # no semantic pass → dropped
     assert "Warehouse Associate" not in titles
 
 
 def test_select_adds_semantic_extras(monkeypatch):
     monkeypatch.setattr(ad.settings, "adoption_semantic_enabled", True)
-    # Stub the embedding pass: pretend "Applied Scientist" is a close neighbour.
-    extra = _job("Applied Scientist", "2")
+    # Stub the embedding pass: pretend "Perception Engineer" is a close neighbour.
+    # (NOT "Applied Scientist" — that is a title hit in its own right now that
+    # the AI role family includes it, so it could not test the semantic path.)
+    extra = _job("Perception Engineer", "2")
     monkeypatch.setattr(ad, "_semantic_extras", lambda others, roles, uid, need: [extra])
     jobs = [_job("Machine Learning Engineer", "1"), extra, _job("Warehouse Associate", "3")]
     out = ad._select_adoptable(jobs, ["machine learning engineer"], "u", limit=50)
     titles = {j.title for j in out}
-    assert titles == {"Machine Learning Engineer", "Applied Scientist"}  # title + semantic
+    assert titles == {"Machine Learning Engineer", "Perception Engineer"}  # title + semantic
 
 
 def test_select_respects_limit(monkeypatch):
@@ -55,7 +57,7 @@ def test_select_respects_limit(monkeypatch):
     monkeypatch.setattr(ad, "_semantic_extras", _fake_extras)
     # 3 title matches, limit 3 → no room left for extras, and _semantic_extras isn't even reached.
     jobs = [_job("ML Engineer", "1"), _job("Machine Learning Engineer", "2"),
-            _job("ML Engineer", "3"), _job("Applied Scientist", "4")]
+            _job("ML Engineer", "3"), _job("Perception Engineer", "4")]
     out = ad._select_adoptable(jobs, ["machine learning engineer"], "u", limit=3)
     assert len(out) == 3
     assert "need" not in called  # len(title_hits) >= limit → semantic pass skipped
@@ -66,7 +68,7 @@ def test_select_falls_back_on_semantic_error(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("model unavailable")
     monkeypatch.setattr(ad, "_semantic_extras", _boom)
-    jobs = [_job("Machine Learning Engineer", "1"), _job("Applied Scientist", "2")]
+    jobs = [_job("Machine Learning Engineer", "1"), _job("Perception Engineer", "2")]
     out = ad._select_adoptable(jobs, ["machine learning engineer"], "u", limit=50)
     assert {j.title for j in out} == {"Machine Learning Engineer"}  # title-only fallback
 

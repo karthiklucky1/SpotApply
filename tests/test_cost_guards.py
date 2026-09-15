@@ -751,8 +751,29 @@ def test_plan_lookup_failure_fails_open_to_a_number_not_to_infinity(monkeypatch)
     monkeypatch.undo()
     monkeypatch.setattr("app.api.server._get_user_plan", _boom, raising=False)
     widest = max(p["finals_daily"] for p in PLAN_LIMITS.values())
-    assert sl._plan_budget("u") == (widest, 0)
+    # BOTH numbers fall back, not just the money one. Returning a target of 0
+    # disabled the delivery target entirely, so an unresolvable plan meant the
+    # day never left fill mode and kept buying finals until the cost ceiling
+    # stopped it: the ceiling bounded the money and nothing bounded delivery.
+    widest_target = max(p["shortlist_daily"] for p in PLAN_LIMITS.values())
+    assert sl._plan_budget("u") == (widest, widest_target)
     assert sl._remaining_finals_today("u", 40) == 40   # a cycle slice, not the day
+
+
+def test_the_shortlist_cap_fails_open_to_the_widest_plan_too(monkeypatch):
+    """The two halves of the same failure used to disagree. The finals ceiling
+    fell back to the widest plan (250); the shortlist cap fell back to
+    settings.daily_shortlist_limit — 200 jobs a day, 5.7x the most generous
+    plan. A billing lookup outage quietly authorised every affected user to
+    receive, and to be scored for, nearly six times what anyone can buy."""
+    from app.common.plan_limits import shortlist_daily_limit
+    from app.db.models import PLAN_LIMITS
+
+    def _boom2(uid):
+        raise RuntimeError("supabase down")
+    monkeypatch.setattr("app.api.server._get_user_plan", _boom2, raising=False)
+    widest = max(p["shortlist_daily"] for p in PLAN_LIMITS.values())
+    assert shortlist_daily_limit("u") == widest
 
 
 def test_local_dev_user_has_no_plan_cap():

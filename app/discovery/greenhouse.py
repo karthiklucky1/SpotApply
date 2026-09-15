@@ -73,10 +73,16 @@ class GreenhouseScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.board_slug}/jobs?content=true"
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
         except httpx.HTTPError as e:
+            # Record WHY this came back empty. An empty list with no last_error
+            # means the board really has no openings; one with a last_error is
+            # a failed poll, and the difference decides whether the scheduler
+            # backs the board off or demotes it to the 72-hour tier.
+            self.last_error = f"{type(e).__name__}: {e}"
             log.warning("Greenhouse fetch failed for %s: %s", self.board_slug, e)
             return []
 

@@ -38,10 +38,14 @@ class AshbyScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.org_slug}?includeCompensation=true"
+        self.last_error = ""
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
         except httpx.HTTPError as e:
+            # See app/discovery/base.py: an empty list with no last_error is a
+            # genuinely empty board; one with a last_error is a failed poll.
+            self.last_error = f"{type(e).__name__}: {e}"
             log.warning("Ashby fetch failed for %s: %s", self.org_slug, e)
             return []
 

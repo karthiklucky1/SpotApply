@@ -45,7 +45,7 @@ from sqlmodel import select
 from app.common.freshness import GHOST_SENTINEL_SCORE
 from app.config import settings
 from app.db.init_db import get_session
-from app.db.models import Application, ApplicationStatus, FunnelEvent, Job
+from app.db.models import Application, FunnelEvent, Job
 
 log = logging.getLogger(__name__)
 
@@ -614,12 +614,17 @@ def _plan_budget(uid: Optional[str]) -> tuple[Optional[int], int]:
         limits = PLAN_LIMITS[_get_user_plan(uid)]
         return limits.get("finals_daily"), int(limits.get("shortlist_daily") or 0)
     except Exception as e:
-        from app.db.models import PLAN_LIMITS
-        fallback = max((int(p.get("finals_daily") or 0) for p in PLAN_LIMITS.values()),
-                       default=0) or None
+        # Fall back to the widest REAL plan, in both numbers. Returning target=0
+        # here disabled the delivery target entirely, so an unresolvable plan
+        # during a billing or Supabase blip meant the day never switched out of
+        # fill mode and kept buying finals until the cost ceiling stopped it.
+        # The ceiling bounded the money; nothing bounded the delivery.
+        from app.common.plan_limits import widest_plan_limit
+        fallback = widest_plan_limit("finals_daily", 0) or None
+        target = widest_plan_limit("shortlist_daily", 0)
         log.debug("plan lookup failed for %s (%s) — falling back to the widest "
-                  "plan ceiling (%s finals)", uid, e, fallback)
-        return fallback, 0
+                  "plan (%s finals, %s jobs)", uid, e, fallback, target)
+        return fallback, target
 
 
 def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
@@ -661,9 +666,7 @@ def _remaining_finals_today(uid: Optional[str], per_cycle_cap: int) -> int:
 
 def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     """Serial, cap-safe: shortlist a user's freshly-scored fits + fire alerts."""
-    from app.matching.pipeline import _AUTOFILL_SOURCES, _check_and_enforce_company_cap
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
-    uid_arg = None if (not uid or uid == "local") else uid
 
     # THE definition of "delivered today", shared with the finals budget: what
     # this loop refuses to exceed has to be the same number the budget stops at.
@@ -681,36 +684,55 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             if j and (j.rerank_reasoning or "").startswith(LOCAL_REASON_PREFIX):
                 local_jids.add(jid)
 
-    # The plan's ceiling on what may reach the board today, not the old flat
-    # 200 for everyone. Resolved once per call: it cannot change mid-loop.
-    from app.common.plan_limits import shortlist_daily_limit
-    _shortlist_cap = shortlist_daily_limit(uid)
+    from app.strategy import slate as _slate
+    from app.strategy.delivery_gate import verified_dead as _verified_dead
 
     shortlisted: List[int] = []
+    dead_skipped = 0
+
+    def _liveness_pair(job_id: int):
+        """(source, external_id, url) for one job — a tiny projected read."""
+        try:
+            with get_session() as s:
+                row = s.exec(select(Job.source, Job.external_id, Job.url)
+                             .where(Job.id == job_id)).first()
+            return (row[0], row[1], row[2]) if row else None
+        except Exception:
+            return None
+
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
         is_local = jid in local_jids
         if score < shortlist_threshold(is_local):
             continue
-        if today_count >= _shortlist_cap:
-            break
+        # Liveness is established HERE, outside the session, because the check
+        # can make a network request and this codebase never holds a pooled
+        # connection across network I/O. It runs only for jobs that have
+        # already cleared the score bar, so a request is only ever spent on a
+        # posting that would otherwise reach someone's board.
+        _pair = _liveness_pair(jid)
+        if _pair and _verified_dead(*_pair):
+            dead_skipped += 1
+            continue                      # try the next candidate; do not stop
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
                 continue
             if session.exec(select(Application).where(Application.job_id == jid)).first():
                 continue
-            if not _check_and_enforce_company_cap(session, job, score):
-                session.commit()
-                continue
-            track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-            session.add(Application(
-                job_id=jid, status=ApplicationStatus.SHORTLISTED,
-                apply_url=job.url, apply_track=track, user_id=uid_arg,
-                provisional=is_local,
-            ))
+            # ONE placement path (app/strategy/slate.py): capacity, the company
+            # cap and the challenger rule. This loop is score-ordered, so once
+            # the slate refuses a job for being below today's cutoff, nothing
+            # after it can qualify either.
+            res = _slate.place(session, job, score, user_id=uid, is_local=is_local)
             session.commit()
+            if not res.created:
+                if res.outcome == "below_cutoff":
+                    break
+                continue
             shortlisted.append(jid)
             today_count += 1
+    if dead_skipped:
+        stats["dead_before_delivery"] = stats.get("dead_before_delivery", 0) + dead_skipped
     stats["shortlisted"] += len(shortlisted)
     if shortlisted:
         try:

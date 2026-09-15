@@ -167,16 +167,43 @@ _AMBIGUOUS_RE = re.compile(
 )
 
 
-# Tokens too generic to identify a department on their own — a keyword phrase
-# like "Mechanical Engineer" should match via "mechanical", never via
-# "engineer" (which would wave every engineering title through).
-_GENERIC_TOKENS = {
+# Structural title words: seniority, level markers and filler. They carry no
+# department meaning anywhere in the product.
+_STRUCTURAL_TOKENS = {
     "engineer", "engineers", "engineering", "senior", "junior", "staff",
     "lead", "principal", "graduate", "entry", "level", "manager", "specialist",
     "associate", "analyst", "developer", "consultant", "intern", "internship",
     "remote", "machine", "learning", "applied", "the", "and", "of", "for",
     "with", "ii", "iii",
 }
+
+# DOMAIN words: they name a FIELD, not a role. As standalone routing terms they
+# waved whole professions through (2026-09-12 audit). Measured leaks: "full"
+# from "Full Stack" matched every "Full Time ..." title, "data" from "Data
+# Engineer" matched "Data Entry Clerk", "software" from "Software Engineer"
+# matched "Software Sales Representative" — and because keyword_hit reads the
+# same set, those titles were also rescued past the non-tech gate in _upsert.
+#
+# A role that genuinely IS one of these still matches: the full phrase, its
+# aliases and its whole family are always accepted terms, and _term_pattern
+# tolerates plural/gerund endings so dropping "data" does not lose "Data
+# Engineering Manager".
+#
+# NOT for preference learning: there, "sales" appearing twice in a user's
+# dismissals is exactly the signal (see _STRUCTURAL_TOKENS, which is what
+# app/matching/preference_learning.py reads).
+_DOMAIN_TOKENS = {
+    "software", "data", "full", "time", "part", "cloud", "site", "mobile",
+    "product", "system", "systems", "web", "platform", "technical",
+    "technology", "solutions", "services", "support", "sales", "customer",
+    "operations", "business", "project", "program", "information", "digital",
+    "network", "security", "team", "global", "hybrid", "onsite", "contract",
+}
+
+# Tokens too generic to identify a department on their own — a keyword phrase
+# like "Mechanical Engineer" should match via "mechanical", never via
+# "engineer" (which would wave every engineering title through).
+_GENERIC_TOKENS = _STRUCTURAL_TOKENS | _DOMAIN_TOKENS
 
 
 def keyword_hit(title: str, keywords: List[str] | None) -> bool:
@@ -273,23 +300,56 @@ _ROLE_TERM_ALIASES = {
 # scored and ranked; a false negative is a job the user never sees at all), and
 # the per-plan daily finals cap still bounds what the extra breadth can cost.
 _ROLE_FAMILIES = (
-    # Software engineering: one flavour implies the neighbouring ones.
+    # Software engineering: one flavour implies the neighbouring ones. The
+    # language-specific titles belong here too — a "Java Developer" user is
+    # shopping the same market as "Backend Engineer" and "SDE II", and before
+    # 2026-09-12 they matched only on the bare token "java".
     ("software engineer", "software developer", "software development engineer",
      "swe", "sde", "programmer", "application developer", "web developer",
-     "python developer",
+     "python developer", "java developer", "golang developer", "go developer",
+     "node developer", "nodejs developer", ".net developer", "c++ developer",
+     "ruby developer", "php developer", "scala developer", "rust developer",
      "backend", "back end", "back-end", "backend developer",
      "frontend", "front end", "front-end",
      "full stack", "fullstack", "full-stack"),
     # AI / ML: an "AI Engineer" and an "ML Engineer" are shopping the same market.
     ("ai engineer", "ai", "artificial intelligence", "machine learning", "ml",
      "ml engineer", "mlops", "ml ops", "deep learning",
-     "genai", "gen ai", "generative ai", "llm"),
+     "genai", "gen ai", "generative ai", "llm", "nlp", "computer vision",
+     "applied scientist", "research engineer", "research scientist",
+     "machine learning scientist"),
+    # Data: the pipeline/warehouse side, distinct from the modelling side.
+    ("data engineer", "data engineering", "etl", "data platform",
+     "analytics engineer", "data infrastructure", "big data", "data warehouse"),
+    # Research / science: an Applied Scientist and a Research Scientist compete
+    # for the same postings, and both overlap the AI family above.
+    ("data scientist", "data science", "applied scientist", "research scientist",
+     "machine learning scientist", "quantitative researcher"),
+    # Platform / infrastructure / reliability.
+    ("platform engineer", "infrastructure engineer", "devops", "devops engineer",
+     "sre", "site reliability", "site reliability engineer", "cloud engineer",
+     "systems engineer", "production engineer", "kubernetes"),
+    # Security.
+    ("security engineer", "application security", "appsec", "infosec",
+     "cybersecurity", "cloud security", "product security"),
+    # Mobile.
+    ("mobile engineer", "mobile developer", "ios", "ios engineer", "android",
+     "android engineer", "react native", "flutter"),
+    # Quality.
+    ("qa engineer", "quality assurance", "sdet", "test engineer",
+     "automation engineer", "quality engineer"),
 )
+
+# Endings a title can add to a term without changing the role: "Data
+# Engineering Manager" holds "data engineer", "Platform Engineering" holds
+# "platform engineer". Without this, removing the weak standalone token "data"
+# (see _GENERIC_TOKENS) would have cost real recall.
+_TERM_SUFFIX = r"(?:s|es|ing|ers?)?"
 
 
 def _term_pattern(term: str) -> "re.Pattern":
     # Letter/digit boundaries (not \b) so "ai" matches "AI/ML" but not "chair".
-    return re.compile(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])")
+    return re.compile(r"(?<![a-z0-9])" + re.escape(term) + _TERM_SUFFIX + r"(?![a-z0-9])")
 
 
 def _family_terms(role_phrase: str) -> set:

@@ -17,7 +17,7 @@ from typing import List
 from sqlalchemy.orm import load_only
 from sqlmodel import select
 
-from app.common.freshness import GHOST_SENTINEL_SCORE
+from app.common.freshness import GHOST_SENTINEL_SCORE, SENTINEL_SCORES, is_fresh_expr
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource
@@ -25,7 +25,9 @@ from app.matching.matcher import Matcher
 from app.matching.reranker import Reranker
 from app.matching.filters import RuleFilter, EmbeddingFilter, score_ghost
 from app.matching.hire_probability import score_hire_probability, blended_score as compute_blended
-from app.matching.fresh_budget import freshness_tier, order_fresh_first, order_fit_first
+from app.matching.fresh_budget import (
+    freshness_tier, order_by_promise, order_fresh_first, order_fit_first,
+)
 
 # Sources where the bot can fill the form automatically
 _AUTOFILL_SOURCES = {JobSource.GREENHOUSE, JobSource.LEVER, JobSource.ASHBY, JobSource.WORKDAY, JobSource.SMARTRECRUITERS}
@@ -384,8 +386,7 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
     or their application was cleaned up). Direct DB query — these jobs used to
     be re-shortlisted only if they happened to win a retrieval slot, which also
     let them crowd fresh jobs out of the cross-encoder budget."""
-    from app.common.plan_limits import shortlist_daily_limit
-    _shortlist_cap = shortlist_daily_limit(user_id)
+    from app.strategy import slate as _slate
     shortlisted: List[int] = []
     with get_session() as session:
         # Any existing application blocks a re-shortlist, regardless of the
@@ -412,34 +413,44 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
                 Job.rerank_score >= settings.shortlist_score_threshold,
+                # Never a posting the ghost or expiry sweep already wrote off:
+                # both sentinels sit below the bar today, but only by arithmetic.
+                Job.rerank_score.notin_(SENTINEL_SCORES),
             )
             .order_by(Job.rerank_score.desc())
             .limit(500)
         )
+        # The backstop has to deliver jobs the board will actually SHOW. Without
+        # the render window it re-shortlisted postings past shortlist_max_age_days:
+        # the slot was consumed, hygiene pruned the row on the next pass, and the
+        # user saw nothing for it. Same two bounds the render filter uses.
+        _fresh = is_fresh_expr(settings.shortlist_max_age_days,
+                               settings.shortlist_max_posted_age_days,
+                               for_render=True)
+        if _fresh is not None:
+            q = q.where(_fresh)
         for job in session.exec(q).all():
             if job.id in applied_ids:
                 continue
-            if today_count >= _shortlist_cap:
-                log.info("Daily shortlist limit reached — stopping re-shortlist of already-scored jobs.")
-                break
-            if not _check_and_enforce_company_cap(session, job, job.rerank_score):
-                session.commit()
-                continue
-            _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-            session.add(
-                Application(
-                    job_id=job.id,
-                    status=ApplicationStatus.SHORTLISTED,
-                    apply_url=job.url,
-                    apply_track=_track,
-                    user_id=user_id,
-                )
-            )
+            # ONE placement path (app/strategy/slate.py): capacity, the company
+            # cap and the challenger rule all live there, so this backstop can
+            # no longer disagree with the two scoring lanes about what "the
+            # board is full" means.
+            res = _slate.place(session, job, job.rerank_score, user_id=user_id)
             session.commit()
+            if not res.created:
+                if res.outcome == "below_cutoff":
+                    # The slate is full and this job does not beat it. Nothing
+                    # further down this score-ordered list will either.
+                    log.info("Re-shortlist: slate full and '%s' (%d) is below the "
+                             "cutoff (%.0f) — stopping.", job.title,
+                             job.rerank_score, res.cutoff or 0.0)
+                    break
+                continue
             shortlisted.append(job.id)
             today_count += 1
-            log.info("Job '%s' @ '%s' already scored (%d) — %s track. Shortlisted.",
-                     job.title, job.company, job.rerank_score, _track)
+            log.info("Job '%s' @ '%s' already scored (%d) — %s. Shortlisted.",
+                     job.title, job.company, job.rerank_score, res.outcome)
     return shortlisted, today_count
 
 
@@ -700,8 +711,7 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # client, so the slow network calls overlap instead of running one-by-one.
     rerank_results: dict[int, tuple] = {}
 
-    from app.common.plan_limits import shortlist_daily_limit
-    _shortlist_cap = shortlist_daily_limit(user_id)
+    from app.strategy import slate as _slate
     def _rerank_one(item):
         jid, _sim = item
         from app.common.inflight import claim
@@ -775,11 +785,14 @@ def run_matching(user_id: str | None = None) -> List[int]:
     drain_gate = min(settings.prescore_advance_threshold,
                      settings.shortlist_score_threshold)
     keep_gate = max(drain_gate, int(_allow.gate))
+    # Bound outside the Tier-1 block: the promise ordering below reads it, and
+    # relying on a name that only exists when prescoring happened to run is the
+    # kind of scoping accident that surfaces as a NameError in production.
+    advance_gate = keep_gate
     prescore_kept: list[tuple[int, float]] = []   # (jid, prescore) — stay Queued
     if (settings.prescore_enabled and to_rerank
             and reranker.has_prescore_backend()
             and not llm_budget_exhausted()):
-        advance_gate = keep_gate
         prescore_pool = to_rerank[: settings.prescore_cap]
         log.info("Cascade Tier-1: prescoring %d candidate(s) (gate=%d)",
                  len(prescore_pool), advance_gate)
@@ -832,9 +845,18 @@ def run_matching(user_id: str | None = None) -> List[int]:
     # ── Cascade Tier-2: Claude (authoritative) score, capped by the smaller of
     # the per-pass ceiling and what this user's budget still allows ────────────
     _tier2_cap = min(settings.llm_rerank_cap, _allow.n) if _allow.n > 0 else 0
+    # ONE final-purchase ordering, shared with the scoring lane: most promising
+    # first, freshest within ties (app/matching/fresh_budget.order_by_promise).
+    # This list arrives fresh-first, which is the right order for deciding WHAT
+    # TO PRESCORE — a brand-new posting deserves the cheap look first. It is the
+    # wrong order for deciding what to BUY: after Tier-1 has spoken, the cut
+    # below dropped the candidates it rated highest and kept the newest adjacent
+    # ones. The sort is stable, so freshness still breaks ties.
+    if prescore_by_jid:
+        to_rerank = order_by_promise(to_rerank, prescore_by_jid, advance_gate)
     if len(to_rerank) > _tier2_cap:
         log.info(
-            "LLM gate: %d candidates for Claude — capping to top %d (fresh-first, "
+            "LLM gate: %d candidates for Claude — capping to top %d (promise-first, "
             "budget: %s)", len(to_rerank), _tier2_cap, _allow.reason,
         )
         # THIS is where the queue's promise ordering comes from, and it used to
@@ -920,45 +942,54 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     select(Application).where(Application.job_id == job.id)
                 ).first()
                 if not existing:
-                    if today_count < _shortlist_cap:
-                        # ── Company cap + cooldown ──
-                        if not _check_and_enforce_company_cap(session, job, score):
+                    # ── Link liveness FIRST — non-ATS links only (direct boards
+                    # are covered by mark_ghost_jobs at scrape time). A dead link
+                    # must not consume a shortlist slot or the user's time, and
+                    # it must certainly not evict a live entry: placement can
+                    # displace, so verifying after it would trade a real job for
+                    # a 404.
+                    # BOUNDED: each check is a serial ~2.5s network call made
+                    # WHILE this pass holds the matching lock, so an unbounded
+                    # count (up to daily_shortlist_limit) could hold the lock
+                    # ~10+ min and starve every other lane. Cap the checks per
+                    # pass; beyond the cap, shortlist without verifying (the
+                    # link is re-checked when the user opens the job).
+                    if (getattr(settings, "verify_links_on_shortlist", True)
+                            and job.source not in _AUTOFILL_SOURCES
+                            and _liveness_checks < settings.max_liveness_checks_per_run):
+                        from app.discovery.verify import check_job_alive
+                        _liveness_checks += 1
+                        alive, dead_reason = check_job_alive(job.url, timeout=2.5)
+                        if not alive:
+                            job.is_closed = True
+                            job.closed_reason = f"Deactivated ({dead_reason})"
+                            session.add(job)
+                            # Share the verdict. This path pre-dates JobLiveness
+                            # and closed only THIS user's copy, so eleven other
+                            # tenants kept re-verifying and re-delivering the
+                            # same corpse. check_job_alive is already
+                            # conservative — it reports alive for every timeout,
+                            # blocked host and non-404/410 status — so reaching
+                            # here means a 404/410 or a careers-page redirect.
+                            try:
+                                from app.discovery import liveness as _lv
+                                _lv.record(
+                                    job.source.value if hasattr(job.source, "value")
+                                    else str(job.source),
+                                    job.external_id,
+                                    _lv.JobLivenessState.REMOVED.value,
+                                    reason="verify_link_dead", checked_url=job.url)
+                            except Exception:
+                                pass
                             session.commit()
+                            log.info("Job %s @ %s dead at shortlist time: %s",
+                                     job.title, job.company, dead_reason)
                             continue
 
-                        # ── Link liveness — non-ATS links only (direct boards are
-                        # covered by mark_ghost_jobs at scrape time). A dead link
-                        # must not consume a shortlist slot or the user's time.
-                        # BOUNDED: each check is a serial ~2.5s network call made
-                        # WHILE this pass holds the matching lock, so an unbounded
-                        # count (up to daily_shortlist_limit) could hold the lock
-                        # ~10+ min and starve every other lane. Cap the checks per
-                        # pass; beyond the cap, shortlist without verifying (the
-                        # link is re-checked when the user opens the job).
-                        if (getattr(settings, "verify_links_on_shortlist", True)
-                                and job.source not in _AUTOFILL_SOURCES
-                                and _liveness_checks < settings.max_liveness_checks_per_run):
-                            from app.discovery.verify import check_job_alive
-                            _liveness_checks += 1
-                            alive, dead_reason = check_job_alive(job.url, timeout=2.5)
-                            if not alive:
-                                job.is_closed = True
-                                job.closed_reason = f"Deactivated ({dead_reason})"
-                                session.add(job)
-                                session.commit()
-                                log.info("Job %s @ %s dead at shortlist time: %s",
-                                         job.title, job.company, dead_reason)
-                                continue
-
-                        _track = "autofill" if job.source in _AUTOFILL_SOURCES else "manual"
-                        new_app = Application(
-                            job_id=job.id,
-                            status=ApplicationStatus.SHORTLISTED,
-                            apply_url=job.url,
-                            apply_track=_track,
-                            user_id=user_id,
-                        )
-                        session.add(new_app)
+                    # ONE placement path — capacity, the company cap and the
+                    # challenger rule (app/strategy/slate.py).
+                    res = _slate.place(session, job, score, user_id=user_id)
+                    if res.created:
                         session.flush()
                         shortlisted.append(job.id)
                         today_count += 1
@@ -977,8 +1008,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
                                 session.add(notif)
                             except Exception as ne:
                                 log.warning("Failed to create high match notification: %s", ne)
-                    else:
-                        log.info("Daily shortlist limit (%d) reached — skipping application creation for job %s.", _shortlist_cap, job.title)
+                    elif res.outcome == "below_cutoff":
+                        log.info("Slate full and '%s' (%.0f) is below today's cutoff "
+                                 "(%.0f) — kept its score, not delivered.",
+                                 job.title, score, res.cutoff or 0.0)
 
             session.commit()
             log.info("Job %s @ %s: sim=%.3f rerank=%.0f — %s",
