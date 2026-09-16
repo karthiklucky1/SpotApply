@@ -337,7 +337,15 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
   the vacancy, and treating it as death would close live jobs whenever a board
   throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
-  an incomplete fetch records nothing.
+  an incomplete fetch records nothing. The gate runs LATE (`strategy/delivery_gate.py`):
+  `slate.place()` holds the cached in-session backstop, the scoring lane does the
+  network refresh outside its session for candidates that already cleared the
+  bar, single-flighted per posting and bounded by `CycleBudget`. Measured: ~55
+  requests in 10.5h, p50 ~335ms. **A refusal must also CLOSE the row** — the
+  first version only refused, and one dead Workday req was re-nominated and
+  re-refused 17 times in 7 hours. Aggregate counters only
+  (`metrics_snapshot`, drained once per scoring cycle into one log line);
+  never a job id, external id or URL in a label.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows

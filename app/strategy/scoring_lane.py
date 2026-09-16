@@ -695,6 +695,25 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     # lane can never overlap itself waiting on slow boards.
     _live_budget = _CycleBudget()
 
+    def _close_dead(job_id: int) -> None:
+        """Take a conclusively dead posting out of the queue.
+
+        Same reason as the matching lane's own dead path and `slate.place()`:
+        refusing a job without closing it leaves the row open, so every later
+        cycle re-nominates it. Production refused one posting 17 times in 7
+        hours. Only ever reached on REMOVED/EXPIRED.
+        """
+        try:
+            with get_session() as s:
+                j = s.get(Job, job_id)
+                if j and not j.is_closed:
+                    j.is_closed = True
+                    j.closed_reason = "Deactivated (posting gone before delivery)"
+                    s.add(j)
+                    s.commit()
+        except Exception as e:
+            log.debug("could not close dead job %s: %s", job_id, e)
+
     def _liveness_pair(job_id: int):
         """(source, external_id, url) for one job — a tiny projected read."""
         try:
@@ -717,6 +736,7 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
         _pair = _liveness_pair(jid)
         if _pair and _verified_dead(*_pair, budget=_live_budget):
             dead_skipped += 1
+            _close_dead(jid)
             continue                      # try the next candidate; do not stop
         with get_session() as session:
             job = session.get(Job, jid)

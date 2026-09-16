@@ -180,6 +180,19 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     # bar and the cutoff are unchanged.
     blocked, _state = _delivery_gate.blocks_delivery(session, job.source, job.external_id)
     if blocked:
+        # Refusing is not enough: the row stays open, so the lanes keep
+        # nominating it. Production refused ONE posting 17 times in 7 hours
+        # (04:43-13:52, the same Workday req) — each refusal cheap, all of them
+        # together a candidate slot burned on a corpse every cycle, forever.
+        # Close it here, where we already hold the session and the row, and the
+        # queue stops offering it. Conclusive evidence only, so this cannot fire
+        # on a 429 or a 403. Safe to do at delivery time by construction: this
+        # job has no application yet, so nothing tailored or applied can be
+        # closed by it.
+        if not job.is_closed:
+            job.is_closed = True
+            job.closed_reason = f"Deactivated (posting {_state} before delivery)"
+            session.add(job)
         log.info("Slate: refused '%s' — posting is %s before delivery", job.title, _state)
         return Placement(False, "dead")
 

@@ -505,3 +505,48 @@ def test_the_backstop_counts_nothing_when_it_lets_a_job_through():
         blocked, _state = gate.blocks_delivery(s, "greenhouse", ext)
     assert blocked is False
     assert "blocked_before_delivery_cached" not in gate.metrics_snapshot()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Refusing is not enough — a corpse must leave the queue
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_a_refused_posting_is_closed_so_it_stops_being_nominated():
+    """Measured in production: ONE dead Workday req was refused 17 times
+    between 04:43 and 13:52. Each refusal was cheap and correct, and together
+    they were a candidate slot spent on a corpse every cycle, forever, because
+    nothing ever closed the row."""
+    from app.strategy.slate import place
+    ext = f"{_PREFIX}place-dead-closes"
+    uid = f"{_PREFIX}u-close"
+    jid = _mk_job(ext, uid)
+    lv.record("greenhouse", ext, JobLivenessState.REMOVED.value, reason="http_404")
+    with get_session() as s:
+        res = place(s, s.get(Job, jid), 95.0, user_id=uid)
+        s.commit()
+    assert res.created is False and res.outcome == "dead"
+    with get_session() as s:
+        job = s.get(Job, jid)
+        assert job.is_closed is True
+        assert "REMOVED" in (job.closed_reason or "")
+
+
+@pytest.mark.parametrize("state", [
+    JobLivenessState.RATE_LIMITED.value,
+    JobLivenessState.BLOCKED.value,
+    JobLivenessState.UNKNOWN.value,
+    JobLivenessState.WRONG_PAGE.value,
+])
+def test_an_inconclusive_state_never_closes_a_job(state):
+    """The whole point of the design: a board that refused to answer must not
+    cost anyone a live vacancy."""
+    from app.strategy.slate import place
+    ext = f"{_PREFIX}no-close-{state}"
+    uid = f"{_PREFIX}u-nc-{state}"
+    jid = _mk_job(ext, uid)
+    lv.record("greenhouse", ext, state, reason="test")
+    with get_session() as s:
+        place(s, s.get(Job, jid), 95.0, user_id=uid)
+        s.commit()
+    with get_session() as s:
+        assert s.get(Job, jid).is_closed is False
