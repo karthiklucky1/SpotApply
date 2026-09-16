@@ -864,6 +864,22 @@ class JobHiringContext(SQLModel, table=True):
     # Bumped when the extractor changes, so a later pass can re-run only stale
     # rows instead of re-reading the whole corpus.
     extractor_version: int = Field(default=1)
+    # sha256 of the DESCRIPTION this row was extracted from. The pulse lane
+    # re-sees the same postings every tick, so capture skips anything already
+    # done — and without this, a posting whose description was later EDITED (a
+    # team named, a req id added, a recruiter line appended) would keep its
+    # first-sighting context forever. Comparing hashes re-extracts exactly the
+    # postings that changed and nothing else. NULL on rows written before this
+    # column existed; those adopt the current description as their baseline on
+    # the next sighting, without paying for a re-extraction.
+    content_hash: Optional[str] = Field(default=None)
+    # True when a pass examined this posting and found NOTHING worth recording.
+    # It is a real answer, and storing it is what stops the regex battery
+    # re-running over the ~1/3 of postings that yield no context, on every tick,
+    # forever. Such a row carries no values and no evidence, so nothing renders.
+    # Nullable with no default, like every other column added to a live table
+    # here, so the ALTER stays metadata-only.
+    examined_only: Optional[bool] = Field(default=None)
 
 
 class JobLiveness(SQLModel, table=True):

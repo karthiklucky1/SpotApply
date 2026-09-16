@@ -145,6 +145,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   user count (the matching lane scores users serially = O(users)). Lock-free
   (no FAISS); the 5-min matching lane stays as the retrieval + reshortlist +
   self-heal backstop. Set `SCORING_LANE_ENABLED=0` to fall back to matching-lane-only.
+  **Housekeeping never spends the cycle**: `_expire_stale_unscored` runs FIRST
+  and was unbounded, so when its SELECT hit Supabase's statement timeout (~150s
+  vs a 120s deadline) every cycle logged `queued: 200, scored: 0` — alive, on
+  schedule, buying nothing, for hours, on two consecutive builds. It now takes a
+  slice (`SCORING_EXPIRY_MAX_SECONDS` 20) + a per-statement `SET LOCAL`
+  ceiling, and reports `expiry_stopped`. Stopping it early is free (`_user_queue`
+  bounds by the same freshness expression, so unswept rows never reach a
+  worker); stopping SCORING early is what users feel. Any new pre-scoring step
+  must be bounded the same way. The scheduler's `wait_for` cannot cancel a
+  `to_thread` cycle, so an overrun drops later ticks — now logged, was silent.
 - **Run modes:** prod = `uvicorn app.api.server:app`; local all-in-one = `python -m app.main`.
 - **Jinja filters** (`server.py`): `fromjson`, `cleantext`, `humanize_signal`
   (turns raw signal tokens like `fresh_posting_4d` → "Posted 4 days ago").
@@ -307,7 +317,19 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   fact, and a weaker claim never overwrites a stronger one (`merge_into`).
   Adapters read keys the responses ALREADY contain (zero extra HTTP);
   `apply_text_extraction` runs at ingest on the FULL description because
-  retrieval only projects 800 chars. Measured on 45 live shortlisted jobs:
+  retrieval only projects 800 chars. **Capture runs once per posting PER
+  DESCRIPTION**, not per sighting: the pulse lane re-sees 4-5k postings a tick,
+  and extracting from each sighting took `upsert_shared` p50 810→2,200ms on an
+  already capacity-limited lane. `captured_state()` asks one bulk indexed
+  question first and re-extracts only where `content_hash` differs, so an
+  EDITED posting is re-read and an unchanged one is free. Two rules keep that
+  bounded: a posting that yields nothing still gets an `examined_only` row (the
+  ~1/3 with no context were being re-read forever), and the hash advances even
+  when a re-read finds nothing new (or the same posting re-reads forever).
+  Rows predating `content_hash` adopt the current text as their baseline
+  WITHOUT re-extracting — backfilling by re-extraction is the original
+  regression, all at once. A new ADAPTER (same text, new fields) needs
+  `EXTRACTOR_VERSION` bumped; a new description does not. Measured on 45 live shortlisted jobs:
   64.4% department/team, 35.6% requisition id, 2.2% named recruiter, **0/45
   named manager** — hence the UI says "People & team", never "hiring manager",
   and a posting creator is never relabelled as one.

@@ -55,6 +55,7 @@ _last_capped_log = [float("-inf")]  # monotonic time of the last "all users plan
                                     #  freshly started container the first capped cycle is < 1800s
                                     #  in and a 0.0 baseline swallows the very warning a post-deploy
                                     #  stall needs to emit)
+_last_overrun_log = [float("-inf")]  # last "previous cycle is still running" warning, same reasoning
 
 # One worker pool for the LIFE OF THE PROCESS, not one per cycle. A fresh
 # 20-thread ThreadPoolExecutor every 90s — abandoned with shutdown(wait=False)
@@ -749,6 +750,17 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
     """One scoring cycle: drain the global unscored queue in parallel, then
     shortlist + alert. Returns cycle stats. Skips if a cycle is already running."""
     if not _LANE_LOCK.acquire(blocking=False):
+        # Say so. The scheduler runs this via asyncio.to_thread and gives up on
+        # it with wait_for, but a THREAD cannot be cancelled — so a cycle that
+        # overruns keeps running while every later tick lands here and returns
+        # in silence. That is a lane doing nothing with nothing in the log to
+        # say why. Rate-limited to once every 10 minutes.
+        now = time.monotonic()
+        if now - _last_overrun_log[0] >= 600:
+            _last_overrun_log[0] = now
+            log.warning("Scoring cycle skipped — the previous cycle is STILL "
+                        "running. Its thread outlived the scheduler's wait, so "
+                        "ticks are being dropped until it finishes.")
         return {"skipped": "cycle already running"}
     try:
         return _run_scoring_cycle(deadline)
@@ -756,7 +768,28 @@ def run_scoring_lane(deadline: Optional[float] = None) -> dict:
         _LANE_LOCK.release()
 
 
-def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
+def _arm_statement_timeout(session, seconds: int) -> None:
+    """Bound ONE transaction's statements, Postgres only.
+
+    SET LOCAL, so the ceiling dies with the transaction and a pooled connection
+    never carries it to the next borrower (same pattern as the dashboard's
+    degraded-panel guard in server.py). Never raises: failing to arm a ceiling
+    must not be the thing that breaks the sweep.
+    """
+    ms = max(0, int(seconds or 0)) * 1000
+    if not ms:
+        return
+    try:
+        if session.get_bind().dialect.name == "postgresql":
+            from sqlalchemy import text as _text
+            session.execute(_text(f"SET LOCAL statement_timeout = {ms}"))
+    except Exception as e:
+        log.debug("statement_timeout not armed: %s", e)
+
+
+def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
+                           deadline: Optional[float] = None,
+                           max_seconds: Optional[int] = None) -> dict:
     """Bulk-stamp unscored per-user jobs that are past a freshness bound so they
     exit the queue WITHOUT costing a prescore or final.
 
@@ -792,6 +825,17 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
 
     Shared-pool rows are excluded (never scored directly). Returns a per-reason
     breakdown; either bound at 0 disables that leg.
+
+    TIME-BOUNDED, and that is load-bearing. This runs FIRST in every cycle, and
+    unbounded it could consume the whole cycle: production logged its SELECT
+    hitting Supabase's statement timeout at ~150s against a 120s cycle deadline,
+    so `scored` and `drained` were 0 in every cycle for hours — the lane was
+    alive, on schedule, and buying nothing. Two independent bounds now: a
+    wall-clock slice (`max_seconds`), checked between batches, and a per-
+    statement ceiling so one pathological scan cannot eat the slice either.
+    Stopping early is NORMAL and reported as `stopped` — the rows it did not
+    reach are still excluded from `_user_queue` by the same freshness
+    expression, so an unfinished sweep costs nothing but a later stamp.
     """
     from datetime import timedelta
 
@@ -802,9 +846,25 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
 
     known_days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
     posted_days = int(getattr(settings, "scoring_max_posted_age_days", 0) or 0)
-    out = {"total": 0, "queue_stale": 0, "ancient_posting": 0}
+    out = {"total": 0, "queue_stale": 0, "ancient_posting": 0, "stopped": ""}
     if known_days <= 0 and posted_days <= 0:
         return out
+
+    if max_seconds is None:
+        max_seconds = int(getattr(settings, "scoring_expiry_max_seconds", 0) or 0)
+    stmt_timeout = int(
+        getattr(settings, "scoring_expiry_statement_timeout_seconds", 0) or 0)
+    started = time.monotonic()
+
+    def _stop_reason() -> str:
+        """Why the sweep should hand the rest of the cycle back, or ''."""
+        if max_seconds and time.monotonic() - started >= max_seconds:
+            return "slice_spent"
+        # Never run past the cycle's own wall clock: whatever time is left after
+        # this belongs to scoring, which is the thing users are paying for.
+        if deadline is not None and time.monotonic() >= deadline:
+            return "cycle_deadline"
+        return ""
 
     now = datetime.utcnow()
     known_cutoff = now - timedelta(days=known_days) if known_days > 0 else None
@@ -841,8 +901,14 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
         # six figures of rows on a 764k-row table, and one unbounded UPDATE is the
         # Supabase statement-timeout / Disk-IO pattern we just spent a day fixing.
         for reason_key, extra, reason_text in passes:
+            if out["stopped"]:
+                break
             for _ in range(max_batches):
+                out["stopped"] = _stop_reason()
+                if out["stopped"]:
+                    break
                 with get_session() as session:
+                    _arm_statement_timeout(session, stmt_timeout)
                     ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
                         select(Job.id).where(*base, *extra).limit(batch)
                     ).all()]
@@ -867,14 +933,19 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50) -> dict:
                     break
         if out["total"]:
             log.info("Scoring: expired %d unscored job(s) — %d held >%dd unscored, "
-                     "%d posted >%dd ago (drained free, no LLM spend)",
+                     "%d posted >%dd ago (drained free, no LLM spend)%s",
                      out["total"], out["queue_stale"], known_days,
-                     out["ancient_posting"], posted_days)
+                     out["ancient_posting"], posted_days,
+                     f" — stopped early: {out['stopped']}" if out["stopped"] else "")
         return out
     except Exception as e:
         # WARNING not DEBUG: this runs every 90s, so a silent failure means a
-        # repeating unlogged IO burn.
-        log.warning("stale-unscored expiry failed (non-fatal): %s", e)
+        # repeating unlogged IO burn. `elapsed` is here because the failure that
+        # mattered in production was not the exception, it was how much of the
+        # cycle the sweep had already burned before raising it.
+        out["stopped"] = out["stopped"] or "error"
+        log.warning("stale-unscored expiry failed after %.1fs (non-fatal): %s",
+                    time.monotonic() - started, e)
         return out
 
 
@@ -904,10 +975,15 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # `expired_ancient` dwarfs `expired_queue_stale`, the sources are feeding us
     # evergreen listings; if `expired_queue_stale` dwarfs `scored`, the SCORER is
     # behind and the gate is throwing away work it should have reached.
-    _exp = _expire_stale_unscored()
+    # Bounded, and given the cycle deadline: housekeeping never gets to spend
+    # the budget that scoring needs. See _expire_stale_unscored's docstring for
+    # the production incident that made this non-negotiable.
+    _exp = _expire_stale_unscored(deadline=deadline)
     stats["expired_stale"] = _exp["total"]
     stats["expired_queue_stale"] = _exp["queue_stale"]
     stats["expired_ancient"] = _exp["ancient_posting"]
+    if _exp.get("stopped"):
+        stats["expiry_stopped"] = _exp["stopped"]
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —
@@ -1190,6 +1266,20 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                 stats["recheck"] = degraded.recheck_provisional(window, users)
     except Exception as e:
         log.warning("degraded-mode bookkeeping failed: %s", e)
+
+    # The delivery gate's counters had no emitter, which is why the first
+    # post-deploy report could only say "zero, because nothing ran" — the two
+    # are indistinguishable from outside the process. Drained once per cycle, so
+    # each line is that cycle's activity rather than an ever-growing total, and
+    # only when something actually happened. Aggregate keys only: fixed strings
+    # and by_source:<ats>, never a job or external id.
+    try:
+        from app.strategy.delivery_gate import metrics_snapshot as _gate_metrics
+        _gate = _gate_metrics(reset=True)
+        if any(v for k, v in _gate.items() if not k.startswith("latency_")):
+            log.info("Liveness gate: %s", _gate)
+    except Exception as e:
+        log.debug("liveness gate metrics unavailable: %s", e)
 
     try:
         with get_session() as session:

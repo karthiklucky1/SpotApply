@@ -719,7 +719,7 @@ def test_a_re_seen_posting_is_not_re_extracted():
     """Production regression guard. The pulse lane re-sees the same few
     thousand postings every tick; extracting from each sighting tripled its
     upsert p50 and pushed the capacity-limited lane into deferring boards."""
-    from app.discovery.hiring_context import already_captured, capture
+    from app.discovery.hiring_context import capture, captured_state
     ext = f"{_PREFIX}reseen"
 
     def _fresh():
@@ -729,7 +729,7 @@ def test_a_re_seen_posting_is_not_re_extracted():
 
     written, enriched, skipped = capture([_fresh()])
     assert written == 1 and skipped == 0
-    assert already_captured([("greenhouse", ext)]) == {("greenhouse", ext)}
+    assert ("greenhouse", ext) in captured_state([("greenhouse", ext)])
 
     # Same posting seen again on the next tick: no extraction, no write.
     written2, enriched2, skipped2 = capture([_fresh()])
@@ -755,3 +755,114 @@ def test_capture_still_processes_postings_it_has_not_seen():
 def test_capture_is_a_no_op_for_an_empty_batch():
     from app.discovery.hiring_context import capture
     assert capture([]) == (0, 0, 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# …but a posting whose DESCRIPTION changes is read again
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_an_edited_description_is_re_extracted_and_merged():
+    """A posting can gain a team, a req id or a recruiter line days after it
+    goes up. Skipping by identity alone froze its first sighting forever."""
+    from app.discovery.hiring_context import capture
+    ext = f"{_PREFIX}edited"
+
+    first = _raw("We are hiring an engineer.", ext=ext)
+    put(first.context, "department", "Engineering", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    assert capture([first])[0] == 1
+
+    edited = _raw("We are hiring an engineer. Questions? Email ada@example.com",
+                  ext=ext)
+    put(edited.context, "department", "Engineering", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    written, enriched, skipped = capture([edited])
+    assert (written, skipped) == (1, 0), "changed text must be re-read"
+    assert enriched == 1
+    ctx = load_context([("greenhouse", ext)])[("greenhouse", ext)]
+    assert ctx["contact_email"] == "ada@example.com"
+    assert ctx["department"] == "Engineering", "the earlier field survives"
+
+    # And the new text becomes the baseline — no unbounded re-reading.
+    again = _raw("We are hiring an engineer. Questions? Email ada@example.com",
+                 ext=ext)
+    assert capture([again]) == (0, 0, 1)
+
+
+def test_a_changed_description_that_adds_nothing_still_stops_re_reading():
+    """The trap: if the hash only advanced when a FIELD changed, a posting
+    edited in a way that yields nothing would be re-extracted on every tick
+    forever — the same unbounded re-work, reached by a different door."""
+    from app.discovery.hiring_context import capture
+    ext = f"{_PREFIX}edited-nothing"
+
+    first = _raw("Build things.", ext=ext)
+    put(first.context, "department", "Eng", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    capture([first])
+
+    edited = _raw("Build many things, with enthusiasm.", ext=ext)
+    put(edited.context, "department", "Eng", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    assert capture([edited])[0] == 1          # re-read once
+
+    same = _raw("Build many things, with enthusiasm.", ext=ext)
+    put(same.context, "department", "Eng", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    assert capture([same]) == (0, 0, 1)       # and then never again
+
+
+def test_a_posting_with_nothing_to_find_is_recorded_as_examined():
+    """~1/3 of postings expose no context. Without a record of having looked,
+    those are exactly the ones re-read on every tick, forever."""
+    from app.discovery.hiring_context import capture
+    ext = f"{_PREFIX}barren"
+    barren = _raw("Join us. We move fast and value ownership.", ext=ext)
+
+    written, _enriched, skipped = capture([barren])
+    assert written == 1 and skipped == 0
+
+    # Recorded, but not renderable: an empty section is worse than none.
+    assert load_context([("greenhouse", ext)]) == {}
+
+    # Second sighting costs nothing.
+    assert capture([_raw("Join us. We move fast and value ownership.", ext=ext)]) \
+        == (0, 0, 1)
+
+
+def test_an_examined_only_row_upgrades_when_the_posting_gains_context():
+    from app.discovery.hiring_context import capture
+    ext = f"{_PREFIX}upgrade"
+    capture([_raw("Nothing here.", ext=ext)])
+    assert load_context([("greenhouse", ext)]) == {}
+
+    later = _raw("Nothing here. You will report to the Director of ML.", ext=ext)
+    assert capture([later])[0] == 1
+    ctx = load_context([("greenhouse", ext)])[("greenhouse", ext)]
+    assert ctx["reporting_title"]
+
+
+def test_rows_predating_the_hash_adopt_a_baseline_without_re_extracting():
+    """Backfill must not re-run the extractor over the whole captured corpus:
+    that is the original regression, all at once, on the first tick."""
+    from sqlmodel import select
+    from app.db.init_db import get_session
+    from app.db.models import JobHiringContext
+    from app.discovery.hiring_context import capture
+    ext = f"{_PREFIX}legacy"
+
+    seed = _raw("Legacy posting.", ext=ext)
+    put(seed.context, "department", "Ops", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    capture([seed])
+
+    with get_session() as s:
+        row = s.exec(select(JobHiringContext).where(
+            JobHiringContext.external_id == ext)).first()
+        row.content_hash = None          # as a pre-column row looks
+        s.add(row)
+        s.commit()
+
+    again = _raw("Legacy posting.", ext=ext)
+    put(again.context, "department", "Ops", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    assert capture([again]) == (0, 0, 1), "stamped, not re-extracted"
+
+    with get_session() as s:
+        row = s.exec(select(JobHiringContext).where(
+            JobHiringContext.external_id == ext)).first()
+        assert row.content_hash, "the baseline is now recorded"
+        assert row.department == "Ops", "and the existing context is untouched"

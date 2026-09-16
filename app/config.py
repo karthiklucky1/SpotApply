@@ -346,6 +346,20 @@ class Settings(BaseSettings):
     scoring_global_cap: int = 200          # max total jobs scored per cycle (bounds cost + wall-clock; also bounds how many prescores can overshoot when the finals budget trips mid-cycle)
     scoring_drain_cap: int = 25            # SCORING_DRAIN_CAP — Tier-1-only slice per user per cycle AFTER their finals allowance hits 0. Production Aug 2026: with one PRO user the lane bought ~70 finals/day and then, because a user with no allowance was dropped from the cycle ENTIRELY, ran zero Tier-1 prescores for the rest of the day — the queue slice was keyed to remaining finals, so exhausting the finals budget also halted the ~$0.0002 OpenAI drain, the backlog never shrank, and the scored feed aged to a 34.8-day median. This slice keeps draining: never-prescored queue items are Tier-1'd, misfits (< the drain gate) are stamped out for good, and everything else stays Queued WITH its prescore so tomorrow's finals budget opens on the best-known candidates instead of arrival order. Never buys a final; skipped when the Anthropic prescore allowance is what ran out (that path IS metered). 0 disables (the old behavior).
     scoring_lane_max_seconds: int = 120    # hard wall-clock cap per cycle
+    # SCORING_EXPIRY_MAX_SECONDS — the slice of a cycle the stale-unscored
+    # expiry sweep may consume before scoring starts. It runs FIRST and used to
+    # be unbounded: production (both builds, 02:30-03:00 UTC) shows its SELECT
+    # hitting Supabase's statement timeout at ~150s, which is the whole cycle,
+    # so every cycle logged `queued: 200, scored: 0` — the lane spent its entire
+    # budget on housekeeping and bought no finals at all. The sweep is
+    # housekeeping (`_user_queue` already bounds by the KNOWN freshness
+    # expression, so stale rows never reach a worker); scoring is the product,
+    # and it gets the rest of the cycle. 0 = unbounded (the old behaviour).
+    scoring_expiry_max_seconds: int = 20
+    # Per-STATEMENT ceiling inside that slice, so one pathological scan cannot
+    # eat the whole slice either. Armed as SET LOCAL, so a pooled connection
+    # never carries it out of the sweep's own transaction. 0 = server default.
+    scoring_expiry_statement_timeout_seconds: int = 10
     # ── Dual-provider final scoring (Option A) ────────────────────────────────
     # The prescore→final cascade is a RELAY (GPT drains misfits, then Claude
     # scores the survivors) — one job flows GPT→Claude, so the two can't be

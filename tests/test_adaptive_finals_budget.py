@@ -394,7 +394,7 @@ def test_a_delivered_user_is_not_reported_as_a_stall(monkeypatch, caplog):
     """
     import logging
     monkeypatch.setattr(sl, "_expire_stale_unscored",
-                        lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
+                        lambda **kw: {"total": 0, "queue_stale": 0, "ancient_posting": 0, "stopped": ""})
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a", "user-b"])
     monkeypatch.setattr(sl, "_finals_allowance", lambda uid, cap: fb.Allowance(
         0, 40, "delivered 35/35 — the day's jobs are on the board"))
@@ -412,7 +412,7 @@ def test_a_user_stopped_by_the_cost_ceiling_is_reported(monkeypatch, caplog):
     user who did NOT get their day's jobs is a warning, every time."""
     import logging
     monkeypatch.setattr(sl, "_expire_stale_unscored",
-                        lambda: {"total": 0, "queue_stale": 0, "ancient_posting": 0})
+                        lambda **kw: {"total": 0, "queue_stale": 0, "ancient_posting": 0, "stopped": ""})
     monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["user-a"])
     monkeypatch.setattr(sl, "_finals_allowance", lambda uid, cap: fb.Allowance(
         0, 40, "daily cost ceiling (250/250 finals) at 9/35 delivered"))

@@ -474,3 +474,34 @@ def test_a_zero_budget_means_unlimited_not_disabled(monkeypatch):
     assert budget.exhausted is False
     assert gate.verified_dead(JobSource.GREENHOUSE, f"{_PREFIX}bud-zero",
                               "https://x/jobs/1", budget=budget) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The cached backstop has to be visible, or "blocked nothing" reads like
+# "never ran"
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_the_in_session_backstop_counts_what_it_blocks():
+    """The first post-deploy report could not tell whether the gate had
+    blocked nothing or had never executed, because `blocks_delivery` — the
+    path inside `slate.place()`, the only writer of a shortlisted application
+    — bumped no counter at all."""
+    gate.metrics_snapshot(reset=True)
+    ext = f"{_PREFIX}backstop-counted"
+    lv.record("greenhouse", ext, JobLivenessState.REMOVED.value, reason="http_404")
+    with get_session() as s:
+        blocked, state = gate.blocks_delivery(s, "greenhouse", ext)
+    assert blocked is True and state == JobLivenessState.REMOVED.value
+    snap = gate.metrics_snapshot()
+    assert snap["blocked_before_delivery_cached"] == 1
+    assert snap["by_source:greenhouse:blocked_cached"] == 1
+
+
+def test_the_backstop_counts_nothing_when_it_lets_a_job_through():
+    gate.metrics_snapshot(reset=True)
+    ext = f"{_PREFIX}backstop-live"
+    lv.record("greenhouse", ext, JobLivenessState.LIVE.value, reason="http_200")
+    with get_session() as s:
+        blocked, _state = gate.blocks_delivery(s, "greenhouse", ext)
+    assert blocked is False
+    assert "blocked_before_delivery_cached" not in gate.metrics_snapshot()

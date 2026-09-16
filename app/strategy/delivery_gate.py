@@ -113,7 +113,16 @@ def blocks_delivery(session, source, external_id: str) -> Tuple[bool, str]:
         log.debug("blocks_delivery lookup failed for %s: %s", src, e)
         return False, JobLivenessState.UNKNOWN.value
     state = (row[0] if isinstance(row, tuple) else row) or JobLivenessState.UNKNOWN.value
-    return is_dead(state), state
+    dead = is_dead(state)
+    if dead:
+        # Counted separately from the network path's `blocked_before_delivery`:
+        # this one costs nothing and catches the job in `place()` itself, which
+        # is the only writer of a shortlisted application. Without its own
+        # counter a backstop block is invisible, and "the gate blocked nothing"
+        # reads identically to "the gate never ran".
+        _bump("blocked_before_delivery_cached")
+        _bump(f"by_source:{src}:blocked_cached")
+    return dead, state
 
 
 def _cached(source: str, external_id: str):
