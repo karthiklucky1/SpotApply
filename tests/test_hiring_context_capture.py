@@ -709,3 +709,49 @@ def test_old_code_still_reads_rows_written_by_new_code():
         with get_session() as s:
             s.exec(delete(Job).where(Job.id == jid))
             s.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Capture runs once per POSTING, not once per sighting
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_a_re_seen_posting_is_not_re_extracted():
+    """Production regression guard. The pulse lane re-sees the same few
+    thousand postings every tick; extracting from each sighting tripled its
+    upsert p50 and pushed the capacity-limited lane into deferring boards."""
+    from app.discovery.hiring_context import already_captured, capture
+    ext = f"{_PREFIX}reseen"
+
+    def _fresh():
+        r = _raw("You will report to the Director of ML. " * 3, ext=ext)
+        put(r.context, "department", "Applied AI", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+        return r
+
+    written, enriched, skipped = capture([_fresh()])
+    assert written == 1 and skipped == 0
+    assert already_captured([("greenhouse", ext)]) == {("greenhouse", ext)}
+
+    # Same posting seen again on the next tick: no extraction, no write.
+    written2, enriched2, skipped2 = capture([_fresh()])
+    assert (written2, enriched2, skipped2) == (0, 0, 1)
+
+
+def test_capture_still_processes_postings_it_has_not_seen():
+    from app.discovery.hiring_context import capture
+    done_ext, new_ext = f"{_PREFIX}mix-done", f"{_PREFIX}mix-new"
+    r1 = _raw("x", ext=done_ext)
+    put(r1.context, "department", "Eng", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    capture([r1])
+    r1b = _raw("x", ext=done_ext)
+    put(r1b.context, "department", "Eng", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    r2 = _raw("x", ext=new_ext)
+    put(r2.context, "department", "Data", EVIDENCE_TEAM_OR_DEPARTMENT, "d")
+    written, _enriched, skipped = capture([r1b, r2])
+    assert written == 1 and skipped == 1
+    ctx = load_context([("greenhouse", new_ext)])[("greenhouse", new_ext)]
+    assert ctx["department"] == "Data"
+
+
+def test_capture_is_a_no_op_for_an_empty_batch():
+    from app.discovery.hiring_context import capture
+    assert capture([]) == (0, 0, 0)

@@ -437,10 +437,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     """
     from app.analytics.funnel import FunnelTracker
     from app.discovery.title_filter import keyword_hit, matches_title
-    from app.discovery.hiring_context import (
-        apply_text_extraction as _apply_text_extraction,
-        record_context as _record_context,
-    )
+    from app.discovery.hiring_context import capture as _capture_context
     from datetime import datetime
     inserted = 0
 
@@ -484,15 +481,18 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     #   * on r.description, which is the FULL text. The retrieval path only
     #     ever sees the first 800 characters (`matcher._candidate_columns`),
     #     and most reporting lines sit past that.
-    # Both calls are CPU-only and both swallow their own failures: capturing
-    # context must never be able to stop discovery from storing jobs.
+    # Bounded by ONE indexed lookup: postings already captured at this
+    # extractor version are skipped, so the regex battery runs once per
+    # POSTING rather than once per sighting. Without that, the pulse lane
+    # re-extracted the same few thousand descriptions every tick and its
+    # upsert p50 tripled. Swallows its own failures: capturing context must
+    # never be able to stop discovery from storing jobs.
     if settings.hiring_context_enabled:
         try:
-            _hc_text = _apply_text_extraction(candidates)
-            _hc_rows = _record_context(candidates)
+            _hc_rows, _hc_text, _hc_skipped = _capture_context(candidates)
             if _hc_rows:
-                log.info("Hiring context: %d posting(s) recorded, %d enriched from text",
-                         _hc_rows, _hc_text)
+                log.info("Hiring context: %d posting(s) recorded, %d enriched from "
+                         "text, %d already captured", _hc_rows, _hc_text, _hc_skipped)
         except Exception as e:
             log.warning("Hiring context capture skipped: %s", e)
 

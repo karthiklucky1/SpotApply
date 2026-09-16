@@ -224,6 +224,69 @@ def apply_text_extraction(raw_jobs: Iterable[RawJob]) -> int:
     return touched
 
 
+def already_captured(pairs: List[tuple]) -> set:
+    """Which (source, external_id) already have context at the CURRENT version.
+
+    This exists because of a measured production regression. The hook runs
+    inside `_upsert`, and the pulse lane re-sees the same 4,000-5,000 postings
+    every tick — so extracting from every candidate meant re-running the regex
+    battery over the full description of thousands of unchanged postings, every
+    tick, forever. Pulse `upsert_shared` p50 went from ~810ms to ~2,200ms and
+    the lane, which is already capacity-limited, deferred more boards.
+
+    One bulk indexed SELECT answers "have we already done this posting?", and
+    the expensive work then runs once per posting instead of once per sighting.
+
+    A posting whose description later CHANGES is not re-extracted until
+    EXTRACTOR_VERSION is bumped. That is the deliberate trade: org-unit fields
+    essentially never change on a live posting, and re-reading every posting
+    forever to catch the rare edit is what caused the regression.
+    """
+    from sqlmodel import select
+    from app.db.init_db import get_session
+    from app.db.models import JobHiringContext
+
+    if not pairs:
+        return set()
+    done: set = set()
+    wanted = set(pairs)
+    try:
+        with get_session() as session:
+            for start in range(0, len(pairs), 300):
+                chunk = pairs[start:start + 300]
+                rows = session.exec(
+                    select(JobHiringContext.source, JobHiringContext.external_id)
+                    .where(JobHiringContext.source.in_([k[0] for k in chunk]),
+                           JobHiringContext.external_id.in_([k[1] for k in chunk]),
+                           JobHiringContext.extractor_version >= EXTRACTOR_VERSION)
+                ).all()
+                for src, ext in rows:
+                    if (src, ext) in wanted:
+                        done.add((src, ext))
+    except Exception as e:
+        # On failure do the work rather than skip it: correctness over cost.
+        log.debug("already_captured lookup failed: %s", e)
+        return set()
+    return done
+
+
+def capture(raw_jobs: List[RawJob]) -> tuple:
+    """Extract and persist context for postings we have not done yet.
+
+    Returns (rows_written, text_enriched, skipped_already_done).
+    """
+    if not raw_jobs:
+        return 0, 0, 0
+    pairs = sorted({(r.source, r.external_id) for r in raw_jobs if r.external_id})
+    done = already_captured(pairs)
+    todo = [r for r in raw_jobs if (r.source, r.external_id) not in done]
+    if not todo:
+        return 0, 0, len(raw_jobs)
+    enriched = apply_text_extraction(todo)
+    written = record_context(todo)
+    return written, enriched, len(raw_jobs) - len(todo)
+
+
 def record_context(raw_jobs: Iterable[RawJob]) -> int:
     """Upsert one context row per distinct (source, external_id).
 
