@@ -406,6 +406,24 @@ class Settings(BaseSettings):
     dormant_user_grace_days: int = 21    # DORMANT_USER_GRACE_DAYS — users with no authenticated request for this many days are skipped by adoption/matching/scoring/alerts (their pool stops refilling, so no LLM money is spent on them); the next visit re-activates them within one lane tick. Profiles that predate activity tracking (last_active_at NULL) are grandfathered as active. 0 disables the gate.
     shortlist_render_cap: int = 200      # max shortlist cards rendered on the dashboard. Was 100, which HID jobs: with 161 shortlisted the board showed 100 while the header/live count said 161, so 61 jobs could never appear and the "new matches" banner looped forever. 200 covers a full day's shortlisting (daily_shortlist_limit); above it the "showing X of Y" note kicks in.
     shortlist_max_age_days: int = 5      # SHORTLIST_MAX_AGE_DAYS — the KNOWN-age render/prune bound: a job we have held this long without it being tailored/applied leaves the board (→ SKIPPED, freeing the per-company slot). Founder-set to 5 in lockstep with SCORING_MAX_JOB_AGE_DAYS=5: score nothing we have held longer than 5d, show nothing we have held longer than 5d. Measured from coalesce(first_seen, discovered_at); the source's own date is bounded separately by SHORTLIST_MAX_POSTED_AGE_DAYS. 0 disables the prune.
+    # EXPLORER_MAX_AGE_DAYS — the KNOWN-age window the All Jobs and Ghost Jobs
+    # tabs default to, and the one the tab badges count. The pool itself keeps
+    # every row; this only bounds what the browser asks for.
+    #
+    # It is a SERVER default, not a JS constant, because the window is the
+    # product promise ("be first to apply"), not a UI preference: the explorer
+    # used to send max_age_days=7 from the template while `/api/jobs` defaulted
+    # to no window at all, so the two unbounded COUNT(*)s behind the badge
+    # ("All Jobs (64,937)", "Ghost Jobs (17,254)") scanned the whole pool on
+    # every keystroke, and any caller that forgot the param got all of it.
+    # An explicit max_age_days=0 still means "all time" so the UI toggle works.
+    #
+    # Separate from shortlist_max_age_days on purpose even though both are 5:
+    # that one also drives prune_stale_shortlist, so binding the explorer to it
+    # would make a later explorer tweak silently change what hygiene deletes.
+    # Measured from coalesce(first_seen, discovered_at); the source's own date
+    # is bounded by SHORTLIST_MAX_POSTED_AGE_DAYS, as everywhere else. 0 disables.
+    explorer_max_age_days: int = 5
     # JOB_DESCRIPTION_STRIP_AGE_DAYS — blank the JD text on jobs older than this
     # that nobody applied to and that carry no real score. `description` is ~5.8 KB
     # a row and was 3.3 GB of a 5.76 GB table (over half the disk); the funnel is

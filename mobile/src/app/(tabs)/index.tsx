@@ -31,10 +31,16 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All jobs" },
 ];
 
+// max_age_days is explicit on every filter, including the 0s. /api/jobs now
+// applies settings.explorer_max_age_days (5) when the param is ABSENT, because
+// the web explorer's badge counts had to stop scanning the whole pool. Omitting
+// it here would silently turn "All jobs" into "all jobs from the last 5 days"
+// and hide older high scorers from "Top matches" — 0 is the documented
+// all-time escape.
 const QUERY_FOR: Record<Filter, JobsQuery> = {
-  top: { min_score: 60, roles_only: "1", hide_aggregators: "1" },
+  top: { min_score: 60, roles_only: "1", hide_aggregators: "1", max_age_days: 0 },
   fresh: { sort: "fresh", max_age_days: 7, roles_only: "1", hide_aggregators: "1" },
-  all: {},
+  all: { max_age_days: 0 },
 };
 
 const PAGE_SIZE = 30;

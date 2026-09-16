@@ -200,6 +200,16 @@ class Application(SQLModel, table=True):
     status: ApplicationStatus = ApplicationStatus.DISCOVERED
     tailored_resume_path: Optional[str] = None
     cover_letter_path: Optional[str] = None
+    # When tailoring last DELIVERED documents the user is allowed to read.
+    #
+    # The two paths above are NOT that signal: tailor.py writes them before it
+    # branches on grounding, so a draft blocked at ERROR has both set while
+    # /application/{id}/details withholds the text and download-resume 409s.
+    # A "View Documents" button driven off path presence therefore offers a
+    # document that does not open. Stamped only in the TAILORED branch.
+    #
+    # updated_at is not a substitute either — it moves on any write.
+    tailored_at: Optional[datetime] = None
     apply_url: Optional[str] = None  # may differ from job.url after redirects
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -368,6 +378,16 @@ class UserProfile(SQLModel, table=True):
     # Department / industry for non-CS fields (e.g. "Civil Engineering").
     # Drives role suggestions and the discovery keyword fallback.
     industry: str = ""
+    # Which résumé the Chrome extension attaches when it fills a form:
+    # "tailored" (per-job rewrite, the default) or "original" (the master
+    # résumé exactly as uploaded).
+    #
+    # Scope, precisely: "original" stops /api/fill-pack/{id}/resume from
+    # tailoring on a cache miss, so fetching the file never spends a tailor
+    # credit. It does NOT stop /api/fill-pack/{id}'s background tailor, which
+    # also produces the COVER LETTER the extension types into the form — a
+    # user who wants their own résumé still wants a tailored cover letter.
+    autofill_resume_source: str = "tailored"
     # ── Location preferences (drive discovery + scoring) ──────────────────────
     # Country the user wants jobs in. Discovery + reranker filter to this country
     # (plus remote when remote_ok). Defaults to US to preserve legacy behavior.

@@ -299,8 +299,50 @@ def init_db() -> None:
         # When the user opened this recommendation. NULL = never seen, which is
         # what makes an entry replaceable by a later, stronger job.
         ("viewed_at", "DATETIME"),
+        # When tailoring last DELIVERED readable documents. NULL = never (or
+        # only ever blocked at ERROR, which writes the paths but withholds the
+        # text). This is what the board's "Tailored / View Documents" state
+        # reads; the paths alone would advertise a document that will not open.
+        ("tailored_at", "DATETIME"),
     ]:
         add_column_if_missing("application", col, col_type)
+
+    # tailored_at arrived as a bare nullable ALTER, and the board now branches
+    # on it instead of on the document paths. Without this backfill every
+    # application delivered BEFORE the deploy reads as "never tailored": the
+    # card loses its View Documents button, /details reports tailored=false so
+    # the download link stays hidden, and the only way back is pressing Tailor
+    # — a full paid generation to rebuild documents already sitting on disk.
+    # (Same shape as the first_seen bare-ALTER regression freshness.py records.)
+    #
+    # Idempotent: the tailored_at IS NULL guard makes every later boot a no-op.
+    # ERROR rows are excluded — their paths exist but the text is withheld,
+    # which is the exact distinction the column was added to draw. The ORM
+    # update() is used rather than raw SQL because SQLAlchemy persists this
+    # enum by member NAME ('ERROR'), differently on SQLite and the native pg
+    # type; a hand-written `status <> 'error'` would raise on Postgres and
+    # silently match nothing on SQLite.
+    try:
+        from sqlalchemy import func as _sa_func
+        from sqlalchemy import update as _sa_update
+
+        from app.db.models import Application as _App
+        from app.db.models import ApplicationStatus as _AS
+        with engine.begin() as conn:
+            _res = conn.execute(
+                _sa_update(_App)
+                .where(_App.tailored_at.is_(None),
+                       _App.tailored_resume_path.is_not(None),
+                       _App.status != _AS.ERROR)
+                .values(tailored_at=_sa_func.coalesce(_App.submitted_at,
+                                                      _App.updated_at,
+                                                      _App.created_at))
+            )
+        if _res.rowcount:
+            log.info("Backfilled tailored_at on %d already-delivered application(s)",
+                     _res.rowcount)
+    except Exception as e:
+        log.error("tailored_at backfill failed (continuing): %s", e)
 
     # Migrations for job table
     add_column_if_missing("job", "cross_source_slug", "VARCHAR")

@@ -36,7 +36,7 @@ from app.common.logging_setup import setup_logging
 setup_logging()
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlmodel import select
 from sqlalchemy import func, desc, nullslast
 
@@ -2968,21 +2968,47 @@ def api_stats(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     _uid_filter = (uid and uid != "local")
     with get_session() as session:
-        # Total OPEN jobs. NOTE: the All Jobs list applies a default-on "My
-        # roles" filter, so its *filtered* total is smaller — the tab badge uses
-        # /api/jobs' total_open (this same query) to stay equal to the Pool card.
+        # Total OPEN jobs — the WHOLE pool, deliberately unwindowed. This is
+        # the Pool stat card and `funnel.total_pool`, and the onboarding
+        # banner reads `total_jobs == 0` as "this user has nothing yet". Bound
+        # it by the explorer's 5-day window and a user with 60k rows and a
+        # quiet week looks like a brand-new account, and the funnel reports a
+        # windowed denominator over unwindowed stage counters.
+        #
+        # The tab badges are a different question and get their own windowed
+        # counts: /api/jobs `total_open` for All Jobs, `closed_jobs_recent`
+        # below for Ghost Jobs.
         jq = select(func.count(Job.id)).where(Job.is_closed == False)
         if _uid_filter:
             jq = jq.where(Job.user_id == uid)
         total_jobs = session.exec(jq).first() or 0
 
-        # Closed/ghosted jobs — fills the Ghost Jobs tab badge at page load
-        # (previously that badge stayed a "..." placeholder until the tab was
-        # first clicked, because only the tab's own loader wrote it).
+        # Closed/ghosted jobs, whole pool — kept for the same reason.
         gq = select(func.count(Job.id)).where(Job.is_closed == True)  # noqa: E712
         if _uid_filter:
             gq = gq.where(Job.user_id == uid)
         closed_jobs = session.exec(gq).first() or 0
+
+        # Closed jobs INSIDE the explorer's window — this and only this fills
+        # the Ghost Jobs tab badge at page load (previously that badge stayed
+        # a "..." placeholder until the tab was first clicked, because only the
+        # tab's own loader wrote it). It must be built from the same setting
+        # the tab's own query defaults to, or the badge changes value the
+        # moment the user opens the tab.
+        from app.common.freshness import is_fresh_expr as _fresh_expr
+        _explorer_age = int(getattr(settings, "explorer_max_age_days", 0) or 0)
+        _recent_filter = _fresh_expr(
+            _explorer_age,
+            int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+            for_render=True,
+        ) if _explorer_age > 0 else None
+        if _recent_filter is not None:
+            grq = select(func.count(Job.id)).where(Job.is_closed == True)  # noqa: E712
+            if _uid_filter:
+                grq = grq.where(Job.user_id == uid)
+            closed_jobs_recent = session.exec(grq.where(_recent_filter)).first() or 0
+        else:
+            closed_jobs_recent = closed_jobs
 
         # Unique companies in Job db
         cq = select(func.count(func.distinct(Job.company)))
@@ -3093,6 +3119,9 @@ def api_stats(request: Request) -> dict:
     return {
         "total_jobs": total_jobs,
         "closed_jobs": closed_jobs,
+        # What the Ghost Jobs tab will actually page through, so the badge and
+        # the table agree before the first click.
+        "closed_jobs_recent": closed_jobs_recent,
         "total_companies": total_companies,
         "funnel": {
             "total_pool": total_jobs,
@@ -3153,6 +3182,10 @@ _JOB_LIST_COLS = (
     Application.apply_track.label("app_track"),
     Application.created_at.label("app_created"),
     Application.updated_at.label("app_updated"),
+    # Drives "Tailor Again" + "View Documents" on the explorer rows. A scalar
+    # timestamp, so no egress concern — the ban is on `description` and whole
+    # -entity selects.
+    Application.tailored_at.label("app_tailored_at"),
 )
 
 
@@ -3311,11 +3344,21 @@ def api_jobs(
         #
         # This must stay at least as permissive as the scoring gate or we pay
         # for finals the board then hides (tests/test_settings_defaults.py).
+        #
+        # The window is a SERVER default (explorer_max_age_days), not something
+        # the caller has to remember: an omitted max_age_days used to mean "the
+        # whole pool", so every caller that forgot it paid for a full-table
+        # scan. An explicit 0 still means all time — that is the UI's third
+        # toggle state, and it must keep working.
+        _effective_age = (
+            int(getattr(settings, "explorer_max_age_days", 0) or 0)
+            if max_age_days is None else int(max_age_days)
+        )
         _age_filter = None
-        if max_age_days is not None and max_age_days > 0:
+        if _effective_age > 0:
             from app.common.freshness import is_fresh_expr as _fresh_expr
             _age_filter = _fresh_expr(
-                max_age_days,
+                _effective_age,
                 int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
                 for_render=True,
             )
@@ -3361,12 +3404,25 @@ def api_jobs(
 
         total = session.exec(count_query).first() or 0
 
-        # Unfiltered open-pool size — same query as /api/stats total_jobs, so
-        # the "All Jobs" tab badge can always equal the Pool card while `total`
-        # (which respects the default-on "My roles" filter) drives pagination.
+        # Open-pool size INSIDE the caller's age window — the "All Jobs" tab
+        # badge, while `total` (which also respects the default-on "My roles"
+        # filter) drives pagination.
+        #
+        # This carries _age_filter deliberately. Unwindowed it counted the
+        # whole pool — "All Jobs (64,937)" in the tab against a list that only
+        # ever showed the last few days — so the badge described a number the
+        # user could not page to, and the COUNT(*) behind it scanned every row
+        # on every request.
+        #
+        # It therefore NO LONGER equals /api/stats `total_jobs`, which stays
+        # the whole pool on purpose (the Pool card, funnel.total_pool and the
+        # "no jobs yet" onboarding check all read it as "everything we hold").
+        # Two numbers, two meanings, each labelled where it is shown.
         open_q = select(func.count(Job.id)).where(Job.is_closed == False)  # noqa: E712
         if _uid_filter:
             open_q = open_q.where(Job.user_id == uid)
+        if _age_filter is not None:
+            open_q = open_q.where(_age_filter)
         total_open = session.exec(open_q).first() or 0
 
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
@@ -3426,7 +3482,8 @@ def api_jobs(
              jsimilarity, jrerank, jhire_prob, jblended, jreason,
              jis_closed, jclosed_reason,
              jscored_at, jprescored_at, jexpired_at,
-             app_id, app_status, app_track, app_created, app_updated) = row
+             app_id, app_status, app_track, app_created, app_updated,
+             app_tailored_at) = row
             _posted = jposted_at or jfirst_seen
             _seen = _tz_naive(jfirst_seen or jdiscovered_at)
             jobs_list.append({
@@ -3465,6 +3522,8 @@ def api_jobs(
                     "apply_track": app_track,
                     "created_at": app_created.isoformat() if app_created else None,
                     "updated_at": app_updated.isoformat() if app_updated else None,
+                    "tailored_at": (app_tailored_at.isoformat()
+                                    if app_tailored_at else None),
                 } if app_id is not None else None
             })
             
@@ -3508,6 +3567,10 @@ def _dashboard_load_options():
             Application.apply_url, Application.tailored_resume_path,
             Application.cover_letter_path, Application.submitted_at,
             Application.created_at, Application.updated_at,
+            # The macros branch on this to pick Tailor vs View Documents +
+            # Tailor Again. Leaving it off the allowlist means one deferred
+            # SELECT per rendered card.
+            Application.tailored_at,
         ),
         Load(Job).load_only(
             Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
@@ -4100,6 +4163,15 @@ def application_details(application_id: int, request: Request) -> dict:
         "rejection_analysis": rejection_data,
         "quality": quality,
         "ats": ats,
+        # The board's tailored state, so every JS surface can reconcile itself
+        # from data instead of from whichever button happened to be clicked.
+        # `blocked` is not the inverse of `tailored`: an ERROR draft has both
+        # document paths written and neither is readable.
+        "tailored": bool(application.tailored_at)
+                    and application.status != ApplicationStatus.ERROR,
+        "tailored_at": (application.tailored_at.isoformat()
+                        if application.tailored_at else None),
+        "blocked": application.status == ApplicationStatus.ERROR,
     }
 
 
@@ -4611,6 +4683,12 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "salary_currency": (getattr(p, "salary_currency", "") if p else "") or "USD",
         "preferred_country": (getattr(p, "preferred_country", "") if p else "") or "",
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
+        # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
+        # does not branch on it — the server already resolved the choice — but
+        # it makes the setting visible in the popup's diagnostics instead of
+        # leaving "why did it attach that file?" unanswerable.
+        "autofill_resume_source": (
+            (getattr(p, "autofill_resume_source", "") if p else "") or "tailored"),
     }
 
     # Add AI-generated essay answers
@@ -4699,11 +4777,46 @@ def _base_resume_bytes(uid: str | None):
         return None
 
 
+def _autofill_resume_source(session, uid: str | None) -> str:
+    """Which résumé the extension should attach: "tailored" or "original".
+
+    Resolves the profile EXACTLY as ``_get_or_create_profile`` does, because a
+    second, subtly different lookup is how a preference ends up unreadable for
+    one tenant shape while every unit test stays green:
+
+    * a real tenant is scoped by ``user_id``;
+    * ``"local"`` (the SQLite dev tenant) maps to NULL, which the writers store
+      — but local mode also has exactly one profile, and older rows predate the
+      NULL convention, so it takes the first row rather than requiring
+      ``user_id IS NULL``;
+    * in multi-tenant mode a missing uid returns the default and reads NOTHING,
+      instead of falling through to some arbitrary tenant's row.
+
+    Anything unrecognised resolves to "tailored", which is also what a profile
+    that has never set it means.
+    """
+    from app.db.models import UserProfile as _UP
+    profile_uid = uid if uid != "local" else None
+    q = select(_UP.autofill_resume_source)
+    if profile_uid:
+        q = q.where(_UP.user_id == profile_uid)
+    elif settings.use_supabase:
+        return "tailored"           # fail closed — never another tenant's row
+    pref = session.exec(q).first()
+    pref = str(pref).strip().lower() if pref else ""
+    return pref if pref in ("tailored", "original") else "tailored"
+
+
 @app.get("/api/fill-pack/{application_id}/resume")
 @_rate_limit("15/minute")
 def get_tailored_resume(application_id: int, request: Request) -> dict:
-    """Return the tailored resume .docx as base64 so the extension can attach it
-    to a form's file input. Auto-tailors first if no resume exists yet."""
+    """Return the résumé .docx as base64 so the extension can attach it to a
+    form's file input.
+
+    Which résumé depends on the user's ``autofill_resume_source`` preference:
+    "tailored" (the default — the per-job rewrite, auto-tailoring first if none
+    exists yet) or "original" (their uploaded master résumé, untouched).
+    """
     import base64
     from pathlib import Path as _P
     _require_owned_application(request, application_id)
@@ -4715,6 +4828,26 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         path = application.tailored_resume_path
         app_status = application.status
         app_notes = application.notes
+        resume_source = _autofill_resume_source(session, uid)
+
+    if resume_source == "original":
+        # Return BEFORE the auto-tailor block below: the user asked for their
+        # own résumé, so spending a paid generation (and a daily tailor credit)
+        # to build one they do not want would be charging them for the opposite
+        # of the setting.
+        base = _base_resume_bytes(uid)
+        if base:
+            filename, mime, blob = base
+            return {
+                "filename": filename, "mime": mime,
+                "base64": base64.b64encode(blob).decode(),
+                "tailored": False,
+            }
+        # No master résumé on file (profile built by hand, or storage is down).
+        # Falling through to the tailored path beats failing the fill — the
+        # extension treats a missing file as a hard, latched error.
+        log.info("autofill_resume_source=original for %s but no master résumé "
+                 "on file; falling back to the tailored draft", uid)
 
     def _grounding_blocked_response():
         """The grounding check rejected this draft. The browser download route
@@ -7782,6 +7915,7 @@ _USERPROFILE_COLUMNS = [
     ("work_auth_status", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("include_internships_in_discovery", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("industry", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("autofill_resume_source", "VARCHAR DEFAULT 'tailored'", "VARCHAR DEFAULT 'tailored'"),
     # Default '' to match the model: never silently assume the US for a user
     # who may be in Berlin (a repair-added column backfills every row).
     ("preferred_country", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -7924,6 +8058,8 @@ def get_profile(request: Request) -> dict:
         "industry": getattr(profile, "industry", ""),
         "preferred_country": getattr(profile, "preferred_country", "United States"),
         "remote_ok": getattr(profile, "remote_ok", True),
+        "autofill_resume_source": (
+            getattr(profile, "autofill_resume_source", "") or "tailored"),
     }
 
 
@@ -7970,6 +8106,21 @@ class ProfileUpdate(BaseModel):
     ead_end_date: Optional[str] = None
     opt_unemployment_days_used: Optional[int] = None
     stem_opt: Optional[bool] = None
+    # "tailored" | "original" — which résumé the extension attaches. Validated
+    # rather than free text: the value is read as a branch in
+    # get_tailored_resume, and anything unrecognised there would silently mean
+    # "tailored", so a typo would look like the setting being ignored.
+    autofill_resume_source: Optional[str] = None
+
+    @field_validator("autofill_resume_source")
+    @classmethod
+    def _known_resume_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = str(v).strip().lower()
+        if v not in ("tailored", "original"):
+            raise ValueError("autofill_resume_source must be 'tailored' or 'original'")
+        return v
 
 
 from datetime import datetime as _dt

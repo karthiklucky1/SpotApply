@@ -2463,8 +2463,12 @@ async function attachResume(root, pack) {
     return false;
   })();
   if (registered) {
-    console.log("[SpotApply] Attached tailored resume:", filename);
-    reportTelemetry(pack, 'resume_attached', {});
+    // `tailored` is false both when the user chose their original resume in
+    // Settings and when a tailored draft was withheld, so say which file went
+    // in rather than always claiming "tailored".
+    const kind = res.data.tailored === false ? "original" : "tailored";
+    console.log(`[SpotApply] Attached ${kind} resume:`, filename);
+    reportTelemetry(pack, 'resume_attached', { source: kind });
     return true;
   }
   console.warn("[SpotApply] Résumé set but the form didn't register it — asking user to attach manually.");

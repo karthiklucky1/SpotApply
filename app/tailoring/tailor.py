@@ -926,6 +926,10 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                       "GROUNDING_REQUIRED is set", application_id)
         else:
             app.status = ApplicationStatus.TAILORED
+            # The one branch that delivers a readable document, so the one
+            # branch that may stamp tailored_at. Every branch above wrote the
+            # paths and then refused the content.
+            app.tailored_at = datetime.utcnow()
             notes = []
             if not grounding_ran:
                 # Delivered, but never silently: the human review step is the

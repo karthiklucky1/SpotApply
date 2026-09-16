@@ -37,9 +37,41 @@ def _seed():
 
 
 def test_default_sort_is_priority(client):
+    # max_age_days=0 is the explicit "all time" escape hatch — without it the
+    # route applies settings.explorer_max_age_days and the 25-day-old row is
+    # outside the window. The sort, not the window, is what this pins.
+    _seed()
+    d = client.get("/api/jobs?max_age_days=0").json()
+    assert d["jobs"][0]["title"] == "Old High Score"
+
+
+def test_omitting_max_age_applies_the_explorer_window(client):
+    """An absent max_age_days means the DEFAULT window, not the whole pool.
+
+    The explorer sent `max_age_days=7` from the template while the route
+    defaulted to no window at all, so the two unbounded COUNT(*)s behind the
+    "All Jobs (64,937)" badge scanned every row on every keystroke and any
+    caller that forgot the param got the entire pool.
+    """
+    from app.config import settings
     _seed()
     d = client.get("/api/jobs").json()
-    assert d["jobs"][0]["title"] == "Old High Score"
+    titles = [j["title"] for j in d["jobs"]]
+    assert settings.explorer_max_age_days == 5
+    assert titles == ["Fresh Low Score"]        # the 25d row is outside the window
+    assert d["total"] == 1
+    # The tab badge counts the same window, or it advertises rows that no
+    # amount of paging can reach.
+    assert d["total_open"] == 1
+
+
+def test_explicit_zero_max_age_still_means_all_time(client):
+    """The UI's third toggle state. It must survive the server-side default."""
+    _seed()
+    d = client.get("/api/jobs?max_age_days=0").json()
+    assert {j["title"] for j in d["jobs"]} == {"Old High Score", "Fresh Low Score"}
+    assert d["total"] == 2
+    assert d["total_open"] == 2
 
 
 def test_fresh_sort_surfaces_new_and_filters_old(client):
@@ -124,7 +156,9 @@ def test_jobs_carry_posted_and_is_new(client):
     """/api/jobs exposes posting age + the 'discovered <24h' flag so the UI can
     render 'New' badges and 'Xh ago' labels per row."""
     _seed()
-    d = client.get("/api/jobs?sort=fresh").json()
+    # max_age_days=0: this pins the per-row fields, and it needs BOTH rows,
+    # including the 25-day-old one the default window would drop.
+    d = client.get("/api/jobs?sort=fresh&max_age_days=0").json()
     by_title = {j["title"]: j for j in d["jobs"]}
     fresh = by_title["Fresh Low Score"]
     old = by_title["Old High Score"]
