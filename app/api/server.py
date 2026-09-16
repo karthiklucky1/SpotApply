@@ -7278,7 +7278,7 @@ def billing_checkout(request: Request) -> dict:
     uid = _get_user_id(request)
     if not uid:
         raise HTTPException(status_code=401, detail="Sign in to upgrade.")
-    from app.billing import create_checkout_session, stripe_enabled
+    from app.billing import AlreadySubscribed, create_checkout_session, stripe_enabled
     if not stripe_enabled():
         raise HTTPException(
             status_code=503,
@@ -7292,6 +7292,20 @@ def billing_checkout(request: Request) -> dict:
     base = str(request.base_url).rstrip("/")
     try:
         url = create_checkout_session(uid, email, base)
+    except AlreadySubscribed:
+        # Already paying. Send them where they can actually act — the portal
+        # manages the card, the invoices and the cancellation. Selling a second
+        # subscription is the one thing we must not do here.
+        log.info("Billing: %s is already subscribed — redirecting to the portal", uid)
+        from app.billing import create_portal_session
+        try:
+            return {"url": create_portal_session(uid, base), "already_subscribed": True}
+        except Exception as e:
+            log.warning("Stripe portal failed for existing subscriber %s: %s", uid, e)
+            raise HTTPException(
+                status_code=409,
+                detail="You're already on Pro. Manage your subscription from "
+                       "Billing, or contact us if something looks wrong.")
     except Exception as e:
         log.warning("Stripe checkout failed for %s: %s", uid, e)
         raise HTTPException(status_code=502, detail="Could not start checkout — try again.")
@@ -7320,7 +7334,10 @@ def admin_set_plan(request: Request, body: dict) -> dict:
     plan_raw = (body.get("plan") or "").strip().lower()
     if not target or plan_raw not in (PlanTier.FREE.value, PlanTier.PRO.value):
         raise HTTPException(status_code=422, detail="user_id and plan ('pro'|'free') required")
-    set_plan(target, PlanTier(plan_raw))
+    # Explicitly clear the period end: a manual grant is open-ended, and a
+    # manual downgrade must not leave a stale expiry behind. set_plan now KEEPS
+    # what it is not told about, so this has to say so.
+    set_plan(target, PlanTier(plan_raw), current_period_end=None)
     return {"ok": True, "user_id": target, "plan": plan_raw}
 
 
@@ -7521,6 +7538,50 @@ def _notify_tailor_failed(uid: str, application_id: int | None = None) -> None:
         log.debug("tailor-failed notification failed for %s: %s", uid, e)
 
 
+def _tailoring_rejected(application_id: int) -> tuple[bool, str]:
+    """Did this tailoring run end in a refusal to deliver? Returns (rejected, why).
+
+    Reads the status the tailor wrote rather than inferring from the return
+    value, because a refusal returns normally — the paths are the same shape.
+    A lookup failure answers "not rejected": the charge-on-success rule should
+    never be decided by a database hiccup, and over-charging is recoverable
+    while silently giving away paid work is not.
+    """
+    try:
+        with get_session() as session:
+            app_row = session.get(Application, application_id)
+            if app_row and app_row.status == ApplicationStatus.ERROR:
+                return True, (app_row.notes or "").strip()
+    except Exception as e:
+        log.debug("could not read tailoring outcome for %s: %s", application_id, e)
+    return False, ""
+
+
+def _notify_tailor_rejected(uid: str, application_id: int, reason: str) -> None:
+    """Tell the user we refused to hand over the document, and why.
+
+    Distinct from _notify_tailor_failed on purpose: "the provider was down" and
+    "the draft claimed things your résumé does not" are different problems with
+    different next steps, and only one of them is our fault.
+    """
+    try:
+        from app.db.models import UserNotification
+        detail = reason.split("\n\n")[0][:400] if reason else ""
+        with get_session() as session:
+            session.add(UserNotification(
+                user_id=uid or "local",
+                title="Tailoring blocked — no credit used",
+                message=("We stopped this résumé before sending it to you because "
+                         "it did not pass verification. Your daily credit was NOT "
+                         "used. " + detail),
+                type="tailor_rejected",
+                link=f"/dashboard?app={application_id}" if application_id else "/dashboard",
+            ))
+            session.commit()
+    except Exception as e:
+        log.debug("tailor-rejected notification failed for %s: %s", uid, e)
+
+
 def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = None) -> bool:
     """Run one tailor; charge the credit ONLY on success (it used to be charged
     at queue time, so provider outages burned a free user's 5-a-day budget with
@@ -7532,6 +7593,19 @@ def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = 
     except Exception as e:
         log.warning("tailor failed for app %s (user %s): %s", application_id, uid, e)
         _notify_tailor_failed(uid, application_id)
+        return False
+    # A rejection is not an exception. When grounding finds fabricated facts,
+    # or the doctor fails the draft, tailor_for_application sets the
+    # application to ERROR and returns NORMALLY — so this used to read as
+    # success and charge a credit for a document the user never receives.
+    # The status the tailor itself wrote is the authoritative record of
+    # whether anything was delivered, and it covers every rejection branch
+    # including ones added later.
+    rejected, reason = _tailoring_rejected(application_id)
+    if rejected:
+        log.info("tailor rejected for app %s (user %s) — no credit charged",
+                 application_id, uid)
+        _notify_tailor_rejected(uid, application_id, reason)
         return False
     _increment_tailor(uid)
     try:

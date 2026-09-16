@@ -170,3 +170,82 @@ def test_tailor_charge_on_success_only(monkeypatch):
                         lambda aid, instr=None: ("a", "b"))
     ok = srv._tailor_and_settle(999999, "user-x")
     assert ok is True and calls["inc"] == 1
+
+
+def test_a_rejected_resume_costs_no_credit(monkeypatch):
+    """Reviewed 2026-09-16. Grounding and doctor rejections set the application
+    to ERROR and then return NORMALLY — the same shape as success — so
+    `_tailor_and_settle` charged a credit for a document the user never gets.
+    The docstring right above it says "charge the credit ONLY on success"."""
+    import app.api.server as srv
+    from app.db.models import Application, ApplicationStatus, Job, JobSource
+
+    calls = {"inc": 0}
+    monkeypatch.setattr(srv, "_increment_tailor",
+                        lambda uid: calls.__setitem__("inc", calls["inc"] + 1))
+    with get_session() as session:
+        session.exec(delete(UserNotification))
+        job = Job(source=JobSource.GREENHOUSE, external_id="reject-credit",
+                  company="Acme", title="Engineer", url="https://x.test/1",
+                  user_id="user-reject")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        app_row = Application(job_id=job.id, user_id="user-reject",
+                              status=ApplicationStatus.SHORTLISTED)
+        session.add(app_row)
+        session.commit()
+        session.refresh(app_row)
+        app_id = app_row.id
+
+    def _reject(aid, instr=None):
+        """What the real tailor does on a fabrication: stamp ERROR, return."""
+        with get_session() as s:
+            row = s.get(Application, aid)
+            row.status = ApplicationStatus.ERROR
+            row.notes = "Blocked: the tailored résumé asserted facts your master résumé does not contain"
+            s.add(row)
+            s.commit()
+        return ("a", "b")
+
+    monkeypatch.setattr("app.tailoring.tailor.tailor_for_application", _reject)
+    ok = srv._tailor_and_settle(app_id, "user-reject")
+
+    assert ok is False, "a blocked résumé is not a delivery"
+    assert calls["inc"] == 0, "and it must not consume the user's credit"
+    with get_session() as session:
+        notes = session.exec(select(UserNotification).where(
+            UserNotification.user_id == "user-reject")).all()
+        assert len(notes) == 1 and notes[0].type == "tailor_rejected"
+        assert "NOT" in notes[0].message
+        # The user is told WHY, not just that something went wrong.
+        assert "verification" in notes[0].message
+
+
+def test_a_delivered_resume_still_charges_exactly_once(monkeypatch):
+    """The guard reads the application's status, so it must not start refusing
+    to charge for work that WAS delivered."""
+    import app.api.server as srv
+    from app.db.models import Application, ApplicationStatus, Job, JobSource
+
+    calls = {"inc": 0}
+    monkeypatch.setattr(srv, "_increment_tailor",
+                        lambda uid: calls.__setitem__("inc", calls["inc"] + 1))
+    with get_session() as session:
+        job = Job(source=JobSource.GREENHOUSE, external_id="ok-credit",
+                  company="Acme", title="Engineer", url="https://x.test/2",
+                  user_id="user-ok")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        app_row = Application(job_id=job.id, user_id="user-ok",
+                              status=ApplicationStatus.TAILORED)
+        session.add(app_row)
+        session.commit()
+        session.refresh(app_row)
+        app_id = app_row.id
+
+    monkeypatch.setattr("app.tailoring.tailor.tailor_for_application",
+                        lambda aid, instr=None: ("a", "b"))
+    assert srv._tailor_and_settle(app_id, "user-ok") is True
+    assert calls["inc"] == 1

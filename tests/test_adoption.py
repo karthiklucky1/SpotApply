@@ -148,3 +148,67 @@ def test_adopt_backfills_after_role_edit():
         titles = sorted(j.title for j in
                         s.exec(select(Job).where(Job.user_id == "u_pivot")).all())
     assert titles == ["Data Engineer", "Senior ML Engineer"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The cap must bound NEW jobs, not re-selected duplicates
+# ══════════════════════════════════════════════════════════════════════════
+# Reviewed 2026-09-16. The newest page was cut to `limit` and deduplicated only
+# later, inside `_upsert` — so every later pass re-selected the same
+# already-copied jobs, inserted nothing, and eligible postings ranked below the
+# cap were never adopted at all. Not a slow feed: a permanently stuck one.
+
+def test_a_second_pass_reaches_jobs_the_cap_cut_off_the_first_time():
+    _clean()
+    with get_session() as s:
+        s.add(UserProfile(user_id="u_cap", target_roles="Machine Learning Engineer"))
+        # Newest first: c1, c2, c3. A two-job cap takes c1+c2 on pass one.
+        s.add(_shared_job("c1", "Senior ML Engineer", days_old=1))
+        s.add(_shared_job("c2", "ML Engineer", days_old=2))
+        s.add(_shared_job("c3", "Machine Learning Engineer", days_old=3))
+        s.commit()
+
+    from app.strategy.adoption import adopt_shared_jobs
+    assert adopt_shared_jobs("u_cap", limit=2) == 2
+    assert adopt_shared_jobs("u_cap", limit=2) == 1, \
+        "the third job must eventually be adopted, not re-skipped forever"
+    assert adopt_shared_jobs("u_cap", limit=2) == 0   # and then it is genuinely done
+
+    with get_session() as s:
+        mine = {j.external_id for j in
+                s.exec(select(Job).where(Job.user_id == "u_cap")).all()}
+    assert mine == {"c1", "c2", "c3"}
+
+
+def test_already_adopted_jobs_do_not_consume_the_cap():
+    """The direct statement of the bug: with the whole pool already adopted,
+    a pass must not spend its budget re-selecting copies."""
+    _clean()
+    with get_session() as s:
+        s.add(UserProfile(user_id="u_dup", target_roles="Machine Learning Engineer"))
+        for n in range(5):
+            s.add(_shared_job(f"d{n}", "ML Engineer", days_old=n + 1))
+        s.commit()
+
+    from app.strategy.adoption import _drop_already_adopted, adopt_shared_jobs
+    assert adopt_shared_jobs("u_dup", limit=10) == 5
+
+    with get_session() as s:
+        shared = s.exec(select(Job).where(Job.user_id == SHARED_POOL_USER)).all()
+    assert _drop_already_adopted(shared, "u_dup") == [], \
+        "every one of these is already in the user's pool"
+
+
+def test_the_duplicate_filter_keeps_jobs_another_user_adopted():
+    """Adoption is per-user. One user's copy must never hide a posting from
+    everyone else — that would be a cross-tenant leak of the worst kind."""
+    _clean()
+    with get_session() as s:
+        s.add(UserProfile(user_id="u_a", target_roles="Machine Learning Engineer"))
+        s.add(UserProfile(user_id="u_b", target_roles="Machine Learning Engineer"))
+        s.add(_shared_job("x1", "ML Engineer", days_old=1))
+        s.commit()
+
+    from app.strategy.adoption import adopt_shared_jobs
+    assert adopt_shared_jobs("u_a", limit=5) == 1
+    assert adopt_shared_jobs("u_b", limit=5) == 1, "u_b gets their own copy"

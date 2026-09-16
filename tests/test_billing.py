@@ -553,3 +553,189 @@ def test_a_failed_renewal_keeps_access_during_dunning_then_falls_to_free(fake_st
     billing.handle_webhook(_event("customer.subscription.updated",
                                   {"id": "sub_1", "status": "unpaid"}), "sig")
     assert _plan_of(_UID) == PlanTier.FREE
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Repeat checkout must not sell a second subscription
+# ══════════════════════════════════════════════════════════════════════════
+# Reviewed 2026-09-16: checkout always created a session, with no check for an
+# existing subscription. Completing two of them left the card billed twice
+# while `set_plan` keeps ONE (customer, subscription) pair — so the first
+# subscription kept charging and was invisible to the portal, which reads that
+# one pair. The user could not even find it to cancel it.
+
+@pytest.fixture
+def fake_checkout(monkeypatch):
+    """A stripe module that records checkout.Session.create calls."""
+    mod = types.ModuleType("stripe")
+    mod.api_key = None
+    calls = []
+
+    class Session:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(url="https://checkout.test/session")
+
+    mod.checkout = types.SimpleNamespace(Session=Session)
+    monkeypatch.setitem(sys.modules, "stripe", mod)
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_x", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_id_pro", "price_x", raising=False)
+    return calls
+
+
+def _seed_sub(**kw):
+    with get_session() as s:
+        row = s.exec(select(UserSubscription).where(
+            UserSubscription.user_id == _UID)).first() or UserSubscription(user_id=_UID)
+        for k, v in kw.items():
+            setattr(row, k, v)
+        s.add(row)
+        s.commit()
+
+
+def test_a_repeat_checkout_for_an_existing_subscriber_is_refused(fake_checkout):
+    _seed_sub(plan=PlanTier.PRO, stripe_customer_id="cus_1",
+              stripe_subscription_id="sub_1")
+    with pytest.raises(billing.AlreadySubscribed):
+        billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    assert fake_checkout == [], "no second subscription may be created"
+
+
+def test_a_lapsed_subscriber_can_check_out_again(fake_checkout):
+    """FREE with an old subscription id is someone whose plan ended. They are
+    allowed to buy again — the guard is about DOUBLE billing, not about
+    locking anyone out."""
+    _seed_sub(plan=PlanTier.FREE, stripe_customer_id="cus_1",
+              stripe_subscription_id="sub_old")
+    url = billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    assert url == "https://checkout.test/session"
+    assert len(fake_checkout) == 1
+
+
+def test_checkout_reuses_a_known_customer_instead_of_making_another(fake_checkout):
+    _seed_sub(plan=PlanTier.FREE, stripe_customer_id="cus_1")
+    billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    kwargs = fake_checkout[0]
+    assert kwargs["customer"] == "cus_1"
+    assert "customer_email" not in kwargs, "Stripe rejects both together"
+
+
+def test_a_first_time_buyer_is_identified_by_email(fake_checkout):
+    billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    kwargs = fake_checkout[0]
+    assert kwargs["customer_email"] == "a@b.test"
+    assert "customer" not in kwargs
+
+
+def test_rapid_repeat_clicks_collapse_onto_one_idempotency_key(fake_checkout):
+    """A double-submit used to create two sessions, either of which the user
+    could complete."""
+    billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    keys = [c["idempotency_key"] for c in fake_checkout]
+    assert keys[0] == keys[1] and keys[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Webhooks are at-least-once and unordered
+# ══════════════════════════════════════════════════════════════════════════
+
+def _wipe_events():
+    from app.db.models import BillingEvent
+    with get_session() as s:
+        for r in s.exec(select(BillingEvent).where(
+                BillingEvent.event_id.like("evt_test_%"))).all():
+            s.delete(r)
+        s.commit()
+
+
+def _ev(etype: str, obj: dict, event_id: str, created: int) -> bytes:
+    return json.dumps({"id": event_id, "type": etype, "created": created,
+                       "data": {"object": obj}}).encode()
+
+
+def _period_end_of(uid: str):
+    with get_session() as s:
+        row = s.exec(select(UserSubscription).where(
+            UserSubscription.user_id == uid)).first()
+        return row.current_period_end if row else None
+
+
+def test_a_replayed_checkout_cannot_re_grant_a_cancelled_plan(fake_stripe):
+    """Stripe retries every non-2xx and replays on request. Re-applying a
+    checkout event after the user cancelled handed them PRO again."""
+    _wipe_events()
+    try:
+        payload = _ev("checkout.session.completed",
+                      {"client_reference_id": _UID, "customer": "cus_1",
+                       "subscription": "sub_1"}, "evt_test_replay", 1_000)
+        billing.handle_webhook(payload, "sig")
+        assert _plan_of(_UID) == PlanTier.PRO
+
+        billing.set_plan(_UID, PlanTier.FREE)
+        out = billing.handle_webhook(payload, "sig")
+        assert out.get("duplicate") is True
+        assert _plan_of(_UID) == PlanTier.FREE, "a replay must change nothing"
+    finally:
+        _wipe_events()
+
+
+def test_checkout_completion_does_not_erase_a_known_period_end(fake_stripe):
+    """The unguarded assignment in set_plan meant the checkout event — which
+    carries no period end — wiped the real one to NULL, and entitlement reads
+    NULL as 'never expires'. Ordinary webhook ordering, no replay needed."""
+    _wipe_events()
+    try:
+        ends = datetime.utcnow() + timedelta(days=30)
+        _seed_sub(plan=PlanTier.PRO, stripe_subscription_id="sub_1",
+                  current_period_end=ends)
+        billing.handle_webhook(
+            _ev("checkout.session.completed",
+                {"client_reference_id": _UID, "customer": "cus_1",
+                 "subscription": "sub_1"}, "evt_test_order", 2_000), "sig")
+        assert _plan_of(_UID) == PlanTier.PRO
+        assert _period_end_of(_UID) is not None, "PRO with no expiry is PRO forever"
+    finally:
+        _wipe_events()
+
+
+def test_a_stale_unpaid_event_cannot_revoke_a_recovered_subscription(fake_stripe):
+    """Dunning `unpaid` overtaken by the recovery that followed it: arriving
+    last, it used to cut off a user who is paying again."""
+    _wipe_events()
+    try:
+        _seed_sub(plan=PlanTier.FREE, stripe_subscription_id="sub_1")
+        ends = int((datetime.utcnow() + timedelta(days=30)).timestamp())
+        billing.handle_webhook(
+            _ev("customer.subscription.updated",
+                {"id": "sub_1", "status": "active", "current_period_end": ends},
+                "evt_test_recover", 5_000), "sig")
+        assert _plan_of(_UID) == PlanTier.PRO
+
+        out = billing.handle_webhook(
+            _ev("customer.subscription.updated",
+                {"id": "sub_1", "status": "unpaid"},
+                "evt_test_stale", 4_000), "sig")          # created EARLIER
+        assert out.get("stale") is True
+        assert _plan_of(_UID) == PlanTier.PRO
+    finally:
+        _wipe_events()
+
+
+def test_a_genuinely_newer_cancellation_still_downgrades(fake_stripe):
+    """The ordering guard must not become a way to ignore real cancellations."""
+    _wipe_events()
+    try:
+        _seed_sub(plan=PlanTier.PRO, stripe_subscription_id="sub_1")
+        billing.handle_webhook(
+            _ev("customer.subscription.updated",
+                {"id": "sub_1", "status": "active"},
+                "evt_test_a", 5_000), "sig")
+        billing.handle_webhook(
+            _ev("customer.subscription.deleted", {"id": "sub_1"},
+                "evt_test_b", 6_000), "sig")
+        assert _plan_of(_UID) == PlanTier.FREE
+        assert _period_end_of(_UID) is None, "a downgrade leaves no stale expiry"
+    finally:
+        _wipe_events()

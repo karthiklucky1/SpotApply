@@ -492,8 +492,31 @@ class UserSubscription(SQLModel, table=True):
     stripe_customer_id: Optional[str] = Field(default=None)
     stripe_subscription_id: Optional[str] = Field(default=None)
     current_period_end: Optional[datetime] = Field(default=None)
+    # Stripe's `created` timestamp for the most recent billing event we ACTED
+    # on. Webhooks are at-least-once and not ordered, so an `unpaid` update
+    # overtaken by the recovery that followed it would otherwise arrive last
+    # and cut off a paying user. An event older than this one is ignored.
+    last_event_at: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BillingEvent(SQLModel, table=True):
+    """Every Stripe event id we have already applied, so a redelivery is a
+    no-op instead of a second entitlement change.
+
+    Stripe retries on any non-2xx and replays on request, so `handle_webhook`
+    has always been able to see the same event twice. Applying
+    `checkout.session.completed` a second time re-granted PRO to a user who had
+    since cancelled. Not user-scoped on purpose: this is a ledger of what the
+    processor told us, and it must survive account deletion to stay a truthful
+    record of what was applied.
+    """
+    __tablename__ = "billing_event"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: str = Field(index=True, unique=True)
+    event_type: str = Field(default="")
+    received_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class UserUsage(SQLModel, table=True):

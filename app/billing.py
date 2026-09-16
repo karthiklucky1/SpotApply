@@ -75,20 +75,65 @@ def _stripe():
     return stripe
 
 
+class AlreadySubscribed(Exception):
+    """This user already has a live Stripe subscription — send them to the
+    portal, do not sell them a second one."""
+
+
+def _checkout_idempotency_key(user_id: str) -> str:
+    """Collapse repeat checkout POSTs from one user into ONE Stripe session.
+
+    Two clicks, a double-submit, or a retry after a slow response each used to
+    create a separate subscription session. Stripe honours an idempotency key
+    for 24h, so bucketing by a 15-minute window means a burst returns the SAME
+    session while a genuine retry tomorrow gets a fresh one.
+    """
+    import time as _t
+    return f"spotapply:checkout:{user_id}:{int(_t.time() // 900)}"
+
+
 def create_checkout_session(user_id: str, email: Optional[str], base_url: str) -> str:
-    """Create a Stripe Checkout session for the Pro subscription; returns its URL."""
+    """Create a Stripe Checkout session for the Pro subscription; returns its URL.
+
+    Raises ``AlreadySubscribed`` when the user is already paying. Without that
+    check a second checkout created a SECOND subscription, and because
+    ``set_plan`` keeps exactly one (customer, subscription) pair, the webhook
+    for the new one overwrote the old — leaving the first subscription billing
+    the card while being invisible to ``create_portal_session``, so the user
+    could not even find it to cancel it.
+    """
     if not stripe_enabled():
         raise RuntimeError("Stripe is not configured")
+    with get_session() as session:
+        row = session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == user_id)
+        ).first()
+        plan = row.plan if row else None
+        customer = row.stripe_customer_id if row else None
+        subscription = row.stripe_subscription_id if row else None
+    if subscription and plan and plan != PlanTier.FREE:
+        raise AlreadySubscribed(
+            f"user {user_id} already has subscription {subscription}")
+
     stripe = _stripe()
-    session = stripe.checkout.Session.create(
+    kwargs = dict(
         mode="subscription",
         line_items=[{"price": settings.stripe_price_id_pro, "quantity": 1}],
         success_url=f"{base_url}/dashboard?billing=success",
         cancel_url=f"{base_url}/pricing",
         client_reference_id=user_id,
-        customer_email=email or None,
         allow_promotion_codes=True,
     )
+    # Reuse the Stripe customer we already know about, so a returning user
+    # (lapsed, then upgrading again) keeps one customer record with one card
+    # and one invoice history. Stripe rejects `customer` and `customer_email`
+    # together, so it is one or the other.
+    if customer:
+        kwargs["customer"] = customer
+    elif email:
+        kwargs["customer_email"] = email
+    session = stripe.checkout.Session.create(
+        **kwargs, idempotency_key=_checkout_idempotency_key(user_id))
     return session.url
 
 
@@ -115,11 +160,26 @@ def create_portal_session(user_id: str, base_url: str) -> str:
     return portal.url
 
 
+#: "the caller said nothing about this field", which is NOT the same as "set it
+#: to None". `current_period_end` used to be assigned unconditionally, so
+#: `checkout.session.completed` — which knows no period end — wiped the real one
+#: to NULL, and entitlement reads NULL as "never expires"
+#: (server._get_user_plan). A user could end up on PRO forever from ordinary
+#: webhook ordering, with no replay involved.
+_UNSET = object()
+
+
 def set_plan(user_id: str, plan: PlanTier,
              stripe_customer_id: Optional[str] = None,
              stripe_subscription_id: Optional[str] = None,
-             current_period_end: Optional[datetime] = None) -> None:
-    """Idempotent upsert of a user's subscription row."""
+             current_period_end=_UNSET,
+             last_event_at: Optional[datetime] = None) -> None:
+    """Idempotent upsert of a user's subscription row.
+
+    Every optional field follows one rule: omit it and the stored value is
+    kept, pass it (including ``None``) and it is written. Only a caller that
+    actually knows the period end may change it.
+    """
     with get_session() as session:
         row = session.exec(
             select(UserSubscription).where(UserSubscription.user_id == user_id)
@@ -131,7 +191,10 @@ def set_plan(user_id: str, plan: PlanTier,
             row.stripe_customer_id = stripe_customer_id
         if stripe_subscription_id is not None:
             row.stripe_subscription_id = stripe_subscription_id
-        row.current_period_end = current_period_end
+        if current_period_end is not _UNSET:
+            row.current_period_end = current_period_end
+        if last_event_at is not None:
+            row.last_event_at = last_event_at
         row.updated_at = datetime.utcnow()
         session.add(row)
         session.commit()
@@ -180,6 +243,43 @@ def _period_end(sub) -> Optional[datetime]:
     return datetime.utcfromtimestamp(int(ts)) if ts else None
 
 
+def _event_created(event) -> Optional[datetime]:
+    """Stripe's own timestamp for the event — the only clock that orders
+    deliveries, since arrival order does not."""
+    ts = _field(event, "created")
+    try:
+        return datetime.utcfromtimestamp(int(ts)) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _claim_event(event_id: str, event_type: str) -> bool:
+    """Record this event id, returning False if it was already recorded.
+
+    The unique constraint is what makes the claim atomic: two workers handed
+    the same redelivery race to INSERT and exactly one wins. On any database
+    error this returns True — processing a duplicate is recoverable, refusing
+    to process a real event is a user who paid and did not get their plan.
+    """
+    from app.db.models import BillingEvent
+    try:
+        with get_session() as session:
+            seen = session.exec(select(BillingEvent).where(
+                BillingEvent.event_id == event_id)).first()
+            if seen:
+                return False
+            session.add(BillingEvent(event_id=event_id, event_type=event_type or ""))
+            session.commit()
+        return True
+    except Exception as e:
+        from sqlalchemy.exc import IntegrityError
+        if isinstance(e, IntegrityError):
+            return False        # lost the race — the winner is applying it
+        log.warning("Billing webhook: could not record event %s (%s) — "
+                    "processing anyway", event_id, e)
+        return True
+
+
 def handle_webhook(payload: bytes, signature: str) -> dict:
     """Verify + apply a Stripe webhook event. Raises ValueError on bad signature."""
     stripe = _stripe()
@@ -192,15 +292,33 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
         raise ValueError(f"webhook verification failed: {e}") from e
 
     etype = _field(event, "type")
+    event_id = _field(event, "id")
+    created = _event_created(event)
     obj = _field(event, "data", {})
     obj = _field(obj, "object", {})
+
+    # Stripe delivers AT LEAST ONCE — it retries every non-2xx and replays on
+    # request — so the same event can arrive twice. Applying
+    # `checkout.session.completed` a second time re-granted PRO to a user who
+    # had cancelled in between. Claim the id first; losing the claim means
+    # someone already applied this event.
+    if event_id and not _claim_event(event_id, etype):
+        log.info("Billing webhook: %s (%s) already applied — ignoring replay",
+                 etype, event_id)
+        return {"received": True, "type": etype, "duplicate": True}
 
     if etype == "checkout.session.completed":
         user_id = _field(obj, "client_reference_id")
         if user_id:
+            # No current_period_end here on purpose: a checkout session does not
+            # carry one, and passing None would ERASE the real period end that
+            # customer.subscription.updated stored. Whichever of the two lands
+            # last, the stored expiry is now the one that came from the
+            # subscription.
             set_plan(user_id, PlanTier.PRO,
                      stripe_customer_id=_field(obj, "customer"),
-                     stripe_subscription_id=_field(obj, "subscription"))
+                     stripe_subscription_id=_field(obj, "subscription"),
+                     last_event_at=created)
         else:
             log.warning("Billing webhook: checkout completed without client_reference_id")
 
@@ -211,13 +329,24 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
             row = session.exec(select(UserSubscription).where(
                 UserSubscription.stripe_subscription_id == sub_id)).first()
         if row:
+            # Webhooks are not ordered. A dunning `unpaid` overtaken by the
+            # recovery that followed it would otherwise arrive last and cut off
+            # someone who is paying again. Entitlement only ever moves forward
+            # in Stripe's own clock.
+            if created and row.last_event_at and created < row.last_event_at:
+                log.info("Billing webhook: %s for %s is older than the last "
+                         "applied event — ignoring", etype, sub_id)
+                return {"received": True, "type": etype, "stale": True}
             if etype == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
                 set_plan(row.user_id, PlanTier.FREE,
-                         stripe_subscription_id=sub_id)
+                         stripe_subscription_id=sub_id,
+                         current_period_end=None,
+                         last_event_at=created)
             else:
                 set_plan(row.user_id, PlanTier.PRO,
                          stripe_subscription_id=sub_id,
-                         current_period_end=_period_end(obj))
+                         current_period_end=_period_end(obj),
+                         last_event_at=created)
         else:
             log.info("Billing webhook: %s for unknown subscription %s", etype, sub_id)
 

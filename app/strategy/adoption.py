@@ -30,6 +30,15 @@ ADOPT_MAX_AGE_DAYS = 21
 # Cap per adoption pass — a full matching pass only LLM-scores a slice per run
 # anyway, and the next cycles keep draining.
 ADOPT_MAX_JOBS = 400
+#: One read of the shared pool. Kept at the size the egress work settled on —
+#: a projected page, not a 5000-full-row scan.
+ADOPT_PAGE_SIZE = 3000
+#: How far past the newest page adoption will look for postings this user does
+#: not already have. Bounded because each page is another read; in steady state
+#: the first page always contains new postings and the loop stops there. It only
+#: pages deeper for a user whose pool already holds everything at the top, which
+#: is exactly the case that used to adopt nothing at all.
+ADOPT_MAX_PAGES = 4
 
 
 def _semantic_query_vector(matcher, user_id, roles):
@@ -78,6 +87,50 @@ def _semantic_extras(others, roles, user_id, need):
         log.info("Adoption semantic: +%d neighbour(s) (cosine ≥ %.2f) from %d off-title jobs",
                  len(picked), threshold, len(pool))
     return picked
+
+
+def _source_key(source) -> str:
+    """`Job.source` is an enum column; per-user copies preserve its value."""
+    return source.value if hasattr(source, "value") else str(source)
+
+
+def _drop_already_adopted(jobs, user_id):
+    """Remove postings this user's pool already holds.
+
+    This has to happen BEFORE the cap, not inside `_upsert` afterwards.
+    `_upsert` deduplicates on `(user_id, source, external_id)`, so duplicates
+    were silently discarded — but they had already consumed the cap on the way
+    in, which is how a user could adopt nothing at all while eligible postings
+    sat unadopted behind them.
+
+    Asks only about the keys in hand (chunked `IN`), so the cost tracks the
+    page size rather than the size of the user's pool — which reached ~115k
+    rows for one production user.
+    """
+    from app.db.models import Job as _Job
+
+    if not jobs:
+        return []
+    keys = [( _source_key(j.source), j.external_id) for j in jobs]
+    have: set = set()
+    try:
+        with get_session() as session:
+            scope = (_Job.user_id == user_id) if user_id else _Job.user_id.is_(None)
+            for start in range(0, len(keys), 300):
+                chunk = keys[start:start + 300]
+                rows = session.exec(
+                    select(_Job.source, _Job.external_id).where(
+                        scope,
+                        _Job.external_id.in_([k[1] for k in chunk]))
+                ).all()
+                for src, ext in rows:
+                    have.add((_source_key(src), ext))
+    except Exception as e:
+        # Fail OPEN: adopting a duplicate is free (`_upsert` drops it), while
+        # skipping this filter entirely is the old behaviour, not a new fault.
+        log.debug("adoption: duplicate pre-filter unavailable (%s)", e)
+        return jobs
+    return [j for j, k in zip(jobs, keys) if k not in have]
 
 
 def _select_adoptable(fresh_jobs, roles, user_id, limit):
@@ -150,8 +203,13 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
             log.debug("adoption role fallback failed: %s", _re)
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-    with get_session() as session:
-        shared = session.exec(
+
+    def _page(offset: int):
+        with get_session() as session:
+            return _shared_page(session, cutoff, offset)
+
+    def _shared_page(session, cutoff, offset: int):
+        return session.exec(
             select(Job)
             # Only load the columns adoption uses (RawJob fields + the freshness
             # timestamps) — the big JSON blobs (rerank_*/hire_probability_signals/
@@ -179,7 +237,8 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
                    # therefore satisfies the `first_seen >= cutoff` arm here.
                    (Job.posted_at >= cutoff) | (Job.first_seen >= cutoff))
             .order_by(Job.first_seen.desc())
-            .limit(3000)
+            .limit(ADOPT_PAGE_SIZE)
+            .offset(offset)
         ).all()
 
     def _fresh_enough(j: Job) -> bool:
@@ -208,8 +267,41 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
         return is_fresh(j, max_age_days,
                         int(getattr(settings, "scoring_max_posted_age_days", 0) or 0))
 
-    fresh = [j for j in shared if _fresh_enough(j)]
-    candidates = _select_adoptable(fresh, roles, user_id, limit)
+    # Walk the shared pool until we have enough postings this user does NOT
+    # already have, rather than capping the newest page and then discovering
+    # every one of them is a duplicate.
+    #
+    # The old shape took the newest ADOPT_PAGE_SIZE rows, cut them to `limit`,
+    # and only deduplicated inside `_upsert` — so the second pass re-selected
+    # the same already-copied jobs and inserted nothing, while eligible
+    # postings ranked below the cap were never adopted at all. Three eligible
+    # jobs against a two-job cap adopted 2, then 0, then 0: the third never
+    # reached scoring, ever.
+    from app.discovery.title_filter import role_title_match
+
+    pool: list = []
+    seen: set = set()
+    for page in range(ADOPT_MAX_PAGES):
+        shared = _page(page * ADOPT_PAGE_SIZE)
+        if not shared:
+            break
+        for j in shared:
+            key = (_source_key(j.source), j.external_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            if _fresh_enough(j):
+                pool.append(j)
+        pool = _drop_already_adopted(pool, user_id)
+        # The quota that matters is ROLE-MATCHING new jobs — those are what
+        # `_select_adoptable` will actually take. Counting raw rows would stop
+        # early on a page full of off-role postings.
+        if sum(1 for j in pool if role_title_match(j.title, roles)) >= limit:
+            break
+        if len(shared) < ADOPT_PAGE_SIZE:
+            break                      # the pool is exhausted, not the budget
+
+    candidates = _select_adoptable(pool, roles, user_id, limit)
     if not candidates:
         return 0
 
