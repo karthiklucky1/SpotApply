@@ -342,6 +342,16 @@ def _lane_user_ids() -> list:
     return out
 
 
+def _subscription_row(uid: str):
+    """The user's user_subscription row, or None. One indexed read; the seam
+    the dormancy gate and _get_user_plan share (tests break it on purpose to
+    prove a DB error keeps a possibly-paid feed running)."""
+    with get_session() as session:
+        return session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == uid)
+        ).first()
+
+
 def _user_paid_search_is_live(profile) -> bool:
     """True when this user is PAYING for the search right now.
 
@@ -351,19 +361,32 @@ def _user_paid_search_is_live(profile) -> bool:
     for — and because there is no email or push channel, they would have no way
     to find out. Their spend is bounded by their own plan either way.
 
-    Deliberately consulted ONLY for a user who would otherwise be dormant, so
-    the extra plan lookup happens for a handful of profiles rather than on
-    every lane tick for everyone.
+    "Paying" is `billing.is_paid_entitlement` on the user's OWN row, not
+    `_get_user_plan(uid) != FREE`. The plan lookup was the bug: with Stripe
+    configured (test keys count) and PLAN_GRANDFATHER_UNTIL unset, a user with
+    no subscription row resolves to PRO through _is_grandfathered, so a
+    complimentary ride read as a paid search and the gate never applied.
+    Production 2026-09-16: 10 ordinary users scored every day, none with a
+    sign-in, job view, tailor or submit in 7 days (three last seen in June),
+    four of them at the 250-finals/day PRO ceiling with no user_subscription
+    row at all — 90.8% of the week's LLM spend. A grandfathered user is a
+    free rider and goes dormant like any other; so does a sandbox (test-mode)
+    subscription, which is a rehearsal, not revenue.
+
+    Kept from before: pre-revenue (Stripe not configured) is False — nobody
+    can be paying; a row we cannot READ (DB error) is True — never pause a
+    search we might be charging for. Consulted ONLY for a user who would
+    otherwise be dormant, so it costs one indexed read for a handful of
+    profiles, not every lane tick for everyone.
     """
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
         return False
     try:
-        from app.billing import stripe_enabled
+        from app.billing import is_paid_entitlement, stripe_enabled
         if not stripe_enabled():
             return False          # pre-revenue: nobody is paying, gate applies
-        from app.db.models import PlanTier
-        return _get_user_plan(uid) != PlanTier.FREE
+        return is_paid_entitlement(_subscription_row(uid))
     except Exception as e:                                  # pragma: no cover
         # An unresolvable plan must not pause a search we may be charging for.
         logging.getLogger("api").debug(
@@ -602,6 +625,7 @@ async def startup_event():
     # Registry maintenance — keeps the direct-ATS board registry seeded,
     # validated, and growing (daily validation, weekly YC harvest)
     asyncio.create_task(_registry_maintenance())
+    asyncio.create_task(_billing_maintenance())  # test-mode warning + daily Stripe reconcile
     # Fresh lane — boards-only rescan every settings.fresh_lane_interval_hours
     # (default 2h) so new postings reach shortlists inside the first-24h window
     # where most interviews are won. Full discovery stays on the 6h scheduler.
@@ -758,6 +782,18 @@ async def _registry_maintenance_once(cycle: int) -> None:
             await asyncio.to_thread(_fn, _days)
         except Exception as e:
             _log.warning("Job retention (%s) failed: %s", _label, e)
+    # Tenants whose Supabase Auth user is gone but whose rows are not. Nothing
+    # reconciled the two: one deleted auth user left a profile with summary
+    # text, 2,860 applications, 33,192 job copies and 13 storage objects
+    # behind. Bounded to 5 users a run, aborts on any doubt about the auth
+    # listing, logs counts only — and a failure here never ends maintenance.
+    if settings.use_supabase and settings.orphan_purge_enabled:
+        try:
+            from app.common.account_purge import _summary_counts, purge_orphaned_accounts
+            summary = await asyncio.to_thread(purge_orphaned_accounts, 5)
+            _log.info("Registry maintenance: orphan purge %s", _summary_counts(summary))
+        except Exception as e:
+            _log.warning("Orphan account purge failed: %s", e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
@@ -787,6 +823,48 @@ async def _registry_maintenance():
             _log.exception("Registry maintenance error: %s", e)
         cycle += 1
         await asyncio.sleep(24 * 60 * 60)
+
+
+async def _billing_maintenance():
+    """Keep the subscription rows honest against Stripe: a once-per-boot
+    test-mode warning, then `billing.reconcile_subscriptions` every
+    `billing_reconcile_interval_hours` (default 24; 0 = warn only).
+
+    The webhook is the primary channel and it has already failed silently
+    once: production's endpoint received 0 deliveries in a week and was never
+    subscribed to invoice events, so the one PRO row it wrote kept a NULL
+    `current_period_end` — "never expires" to entitlement — while Stripe showed
+    a next billing date. Reconcile is the backstop that re-reads such rows.
+    Runs in the lanes process only (this is called after the lanes_enabled
+    return, next to _registry_maintenance) so two replicas never both poll
+    Stripe, and it is bounded: `limit` rows per run, one GET each. No
+    exception may end the loop — a Stripe outage tonight must not mean no
+    reconcile tomorrow.
+    """
+    import asyncio
+    import logging
+    from app.config import settings
+    _log = logging.getLogger("billing")
+    await asyncio.sleep(120)  # let boot settle; the warning still lands in the boot log
+    first = True
+    while True:
+        hours = int(getattr(settings, "billing_reconcile_interval_hours", 24) or 0)
+        try:
+            from app.billing import (reconcile_subscriptions, stripe_enabled,
+                                     warn_if_stripe_test_mode)
+            if first:
+                warn_if_stripe_test_mode()
+            if hours <= 0:
+                _log.info("Billing maintenance: reconcile disabled "
+                          "(billing_reconcile_interval_hours=0)")
+                return
+            if stripe_enabled():
+                out = await asyncio.to_thread(reconcile_subscriptions)
+                _log.info("Billing maintenance: reconcile %s", out)
+        except Exception as e:
+            _log.exception("Billing maintenance error: %s", e)
+        first = False
+        await asyncio.sleep(max(1, hours) * 60 * 60)
 
 
 async def _fresh_lane():
@@ -2001,6 +2079,9 @@ async def upload_resume(request: Request):
         invalidate_resume_cache(uid)
     except Exception:
         pass
+    # A résumé plus target roles is a scorable profile — record the
+    # onboarding-complete moment (once) so new-user latency is measurable.
+    await anyio.to_thread.run_sync(_record_profile_completed_once, uid)
     return result
 
 
@@ -3211,6 +3292,42 @@ def _score_kind(rerank, scored_at, prescored_at, expired_at) -> str:
     return "final"        # legacy row scored before the lifecycle columns
 
 
+# TTLs for the per-user aggregates the board polls (app/common/ttl_cache.py —
+# its module docstring carries the 2026-09-16 sample that motivated them).
+# 300 s is one pulse-lane cadence: a tile cannot move faster than the lanes
+# that feed it. 60 s for the explorer counts, which follow every keystroke.
+_POOL_COUNT_TTL_SECONDS = 300
+_JOBS_COUNT_TTL_SECONDS = 60
+_FRESHNESS_STATS_TTL_SECONDS = 300
+# A degraded freshness payload is kept only briefly, so a recovered database
+# shows up within a minute instead of five.
+_FRESHNESS_DEGRADED_TTL_SECONDS = 60
+# SQLite has no percentile_cont; the fallback medians read at most this many
+# of the newest matching rows into Python. Dev/test only — production is
+# Postgres and never takes that path.
+_FRESHNESS_SAMPLE_ROWS = 5000
+# Upper bound on FunnelEvent rows any one freshness statement may return.
+_FRESHNESS_EVENT_LIMIT = 5000
+
+
+def _jobs_count_key(uid, closed, search, company, track, status, min_score,
+                    max_score, remote, hide_aggregators, roles_only, age_days) -> str:
+    """One cache key per (tenant, normalised filter set) for the /api/jobs
+    COUNTs. Normalised the way the predicates read them — ILIKE is
+    case-insensitive so `search` folds, `company` is an equality so it does
+    not — so two spellings of the same filter share one cached total."""
+    parts = (
+        uid or "local", int(bool(closed)),
+        (search or "").strip().lower(), (company or "").strip(),
+        track or "", status or "",
+        "" if min_score is None else int(min_score),
+        "" if max_score is None else int(max_score),
+        "" if remote is None else int(remote.strip().lower() == "true"),
+        int(hide_aggregators == "1"), int(roles_only == "1"), int(age_days or 0),
+    )
+    return _json.dumps(parts, separators=(",", ":"))
+
+
 @app.get("/api/jobs")
 def api_jobs(
     request: Request,
@@ -3401,8 +3518,7 @@ def api_jobs(
             count_query = count_query.where(_roles_cond)
         if _age_filter is not None:
             count_query = count_query.where(_age_filter)
-
-        total = session.exec(count_query).first() or 0
+        # Built here, EXECUTED after the page query below — see the note there.
 
         # Open-pool size INSIDE the caller's age window — the "All Jobs" tab
         # badge, while `total` (which also respects the default-on "My roles"
@@ -3423,7 +3539,6 @@ def api_jobs(
             open_q = open_q.where(Job.user_id == uid)
         if _age_filter is not None:
             open_q = open_q.where(_age_filter)
-        total_open = session.exec(open_q).first() or 0
 
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
@@ -3468,6 +3583,39 @@ def api_jobs(
             ).offset(offset).limit(limit)
         
         results = session.exec(query).all()
+
+        # The two COUNT(*)s run AFTER the page and are the only statements
+        # under the budget: `SET LOCAL statement_timeout` covers the rest of
+        # this transaction, and a page that outlives the budget should arrive
+        # late, not come back empty and read as "no matching jobs". The counts
+        # are what made this route 36 s in the 2026-09-16 sample — a 65k-row
+        # per-user pool re-counted on every keystroke, page click and refresh
+        # — so they get the dashboard's budget and, on expiry, None rather
+        # than a number (the client pages on "did a full page arrive").
+        #
+        # Cached 60 s per (uid, normalised filter signature). Deliberately NOT
+        # invalidated when the pool changes: a total that lags a lane by up to
+        # a minute is invisible to the user (the list itself stays live), and
+        # a per-user invalidation hook in every writer is exactly the kind of
+        # bookkeeping that drifts. A None is never cached.
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        from app.common import ttl_cache as _ttl
+        _count_key = _jobs_count_key(
+            uid, is_closed_filter, search, company, track, status, min_score,
+            max_score, remote, hide_aggregators, roles_only, _effective_age)
+        total = _ttl.get_or_compute(
+            "jobs_total:" + _count_key, _JOBS_COUNT_TTL_SECONDS,
+            lambda: reads.get(None, lambda: _scalar(session.exec(count_query).one())),
+            cache_if=lambda v: v is not None,
+        )
+        _open_key = _jobs_count_key(
+            uid, False, None, None, None, None, None, None, None, None, None,
+            _effective_age)
+        total_open = _ttl.get_or_compute(
+            "jobs_open:" + _open_key, _JOBS_COUNT_TTL_SECONDS,
+            lambda: reads.get(None, lambda: _scalar(session.exec(open_q).one())),
+            cache_if=lambda v: v is not None,
+        )
 
         from datetime import datetime as _dtm2, timedelta as _td2
         _new_cutoff = _dtm2.utcnow() - _td2(days=1)
@@ -3528,15 +3676,18 @@ def api_jobs(
             })
             
         import math
-        pages = math.ceil(total / limit) if total else 0
-        
+        # None = the count exceeded its budget. The page itself still came
+        # back, so the client keeps paging on whether a full page arrived.
+        pages = None if total is None else (math.ceil(total / limit) if total else 0)
+
         return {
             "jobs": jobs_list,
             "total": total,
             "total_open": total_open,
             "page": page,
             "pages": pages,
-            "limit": limit
+            "limit": limit,
+            "degraded": reads.degraded,
         }
 
 
@@ -3632,6 +3783,17 @@ class _BoundedReads:
             self.degraded = True
             log.warning("dashboard read exceeded its %dms budget — panel degraded: %s",
                         self.ms, str(e).splitlines()[0][:200])
+            # Keep what the EARLIER panels already loaded. A rollback expires
+            # every instance in the session, and this page reads those rows
+            # again AFTER the session has closed (the shortlist sort keys) —
+            # an expired, detached row then raises DetachedInstanceError
+            # instead of rendering, so one slow COUNT took the whole board
+            # down with it. Expunged instances keep their loaded state and
+            # nothing on a bounded read path writes them back.
+            try:
+                self.session.expunge_all()
+            except Exception:
+                pass
             try:
                 self.session.rollback()
             except Exception:
@@ -3980,7 +4142,19 @@ def pipeline_live(request: Request) -> dict:
             pq = pq.where(Job.user_id == uid)
         # None, not 0: the board leaves the tile at its last value rather than
         # telling the user their pool emptied.
-        counts["pool"] = reads.get(None, lambda: _scalar(session.exec(pq).one()))
+        #
+        # CACHED per user (app/common/ttl_cache.py). This endpoint is polled
+        # every minute, and this one COUNT over a 65k-row per-user pool was
+        # p50 4 s / p95 9 s / max 10 s of it in the 2026-09-16 sample — a
+        # tile, recomputed 1,440 times a day, for a number the lanes move
+        # every few minutes. A None (timed out) is never cached: pinning
+        # "unavailable" for five minutes would hide the recovery.
+        from app.common import ttl_cache as _ttl
+        counts["pool"] = _ttl.get_or_compute(
+            f"pool_count:{uid or 'local'}", _POOL_COUNT_TTL_SECONDS,
+            lambda: reads.get(None, lambda: _scalar(session.exec(pq).one())),
+            cache_if=lambda v: v is not None,
+        )
 
         # Same aggregator-redirect ghost exclusion as the dashboard pipeline, so
         # the live-updated header tiles agree with the board's numbers.
@@ -4899,16 +5073,16 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                                "résumé — review it before submitting."),
                 }
             raise HTTPException(status_code=429, detail=_detail)
+        # A generation may already be running for this application (fill-pack
+        # fires one in the background when it sees no tailored file) — starting
+        # a second one here paid twice for the same document.
+        if not _claim_tailor(application_id):
+            raise HTTPException(status_code=409, detail="already generating")
         try:
             from app.tailoring.tailor import tailor_for_application
             resume_path, _ = tailor_for_application(application_id)
             path = str(resume_path)
-            _increment_tailor(uid or "local")
-            try:
-                from app.analytics.spend import record_llm_spend
-                record_llm_spend(uid or "local", "tailor")
-            except Exception:
-                pass
+            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
             # The tailor may have parked the application at ERROR (grounding
             # failure) while still writing the file — re-check before serving.
             with get_session() as session:
@@ -4972,6 +5146,8 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                 detail=("No résumé available. Upload one in Settings → Résumé so SpotApply "
                         "can attach it to applications."),
             )
+        finally:
+            _release_tailor(application_id)
 
     p = _P(path)
     if not p.exists():
@@ -5080,136 +5256,202 @@ def freshness_stats(request: Request) -> dict:
     median posting age of the live scored feed, median detection latency
     (posted → discovered) over the last 7 days, share detected within 24h,
     and median post-to-alert latency from dispatched fresh alerts."""
-    import statistics
-    from datetime import datetime, timedelta
     uid = _get_user_id(request)
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_id_arg = uid if uid and uid != "local" else None
-    now = datetime.utcnow()
-    with get_session() as session:
-        # Only the four columns this metric reads — never whole Job rows. The
-        # pool per user is thousands of postings with multi-KB descriptions;
-        # SELECT * just to compute ages/counts is a needless heavy load (and the
-        # global variant of this exact pattern was timing out on Supabase).
-        q = select(Job.rerank_score, Job.posted_at, Job.first_seen, Job.discovered_at).where(
-            Job.is_closed == False,  # noqa: E712
-            Job.user_id == user_id_arg,
-        )
-        rows = session.exec(q).all()  # (rerank_score, posted_at, first_seen, discovered_at)
+    # Cached per user: 300 s healthy, 60 s degraded (app/common/ttl_cache.py).
+    # This payload took 52 s in the 2026-09-16 sample because it loaded EVERY
+    # open row of a 65k-row per-user pool into Python to take two medians, on
+    # every dashboard open. Nothing in it can move faster than a lane tick, so
+    # a five-minute-old answer is the same answer.
+    from app.common import ttl_cache as _ttl
+    return _ttl.get_or_compute(
+        f"freshness_stats:{user_id_arg or 'local'}",
+        lambda out: (_FRESHNESS_DEGRADED_TTL_SECONDS if out.get("degraded")
+                     else _FRESHNESS_STATS_TTL_SECONDS),
+        lambda: _compute_freshness_stats(user_id_arg),
+    )
 
-        from app.db.models import FunnelEvent
-        alerts = session.exec(
-            select(FunnelEvent).where(FunnelEvent.stage == "fresh_alert")
-            .where(FunnelEvent.created_at > now - timedelta(days=7))
-        ).all()
+
+def _compute_freshness_stats(user_id_arg: str | None) -> dict:
+    """The uncached computation behind /api/freshness-stats.
+
+    Every number is an aggregate the DATABASE computes — conditional counts,
+    `percentile_cont` medians on Postgres — over just the columns it needs and
+    through _BoundedReads, so this route can never again pull a whole pool into
+    the web process or outlive the dashboard budget. A statement that exceeds
+    the budget yields None for its metric (the board already renders null as
+    "—") and flags the payload `degraded`; the remaining metrics still load.
+    SQLite (dev/test only) has no percentile_cont, so its medians fall back to
+    Python over at most _FRESHNESS_SAMPLE_ROWS of the newest matching rows.
+    Every FunnelEvent scan filters on `stage` (indexed) AND `created_at`, with
+    a LIMIT, and projects only the columns it reads.
+    """
+    import statistics
+    from datetime import datetime, timedelta
+    from sqlalchemy import case as _case, extract as _extract, literal as _literal
+    from sqlalchemy.types import DateTime as _DateTime
+    from app.db.models import CompanyRegistry as _CR, DiscoveryRun as _DR, FunnelEvent as _FE
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    now = datetime.utcnow()
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(days=7)
 
     def _naive(dt):
         return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
-    scored = [r for r in rows if (r[0] or 0) >= settings.shortlist_score_threshold]
-    ages = [max(0.0, (now - _naive(posted or first)).total_seconds() / 3600)
-            for (_rs, posted, first, _disc) in scored if (posted or first)]
-    recent = [(posted, disc) for (_rs, posted, _first, disc) in rows
-              if posted and disc and disc > now - timedelta(days=7)]
-    latencies = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
-                 for (posted, disc) in recent]
-    latencies = [x for x in latencies if x < 24 * 30]  # drop garbage timestamps
-    # Two lists on purpose. Every alert counts toward fresh_alerts_7d, but
-    # median_post_to_alert_min advertises a POST-to-alert number, and an alert
-    # fired on KNOWN age (no trustworthy posted_at — see
-    # app/strategy/fresh_alerts.py) has no posting reference to measure from.
-    # Counting those would quietly turn the advertised figure into a detection
-    # latency. Legacy events predate `posted_trusted` and are kept.
+    def _med(xs):
+        return round(statistics.median(xs), 1) if xs else None
+
+    def _r1(v):
+        return None if v is None else round(float(v), 1)
+
+    open_where = (Job.is_closed == False, Job.user_id == user_id_arg)  # noqa: E712
+    scored_where = Job.rerank_score >= settings.shortlist_score_threshold
+    # Same precedence the Python version used: feed age reads the source's
+    # posting date, else when we first saw it; "new" reads first_seen, else
+    # discovered_at.
+    age_ref = func.coalesce(Job.posted_at, Job.first_seen)
+    seen_ref = func.coalesce(Job.first_seen, Job.discovered_at)
+
+    scored_n = discovered_24h = None
+    median_age = median_lat = within_24h_pct = None
     alert_count, alert_lat = 0, []
-    for e in alerts:
-        try:
-            meta = _json.loads(e.metadata_json or "{}")
-        except Exception:
-            continue
-        v = meta.get("latency_min")
-        if not isinstance(v, (int, float)):
-            continue
-        alert_count += 1
-        if meta.get("posted_trusted", True):
-            alert_lat.append(v)
-
-    med = lambda xs: round(statistics.median(xs), 1) if xs else None
-
-    # Hot-lane heartbeat: last run + jobs it fetched over the last day, so the
-    # dashboard can show whether the every-20-min lane is actually alive.
-    hot_last_at = None
-    hot_runs_24h = 0
-    hot_jobs_24h = 0
-    with get_session() as session:
-        from app.db.models import FunnelEvent as _FE
-        runs = session.exec(
-            select(_FE).where(_FE.stage == "hot_lane_run",
-                              _FE.created_at > now - timedelta(days=1))
-            .order_by(_FE.created_at.desc())
-        ).all()
-    hot_runs_24h = len(runs)
-    hot_inserted_24h = 0
-    if runs:
-        hot_last_at = runs[0].created_at.isoformat()
-        for e in runs:
-            try:
-                meta = _json.loads(e.metadata_json or "{}")
-                hot_jobs_24h += int(meta.get("fetched_jobs") or 0)
-                hot_inserted_24h += int(meta.get("inserted_jobs") or 0)
-            except Exception:
-                pass
-
-    # "New jobs" the user can actually feel: rows discovered in the last 24h
-    # (moves within minutes of a lane finding something, unlike the multi-day
-    # median-age metric), plus when the fresh/full discovery lanes last ran.
-    discovered_24h = sum(
-        1 for (_rs, _posted, first, disc) in rows
-        if (first or disc)
-        and _naive(first or disc) > now - timedelta(days=1)
-    )
-    # THE canonical "new in 24h": distinct new postings in the shared pool.
-    # Four different numbers wore this label at once in production — 2,611
-    # (this user's own adopted pool, above), 12,936 (pulse-tick inserts only),
-    # 19,071 (all Job rows incl. per-user adopted COPIES, whose first_seen is
-    # re-stamped at adoption), 18,921 (same by discovered_at) — shown side by
-    # side as if comparable. The shared pool counts each posting once, across
-    # every lane, with no per-user duplication.
-    shared_new_24h = 0
-    try:
-        from app.discovery.pipeline import SHARED_POOL_USER as _SPU
-        with get_session() as session:
-            _v = session.exec(
-                select(func.count(Job.id)).where(
-                    Job.user_id == _SPU,
-                    Job.first_seen > now - timedelta(days=1))
-            ).first()
-        shared_new_24h = int(_v[0] if isinstance(_v, tuple) else (_v or 0))
-    except Exception as _se:
-        log.debug("shared-pool 24h count skipped: %s", _se)
+    hot_last_at, hot_runs_24h, hot_jobs_24h, hot_inserted_24h = None, 0, 0, 0
+    shared_new_24h = None
     last_discovery_at = None
-    with get_session() as session:
-        from app.db.models import DiscoveryRun as _DR
-        from app.discovery.pipeline import SHARED_POOL_USER
-        # Global (shared-pool) runs count too — they feed this user via adoption.
-        _owner = (_DR.user_id == user_id_arg) | (_DR.user_id == SHARED_POOL_USER)
-        row = session.exec(
-            select(_DR).where(_owner,
-                              _DR.finished_at != None)  # noqa: E711
-            .order_by(_DR.finished_at.desc()).limit(1)
-        ).first()
-        if row and row.finished_at:
-            last_discovery_at = row.finished_at.isoformat()
-
     # Pulse-lane coverage: how alive the freshness guarantee is right now.
     pulse = {"enabled": bool(settings.pulse_lane_enabled)}
-    if settings.pulse_lane_enabled:
-        try:
-            from app.db.models import CompanyRegistry as _CR, FunnelEvent as _FE2
-            with get_session() as session:
+
+    with get_session() as session:
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        is_pg = session.get_bind().dialect.name == "postgresql"
+
+        # 1. The two counts over this user's open pool, in ONE pass: the scored
+        # feed (what the median-age tile is a median OF) and the rows the user
+        # can feel as "new" (moved within minutes of a lane finding something).
+        cnt_row = reads.get(None, lambda: session.exec(
+            select(func.count(_case((scored_where, 1))),
+                   func.count(_case((seen_ref > day_ago, 1))))
+            .where(*open_where)).one())
+        if cnt_row is not None:
+            scored_n, discovered_24h = int(cnt_row[0] or 0), int(cnt_row[1] or 0)
+
+        # 2. Medians. Postgres does them in SQL; SQLite takes a bounded sample.
+        # Detection latency = posted -> discovered over the last 7 days; values
+        # past 30 days are garbage timestamps and are dropped, as before.
+        if is_pg:
+            _now_lit = _literal(now, type_=_DateTime)
+            age_hours = func.greatest(
+                0.0, _extract("epoch", _now_lit - age_ref) / 3600.0)
+            median_age = _r1(reads.get(None, lambda: session.exec(
+                select(func.percentile_cont(0.5).within_group(age_hours))
+                .where(*open_where, scored_where, age_ref.is_not(None))).one()))
+            lat_hours = func.greatest(
+                0.0, _extract("epoch", Job.discovered_at - Job.posted_at) / 3600.0)
+            lat_row = reads.get(None, lambda: session.exec(
+                select(func.percentile_cont(0.5).within_group(lat_hours),
+                       func.count(),
+                       func.count(_case((lat_hours <= 24, 1))))
+                .where(*open_where,
+                       Job.posted_at.is_not(None), Job.discovered_at.is_not(None),
+                       Job.discovered_at > week_ago,
+                       lat_hours < 24 * 30)).one())
+            if lat_row is not None:
+                median_lat = _r1(lat_row[0])
+                _n_lat = int(lat_row[1] or 0)
+                within_24h_pct = (round(100 * int(lat_row[2] or 0) / _n_lat)
+                                  if _n_lat else None)
+        else:
+            age_rows = reads.get(None, lambda: list(session.exec(
+                select(Job.posted_at, Job.first_seen)
+                .where(*open_where, scored_where)
+                .order_by(desc(Job.id)).limit(_FRESHNESS_SAMPLE_ROWS)).all()))
+            if age_rows is not None:
+                median_age = _med([
+                    max(0.0, (now - _naive(p or f)).total_seconds() / 3600)
+                    for (p, f) in age_rows if (p or f)])
+            lat_rows = reads.get(None, lambda: list(session.exec(
+                select(Job.posted_at, Job.discovered_at)
+                .where(*open_where,
+                       Job.posted_at.is_not(None), Job.discovered_at.is_not(None),
+                       Job.discovered_at > week_ago)
+                .order_by(desc(Job.id)).limit(_FRESHNESS_SAMPLE_ROWS)).all()))
+            if lat_rows is not None:
+                lats = [max(0.0, (_naive(d) - _naive(p)).total_seconds() / 3600)
+                        for (p, d) in lat_rows]
+                lats = [x for x in lats if x < 24 * 30]
+                median_lat = _med(lats)
+                within_24h_pct = (round(100 * sum(1 for x in lats if x <= 24) / len(lats))
+                                  if lats else None)
+
+        # 3. Fresh alerts (7d). Two lists on purpose. Every alert counts toward
+        # fresh_alerts_7d, but median_post_to_alert_min advertises a
+        # POST-to-alert number, and an alert fired on KNOWN age (no trustworthy
+        # posted_at — see app/strategy/fresh_alerts.py) has no posting
+        # reference to measure from. Counting those would quietly turn the
+        # advertised figure into a detection latency. Legacy events predate
+        # `posted_trusted` and are kept.
+        alert_meta = reads.get([], lambda: list(session.exec(
+            select(_FE.metadata_json)
+            .where(_FE.stage == "fresh_alert", _FE.created_at > week_ago)
+            .order_by(desc(_FE.id)).limit(_FRESHNESS_EVENT_LIMIT)).all()))
+        for mj in alert_meta:
+            try:
+                meta = _json.loads(mj or "{}")
+            except Exception:
+                continue
+            v = meta.get("latency_min")
+            if not isinstance(v, (int, float)):
+                continue
+            alert_count += 1
+            if meta.get("posted_trusted", True):
+                alert_lat.append(v)
+
+        # 4. Hot-lane heartbeat: last run + jobs it fetched over the last day,
+        # so the dashboard can show whether the every-20-min lane is alive.
+        hot_rows = reads.get([], lambda: list(session.exec(
+            select(_FE.created_at, _FE.metadata_json)
+            .where(_FE.stage == "hot_lane_run", _FE.created_at > day_ago)
+            .order_by(desc(_FE.created_at)).limit(_FRESHNESS_EVENT_LIMIT)).all()))
+        hot_runs_24h = len(hot_rows)
+        if hot_rows:
+            hot_last_at = hot_rows[0][0].isoformat()
+            for (_at, mj) in hot_rows:
+                try:
+                    meta = _json.loads(mj or "{}")
+                    hot_jobs_24h += int(meta.get("fetched_jobs") or 0)
+                    hot_inserted_24h += int(meta.get("inserted_jobs") or 0)
+                except Exception:
+                    pass
+
+        # 5. THE canonical "new in 24h": distinct new postings in the shared
+        # pool. Four different numbers wore this label at once in production —
+        # 2,611 (this user's own adopted pool, above), 12,936 (pulse-tick
+        # inserts only), 19,071 (all Job rows incl. per-user adopted COPIES,
+        # whose first_seen is re-stamped at adoption), 18,921 (same by
+        # discovered_at) — shown side by side as if comparable. The shared
+        # pool counts each posting once, across every lane, no duplication.
+        shared_new_24h = reads.get(None, lambda: _scalar(session.exec(
+            select(func.count(Job.id)).where(
+                Job.user_id == SHARED_POOL_USER, Job.first_seen > day_ago)).one()))
+
+        # 6. Global (shared-pool) runs count too — they feed this user via
+        # adoption.
+        _owner = (_DR.user_id == user_id_arg) | (_DR.user_id == SHARED_POOL_USER)
+        _fin = reads.get(None, lambda: session.exec(
+            select(_DR.finished_at).where(_owner, _DR.finished_at.is_not(None))
+            .order_by(desc(_DR.finished_at)).limit(1)).first())
+        if _fin:
+            last_discovery_at = _fin.isoformat()
+
+        # 7. Pulse coverage.
+        if settings.pulse_lane_enabled:
+            try:
                 def _cnt(q):
-                    v = session.exec(q).one()
-                    return int(v[0] if isinstance(v, tuple) else v)
+                    return reads.get(None, lambda: _scalar(session.exec(q).one()))
                 active_cut = now - timedelta(days=settings.pulse_active_days)
                 pulse["fast_boards"] = _cnt(
                     select(func.count(_CR.id)).where(
@@ -5234,98 +5476,95 @@ def freshness_stats(request: Request) -> dict:
                     select(func.count(_CR.id)).where(
                         _CR.last_seen != None,  # noqa: E711
                         _CR.last_seen >= now - timedelta(hours=24)))
-                ticks = session.exec(
-                    select(_FE2).where(_FE2.stage == "pulse_tick",
-                                       _FE2.created_at > now - timedelta(hours=24))
-                    .order_by(_FE2.created_at.desc()).limit(2000)
-                ).all()
-            pulse["ticks_24h"] = len(ticks)
-            pulse["last_tick_at"] = ticks[0].created_at.isoformat() if ticks else None
-            # SELECTED IS NOT POLLED. The only per-tick number recorded used to
-            # be the SELECTION, so every consumer that wanted a poll count
-            # multiplied ticks x selected — scripts/pulse_check.py printed that
-            # product verbatim as "board polls" — while ~88% of each tick's
-            # selection was being deferred without ever being fetched. These
-            # four are kept separate so that can never be conflated again.
-            new_24h = selected_24h = polled_24h = deferred_24h = failed_24h = 0
-            lat_p50: list[int] = []
-            for t in ticks:
-                try:
-                    m = _json.loads(t.metadata_json or "{}")
-                except Exception:
-                    continue
-                new_24h += int(m.get("new_jobs") or 0)
-                selected_24h += int(m.get("selected") or m.get("boards") or 0)
-                # `fetch_ok` only exists on ticks written since the split; older
-                # events contribute to `selected` and are honestly absent here
-                # rather than being back-filled with a guess.
-                polled_24h += int(m.get("fetch_ok") or 0)
-                deferred_24h += int(m.get("deferred") or 0)
-                failed_24h += int(m.get("fetch_failed") or 0)
-                if m.get("fetch_p50_ms"):
-                    lat_p50.append(int(m["fetch_p50_ms"]))
-            pulse["new_jobs_24h"] = new_24h
-            pulse["boards_selected_24h"] = selected_24h
-            pulse["fetches_completed_24h"] = polled_24h
-            pulse["fetches_failed_24h"] = failed_24h
-            pulse["fetches_deferred_24h"] = deferred_24h
-            pulse["deferred_pct"] = (round(100.0 * deferred_24h / selected_24h, 1)
-                                     if selected_24h else 0.0)
-            if lat_p50:
-                lat_p50.sort()
-                pulse["fetch_p50_ms"] = lat_p50[len(lat_p50) // 2]
-            # The honest answer to "how often does a board actually get looked
-            # at?" — live boards divided by real completed fetches per hour.
-            # This is the number the floor promise should be judged on.
-            _lv0 = int(pulse.get("live_boards") or 0)
-            if polled_24h > 0 and _lv0:
-                pulse["effective_revisit_hours"] = round(_lv0 / (polled_24h / 24.0), 1)
-            else:
-                pulse["effective_revisit_hours"] = None
-            # Lane-agnostic: fresh alerts are dispatched by the scoring lane,
-            # the matching lane AND the pulse fast path, and every one of them
-            # writes a stage="fresh_alert" FunnelEvent. Summing only the pulse
-            # ticks' metadata (the old shape) undercounted the other lanes to 0.
-            with get_session() as session:
-                _a = session.exec(
-                    select(func.count(_FE2.id)).where(
-                        _FE2.stage == "fresh_alert",
-                        _FE2.created_at > now - timedelta(days=1))
-                ).first()
-            pulse["alerts_24h"] = int(_a[0] if isinstance(_a, tuple) else (_a or 0))
-            pulse["fast_interval_min"] = settings.pulse_fast_interval_minutes
-            pulse["floor_interval_min"] = settings.pulse_floor_interval_minutes
-            # Is the "every live board within the floor" promise actually being
-            # kept? Production: 18,773 of 21,505 live boards were past the
-            # 60-min floor while the UI said "catching up" — at 87% that is not
-            # catching up, it is structural under-capacity (see the sizing note
-            # on pulse_max_boards_per_tick in config.py). Give the UI the
-            # honest ratio so it can say which one is true.
-            _live = int(pulse.get("live_boards") or 0)
-            _over = int(pulse.get("overdue_boards") or 0)
-            pulse["overdue_pct"] = round(100.0 * _over / _live, 1) if _live else 0.0
-            # floor_holding needs BOTH halves. overdue_pct alone was checkable
-            # against a schedule the lane itself was falsifying: a deferred board
-            # got its next_poll_at advanced exactly like a polled one, so the
-            # schedule looked current while the fetch never happened. The
-            # deferral rate is the independent check — a lane deferring a large
-            # share of what it selects is capacity-limited whatever its
-            # next_poll_at column says.
-            _defer_pct = float(pulse.get("deferred_pct") or 0.0)
-            pulse["capacity_limited"] = _defer_pct >= 20.0
-            pulse["floor_holding"] = (bool(_live) and (_over / _live) < 0.05
-                                      and not pulse["capacity_limited"])
-        except Exception as _pe:
-            log.debug("pulse stats skipped: %s", _pe)
+                ticks = reads.get([], lambda: list(session.exec(
+                    select(_FE.created_at, _FE.metadata_json)
+                    .where(_FE.stage == "pulse_tick", _FE.created_at > day_ago)
+                    .order_by(desc(_FE.created_at)).limit(2000)).all()))
+                pulse["ticks_24h"] = len(ticks)
+                pulse["last_tick_at"] = ticks[0][0].isoformat() if ticks else None
+                # SELECTED IS NOT POLLED. The only per-tick number recorded used
+                # to be the SELECTION, so every consumer that wanted a poll
+                # count multiplied ticks x selected — scripts/pulse_check.py
+                # printed that product verbatim as "board polls" — while ~88%
+                # of each tick's selection was being deferred without ever
+                # being fetched. These four are kept separate so that can never
+                # be conflated again.
+                new_24h = selected_24h = polled_24h = deferred_24h = failed_24h = 0
+                lat_p50: list[int] = []
+                for (_at, mj) in ticks:
+                    try:
+                        m = _json.loads(mj or "{}")
+                    except Exception:
+                        continue
+                    new_24h += int(m.get("new_jobs") or 0)
+                    selected_24h += int(m.get("selected") or m.get("boards") or 0)
+                    # `fetch_ok` only exists on ticks written since the split;
+                    # older events contribute to `selected` and are honestly
+                    # absent here rather than being back-filled with a guess.
+                    polled_24h += int(m.get("fetch_ok") or 0)
+                    deferred_24h += int(m.get("deferred") or 0)
+                    failed_24h += int(m.get("fetch_failed") or 0)
+                    if m.get("fetch_p50_ms"):
+                        lat_p50.append(int(m["fetch_p50_ms"]))
+                pulse["new_jobs_24h"] = new_24h
+                pulse["boards_selected_24h"] = selected_24h
+                pulse["fetches_completed_24h"] = polled_24h
+                pulse["fetches_failed_24h"] = failed_24h
+                pulse["fetches_deferred_24h"] = deferred_24h
+                pulse["deferred_pct"] = (round(100.0 * deferred_24h / selected_24h, 1)
+                                         if selected_24h else 0.0)
+                if lat_p50:
+                    lat_p50.sort()
+                    pulse["fetch_p50_ms"] = lat_p50[len(lat_p50) // 2]
+                # The honest answer to "how often does a board actually get
+                # looked at?" — live boards divided by real completed fetches
+                # per hour. This is the number the floor promise is judged on.
+                _lv0 = int(pulse.get("live_boards") or 0)
+                if polled_24h > 0 and _lv0:
+                    pulse["effective_revisit_hours"] = round(_lv0 / (polled_24h / 24.0), 1)
+                else:
+                    pulse["effective_revisit_hours"] = None
+                # Lane-agnostic: fresh alerts are dispatched by the scoring
+                # lane, the matching lane AND the pulse fast path, and every one
+                # of them writes a stage="fresh_alert" FunnelEvent. Summing only
+                # the pulse ticks' metadata (the old shape) undercounted the
+                # other lanes to 0.
+                pulse["alerts_24h"] = _cnt(
+                    select(func.count(_FE.id)).where(
+                        _FE.stage == "fresh_alert", _FE.created_at > day_ago))
+                pulse["fast_interval_min"] = settings.pulse_fast_interval_minutes
+                pulse["floor_interval_min"] = settings.pulse_floor_interval_minutes
+                # Is the "every live board within the floor" promise actually
+                # being kept? Production: 18,773 of 21,505 live boards were
+                # past the 60-min floor while the UI said "catching up" — at
+                # 87% that is not catching up, it is structural under-capacity
+                # (see the sizing note on pulse_max_boards_per_tick in
+                # config.py). Give the UI the honest ratio so it can say which
+                # one is true.
+                _live = int(pulse.get("live_boards") or 0)
+                _over = int(pulse.get("overdue_boards") or 0)
+                pulse["overdue_pct"] = round(100.0 * _over / _live, 1) if _live else 0.0
+                # floor_holding needs BOTH halves. overdue_pct alone was
+                # checkable against a schedule the lane itself was falsifying:
+                # a deferred board got its next_poll_at advanced exactly like a
+                # polled one, so the schedule looked current while the fetch
+                # never happened. The deferral rate is the independent check —
+                # a lane deferring a large share of what it selects is
+                # capacity-limited whatever its next_poll_at column says.
+                _defer_pct = float(pulse.get("deferred_pct") or 0.0)
+                pulse["capacity_limited"] = _defer_pct >= 20.0
+                pulse["floor_holding"] = (bool(_live) and (_over / _live) < 0.05
+                                          and not pulse["capacity_limited"])
+            except Exception as _pe:
+                log.debug("pulse stats skipped: %s", _pe)
 
     return {
-        "scored_feed_jobs": len(scored),
-        "median_feed_age_hours": med(ages),
-        "median_detection_latency_hours": med(latencies),
-        "detected_within_24h_pct": (round(100 * sum(1 for x in latencies if x <= 24) / len(latencies))
-                                    if latencies else None),
+        "scored_feed_jobs": scored_n,
+        "median_feed_age_hours": median_age,
+        "median_detection_latency_hours": median_lat,
+        "detected_within_24h_pct": within_24h_pct,
         "fresh_alerts_7d": alert_count,
-        "median_post_to_alert_min": med(alert_lat),
+        "median_post_to_alert_min": _med(alert_lat),
         "hot_lane_last_run": hot_last_at,
         "hot_lane_runs_24h": hot_runs_24h,
         "hot_lane_jobs_24h": hot_jobs_24h,
@@ -5339,6 +5578,9 @@ def freshness_stats(request: Request) -> dict:
         "shared_pool_new_24h": shared_new_24h,
         "last_discovery_run": last_discovery_at,
         "pulse": pulse,
+        # True when at least one statement exceeded the dashboard budget and
+        # its metric is None. Never quietly 0.
+        "degraded": reads.degraded,
     }
 
 
@@ -5723,6 +5965,7 @@ def download_extension():
                     arcname = "spotapply-extension/" + _os.path.relpath(fpath, ext_dir)
                     zf.write(fpath, arcname)
         buf.seek(0)
+        _record_document_downloaded("extension", None)
         return StreamingResponse(
             buf,
             media_type="application/zip",
@@ -7061,33 +7304,78 @@ def api_admin_spend(request: Request, days: int = 14):
 
 @app.get("/api/admin/metrics")
 def admin_metrics(request: Request) -> dict:
-    """Aggregated KPIs for the owner dashboard. Admin-only."""
+    """Aggregated KPIs for the owner dashboard. Admin-only.
+
+    Two numbers here lied on 2026-09-16 and both are now split in two:
+
+    - active_users_7d read Application.updated_at, which the background lanes
+      bump for EVERY user (hygiene, re-scoring, realign — every user's
+      applications showed updated_at 09-15/09-16), so 10 users with no
+      sign-in in 7 days (three last seen in June) were reported active. It is
+      now distinct profiles with an authenticated request in the window
+      (UserProfile.last_active_at, the same stamp the dormancy gate reads);
+      the old number survives as users_with_pipeline_activity_7d, which is a
+      measure of the pipeline, not of people.
+    - paid_subscriptions / MRR counted every non-FREE, unexpired row. The only
+      subscription production had was the founder's SANDBOX one (test-mode
+      keys; live payments never activated) and it was reported as $100 MRR.
+      Revenue now counts `billing.is_paid_entitlement` rows only; the sandbox
+      rows are shown separately, as is what would silently vanish from MRR at
+      go-live (grandfathered_users) and the rows whose period end reconcile
+      still has to fill (subscriptions_missing_period_end — the founder's row
+      was one: written by checkout.session.completed, NULL = never expires).
+    """
     _require_admin_user(request)
     from datetime import timedelta
+    from app.billing import (entitlement_expired, is_paid_entitlement,
+                             stripe_live_mode, stripe_mode)
     from app.db.models import (UserProfile, Application, UserSubscription,
                                TrialGrant, PlanTier, PLAN_PRICES)
-    cutoff = _dt.utcnow() - timedelta(days=7)
+    now = _dt.utcnow()
+    cutoff = now - timedelta(days=7)
+    grandfather_cutoff = _grandfather_cutoff()
     with get_session() as session:
         total_users = _scalar(session.exec(select(func.count(UserProfile.id))).one())
-        active_rows = session.exec(
+        active_users = _scalar(session.exec(
+            select(func.count(func.distinct(UserProfile.user_id)))
+            .where(UserProfile.user_id.isnot(None))
+            .where(UserProfile.last_active_at >= cutoff)).one())
+        pipeline_rows = session.exec(
             select(Application.user_id).where(Application.updated_at >= cutoff)).all()
-        active_users = len({u for u in active_rows if u})
+        pipeline_users = len({u for u in pipeline_rows if u})
         referred = _scalar(session.exec(
             select(func.count(UserProfile.id)).where(UserProfile.referred_by_id.isnot(None))).one())
         trials = _scalar(session.exec(select(func.count(TrialGrant.id))).one())
         total_apps = _scalar(session.exec(select(func.count(Application.id))).one())
         subs = session.exec(select(UserSubscription)).all()
-    mrr, paid = 0, 0
-    now = _dt.utcnow()
+        # Profiles _is_grandfathered would grant PRO: no subscription row, and
+        # created before the cutoff when one is set. Counted, not resolved per
+        # user — one query, however many profiles.
+        gf_q = (select(func.count(UserProfile.id))
+                .where(UserProfile.user_id.isnot(None))
+                .where(UserProfile.user_id.notin_(select(UserSubscription.user_id))))
+        if grandfather_cutoff is not None:
+            gf_q = gf_q.where(UserProfile.created_at < grandfather_cutoff)
+        grandfathered = _scalar(session.exec(gf_q).one())
+    mrr, paid, sandbox, missing_end = 0, 0, 0, 0
+    live = stripe_live_mode()
     by_plan = {}
     for s in subs:
-        if s.plan and s.plan != PlanTier.FREE and (s.current_period_end is None or s.current_period_end > now):
+        stripe_backed = bool(s.stripe_subscription_id)
+        looks_active = bool(s.plan and s.plan != PlanTier.FREE
+                            and not entitlement_expired(s, now))
+        if is_paid_entitlement(s, now):
             mrr += PLAN_PRICES.get(s.plan, 0)
             paid += 1
             by_plan[s.plan.value] = by_plan.get(s.plan.value, 0) + 1
+        elif looks_active and stripe_backed and not live:
+            sandbox += 1
+        if stripe_backed and s.plan and s.plan != PlanTier.FREE and s.current_period_end is None:
+            missing_end += 1
     return {
         "total_users": total_users,
         "active_users_7d": active_users,
+        "users_with_pipeline_activity_7d": pipeline_users,
         "referred_signups": referred,
         "trial_users": trials,
         "total_applications": total_apps,
@@ -7095,6 +7383,11 @@ def admin_metrics(request: Request) -> dict:
         "mrr_usd": mrr,
         "arr_usd": mrr * 12,
         "by_plan": by_plan,
+        "sandbox_subscriptions": sandbox,
+        "grandfathered_users": grandfathered,
+        "subscriptions_missing_period_end": missing_end,
+        "stripe_mode": stripe_mode(),
+        "plan_grandfather_until": getattr(settings, "plan_grandfather_until", "") or "",
     }
 
 
@@ -7132,6 +7425,149 @@ def admin_whoami(request: Request) -> dict:
         return {"is_admin": True}
     email = (_get_user_email(request) or "").lower()
     return {"is_admin": bool(email and email in settings.admin_emails_list)}
+
+
+# ── Admin observability ──────────────────────────────────────────────────────
+# The 2026-09-16 audit ran for four hours against production and could not
+# answer three questions from any surface it was allowed to read: what the
+# effective runtime settings were (the Railway variables page exposes secret
+# VALUES, so it was off limits), which LLM provider was actually serving finals
+# (Anthropic had been rejecting every call for two days while the ledger booked
+# them to Claude), and whether Stripe was live (it was not). These two routes
+# answer them without a shell, and without ever printing a secret.
+
+# A settings field is a secret when its NAME says so. Matched as substrings of
+# the lower-cased field name; `details` covers PAYMENT_BANK_DETAILS.
+_SECRET_NAME_MARKERS = ("key", "secret", "token", "password", "passwd", "dsn", "details")
+_SECRET_VALUE_PREFIXES = ("sk_", "sk-", "rk_", "whsec_", "eyj")  # API keys, Stripe, JWTs
+
+
+def _looks_secret(name: str, value) -> bool:
+    n = (name or "").lower()
+    if any(m in n for m in _SECRET_NAME_MARKERS):
+        return True
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v.startswith(_SECRET_VALUE_PREFIXES):
+            return True
+        # A connection URL with userinfo ("postgresql://user:pass@host") is a
+        # credential whatever the field is called.
+        if "://" in v and "@" in v.split("://", 1)[1].split("/", 1)[0] and ":" in v.split("://", 1)[1].split("@", 1)[0]:
+            return True
+    return False
+
+
+def _redacted_settings() -> dict:
+    """settings.model_dump() with every secret replaced by {"configured": bool}.
+
+    Everything else is verbatim: lane cadences, caps, thresholds, model names,
+    feature flags — the numbers the audit needed and could not read.
+    """
+    from pathlib import Path as _Path
+    out: dict = {}
+    for name, value in settings.model_dump().items():
+        if _looks_secret(name, value):
+            out[name] = {"configured": bool(value)}
+        elif isinstance(value, _Path):
+            out[name] = str(value)
+        else:
+            out[name] = value
+    return out
+
+
+@app.get("/api/admin/settings")
+def admin_settings(request: Request) -> dict:
+    """Effective runtime settings, secrets shown only as configured=true/false.
+    Admin-only. Derived properties the operator keeps asking about are added
+    under `derived` so nobody has to re-implement them in their head."""
+    _require_admin_user(request)
+    from app.billing import stripe_mode
+    out = _redacted_settings()
+    out["derived"] = {
+        "stripe_mode": stripe_mode(),
+        "use_supabase": bool(settings.use_supabase),
+        "lanes_enabled": bool(settings.lanes_enabled),
+        "plan_grandfather_cutoff": (_grandfather_cutoff().isoformat()
+                                    if _grandfather_cutoff() else None),
+        "admin_emails_configured": len(settings.admin_emails_list),
+    }
+    return out
+
+
+@app.get("/api/admin/health")
+def admin_health(request: Request) -> dict:
+    """Live operational state: provider breakers (who is serving finals and
+    since when), the platform LLM budget, billing mode, the dormancy gate, the
+    DB pool, memory, and the last scoring/pulse tick. Admin-only. Aggregates
+    only — never a job id, user id, URL or secret."""
+    _require_admin_user(request)
+    from datetime import datetime as _dth
+    from app.billing import stripe_mode
+    from app.db.models import FunnelEvent as _FE
+    out: dict = {"generated_at": _dth.utcnow().isoformat() + "Z"}
+
+    # Provider circuit breakers. provider_status() is the reranker's view of
+    # its own breaker; fall back to the bare availability predicate if a
+    # build predates it, so this route never 500s over a missing helper.
+    try:
+        from app.matching import reranker as _rr
+        status_fn = getattr(_rr, "provider_status", None)
+        if callable(status_fn):
+            out["providers"] = status_fn()
+        else:
+            out["providers"] = {p: {"available": _rr.provider_available(p)}
+                                for p in ("anthropic", "openai")}
+        out["llm_budget"] = {
+            "daily_finals": dict(getattr(_rr, "_daily_finals", {})),
+            "hourly_finals": dict(getattr(_rr, "_hourly_finals", {})),
+            "daily_cap": settings.llm_daily_final_cap,
+            "hourly_cap": settings.llm_hourly_final_cap,
+            "exhausted": bool(_rr.llm_budget_exhausted()),
+            "provider_cooldown_minutes": settings.llm_provider_cooldown_minutes,
+        }
+    except Exception as e:                                   # pragma: no cover
+        out["providers"] = {"error": type(e).__name__}
+
+    out["billing"] = {
+        "stripe_mode": stripe_mode(),
+        "plan_grandfather_until": getattr(settings, "plan_grandfather_until", "") or "",
+        "grandfather_cutoff_parsed": bool(_grandfather_cutoff()),
+    }
+    out["dormancy"] = {"grace_days": settings.dormant_user_grace_days}
+
+    try:
+        from app.db.init_db import engine as _engine
+        pool = getattr(_engine, "pool", None)
+        out["db_pool"] = pool.status() if pool is not None and hasattr(pool, "status") else None
+    except Exception as e:                                   # pragma: no cover
+        out["db_pool"] = type(e).__name__
+    try:
+        from app.common.memuse import snapshot as _mem_snapshot
+        out["memory"] = _mem_snapshot()
+    except Exception as e:                                   # pragma: no cover
+        out["memory"] = {"error": type(e).__name__}
+
+    # The last scoring cycle and pulse tick, straight from their own event
+    # rows (ORDER BY id DESC LIMIT 1 rides the primary key) and bounded by the
+    # dashboard budget so a slow database costs a panel, not the page.
+    lanes: dict = {}
+    with get_session() as session:
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        for stage in ("scoring_cycle", "pulse_tick"):
+            row = reads.get(None, lambda s=stage: session.exec(
+                select(_FE.created_at, _FE.metadata_json)
+                .where(_FE.stage == s).order_by(desc(_FE.id)).limit(1)).first())
+            if row:
+                try:
+                    meta = _json.loads(row[1] or "{}")
+                except Exception:
+                    meta = {}
+                lanes[stage] = {"at": row[0].isoformat() if row[0] else None, "stats": meta}
+            else:
+                lanes[stage] = None
+        out["lanes"] = lanes
+        out["degraded"] = reads.degraded
+    return out
 
 
 # --- User Reviews APIs ---
@@ -7316,10 +7752,25 @@ def _is_grandfathered(uid: str) -> bool:
     a WARNING once per process so they cannot go unnoticed. A user with no
     profile at all is never grandfathered.
     """
+    from app.db.models import UserProfile
+    cutoff = _grandfather_cutoff()
+    with get_session() as session:
+        prof = session.exec(
+            select(UserProfile).where(UserProfile.user_id == uid)).first()
+    if not prof:
+        return False
+    if cutoff is None:
+        return True
+    created = getattr(prof, "created_at", None)
+    return bool(created and created < cutoff)
+
+
+def _grandfather_cutoff():
+    """PLAN_GRANDFATHER_UNTIL parsed, or None when unset/unparseable (= every
+    profile is grandfathered). Warns once per process in that case. Shared by
+    _is_grandfathered and the admin KPIs so both read the setting one way."""
     raw = (getattr(settings, "plan_grandfather_until", "") or "").strip()
     from datetime import datetime as _dt
-
-    from app.db.models import UserProfile
     cutoff = None
     if raw:
         try:
@@ -7333,44 +7784,38 @@ def _is_grandfathered(uid: str) -> bool:
             "PRO without a subscription. Set it to the ISO date billing went live "
             "so later signups are asked to pay.",
             "unset" if not raw else f"not an ISO date ({raw!r})")
-    with get_session() as session:
-        prof = session.exec(
-            select(UserProfile).where(UserProfile.user_id == uid)).first()
-    if not prof:
-        return False
-    if cutoff is None:
-        return True
-    created = getattr(prof, "created_at", None)
-    return bool(created and created < cutoff)
+    return cutoff
 
 
 def _get_user_plan(uid: str) -> PlanTier:
-    """The user's current plan tier.
+    """The user's current plan tier — what LIMITS they get, which is not the
+    same question as whether they are PAYING (billing.is_paid_entitlement).
 
     Pre-revenue mode: while Stripe is NOT configured, everyone rides free on
     PRO (nothing to buy yet — limits must not lock people out of a product
     that has no checkout). Once the STRIPE_* env vars are set, plans come
     from user_subscription: paid rows are PRO, an expired period (past
-    current_period_end + 3-day grace) falls back to FREE, and a user with no
-    row is PRO while grandfathered (_is_grandfathered: everyone with a
-    profile until PLAN_GRANDFATHER_UNTIL is set, earlier signups after) and
-    FREE otherwise. Manual bank-transfer activations are the same rows, set
-    via admin set-plan.
+    current_period_end + ENTITLEMENT_GRACE_DAYS) falls back to FREE, and a
+    user with no row is PRO while grandfathered (_is_grandfathered: everyone
+    with a profile until PLAN_GRANDFATHER_UNTIL is set, earlier signups after)
+    and FREE otherwise. Manual bank-transfer activations are the same rows,
+    set via admin set-plan.
+
+    A grandfathered PRO and a test-mode (sandbox) subscription both resolve to
+    PRO here — they get PRO limits — but neither is revenue, so nothing that
+    means "this user is paying us" (the dormancy override, MRR) may be derived
+    from this function; that derivation is exactly how dormant free riders
+    were scored at the PRO ceiling for weeks.
     """
-    from datetime import datetime, timedelta
-    from app.billing import stripe_enabled
+    from app.billing import entitlement_expired, stripe_enabled
     if uid == "local" or not stripe_enabled():
         return PlanTier.PRO
-    with get_session() as session:
-        row = session.exec(
-            select(UserSubscription).where(UserSubscription.user_id == uid)
-        ).first()
+    row = _subscription_row(uid)
     if not row:
         if _is_grandfathered(uid):
             return PlanTier.PRO
         return PlanTier.FREE
-    if row.current_period_end and \
-            row.current_period_end + timedelta(days=3) < datetime.utcnow():
+    if entitlement_expired(row):
         return PlanTier.FREE
     return row.plan
 
@@ -7562,6 +8007,22 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
 
 
 def _increment_tailor(uid: str):
+    """Count one DELIVERED tailor: the plan-usage counter AND the spend ledger.
+
+    The two used to be written separately — ``record_llm_spend(uid, "tailor")``
+    sat after ``_increment_tailor`` at two of the four tailor entry points and
+    was missing from the others — so production's ``user_usage.tailor_count``
+    summed to 15 all-time while ``llm_spend`` kind=tailor held 3 calls. One
+    writer means the admin spend page and the usage counter can no longer tell
+    two different stories about the same generations. The ledger line is
+    written for EVERY branch below, including the trial grant and the local
+    dev identity (whose spend was always recorded, just never its usage).
+    """
+    try:
+        from app.analytics.spend import record_llm_spend
+        record_llm_spend(uid or "local", "tailor")
+    except Exception as e:      # accounting must never fail a delivered tailor
+        log.debug("tailor spend ledger write skipped for %s: %s", uid, e)
     if uid == "local":
         return
     # Trial users spend a job from their founding-trial budget (1 tailor = 1 job).
@@ -7715,11 +8176,60 @@ def _notify_tailor_rejected(uid: str, application_id: int, reason: str) -> None:
         log.debug("tailor-rejected notification failed for %s: %s", uid, e)
 
 
-def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = None) -> bool:
+# ── one paid tailor per application at a time ────────────────────────────────
+# Process-local, like app/common/inflight.py for scored jobs (one uvicorn
+# process, so a locked set is a complete fix). Application ids are a different
+# keyspace from job ids, hence a set of their own rather than sharing that one.
+# Four doors start a tailor (the single route, fill-pack's auto-tailor, the
+# extension's résumé attach, extract-link) and none of them asked whether one
+# was already running for the same application — a second request while the
+# first generated simply started a second paid generation.
+import threading as _threading  # noqa: E402
+
+_tailor_inflight: set[int] = set()
+_tailor_inflight_lock = _threading.Lock()
+
+
+def _claim_tailor(application_id: int) -> bool:
+    """Claim the application for one generation. False = one is running now."""
+    with _tailor_inflight_lock:
+        if application_id in _tailor_inflight:
+            return False
+        _tailor_inflight.add(application_id)
+        return True
+
+
+def _release_tailor(application_id: int) -> None:
+    with _tailor_inflight_lock:
+        _tailor_inflight.discard(application_id)
+
+
+def _tailor_in_flight(application_id: int) -> bool:
+    with _tailor_inflight_lock:
+        return application_id in _tailor_inflight
+
+
+def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = None,
+                       *, claimed: bool = False) -> bool:
     """Run one tailor; charge the credit ONLY on success (it used to be charged
     at queue time, so provider outages burned a free user's 5-a-day budget with
-    nothing delivered). Two racing requests can each pass the pre-check — a
-    ±1 overshoot we accept over holding a lock across an LLM call."""
+    nothing delivered). Two racing requests can each pass the LIMIT pre-check —
+    a ±1 overshoot we accept over holding a lock across an LLM call — but two
+    requests for the SAME application never both generate: the second finds
+    the claim taken and returns False without paying. ``claimed=True`` means
+    the caller (the single route) already holds the claim so it could 409 the
+    duplicate synchronously; either way it is released here."""
+    if not claimed and not _claim_tailor(application_id):
+        log.info("tailor already generating for app %s (user %s) — not started twice",
+                 application_id, uid)
+        return False
+    try:
+        return _tailor_and_settle_owned(application_id, uid, instruction)
+    finally:
+        _release_tailor(application_id)
+
+
+def _tailor_and_settle_owned(application_id: int, uid: str, instruction: str | None) -> bool:
     from app.tailoring.tailor import tailor_for_application
     try:
         tailor_for_application(application_id, instruction)
@@ -7740,12 +8250,11 @@ def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = 
                  application_id, uid)
         _notify_tailor_rejected(uid, application_id, reason)
         return False
+    # Usage AND the spend ledger are written by _increment_tailor — one writer,
+    # so they cannot drift again (tailor_count summed to 15 all-time while
+    # llm_spend kind=tailor had 3 calls: the ledger was written at two of the
+    # four entry points and not the others).
     _increment_tailor(uid)
-    try:
-        from app.analytics.spend import record_llm_spend
-        record_llm_spend(uid, "tailor")
-    except Exception:
-        pass
     return True
 
 
@@ -7795,9 +8304,16 @@ def trigger_tailor_single(application_id: int, request: Request, bg: BackgroundT
     allowed, detail, usage = _check_tailor_limit(uid)
     if not allowed:
         raise HTTPException(status_code=429, detail=detail)
+    # One paid generation per application at a time. The claim is taken HERE,
+    # not in the background task, so the second click gets its 409 even when
+    # it lands before the first task has started running — with a check-only
+    # route both would answer "started" and the second task would find the
+    # claim gone and quietly do nothing. _tailor_and_settle releases it.
+    if not _claim_tailor(application_id):
+        raise HTTPException(status_code=409, detail="already generating")
     # Credit is charged inside _tailor_and_settle ON SUCCESS — not here.
     bg.add_task(_tailor_and_settle, application_id, uid,
-                (instruction or "").strip()[:500] or None)
+                (instruction or "").strip()[:500] or None, claimed=True)
     return {"started": "tailoring", "application_id": application_id, "usage": usage}
 
 
@@ -8126,6 +8642,63 @@ class ProfileUpdate(BaseModel):
 from datetime import datetime as _dt
 
 
+# ── Funnel instrumentation the audit found missing ───────────────────────────
+# "New-user latency: UNAVAILABLE — there is no event for profile/resume/
+# preferences completed", and "download events are not instrumented". Two
+# events, both best-effort (a funnel row must never fail the request that
+# earned it), both aggregate-friendly: the user id sits in `reason` so the
+# once-per-user check is an indexed equality, not a LIKE over metadata.
+
+def _record_profile_completed_once(uid: str | None) -> bool:
+    """Write stage="profile_completed" the FIRST time this user's profile can
+    feed the pipeline: target roles present, plus either key skills or an
+    uploaded résumé. Returns True when the event was written now."""
+    try:
+        from app.db.models import FunnelEvent, UserProfile
+        from app.analytics.funnel import FunnelTracker
+        who = uid or "local"
+        user_id_arg = None if who == "local" else who
+        with get_session() as session:
+            q = select(UserProfile.target_roles, UserProfile.key_skills)
+            q = (q.where(UserProfile.user_id == user_id_arg) if user_id_arg
+                 else q.where(UserProfile.user_id.is_(None)))
+            row = session.exec(q).first()
+            if not row:
+                return False
+            roles, skills = (row[0] or "").strip(), (row[1] or "").strip()
+            if not roles:
+                return False
+            has_skills = bool(skills)
+            already = session.exec(
+                select(FunnelEvent.id).where(
+                    FunnelEvent.stage == "profile_completed",
+                    FunnelEvent.reason == who).limit(1)).first()
+        if already is not None:
+            return False
+        # The storage round-trip only when skills alone do not qualify.
+        has_resume = has_skills or _user_has_resume(who)
+        if not (has_skills or has_resume):
+            return False
+        FunnelTracker.record(None, "profile_completed", True, reason=who,
+                             metadata={"user_id": who, "has_skills": has_skills,
+                                       "has_resume": bool(has_resume)})
+        return True
+    except Exception as e:                                   # never fail the request
+        log.debug("profile_completed event skipped for %s: %s", uid, e)
+        return False
+
+
+def _record_document_downloaded(kind: str, application_id: int | None,
+                                uid: str | None = None) -> None:
+    """stage="document_downloaded" — kind is resume | cover | extension."""
+    try:
+        from app.analytics.funnel import FunnelTracker
+        FunnelTracker.record(None, "document_downloaded", True, reason=(uid or None),
+                             metadata={"kind": kind, "application_id": application_id})
+    except Exception as e:                                   # never fail the download
+        log.debug("document_downloaded event skipped (%s): %s", kind, e)
+
+
 @app.put("/api/profile")
 def update_profile(request: Request, update: ProfileUpdate) -> dict:
     """Update user profile fields."""
@@ -8194,6 +8767,9 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
         except Exception as e2:
             log.exception("Profile update failed after schema repair: %s", e2)
             raise HTTPException(status_code=500, detail=f"Could not save profile: {e2}")
+
+    # First save that makes the profile scorable → the onboarding clock stops.
+    _record_profile_completed_once(uid)
 
     # Recompute the Trust Profile in the background (GitHub harvest can be slow).
     try:
@@ -9802,6 +10378,7 @@ def download_tailored_resume(application_id: int, request: Request):
             raise HTTPException(status_code=404, detail="Resume file not found on disk")
             
         filename = os.path.basename(path)
+        _record_document_downloaded("resume", application_id, application.user_id)
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -9948,11 +10525,10 @@ async def trigger_extract_link(req: ExtractLinkRequest, request: Request, bg: Ba
 # Tables that own user data under a column OTHER than `user_id`. Everything with
 # a plain `user_id` column is found from the schema instead of being listed, so a
 # new table cannot silently escape deletion (see tests/test_account_deletion.py).
-_EXTRA_OWNER_COLUMNS = {
-    "candidateintro": ("candidate_user_id", "recruiter_user_id"),
-    "intromessage": ("sender_user_id",),
-    "introrating": ("rater_user_id", "ratee_user_id"),
-}
+# The table itself lives with the deletion in app/common/account_purge.py — the
+# daily orphan reconcile runs the SAME purge as this route, so there is one
+# list to keep, not two.
+from app.common.account_purge import _EXTRA_OWNER_COLUMNS  # noqa: E402
 
 
 @app.delete("/api/account")
@@ -9965,58 +10541,28 @@ def delete_account(request: Request) -> dict:
     card_match_shadow) were the most recent. An enumeration cannot fall behind
     that way, and the accompanying test fails the moment a new user-scoped table
     appears without a deletion story.
+
+    The deletion itself is ``account_purge.purge_user_data`` — shared with the
+    daily reconcile that removes tenants whose auth user was deleted directly
+    in Supabase (which this route never sees). Both storage buckets are
+    cleaned; the route used to know only "resume" while "avatars" kept the
+    user's photo under their id.
     """
     uid = _require_user(request)
-    from sqlmodel import SQLModel, delete as sql_delete, select
-
-    from app.db.init_db import get_session
-    from app.db.models import PendingQuestion
+    from app.common.account_purge import (
+        is_sentinel, purge_user_data, purge_user_storage,
+    )
 
     # Never let a sentinel identity through: SHARED_POOL_USER owns the pool every
     # tenant is served from, so "delete my account" for it would wipe the corpus.
-    from app.discovery.pipeline import SHARED_POOL_USER
-    if uid in (SHARED_POOL_USER, "shared", ""):
+    # "local" is the SQLite dev identity: refused by the purge, and this route
+    # has always answered it with success and no row deleted.
+    if uid != "local" and is_sentinel(uid):
         raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
 
     deleted: dict[str, int] = {}
-    with get_session() as session:
-        if uid != "local":
-            # PendingQuestion hangs off the application, not the user.
-            app_ids = list(session.exec(
-                select(Application.id).where(Application.user_id == uid)).all())
-            if app_ids:
-                r = session.exec(sql_delete(PendingQuestion).where(
-                    PendingQuestion.application_id.in_(app_ids)))
-                deleted["pendingquestion"] = r.rowcount or 0
-
-            # CHILDREN FIRST. sorted_tables is FK-dependency order (parents
-            # first), so deleting in reverse removes referencing rows before the
-            # rows they point at. Plain declaration order put `job` ahead of
-            # `application`, and on Postgres (which actually enforces the FK,
-            # unlike the SQLite used in tests) that raised — see below.
-            for table in reversed(SQLModel.metadata.sorted_tables):
-                name = table.name
-                cols = table.columns
-                owner_cols = [cols[c] for c in ("user_id",) if c in cols]
-                owner_cols += [cols[c] for c in _EXTRA_OWNER_COLUMNS.get(name, ())
-                               if c in cols]
-                if not owner_cols:
-                    continue
-                for col in owner_cols:
-                    # SAVEPOINT per statement: on Postgres a failed statement
-                    # poisons the whole transaction, so without this the first
-                    # error made every later delete AND the final commit fail —
-                    # the route 500'd and nothing at all was deleted, while the
-                    # except below quietly logged "one table failed".
-                    try:
-                        with session.begin_nested():
-                            r = session.exec(sql_delete(table).where(col == uid))
-                            deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
-                    except Exception as e:
-                        # One undeletable table must not abandon the rest half-done.
-                        log.exception("Account deletion: %s.%s failed for %s: %s",
-                                      name, col.name, uid, e)
-            session.commit()
+    if uid != "local":
+        deleted = purge_user_data(uid)
     log.info("Account deletion for %s removed: %s", uid,
              {k: v for k, v in sorted(deleted.items()) if v})
 
@@ -10037,14 +10583,11 @@ def delete_account(request: Request) -> dict:
 
         if sb is not None:
             try:
-                files = sb.storage.from_("resume").list(uid) or []
-                paths = [f"{uid}/{f['name']}" for f in files if f.get("name")]
-                if paths:
-                    sb.storage.from_("resume").remove(paths)
-                storage_deleted = True
+                per_bucket = purge_user_storage(uid, sb)
+                storage_deleted = all(per_bucket.values())
             except Exception as e:
                 storage_deleted = False
-                log.exception("Account deletion: résumé storage cleanup failed for %s: %s", uid, e)
+                log.exception("Account deletion: storage cleanup failed for %s: %s", uid, e)
 
             # The one that actually ends the account. Never let the storage
             # result above decide whether this runs.

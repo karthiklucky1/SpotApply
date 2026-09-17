@@ -82,10 +82,15 @@
                     <div class="text-5xl font-black" style="color:var(--ink);">${{ pro_price }}</div>
                     <div class="text-sm mt-1" style="color:var(--muted);">per month · billed monthly · cancel any time</div>
                 </div>
+                <!-- Numbers here mirror PLAN_LIMITS[PlanTier.PRO] in app/db/models.py
+                     (tailor_daily 35, shortlist_daily 35, autofill_weekly None =
+                     unlimited). Pro is NOT uncapped — this card said "Unlimited"
+                     tailoring and "no caps" while the code enforced 35/day; only
+                     auto-fill is genuinely unlimited. Change both places together. -->
                 <ul class="space-y-3 text-sm flex-1 mb-8">
-                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>Unlimited</strong> tailored resumes &amp; cover letters</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>35</strong> tailored resumes &amp; cover letters / day</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>Unlimited</strong> auto-fills — you always click Submit</li>
-                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Everything in Free, with no caps</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Everything in Free, with higher daily caps — up to 35 qualified jobs a day on your board</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Priority matching queue</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Full analytics &amp; funnel insights</li>
                 </ul>
@@ -124,7 +129,7 @@
                         Which job boards does it cover?
                         <svg class="w-4 h-4 group-open:rotate-180 transition-transform" style="color:var(--muted);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </summary>
-                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">Greenhouse, Lever, Ashby, Workday, SmartRecruiters, LinkedIn, Indeed, Remotive, RemoteOK, HN Hiring, The Muse, Arbeitnow, Jobicy, WeWorkRemotely, Adzuna, Reed, Jooble, and more.</p>
+                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">Greenhouse, Lever, Ashby, Workday, SmartRecruiters, LinkedIn, Remotive, RemoteOK, HN Hiring, The Muse, Arbeitnow, Jobicy, WeWorkRemotely, Adzuna, Reed, Jooble, and more.</p>
                 </details>
             </div>
         </div>

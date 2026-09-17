@@ -476,6 +476,25 @@ def init_db() -> None:
     ]:
         add_column_if_missing("discoveryrun", col, col_type)
 
+    # Migrations for llm_spend (metered ledger: which provider/model answered,
+    # and the token counts it billed — analytics/spend.py). Existing rows keep
+    # NULL provider/model and zero tokens, which reads as "legacy, unmetered".
+    for col, col_type in [
+        ("provider", "VARCHAR"),
+        ("model", "VARCHAR"),
+        ("input_tokens", "INTEGER DEFAULT 0"),
+        ("output_tokens", "INTEGER DEFAULT 0"),
+        ("cache_read_tokens", "INTEGER DEFAULT 0"),
+        ("cache_write_tokens", "INTEGER DEFAULT 0"),
+        ("metered_calls", "INTEGER DEFAULT 0"),
+    ]:
+        add_column_if_missing("llm_spend", col, col_type)
+
+    # grounding_verdict: which provider actually answered the fact-check (the
+    # version column names the configured model, not the fallback that served).
+    # Existing rows stay NULL = "unknown".
+    add_column_if_missing("grounding_verdict", "verifier_provider", "VARCHAR")
+
     # Migrations for h1bsponsor table (multi-country sponsor registry)
     for col, col_type in [
         ("country", "VARCHAR DEFAULT 'united states'"),

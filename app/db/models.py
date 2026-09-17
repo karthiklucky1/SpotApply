@@ -754,22 +754,36 @@ class UserNotification(SQLModel, table=True):
 
 
 class LlmSpend(SQLModel, table=True):
-    """Per-user, per-day, per-kind LLM spend ledger (estimated).
+    """Per-user, per-day, per-kind, per-(provider, model) LLM spend ledger.
 
-    One row per (user_id, day, kind); the recorder upserts counts. Costs are
-    ESTIMATES from flat per-call figures (see analytics/spend.py) — the point
-    is attribution and trend ("which user/day/feature costs what"), not
-    accounting-grade precision. Written by the scoring lane, pulse fast path,
-    and tailoring; read by /api/admin/spend."""
+    One row per (user_id, day, kind, provider, model); the recorder upserts
+    counts and token totals. Where the API returned usage the cost is METERED
+    from a per-model price table (analytics/spend.py PRICES_PER_MTOK) and
+    `metered_calls` counts those calls; otherwise it is a flat per-call
+    estimate and `metered_calls` stays put, so `metered_calls / calls` tells
+    the reader how much of a row is measured. `provider`/`model` are NULL on
+    legacy rows and on tailoring, which records no backend. Provider is part
+    of the key because the 2026-09 audit found three days of finals booked to
+    Claude at Haiku's rate while Anthropic was rejecting every call and OpenAI
+    was serving them all. Written ONLY through analytics/spend.py (the
+    Reranker buffers per call, the lanes flush per cycle); read by
+    /api/admin/spend."""
     __tablename__ = "llm_spend"
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: str = Field(index=True)              # "local" in dev; shared-pool never scored
     day: date = Field(index=True)
-    kind: str = Field(index=True)                 # score_final | score_prescore | score_local | tailor
+    kind: str = Field(index=True)                 # score_final | score_prescore | score_prewarm | score_local | tailor
     calls: int = 0
     est_cost_usd: float = 0.0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    provider: Optional[str] = Field(default=None)  # anthropic | openai | NULL (legacy / tailor)
+    model: Optional[str] = Field(default=None)     # model id the response reported
+    input_tokens: int = 0                          # uncached prompt tokens
+    output_tokens: int = 0
+    cache_read_tokens: int = 0                     # prompt tokens served from cache
+    cache_write_tokens: int = 0                    # Anthropic cache_creation_input_tokens
+    metered_calls: int = 0                         # calls priced from real usage
 
 
 class JobCardRow(SQLModel, table=True):
@@ -1020,4 +1034,12 @@ class GroundingVerdict(SQLModel, table=True):
     verifier_version: str = Field(default="", index=True)
     supported: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    # WHICH backend actually answered: "anthropic" | "openai" | NULL (written
+    # before this column existed). verifier_version carries the CONFIGURED
+    # scoring model, but the verifier falls back to the other provider when the
+    # first is down — production logged "batched Anthropic verify failed: 400"
+    # followed by "5 verified, 1 LLM call, PASSED" while Anthropic was suspended,
+    # and nothing on the record said the fallback had served. This is that
+    # record, per verdict.
+    verifier_provider: Optional[str] = Field(default=None)
 

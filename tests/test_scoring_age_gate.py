@@ -136,6 +136,12 @@ def test_a_spent_slice_stops_between_batches_and_keeps_what_it_did(monkeypatch):
             return self.t
 
     monkeypatch.setattr(sl.time, "monotonic", _Clock())
+    # The sweep visits owners round-robin across calls (sl._EXPIRY_RESUME), so
+    # a previous test file's sweep may have left the cursor on the NULL owner.
+    # This test counts clock reads from the FIRST owner's batches, so it has to
+    # start the rotation at u1 — the rotation itself is pinned in
+    # tests/test_expiry_sweep.py.
+    monkeypatch.setattr(sl, "_EXPIRY_RESUME", [])
     out = _expire_stale_unscored(batch=1, max_seconds=20)
     assert out["stopped"] == "slice_spent"
     assert 0 < out["total"] < 5, f"partial progress expected, got {out['total']}"

@@ -89,6 +89,43 @@ def known_ref():
     return func.coalesce(Job.first_seen, Job.discovered_at)
 
 
+def known_before_expr(cutoff: datetime):
+    """SQL: ``known_ref() < cutoff``, spelled so a btree on ``first_seen`` can
+    serve it as a RANGE instead of a filter.
+
+    ``coalesce(first_seen, discovered_at) < cutoff`` wraps the indexed column in
+    a function, so ``ix_job_unscored (user_id, first_seen) WHERE rerank_score
+    IS NULL`` can only ever supply the ``user_id`` prefix and every unscored row
+    of the owner is heap-fetched to evaluate the bound. Over the whole table
+    (the expiry sweep's old shape) that was a scan of the 1.48M-row job table
+    per cycle, and it hit Supabase's statement timeout in 159 of 271 cycles on
+    2026-09-16 — so the age gate never reached an 84-day-old unscored row.
+
+    Provably the same predicate under SQL's three-valued logic:
+
+      first_seen NOT NULL  →  coalesce = first_seen; the second arm is FALSE,
+                              so the OR reduces to ``first_seen < cutoff``.
+      first_seen IS NULL   →  coalesce = discovered_at; the first arm is NULL,
+                              ``NULL OR x`` is ``x``, so the OR reduces to
+                              ``discovered_at < cutoff`` (NULL when that is
+                              NULL too — never true, exactly like the coalesce).
+
+    Pinned against ``known_ref()`` over every NULL combination in
+    tests/test_expiry_sweep.py. This is the ONLY other spelling of the known
+    bound; anything else is a hand-rolled date expression.
+    """
+    return (Job.first_seen < cutoff) | (
+        Job.first_seen.is_(None) & (Job.discovered_at < cutoff))
+
+
+def known_on_or_after_expr(cutoff: datetime):
+    """SQL: ``known_ref() >= cutoff`` in the same index-friendly form — the
+    complement of :func:`known_before_expr` on non-NULL rows (a row with
+    neither timestamp satisfies neither, as with the coalesce)."""
+    return (Job.first_seen >= cutoff) | (
+        Job.first_seen.is_(None) & (Job.discovered_at >= cutoff))
+
+
 def posting_ref():
     """SQL: the source's claim about when the role went live, with fallbacks.
 

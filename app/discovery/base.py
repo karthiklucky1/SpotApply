@@ -61,6 +61,14 @@ class RawJob:
     # The board the posting actually lives on, when the producer is an
     # aggregator that knows it (SerpAPI's `via`).
     origin_provider: Optional[str] = None
+    # Pay as the ATS itself states it, when the response carries a structured
+    # field for it (Ashby's `compensation.compensationTierSummary`). None means
+    # "the source has no such field", NOT "unpaid": `_build_job` then falls back
+    # to the regex facet over the description (app/strategy/job_facets.py). A
+    # value here WINS over that regex — the audit found five Ashby postings with
+    # "$160-200K" on the page and nothing on the card because the salary lived
+    # only in this field, which nobody read.
+    salary_text: Optional[str] = None
     # ── hiring context read straight out of the response, zero extra calls ──
     # Keys are JobHiringContext column names: department, team, division,
     # hiring_entity, recruiting_agency, requisition_id, reporting_title,

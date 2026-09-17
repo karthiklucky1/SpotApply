@@ -3,6 +3,15 @@
 Tries Claude first (Anthropic), falls back to gpt-4o-mini (OpenAI) if Claude
 is unavailable (e.g. credits depleted). Both use the same system prompt
 and expect the same JSON output format.
+
+Every backend call reports WHO answered: ``score_with_meta`` returns the
+backend, model id and token usage of the final it delivered, and each call
+site records its own spend (analytics/spend.py) — the lanes only flush. The
+2026-09 audit found three days of finals booked to Claude while Anthropic was
+rejecting every call and OpenAI served them all, because attribution keyed
+off the provider the lane asked for. ``provider_status`` exposes the breaker
+state (including how long the current outage has run) for the same reason:
+the outage ran 2+ days with nobody noticing.
 """
 from __future__ import annotations
 
@@ -12,8 +21,8 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import List, NamedTuple, Optional, Tuple
 
 from app.config import settings
 from app.db.models import Job
@@ -27,8 +36,22 @@ log = logging.getLogger(__name__)
 # to keep re-hitting it 4x per job per 90s cycle, forever (the Jul 15 log storm).
 # Instead: mark the provider DOWN for a cooldown and skip it — jobs stay Queued
 # and cost nothing until a provider is back.
+#
+# Three dicts, one lock. `down_until` is the cooldown the lanes honour;
+# `down_since` is the first trip of the CURRENT consecutive outage and is
+# cleared only by a call to that provider SUCCEEDING (a cooldown merely
+# expiring proves nothing); `last_error` is the provider's own words,
+# truncated and with anything key-shaped redacted. The 2026-09-14..16 outage
+# re-tripped every 30 minutes for three days and each warning read like the
+# first — nothing said "this has been going on for 2 days", so nobody looked.
 _provider_down_until: dict = {}
+_provider_down_since: dict = {}
+_provider_last_error: dict = {}
 _breaker_lock = threading.Lock()
+
+_PROVIDERS = ("anthropic", "openai")
+_BILLING_CONSOLE = {"anthropic": "console.anthropic.com",
+                    "openai": "platform.openai.com/settings/organization/billing"}
 
 
 # Errors that mean "this provider has no capacity left for a while" — credit /
@@ -45,14 +68,94 @@ def _is_exhaustion_error(error_str: str) -> bool:
 
 _prewarm_warned = [0.0]     # monotonic-ish wall clock of the last prewarm warning
 
+# Anything that looks like an API key or bearer token in a provider's error
+# text is redacted before it is stored or logged.
+_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|api[_-]?key[=:]\s*\S+)", re.IGNORECASE)
+_LAST_ERROR_MAX = 300
 
-def _mark_provider_down(name: str) -> None:
+
+def _sanitize_error(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    return _SECRET_RE.sub("[redacted]", " ".join(str(text).split()))[:_LAST_ERROR_MAX]
+
+
+def _fmt_duration(seconds: float) -> str:
+    """'2d 3h', '3h 12m', '5m' — coarse on purpose; this is for a log line."""
+    s = max(0, int(seconds))
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _provider_configured(name: str) -> bool:
+    """Whether a client for ``name`` exists (or would be built) in this process."""
+    clients = _CLIENTS
+    if clients is not None:
+        return (clients[0] if name == "anthropic" else clients[1]) is not None
+    return bool(settings.anthropic_api_key if name == "anthropic" else settings.openai_api_key)
+
+
+def _final_model_for(name: str) -> str:
+    """The model id ``name`` serves FINALS with under the current settings."""
+    if name == "anthropic":
+        return settings.scoring_model
+    return settings.dual_score_openai_model if settings.dual_score_enabled else "gpt-4o-mini"
+
+
+def _serving_finals_instead_of(down: str) -> str:
+    """Who is answering finals while ``down`` is out — for the outage warning.
+    Reads the same state the lanes route on, so it cannot claim a fallback the
+    lanes would not actually use."""
+    others = [p for p in _PROVIDERS if p != down and _provider_configured(p) and provider_available(p)]
+    if others:
+        return ", ".join(f"{p}/{_final_model_for(p)}" for p in others)
+    if settings.local_score_fallback:
+        return "the free local scorer (no LLM — provisional scores)"
+    return "NOBODY — finals are stalled until a provider recovers"
+
+
+def _mark_provider_down(name: str, error: Optional[str] = None) -> None:
+    """Trip the breaker for ``name``. ``error`` is the provider's message,
+    kept (sanitised) for provider_status. Every trip, first or repeat, logs how
+    long the current outage has lasted and who is serving finals meanwhile."""
     mins = settings.llm_provider_cooldown_minutes
     if mins <= 0:
         return
+    now = time.time()
     with _breaker_lock:
-        _provider_down_until[name] = time.time() + mins * 60
-    log.warning("Reranker: provider %s marked DOWN (credit/quota) — cooling off %d min", name, mins)
+        _provider_down_until[name] = now + mins * 60
+        since = _provider_down_since.setdefault(name, now)
+        if error:
+            _provider_last_error[name] = _sanitize_error(error)
+    log.warning(
+        "Reranker: provider %s marked DOWN (credit/quota) — cooling off %d min. "
+        "%s has failed on credit/quota for %s — finals are being served by %s; "
+        "check billing at %s",
+        name, mins, name, _fmt_duration(now - since), _serving_finals_instead_of(name),
+        _BILLING_CONSOLE.get(name, "the provider console"))
+
+
+def _note_provider_ok(name: str) -> None:
+    """A call to ``name`` succeeded: the current outage (if any) is over."""
+    with _breaker_lock:
+        if name in _provider_down_since or name in _provider_last_error:
+            _provider_down_since.pop(name, None)
+            _provider_last_error.pop(name, None)
+        else:
+            return
+    log.info("Reranker: provider %s answered — outage cleared", name)
 
 
 def provider_available(name: str) -> bool:
@@ -63,6 +166,28 @@ def provider_available(name: str) -> bool:
 def any_provider_available() -> bool:
     """For the lanes: is at least one final-score provider not cooling down?"""
     return provider_available("anthropic") or provider_available("openai")
+
+
+def provider_status() -> dict:
+    """Breaker state per provider, for the admin/health surfaces:
+    ``{"anthropic": {"configured", "available", "down_until", "down_since",
+    "last_error"}, "openai": {...}}``. ``down_since`` outlives the cooldown —
+    it clears only when a call succeeds — so ``available=True`` with a
+    ``down_since`` set means "cooldown expired, recovery unconfirmed"."""
+    now = time.time()
+    configured = {p: _provider_configured(p) for p in _PROVIDERS}
+    out = {}
+    with _breaker_lock:
+        for p in _PROVIDERS:
+            until = _provider_down_until.get(p, 0.0)
+            out[p] = {
+                "configured": configured[p],
+                "available": now >= until,
+                "down_until": _iso(until) if until > now else None,
+                "down_since": _iso(_provider_down_since.get(p)),
+                "last_error": _provider_last_error.get(p),
+            }
+    return out
 
 
 # ── Local (no-LLM) scoring fallback ──────────────────────────────────────────
@@ -239,6 +364,87 @@ def _track_anthropic_usage(resp) -> None:
                  t["calls"], t["input"], t["cache_read"], t["cache_write"], t["output"], ratio)
     except Exception:
         pass
+
+
+# ── Per-call attribution ──────────────────────────────────────────────────────
+# Each backend method returns an _LlmCall: the text to parse plus the model id
+# and token usage the response carried, and records its own spend BEFORE the
+# text is even read — an unparseable answer still cost money. The Reranker is
+# shared by 20 worker threads, so nothing here is stashed on `self`: the
+# result rides back up the call stack. Tests monkeypatch the backend methods
+# with lambdas returning a bare string; `_as_call` accepts that too.
+
+class _LlmCall(NamedTuple):
+    text: str
+    model: Optional[str]
+    usage: Optional[dict]      # {"input","output","cache_read","cache_write"} or None
+
+
+def _usage_from_anthropic(resp) -> Optional[dict]:
+    """Anthropic usage: `input_tokens` already EXCLUDES cache reads/writes."""
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return None
+    try:
+        return {
+            "input": int(getattr(u, "input_tokens", 0) or 0),
+            "output": int(getattr(u, "output_tokens", 0) or 0),
+            "cache_read": int(getattr(u, "cache_read_input_tokens", 0) or 0),
+            "cache_write": int(getattr(u, "cache_creation_input_tokens", 0) or 0),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_from_openai(resp) -> Optional[dict]:
+    """OpenAI usage: `prompt_tokens` INCLUDES the cached ones, so the uncached
+    input is prompt_tokens - cached_tokens (prompt_tokens_details, when the
+    endpoint reports it). OpenAI bills no explicit cache write."""
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return None
+    try:
+        prompt = int(getattr(u, "prompt_tokens", 0) or 0)
+        details = getattr(u, "prompt_tokens_details", None)
+        cached = int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+        cached = min(cached, prompt)
+        return {
+            "input": prompt - cached,
+            "output": int(getattr(u, "completion_tokens", 0) or 0),
+            "cache_read": cached,
+            "cache_write": 0,
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _buffer_spend(user_id: Optional[str], kind: str, provider: str,
+                  model: Optional[str], usage: Optional[dict]) -> None:
+    """Record one API call into the process spend buffer. Never raises —
+    accounting must not be the thing that fails a score."""
+    try:
+        from app.analytics.spend import buffer_llm_spend
+        buffer_llm_spend(user_id, kind, provider=provider, model=model, usage=usage)
+    except Exception as e:
+        log.debug("spend not buffered (%s/%s): %s", kind, provider, e)
+
+
+def _as_call(out, default_model: Optional[str]) -> _LlmCall:
+    """Coerce a backend's return value to _LlmCall (bare strings come from
+    monkeypatched fakes and carry no usage)."""
+    if isinstance(out, _LlmCall):
+        return out
+    if isinstance(out, tuple) and len(out) == 3:
+        return _LlmCall(*out)
+    return _LlmCall(str(out), default_model, None)
+
+
+def _meta(provider: str, model: Optional[str] = None, usage: Optional[dict] = None) -> dict:
+    """The `meta` half of score_with_meta's return."""
+    return {"provider": provider, "model": model,
+            "usage": dict(usage) if usage else
+            {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}}
+
 
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
@@ -485,8 +691,7 @@ def _build_prescore_prompt(resume_text: str, job: Job) -> str:
 <job>
 Title: {job.title}
 Company: {job.company}
-Location: {job.location}
-Remote: {job.remote}
+{_location_lines(job)}
 Description:
 {(job.description or '')[:1800]}
 </job>
@@ -610,13 +815,23 @@ def _jd_slice(description: str, limit: int = 5000) -> str:
     return f"{head}\n[...truncated; work-authorization lines from the omitted text:]\n{tail}"
 
 
+def _location_lines(job: Job) -> str:
+    """Location + Remote lines for both prompts. A blank location used to
+    render as `Location: ` and `Remote: False`, and the scorer filled the gap
+    itself: 7 of 15 audited wrong-country cards had reasoning that never
+    mentioned location at all. Saying "not stated" makes the absence a fact
+    the model has to reason about instead of one it can skip."""
+    loc = (getattr(job, "location", "") or "").strip()
+    return (f"Location: {loc if loc else 'not stated in the posting'}\n"
+            f"Remote: {'yes' if getattr(job, 'remote', False) else 'no'}")
+
+
 def _job_context_block(job: Job, profile=None) -> str:
     """The per-job half — changes every call, so it is NOT cached."""
     return f"""<job>
 Title: {job.title}
 Company: {job.company}
-Location: {job.location}
-Remote: {job.remote}
+{_location_lines(job)}
 {_sponsor_note(job, profile)}
 Description:
 {_jd_slice(job.description)}
@@ -764,7 +979,7 @@ class Reranker:
         if not self._active_backend:
             log.error("Reranker: No LLM backend available! Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
 
-    def _score_anthropic(self, resume_block: str, job_block: str) -> str:
+    def _score_anthropic(self, resume_block: str, job_block: str) -> _LlmCall:
         """Call Claude for scoring. The rubric AND the résumé are cached system
         blocks, so scoring the next job for this user reads both from cache
         instead of re-sending the whole résumé each time."""
@@ -780,7 +995,10 @@ class Reranker:
             messages=[{"role": "user", "content": job_block}],
         )
         _track_anthropic_usage(resp)
-        return resp.content[0].text
+        model = getattr(resp, "model", None) or settings.scoring_model
+        usage = _usage_from_anthropic(resp)
+        _buffer_spend(self._user_id, "score_final", "anthropic", model, usage)
+        return _LlmCall(resp.content[0].text, model, usage)
 
     def prewarm_cache(self, resume_text: str) -> bool:
         """Write this user's cached prefix ONCE, before their jobs fan out.
@@ -815,6 +1033,13 @@ class Reranker:
                 messages=[{"role": "user", "content": "warmup"}],
             )
             _track_anthropic_usage(resp)
+            _note_provider_ok("anthropic")
+            # "Free" means zero OUTPUT tokens; the cache write itself is billed
+            # at 1.25x on ~4-5k tokens, twice per scoring cycle per user, and
+            # was never in the ledger. Metered like every other call.
+            _buffer_spend(self._user_id, "score_prewarm", "anthropic",
+                          getattr(resp, "model", None) or settings.scoring_model,
+                          _usage_from_anthropic(resp))
             return True
         except Exception as e:
             # Not silent. This ran at DEBUG, and production spent an afternoon
@@ -827,7 +1052,7 @@ class Reranker:
             err = str(e)
             if _is_exhaustion_error(err.lower()) and provider_available("anthropic"):
                 log.warning("Reranker: cache prewarm failed with a credit/quota error: %s", err[:300])
-                _mark_provider_down("anthropic")
+                _mark_provider_down("anthropic", error=err)
             else:
                 now = time.time()
                 if now - _prewarm_warned[0] >= 1800:
@@ -837,27 +1062,21 @@ class Reranker:
                                 err[:300])
             return False
 
-    def _score_openai(self, resume_block: str, job_block: str) -> str:
+    def _score_openai(self, resume_block: str, job_block: str) -> _LlmCall:
         """Call GPT-4o-mini for scoring (single-provider fallback path). The
         rubric+résumé go in the system message so OpenAI's automatic prefix
         caching can reuse them across the user's jobs."""
-        resp = self._openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=600,
-            messages=[
-                {"role": "system", "content": _get_system_prompt(self._profile) + "\n\n" + resume_block},
-                {"role": "user", "content": job_block},
-            ],
-            response_format={"type": "json_object"},
-        )
-        return resp.choices[0].message.content
+        return self._openai_final_call("gpt-4o-mini", resume_block, job_block)
 
-    def _score_openai_final(self, resume_block: str, job_block: str) -> str:
+    def _score_openai_final(self, resume_block: str, job_block: str) -> _LlmCall:
         """Call the full GPT model (default gpt-4o) for an AUTHORITATIVE final
         score in dual-provider mode — same rubric as Claude, so the two are
         comparable. Used when the 60/40 router sends a job to OpenAI."""
+        return self._openai_final_call(settings.dual_score_openai_model, resume_block, job_block)
+
+    def _openai_final_call(self, model: str, resume_block: str, job_block: str) -> _LlmCall:
         resp = self._openai_client.chat.completions.create(
-            model=settings.dual_score_openai_model,
+            model=model,
             max_tokens=600,
             messages=[
                 {"role": "system", "content": _get_system_prompt(self._profile) + "\n\n" + resume_block},
@@ -865,7 +1084,12 @@ class Reranker:
             ],
             response_format={"type": "json_object"},
         )
-        return resp.choices[0].message.content
+        # The response's own model id (a dated snapshot) wins over the alias we
+        # asked for — that is what the invoice will say.
+        served = getattr(resp, "model", None) or model
+        usage = _usage_from_openai(resp)
+        _buffer_spend(self._user_id, "score_final", "openai", served, usage)
+        return _LlmCall(resp.choices[0].message.content, served, usage)
 
     def _pre_filter_job(self, job: Job) -> Optional[Tuple[float, str, List[str], dict]]:
         """Apply rule-based pre-filters to catch obvious misfits without calling the LLM."""
@@ -876,8 +1100,16 @@ class Reranker:
         return None
 
     # ── Tier-1 cheap prescore (cascade) ──────────────────────────────────────
-    def _prescore_openai(self, prompt: str) -> str:
-        model = settings.prescore_model if not settings.prescore_model.startswith("claude") else "gpt-4o-mini"
+    @staticmethod
+    def _prescore_model_for(name: str) -> str:
+        """The model id ``name`` runs Tier-1 with under the current settings."""
+        if name == "openai":
+            return settings.prescore_model if not settings.prescore_model.startswith("claude") else "gpt-4o-mini"
+        # If prescore_model is an Anthropic model use it, else the cheap Haiku scorer.
+        return settings.prescore_model if settings.prescore_model.startswith("claude") else settings.scoring_model
+
+    def _prescore_openai(self, prompt: str) -> _LlmCall:
+        model = self._prescore_model_for("openai")
         resp = self._openai_client.chat.completions.create(
             model=model,
             max_tokens=120,
@@ -893,11 +1125,17 @@ class Reranker:
         # exactly what turned a provider outage into a feed outage. The
         # allowance exists for the ANTHROPIC fallback (~$0.00185, 9x), which
         # still registers below. See docs/research/capacity-one-user-2026-08.md.
-        return resp.choices[0].message.content
+        #
+        # It IS metered: the audit's estimate was 83% prescore at a flat
+        # $0.001 nobody had ever checked, and this response carries the
+        # actual token counts.
+        served = getattr(resp, "model", None) or model
+        usage = _usage_from_openai(resp)
+        _buffer_spend(self._user_id, "score_prescore", "openai", served, usage)
+        return _LlmCall(resp.choices[0].message.content, served, usage)
 
-    def _prescore_anthropic(self, prompt: str) -> str:
-        # If prescore_model is an Anthropic model use it, else the cheap Haiku scorer.
-        model = settings.prescore_model if settings.prescore_model.startswith("claude") else settings.scoring_model
+    def _prescore_anthropic(self, prompt: str) -> _LlmCall:
+        model = self._prescore_model_for("anthropic")
         resp = self._anthropic_client.messages.create(
             model=model,
             max_tokens=120,
@@ -922,7 +1160,10 @@ class Reranker:
         # scoring_lane._remaining_finals_today.
         _register_final_call(None)
         _register_prescore_call(self._user_id)
-        return resp.content[0].text
+        served = getattr(resp, "model", None) or model
+        usage = _usage_from_anthropic(resp)
+        _buffer_spend(self._user_id, "score_prescore", "anthropic", served, usage)
+        return _LlmCall(resp.content[0].text, served, usage)
 
     def has_prescore_backend(self) -> bool:
         """True when at least one LLM client exists to run the cheap Tier-1 pass."""
@@ -966,10 +1207,12 @@ class Reranker:
             if name == "anthropic" and llm_budget_exhausted():
                 continue
             try:
-                return _parse_prescore(call_fn(prompt))
+                call = _as_call(call_fn(prompt), self._prescore_model_for(name))
+                _note_provider_ok(name)
+                return _parse_prescore(call.text)
             except Exception as e:
                 if _is_exhaustion_error(str(e).lower()):
-                    _mark_provider_down(name)
+                    _mark_provider_down(name, error=str(e))
                 log.debug("Prescore: %s failed for job %s: %s", name, job.id, e)
                 continue
         return None
@@ -1007,9 +1250,15 @@ class Reranker:
         pre-filter stays authoritative; then the distilled scorer if trained,
         else the calibrated cross-encoder. Raises only when no local model can
         run at all (the caller treats that like any other scoring failure)."""
+        return self._score_local_with_meta(resume_text, job)[:4]
+
+    def _score_local_with_meta(self, resume_text: str, job: Job):
+        """score_local plus the meta half: provider 'rule' for a pre-filter
+        verdict, 'local' for either free model — neither is an API call, so
+        neither records spend."""
         pre = self._pre_filter_job(job)
         if pre is not None:
-            return pre
+            return (*pre, _meta("rule"))
 
         from app.matching.local_scorer import LocalScorer
         scorer = LocalScorer.get()
@@ -1019,7 +1268,7 @@ class Reranker:
                 s = max(0.0, min(100.0, s))
                 reason = (f"{LOCAL_REASON_PREFIX} (distilled scorer, no LLM provider "
                           f"active): {s:.0f}/100")
-                return s, reason, [], _clean_breakdown(None, s)
+                return s, reason, [], _clean_breakdown(None, s), _meta("local", "distilled")
 
         rel = self._ce_relevance(resume_text, job)
         if rel is None:
@@ -1028,7 +1277,7 @@ class Reranker:
         reason = (f"{LOCAL_REASON_PREFIX} (no LLM provider active): cross-encoder "
                   f"relevance {rel:.2f} → {s:.0f}/100. Free local estimate — less "
                   f"precise than an LLM score.")
-        return s, reason, [], _clean_breakdown(None, s)
+        return s, reason, [], _clean_breakdown(None, s), _meta("local", "cross-encoder")
 
     def _calibrate(self, backend_name: str, result):
         """In dual mode, nudge GPT's scale onto Claude's so the shortlist bar is
@@ -1042,15 +1291,29 @@ class Reranker:
 
     def score(self, resume_text: str, job: Job,
               provider: Optional[str] = None) -> Tuple[float, str, List[str], dict]:
-        """Authoritative final score. ``provider`` ('anthropic'|'openai') routes
-        the FIRST attempt to that backend (Option A's 60/40 split); the other
-        provider stays as the fallback, so a rate-limited/errored primary still
-        gets the job scored. None = default priority order."""
+        """Authoritative final score as the 4-tuple (score, reason, concerns,
+        breakdown). Thin wrapper over score_with_meta for the many callers that
+        do not need to know which backend answered."""
+        return self.score_with_meta(resume_text, job, provider=provider)[:4]
+
+    def score_with_meta(self, resume_text: str, job: Job, provider: Optional[str] = None):
+        """Authoritative final score PLUS who produced it:
+        ``(score, reason, concerns, breakdown, meta)`` with
+        ``meta = {"provider": "anthropic"|"openai"|"local"|"rule", "model": id,
+        "usage": {"input", "output", "cache_read", "cache_write"}}``.
+
+        ``provider`` ('anthropic'|'openai') routes the FIRST attempt to that
+        backend (Option A's 60/40 split); the other provider stays as the
+        fallback, so a rate-limited/errored primary still gets the job scored.
+        None = default priority order. The meta names the backend that ANSWERED,
+        never the one requested: production booked three days of OpenAI-served
+        finals to Claude because the lane attributed by request.
+        """
         # Run pre-filters first to avoid LLM calls on misfits
         pre_filtered = self._pre_filter_job(job)
         if pre_filtered is not None:
             log.info("Reranker: Pre-filtered job %s - %s", job.title, pre_filtered[1])
-            return pre_filtered
+            return (*pre_filtered, _meta("rule"))
 
         # Daily spend guard — past the cap, jobs stay Queued (raise = unscored),
         # they are NOT silently mis-scored. Checked before any API call.
@@ -1074,20 +1337,21 @@ class Reranker:
             # No usable LLM at all (no keys, or everything cooling down after
             # billing/quota errors) — keep the funnel moving on local models.
             if settings.local_score_fallback:
-                return self.score_local(resume_text, job)
+                return self._score_local_with_meta(resume_text, job)
             raise RuntimeError(f"rerank skipped for job {job.id}: all providers cooling down")
         for backend_name, call_fn in backends:
             for attempt in range(max_retries):
                 try:
-                    text = call_fn(resume_block, job_block)
+                    call = _as_call(call_fn(resume_block, job_block), _final_model_for(backend_name))
+                    _note_provider_ok(backend_name)
                     _register_final_call(self._user_id)
-                    result = self._calibrate(backend_name, _parse_response(text))
+                    result = self._calibrate(backend_name, _parse_response(call.text))
                     # The verdict feeds the adaptive budget's marginal-yield
                     # test. Recorded AFTER the parse (a score is needed) but the
                     # spend above is recorded BEFORE it — an unparseable
                     # response still cost money.
                     _record_final_outcome(self._user_id, result[0])
-                    return result
+                    return (*result, _meta(backend_name, call.model, call.usage))
                 except Exception as e:
                     error_str = str(e).lower()
                     is_credit_error = _is_exhaustion_error(error_str)
@@ -1103,7 +1367,9 @@ class Reranker:
                         time.sleep(delay)
                         continue
                     if is_credit_error:
-                        _mark_provider_down(backend_name)  # circuit breaker: skip it for a cooldown
+                        # Circuit breaker: skip it for a cooldown. The breaker's
+                        # own warning names the outage length and the fallback.
+                        _mark_provider_down(backend_name, error=str(e))
                         log.warning("Reranker: %s out of credits/quota — trying fallback backend: %s",
                                     backend_name, e)
                         break  # don't burn retries; move to next backend
@@ -1115,7 +1381,7 @@ class Reranker:
         # credits), fall back to local models rather than stranding the job.
         if settings.local_score_fallback and not self.llm_usable():
             log.warning("Reranker: no usable LLM backend for job %s — scoring locally", job.id)
-            return self.score_local(resume_text, job)
+            return self._score_local_with_meta(resume_text, job)
         log.error("Reranker: All backends/retries exhausted for job %s — leaving unscored", job.id)
         raise RuntimeError(f"rerank failed for job {job.id}: all backends exhausted")
 

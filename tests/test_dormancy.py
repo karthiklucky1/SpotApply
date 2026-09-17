@@ -9,6 +9,17 @@ find out except by coming back and noticing the board had gone quiet.
 Two changes: a live paid subscription overrides the gate entirely (they are
 paying for a continuously-running search, and their spend is bounded by their
 own plan), and a free user who crosses the line is told once.
+
+And then the override itself was too wide. Audit 2026-09-16: 10 ordinary users
+were scored every day with NO sign-in, job view, tailor or submit in 7 days
+(three last seen in June); four hit the 250-finals/day PRO ceiling with no
+user_subscription row at all; 90.8% of the week's LLM spend went to them. The
+override read `_get_user_plan(uid) != FREE` as "paying", and with Stripe on
+TEST keys and PLAN_GRANDFATHER_UNTIL unset, every row-less profile resolves to
+PRO through _is_grandfathered. A grandfathered PRO is a free ride and a sandbox
+subscription is a rehearsal — neither is a paid search. Only
+`billing.is_paid_entitlement` (a manual activation, or a Stripe row under an
+sk_live_ key) keeps a dormant user's feed running.
 """
 from __future__ import annotations
 
@@ -20,7 +31,7 @@ from sqlmodel import delete, select
 from app.api import server
 from app.config import settings
 from app.db.init_db import get_session
-from app.db.models import PlanTier, UserNotification, UserProfile
+from app.db.models import PlanTier, UserNotification, UserProfile, UserSubscription
 
 _P = "dm_"
 
@@ -31,11 +42,28 @@ def _clean():
         with get_session() as s:
             s.exec(delete(UserNotification).where(
                 UserNotification.user_id.like(f"{_P}%")))
+            s.exec(delete(UserSubscription).where(
+                UserSubscription.user_id.like(f"{_P}%")))
             s.exec(delete(UserProfile).where(UserProfile.user_id.like(f"{_P}%")))
             s.commit()
     _wipe()
     yield
     _wipe()
+
+
+def _subscription(uid: str, **kw) -> None:
+    with get_session() as s:
+        row = UserSubscription(user_id=_P + uid, plan=PlanTier.PRO)
+        for k, v in kw.items():
+            setattr(row, k, v)
+        s.add(row)
+        s.commit()
+
+
+def _stripe(monkeypatch, key: str) -> None:
+    monkeypatch.setattr(settings, "stripe_secret_key", key, raising=False)
+    monkeypatch.setattr(settings, "stripe_price_id_pro", "price_x" if key else "",
+                        raising=False)
 
 
 def _profile(uid: str, days_idle: float) -> UserProfile:
@@ -76,13 +104,17 @@ def test_a_paying_subscribers_search_keeps_running(monkeypatch):
 
 def test_an_unresolvable_plan_does_not_pause_a_search(monkeypatch):
     """If we cannot tell whether they are paying, keep the feed on. The failure
-    we must avoid is silently stopping something we may be charging for."""
+    we must avoid is silently stopping something we may be charging for.
+
+    (The seam moved: the gate no longer consults _get_user_plan — that lookup
+    WAS the bug, a grandfathered PRO read as paid — so the failure is now the
+    subscription-row read itself.)"""
     monkeypatch.setattr("app.billing.stripe_enabled", lambda: True, raising=False)
 
     def _boom(uid):
         raise RuntimeError("supabase down")
 
-    monkeypatch.setattr(server, "_get_user_plan", _boom)
+    monkeypatch.setattr(server, "_subscription_row", _boom)
     p = _profile("unknown", days_idle=settings.dormant_user_grace_days + 5)
     assert server._user_paid_search_is_live(p)
 
@@ -96,9 +128,70 @@ def test_pre_revenue_mode_still_applies_the_gate(monkeypatch):
 
 
 def test_a_free_plan_is_not_a_paid_search(monkeypatch):
-    monkeypatch.setattr("app.billing.stripe_enabled", lambda: True, raising=False)
-    monkeypatch.setattr(server, "_get_user_plan", lambda uid: PlanTier.FREE)
+    _stripe(monkeypatch, "sk_live_x")
     p = _profile("free", days_idle=settings.dormant_user_grace_days + 5)
+    _subscription("free", plan=PlanTier.FREE, stripe_subscription_id="sub_ended")
+    assert not server._user_paid_search_is_live(p)
+
+
+# ── Complimentary is not paid ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("key", ["sk_test_x", "sk_live_x"])
+def test_a_grandfathered_user_with_no_row_is_not_a_paid_search(monkeypatch, key):
+    """THE SPEND LEAK. Stripe configured, PLAN_GRANDFATHER_UNTIL unset, no
+    subscription row: _get_user_plan says PRO (they get PRO limits) but nobody
+    is charging them, so three weeks of silence pauses their feed like anyone
+    else's. Under either key — being grandfathered has nothing to do with the
+    Stripe mode."""
+    _stripe(monkeypatch, key)
+    monkeypatch.setattr(settings, "plan_grandfather_until", "", raising=False)
+    p = _profile("gf", days_idle=settings.dormant_user_grace_days + 5)
+    assert server._get_user_plan(_P + "gf") == PlanTier.PRO, "precondition: free PRO"
+    assert not server._user_paid_search_is_live(p)
+    assert not server._user_is_active(p), "the dormancy gate applies to a free ride"
+
+
+def test_a_sandbox_subscription_is_not_a_paid_search(monkeypatch):
+    """A Stripe-backed PRO row under an sk_test_ key — the only subscription
+    production had. Test mode cannot collect money."""
+    _stripe(monkeypatch, "sk_test_x")
+    p = _profile("sandbox", days_idle=settings.dormant_user_grace_days + 5)
+    _subscription("sandbox", stripe_customer_id="cus_sb", stripe_subscription_id="sub_sb",
+                  current_period_end=datetime.utcnow() + timedelta(days=17))
+    assert server._get_user_plan(_P + "sandbox") == PlanTier.PRO, "PRO limits, yes"
+    assert not server._user_paid_search_is_live(p)
+    assert not server._user_is_active(p)
+
+
+def test_a_manual_activation_is_a_paid_search(monkeypatch):
+    """Bank transfer / admin set-plan: no Stripe ids, a future period end.
+    Someone paid outside Stripe — their search runs whether or not they
+    visit, in any Stripe mode."""
+    for key, uid in (("sk_test_x", "bank_t"), ("sk_live_x", "bank_l")):
+        _stripe(monkeypatch, key)
+        p = _profile(uid, days_idle=settings.dormant_user_grace_days + 30)
+        _subscription(uid, current_period_end=datetime.utcnow() + timedelta(days=20))
+        assert server._user_paid_search_is_live(p), key
+        assert server._user_is_active(p), key
+
+
+def test_a_live_stripe_subscription_is_a_paid_search(monkeypatch):
+    _stripe(monkeypatch, "sk_live_x")
+    p = _profile("live", days_idle=settings.dormant_user_grace_days + 30)
+    _subscription("live", stripe_customer_id="cus_1", stripe_subscription_id="sub_1",
+                  current_period_end=datetime.utcnow() + timedelta(days=17))
+    assert server._user_paid_search_is_live(p)
+    assert server._user_is_active(p)
+
+
+def test_an_expired_live_subscription_is_no_longer_a_paid_search(monkeypatch):
+    """Past current_period_end + grace nobody is being charged — the gate
+    comes back, exactly when _get_user_plan drops them to FREE."""
+    _stripe(monkeypatch, "sk_live_x")
+    p = _profile("lapsed", days_idle=settings.dormant_user_grace_days + 5)
+    _subscription("lapsed", stripe_customer_id="cus_1", stripe_subscription_id="sub_1",
+                  current_period_end=datetime.utcnow() - timedelta(days=4))
+    assert server._get_user_plan(_P + "lapsed") == PlanTier.FREE
     assert not server._user_paid_search_is_live(p)
 
 

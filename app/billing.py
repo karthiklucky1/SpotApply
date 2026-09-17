@@ -18,18 +18,49 @@ Designed to be safe BEFORE the business entity exists:
   the go-live date, after which only earlier signups keep it.
 
 Lifecycle, as Stripe drives it (handle_webhook):
-  checkout.session.completed            -> PRO (customer + subscription ids stored)
-  customer.subscription.updated         -> PRO with the new current_period_end
+  checkout.session.completed            -> PRO (customer + subscription ids stored),
+                                           then the subscription is RETRIEVED so
+                                           the period end lands with it (below)
+  customer.subscription.created/updated -> PRO with the new current_period_end
                                            (renewal; also past_due during dunning —
                                            the user keeps access while Stripe
                                            retries the card)
+  invoice.paid / invoice.payment_succeeded
+                                        -> PRO with the period end of the
+                                           subscription the invoice paid for
+  invoice.payment_failed                -> logged only (dunning keeps access)
   ... status canceled/unpaid, or
   customer.subscription.deleted         -> FREE (a portal cancellation lands
                                            here at period end; "cancel any time"
                                            is the Stripe Customer Portal,
                                            create_portal_session)
 Entitlement is then server._get_user_plan: a PRO row is PRO until
-current_period_end + 3 days grace.
+current_period_end + ENTITLEMENT_GRACE_DAYS.
+
+THE STRIPE ENDPOINT MUST BE SUBSCRIBED TO (Dashboard -> Developers -> Webhooks):
+    checkout.session.completed
+    customer.subscription.created
+    customer.subscription.updated
+    customer.subscription.deleted
+    invoice.paid
+Production (2026-09-16) subscribed only to checkout.session.completed and
+customer.subscription.updated/deleted, and no invoice event at all. The founder's
+PRO row was written by checkout.session.completed and no subscription event ever
+followed (0 webhook deliveries that week), so `current_period_end` stayed NULL —
+which entitlement reads as "never expires" — while Stripe showed a next billing
+date. Three things now close that gap: checkout retrieves the subscription for
+its period end, invoice.paid is handled, and `reconcile_subscriptions` (run
+daily by server._billing_maintenance) re-reads any Stripe-backed row whose
+period end is missing or long past.
+
+TEST MODE IS NOT REVENUE. `sk_test_` keys make `stripe_enabled()` True — the
+whole flow works, nobody is charged — so a sandbox subscription used to count as
+a paid one everywhere: /api/admin/metrics reported the founder's sandbox
+subscription as $100 MRR, and the dormancy gate read "plan != FREE" as "paying"
+(server._user_paid_search_is_live), which is how 10 users with no sign-in in 7
+days (three last seen in June) kept scoring at the 250-finals/day PRO ceiling and
+took 90.8% of the week's LLM spend. `stripe_live_mode()` and
+`is_paid_entitlement()` are the two predicates that tell revenue from rehearsal.
 
 The `stripe` package is imported lazily so the app boots even when the
 dependency isn't installed (e.g. a slim deployment that never enables it).
@@ -37,7 +68,7 @@ dependency isn't installed (e.g. a slim deployment that never enables it).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import select
@@ -48,9 +79,41 @@ from app.db.models import PLAN_PRICES, PlanTier, UserSubscription
 
 log = logging.getLogger(__name__)
 
+#: How long a PRO row stays PRO past its `current_period_end`. Covers the gap
+#: between Stripe's renewal charge and the webhook that reports it (and a card
+#: retry or two). server._get_user_plan and is_paid_entitlement read the same
+#: number so "entitled" and "paid" cannot drift apart at the boundary.
+ENTITLEMENT_GRACE_DAYS = 3
+
+#: Subscription statuses that mean Stripe has given up on collecting: the row
+#: goes to FREE. `past_due` is NOT here — that is dunning, and the user keeps
+#: access while Stripe retries the card. `incomplete_expired` is the initial
+#: payment that never went through (Stripe closes it after 23h); granting PRO
+#: on it would be a free plan for a card that was never charged.
+_DEAD_STATUSES = ("canceled", "unpaid", "incomplete_expired")
+
 
 def stripe_enabled() -> bool:
     return bool(settings.stripe_secret_key and settings.stripe_price_id_pro)
+
+
+def stripe_live_mode() -> bool:
+    """True only when the configured key can actually move money.
+
+    `stripe_enabled()` is deliberately True for `sk_test_` keys so the whole
+    checkout/webhook flow can be exercised before go-live — but that makes it
+    the wrong question for anything about REVENUE. Production ran on test keys
+    (the billing portal opened under "Spotapply llc sandbox"; live payments were
+    never activated) and every "is this user paying?" check said yes.
+    """
+    return stripe_enabled() and settings.stripe_secret_key.startswith("sk_live_")
+
+
+def stripe_mode() -> str:
+    """'live' | 'test' | 'off' — for the admin KPIs, never the key itself."""
+    if not stripe_enabled():
+        return "off"
+    return "live" if stripe_live_mode() else "test"
 
 
 def pro_price_usd() -> int:
@@ -63,10 +126,79 @@ def payment_options() -> dict:
     return {
         "price_monthly_usd": pro_price_usd(),
         "stripe_enabled": stripe_enabled(),
+        "stripe_live": stripe_live_mode(),
         "bank_transfer": bool(settings.payment_bank_details.strip()),
         "bank_details": settings.payment_bank_details.strip() or None,
         "contact_email": settings.payment_contact_email.strip() or None,
     }
+
+
+def entitlement_expired(row, now: Optional[datetime] = None) -> bool:
+    """True once `current_period_end` + grace is behind us. NULL never expires
+    (the founder's row — see the header — is exactly why that is dangerous, and
+    why reconcile_subscriptions exists to fill it)."""
+    end = getattr(row, "current_period_end", None) if row is not None else None
+    if end is None:
+        return False
+    if end.tzinfo is not None:
+        from datetime import timezone
+        end = end.astimezone(timezone.utc).replace(tzinfo=None)
+    return end + timedelta(days=ENTITLEMENT_GRACE_DAYS) < (now or datetime.utcnow())
+
+
+def is_paid_entitlement(row, now: Optional[datetime] = None) -> bool:
+    """Is money actually changing hands for this subscription row?
+
+    Stricter than "plan != FREE", which server._get_user_plan answers and
+    which is also True for two complimentary cases this returns False for:
+      - no row at all (a grandfathered PRO is a free ride — the dormancy gate
+        applies to them; 10 dormant, row-less users were scored every day at
+        the PRO ceiling because they read as paying);
+      - a Stripe-backed row while the keys are TEST mode (a sandbox
+        subscription — the only subscription production had, reported as $100
+        MRR by /api/admin/metrics).
+    A row WITHOUT Stripe ids is a manual activation (bank transfer / admin
+    set-plan) and counts as paid: someone paid outside Stripe and an operator
+    wrote the row. A row WITH Stripe ids counts only under `sk_live_`.
+    An expired period (past ENTITLEMENT_GRACE_DAYS) is never paid.
+    """
+    if row is None:
+        return False
+    plan = getattr(row, "plan", None)
+    if not plan or plan == PlanTier.FREE:
+        return False
+    if entitlement_expired(row, now):
+        return False
+    stripe_backed = bool(getattr(row, "stripe_subscription_id", None)
+                         or getattr(row, "stripe_customer_id", None))
+    if not stripe_backed:
+        return True
+    return stripe_live_mode()
+
+
+_TEST_MODE_WARNED = [False]
+
+
+def warn_if_stripe_test_mode() -> bool:
+    """Log, once per process, that the deployment cannot collect money.
+
+    Only when it matters: a hosted (Supabase) deployment with Stripe configured
+    on test keys. Local dev and pre-revenue (no keys) are silent. Returns True
+    when the warning was written — server._billing_maintenance calls this on
+    its first pass so the line lands in the boot log where the founder reads
+    it, not only in a metrics field nobody opens.
+    """
+    if _TEST_MODE_WARNED[0]:
+        return False
+    if not (settings.use_supabase and stripe_enabled() and not stripe_live_mode()):
+        return False
+    _TEST_MODE_WARNED[0] = True
+    log.warning(
+        "Stripe is in TEST mode — checkout cannot collect money and sandbox "
+        "subscriptions are not revenue. Set STRIPE_SECRET_KEY to the sk_live_ "
+        "key (and STRIPE_PRICE_ID_PRO / STRIPE_WEBHOOK_SECRET to their live "
+        "counterparts) to go live.")
+    return True
 
 
 def _stripe():
@@ -309,6 +441,7 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
 
     if etype == "checkout.session.completed":
         user_id = _field(obj, "client_reference_id")
+        sub_id = _field(obj, "subscription")
         if user_id:
             # No current_period_end here on purpose: a checkout session does not
             # carry one, and passing None would ERASE the real period end that
@@ -317,39 +450,217 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
             # subscription.
             set_plan(user_id, PlanTier.PRO,
                      stripe_customer_id=_field(obj, "customer"),
-                     stripe_subscription_id=_field(obj, "subscription"),
+                     stripe_subscription_id=sub_id,
                      last_event_at=created)
+            # Then go and GET the period end, best effort. The founder's row sat
+            # on PRO with a NULL period end for two weeks because this event
+            # was the only one the endpoint received (0 subscription events
+            # delivered that week) and NULL reads as "never expires". A failure
+            # here is logged and the webhook still returns 2xx — Stripe must not
+            # retry a checkout we have already applied.
+            if sub_id:
+                try:
+                    _apply_subscription(user_id, sub_id,
+                                        _retrieve_subscription(sub_id))
+                except Exception as e:
+                    log.warning("Billing webhook: checkout for %s applied, but "
+                                "could not retrieve subscription %s for its "
+                                "period end (%s) — reconcile will fill it",
+                                user_id, sub_id, e)
         else:
             log.warning("Billing webhook: checkout completed without client_reference_id")
 
-    elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
+    elif etype in ("customer.subscription.created", "customer.subscription.updated",
+                   "customer.subscription.deleted"):
         sub_id = _field(obj, "id")
         status = _field(obj, "status")
-        with get_session() as session:
-            row = session.exec(select(UserSubscription).where(
-                UserSubscription.stripe_subscription_id == sub_id)).first()
+        row = _row_for_subscription(sub_id)
         if row:
-            # Webhooks are not ordered. A dunning `unpaid` overtaken by the
-            # recovery that followed it would otherwise arrive last and cut off
-            # someone who is paying again. Entitlement only ever moves forward
-            # in Stripe's own clock.
-            if created and row.last_event_at and created < row.last_event_at:
+            if _is_stale(row, created):
                 log.info("Billing webhook: %s for %s is older than the last "
                          "applied event — ignoring", etype, sub_id)
                 return {"received": True, "type": etype, "stale": True}
-            if etype == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
-                set_plan(row.user_id, PlanTier.FREE,
-                         stripe_subscription_id=sub_id,
-                         current_period_end=None,
-                         last_event_at=created)
-            else:
-                set_plan(row.user_id, PlanTier.PRO,
-                         stripe_subscription_id=sub_id,
-                         current_period_end=_period_end(obj),
-                         last_event_at=created)
+            if etype == "customer.subscription.deleted":
+                status = "canceled"
+            _apply_subscription(row.user_id, sub_id, obj, status=status,
+                                last_event_at=created)
         else:
             log.info("Billing webhook: %s for unknown subscription %s", etype, sub_id)
+
+    elif etype in ("invoice.paid", "invoice.payment_succeeded"):
+        # A renewal charge. The endpoint production ran on was never subscribed
+        # to invoice events, so renewals reached us only through
+        # customer.subscription.updated — which also never arrived. Either one
+        # is enough now: the invoice names the subscription, the subscription
+        # carries the new period end.
+        sub_id = _invoice_subscription_id(obj)
+        row = _row_for_subscription(sub_id) if sub_id else None
+        if row is None:
+            log.info("Billing webhook: %s for unknown subscription %s", etype, sub_id)
+        elif _is_stale(row, created):
+            log.info("Billing webhook: %s for %s is older than the last "
+                     "applied event — ignoring", etype, sub_id)
+            return {"received": True, "type": etype, "stale": True}
+        else:
+            try:
+                sub = _retrieve_subscription(sub_id)
+            except Exception as e:
+                # The invoice's own line period is the fallback: less precise
+                # (one line, not the subscription), but it beats leaving a
+                # paid renewal with a stale or NULL period end.
+                log.warning("Billing webhook: %s — could not retrieve %s (%s); "
+                            "using the invoice line period", etype, sub_id, e)
+                sub = {"status": "active",
+                       "current_period_end": _invoice_period_end(obj)}
+            _apply_subscription(row.user_id, sub_id, sub, last_event_at=created)
+
+    elif etype == "invoice.payment_failed":
+        # Dunning. Stripe retries the card on its own schedule and tells us via
+        # customer.subscription.updated (past_due keeps access, unpaid ends
+        # it). Nothing of ours decides the retry policy — log and move on.
+        log.info("Billing webhook: payment failed for subscription %s — Stripe "
+                 "is retrying; access continues until it reports unpaid",
+                 _invoice_subscription_id(obj))
 
     else:
         log.debug("Billing webhook: ignoring event type %s", etype)
     return {"received": True, "type": etype}
+
+
+# ── what Stripe says a subscription is, applied to our row ───────────────────
+
+def _row_for_subscription(sub_id) -> Optional[UserSubscription]:
+    if not sub_id:
+        return None
+    with get_session() as session:
+        return session.exec(select(UserSubscription).where(
+            UserSubscription.stripe_subscription_id == sub_id)).first()
+
+
+def _is_stale(row, created: Optional[datetime]) -> bool:
+    """Webhooks are not ordered. A dunning `unpaid` overtaken by the recovery
+    that followed it would otherwise arrive last and cut off someone who is
+    paying again. Entitlement only ever moves forward in Stripe's own clock."""
+    return bool(created and row.last_event_at and created < row.last_event_at)
+
+
+def _retrieve_subscription(sub_id: str):
+    """GET the subscription from Stripe. Raises on any failure — callers decide
+    whether that is fatal (reconcile: count it) or not (webhook: log it)."""
+    return _stripe().Subscription.retrieve(sub_id)
+
+
+def _apply_subscription(user_id: str, sub_id: str, sub, status=None,
+                        last_event_at: Optional[datetime] = None) -> PlanTier:
+    """Write what a Subscription object says onto the user's row.
+
+    Dead statuses -> FREE with the period end cleared (a downgrade leaves no
+    stale expiry). Anything else -> PRO with the subscription's period end; a
+    payload that carries NO period end (a hand-built `past_due` update, an
+    incomplete object) keeps the stored one rather than wiping it — the same
+    `_UNSET` rule set_plan already applies to the checkout event.
+    """
+    status = status or _field(sub, "status")
+    if status in _DEAD_STATUSES:
+        set_plan(user_id, PlanTier.FREE, stripe_subscription_id=sub_id,
+                 current_period_end=None, last_event_at=last_event_at)
+        return PlanTier.FREE
+    end = _period_end(sub)
+    set_plan(user_id, PlanTier.PRO, stripe_subscription_id=sub_id,
+             current_period_end=end if end is not None else _UNSET,
+             last_event_at=last_event_at)
+    return PlanTier.PRO
+
+
+def _invoice_subscription_id(invoice) -> Optional[str]:
+    """The subscription an invoice bills. Top-level `subscription` on older API
+    versions; `parent.subscription_details.subscription` from 2025-03-31.basil
+    on (this account is on 2026-08-26.dahlia). Either may be an id string or
+    an expanded object."""
+    ref = _field(invoice, "subscription")
+    if ref is None:
+        parent = _field(invoice, "parent", {})
+        details = _field(parent, "subscription_details", {})
+        ref = _field(details, "subscription")
+    if ref is not None and not isinstance(ref, str):
+        ref = _field(ref, "id")
+    return ref or None
+
+
+def _invoice_period_end(invoice) -> Optional[int]:
+    """`lines.data[0].period.end` — the fallback when the subscription cannot
+    be retrieved. Returns the raw epoch so `_period_end` can read it."""
+    lines = _field(invoice, "lines", {})
+    data = _field(lines, "data", []) or []
+    if not data:
+        return None
+    period = _field(data[0], "period", {})
+    ts = _field(period, "end")
+    try:
+        return int(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def reconcile_subscriptions(limit: int = 50) -> dict:
+    """Re-read Stripe for the rows the webhook stream let drift. Never raises.
+
+    Targets: Stripe-backed rows whose `current_period_end` is NULL (PRO forever
+    as far as entitlement can tell — the founder's row), and non-FREE rows
+    whose period end is more than ENTITLEMENT_GRACE_DAYS past (already
+    downgraded by _get_user_plan, but the row still says PRO and the KPIs still
+    count it). Each is retrieved and applied through the same
+    `_apply_subscription` the webhooks use: dead -> FREE, live -> PRO + the
+    real period end. Non-FREE rows go first, then FREE rows oldest-checked
+    first (set_plan bumps updated_at, so the sweep rotates); `limit` bounds the
+    Stripe calls per run. A FREE row with a Stripe id is polled too because it
+    is the one case a MISSED recovery webhook would leave a paying user on
+    FREE, and this endpoint has already missed a week of deliveries once.
+    """
+    out = {"examined": 0, "pro": 0, "free": 0, "failed": 0, "skipped": False}
+    if not stripe_enabled():
+        out["skipped"] = True
+        return out
+    from sqlalchemy import and_, case, or_
+    horizon = datetime.utcnow() - timedelta(days=ENTITLEMENT_GRACE_DAYS)
+    try:
+        with get_session() as session:
+            rows = session.exec(
+                select(UserSubscription)
+                .where(UserSubscription.stripe_subscription_id.isnot(None))
+                .where(or_(
+                    UserSubscription.current_period_end.is_(None),
+                    and_(UserSubscription.plan != PlanTier.FREE,
+                         UserSubscription.current_period_end < horizon)))
+                .order_by(case((UserSubscription.plan == PlanTier.FREE, 1), else_=0),
+                          UserSubscription.updated_at)
+                .limit(max(1, int(limit)))
+            ).all()
+            targets = [(r.user_id, r.stripe_subscription_id) for r in rows]
+    except Exception as e:
+        log.warning("Billing reconcile: could not list subscriptions (%s)", e)
+        out["failed"] += 1
+        return out
+    if not targets:
+        return out
+    try:
+        stripe = _stripe()
+    except Exception as e:                       # stripe package missing
+        log.warning("Billing reconcile: stripe unavailable (%s)", e)
+        out["failed"] += len(targets)
+        return out
+    for user_id, sub_id in targets:
+        out["examined"] += 1
+        try:
+            sub = stripe.Subscription.retrieve(sub_id)
+            plan = _apply_subscription(user_id, sub_id, sub)
+        except Exception as e:
+            out["failed"] += 1
+            log.warning("Billing reconcile: subscription %s for %s failed (%s)",
+                        sub_id, user_id, e)
+            continue
+        out["pro" if plan == PlanTier.PRO else "free"] += 1
+    if out["examined"]:
+        log.info("Billing reconcile: examined %d, pro %d, free %d, failed %d",
+                 out["examined"], out["pro"], out["free"], out["failed"])
+    return out

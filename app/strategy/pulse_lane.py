@@ -89,11 +89,18 @@ def _pctl_ms(values: list) -> dict:
             "p95": _at(0.95), "total_ms": int(sum(vs) * 1000)}
 
 
-def _record_spend(uid: str | None, kind: str) -> None:
-    """Per-user spend attribution for fast-path LLM calls — never raises."""
+def _flush_spend() -> None:
+    """Write the fast path's buffered LLM spend to the ledger — never raises.
+
+    The lane used to book a `score_prescore` per job it prescored and a
+    `score_final` per job it scored, at flat rates, whichever backend answered
+    — and for prescore short-circuits (rule pre-filter, empty-JD guard) that
+    made no API call at all. The Reranker now records each call where it
+    happens, with provider, model and token usage; the tick only flushes,
+    exactly as the scoring lane does (analytics/spend.py is the one writer)."""
     try:
-        from app.analytics.spend import record_llm_spend
-        record_llm_spend(uid, kind)
+        from app.analytics.spend import flush_llm_spend
+        flush_llm_spend()
     except Exception:
         pass
 
@@ -569,8 +576,10 @@ def _fast_path_user(uid: str, score_budget: int,
             # ── Phase 2: LLM calls, no DB connection held ───────────────────
             prescore_val = None
             if use_prescore:
+                # Spend for this call (if it happens — the rule pre-filter and
+                # the empty-JD guard return without one) is recorded by the
+                # Reranker itself, with the backend and tokens it actually used.
                 pre = reranker.prescore(resume, job)
-                _record_spend(uid, "score_prescore")
                 if pre is not None:
                     prescore_val = float(pre[0])
                 if pre is not None and pre[0] < gate:
@@ -602,11 +611,18 @@ def _fast_path_user(uid: str, score_budget: int,
                     continue
 
             try:
-                score, reason, concerns, breakdown = reranker.score(resume, job)
+                # Same call the scoring lane makes: the meta names the backend
+                # that answered, and the Reranker has already recorded the
+                # spend by then. Duck-typed because the suite's fakes expose
+                # only score().
+                _with_meta = getattr(reranker, "score_with_meta", None)
+                if _with_meta is not None:
+                    score, reason, concerns, breakdown, _meta = _with_meta(resume, job)
+                else:
+                    score, reason, concerns, breakdown = reranker.score(resume, job)
             except Exception as e:
                 log.debug("pulse fast-path score failed for %d (left for matching lane): %s", jid, e)
                 continue
-            _record_spend(uid, "score_final")
             scored += 1
 
             # ── Phase 3: write back (short session) ─────────────────────────
@@ -648,6 +664,7 @@ def _fast_path_user(uid: str, score_budget: int,
                             today_count += 1
                 session.commit()
 
+    _flush_spend()   # one ledger write per fast path, not one per call
     alerts = 0
     if shortlisted:
         try:
@@ -683,6 +700,72 @@ _TICK_LOCK = threading.Lock()
 # Monotonic time the current holder acquired, or 0.0 when free. Diagnostic only:
 # nothing branches on it, so it can never become a bypass again.
 _TICK_STARTED = [0.0]
+
+# ── Adaptive board cap ────────────────────────────────────────────────────────
+# How many boards the NEXT tick selects. 0 = not yet learned → the settings
+# ceiling. Written only by the tick that holds _TICK_LOCK, read by the next.
+#
+# The fixed `pulse_max_boards_per_tick` selection assumed the tick could finish
+# what it picked. When it could not, the surplus was not free: a deferred board
+# was still fetched (one HTTP request each — ~230 wasted per tick at the
+# measured 231/300 deferral) and the fetches that landed still paid their DB
+# writes before the deadline cut the consumer off — on a Supabase instance
+# whose Disk IO budget was nearly exhausted. Production 2026-09-14..16:
+# deferred boards 1-4K/day → 20,367 / 23,753 / 40,950, ticks/day 1,100 → 537,
+# consumer deadline hits 2-17/day → 119-241/day, a 159s tick against a 60s
+# interval. Over-selecting slowed the DB, which slowed the tick, which deferred
+# more: a loop the selection size has to break. AIMD (the TCP congestion rule)
+# does that with one number: halve on a tick that mostly failed, grow slowly on
+# a tick that cleanly finished early, hold otherwise. `_next_board_cap` is the
+# whole controller and is pure, so tests/test_pulse_adaptive.py drives it with
+# a stats dict and no network.
+_BOARD_CAP = [0]
+
+
+def _board_cap() -> int:
+    """The cap this tick selects with: the learned value, clamped to the
+    settings ceiling (which may be lowered at runtime), or the ceiling itself
+    when adaptation is off or nothing has been learned yet."""
+    ceiling = max(1, int(settings.pulse_max_boards_per_tick))
+    if not settings.pulse_adaptive_enabled:
+        return ceiling
+    cap = int(_BOARD_CAP[0] or 0)
+    if cap <= 0:
+        return ceiling
+    return max(1, min(cap, ceiling))
+
+
+def _next_board_cap(current: int, stats: dict, elapsed: float) -> int:
+    """The cap for the next tick, from this tick's outcome. Pure.
+
+      * deferred/selected > pulse_adaptive_defer_pct, or the consumer hit the
+        tick deadline → HALVE (multiplicative decrease), floored at
+        pulse_min_boards_per_tick so the lane keeps polling under pressure.
+      * nothing deferred and the tick finished inside 70% of
+        pulse_tick_max_seconds → grow by 25% + 1 (additive-ish increase),
+        capped at pulse_max_boards_per_tick.
+      * anything else, or a tick that selected nothing → unchanged.
+
+    The +1 makes growth possible from the floor even when 25% rounds to zero;
+    the 70% margin keeps a tick that barely fit from being read as headroom.
+    """
+    ceiling = max(1, int(settings.pulse_max_boards_per_tick))
+    if not settings.pulse_adaptive_enabled:
+        return ceiling
+    floor = max(1, min(int(settings.pulse_min_boards_per_tick or 1), ceiling))
+    current = max(floor, min(int(current or ceiling), ceiling))
+    selected = int(stats.get("selected") or 0)
+    if selected <= 0:
+        return current            # nothing was tried, nothing was learned
+    deferred = int(stats.get("deferred") or 0)
+    defer_share = deferred / selected
+    if defer_share > float(settings.pulse_adaptive_defer_pct) \
+            or stats.get("consumer_deadline_hit"):
+        return max(floor, int(current * 0.5))
+    if deferred == 0 and elapsed < 0.7 * float(settings.pulse_tick_max_seconds):
+        return min(ceiling, int(current * 1.25) + 1)
+    return current
+
 
 # One fetch pool for the life of the process — see scoring_lane._worker_pool.
 # A fresh 24-thread pool per 60s tick, abandoned with shutdown(wait=False), was
@@ -733,8 +816,11 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         _active_users, _mark_polled, _retire_unsupported, _title_matches,
     )
 
+    tick_started = time.monotonic()
     now = datetime.utcnow()
-    boards = _due_boards(now, settings.pulse_max_boards_per_tick)
+    # The ADAPTIVE cap, not the settings ceiling — see _BOARD_CAP.
+    cap = _board_cap()
+    boards = _due_boards(now, cap)
     # TELEMETRY CONTRACT — every board selected lands in EXACTLY ONE outcome
     # bucket, and the buckets sum to `selected`. Before this, the only number
     # recorded was `boards` (the SELECTION), so every consumer that wanted a
@@ -759,6 +845,11 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
              # running out of futures — the honest signal that the tick is
              # capacity-limited downstream of the fetch.
              "consumer_deadline_hit": 0,
+             # The cap this tick selected with (`selected` <= this). Read it
+             # beside `deferred`: a shrinking cap with a falling deferral is the
+             # controller working; a cap pinned at the floor with deferrals
+             # still high means the floor itself is above what the lane can do.
+             "board_cap": cap,
              "unchanged": 0, "changed": 0, "fetched_jobs": 0,
              "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0}
     # RESERVE ~40% of the budget for SCORING. During the bootstrap backlog the
@@ -1079,6 +1170,25 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             stats["alerts"] += alerts
         except Exception as e:
             log.warning("pulse fast-path failed for %s: %s", uid, e)
+
+    # Learn from this tick before recording it, so the event carries both the
+    # cap it used and the one it hands to the next tick. Measured over the
+    # WHOLE tick (fetch, consume, fast path): the lane's cadence is set by the
+    # tick's wall clock, whichever phase spent it.
+    elapsed = time.monotonic() - tick_started
+    next_cap = _next_board_cap(cap, stats, elapsed)
+    if next_cap != cap:
+        stats["board_cap_next"] = next_cap
+        _BOARD_CAP[0] = next_cap
+        if next_cap < cap:
+            log.info("pulse cap %d → %d after a %d%%-deferred tick%s",
+                     cap, next_cap,
+                     round(100.0 * stats["deferred"] / max(1, stats["selected"])),
+                     " (consumer deadline hit)" if stats["consumer_deadline_hit"] else "")
+        else:
+            log.info("pulse cap %d → %d after a clean tick (%.0fs of %ds, "
+                     "nothing deferred)", cap, next_cap, elapsed,
+                     settings.pulse_tick_max_seconds)
 
     try:
         with get_session() as session:

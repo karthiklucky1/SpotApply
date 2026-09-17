@@ -284,7 +284,12 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
     # (app/strategy/job_facets.py).
     _sal, _spons, _cap_exempt = _job_facets(
         r.title, r.description, r.company, r.url, r.location)
-    job.salary_text = _sal
+    # The ATS's own structured pay field (RawJob.salary_text — Ashby's
+    # compensation summary) wins over the regex guess from the description:
+    # the audit found five Ashby postings showing "$160-200K" on the page and
+    # no salary on the card, because the number lived only in that field. The
+    # regex stays as the fallback for the sources that have no such field.
+    job.salary_text = getattr(r, "salary_text", None) or _sal
     job.sponsorship_json = _spons
     if _cap_exempt:
         job.is_cap_exempt = True

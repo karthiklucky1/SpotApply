@@ -7,7 +7,7 @@
 <meta name="description" content="SpotApply watches 50,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored resume for the ones worth your time.">
 <link rel="canonical" href="https://app.spotapply.ai/">
 <meta property="og:title" content="SpotApply — Apply only where you actually fit">
-<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 32 ATS providers and job feeds, honest match scoring, and tailored resumes grounded in your real experience.">
+<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 27 ATS providers and job feeds, honest match scoring, and tailored resumes grounded in your real experience.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://app.spotapply.ai/">
 <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
@@ -426,7 +426,7 @@
                 <div class="num" id="fr-boards"
                      style="font-size:clamp(48px,5.4vw,64px);font-weight:800;color:var(--ink);line-height:1;letter-spacing:-0.04em;">50,000+</div>
                 <div class="body" style="font-size:15px;margin-top:10px;">
-                    Company career boards, polled continuously
+                    Company career boards, polled on a rolling schedule
                 </div>
                 <p id="freshness-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:14px;">
                     <span class="num" id="fr-jobs" style="font-weight:600;color:var(--ink-soft);"></span>
@@ -435,8 +435,14 @@
             </div>
 
             <div class="lg:col-span-7 grid grid-cols-3" style="gap:28px;">
+                <!-- This number is the count of DISTINCT names in the sources strip
+                     above (one loop of the marquee) and in the "Where do the jobs
+                     come from?" FAQ below. The list is the only honest source: the
+                     tile said 32 while both lists named 27. When a provider is added
+                     or removed, change the tile, the FAQ sentence and og:description
+                     in the same edit. -->
                 <div>
-                    <div class="num" style="font-size:26px;font-weight:700;color:var(--ink);">32</div>
+                    <div class="num" style="font-size:26px;font-weight:700;color:var(--ink);">27</div>
                     <div class="body" style="font-size:13.5px;margin-top:4px;">ATS providers and job feeds</div>
                 </div>
                 <div>
@@ -470,8 +476,8 @@
                     <div>
                         <h3 class="h3">Find</h3>
                         <p class="body" style="margin-top:8px;">
-                            Company career pages, polled around the clock. What reaches you
-                            is a short list of strong matches, not a feed of everything
+                            Company career pages, checked on a rolling schedule. What reaches
+                            you is a short list of strong matches, not a feed of everything
                             posted today.
                         </p>
                     </div>
@@ -616,7 +622,7 @@
             <li class="rail-step">
                 <span class="rail-dot" aria-hidden="true"></span>
                 <h3 class="rail-h">Discover</h3>
-                <p class="rail-p">Boards polled around the clock.</p>
+                <p class="rail-p">Boards polled on a rolling schedule.</p>
             </li>
             <li class="rail-step">
                 <span class="rail-dot" aria-hidden="true"></span>
@@ -743,7 +749,7 @@
             <a href="/login?mode=signup" class="btn btn-primary" style="width:100%;margin-top:32px;">Start free</a>
             <p style="font-size:13.5px;color:var(--muted);text-align:center;margin:16px 0 0;">
                 The Free plan is the trial — the full pipeline with daily caps, no card required.
-                Upgrade when you want the caps removed.
+                Upgrade for higher daily caps and unlimited auto-fill.
             </p>
         </div>
     </div>
@@ -772,8 +778,8 @@
                     job feeds and aggregators, including Remotive, RemoteOK, The Muse,
                     WeWorkRemotely, Arbeitnow, Jobicy, Adzuna, Reed, Jooble, Hacker
                     News Who&#39;s Hiring, Y&nbsp;Combinator, Google Jobs and LinkedIn.
-                    32 providers in total, across more than 50,000 company boards
-                    polled continuously.
+                    27 providers in total, across more than 50,000 company boards,
+                    each polled on its own rolling schedule.
                 </p>
             </details>
             <details class="faq">

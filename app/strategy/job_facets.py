@@ -118,18 +118,22 @@ def backfill(user_id: Optional[str], max_rows: int = 250_000,
             # backfill from becoming the same problem.
             q = (select(Job.id, Job.title,
                         func.substr(Job.description, 1, 8000).label("desc"),
-                        Job.company, Job.url, Job.location)
+                        Job.company, Job.url, Job.location, Job.salary_text)
                  .where(Job.user_id == user_id, Job.sponsorship_json.is_(None)))
             rows = list(session.exec(q.limit(chunk)).all())
         if not rows:
             break                                   # pool is fully stamped
 
         mappings = []
-        for jid, title, desc, company, url, location in rows:
+        for jid, title, desc, company, url, location, stored_salary in rows:
             salary, spons, cap_exempt = compute(title or "", desc or "", company or "",
                                                 url or "", location or "")
             m = {"id": int(jid),
-                 "salary_text": salary,
+                 # The regex never BLANKS a salary: the stored value may be the
+                 # ATS's own structured field (RawJob.salary_text) or the LLM's
+                 # read of the posting, both better sources than a guess from
+                 # the description that happened to find nothing this time.
+                 "salary_text": salary or stored_salary,
                  # Always write SOMETHING for sponsorship, even "{}": this column
                  # is the loop's own progress marker, and a row left NULL because
                  # its assessment came back empty would be re-read forever.
@@ -208,7 +212,7 @@ def restamp_facets(start_id: int = 0, max_rows: int = 250_000,
             rows = list(session.exec(
                 select(Job.id, Job.title,
                        func.substr(Job.description, 1, 8000).label("desc"),
-                       Job.company, Job.url, Job.location)
+                       Job.company, Job.url, Job.location, Job.salary_text)
                 .where(Job.id > cursor)
                 .order_by(Job.id)
                 .limit(chunk)
@@ -218,11 +222,13 @@ def restamp_facets(start_id: int = 0, max_rows: int = 250_000,
             break
 
         mappings = []
-        for jid, title, desc, company, url, location in rows:
+        for jid, title, desc, company, url, location, stored_salary in rows:
             salary, spons, cap_exempt = compute(title or "", desc or "", company or "",
                                                 url or "", location or "")
             mappings.append({"id": int(jid),
-                             "salary_text": salary,
+                             # Same rule as backfill(): a regex miss keeps the
+                             # stored ATS/LLM salary rather than blanking it.
+                             "salary_text": salary or stored_salary,
                              "sponsorship_json": spons or "{}",
                              "is_cap_exempt": bool(cap_exempt)})
         next_cursor = max(int(r[0]) for r in rows)

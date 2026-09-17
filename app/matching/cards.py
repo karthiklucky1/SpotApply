@@ -172,9 +172,21 @@ def _haiku_json(system: str, user: str, max_tokens: int = 900) -> Optional[dict]
     budget on dense resumes. Now: one retry at double the budget when the stop
     reason says truncation, and every failure logs at WARNING with the stop
     reason — a mint that returns None must never be invisible."""
-    from app.matching.reranker import _shared_llm_clients
+    from app.matching.reranker import (
+        _is_exhaustion_error, _mark_provider_down, _shared_llm_clients,
+        provider_available,
+    )
     anthropic_client, _openai, _active = _shared_llm_clients()
     if anthropic_client is None:
+        return None
+    # Consult the provider circuit breaker the scoring lanes already trip and
+    # read. This function did not, so while Anthropic was suspended a 106-line
+    # log sample carried 23 "card mint call failed" (400) lines — one doomed
+    # call per mint attempt, each paying the request and its timeout, while
+    # every other lane had already stopped asking. Logged once per interval,
+    # not per call: the lanes mint dozens of cards a tick.
+    if not provider_available("anthropic"):
+        _note_breaker_skip()
         return None
 
     def _call(budget: int):
@@ -199,8 +211,38 @@ def _haiku_json(system: str, user: str, max_tokens: int = 900) -> Optional[dict]
                         "(stop_reason=%s, %d chars): %.120s", stop, len(text or ""), text)
         return card
     except Exception as e:
+        # Credit/quota exhaustion trips the shared breaker so the NEXT mint
+        # (and every lane) stops asking for the cooldown instead of failing
+        # the same way per call.
+        err = str(e)
+        if _is_exhaustion_error(err.lower()):
+            _mark_provider_down("anthropic", err)
         log.warning("card mint call failed: %s", e)
         return None
+
+
+# Breaker-skip logging, throttled: one line per _BREAKER_LOG_INTERVAL seconds,
+# however many mints the breaker turns away meanwhile.
+_BREAKER_LOG_INTERVAL = 30 * 60
+# logged_at is None until the first note: time.monotonic() counts from machine
+# boot, so a 0.0 sentinel compared against it kept the FIRST warning silent
+# for the first half hour after a fresh boot — exactly when a deploy lands.
+_breaker_skip = {"logged_at": None, "skipped": 0}
+_breaker_skip_lock = threading.Lock()
+
+
+def _note_breaker_skip() -> None:
+    import time
+    now = time.monotonic()
+    with _breaker_skip_lock:
+        _breaker_skip["skipped"] += 1
+        last = _breaker_skip["logged_at"]
+        if last is not None and now - last < _BREAKER_LOG_INTERVAL:
+            return
+        skipped, _breaker_skip["skipped"] = _breaker_skip["skipped"], 0
+        _breaker_skip["logged_at"] = now
+    log.warning("card mint skipped: anthropic is cooling off (credit/quota) — "
+                "%d mint(s) not attempted since the last note", skipped)
 
 
 # ── JobCard ───────────────────────────────────────────────────────────────────

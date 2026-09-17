@@ -134,6 +134,14 @@ def _reset_process_globals():
         _RESUME_CACHE.clear()
     except ImportError:
         pass
+    try:
+        # Per-user dashboard aggregates (/api/jobs totals, the pool tile,
+        # freshness-stats) live for minutes on purpose; under pytest a value
+        # cached by one test is a stale count in the next file's assertion.
+        from app.common import ttl_cache as _ttl
+        _ttl.invalidate()
+    except ImportError:
+        pass
 
 
 @pytest.fixture(autouse=True)

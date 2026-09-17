@@ -16,6 +16,21 @@ code of a country the string's own city names point at.
 The second half of the same bug was coverage: 21 countries meant most of Europe
 resolved to "unknown", and unknown is KEPT. A US user's queue filled with
 Zurich, Milan, Stockholm and Tel Aviv postings that Tier-1 then paid to reject.
+
+Coverage was still short on 2026-09-17: a US user was delivered "Remote,
+Tiranë, Albania +27 more" because Albania was in no table, so the string read
+as unknown and unknown is kept. The Balkans, the Caucasus, Central Asia, the
+Gulf, North Africa and most of Central America were missing the same way.
+
+Adding them met the header's own rule in a new form: some COUNTRY names are
+also US place names — Malta NY (a fab town), West Jordan UT, Lebanon NH/PA/TN,
+Panama City FL, and Georgia the state. Those countries live in the CITY tier
+(where a ", XX" state code beats them) instead of the name tier (which beats
+the state code), and bare "georgia" is not a token at all: only Tbilisi is.
+Spelled-out US state names are US signals for the same reason — "Lebanon, New
+Hampshire" has no state code to win on, and "Albuquerque, New Mexico" used to
+resolve to Mexico because the name tier saw "mexico" (a few state names are
+excluded, see `_US_STATE_NAMES`).
 """
 from __future__ import annotations
 
@@ -26,13 +41,33 @@ _US_STATE_CODES = {
     "ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nj",
     "nm","ny","nc","nd","oh","ok","or","pa","ri","sc","sd","tn","tx","ut","vt",
     "va","wa","wv","wi","wy","dc",
+    # US territories — a job in San Juan, PR is a US job for work authorization.
+    "pr","gu",
 }
+
+# Spelled-out US state names — tier-1 US signals. Only the ones with no real
+# foreign collision: "california" is left out (Baja California, Mexico),
+# "maine" (Maine-et-Loire, France) and "georgia" (the country — "Atlanta,
+# Georgia" stays unknown-and-kept rather than making every Tbilisi posting US).
+_US_STATE_NAMES = [
+    "alabama", "alaska", "arizona", "arkansas", "colorado", "connecticut",
+    "delaware", "florida", "hawaii", "idaho", "illinois", "indiana", "iowa",
+    "kansas", "kentucky", "louisiana", "maryland", "massachusetts", "michigan",
+    "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+    "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont",
+    "virginia", "west virginia", "washington", "wisconsin", "wyoming",
+]
 
 # Explicit US signals. NOTE: bare "america" is deliberately NOT one — "Latin
 # America", "South America" and "North America" (which also spans Canada and
 # Mexico) are not the United States. "United States of America" still matches
-# via "united states"; "USA"/"U.S.A"/"US" cover the abbreviations.
-_US_SIGNALS = ["united states", "usa", "u.s.a", "u.s.", " us ", "remote us", "us remote"]
+# via "united states"; "USA"/"U.S.A"/"US" cover the abbreviations. Puerto Rico,
+# Guam and the US Virgin Islands are US ("U.S. Virgin Islands" already matches
+# through "u.s."; "US Virgin Islands" through " us ").
+_US_SIGNALS = ["united states", "usa", "u.s.a", "u.s.", " us ", "remote us", "us remote",
+               "puerto rico", "guam"] + _US_STATE_NAMES
 
 # country -> the country's OWN names/aliases. These are unambiguous: a string
 # containing them names that country no matter what else it contains, so they
@@ -102,6 +137,45 @@ _COUNTRY_NAMES = {
     "serbia": ["serbia"],
     "slovakia": ["slovakia"],
     "slovenia": ["slovenia"],
+    # ── added 2026-09-17 (the "+27 more" audit) ──
+    "albania": ["albania", "shqipëri", "shqiperi"],
+    "bosnia and herzegovina": ["bosnia and herzegovina", "bosnia & herzegovina", "bosnia"],
+    "north macedonia": ["north macedonia", "macedonia"],
+    "montenegro": ["montenegro"],
+    "kosovo": ["kosovo"],
+    "moldova": ["moldova"],
+    "belarus": ["belarus"],
+    # NOT bare "georgia" — that is Atlanta's state far more often than Tbilisi's
+    # country on the boards we read. The country is detected by its cities.
+    "georgia": ["republic of georgia", "sakartvelo"],
+    # Ordered AFTER colombia on purpose: Armenia is also a Colombian city, and
+    # the first table entry to match wins.
+    "armenia": ["armenia"],
+    "azerbaijan": ["azerbaijan"],
+    "kazakhstan": ["kazakhstan"],
+    "uzbekistan": ["uzbekistan"],
+    "cyprus": ["cyprus"],
+    "luxembourg": ["luxembourg", "luxemburg"],
+    "iceland": ["iceland", "ísland"],
+    "bangladesh": ["bangladesh"],
+    "sri lanka": ["sri lanka"],
+    "nepal": ["nepal"],
+    "saudi arabia": ["saudi arabia", "saudi", "ksa"],
+    "qatar": ["qatar"],
+    "morocco": ["morocco", "maroc"],
+    "tunisia": ["tunisia", "tunisie"],
+    "ghana": ["ghana"],
+    "ecuador": ["ecuador"],
+    "bolivia": ["bolivia"],
+    "paraguay": ["paraguay"],
+    "venezuela": ["venezuela"],
+    "guatemala": ["guatemala"],
+    "dominican republic": ["dominican republic", "república dominicana", "republica dominicana"],
+    "el salvador": ["el salvador"],
+    "honduras": ["honduras"],
+    "cambodia": ["cambodia"],
+    # malta, jordan, lebanon and panama are detected in the CITY tier below:
+    # each is also a US place name, and only that tier lets a state code win.
 }
 
 # country -> city tokens. WEAKER than a country name: a US state code beats a
@@ -112,6 +186,11 @@ _COUNTRY_NAMES = {
 # Columbia (SC/MD — note Colombia is spelled differently and is safe),
 # Birmingham (AL) and Manchester (NH) are kept for the UK only because the
 # state-code tier now runs first and catches the US forms.
+#
+# A COUNTRY name appears in this tier when it is also a US place name — Malta
+# NY, West Jordan UT, Lebanon NH/PA/TN, Panama City FL. Here "Malta, NY" is New
+# York (state code wins) while bare "Malta" and "Valletta, Malta" are Malta; in
+# the name tier the country would have beaten the state code every time.
 _COUNTRY_CITIES = {
     "united kingdom": ["london", "manchester", "birmingham", "edinburgh", "glasgow",
                        "bristol", "leeds", "cambridge", "oxford", "belfast", "cardiff"],
@@ -129,7 +208,8 @@ _COUNTRY_CITIES = {
     "poland": ["warsaw", "warszawa", "krakow", "kraków", "wroclaw", "wrocław", "gdansk", "gdańsk", "poznan"],
     "portugal": ["lisbon", "lisboa", "porto", "braga"],
     "brazil": ["são paulo", "sao paulo", "rio de janeiro", "belo horizonte", "curitiba"],
-    "mexico": ["mexico city", "guadalajara", "monterrey", "querétaro", "queretaro"],
+    "mexico": ["mexico city", "cdmx", "ciudad de méxico", "ciudad de mexico",
+               "guadalajara", "monterrey", "querétaro", "queretaro"],
     "japan": ["tokyo", "osaka", "kyoto", "yokohama"],
     "philippines": ["manila", "cebu", "makati", "taguig"],
     "ukraine": ["kyiv", "kiev", "lviv", "kharkiv", "odesa"],
@@ -155,7 +235,7 @@ _COUNTRY_CITIES = {
     "kenya": ["nairobi", "mombasa"],
     "egypt": ["cairo", "giza", "alexandria"],
     "indonesia": ["jakarta", "bandung", "surabaya"],
-    "vietnam": ["hanoi", "ho chi minh", "da nang"],
+    "vietnam": ["hanoi", "ho chi minh", "saigon", "da nang"],
     "thailand": ["bangkok", "chiang mai"],
     "malaysia": ["kuala lumpur", "penang", "cyberjaya"],
     "south korea": ["seoul", "busan", "incheon"],
@@ -163,7 +243,10 @@ _COUNTRY_CITIES = {
     "taiwan": ["taipei", "hsinchu"],
     "hong kong": ["kowloon"],
     "new zealand": ["auckland", "wellington", "christchurch"],
-    "chile": ["santiago de chile", "valparaíso", "valparaiso"],
+    # Bare "Santiago" is Chile's capital on the boards we read; the Spanish and
+    # Dominican Santiagos arrive with their country named, and the name tier
+    # runs first.
+    "chile": ["santiago de chile", "santiago", "valparaíso", "valparaiso"],
     "colombia": ["bogota", "bogotá", "medellin", "medellín", "cali"],
     "peru": ["lima"],
     "uruguay": ["montevideo"],
@@ -175,6 +258,41 @@ _COUNTRY_CITIES = {
     "serbia": ["belgrade", "beograd", "novi sad"],
     "slovakia": ["bratislava", "košice", "kosice"],
     "slovenia": ["ljubljana", "maribor"],
+    # ── added 2026-09-17 (the "+27 more" audit) ──
+    "albania": ["tirana", "tiranë", "tirane", "durrës", "durres"],
+    "bosnia and herzegovina": ["sarajevo", "banja luka"],
+    "north macedonia": ["skopje"],
+    "montenegro": ["podgorica"],
+    "kosovo": ["pristina", "prishtina", "priština"],
+    "moldova": ["chișinău", "chisinau", "kishinev"],
+    "belarus": ["minsk"],
+    "georgia": ["tbilisi", "batumi"],
+    "armenia": ["yerevan"],
+    "azerbaijan": ["baku"],
+    "kazakhstan": ["almaty", "astana", "nur-sultan"],
+    "uzbekistan": ["tashkent"],
+    "cyprus": ["nicosia", "limassol", "larnaca"],
+    "malta": ["malta", "valletta", "sliema"],
+    "iceland": ["reykjavik", "reykjavík"],
+    "bangladesh": ["dhaka", "chittagong"],
+    "sri lanka": ["colombo"],
+    "nepal": ["kathmandu"],
+    "saudi arabia": ["riyadh", "jeddah", "dammam"],
+    "qatar": ["doha"],
+    "jordan": ["jordan", "amman"],
+    "lebanon": ["lebanon", "beirut"],
+    "morocco": ["casablanca", "rabat", "marrakech", "marrakesh", "tangier"],
+    "tunisia": ["tunis"],
+    "ghana": ["accra", "kumasi"],
+    "ecuador": ["quito", "guayaquil"],
+    "bolivia": ["la paz", "cochabamba"],
+    "paraguay": ["asunción", "asuncion"],
+    "venezuela": ["caracas", "maracaibo"],
+    "panama": ["panama"],
+    "dominican republic": ["santo domingo"],
+    "el salvador": ["san salvador"],
+    "honduras": ["tegucigalpa", "san pedro sula"],
+    "cambodia": ["phnom penh"],
 }
 
 # ISO-2 codes that COLLIDE with a US state code. Only these matter: when a
@@ -209,25 +327,36 @@ _CITY_RES = {c: _compile(toks) for c, toks in _COUNTRY_CITIES.items()}
 
 # Region anchors ("Remote — EU only", "EMEA", "APAC") → member countries we know.
 # A region-locked posting is kept only for users whose country is in the region.
+_EU_MEMBERS = {
+    "germany", "france", "spain", "netherlands", "ireland", "poland", "portugal",
+    "austria", "italy", "sweden", "denmark", "finland", "belgium", "czechia",
+    "romania", "hungary", "greece", "estonia", "latvia", "lithuania", "bulgaria",
+    "croatia", "slovakia", "slovenia", "cyprus", "malta", "luxembourg",
+}
+_EUROPE_MEMBERS = _EU_MEMBERS | {
+    "norway", "serbia", "switzerland", "united kingdom", "ukraine", "iceland",
+    "albania", "bosnia and herzegovina", "north macedonia", "montenegro", "kosovo",
+    "moldova", "belarus",
+}
 _REGION_MEMBERS = {
-    "eu": {"germany", "france", "spain", "netherlands", "ireland", "poland", "portugal",
-           "austria", "italy", "sweden", "denmark", "finland", "belgium", "czechia",
-           "romania", "hungary", "greece", "estonia", "latvia", "lithuania", "bulgaria",
-           "croatia", "slovakia", "slovenia"},
-    "europe": {"germany", "france", "spain", "netherlands", "ireland", "poland", "portugal",
-               "austria", "italy", "sweden", "norway", "denmark", "finland", "belgium",
-               "czechia", "romania", "hungary", "greece", "estonia", "latvia", "lithuania",
-               "bulgaria", "croatia", "serbia", "slovakia", "slovenia", "switzerland",
-               "united kingdom", "ukraine"},
-    "emea": {"germany", "france", "spain", "netherlands", "ireland", "poland",
-             "portugal", "united kingdom", "ukraine", "nigeria", "switzerland",
-             "austria", "italy", "sweden", "norway", "denmark", "finland", "belgium",
-             "israel", "united arab emirates", "south africa", "kenya", "egypt", "turkey"},
+    "eu": _EU_MEMBERS,
+    "europe": _EUROPE_MEMBERS,
+    # EMEA ⊇ Europe by definition. The old set named only twelve European
+    # countries, so a Romanian or Czech user was outside "Remote (EMEA)".
+    # Turkey and the Caucasus stay EMEA-only, as Turkey always was.
+    "emea": _EUROPE_MEMBERS | {
+        "turkey", "georgia", "armenia", "azerbaijan",
+        "nigeria", "israel", "united arab emirates", "south africa", "kenya",
+        "egypt", "saudi arabia", "qatar", "jordan", "lebanon", "morocco",
+        "tunisia", "ghana",
+    },
     "apac": {"india", "australia", "singapore", "japan", "philippines", "pakistan",
              "indonesia", "vietnam", "thailand", "malaysia", "south korea", "china",
-             "taiwan", "hong kong", "new zealand"},
+             "taiwan", "hong kong", "new zealand", "bangladesh", "sri lanka", "nepal",
+             "cambodia", "kazakhstan", "uzbekistan"},
     "latam": {"brazil", "mexico", "argentina", "chile", "colombia", "peru",
-              "costa rica", "uruguay"},
+              "costa rica", "uruguay", "ecuador", "bolivia", "paraguay", "venezuela",
+              "guatemala", "panama", "dominican republic", "el salvador", "honduras"},
 }
 _REGION_RES = {
     region: _compile(tokens)
@@ -265,6 +394,12 @@ def norm_country(name: str) -> str:
         "schweiz": "switzerland", "suisse": "switzerland", "österreich": "austria",
         "italia": "italy", "sverige": "sweden", "norge": "norway", "danmark": "denmark",
         "suomi": "finland", "polska": "poland",
+        "puerto rico": "united states", "guam": "united states",
+        "macedonia": "north macedonia", "bosnia": "bosnia and herzegovina",
+        "republic of georgia": "georgia", "ksa": "saudi arabia", "saudi": "saudi arabia",
+        "maroc": "morocco", "luxemburg": "luxembourg",
+        "republica dominicana": "dominican republic",
+        "república dominicana": "dominican republic",
     }
     return aliases.get(n, n)
 
@@ -283,6 +418,13 @@ def _match_country(loc: str, table: dict) -> str:
         if any(r.search(loc) for r in res):
             return country
     return ""
+
+
+# Separators between the SITES of a multi-site posting ("Remote · Tiranë,
+# Albania · Austin, TX", "Vilnius, Lithuania / Kaunas, Lithuania"). Commas are
+# deliberately not one: they separate the parts of ONE address, and splitting
+# "Toronto, ON, Canada" would lose exactly the country that names it.
+_SITE_SPLIT = re.compile(r"\s*(?:·|\||;|/|\n)\s*")
 
 
 def detect_country(location: str) -> str:
@@ -343,6 +485,15 @@ def location_allowed(location: str, remote: bool, preferred_country: str, remote
     # "Remote - US/EU" names the user's country and must not be dropped by the
     # "EU" token, and "Berlin, Germany (EU)" is fine for a German user.
     if detected and detected == preferred:
+        return True
+    # A multi-site posting is judged site by site. Read as one string, "Remote
+    # · Tiranë, Albania · Austin, TX" is Albania — a foreign COUNTRY name is a
+    # higher tier than the user's own ", TX" — yet the posting has a site in
+    # the user's country. Any such site keeps it; none, and the whole-string
+    # verdict below stands, remote or not.
+    if _SITE_SPLIT.search(loc) and any(
+            detect_country(site) == preferred
+            for site in _SITE_SPLIT.split(loc) if site.strip()):
         return True
     region = detect_region(loc)
     if region and preferred not in _REGION_MEMBERS[region]:

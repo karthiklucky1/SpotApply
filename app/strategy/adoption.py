@@ -226,6 +226,11 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
                 Job.source, Job.external_id, Job.company, Job.title, Job.location,
                 Job.remote, Job.url, Job.description, Job.posted_at, Job.first_seen,
                 Job.discovered_at,
+                # ≤120 chars: the ATS's own pay statement (RawJob.salary_text),
+                # carried into the copy below so the regex fallback in
+                # _build_job does not replace it. Loaded here because these
+                # rows are read after the session closes (see above).
+                Job.salary_text,
             ))
             .where(Job.user_id == SHARED_POOL_USER,
                    Job.is_closed == False,  # noqa: E712
@@ -321,6 +326,10 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
         # 5-day scoring window, re-entered the render window, and the freshness
         # promise measured the age of a DB copy instead of the age of the job.
         first_seen=j.first_seen or j.discovered_at,
+        # Same principle for pay: the shared row may hold the ATS's own salary
+        # summary (Ashby). A copy that dropped it would be re-stamped from the
+        # description regex, which for those postings found nothing.
+        salary_text=j.salary_text,
     ) for j in candidates]
 
     inserted = _upsert(raw, user_id=user_id, preferred_country=country,

@@ -86,7 +86,32 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `_require_user` (:258), `_require_owned_application` (:349),
   `_require_admin_user` (:5487), `_require_admin` (:7732), all in server.py.
   `"local"` = SQLite dev user. Never leak data across users; check ownership on
-  per-application routes.
+  per-application routes. Account removal is ONE deletion for two callers:
+  `DELETE /api/account` and the daily orphan reconcile both run
+  `app/common/account_purge.py` (schema-driven, children-first, both storage
+  buckets). `purge_orphaned_accounts` compares our tenants against the Supabase
+  Auth listing and deletes NOTHING on any doubt — a listing that raised, came
+  back empty, did not paginate to the end, or implies more orphans than live
+  users (guard: `test_account_purge`). One deleted auth user had left 33k job
+  copies, 2,860 applications and 13 storage objects behind.
+- **PAID ≠ PLAN** (`app/billing.py`, 2026-09-17): `_get_user_plan` answers what
+  LIMITS a user gets; `billing.is_paid_entitlement(row)` answers whether they
+  are PAYING (a non-FREE, unexpired row that is either a manual/bank activation
+  or Stripe-backed under `sk_live_`). Only the latter overrides the dormancy
+  gate (`_user_paid_search_is_live`) or counts as MRR. A grandfathered PRO (no
+  row, `PLAN_GRANDFATHER_UNTIL` unset) and a test-mode (sandbox) subscription
+  are complimentary — reading `plan != FREE` as "paying" let 10 dormant
+  accounts take 90.8% of a week's LLM spend at the PRO ceiling. Production ran
+  on `sk_test_` keys the whole beta: `stripe_live_mode()`/`stripe_mode()` say
+  so, `warn_if_stripe_test_mode` logs it at boot, `/api/admin/metrics` reports
+  `sandbox_subscriptions`/`grandfathered_users`/`stripe_mode`, and
+  `active_users_7d` reads `UserProfile.last_active_at` (authenticated
+  requests), never `Application.updated_at` (lanes bump it for everyone). The
+  webhook must be subscribed to checkout.session.completed,
+  customer.subscription.created/updated/deleted AND invoice.paid; checkout
+  completion now fetches the period end itself and `reconcile_subscriptions`
+  (daily, `_billing_maintenance`) re-reads rows the stream let drift (the
+  founder's row sat on `current_period_end=NULL` = never expires for two weeks).
 - **Scrape once, serve many:** all scheduled lanes write postings ONCE to the
   shared pool (`Job.user_id == SHARED_POOL_USER`, pipeline.py); per-user pools
   are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also
@@ -138,6 +163,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   exactly once (`fetch_ok`/`fetch_failed`/`unsupported`/`deferred`, deferrals
   split cancelled/running/unconsumed — that split names the bottleneck before
   anyone touches worker counts). Never derive a poll count from ticks × selected.
+  **The selection is ADAPTIVE (AIMD)**: a tick that deferred >
+  `PULSE_ADAPTIVE_DEFER_PCT` (50%) of what it selected, or hit the consumer
+  deadline, halves the next cap (floor `PULSE_MIN_BOARDS_PER_TICK` 40); a clean
+  tick inside 70% of its budget grows it 25%+1 back toward
+  `PULSE_MAX_BOARDS_PER_TICK`. Selecting 300 and consuming 69 (09-16: 231/300
+  deferred, upsert p90 38s, deferrals 1-4K → 20-41K/day) was ~230 wasted fetches
+  per tick feeding back into a Disk-IO-exhausted database. `board_cap` is in
+  every tick event; `PULSE_ADAPTIVE_ENABLED=0` restores constant selection.
 - **Scoring lane** (`strategy/scoring_lane.py`, every `SCORING_LANE_INTERVAL_SECONDS`):
   the decoupled, PARALLEL, cross-user scorer — drains the global `rerank_score
   IS NULL` queue across ALL users with a fixed pool of `scoring_workers` (GPT
@@ -153,7 +186,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   ceiling, and reports `expiry_stopped`. Stopping it early is free (`_user_queue`
   bounds by the same freshness expression, so unswept rows never reach a
   worker); stopping SCORING early is what users feel. Any new pre-scoring step
-  must be bounded the same way. The scheduler's `wait_for` cannot cancel a
+  must be bounded the same way. The sweep runs PER OWNER on `ix_job_unscored`
+  with the known bound spelled index-friendly (`freshness.known_before_expr`:
+  `first_seen < c OR (first_seen IS NULL AND discovered_at < c)` — provably the
+  coalesce, guard: `test_expiry_sweep`); the old whole-table
+  `coalesce(...) < c` scan could use no index and hit the statement timeout in
+  159 of 271 cycles (`expiry_stopped="error"`), leaving an 84-day-old unscored
+  copy in one queue. One owner's cancelled statement is counted
+  (`owners_failed`) and the sweep CONTINUES; owners rotate round-robin. The scheduler's `wait_for` cannot cancel a
   `to_thread` cycle, so an overrun drops later ticks — now logged, was silent.
 - **Run modes:** prod = `uvicorn app.api.server:app`; local all-in-one = `python -m app.main`.
 - **Jinja filters** (`server.py`): `fromjson`, `cleantext`, `humanize_signal`
@@ -161,6 +201,17 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Dashboard** is one big `templates/dashboard.html` (HTML + inline `<script>`). Modals
   toggle via `style.display` (not the `hidden` class — inline `display` overrides it).
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
+  **Per-user aggregates are bounded AND cached** (`app/common/ttl_cache.py`):
+  `/api/freshness-stats` (was 52s — it loaded every open row of a 65k pool to
+  take two medians; now SQL aggregates, 300s TTL), the `/api/pipeline/live`
+  pool tile (300s) and the `/api/jobs` COUNTs (60s per filter signature) run
+  through `_BoundedReads`; a timed-out count is `None`/`degraded: true`, never
+  0, is never cached, and the JS pages on "did a full page arrive".
+  `_BoundedReads` expunges before it rolls back so rows earlier panels loaded
+  keep their state (a rollback expires them and the sort keys read them after
+  the session closes). Admin surfaces: `/api/admin/settings` (secrets shown only
+  as `configured: bool` — guard: `test_admin_observability`) and
+  `/api/admin/health` (breakers, budget, stripe mode, pool, memory, last ticks).
 - **Tuning lives in env/Settings:** `shortlist_score_threshold` (60 — of real
   Claude finals 44.5% cleared 35 but only 11.6% cleared 65, so the old bar
   shortlisted ~1,800 jobs/user that the board's own default filter
@@ -253,6 +304,22 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   miss and all pay the 1.25x write; cache telemetry every 25 finals; adoption
   extras bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS`. **Every lane checks
   `llm_budget_exhausted()` BEFORE Tier-1** — prescores are cheap, not free.
+  **Attribution names the backend that ANSWERED, never the one requested**
+  (`Reranker.score_with_meta` → meta `provider`/`model`/`usage`; `score()` stays
+  the 4-tuple wrapper). 09-14..16 Anthropic rejected every call (unpaid
+  balance) and OpenAI served every final, yet cycles logged `by_claude` and the
+  ledger booked Haiku rates. **The spend ledger is METERED and has ONE writer**
+  (`analytics/spend.py`): the Reranker buffers each real call with provider,
+  model and token usage priced from `PRICES_PER_MTOK`; the lanes only flush.
+  A call that did not happen records nothing — ghost stamps, rule rejections and
+  the empty-JD guard were booked as 26K prescores/week that OpenAI never saw,
+  and the flat estimate ran 3.9x the bill. `LlmSpend` is keyed by
+  (user, day, kind, provider, model); `metered_share` in `/api/admin/spend`
+  says how much is measured. `provider_status()` (down_since, sanitised
+  last_error) feeds `/api/admin/health`; the breaker WARNING names the outage
+  length and who is serving. Grounding (`_ask_verifier`, records
+  `verifier_provider`) and card minting consult the SAME breaker — neither may
+  call a provider the lanes already know is down.
 - **DB egress:** never `select(Job)` on a hot path. Retrieval + FAISS rebuild use
   `matcher._candidate_columns()` (6 cols, description truncated in SQL — nothing
   reads past ~800 chars). Full descriptions put Supabase at 205% of its egress
@@ -271,7 +338,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   city-before-state made Dublin OH Irish and Melbourne FL Australian. Role terms
   drop DOMAIN tokens (`_DOMAIN_TOKENS`: "full" matched every "Full Time", "data"
   matched "Data Entry"); `_STRUCTURAL_TOKENS` is the smaller set preference
-  learning reads, where "sales" IS the signal.
+  learning reads, where "sales" IS the signal. **A scraper must read fields the
+  API actually emits**: `ashby.py` read `locationName` (not a real key), so every
+  Ashby row was stored with a blank location and `remote=isRemote`, and 11 of 31
+  audited cards — Warsaw, London, Vilnius hybrids for US users — sailed through
+  a gate that keeps "unspecified" (guard: `test_ashby_scraper`). Location now
+  comes from `location`/`address.postalAddress`/`secondaryLocations`, salary
+  from `compensation` → `RawJob.salary_text` (scraper value wins over the
+  description regex, and copies keep it). `location_allowed` splits multi-site
+  strings and keeps a posting if ANY site is the user's country; the scorer's
+  job block prints "Location: not stated in the posting" instead of a blank.
 - **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
   that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —
@@ -400,7 +476,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   hashes come from listing-phase entries, immune to detail-fetch jitter; a
   stored hash always denotes fully-INGESTED content — a poll whose details
   failed never establishes the baseline, or recovery reads as unchanged and
-  the postings are never upserted).
+  the postings are never upserted) · `spend_attribution` (the backend that
+  answered is the one billed; no phantom calls) · `expiry_sweep` (per-owner,
+  index-friendly, survives one owner's failure) · `pulse_adaptive` (the cap
+  shrinks under deferral and grows back) · `account_purge` (the reconcile
+  deletes nothing on any doubt) · `admin_observability` (no secret value in
+  any admin payload) · `grounding_provider` (never fails open; names the
+  verifier) · `tailor_accounting` (usage and ledger move together; one
+  generation per application at a time).
 - **Tests must clean up only their OWN rows.** A wholesale `delete(Job)` /
   `delete(CompanyRegistry)` takes out fixtures other files already built, which
   is a suite that fails differently every run. Prefix your rows and delete by

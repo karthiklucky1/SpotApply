@@ -167,6 +167,84 @@ class GroundingChecker:
     _SECTION_KEYS = ("EXPERIENCE", "PROJECT", "WORK", "EMPLOYMENT")
     _BULLET_PREFIXES = ("- ", "* ", "• ", "·", "– ", "— ", "‣ ", "▪ ", "◦ ", "● ", "» ")
 
+    # Which backend answered the most recent verifier request: "anthropic",
+    # "openai", or None when nobody did (or nothing has been asked yet). A
+    # class-level default so a checker built without __init__ (the tests, the
+    # no-torch path) still reads it. Production logged "batched Anthropic
+    # verify failed: 400" followed by "5 verified, 1 LLM call, PASSED" while
+    # Anthropic was suspended; a fallback had served and a small gpt-4o charge
+    # appeared, and nothing on the record said which provider verified.
+    last_verifier_provider: Optional[str] = None
+
+    def _ask_verifier(self, prompt: str, *, system: Optional[str] = None,
+                      max_tokens: int = 10) -> str:
+        """One fact-check request. Anthropic when it is up, otherwise OpenAI.
+
+        Sets ``last_verifier_provider``. Returns the raw answer — "" when no
+        provider answered, which every caller treats as NOT supported.
+
+        The Anthropic call is skipped, not attempted, while the reranker's
+        circuit breaker says the provider is cooling off: a suspended account
+        otherwise cost a doomed call per tailor (and its timeout) before the
+        fallback ran. An exhaustion error here trips the same breaker the
+        scoring lanes read, so the first tailor to hit it spares the rest.
+        """
+        from app.matching.reranker import (
+            _is_exhaustion_error, _mark_provider_down, provider_available,
+        )
+        from app.tailoring.tailor import Tailor
+
+        tailor = Tailor()
+        self.last_verifier_provider = None
+        answer = ""
+        anthropic_client = (tailor._anthropic_client
+                            if tailor._active_backend == "anthropic" else None)
+        why_not_anthropic = "not configured"
+        if anthropic_client is not None:
+            if not provider_available("anthropic"):
+                why_not_anthropic = "cooling off (credit/quota)"
+                log.info("Grounding: anthropic is %s — not asking it", why_not_anthropic)
+            else:
+                try:
+                    from app.common.llm import sampling
+                    kwargs: Dict[str, Any] = dict(
+                        model=settings.scoring_model,
+                        max_tokens=max_tokens,
+                        messages=[{"role": "user", "content": prompt}],
+                        **sampling(settings.scoring_model, settings.verifier_temperature),
+                    )
+                    if system:
+                        kwargs["system"] = system
+                    resp = anthropic_client.messages.create(**kwargs)
+                    answer = (resp.content[0].text or "").strip()
+                    if answer:
+                        self.last_verifier_provider = "anthropic"
+                    else:
+                        why_not_anthropic = "returned an empty answer"
+                except Exception as ae:
+                    err = str(ae)
+                    if _is_exhaustion_error(err.lower()):
+                        _mark_provider_down("anthropic", err)
+                    why_not_anthropic = "failed"
+                    log.warning("Grounding: Anthropic verify failed: %s", ae)
+
+        if not answer and tailor._openai_client:
+            messages = [{"role": "user", "content": prompt}]
+            if system:
+                messages.insert(0, {"role": "system", "content": system})
+            resp = tailor._openai_client.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=max_tokens,
+                temperature=settings.verifier_temperature,
+                messages=messages,
+            )
+            answer = (resp.choices[0].message.content or "").strip()
+            if answer:
+                self.last_verifier_provider = "openai"
+                log.info("Grounding: verified by openai/gpt-4o — anthropic unavailable (%s)",
+                         why_not_anthropic)
+        return answer
+
     def _extract_bullets(self, resume_md: str) -> List[str]:
         """Extract experience/project bullets.
 
@@ -245,37 +323,10 @@ Guidelines:
 Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supported. No other text.
 """
         try:
-            from app.tailoring.tailor import Tailor
-            tailor = Tailor()
-            answer = ""
-            
-            # Try Anthropic first if it is the active backend
-            if tailor._active_backend == "anthropic" and tailor._anthropic_client:
-                try:
-                    from app.common.llm import sampling
-                    resp = tailor._anthropic_client.messages.create(
-                        model=settings.scoring_model,
-                        max_tokens=10,
-                        messages=[{"role": "user", "content": prompt}],
-                        **sampling(settings.scoring_model, settings.verifier_temperature),
-                    )
-                    answer = resp.content[0].text.strip()
-                except Exception as ae:
-                    log.warning("Grounding: Anthropic failed during verify_with_llm, falling back to OpenAI: %s", ae)
-            
-            # Fall back to OpenAI if Anthropic failed, was not run, or answer is empty
-            if not answer and tailor._openai_client:
-                resp = tailor._openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    max_tokens=10,
-                    temperature=settings.verifier_temperature,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                answer = resp.choices[0].message.content.strip()
-                
+            answer = self._ask_verifier(prompt, max_tokens=10)
             if not answer:
+                # Nobody answered. Not a pass — silence never means clean.
                 return False
-                
             return "SUPPORTED" in answer.upper()
         except Exception as e:
             log.warning("LLM verification of flagged bullet failed: %s", e)
@@ -317,10 +368,6 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         if not patches:
             return []
         try:
-            from app.tailoring.tailor import Tailor
-            tailor = Tailor()
-            client = tailor._anthropic_client if tailor._active_backend == "anthropic" else None
-
             items = "\n\n".join(
                 f"{i}. CLAIM: {claim}\n   SOURCE: {src or '(no matching line in the master resume)'}"
                 for i, (claim, src) in enumerate(patches, start=1)
@@ -330,35 +377,14 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
                 f"Claims to check ({len(patches)}):\n\n{items}\n\n"
                 f"Return exactly {len(patches)} lines, one verdict per claim."
             )
-
-            answer = ""
-            if client is not None:
-                try:
-                    from app.common.llm import sampling
-                    resp = client.messages.create(
-                        model=settings.scoring_model,
-                        max_tokens=16 * len(patches) + 32,
-                        system=self._BATCH_SYSTEM,
-                        messages=[{"role": "user", "content": prompt}],
-                        **sampling(settings.scoring_model, settings.verifier_temperature),
-                    )
-                    answer = resp.content[0].text.strip()
-                except Exception as ae:
-                    log.warning("Grounding: batched Anthropic verify failed: %s", ae)
-            if not answer and tailor._openai_client:
-                resp = tailor._openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    max_tokens=16 * len(patches) + 32,
-                    temperature=settings.verifier_temperature,
-                    messages=[{"role": "system", "content": self._BATCH_SYSTEM},
-                              {"role": "user", "content": prompt}],
-                )
-                answer = (resp.choices[0].message.content or "").strip()
+            answer = self._ask_verifier(prompt, system=self._BATCH_SYSTEM,
+                                        max_tokens=16 * len(patches) + 32)
             if not answer:
                 return [False] * len(patches)
             return self._parse_batch_answer(answer, len(patches))
         except Exception as e:
             log.warning("Batched grounding verification failed: %s", e)
+            self.last_verifier_provider = None
             return [False] * len(patches)
 
     @staticmethod
@@ -549,18 +575,22 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
                 pending.append(i)
 
         llm_calls = 0
-        fresh: List[Tuple[Tuple[str, str, str], bool]] = []
+        # Fresh verdicts grouped by the provider that gave them, so the stored
+        # row says who actually answered (the version key names only the
+        # configured model, and the fallback serves under the same key).
+        fresh: Dict[Optional[str], List[Tuple[Tuple[str, str, str], bool]]] = {}
         batch_max = max(1, int(getattr(settings, "grounding_verify_batch_max", 12)))
         for start in range(0, len(pending), batch_max):
             chunk = pending[start:start + batch_max]
             pairs = [(needs_verdict[i][0], needs_verdict[i][1]) for i in chunk]
             answers = self.verify_batch(pairs, source_resume_md)
             llm_calls += 1
+            provider = getattr(self, "last_verifier_provider", None)
             for i, supported in zip(chunk, answers, strict=False):
                 verdicts[i] = supported
-                fresh.append((keys[i], supported))
-        if fresh:
-            verify_cache.store(fresh)
+                fresh.setdefault(provider, []).append((keys[i], supported))
+        for provider, entries in fresh.items():
+            verify_cache.store(entries, provider=provider)
 
         flagged_bullets = [
             {"bullet": bullet, "best_match_bullet": best_bullet, "best_match_score": score}

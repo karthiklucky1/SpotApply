@@ -98,8 +98,13 @@ def lookup(keys: Iterable[Key]) -> Dict[Key, bool]:
     return found
 
 
-def store(entries: List[Tuple[Key, bool]]) -> int:
-    """Persist fresh verdicts. Returns how many reached the database."""
+def store(entries: List[Tuple[Key, bool]], provider: Optional[str] = None) -> int:
+    """Persist fresh verdicts. Returns how many reached the database.
+
+    ``provider`` is which backend actually answered ("anthropic" | "openai"),
+    recorded on the row so an audit can tell a fallback verdict from a primary
+    one — the version half of the key names the CONFIGURED model only.
+    """
     if not entries or not _enabled():
         return 0
 
@@ -130,12 +135,14 @@ def store(entries: List[Tuple[Key, bool]]) -> int:
                     if existing.supported != supported:
                         existing.supported = supported
                         existing.created_at = datetime.utcnow()
+                        existing.verifier_provider = provider
                         session.add(existing)
                         written += 1
                     continue
                 session.add(GroundingVerdict(
                     evidence_id=evidence_id, patch_hash=patch,
                     verifier_version=version, supported=supported,
+                    verifier_provider=provider,
                 ))
                 written += 1
             session.commit()

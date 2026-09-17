@@ -528,10 +528,21 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
         return None
 
     # Tier-2: authoritative score (dual routing when enabled; the rule
-    # pre-filter runs inside .score()).
+    # pre-filter runs inside .score()). `provider` here is the one we ASK for;
+    # the one that ANSWERS comes back in `meta` and is what gets attributed.
+    # Production 2026-09-14..16: Anthropic rejected every call for three days
+    # and OpenAI served every final, yet the cycle stats said by_claude=1,335
+    # by_gpt=0, because attribution keyed off the requested provider (None =
+    # "must have been Claude"). Fakes in the test-suite expose only score(),
+    # so the meta call is duck-typed.
     provider = _pick_provider(jid, ctx)
     try:
-        score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
+        _with_meta = getattr(ctx.reranker, "score_with_meta", None)
+        if _with_meta is not None:
+            score, reason, concerns, breakdown, meta = _with_meta(ctx.resume, job, provider=provider)
+        else:
+            score, reason, concerns, breakdown = ctx.reranker.score(ctx.resume, job, provider=provider)
+            meta = {}
     except Exception as e:
         log.debug("scoring failed for %d (left for next cycle): %s", jid, e)
         if pre is not None:
@@ -549,11 +560,16 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     _note_score_success(jid)
     _prescore_memo.pop(jid, None)
 
-    # A score() call that fell back to local models tags its reasoning — surface
-    # that in the cycle stats so "who scored what" stays visible in the logs.
+    # Attribute the final to the backend that SERVED it (meta["provider"]:
+    # anthropic | openai | local | rule). A scorer that reports no meta (the
+    # suite's fakes) falls back to the reasoning tag for the local path and
+    # otherwise to the requested provider — never to "anthropic" by default,
+    # which is the exact miscount this replaces.
     from app.matching.reranker import LOCAL_REASON_PREFIX
-    if reason.startswith(LOCAL_REASON_PREFIX):
-        provider = "local"
+    served = meta.get("provider") if isinstance(meta, dict) else None
+    if not served:
+        served = "local" if reason.startswith(LOCAL_REASON_PREFIX) else provider
+    provider = served
 
     # Phase 3 — short session: idempotent write-back + hire-probability blend.
     def _hp(job, session):
@@ -573,8 +589,9 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     # ONLY for real LLM finals — when the final itself came from the local
     # fallback, "shadowing" would compare the model against itself (the fake
     # MAE=0.0/100% telemetry of the Jul 2026 credits outage) and pay a second
-    # inference for nothing.
-    if provider != "local":
+    # inference for nothing. A rule pre-filter stamp is not an LLM verdict
+    # either.
+    if provider not in ("local", "rule"):
         try:
             from app.matching.local_scorer import shadow_score
             shadow_score(jid, ctx.resume, job, float(score))
@@ -807,6 +824,93 @@ def _arm_statement_timeout(session, seconds: int) -> None:
         log.debug("statement_timeout not armed: %s", e)
 
 
+# The owner the NEXT expiry sweep starts from — round-robin across owners, so a
+# sweep that spends its slice on one owner's backlog hands the next slice to the
+# next owner instead of returning to the same alphabetically-first user every
+# 90 seconds while everyone else's stale rows wait. Process-local, like the
+# per-job attempt ceiling above; a restart merely starts the rotation over.
+_EXPIRY_RESUME: list = []
+
+
+def _is_statement_timeout(exc: BaseException) -> bool:
+    """Did this exception come from Postgres cancelling a statement on its
+    timeout (SQLSTATE 57014, psycopg2 ``QueryCanceled``)? Recognised by code
+    first and by message as a fallback, so a driver that does not expose
+    ``pgcode`` still classifies correctly."""
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "pgcode", None) == "57014":
+        return True
+    name = type(orig).__name__ if orig is not None else type(exc).__name__
+    if "QueryCanceled" in name:
+        return True
+    msg = str(exc).lower()
+    return "statement timeout" in msg or "canceling statement" in msg
+
+
+def _failure_reason(exc: BaseException) -> str:
+    return "statement_timeout" if _is_statement_timeout(exc) else "error"
+
+
+def _expiry_owners(stmt_timeout: int, limit: int = 1000) -> List[Optional[str]]:
+    """Every owner with at least one unscored job, shared pool excluded, the
+    NULL (local/legacy) owner last.
+
+    The same enumeration ``_scorable_user_ids`` uses — the recursive-CTE skip
+    scan over ``ix_job_unscored`` (measured 35.6 ms against a 4.5 s DISTINCT,
+    see ``_SKIP_SCAN_OWNERS``), degrading to the DISTINCT if the skip scan
+    fails. Unlike ``_scorable_user_ids`` it applies neither the ``is_closed``
+    re-check nor the dormancy gate: expiring a dormant user's stale rows costs
+    no LLM call, and their backlog is exactly the kind that otherwise grows
+    unbounded (one production owner's oldest unscored copy was 84 days old).
+    """
+    from app.discovery.pipeline import SHARED_POOL_USER
+    try:
+        with get_session() as session:
+            _arm_statement_timeout(session, stmt_timeout)
+            candidates: List[Optional[str]] = list(
+                _unscored_owners_fast(session, limit))
+    except Exception as e:
+        log.warning("expiry: skip-scan owner enumeration failed, using DISTINCT: %s", e)
+        with get_session() as session:
+            _arm_statement_timeout(session, stmt_timeout)
+            candidates = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                select(Job.user_id).where(
+                    Job.rerank_score == None,  # noqa: E711
+                ).distinct().limit(limit)
+            ).all()]
+    owners: List[Optional[str]] = []
+    seen: set = set()
+    # The NULL owner cannot be reached by the skip scan's `user_id >` walk
+    # (ORDER BY sorts NULLs last), so it is probed explicitly — same as
+    # _scorable_user_ids.
+    for uid in [c for c in candidates if c is not None] + [None]:
+        if uid == SHARED_POOL_USER or uid in seen:
+            continue
+        seen.add(uid)
+        owners.append(uid)
+    return owners
+
+
+def _owner_expiry_select(owner_clause, extra_clauses, batch: int):
+    """The ONE per-owner statement the expiry sweep runs — ``user_id = X AND
+    rerank_score IS NULL AND is_closed = false AND <bound>``, LIMIT ``batch``.
+
+    Every clause is a prefix or range on ``ix_job_unscored (user_id,
+    first_seen) WHERE rerank_score IS NULL``; the bound comes from
+    app/common/freshness.py in its index-friendly spelling, never a coalesce
+    over the indexed column. Kept as a function so tests/test_expiry_sweep.py
+    can EXPLAIN the statement the code actually runs.
+    """
+    return (
+        select(Job.id)
+        .where(owner_clause,
+               Job.rerank_score == None,   # noqa: E711
+               Job.is_closed == False,     # noqa: E712
+               *extra_clauses)
+        .limit(batch)
+    )
+
+
 def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
                            deadline: Optional[float] = None,
                            max_seconds: Optional[int] = None) -> dict:
@@ -838,13 +942,38 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
     prescores are bounded by the adaptive budget and ``scoring_*_cap``, so a
     larger eligible queue changes WHICH jobs the fixed budget buys.
 
-    Run as two index-friendly passes rather than one OR'd predicate: pass A
-    rides ``ix_job_unscored (user_id, first_seen) WHERE rerank_score IS NULL``
-    directly, and pass B constrains ``first_seen >= known_cutoff`` so it walks
-    the same bounded range (rows older than that are already pass A's).
+    PER OWNER, and that is what makes it run at all. The sweep used to issue
+    ``rerank_score IS NULL AND user_id != '__shared__' AND coalesce(first_seen,
+    discovered_at) < cutoff`` over the whole table: no ``user_id`` prefix, and
+    the indexed column wrapped in a function, so ``ix_job_unscored (user_id,
+    first_seen) WHERE rerank_score IS NULL`` could serve neither clause and the
+    statement scanned the 1.48M-row job table. Production 2026-09-16: the
+    cycle metadata showed ``expiry_stopped="error"`` in 159 of 271 cycles, the
+    log carried the matching ``QueryCanceled`` warnings, and one owner's oldest
+    unscored per-user copy was 2,024 hours old — the age gate was not reaching
+    it. Now every statement is ``user_id = X AND rerank_score IS NULL AND
+    <bound>`` for one owner at a time (``_owner_expiry_select``), the owners
+    coming from the same skip scan ``_scorable_user_ids`` uses, and the bound
+    spelled as ``first_seen < cutoff OR (first_seen IS NULL AND discovered_at <
+    cutoff)`` (``freshness.known_before_expr`` — provably the coalesce), so
+    each SELECT is a range over one owner's slice of the partial index.
+
+    Two passes per owner: pass A is the known bound; pass B constrains
+    ``known >= known_cutoff`` so it walks the same bounded range (rows older
+    than that are already pass A's).
+
+    A FAILURE ON ONE OWNER DOES NOT END THE SWEEP. The old ``except`` wrapped
+    the whole loop, so one cancelled statement abandoned every other owner's
+    rows for the cycle — and since the same owner was first every time, for
+    every cycle. A failed owner is counted in ``owners_failed``, its reason
+    (``statement_timeout`` or ``error``) is reported as ``stopped`` unless the
+    slice or the cycle deadline ended the sweep, and the loop moves to the next
+    owner. Owners are visited round-robin across calls (``_EXPIRY_RESUME``): a
+    slice spent on one owner's backlog hands the next slice to the next owner.
 
     Shared-pool rows are excluded (never scored directly). Returns a per-reason
-    breakdown; either bound at 0 disables that leg.
+    breakdown plus ``owners`` / ``owners_swept`` / ``owners_failed``; either
+    bound at 0 disables that leg.
 
     TIME-BOUNDED, and that is load-bearing. This runs FIRST in every cycle, and
     unbounded it could consume the whole cycle: production logged its SELECT
@@ -861,12 +990,14 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
 
     from sqlalchemy import update
 
-    from app.common.freshness import EXPIRY_SENTINEL_SCORE, known_ref
-    from app.discovery.pipeline import SHARED_POOL_USER
+    from app.common.freshness import (
+        EXPIRY_SENTINEL_SCORE, known_before_expr, known_on_or_after_expr,
+    )
 
     known_days = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
     posted_days = int(getattr(settings, "scoring_max_posted_age_days", 0) or 0)
-    out = {"total": 0, "queue_stale": 0, "ancient_posting": 0, "stopped": ""}
+    out = {"total": 0, "queue_stale": 0, "ancient_posting": 0, "stopped": "",
+           "owners": 0, "owners_swept": 0, "owners_failed": 0}
     if known_days <= 0 and posted_days <= 0:
         return out
 
@@ -889,17 +1020,12 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
     now = datetime.utcnow()
     known_cutoff = now - timedelta(days=known_days) if known_days > 0 else None
     posted_cutoff = now - timedelta(days=posted_days) if posted_days > 0 else None
-    base = (
-        Job.rerank_score == None,   # noqa: E711
-        Job.is_closed == False,     # noqa: E712
-        (Job.user_id.is_(None)) | (Job.user_id != SHARED_POOL_USER),
-    )
 
     passes = []
     if known_cutoff is not None:
         passes.append((
             "queue_stale",
-            (known_ref() < known_cutoff,),
+            (known_before_expr(known_cutoff),),
             f"Expired unscored — held {known_days}d without a score "
             f"(too stale to be worth applying to)",
         ))
@@ -907,66 +1033,107 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
         passes.append((
             "ancient_posting",
             # Bounded to rows the queue-stale pass does NOT already cover, so
-            # this walks the same index range instead of the whole table.
-            ((known_ref() >= known_cutoff) if known_cutoff is not None
-             else (Job.id == Job.id),
-             Job.posted_at.is_not(None),
-             Job.posted_at < posted_cutoff),
+            # this walks the same index range instead of the owner's whole
+            # unscored slice.
+            (((known_on_or_after_expr(known_cutoff),)
+              if known_cutoff is not None else ())
+             + (Job.posted_at.is_not(None), Job.posted_at < posted_cutoff)),
             f"Expired unscored — source posting date is over {posted_days}d old "
             f"(evergreen or long-filled listing)",
         ))
 
+    # Owner enumeration is the one statement that is not per-owner, so it is
+    # armed with the same ceiling and its failure ends the sweep for this
+    # cycle — WARNING, not DEBUG: this runs every 90s, so a silent failure means
+    # a repeating unlogged IO burn. `elapsed` is here because the failure that
+    # mattered in production was not the exception, it was how much of the
+    # cycle the sweep had already burned before raising it.
     try:
-        # Batched like close_stale_user_jobs: the first run after deploy can match
-        # six figures of rows on a 764k-row table, and one unbounded UPDATE is the
-        # Supabase statement-timeout / Disk-IO pattern we just spent a day fixing.
-        for reason_key, extra, reason_text in passes:
-            if out["stopped"]:
-                break
-            for _ in range(max_batches):
-                out["stopped"] = _stop_reason()
-                if out["stopped"]:
-                    break
-                with get_session() as session:
-                    _arm_statement_timeout(session, stmt_timeout)
-                    ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
-                        select(Job.id).where(*base, *extra).limit(batch)
-                    ).all()]
-                    if not ids:
-                        break
-                    session.exec(
-                        update(Job)
-                        .where(Job.id.in_(ids))
-                        # expired_at is the LIFECYCLE record: it says this row
-                        # left the queue on age with no scoring verdict, which
-                        # the 8.0 sentinel alone could never distinguish from a
-                        # real (very low) score. Written in the SAME update, so
-                        # it costs nothing extra.
-                        .values(rerank_score=EXPIRY_SENTINEL_SCORE,
-                                expired_at=now,
-                                rerank_reasoning=reason_text)
-                    )
-                    session.commit()
-                    out[reason_key] += len(ids)
-                    out["total"] += len(ids)
-                if len(ids) < batch:
-                    break
-        if out["total"]:
-            log.info("Scoring: expired %d unscored job(s) — %d held >%dd unscored, "
-                     "%d posted >%dd ago (drained free, no LLM spend)%s",
-                     out["total"], out["queue_stale"], known_days,
-                     out["ancient_posting"], posted_days,
-                     f" — stopped early: {out['stopped']}" if out["stopped"] else "")
-        return out
+        owners = _expiry_owners(stmt_timeout)
     except Exception as e:
-        # WARNING not DEBUG: this runs every 90s, so a silent failure means a
-        # repeating unlogged IO burn. `elapsed` is here because the failure that
-        # mattered in production was not the exception, it was how much of the
-        # cycle the sweep had already burned before raising it.
-        out["stopped"] = out["stopped"] or "error"
-        log.warning("stale-unscored expiry failed after %.1fs (non-fatal): %s",
-                    time.monotonic() - started, e)
+        out["stopped"] = _failure_reason(e)
+        log.warning("stale-unscored expiry: owner enumeration failed after %.1fs "
+                    "(non-fatal): %s", time.monotonic() - started, e)
         return out
+    out["owners"] = len(owners)
+    if not owners:
+        return out
+
+    # Round-robin: start where the previous call left off.
+    if _EXPIRY_RESUME and _EXPIRY_RESUME[0] in owners:
+        i = owners.index(_EXPIRY_RESUME[0])
+        owners = owners[i:] + owners[:i]
+
+    halt = ""          # slice_spent / cycle_deadline — ends the sweep
+    failure = ""       # first per-owner failure reason — reported, not fatal
+    last_started = -1  # index of the last owner whose passes began
+    for idx, uid in enumerate(owners):
+        halt = _stop_reason()
+        if halt:
+            break
+        last_started = idx
+        owner_clause = Job.user_id.is_(None) if uid is None else Job.user_id == uid
+        try:
+            # Batched like close_stale_user_jobs: the first run after deploy can
+            # match six figures of rows, and one unbounded UPDATE is the
+            # Supabase statement-timeout / Disk-IO pattern we spent a day fixing.
+            for reason_key, extra, reason_text in passes:
+                for _ in range(max_batches):
+                    halt = _stop_reason()
+                    if halt:
+                        break
+                    with get_session() as session:
+                        _arm_statement_timeout(session, stmt_timeout)
+                        ids = [r[0] if isinstance(r, tuple) else r for r in session.exec(
+                            _owner_expiry_select(owner_clause, extra, batch)
+                        ).all()]
+                        if not ids:
+                            break
+                        session.exec(
+                            update(Job)
+                            .where(Job.id.in_(ids))
+                            # expired_at is the LIFECYCLE record: it says this
+                            # row left the queue on age with no scoring
+                            # verdict, which the 8.0 sentinel alone could never
+                            # distinguish from a real (very low) score. Written
+                            # in the SAME update, so it costs nothing extra.
+                            .values(rerank_score=EXPIRY_SENTINEL_SCORE,
+                                    expired_at=now,
+                                    rerank_reasoning=reason_text)
+                        )
+                        session.commit()
+                        out[reason_key] += len(ids)
+                        out["total"] += len(ids)
+                    if len(ids) < batch:
+                        break
+                if halt:
+                    break
+            if halt:
+                break
+            out["owners_swept"] += 1
+        except Exception as e:
+            # One owner's cancelled statement is that owner's problem for this
+            # cycle, not everyone's. Each batch ran in its own session, so the
+            # rows already stamped for this owner are committed and kept.
+            out["owners_failed"] += 1
+            failure = failure or _failure_reason(e)
+            log.warning("stale-unscored expiry: owner %s batch failed after %.1fs "
+                        "(%s) — continuing with the next owner: %s",
+                        uid, time.monotonic() - started, _failure_reason(e), e)
+            continue
+
+    # Next call starts at the first owner this one did NOT get to (or wraps).
+    _EXPIRY_RESUME[:] = [owners[(last_started + 1) % len(owners)]]
+    out["stopped"] = halt or failure
+    if out["total"] or out["owners_failed"]:
+        log.info("Scoring: expired %d unscored job(s) — %d held >%dd unscored, "
+                 "%d posted >%dd ago (drained free, no LLM spend); owners %d/%d "
+                 "swept, %d failed%s",
+                 out["total"], out["queue_stale"], known_days,
+                 out["ancient_posting"], posted_days,
+                 out["owners_swept"], out["owners"], out["owners_failed"],
+                 f" — stopped early: {out['stopped']}" if out["stopped"] else "")
+    return out
 
 
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
@@ -976,7 +1143,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     )
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
-             "by_local": 0, "drain_prescored": 0}
+             "by_local": 0, "by_rule": 0, "drain_prescored": 0}
 
     # Age gate first: never spend LLM budget (or backlog IO) on postings too
     # old to be worth applying to.
@@ -1004,6 +1171,13 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     stats["expired_ancient"] = _exp["ancient_posting"]
     if _exp.get("stopped"):
         stats["expiry_stopped"] = _exp["stopped"]
+    # Per-owner sweep bookkeeping: `statement_timeout`/`error` above now mean
+    # ONE owner's batch failed and the rest were swept, which these two keys
+    # make distinguishable from an abandoned sweep in the cycle metadata.
+    if _exp.get("owners_failed"):
+        stats["expiry_owners_failed"] = _exp["owners_failed"]
+    if _exp.get("owners_swept"):
+        stats["expiry_owners_swept"] = _exp["owners_swept"]
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —
@@ -1203,7 +1377,9 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         return (uid, res) if res else None
 
     scored_by_user: dict = defaultdict(list)
-    spend_by_user: dict = defaultdict(int)   # (uid, kind) -> calls this cycle
+    # Served backend (score_with_meta's meta["provider"]) -> cycle stats key.
+    _PROVIDER_STAT = {"anthropic": "by_claude", "openai": "by_gpt",
+                      "local": "by_local", "rule": "by_rule"}
     pool = _worker_pool()
     futures = [pool.submit(_work, it) for it in items]
     for fut in futures:
@@ -1222,31 +1398,28 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         if kind == "scored":
             stats["scored"] += 1
             scored_by_user[uid].append((jid, score))
-            # `provider` is the REQUESTED provider, and _pick_provider returns
-            # None whenever dual mode is off — which it is in production. So the
-            # old `== "anthropic"` test never matched the normal path and
-            # score_final was recorded ONCE in the table's entire history, while
-            # 1,300+ finals actually ran: /api/admin/spend reported the single
-            # most expensive call type as zero. None = default priority order =
-            # the Tier-2 final; the local fallback sets provider="local"
-            # explicitly above, so it cannot be miscounted here.
-            if provider in (None, "anthropic"):
-                stats["by_claude"] += 1
-                spend_by_user[(uid, "score_final")] += 1
-            elif provider == "openai":
-                stats["by_gpt"] += 1
-                spend_by_user[(uid, "score_prescore")] += 1
-            elif provider == "local":
-                stats["by_local"] += 1
-                spend_by_user[(uid, "score_local")] += 1
+            # `provider` is the backend that ANSWERED (score_with_meta), not the
+            # one the router asked for. The old test was `in (None, "anthropic")
+            # → by_claude`, and _pick_provider returns None whenever dual mode
+            # is off — which it is in production — so three days of finals that
+            # OpenAI actually served (Anthropic: 400 credit balance too low,
+            # $0 billed) were logged as by_claude=1,335 by_gpt=0. A "rule"
+            # verdict is the free pre-filter; anything unrecognised is counted
+            # as such rather than folded into a provider.
+            key = _PROVIDER_STAT.get(provider, "by_unknown")
+            stats[key] = stats.get(key, 0) + 1
         elif kind == "drained":
             stats["drained"] += 1
-            spend_by_user[(uid, "score_prescore")] += 1
         elif kind == "prescored":
             # Drain-only slice: a real candidate got its Tier-1 number and
-            # stays Queued for the next open budget. Paid one prescore.
+            # stays Queued for the next open budget.
             stats["drain_prescored"] += 1
-            spend_by_user[(uid, "score_prescore")] += 1
+        # No spend is booked here. The lane used to charge one score_prescore
+        # per "drained" item — including ghost stamps and rule rejections that
+        # made NO API call — and one score_final per "scored" item at the Haiku
+        # flat rate whoever answered: 67,280 recorded calls against 41,378 the
+        # provider saw. The Reranker now records each call where it happens,
+        # with provider, model and token usage; this cycle only flushes below.
     # Cancel whatever is still QUEUED so a deadline-truncated cycle can't drain
     # its leftovers into the next one (the old per-cycle pool's shutdown(wait=
     # False) let up to ~200 queued LLM calls keep running while a fresh pool
@@ -1256,11 +1429,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     for fut in futures:
         fut.cancel()
 
-    # Per-user spend attribution (batched: one upsert per user+kind per cycle).
+    # Write the cycle's LLM spend: the Reranker buffered every API call it made
+    # (per user, kind, provider, model, with token usage); ONE flush per cycle
+    # upserts a row per key. The lane is not a writer — see analytics/spend.py.
     try:
-        from app.analytics.spend import record_llm_spend
-        for (s_uid, s_kind), n in spend_by_user.items():
-            record_llm_spend(s_uid, s_kind, n)
+        from app.analytics.spend import flush_llm_spend
+        _spend_rows = flush_llm_spend()
+        if _spend_rows:
+            stats["spend_rows"] = _spend_rows
     except Exception:
         pass
 

@@ -3146,19 +3146,27 @@
                 }
                 const data = await res.json();
                 
-                explorerTotalPages = data.pages;
+                // total / pages / total_open are null when the pagination
+                // COUNT exceeded its database budget (data.degraded). The page
+                // itself still arrived, so paging keeps working on "did a
+                // full page come back" and the counts read "many".
+                const countKnown = data.pages != null;
+                const fullPage = (data.jobs || []).length >= (data.limit || 25);
+                explorerTotalPages = countKnown ? data.pages : (fullPage ? data.page + 1 : data.page);
                 // Tab badge = the open pool INSIDE the current age window
                 // (matches the Pool card, which uses the same window); the
                 // filtered total (default "My roles" filter) lives in the pager.
                 const openTotal = (data.total_open != null ? data.total_open : data.total);
-                document.getElementById('explorer-total-count').textContent = openTotal.toLocaleString();
-                document.getElementById('explorer-page-info').textContent = `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} matching)`;
+                document.getElementById('explorer-total-count').textContent = openTotal != null ? openTotal.toLocaleString() : 'many';
+                document.getElementById('explorer-page-info').textContent = countKnown
+                    ? `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} matching)`
+                    : `Page ${data.page} (many matching)`;
 
                 // Update pagination buttons
                 document.getElementById('explorer-btn-first').disabled = data.page === 1;
                 document.getElementById('explorer-btn-prev').disabled = data.page === 1;
-                document.getElementById('explorer-btn-next').disabled = data.page === data.pages || data.pages === 0;
-                document.getElementById('explorer-btn-last').disabled = data.page === data.pages || data.pages === 0;
+                document.getElementById('explorer-btn-next').disabled = countKnown ? (data.page === data.pages || data.pages === 0) : !fullPage;
+                document.getElementById('explorer-btn-last').disabled = !countKnown || data.page === data.pages || data.pages === 0;
 
                 if (!data.jobs || data.jobs.length === 0) {
                     tBody.innerHTML = `
@@ -3389,14 +3397,20 @@
                 }
                 const data = await res.json();
 
-                ghostTotalPages = data.pages;
-                document.getElementById('ghost-total-count').textContent = data.total.toLocaleString();
-                document.getElementById('ghost-page-info').textContent = `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} ghost jobs)`;
+                // Same null-tolerant paging as the explorer: a timed-out COUNT
+                // returns total/pages null while the rows still come back.
+                const ghostCountKnown = data.pages != null;
+                const ghostFullPage = (data.jobs || []).length >= (data.limit || 25);
+                ghostTotalPages = ghostCountKnown ? data.pages : (ghostFullPage ? data.page + 1 : data.page);
+                document.getElementById('ghost-total-count').textContent = data.total != null ? data.total.toLocaleString() : 'many';
+                document.getElementById('ghost-page-info').textContent = ghostCountKnown
+                    ? `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} ghost jobs)`
+                    : `Page ${data.page} (many ghost jobs)`;
 
                 document.getElementById('ghost-btn-first').disabled = data.page === 1;
                 document.getElementById('ghost-btn-prev').disabled = data.page === 1;
-                document.getElementById('ghost-btn-next').disabled = data.page === data.pages || data.pages === 0;
-                document.getElementById('ghost-btn-last').disabled = data.page === data.pages || data.pages === 0;
+                document.getElementById('ghost-btn-next').disabled = ghostCountKnown ? (data.page === data.pages || data.pages === 0) : !ghostFullPage;
+                document.getElementById('ghost-btn-last').disabled = !ghostCountKnown || data.page === data.pages || data.pages === 0;
 
                 if (!data.jobs || data.jobs.length === 0) {
                     tBody.innerHTML = `
