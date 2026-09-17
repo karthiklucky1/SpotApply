@@ -741,13 +741,17 @@ def _next_board_cap(current: int, stats: dict, elapsed: float) -> int:
       * deferred/selected > pulse_adaptive_defer_pct, or the consumer hit the
         tick deadline → HALVE (multiplicative decrease), floored at
         pulse_min_boards_per_tick so the lane keeps polling under pressure.
-      * nothing deferred and the tick finished inside 70% of
-        pulse_tick_max_seconds → grow by 25% + 1 (additive-ish increase),
-        capped at pulse_max_boards_per_tick.
+      * at most _GROW_DEFER_SHARE of the selection deferred and the tick
+        finished inside 70% of pulse_tick_max_seconds → grow by 25% + 1
+        (additive-ish increase), capped at pulse_max_boards_per_tick.
       * anything else, or a tick that selected nothing → unchanged.
 
     The +1 makes growth possible from the floor even when 25% rounds to zero;
     the 70% margin keeps a tick that barely fit from being read as headroom.
+    Growth tolerates a FEW deferrals on purpose: one slow host that misses the
+    fetch deadline on every tick is not a capacity signal, and requiring zero
+    would have parked the cap at the floor for as long as that host stayed
+    slow — after the database itself had long recovered.
     """
     ceiling = max(1, int(settings.pulse_max_boards_per_tick))
     if not settings.pulse_adaptive_enabled:
@@ -762,9 +766,15 @@ def _next_board_cap(current: int, stats: dict, elapsed: float) -> int:
     if defer_share > float(settings.pulse_adaptive_defer_pct) \
             or stats.get("consumer_deadline_hit"):
         return max(floor, int(current * 0.5))
-    if deferred == 0 and elapsed < 0.7 * float(settings.pulse_tick_max_seconds):
+    if defer_share <= _GROW_DEFER_SHARE and elapsed < 0.7 * float(settings.pulse_tick_max_seconds):
         return min(ceiling, int(current * 1.25) + 1)
     return current
+
+
+# A tick may defer up to this share of its selection and still count as clean
+# for GROWTH (the halving threshold is settings.pulse_adaptive_defer_pct). One
+# straggling host on a 40-board tick is 2.5%; a lane in trouble defers far more.
+_GROW_DEFER_SHARE = 0.05
 
 
 # One fetch pool for the life of the process — see scoring_lane._worker_pool.
@@ -1187,8 +1197,12 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                      " (consumer deadline hit)" if stats["consumer_deadline_hit"] else "")
         else:
             log.info("pulse cap %d → %d after a clean tick (%.0fs of %ds, "
-                     "nothing deferred)", cap, next_cap, elapsed,
-                     settings.pulse_tick_max_seconds)
+                     "%d deferred)", cap, next_cap, elapsed,
+                     settings.pulse_tick_max_seconds, stats["deferred"])
+
+    # Whatever the Reranker buffered during this tick reaches the ledger even
+    # when no fast path ran (or one raised before its own flush).
+    _flush_spend()
 
     try:
         with get_session() as session:

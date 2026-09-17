@@ -40,6 +40,8 @@ def _clean():
                 s.delete(j)
             s.exec(delete(UserSubscription).where(UserSubscription.user_id.like(f"{_P}%")))
             s.exec(delete(UserProfile).where(UserProfile.user_id.like(f"{_P}%")))
+            from app.db.models import UserUsage
+            s.exec(delete(UserUsage).where(UserUsage.user_id.like(f"{_P}%")))
             s.commit()
     _wipe()
     yield
@@ -80,17 +82,35 @@ class _Bucket:
         self.log.append((self.name, tuple(paths)))
 
 
-class _FakeSupabase:
-    """auth.admin.list_users pages like supabase-py; storage.from_(bucket)."""
+class _NotFound(Exception):
+    status = 404
 
-    def __init__(self, auth_ids, *, raise_on_page=None, per_page_short=True):
+
+class _FakeSupabase:
+    """auth.admin.list_users pages like supabase-py; auth.admin.get_user_by_id
+    answers from ``known_ids`` (defaults to the listing) — a 404-shaped error
+    for a missing user, a generic error when ``lookup_fails``; storage.from_(bucket)."""
+
+    def __init__(self, auth_ids, *, raise_on_page=None, per_page_short=True,
+                 known_ids=None, lookup_fails=False):
         self.auth_ids = list(auth_ids)
+        self.known_ids = {u.lower() for u in (auth_ids if known_ids is None else known_ids)}
         self.raise_on_page = raise_on_page
         self.per_page_short = per_page_short
+        self.lookup_fails = lookup_fails
         self.removed: list = []
+        self.lookups: list = []
         fake = self
 
         class _Admin:
+            def get_user_by_id(self, uid):
+                fake.lookups.append(uid)
+                if fake.lookup_fails:
+                    raise RuntimeError("auth unreachable")
+                if uid.lower() in fake.known_ids:
+                    return SimpleNamespace(user=SimpleNamespace(id=uid))
+                raise _NotFound("User not found")
+
             def list_users(self, page=1, per_page=1000):
                 if fake.raise_on_page == page:
                     raise RuntimeError("auth down")
@@ -220,6 +240,88 @@ def test_a_tenant_whose_auth_user_is_gone_is_purged_and_live_tenants_are_not(mon
     assert _rows_for(f"{_P}live1")["profiles"] == 1 and _rows_for(f"{_P}live2")["profiles"] == 1
     # Counts only in the result — never an id or an email.
     assert f"{_P}gone" not in repr(out)
+
+
+def test_a_live_user_the_listing_missed_is_never_purged(monkeypatch):
+    """THE reviewer's scenario: a gateway that clamps per_page, or a signup
+    landing between two offset pages, leaves a live user out of the bulk
+    listing. Absence from a listing is a nomination, not a verdict — the
+    per-user lookup still knows them, so they are kept."""
+    _seed_tenant(f"{_P}missed", jobs=1)
+    _seed_tenant(f"{_P}gone", jobs=1)
+    live = [f"{_P}live{i}" for i in range(3)]
+    for uid in live:
+        _seed_tenant(uid, jobs=0)
+    others = sorted(_others())
+    fake = _FakeSupabase(others + live,                          # listing misses 'missed'
+                         known_ids=others + live + [f"{_P}missed"])
+    _wire(monkeypatch, fake)
+    out = ap.purge_orphaned_accounts()
+    assert out["aborted"] is None
+    assert out["candidates"] == 2 and len(out["purged"]) == 1 and out["kept"] == 1
+    assert _rows_for(f"{_P}missed")["profiles"] == 1, "a live user was purged on a listing gap"
+    assert _rows_for(f"{_P}gone")["profiles"] == 0
+    assert set(fake.lookups) == {f"{_P}missed", f"{_P}gone"}, "every candidate is confirmed"
+
+
+def test_an_unanswerable_lookup_keeps_the_tenant_for_tomorrow(monkeypatch):
+    _seed_tenant(f"{_P}gone", jobs=1)
+    _seed_tenant(f"{_P}live", jobs=0)
+    fake = _FakeSupabase(sorted(_others()) + [f"{_P}live"], lookup_fails=True)
+    _wire(monkeypatch, fake)
+    out = ap.purge_orphaned_accounts()
+    assert out["aborted"] is None and out["purged"] == [] and out["unconfirmed"] == 1
+    assert _rows_for(f"{_P}gone")["profiles"] == 1
+
+
+def test_the_lookup_verdict_reads_every_shape_the_sdk_raises():
+    class _Boom(Exception):
+        pass
+
+    class _Admin:
+        def __init__(self, behaviour):
+            self.b = behaviour
+
+        def get_user_by_id(self, uid):
+            if isinstance(self.b, Exception):
+                raise self.b
+            return self.b
+
+    def _sb(b):
+        return SimpleNamespace(auth=SimpleNamespace(admin=_Admin(b)))
+
+    assert ap._auth_user_gone(_sb(_NotFound("User not found")), "u1") is True
+    assert ap._auth_user_gone(_sb(_Boom("user_not_found")), "u1") is True
+    assert ap._auth_user_gone(_sb(_Boom("connection reset")), "u1") is None
+    assert ap._auth_user_gone(_sb(SimpleNamespace(user=SimpleNamespace(id="U1"))), "u1") is False
+    # A response naming a DIFFERENT user is not a confirmation either way.
+    assert ap._auth_user_gone(_sb(SimpleNamespace(user=SimpleNamespace(id="u2"))), "u1") is None
+    assert ap._auth_user_gone(_sb(SimpleNamespace(user=None)), "u1") is None
+
+
+def test_tenants_known_only_by_applications_or_usage_are_reconciled(monkeypatch):
+    from app.db.models import UserUsage
+    from datetime import date
+    with get_session() as s:
+        j = Job(source=JobSource.REMOTEOK, external_id=f"{_P}apponly-j", company="PurgeCo",
+                title="Role", url="http://p", description="d", user_id=f"{_P}apponly",
+                first_seen=datetime.utcnow(), discovered_at=datetime.utcnow())
+        s.add(j)
+        s.flush()
+        s.add(Application(job_id=j.id, user_id=f"{_P}apponly",
+                          status=ApplicationStatus.SHORTLISTED, apply_track="manual"))
+        s.add(UserUsage(user_id=f"{_P}usageonly", usage_date=date.today(),
+                        week_start=date.today()))
+        s.commit()
+    for _ in range(3):
+        _seed_tenant(f"{_P}live{_}", jobs=0)
+    fake = _FakeSupabase(sorted(_others()) + [f"{_P}live{i}" for i in range(3)])
+    _wire(monkeypatch, fake)
+    out = ap.purge_orphaned_accounts()
+    assert out["aborted"] is None and out["candidates"] == 2 and len(out["purged"]) == 2
+    assert _rows_for(f"{_P}apponly") == {"profiles": 0, "jobs": 0, "apps": 0}
+    with get_session() as s:
+        assert s.exec(select(UserUsage).where(UserUsage.user_id == f"{_P}usageonly")).first() is None
 
 
 def test_auth_ids_are_matched_case_insensitively(monkeypatch):

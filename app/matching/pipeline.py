@@ -1017,6 +1017,15 @@ def run_matching(user_id: str | None = None) -> List[int]:
             log.info("Job %s @ %s: sim=%.3f rerank=%.0f — %s",
                      job.title, job.company, sim, score, reason)
 
+    # The Reranker buffered every Tier-1/Tier-2 call this pass made (with the
+    # backend that answered and its token usage); write them to the ledger
+    # now. Without this the matching lane — the only scorer when
+    # SCORING_LANE_ENABLED=0 — buffered spend that nothing ever flushed.
+    try:
+        from app.analytics.spend import flush_llm_spend
+        flush_llm_spend()
+    except Exception as _fe:
+        log.debug("matching pass spend flush skipped: %s", _fe)
     return shortlisted
 
 

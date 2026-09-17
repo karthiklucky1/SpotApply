@@ -393,7 +393,10 @@ def test_a_time_stop_outranks_a_recorded_failure(iso, monkeypatch):
     out = sl._expire_stale_unscored(deadline=_time.monotonic() - 1)
     assert out["stopped"] == "cycle_deadline"
     assert out["total"] == 0 and out["owners_swept"] == 0
-    assert out["owners"] == 2      # enumerated, then handed the cycle back
+    # Not even enumerated: with no time left, the owner listing (one statement
+    # ceiling, two on the DISTINCT fallback) would be spent on owners the sweep
+    # can never reach. The cycle is handed back before it.
+    assert out["owners"] == 0
 
 
 def test_statement_timeout_classification():

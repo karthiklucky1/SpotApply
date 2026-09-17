@@ -870,6 +870,12 @@ def _expiry_owners(stmt_timeout: int, limit: int = 1000) -> List[Optional[str]]:
             candidates: List[Optional[str]] = list(
                 _unscored_owners_fast(session, limit))
     except Exception as e:
+        if _is_statement_timeout(e):
+            # The skip scan timed out: the plain DISTINCT is the SLOWER query
+            # (4.5 s vs 35.6 ms measured), so trying it would spend a second
+            # full statement ceiling to time out again — the whole 20 s slice
+            # gone before a single row is expired. Report and stop.
+            raise
         log.warning("expiry: skip-scan owner enumeration failed, using DISTINCT: %s", e)
         with get_session() as session:
             _arm_statement_timeout(session, stmt_timeout)
@@ -1048,6 +1054,14 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
     # a repeating unlogged IO burn. `elapsed` is here because the failure that
     # mattered in production was not the exception, it was how much of the
     # cycle the sweep had already burned before raising it.
+    # The cycle deadline is read BEFORE the one non-per-owner statement, not
+    # only between owners: a cycle that arrives with no time left must not
+    # spend a statement ceiling (10 s, twice on the fallback path) enumerating
+    # owners it will never sweep. Only the deadline can already have passed at
+    # entry — the slice starts here — so only the deadline is consulted.
+    if deadline is not None and time.monotonic() >= deadline:
+        out["stopped"] = "cycle_deadline"
+        return out
     try:
         owners = _expiry_owners(stmt_timeout)
     except Exception as e:

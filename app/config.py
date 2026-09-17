@@ -586,7 +586,7 @@ class Settings(BaseSettings):
     # follow the measured outcome. Additive-increase / multiplicative-decrease:
     # a tick that deferred more than PULSE_ADAPTIVE_DEFER_PCT of its selection
     # or hit the consumer deadline HALVES the cap (floored at
-    # PULSE_MIN_BOARDS_PER_TICK); a tick that deferred nothing and finished
+    # PULSE_MIN_BOARDS_PER_TICK); a tick that deferred at most ~5% and finished
     # inside 70% of pulse_tick_max_seconds grows it by 25%+1 (capped at
     # pulse_max_boards_per_tick); anything in between leaves it alone. The cap
     # used is reported in every pulse_tick event as `board_cap`, and each change

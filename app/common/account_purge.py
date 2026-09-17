@@ -105,10 +105,14 @@ def purge_user_data(uid: str) -> dict[str, int]:
         # PendingQuestion hangs off the application, not the user.
         app_ids = list(session.exec(
             select(Application.id).where(Application.user_id == uid)).all())
-        if app_ids:
+        # Chunked IN: one production tenant owned 2,860 applications, and an
+        # unbounded parameter list is the kind of statement that grows with the
+        # tenant until it trips a planner or driver limit.
+        for start in range(0, len(app_ids), 500):
+            chunk = app_ids[start:start + 500]
             r = session.exec(sql_delete(PendingQuestion).where(
-                PendingQuestion.application_id.in_(app_ids)))
-            deleted["pendingquestion"] = r.rowcount or 0
+                PendingQuestion.application_id.in_(chunk)))
+            deleted["pendingquestion"] = deleted.get("pendingquestion", 0) + (r.rowcount or 0)
 
         for table in reversed(SQLModel.metadata.sorted_tables):
             name = table.name
@@ -205,15 +209,24 @@ def _list_auth_user_ids(sb) -> tuple[set[str], Optional[str]]:
 
 
 def _tenant_ids() -> set[str]:
-    """Distinct identities our user-owned tables claim exist."""
+    """Distinct identities our user-owned tables claim exist.
+
+    Profiles and subscriptions name every onboarded tenant; applications and
+    usage rows are added because a tenant can lose their profile and keep
+    thousands of applications (the audit's deleted user kept 2,860). ``job`` is
+    deliberately NOT walked: a DISTINCT over 1.48M rows is the statement the
+    scoring lane's skip scan exists to avoid, and a tenant with jobs but no
+    application, profile or usage row has never been scored for.
+    """
     from sqlmodel import select
 
     from app.db.init_db import get_session
-    from app.db.models import UserProfile, UserSubscription
+    from app.db.models import Application, UserProfile, UserSubscription, UserUsage
 
     found: set[str] = set()
     with get_session() as session:
-        for col in (UserProfile.user_id, UserSubscription.user_id):
+        for col in (UserProfile.user_id, UserSubscription.user_id,
+                    Application.user_id, UserUsage.user_id):
             for row in session.exec(select(col).distinct()).all():
                 uid = row[0] if isinstance(row, tuple) else row
                 if isinstance(uid, str) and uid.strip():
@@ -221,17 +234,50 @@ def _tenant_ids() -> set[str]:
     return found
 
 
+def _auth_user_gone(sb, uid: str) -> Optional[bool]:
+    """Positively confirm ONE candidate against Auth: True = the user is
+    explicitly not found (purge), False = the user exists (keep), None = could
+    not tell (keep, count as unconfirmed).
+
+    The bulk listing only NOMINATES candidates; it cannot prove absence. A
+    gateway that clamps ``per_page``, or one signup landing between two
+    offset-paginated pages, leaves live users out of the listing — and each of
+    those would have been an irreversible purge. Deleting a tenant needs the
+    server to say, about that user, "not found".
+    """
+    try:
+        resp = sb.auth.admin.get_user_by_id(uid)
+    except Exception as e:
+        text = str(e).lower()
+        status = getattr(e, "status", None) or getattr(e, "code", None)
+        if status in (404, "404") or "not found" in text or "user_not_found" in text:
+            return True
+        return None
+    user = getattr(resp, "user", resp)
+    found_id = _user_id_of(user)
+    if found_id and found_id == uid.strip().lower():
+        return False
+    return None
+
+
 def purge_orphaned_accounts(max_users: int = 5) -> dict:
     """Purge tenants whose Supabase Auth user no longer exists. Bounded, and
     aborts — deleting nothing — on any doubt about the auth listing.
 
     Returns ``{"auth_users": n, "candidates": k, "purged": [per-user counts],
-    "aborted": reason | None}``. Nothing in it, and nothing logged from it,
-    identifies a person.
+    "kept": m, "unconfirmed": u, "aborted": reason | None}``. Nothing in it,
+    and nothing logged from it, identifies a person.
+
+    Two gates, both required: the bulk listing nominates a candidate, and a
+    per-user ``get_user_by_id`` must then answer "not found" for THAT user
+    (``_auth_user_gone``). A candidate the listing missed but Auth still knows
+    is ``kept``; one Auth could not answer for is ``unconfirmed``. Neither is
+    ever deleted.
     """
     from app.config import settings
 
-    out: dict[str, Any] = {"auth_users": 0, "candidates": 0, "purged": [], "aborted": None}
+    out: dict[str, Any] = {"auth_users": 0, "candidates": 0, "purged": [],
+                           "kept": 0, "unconfirmed": 0, "aborted": None}
 
     def _abort(reason: str) -> dict:
         out["aborted"] = reason
@@ -269,6 +315,13 @@ def purge_orphaned_accounts(max_users: int = 5) -> dict:
         return _abort(f"{len(candidates)} orphan candidates exceed {len(auth_ids)} auth users")
 
     for uid in candidates[:max(0, int(max_users))]:
+        gone = _auth_user_gone(sb, uid)
+        if gone is False:
+            out["kept"] += 1          # the listing missed a live user — never purge
+            continue
+        if gone is None:
+            out["unconfirmed"] += 1   # Auth could not say — leave it for tomorrow
+            continue
         try:
             counts = purge_user_data(uid)
         except Exception as e:
@@ -285,9 +338,14 @@ def purge_orphaned_accounts(max_users: int = 5) -> dict:
             "storage": storage,
         })
 
-    log.info("Orphan purge: %d auth users, %d orphaned tenants, purged %d this run (%d rows)",
+    if out["kept"]:
+        log.warning("Orphan purge: the auth listing missed %d live user(s) that "
+                    "get_user_by_id still knows — nothing deleted for them; the "
+                    "listing is not complete", out["kept"])
+    log.info("Orphan purge: %d auth users, %d orphan candidates, purged %d this run "
+             "(%d rows), %d kept, %d unconfirmed",
              out["auth_users"], out["candidates"], len(out["purged"]),
-             sum(p["rows"] for p in out["purged"]))
+             sum(p["rows"] for p in out["purged"]), out["kept"], out["unconfirmed"])
     return out
 
 
@@ -297,6 +355,8 @@ def _summary_counts(summary: dict) -> dict:
         "auth_users": summary.get("auth_users", 0),
         "candidates": summary.get("candidates", 0),
         "purged": len(summary.get("purged") or []),
+        "kept": summary.get("kept", 0),
+        "unconfirmed": summary.get("unconfirmed", 0),
         "aborted": summary.get("aborted"),
     }
 

@@ -156,8 +156,13 @@ def test_clean_fast_ticks_grow_the_cap_back_to_the_ceiling():
 def test_growth_needs_both_a_clean_tick_and_time_to_spare():
     # Nothing deferred but the tick used most of its budget: hold.
     assert pulse_lane._next_board_cap(100, _clean(selected=100), 120.0) == 100
-    # Fast, but something was deferred: hold.
-    assert pulse_lane._next_board_cap(100, _limited(selected=100, deferred=1), 20.0) == 100
+    # Fast, but a real share was deferred (10%): hold.
+    assert pulse_lane._next_board_cap(100, _limited(selected=100, deferred=10), 20.0) == 100
+    # Fast, and only a straggler or two deferred (≤5%): that is a clean tick.
+    # Requiring zero parked the cap at the floor for as long as ONE slow host
+    # kept missing the fetch deadline, long after the database had recovered.
+    assert pulse_lane._next_board_cap(100, _limited(selected=100, deferred=5), 20.0) == 126
+    assert pulse_lane._next_board_cap(100, _limited(selected=100, deferred=6), 20.0) == 100
     # Just inside the 70% margin grows; on it does not.
     assert pulse_lane._next_board_cap(100, _clean(selected=100), 104.9) == 126
     assert pulse_lane._next_board_cap(100, _clean(selected=100), 105.0) == 100
