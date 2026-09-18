@@ -619,10 +619,20 @@ def test_the_sweep_is_bounded_by_its_budget(monkeypatch):
     monkeypatch.setattr(gv, "_fetch", lambda url, timeout: _page(_jsonld(
         jobLocation={"address": {"addressLocality": "Austin", "addressRegion": "TX",
                                  "addressCountry": "US"}})))
-    out = gv.verify_pending(budget=gv.Budget(seconds=60, items=2))
-    assert out["pending_examined"] == 2
-    assert gv.verify_pending(budget=gv.Budget(seconds=60, items=5))["pending_examined"] == 1
-    assert _copy(U1, "budget2").eligibility == ELIGIBLE
+    # Other test files' held fixtures may be due too (their postings now get
+    # geography rows), so this pins the BOUND and the outcome, not an exact
+    # count: no sweep ever exceeds its item budget, every sweep with work left
+    # does some, and three postings cannot fit one sweep of two.
+    sweeps = 0
+    while not all(_copy(U1, f"budget{i}").eligibility == ELIGIBLE for i in range(3)):
+        out = gv.verify_pending(budget=gv.Budget(seconds=60, items=2))
+        sweeps += 1
+        assert 0 < out["pending_examined"] <= 2, out
+        assert sweeps <= 40, "held postings never resolved"
+    assert sweeps >= 2
+    for i in range(3):
+        row = _geo_row(f"budget{i}", "teamtailor")
+        assert row.status == "resolved" and row.attempts == 1, "each posting was fetched exactly once"
 
 
 def test_changed_location_evidence_invalidates_the_cached_decision():
