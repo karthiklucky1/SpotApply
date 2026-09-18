@@ -87,10 +87,9 @@ def purge_user_data(uid: str) -> dict[str, int]:
     enforces the FK, unlike the SQLite the tests run on — raised on the first
     delete, poisoned the transaction, and deleted nothing.
 
-    SAVEPOINT per statement: on Postgres a failed statement poisons the whole
-    transaction, so without this the first error made every later delete AND
-    the final commit fail — the route 500'd and nothing at all was deleted,
-    while the except quietly logged "one table failed".
+    A failed statement aborts the whole purge. Keep the tenant rows intact so
+    an operator or the next reconcile can retry; callers must not delete Auth
+    after a partial row purge. Savepoints identify the failed table in logs.
     """
     if is_sentinel(uid):
         raise ValueError("refusing to purge a system identity")
@@ -102,6 +101,12 @@ def purge_user_data(uid: str) -> dict[str, int]:
 
     deleted: dict[str, int] = {}
     with get_session() as session:
+        # sqlite3's legacy transaction mode does not start a transaction for a
+        # SAVEPOINT. Start one explicitly so rollback also covers released
+        # savepoints when a later table fails (Postgres already does this).
+        if session.get_bind().dialect.name == "sqlite":
+            from sqlalchemy import text
+            session.execute(text("BEGIN IMMEDIATE"))
         # PendingQuestion hangs off the application, not the user.
         app_ids = list(session.exec(
             select(Application.id).where(Application.user_id == uid)).all())
@@ -128,9 +133,12 @@ def purge_user_data(uid: str) -> dict[str, int]:
                         r = session.exec(sql_delete(table).where(col == uid))
                         deleted[name] = deleted.get(name, 0) + (r.rowcount or 0)
                 except Exception as e:
-                    # One undeletable table must not abandon the rest half-done.
                     log.exception("Account purge: %s.%s failed for %s: %s",
                                   name, col.name, uid, e)
+                    # Preserve the tenant/profile so the next reconcile can
+                    # find and retry it. Never commit a partial row purge and
+                    # report success to a caller that will then delete Auth.
+                    raise
         session.commit()
     return deleted
 
@@ -147,16 +155,55 @@ def purge_user_storage(uid: str, sb) -> dict[str, Optional[bool]]:
     out: dict[str, Optional[bool]] = {}
     for bucket in STORAGE_BUCKETS:
         try:
-            files = sb.storage.from_(bucket).list(uid) or []
-            paths = [f"{uid}/{f['name']}" for f in files if f.get("name")]
-            if paths:
-                sb.storage.from_(bucket).remove(paths)
+            storage = sb.storage.from_(bucket)
+            paths = _storage_paths(storage, uid)
+            for start in range(0, len(paths), 100):
+                storage.remove(paths[start:start + 100])
             out[bucket] = True
         except Exception as e:
             out[bucket] = False
             log.exception("Account purge: %s storage cleanup failed for %s: %s",
                           bucket, uid, e)
     return out
+
+
+def _storage_paths(storage, uid: str) -> list[str]:
+    """Enumerate every page and nested folder BEFORE deleting any page.
+
+    Deleting during offset pagination shifts the remaining files and skips
+    them. Bound the traversal; an incomplete listing must never report clean.
+    """
+    folders, seen, paths = [uid], set(), []
+    calls = 0
+    while folders:
+        prefix = folders.pop()
+        if prefix in seen:
+            raise RuntimeError("storage listing repeated a folder")
+        seen.add(prefix)
+        offset = 0
+        while True:
+            calls += 1
+            if calls > 1000:
+                raise RuntimeError("storage listing did not complete")
+            files = storage.list(prefix, {"limit": 100, "offset": offset,
+                                        "sortBy": {"column": "name", "order": "asc"}})
+            if not isinstance(files, list):
+                raise RuntimeError("unrecognised storage listing")
+            if not files:
+                break
+            for item in files:
+                name = item.get("name")
+                if not isinstance(name, str) or not name or name in (".", "..") or "/" in name:
+                    raise RuntimeError("invalid storage object name")
+                path = f"{prefix}/{name}"
+                if "id" in item and item["id"] is None:
+                    folders.append(path)
+                else:
+                    paths.append(path)
+                if len(paths) + len(folders) + len(seen) > 10000:
+                    raise RuntimeError("storage listing exceeds cleanup bound")
+            offset += len(files)
+    return paths
 
 
 # ── reconcile: tenants whose auth user is gone ───────────────────────────────
@@ -248,9 +295,10 @@ def _auth_user_gone(sb, uid: str) -> Optional[bool]:
     try:
         resp = sb.auth.admin.get_user_by_id(uid)
     except Exception as e:
-        text = str(e).lower()
-        status = getattr(e, "status", None) or getattr(e, "code", None)
-        if status in (404, "404") or "not found" in text or "user_not_found" in text:
+        # A proxy 404, missing session, or DNS "host not found" is not proof
+        # that THIS auth user is gone. Supabase documents a specific code for
+        # that verdict. Older/ambiguous errors deliberately leave data intact.
+        if getattr(e, "code", None) == "user_not_found":
             return True
         return None
     user = getattr(resp, "user", resp)
@@ -322,16 +370,20 @@ def purge_orphaned_accounts(max_users: int = 5) -> dict:
         if gone is None:
             out["unconfirmed"] += 1   # Auth could not say — leave it for tomorrow
             continue
-        try:
-            counts = purge_user_data(uid)
-        except Exception as e:
-            log.exception("Orphan purge: row deletion failed for one tenant: %s", type(e).__name__)
-            continue
+        # Keep the rows that nominate this orphan until its storage is clean.
+        # Otherwise a transient storage error removes the only retry handle.
         try:
             storage = purge_user_storage(uid, sb)
         except Exception as e:
             storage = {b: False for b in STORAGE_BUCKETS}
             log.exception("Orphan purge: storage cleanup failed for one tenant: %s", type(e).__name__)
+        if not all(storage.values()):
+            continue
+        try:
+            counts = purge_user_data(uid)
+        except Exception as e:
+            log.exception("Orphan purge: row deletion failed for one tenant: %s", type(e).__name__)
+            continue
         out["purged"].append({
             "rows": sum(counts.values()),
             "tables": {k: v for k, v in sorted(counts.items()) if v},

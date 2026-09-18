@@ -217,9 +217,11 @@ class _FakeStorageBucket:
         self.fail = fail
         self.removed = None
 
-    def list(self, uid):
+    def list(self, uid, options=None):
         if self.fail:
             raise RuntimeError("storage listing exploded")
+        if options and options.get("offset"):
+            return []
         return [{"name": "resume.pdf"}]
 
     def remove(self, paths):
@@ -271,7 +273,8 @@ def test_auth_user_is_deleted_even_when_storage_cleanup_fails(monkeypatch):
     )
     assert result["storage_deleted"] is False
     assert result["auth_deleted"] is True
-    assert result["success"] is True
+    assert result["success"] is False and result["partial"] is True
+    assert result["data_deleted"] is False, "keep tenant rows so orphan cleanup can retry"
 
 
 def test_a_failed_auth_delete_is_reported_not_swallowed(monkeypatch):

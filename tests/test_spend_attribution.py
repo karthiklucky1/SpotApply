@@ -225,8 +225,8 @@ def test_prescore_that_really_calls_is_metered_to_its_provider():
     rk = _reranker(uid, openai=oai)
     assert rk.prescore("resume", _job()) == (25.0, "off-role")
     snap = spend.pending_spend()
-    assert list(snap) == [(uid, "score_prescore", "openai", "gpt-4o-mini-2024-07-18")]
-    b = snap[(uid, "score_prescore", "openai", "gpt-4o-mini-2024-07-18")]
+    assert list(snap) == [(uid, spend._utc_day(), "score_prescore", "openai", "gpt-4o-mini-2024-07-18")]
+    b = snap[(uid, spend._utc_day(), "score_prescore", "openai", "gpt-4o-mini-2024-07-18")]
     assert b["metered_calls"] == 1 and b["flat_calls"] == 0
     assert b["usage"] == {"input": 176, "output": 20, "cache_read": 1024, "cache_write": 0}
 
@@ -615,7 +615,7 @@ def test_spend_buffer_coalesces_per_key_and_is_thread_safe():
         t.join()
     assert buf.pending() == 2
     snap = buf.snapshot()
-    fin = snap[(uid, "score_final", "anthropic", "claude-haiku-4-5")]
+    fin = snap[(uid, spend._utc_day(), "score_final", "anthropic", "claude-haiku-4-5")]
     assert fin["metered_calls"] == 1000
     assert fin["usage"] == {"input": 10_000, "output": 2_000, "cache_read": 100_000, "cache_write": 0}
     assert buf.flush() == 2
@@ -633,7 +633,7 @@ def test_spend_buffer_keeps_metered_and_flat_calls_apart():
     buf.add(uid, "score_final", provider="openai", model="gpt-4o-mini", usage={"input": 1000})
     buf.add(uid, "score_final", provider="openai", model="gpt-4o-mini")          # no usage
     buf.add(uid, "score_final", provider="openai", model="gpt-4o-mini", usage={"input": 1000})
-    b = buf.snapshot()[(uid, "score_final", "openai", "gpt-4o-mini")]
+    b = buf.snapshot()[(uid, spend._utc_day(), "score_final", "openai", "gpt-4o-mini")]
     assert (b["metered_calls"], b["flat_calls"]) == (2, 1)
     buf.flush()
     (row,) = _rows(uid)

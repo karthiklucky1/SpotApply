@@ -154,12 +154,14 @@ def is_paid_entitlement(row, now: Optional[datetime] = None) -> bool:
       - no row at all (a grandfathered PRO is a free ride — the dormancy gate
         applies to them; 10 dormant, row-less users were scored every day at
         the PRO ceiling because they read as paying);
-      - a Stripe-backed row while the keys are TEST mode (a sandbox
+      - a Stripe-backed row whose object is TEST mode or not yet verified (a sandbox
         subscription — the only subscription production had, reported as $100
         MRR by /api/admin/metrics).
     A row WITHOUT Stripe ids is a manual activation (bank transfer / admin
     set-plan) and counts as paid: someone paid outside Stripe and an operator
-    wrote the row. A row WITH Stripe ids counts only under `sk_live_`.
+    wrote the row. A row WITH Stripe ids counts only when Stripe confirmed
+    `livemode=True` for that object. Deployment keys cannot prove its mode:
+    switching to live keys must not relabel old sandbox subscriptions as paid.
     An expired period (past ENTITLEMENT_GRACE_DAYS) is never paid.
     """
     if row is None:
@@ -173,7 +175,7 @@ def is_paid_entitlement(row, now: Optional[datetime] = None) -> bool:
                          or getattr(row, "stripe_customer_id", None))
     if not stripe_backed:
         return True
-    return stripe_live_mode()
+    return getattr(row, "stripe_livemode", None) is True
 
 
 _TEST_MODE_WARNED = [False]
@@ -243,6 +245,11 @@ def create_checkout_session(user_id: str, email: Optional[str], base_url: str) -
         plan = row.plan if row else None
         customer = row.stripe_customer_id if row else None
         subscription = row.stripe_subscription_id if row else None
+        object_live = row.stripe_livemode if row else None
+    if object_live is False and stripe_live_mode():
+        # Test customers/subscriptions do not exist in the live account.
+        # Allow a real purchase without reusing those sandbox ids.
+        customer = subscription = None
     if subscription and plan and plan != PlanTier.FREE:
         raise AlreadySubscribed(
             f"user {user_id} already has subscription {subscription}")
@@ -282,8 +289,11 @@ def create_portal_session(user_id: str, base_url: str) -> str:
             select(UserSubscription).where(UserSubscription.user_id == user_id)
         ).first()
         customer = row.stripe_customer_id if row else None
+        object_live = row.stripe_livemode if row else None
     if not customer:
         raise LookupError("no Stripe customer for this user")
+    if object_live is not None and object_live != stripe_live_mode():
+        raise LookupError("Stripe customer belongs to a different billing mode")
     stripe = _stripe()
     portal = stripe.billing_portal.Session.create(
         customer=customer,
@@ -305,31 +315,42 @@ def set_plan(user_id: str, plan: PlanTier,
              stripe_customer_id: Optional[str] = None,
              stripe_subscription_id: Optional[str] = None,
              current_period_end=_UNSET,
-             last_event_at: Optional[datetime] = None) -> None:
+             last_event_at: Optional[datetime] = None,
+             stripe_livemode=_UNSET, *, session=None) -> None:
     """Idempotent upsert of a user's subscription row.
 
     Every optional field follows one rule: omit it and the stored value is
     kept, pass it (including ``None``) and it is written. Only a caller that
     actually knows the period end may change it.
     """
-    with get_session() as session:
-        row = session.exec(
-            select(UserSubscription).where(UserSubscription.user_id == user_id)
-        ).first()
-        if row is None:
-            row = UserSubscription(user_id=user_id)
-        row.plan = plan
-        if stripe_customer_id is not None:
-            row.stripe_customer_id = stripe_customer_id
-        if stripe_subscription_id is not None:
-            row.stripe_subscription_id = stripe_subscription_id
-        if current_period_end is not _UNSET:
-            row.current_period_end = current_period_end
-        if last_event_at is not None:
-            row.last_event_at = last_event_at
-        row.updated_at = datetime.utcnow()
-        session.add(row)
-        session.commit()
+    if session is None:
+        with get_session() as owned:
+            set_plan(user_id, plan, stripe_customer_id, stripe_subscription_id,
+                     current_period_end, last_event_at, stripe_livemode, session=owned)
+            owned.commit()
+        return
+    row = session.exec(
+        select(UserSubscription).where(UserSubscription.user_id == user_id)
+        .with_for_update()
+    ).first()
+    if row is None:
+        row = UserSubscription(user_id=user_id)
+    elif _is_stale(row, last_event_at):
+        return
+    row.plan = plan
+    if stripe_customer_id is not None:
+        row.stripe_customer_id = stripe_customer_id
+    if stripe_subscription_id is not None:
+        row.stripe_subscription_id = stripe_subscription_id
+    if current_period_end is not _UNSET:
+        row.current_period_end = current_period_end
+    if stripe_livemode is not _UNSET:
+        row.stripe_livemode = stripe_livemode
+    if last_event_at is not None:
+        row.last_event_at = last_event_at
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.flush()
     log.info("Billing: user %s set to plan %s", user_id, plan.value)
 
 
@@ -385,31 +406,22 @@ def _event_created(event) -> Optional[datetime]:
         return None
 
 
-def _claim_event(event_id: str, event_type: str) -> bool:
-    """Record this event id, returning False if it was already recorded.
+def _claim_event(event_id: str, event_type: str, session) -> bool:
+    """Claim in the SAME transaction as the entitlement update.
 
-    The unique constraint is what makes the claim atomic: two workers handed
-    the same redelivery race to INSERT and exactly one wins. On any database
-    error this returns True — processing a duplicate is recoverable, refusing
-    to process a real event is a user who paid and did not get their plan.
+    An error or process death rolls back both, leaving Stripe's retry usable.
+    The unique constraint serializes concurrent deliveries of the same event.
+    Database failures must propagate as non-2xx, never consume a real payment.
     """
     from app.db.models import BillingEvent
-    try:
-        with get_session() as session:
-            seen = session.exec(select(BillingEvent).where(
-                BillingEvent.event_id == event_id)).first()
-            if seen:
-                return False
-            session.add(BillingEvent(event_id=event_id, event_type=event_type or ""))
-            session.commit()
-        return True
-    except Exception as e:
-        from sqlalchemy.exc import IntegrityError
-        if isinstance(e, IntegrityError):
-            return False        # lost the race — the winner is applying it
-        log.warning("Billing webhook: could not record event %s (%s) — "
-                    "processing anyway", event_id, e)
-        return True
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    result = session.exec(insert(BillingEvent).values(
+        event_id=event_id, event_type=event_type or ""
+    ).on_conflict_do_nothing(index_elements=["event_id"]))
+    return bool(result.rowcount)
 
 
 def handle_webhook(payload: bytes, signature: str) -> dict:
@@ -423,118 +435,105 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
     except Exception as e:  # bad payload or signature — reject, never guess
         raise ValueError(f"webhook verification failed: {e}") from e
 
+    # Network reads happen before the database transaction. Once it starts,
+    # the event claim and every plan write commit (or roll back) together.
     etype = _field(event, "type")
-    event_id = _field(event, "id")
-    created = _event_created(event)
-    obj = _field(event, "data", {})
-    obj = _field(obj, "object", {})
+    obj = _field(_field(event, "data", {}), "object", {})
+    sub_id = (_field(obj, "subscription") if etype == "checkout.session.completed"
+              else _invoice_subscription_id(obj) if etype in
+              ("invoice.paid", "invoice.payment_succeeded") else None)
+    if etype in ("invoice.paid", "invoice.payment_succeeded") and sub_id:
+        if _row_for_subscription(sub_id) is None:
+            sub_id = None  # no tenant to update; do not buy a Stripe read
+    subscription = None
+    if sub_id:
+        try:
+            subscription = _retrieve_subscription(sub_id)
+        except Exception as e:
+            log.warning("Billing webhook: %s could not retrieve subscription %s (%s)",
+                        etype, sub_id, type(e).__name__)
+            if etype in ("invoice.paid", "invoice.payment_succeeded"):
+                end = _invoice_period_end(obj)
+                if end is None:
+                    # No authoritative period: let Stripe retry. Do not grant
+                    # an open-ended paid plan or acknowledge a lost renewal.
+                    raise
+                subscription = {"status": "active", "current_period_end": end}
 
-    # Stripe delivers AT LEAST ONCE — it retries every non-2xx and replays on
-    # request — so the same event can arrive twice. Applying
-    # `checkout.session.completed` a second time re-granted PRO to a user who
-    # had cancelled in between. Claim the id first; losing the claim means
-    # someone already applied this event.
-    if event_id and not _claim_event(event_id, etype):
-        log.info("Billing webhook: %s (%s) already applied — ignoring replay",
-                 etype, event_id)
-        return {"received": True, "type": etype, "duplicate": True}
+    with get_session() as session:
+        event_id = _field(event, "id")
+        if event_id and not _claim_event(event_id, etype, session):
+            return {"received": True, "type": etype, "duplicate": True}
+        out = _apply_webhook_event(event, session, subscription)
+        session.commit()
+        return out
+
+
+def _apply_webhook_event(event, session, subscription=None) -> dict:
+    etype = _field(event, "type")
+    created = _event_created(event)
+    obj = _field(_field(event, "data", {}), "object", {})
+    livemode = _field(event, "livemode", _UNSET)
+    if not isinstance(livemode, bool):
+        livemode = _UNSET
+    result = {"received": True, "type": etype}
 
     if etype == "checkout.session.completed":
         user_id = _field(obj, "client_reference_id")
         sub_id = _field(obj, "subscription")
         if user_id:
-            # No current_period_end here on purpose: a checkout session does not
-            # carry one, and passing None would ERASE the real period end that
-            # customer.subscription.updated stored. Whichever of the two lands
-            # last, the stored expiry is now the one that came from the
-            # subscription.
+            row = session.exec(select(UserSubscription).where(
+                UserSubscription.user_id == user_id).with_for_update()).first()
+            if row and _is_stale(row, created):
+                return {**result, "stale": True}
             set_plan(user_id, PlanTier.PRO,
                      stripe_customer_id=_field(obj, "customer"),
-                     stripe_subscription_id=sub_id,
-                     last_event_at=created)
-            # Then go and GET the period end, best effort. The founder's row sat
-            # on PRO with a NULL period end for two weeks because this event
-            # was the only one the endpoint received (0 subscription events
-            # delivered that week) and NULL reads as "never expires". A failure
-            # here is logged and the webhook still returns 2xx — Stripe must not
-            # retry a checkout we have already applied.
-            if sub_id:
-                try:
-                    _apply_subscription(user_id, sub_id,
-                                        _retrieve_subscription(sub_id))
-                except Exception as e:
-                    log.warning("Billing webhook: checkout for %s applied, but "
-                                "could not retrieve subscription %s for its "
-                                "period end (%s) — reconcile will fill it",
-                                user_id, sub_id, e)
+                     stripe_subscription_id=sub_id, last_event_at=created,
+                     stripe_livemode=livemode, session=session)
+            if subscription is not None:
+                # A retrieved cancellation must win over an old checkout.
+                # Database errors here roll back the claim as well.
+                _apply_subscription(user_id, sub_id, subscription,
+                                    last_event_at=created, session=session)
         else:
             log.warning("Billing webhook: checkout completed without client_reference_id")
 
     elif etype in ("customer.subscription.created", "customer.subscription.updated",
-                   "customer.subscription.deleted"):
-        sub_id = _field(obj, "id")
-        status = _field(obj, "status")
-        row = _row_for_subscription(sub_id)
-        if row:
-            if _is_stale(row, created):
-                log.info("Billing webhook: %s for %s is older than the last "
-                         "applied event — ignoring", etype, sub_id)
-                return {"received": True, "type": etype, "stale": True}
-            if etype == "customer.subscription.deleted":
-                status = "canceled"
-            _apply_subscription(row.user_id, sub_id, obj, status=status,
-                                last_event_at=created)
-        else:
-            log.info("Billing webhook: %s for unknown subscription %s", etype, sub_id)
-
-    elif etype in ("invoice.paid", "invoice.payment_succeeded"):
-        # A renewal charge. The endpoint production ran on was never subscribed
-        # to invoice events, so renewals reached us only through
-        # customer.subscription.updated — which also never arrived. Either one
-        # is enough now: the invoice names the subscription, the subscription
-        # carries the new period end.
-        sub_id = _invoice_subscription_id(obj)
-        row = _row_for_subscription(sub_id) if sub_id else None
+                   "customer.subscription.deleted", "invoice.paid", "invoice.payment_succeeded"):
+        invoice = etype in ("invoice.paid", "invoice.payment_succeeded")
+        sub_id = _invoice_subscription_id(obj) if invoice else _field(obj, "id")
+        row = _row_for_subscription(sub_id, session=session)
         if row is None:
             log.info("Billing webhook: %s for unknown subscription %s", etype, sub_id)
         elif _is_stale(row, created):
-            log.info("Billing webhook: %s for %s is older than the last "
-                     "applied event — ignoring", etype, sub_id)
-            return {"received": True, "type": etype, "stale": True}
+            return {**result, "stale": True}
         else:
-            try:
-                sub = _retrieve_subscription(sub_id)
-            except Exception as e:
-                # The invoice's own line period is the fallback: less precise
-                # (one line, not the subscription), but it beats leaving a
-                # paid renewal with a stale or NULL period end.
-                log.warning("Billing webhook: %s — could not retrieve %s (%s); "
-                            "using the invoice line period", etype, sub_id, e)
-                sub = {"status": "active",
-                       "current_period_end": _invoice_period_end(obj)}
-            _apply_subscription(row.user_id, sub_id, sub, last_event_at=created)
+            if invoice and subscription is None:
+                raise RuntimeError("Subscription appeared during invoice processing; retry")
+            status = "canceled" if etype == "customer.subscription.deleted" else None
+            _apply_subscription(row.user_id, sub_id, subscription if invoice else obj,
+                                status=status, last_event_at=created,
+                                stripe_livemode=livemode, session=session)
 
     elif etype == "invoice.payment_failed":
-        # Dunning. Stripe retries the card on its own schedule and tells us via
-        # customer.subscription.updated (past_due keeps access, unpaid ends
-        # it). Nothing of ours decides the retry policy — log and move on.
         log.info("Billing webhook: payment failed for subscription %s — Stripe "
                  "is retrying; access continues until it reports unpaid",
                  _invoice_subscription_id(obj))
-
     else:
         log.debug("Billing webhook: ignoring event type %s", etype)
-    return {"received": True, "type": etype}
+    return result
 
 
 # ── what Stripe says a subscription is, applied to our row ───────────────────
 
-def _row_for_subscription(sub_id) -> Optional[UserSubscription]:
+def _row_for_subscription(sub_id, *, session=None) -> Optional[UserSubscription]:
     if not sub_id:
         return None
-    with get_session() as session:
-        return session.exec(select(UserSubscription).where(
-            UserSubscription.stripe_subscription_id == sub_id)).first()
+    if session is None:
+        with get_session() as owned:
+            return _row_for_subscription(sub_id, session=owned)
+    return session.exec(select(UserSubscription).where(
+        UserSubscription.stripe_subscription_id == sub_id).with_for_update()).first()
 
 
 def _is_stale(row, created: Optional[datetime]) -> bool:
@@ -551,7 +550,8 @@ def _retrieve_subscription(sub_id: str):
 
 
 def _apply_subscription(user_id: str, sub_id: str, sub, status=None,
-                        last_event_at: Optional[datetime] = None) -> PlanTier:
+                        last_event_at: Optional[datetime] = None,
+                        stripe_livemode=_UNSET, *, session=None) -> PlanTier:
     """Write what a Subscription object says onto the user's row.
 
     Dead statuses -> FREE with the period end cleared (a downgrade leaves no
@@ -561,14 +561,18 @@ def _apply_subscription(user_id: str, sub_id: str, sub, status=None,
     `_UNSET` rule set_plan already applies to the checkout event.
     """
     status = status or _field(sub, "status")
+    mode = _field(sub, "livemode", stripe_livemode)
+    if not isinstance(mode, bool):
+        mode = _UNSET
     if status in _DEAD_STATUSES:
         set_plan(user_id, PlanTier.FREE, stripe_subscription_id=sub_id,
-                 current_period_end=None, last_event_at=last_event_at)
+                 current_period_end=None, last_event_at=last_event_at,
+                 stripe_livemode=mode, session=session)
         return PlanTier.FREE
     end = _period_end(sub)
     set_plan(user_id, PlanTier.PRO, stripe_subscription_id=sub_id,
              current_period_end=end if end is not None else _UNSET,
-             last_event_at=last_event_at)
+             last_event_at=last_event_at, stripe_livemode=mode, session=session)
     return PlanTier.PRO
 
 
@@ -605,7 +609,8 @@ def _invoice_period_end(invoice) -> Optional[int]:
 def reconcile_subscriptions(limit: int = 50) -> dict:
     """Re-read Stripe for the rows the webhook stream let drift. Never raises.
 
-    Targets: Stripe-backed rows whose `current_period_end` is NULL (PRO forever
+    Targets: Stripe-backed rows with unverified `stripe_livemode`, whose
+    `current_period_end` is NULL (PRO forever
     as far as entitlement can tell — the founder's row), and non-FREE rows
     whose period end is more than ENTITLEMENT_GRACE_DAYS past (already
     downgraded by _get_user_plan, but the row still says PRO and the KPIs still
@@ -630,6 +635,7 @@ def reconcile_subscriptions(limit: int = 50) -> dict:
                 .where(UserSubscription.stripe_subscription_id.isnot(None))
                 .where(or_(
                     UserSubscription.current_period_end.is_(None),
+                    UserSubscription.stripe_livemode.is_(None),
                     and_(UserSubscription.plan != PlanTier.FREE,
                          UserSubscription.current_period_end < horizon)))
                 .order_by(case((UserSubscription.plan == PlanTier.FREE, 1), else_=0),

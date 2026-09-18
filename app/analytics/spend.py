@@ -27,17 +27,40 @@ responses that carried no usage. Recording must never break the caller —
 everything is wrapped."""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 
+from sqlalchemy import text
 from sqlmodel import select
 
 from app.db.init_db import get_session
 from app.db.models import LlmSpend
 
 log = logging.getLogger(__name__)
+
+
+def _utc_day() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _lock_ledger_key(session, key) -> None:
+    """Serialize the read/insert/increment even when two lanes flush together.
+
+    A Python buffer lock ends before DB writes and cannot protect another
+    process. The transaction lock covers absent rows too, without a destructive
+    deduplication/index migration of the historical ledger.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        digest = hashlib.sha256(json.dumps(key, default=str).encode()).digest()
+        lock_id = int.from_bytes(digest[:8], "big", signed=True)
+        session.execute(text("SET LOCAL lock_timeout = '5s'"))
+        session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_id})
+    else:
+        session.execute(text("BEGIN IMMEDIATE"))
 
 # Flat per-call estimates (USD) — the FALLBACK when a call carried no token
 # usage (legacy callers, fakes, SDK responses without `.usage`). Every scoring
@@ -128,7 +151,8 @@ def estimate_cost(model: Optional[str], usage) -> Optional[float]:
 
 def record_llm_spend(user_id: str | None, kind: str, calls: int = 1, *,
                      provider: Optional[str] = None, model: Optional[str] = None,
-                     usage=None, cost_usd: Optional[float] = None) -> None:
+                     usage=None, cost_usd: Optional[float] = None,
+                     ledger_day: Optional[date] = None) -> None:
     """Upsert today's (user, kind, provider, model) row. Safe from any thread.
 
     Backward compatible: ``record_llm_spend(uid, "tailor")`` still works and
@@ -138,7 +162,7 @@ def record_llm_spend(user_id: str | None, kind: str, calls: int = 1, *,
     if calls <= 0:
         return
     uid = user_id or "local"
-    today = date.today()
+    today = ledger_day if ledger_day is not None else _utc_day()
     tokens = normalize_usage(usage) if usage is not None else None
     metered = 0
     if cost_usd is not None:
@@ -154,6 +178,7 @@ def record_llm_spend(user_id: str | None, kind: str, calls: int = 1, *,
             est = EST_COST_PER_CALL.get(kind, 0.0) * calls
     try:
         with get_session() as session:
+            _lock_ledger_key(session, (uid, today, kind, provider, model))
             row = session.exec(
                 select(LlmSpend).where(
                     LlmSpend.user_id == uid,
@@ -169,6 +194,7 @@ def record_llm_spend(user_id: str | None, kind: str, calls: int = 1, *,
             row.calls = (row.calls or 0) + calls
             row.est_cost_usd = (row.est_cost_usd or 0.0) + est
             row.metered_calls = (row.metered_calls or 0) + metered
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
             if tokens is not None:
                 row.input_tokens = (row.input_tokens or 0) + tokens["input"]
                 row.output_tokens = (row.output_tokens or 0) + tokens["output"]
@@ -183,7 +209,7 @@ def record_llm_spend(user_id: str | None, kind: str, calls: int = 1, *,
 # ── In-process buffer: the ONE writer's staging area ─────────────────────────
 # The Reranker is shared by 20 worker threads per user and makes one API call
 # per job; writing a ledger row per call would be a DB round-trip inside the
-# money path. Calls are coalesced here per (user, kind, provider, model) and
+# money path. Calls are coalesced here per (user, UTC day, kind, provider, model) and
 # the lanes flush once per cycle/tick — one upsert per key, not per call.
 # Best-effort by design: a crash loses at most one cycle's attribution.
 
@@ -215,7 +241,7 @@ class SpendBuffer:
             cost_usd: Optional[float] = None) -> None:
         if calls <= 0:
             return
-        key = (user_id or "local", kind, provider, model)
+        key = (user_id or "local", _utc_day(), kind, provider, model)
         overflow = False
         with self._lock:
             row = self._rows.get(key)
@@ -257,18 +283,19 @@ class SpendBuffer:
         with self._lock:
             rows, self._rows = self._rows, {}
         n = 0
-        for (uid, kind, provider, model), b in rows.items():
+        for (uid, day, kind, provider, model), b in rows.items():
             try:
                 if b["metered_calls"]:
                     record_llm_spend(uid, kind, b["metered_calls"], provider=provider,
-                                     model=model, usage=b["usage"])
+                                     model=model, usage=b["usage"], ledger_day=day)
                     n += 1
                 if b["flat_calls"]:
-                    record_llm_spend(uid, kind, b["flat_calls"], provider=provider, model=model)
+                    record_llm_spend(uid, kind, b["flat_calls"], provider=provider,
+                                     model=model, ledger_day=day)
                     n += 1
                 if b["priced_calls"]:
                     record_llm_spend(uid, kind, b["priced_calls"], provider=provider,
-                                     model=model, cost_usd=b["priced_cost"])
+                                     model=model, cost_usd=b["priced_cost"], ledger_day=day)
                     n += 1
             except Exception as e:
                 log.debug("llm spend flush failed (%s/%s/%s): %s", uid, kind, provider, e)
@@ -312,7 +339,7 @@ def spend_summary(days: int = 14) -> dict:
     — the fraction of recorded calls priced from real token counts, so the
     owner can see how much of the number is measured rather than guessed."""
     from datetime import timedelta
-    since = date.today() - timedelta(days=days - 1)
+    since = _utc_day() - timedelta(days=days - 1)
     with get_session() as session:
         rows = session.exec(select(LlmSpend).where(LlmSpend.day >= since)).all()
     by_day: dict = {}

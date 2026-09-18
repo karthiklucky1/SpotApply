@@ -628,6 +628,15 @@ def test_a_repeat_checkout_for_an_existing_subscriber_is_refused(fake_checkout):
     assert fake_checkout == [], "no second subscription may be created"
 
 
+def test_sandbox_customer_can_purchase_live_without_reusing_test_ids(fake_checkout, monkeypatch):
+    _seed_sub(plan=PlanTier.PRO, stripe_customer_id="cus_test",
+              stripe_subscription_id="sub_test", stripe_livemode=False)
+    _keys(monkeypatch, "sk_live_fake")
+    billing.create_checkout_session(_UID, "a@b.test", "https://app.test")
+    assert fake_checkout[0]["customer_email"] == "a@b.test"
+    assert "customer" not in fake_checkout[0]
+
+
 def test_a_lapsed_subscriber_can_check_out_again(fake_checkout):
     """FREE with an old subscription id is someone whose plan ended. They are
     allowed to buy again — the guard is about DOUBLE billing, not about
@@ -818,9 +827,10 @@ def test_a_sandbox_subscription_is_never_a_paid_entitlement(monkeypatch):
     assert billing.is_paid_entitlement(row) is False
 
 
-def test_the_same_row_under_live_keys_is_paid(monkeypatch):
+def test_a_verified_live_subscription_is_paid(monkeypatch):
     _keys(monkeypatch, "sk_live_x")
     row = _row(stripe_customer_id="cus_1", stripe_subscription_id="sub_1",
+               stripe_livemode=True,
                current_period_end=datetime.utcnow() + timedelta(days=17))
     assert billing.is_paid_entitlement(row) is True
 
@@ -1109,6 +1119,7 @@ def test_reconcile_renews_a_long_expired_row_stripe_says_is_active(fake_stripe):
 
 def test_reconcile_leaves_healthy_rows_alone(fake_stripe):
     _seed_sub(plan=PlanTier.PRO, stripe_subscription_id="sub_ok",
+              stripe_livemode=False,
               current_period_end=datetime.utcnow() + timedelta(days=20))
     billing.reconcile_subscriptions()
     assert "sub_ok" not in fake_stripe["retrieved"], "a healthy row costs no Stripe call"
@@ -1196,6 +1207,7 @@ def test_a_sandbox_subscription_is_zero_mrr_and_counted_as_sandbox(metrics, monk
     before = metrics()
     _profile("founder")
     _subscription("founder", stripe_customer_id="cus_sb", stripe_subscription_id="sub_sb",
+                  stripe_livemode=False,
                   current_period_end=datetime.utcnow() + timedelta(days=17))
     after = metrics()
     assert after["mrr_usd"] == before["mrr_usd"], "a sandbox subscription is not revenue"
@@ -1205,11 +1217,12 @@ def test_a_sandbox_subscription_is_zero_mrr_and_counted_as_sandbox(metrics, monk
     assert after["stripe_mode"] == "test"
 
 
-def test_the_same_subscription_under_live_keys_is_revenue(metrics, monkeypatch):
+def test_a_verified_live_subscription_is_revenue(metrics, monkeypatch):
     _keys(monkeypatch, "sk_live_x")
     before = metrics()
     _profile("payer")
     _subscription("payer", stripe_customer_id="cus_1", stripe_subscription_id="sub_1",
+                  stripe_livemode=True,
                   current_period_end=datetime.utcnow() + timedelta(days=17))
     after = metrics()
     assert after["mrr_usd"] == before["mrr_usd"] + 100
