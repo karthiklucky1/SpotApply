@@ -17,6 +17,7 @@ from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     EVIDENCE_TEAM_OR_DEPARTMENT,
     EVIDENCE_TITLE_ONLY,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -73,7 +74,17 @@ class PinpointScraper:
             if not ext_id:
                 continue
             location = _text(attrs.get("location_name")) or _text(attrs.get("location"))
-            remote = "remote" in location.lower() or bool(attrs.get("remote"))
+            # `workplace_type` (remote / hybrid / on_site) was never read.
+            wpt = str(attrs.get("workplace_type") or "").strip().lower()
+            work_mode = ("remote" if wpt == "remote" else "hybrid" if wpt == "hybrid"
+                         else "onsite" if wpt in ("on_site", "onsite", "on-site", "office") else "")
+            if not work_mode and attrs.get("remote"):
+                work_mode = "remote"
+            remote = "remote" in location.lower() or work_mode == "remote"
+            geo = GeoEvidence(
+                sites=[location] if location else [], sites_field="attributes.location_name",
+                work_mode=work_mode, work_mode_field=("attributes.workplace_type" if wpt else "attributes.remote") if work_mode else "",
+            ) if (location or work_mode) else None
             posted_dt = None
             published = attrs.get("published_at") or attrs.get("created_at")
             if published:
@@ -111,6 +122,7 @@ class PinpointScraper:
                     posted_at=posted_dt,
                     origin="pinpoint",
                     context=ctx,
+                    geo=geo,
                 )
             )
         log.info("Pinpoint[%s]: %d jobs", self.board_slug, len(jobs))

@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
 
@@ -211,6 +211,18 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
             session.add(job)
         log.info("Slate: refused '%s' — posting is %s before delivery", job.title, _state)
         return _record(session, job, score, user_id, Placement(False, "dead"))
+
+    # ── A hard eligibility failure never reaches a board ────────────────────
+    # The verdict was decided once (app/common/eligibility.py) and stamped on
+    # the row; this is the last door, and a fit score — however high — does
+    # not override it. "unknown" is held while verification is pending
+    # (settings.geo_hold_unresolved). Both leave a placement event that says so.
+    _elig = (getattr(job, "eligibility", None) or "")
+    if _elig == "ineligible":
+        log.info("Slate: refused '%s' — %s", job.title, job.eligibility_reason or "ineligible location")
+        return _record(session, job, score, user_id, Placement(False, "ineligible"))
+    if _elig == "unknown" and settings.geo_hold_unresolved:
+        return _record(session, job, score, user_id, Placement(False, "unverified_location"))
 
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)

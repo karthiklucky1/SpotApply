@@ -492,18 +492,25 @@ def _fast_path_user(uid: str, score_budget: int,
         # (Mechanical Engineer, Contact Center Analyst); scoring newest-first
         # could spend the whole LLM budget on those while a genuinely-fresh
         # AI/ML match waits for the slower matching lane.
+        q = select(Job.id, Job.title).where(
+            Job.user_id == uid_arg,
+            Job.rerank_score == None,  # noqa: E711
+            Job.is_closed == False,  # noqa: E712
+            Job.first_seen >= cutoff,
+            # Fast-path LLM spend is reserved for genuinely fresh postings.
+            # Jobs first-seen now but POSTED long ago (e.g. the scheduler
+            # bootstrap adopting weeks of backlog) wait for the regular
+            # matching lane — they can't produce a valid fresh alert anyway.
+            (Job.posted_at == None) | (Job.posted_at >= posted_cut),  # noqa: E711
+        )
+        # A fresh copy whose location is still unverified waits for the
+        # scoring lane's verification sweep (app/discovery/geo_verify.py); the
+        # fast path never pays Tier-1 on a posting that may be ineligible.
+        if getattr(settings, "geo_hold_unresolved", True):
+            from sqlalchemy import or_ as _or
+            q = q.where(_or(Job.eligibility.is_(None), Job.eligibility != "unknown"))
         rows = session.exec(
-            select(Job.id, Job.title).where(
-                Job.user_id == uid_arg,
-                Job.rerank_score == None,  # noqa: E711
-                Job.is_closed == False,  # noqa: E712
-                Job.first_seen >= cutoff,
-                # Fast-path LLM spend is reserved for genuinely fresh postings.
-                # Jobs first-seen now but POSTED long ago (e.g. the scheduler
-                # bootstrap adopting weeks of backlog) wait for the regular
-                # matching lane — they can't produce a valid fresh alert anyway.
-                (Job.posted_at == None) | (Job.posted_at >= posted_cut),  # noqa: E711
-            ).order_by(Job.first_seen.desc()).limit(max(score_budget * 6, 60))
+            q.order_by(Job.first_seen.desc()).limit(max(score_budget * 6, 60))
         ).all()
     # THE definition of "delivered today", shared with the finals budget — the
     # fast path must stop at the same number the budget stops buying for.
@@ -552,6 +559,19 @@ def _fast_path_user(uid: str, score_budget: int,
             with get_session() as session:
                 job = session.get(Job, jid)
                 if not job or job.rerank_score is not None or job.is_closed:
+                    continue
+                # Same eligibility backstop as the scoring lane: an INELIGIBLE
+                # copy is stamped out for free, an UNKNOWN one waits.
+                _elig = getattr(job, "eligibility", None)
+                if _elig == "ineligible":
+                    from app.common.eligibility import Decision as _Decision
+                    from app.discovery.geo_verify import stamp_ineligible
+                    stamp_ineligible(job, _Decision("ineligible", "stamped",
+                                                    job.eligibility_reason or "ineligible location"))
+                    session.add(job)
+                    session.commit()
+                    continue
+                if _elig == "unknown" and getattr(settings, "geo_hold_unresolved", True):
                     continue
                 try:
                     g = score_ghost(job, session)
@@ -1075,7 +1095,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                                 preferred_country=u.get("preferred_country") or None,
                                 remote_ok=bool(u.get("remote_ok", True)),
                                 user_keywords=u["roles"] or None,
-                                role_gate_terms=u["roles"] or None)
+                                role_gate_terms=u["roles"] or None,
+                                geo_prefs=u.get("geo_prefs"))
                     if n:
                         users_touched.add(u["user_id"])
                         new_here += n

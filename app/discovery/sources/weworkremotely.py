@@ -15,7 +15,7 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,12 @@ class WeWorkRemotelySource:
                                 link_el = item.find("link")
                                 desc_el = item.find("description")
                                 pub_el = item.find("pubDate")
+                                # WWR's `<region>` is the posting's own remote
+                                # restriction ("USA Only", "Anywhere in the
+                                # World", "Europe Only"). It was never read, so
+                                # every WWR posting was a borderless "Remote".
+                                region_el = item.find("region")
+                                region = (region_el.text or "").strip() if region_el is not None else ""
 
                                 title = (title_el.text or "").strip() if title_el is not None else ""
                                 link = (link_el.text or "").strip() if link_el is not None else ""
@@ -107,11 +113,19 @@ class WeWorkRemotelySource:
                                     external_id=ext_id,
                                     company=company,
                                     title=title,
-                                    location="Remote",
+                                    location=f"Remote ({region})" if region else "Remote",
                                     remote=True,
                                     url=link,
                                     description=description,
                                     posted_at=posted_at,
+                                    origin="weworkremotely",
+                                    geo=GeoEvidence(
+                                        sites=[region] if region else [],
+                                        sites_field="region" if region else "",
+                                        work_mode="remote", work_mode_field="board",
+                                        remote_regions=region,
+                                        remote_regions_field="region" if region else "",
+                                    ),
                                 ))
                             except Exception as e:
                                 log.debug("WeWorkRemotely: failed to parse item: %s", e)

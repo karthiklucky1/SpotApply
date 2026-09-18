@@ -367,6 +367,27 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   description regex, and copies keep it). `location_allowed` splits multi-site
   strings and keeps a posting if ANY site is the user's country; the scorer's
   job block prints "Location: not stated in the posting" instead of a blank.
+- **Location eligibility is ONE decision, decided from evidence, once per
+  posting** (2026-09-18, `docs/GEO_ELIGIBILITY.md`; NEW postings only):
+  adapters fill `RawJob.geo` (every site untruncated, structured country,
+  workplace type, the source's remote-restriction field — a title suffix, a
+  department, an HQ or a currency is never location evidence). The shared
+  `_upsert` records `JobGeography` keyed `(source, external_id)` for keys it
+  has never seen (`geo_verify.derive`: structured fields + description
+  restriction scan); every per-user door then calls
+  `eligibility.decide(geography, geo_prefs)` → `Job.eligibility` =
+  eligible / ineligible (dropped, or stamped 10.0 "Location filtered:") /
+  unknown (HELD: excluded from `_user_queue`, retrieval and the pulse fast
+  path; refused by `slate.place`). "Remote"/"Homeoffice" establish no
+  country; a remote role anchored abroad is ineligible; on-site/hybrid
+  outside the home area is ineligible when `open_to_relocation` is off. The
+  scoring cycle's bounded pre-step `geo_verify.verify_pending` resolves held
+  postings: official ATS detail / page JSON-LD first, then ONE extraction
+  call on the cheapest configured model only when location text exists the
+  rules could not read — the quote must be verbatim in the excerpts or the
+  answer is discarded; no text = no call. Unresolved rows are cached with
+  backoff (`GEO_VERIFY_*`). A copy of a pre-rollout posting gets no row and
+  keeps the string gate (`geo.location_allowed`). Guard: `test_geo_eligibility`.
 - **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
   that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —

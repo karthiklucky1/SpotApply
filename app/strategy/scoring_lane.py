@@ -289,6 +289,13 @@ def _user_queue(user_id: Optional[str], cap: int,
             # normal slice. Re-picking it here would just re-pay/re-write the
             # same number every 90s.
             q = q.where(Job.prescore == None)  # noqa: E711
+        # A copy whose location is still unverified is held, not scored: it
+        # would take a slot from a job we can actually deliver, and it is what
+        # the pre-cycle verification sweep exists to resolve. NULL = a row from
+        # before the verdict existed, which keeps its old path.
+        if getattr(settings, "geo_hold_unresolved", True):
+            from sqlalchemy import or_ as _or
+            q = q.where(_or(Job.eligibility.is_(None), Job.eligibility != "unknown"))
         # Exclude deferred ids in-SQL for the common (small) set; fall back to
         # post-filtering only if the deferred set is pathologically large.
         if deferred and len(deferred) <= 2000:
@@ -468,6 +475,21 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     with get_session() as session:
         job = session.get(Job, jid)
         if not job or job.rerank_score is not None or job.is_closed:
+            return None
+        # The location verdict, decided once at intake (app/common/eligibility.py)
+        # and possibly updated by verification since. INELIGIBLE never reaches
+        # Tier-1 — stamped out here for free; UNKNOWN waits for verification.
+        # Both are backstops: the queue already excludes them.
+        _elig = getattr(job, "eligibility", None)
+        if _elig == "ineligible":
+            from app.common.eligibility import Decision as _Decision
+            from app.discovery.geo_verify import stamp_ineligible
+            stamp_ineligible(job, _Decision("ineligible", "stamped",
+                                            job.eligibility_reason or "ineligible location"))
+            session.add(job)
+            session.commit()
+            return ("drained", jid, None, None)
+        if _elig == "unknown" and getattr(settings, "geo_hold_unresolved", True):
             return None
         try:
             g = score_ghost(job, session)
@@ -1192,6 +1214,26 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         stats["expiry_owners_failed"] = _exp["owners_failed"]
     if _exp.get("owners_swept"):
         stats["expiry_owners_swept"] = _exp["owners_swept"]
+
+    # Location verification for NEW postings still held as UNKNOWN: the
+    # posting's own page, then (only when text exists the rules could not read)
+    # one small extraction call — once per posting, shared by every copy. Bounded
+    # like the expiry sweep: a count cap, a wall-clock cap and the cycle deadline
+    # (app/discovery/geo_verify.py). Whatever it resolves re-enters the queue
+    # built right below; whatever it cannot waits with backoff. Never fatal.
+    try:
+        from app.discovery.geo_verify import verify_pending as _verify_geo
+        _geo = _verify_geo(deadline=deadline)
+        if _geo.get("pending_examined"):
+            stats["geo_pending_examined"] = _geo["pending_examined"]
+            stats["geo_resolved"] = _geo["resolved"]
+            stats["geo_still_unknown"] = _geo["still_unknown"]
+            stats["geo_copies_updated"] = _geo["copies_updated"]
+        if _geo.get("geo_verify"):
+            stats["geo_verify"] = _geo["geo_verify"]
+            log.info("Geo verification: %s", _geo["geo_verify"])
+    except Exception as e:
+        log.warning("geo verification sweep failed (non-fatal): %s", e)
 
     # Fast-exit guards: when every provider is cooling down (credit/quota) or
     # the daily spend cap is hit, a cycle would only burn CPU and log noise —

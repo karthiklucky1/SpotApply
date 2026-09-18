@@ -71,7 +71,13 @@ def test_teamtailor(monkeypatch):
     _patch(monkeypatch, m, FakeResp(content=rss))
     jobs = m.TeamtailorScraper("acme").fetch()
     assert len(jobs) == 1
-    assert jobs[0].title == "Frontend Developer" and jobs[0].location == "Stockholm"
+    # The title suffix is NOT a location. It was split off and stored as a
+    # city for months, and on boards where the suffix is a department ("POS
+    # Integrations") that filed the posting under a city that does not exist.
+    # The title stays whole; the geography pass resolves the place from the
+    # posting's page (docs/GEO_ELIGIBILITY.md).
+    assert jobs[0].title == "Frontend Developer - Stockholm" and jobs[0].location == ""
+    assert jobs[0].geo is None
     assert jobs[0].source == "teamtailor" and jobs[0].posted_at is not None
 
 

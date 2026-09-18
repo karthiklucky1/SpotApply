@@ -63,12 +63,15 @@ def _active_users() -> list[dict]:
         # user_id + roles, so the one door that delivers ~70% of shortlists was
         # also the only door with no location filter at all (2026-09-12 audit).
         # These columns are already on the profile row — no extra query.
-        from app.common.tenant_prefs import effective_country, effective_remote_ok
+        from app.common.tenant_prefs import effective_country, effective_remote_ok, geo_prefs
         out.append({
             "user_id": uid,
             "roles": roles,
             "preferred_country": effective_country(p, uid),
             "remote_ok": effective_remote_ok(p),
+            # The full saved location preferences (relocation, home area) the
+            # eligibility decision reads — app/common/eligibility.py.
+            "geo_prefs": geo_prefs(p, uid),
         })
     return out
 

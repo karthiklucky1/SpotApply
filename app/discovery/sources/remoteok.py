@@ -14,7 +14,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -102,13 +102,26 @@ class RemoteOKSource:
                         elif sal_min:
                             description = f"Salary: ${sal_min:,}+/yr\n\n{description}"
 
+                        # RemoteOK's `location` is the posting's remote
+                        # restriction ("Worldwide", "United States", "Europe").
+                        # It was discarded and every posting stored as a
+                        # borderless "Remote".
+                        restriction = (item.get("location") or "").strip()
                         jobs.append(RawJob(
                             source="remotive",  # reuse remotive bucket (both are remote-only boards)
                             external_id=f"rok_{job_id}",
                             company=company,
                             title=position,
-                            location="Remote",
+                            location=(f"Remote ({restriction})" if restriction
+                                      and "remote" not in restriction.lower() else (restriction or "Remote")),
                             remote=True,
+                            geo=GeoEvidence(
+                                sites=[restriction] if restriction else [],
+                                sites_field="location" if restriction else "",
+                                work_mode="remote", work_mode_field="board",
+                                remote_regions=restriction,
+                                remote_regions_field="location" if restriction else "",
+                            ),
                             url=apply_url or f"https://remoteok.com/remote-jobs/{job_id}",
                             description=description,
                             posted_at=posted_at,

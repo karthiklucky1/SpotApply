@@ -46,13 +46,22 @@ class LeverScraper:
             log.warning("Lever fetch failed for %s: %s", self.company_slug, e)
             return []
 
+        from app.discovery.geo_verify import lever_geo
+
         jobs: List[RawJob] = []
         for j in r.json():
             cats = j.get("categories") or {}
             location = cats.get("location") or ""
-            commitment = cats.get("commitment", "")
-            workplace = (cats.get("allLocations") or [location])[0] if cats.get("allLocations") else location
-            remote = "remote" in (workplace + " " + commitment).lower()
+            # EVERY site, the structured `country` code and `workplaceType`
+            # (remote / hybrid / on-site). The scraper used to keep only
+            # allLocations[0], so a posting listed "Berlin · Austin, TX" was a
+            # Berlin posting to the gate and dropped for a US user, and it read
+            # "remote" off the commitment field (full-time/part-time) instead
+            # of the field Lever provides for it.
+            geo = lever_geo(j)
+            sites = geo.sites or ([location] if location else [])
+            workplace = " · ".join(dict.fromkeys(s for s in sites if s))
+            remote = geo.work_mode == "remote" or "remote" in workplace.lower()
 
             # Lever timestamps are unix ms
             created_at = j.get("createdAt")
@@ -86,6 +95,7 @@ class LeverScraper:
                     posted_at=posted_dt,
                     origin="lever",
                     context=ctx,
+                    geo=geo if (geo.sites or geo.country or geo.work_mode) else None,
                 )
             )
         log.info("Lever[%s]: %d jobs", self.company_slug, len(jobs))

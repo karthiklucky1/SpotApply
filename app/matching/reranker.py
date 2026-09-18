@@ -822,8 +822,16 @@ def _location_lines(job: Job) -> str:
     mentioned location at all. Saying "not stated" makes the absence a fact
     the model has to reason about instead of one it can skip."""
     loc = (getattr(job, "location", "") or "").strip()
-    return (f"Location: {loc if loc else 'not stated in the posting'}\n"
-            f"Remote: {'yes' if getattr(job, 'remote', False) else 'no'}")
+    lines = (f"Location: {loc if loc else 'not stated in the posting'}\n"
+             f"Remote: {'yes' if getattr(job, 'remote', False) else 'no'}")
+    # What the shared geography check established for this user, when it has
+    # run (new postings): the scorer reasons from the verified fact, not from
+    # a blank line. Never a résumé detail — the verdict names the posting's
+    # place and the user's saved country only.
+    check = (getattr(job, "eligibility_reason", "") or "").strip()
+    if check:
+        lines += f"\nLocation check: {check}"
+    return lines
 
 
 def _job_context_block(job: Job, profile=None) -> str:

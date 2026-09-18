@@ -222,7 +222,10 @@ def _flush_content_updates(rows: List[dict]) -> None:
     """Write changed descriptions back — one executemany keyed by primary key.
 
     ``embedding_id`` is cleared so the row is re-embedded, exactly as the
-    per-job path did.
+    per-job path did. ``location``/``remote`` ride along: a posting whose
+    sites changed (an office added, a "Remote" made "Remote - Poland") is the
+    metadata change the eligibility gate must see, and the row it renders
+    from must say the same thing the gate decided on.
     """
     if not rows:
         return
@@ -233,6 +236,8 @@ def _flush_content_updates(rows: List[dict]) -> None:
                 .values(description=bindparam("_description"),
                         content_hash=bindparam("_content_hash"),
                         embedding_id=None,
+                        location=bindparam("_location"),
+                        remote=bindparam("_remote"),
                         last_seen=bindparam("_last_seen")))
         for start in range(0, len(rows), _DEDUPE_PREFETCH_CHUNK):
             session.execute(stmt, rows[start:start + _DEDUPE_PREFETCH_CHUNK])
@@ -279,6 +284,12 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
         # None when the owner has no roles set.
         on_role=_on_role_for(r.title, user_keywords),
     )
+    # The location-eligibility verdict `_upsert` reached for THIS user from the
+    # posting's shared geography (app/common/eligibility.py). None on the
+    # shared pool and on copies of pre-rollout postings — the legacy path.
+    _decision = getattr(r, "eligibility_decision", None)
+    if _decision:
+        job.eligibility, job.eligibility_reason = _decision[0], (_decision[1] or "")[:200]
     # Card-face facets from the text we already have in hand, so the board never
     # has to load the posting to draw a salary chip or a sponsorship badge
     # (app/strategy/job_facets.py).
@@ -473,10 +484,54 @@ def _inherit_shared_first_seen(candidates: List["RawJob"]) -> int:
     return stamped
 
 
+def _geography_for_user_door(candidates: List["RawJob"]) -> dict:
+    """{(source, external_id): Geography} for a per-user door.
+
+    Three sources, cheapest first: the geography the SHARED upsert stamped on
+    these same RawJob objects seconds ago (the pulse lane's order — no query);
+    the stored row (adoption rebuilds RawJobs from the shared pool, so it
+    always looks up); and, for a posting that reaches a user's pool straight
+    from a scraper and that the shared pool has never held, a fresh derivation
+    recorded as NEW so every other user shares it. A copy of a posting the
+    pool already held before this shipped gets nothing here — copying does not
+    make it new — and keeps the string gate it always had.
+    """
+    from app.discovery import geo_verify as _gv
+    out: dict = {}
+    if not settings.geo_verify_enabled:
+        return out
+    missing: List[RawJob] = []
+    for r in candidates:
+        if not r.external_id:
+            continue
+        key = (r.source, str(r.external_id))
+        g = getattr(r, "geography", None)
+        if g is not None:
+            out[key] = g
+        else:
+            missing.append(r)
+    if missing:
+        stored = _gv.load_geographies([(r.source, r.external_id) for r in missing])
+        out.update(stored)
+        # Never in the shared pool (no inherited sighting) and no row: a genuinely
+        # new posting arriving through a user's own discovery. Record it once.
+        fresh = [r for r in missing
+                 if (r.source, str(r.external_id)) not in stored and r.first_seen is None]
+        if fresh:
+            new_keys = {(r.source, str(r.external_id)) for r in fresh}
+            hashes = {(r.source, str(r.external_id)):
+                      hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
+                      for r in fresh}
+            out.update(_gv.capture(fresh, new_keys=new_keys, changed_keys=set(),
+                                   content_hashes=hashes))
+    return out
+
+
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             preferred_country: str | None = None, remote_ok: bool = True,
             user_keywords: List[str] | None = None,
-            role_gate_terms: List[str] | None = None) -> int:
+            role_gate_terms: List[str] | None = None,
+            geo_prefs=None) -> int:
     """Insert new jobs; skip duplicates by (source, external_id) and cross-source slug.
 
     Fast path: ONE query snapshots this user's existing dedupe keys, and raw
@@ -502,7 +557,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     inserted = 0
 
     # Cheap in-process gates first (no DB).
-    candidates: List[RawJob] = []
+    pre_gate: List[RawJob] = []
     _role_dropped = 0
     for r in raw_jobs:
         # Permissive gate: only skip obvious non-tech titles before any DB work
@@ -519,15 +574,56 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         if role_gate_terms and not matches_title(r.title or "", role_gate_terms):
             _role_dropped += 1
             continue
-        # Per-user country gate: drop jobs clearly located in another country.
-        if preferred_country and not _location_allowed(
-            r.location or "", bool(getattr(r, "remote", False)), preferred_country, remote_ok
-        ):
-            continue
-        candidates.append(r)
+        pre_gate.append(r)
     if _role_dropped:
         log.info("Role gate: dropped %d off-role posting(s) from user %s's pool",
                  _role_dropped, user_id)
+
+    # ── Per-user location gate: ONE decision, the same one every lane reads ──
+    # For a posting whose geography is known (new since the geography record
+    # shipped, or established since), the verdict comes from
+    # app/common/eligibility.py against the user's saved preferences:
+    # INELIGIBLE is dropped here, before any DB work; ELIGIBLE and UNKNOWN are
+    # admitted with the verdict stamped on the row (`_build_job`), so scoring
+    # spends nothing on the former's opposite and holds the latter for
+    # verification. A posting with no geography record — a copy of something
+    # the pool held before this shipped — keeps the string gate it always had.
+    candidates: List[RawJob] = []
+    _shared_door = user_id == SHARED_POOL_USER
+    _prefs = geo_prefs
+    if _prefs is None and preferred_country and not _shared_door:
+        from app.common.eligibility import GeoPrefs
+        from app.common.geo import norm_country
+        _prefs = GeoPrefs(country=norm_country(preferred_country), remote_ok=bool(remote_ok))
+    _geo_map: dict = {}
+    if _prefs is not None and not _shared_door and pre_gate:
+        # A per-user copy must never be younger than the posting, and "has the
+        # pool seen this?" is also what tells a NEW posting from an old one.
+        _inherit_shared_first_seen(pre_gate)
+        try:
+            _geo_map = _geography_for_user_door(pre_gate)
+        except Exception as e:      # the gate must never stop discovery
+            log.debug("geography lookup for user door failed: %s", e)
+            _geo_map = {}
+    _geo_dropped = 0
+    for r in pre_gate:
+        geo = _geo_map.get((r.source, str(r.external_id))) if _geo_map else None
+        if geo is not None and _prefs is not None:
+            from app.common.eligibility import decide as _decide
+            d = _decide(geo, _prefs)
+            if d.ineligible:
+                _geo_dropped += 1
+                continue
+            r.eligibility_decision = (d.status, d.reason)
+        elif preferred_country and not _location_allowed(
+            r.location or "", bool(getattr(r, "remote", False)), preferred_country, remote_ok
+        ):
+            # Per-user country gate: drop jobs clearly located in another country.
+            continue
+        candidates.append(r)
+    if _geo_dropped:
+        log.info("Location gate: dropped %d ineligible posting(s) from user %s's pool",
+                 _geo_dropped, user_id)
     if not candidates:
         return 0
 
@@ -590,7 +686,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         continue
                     rows.extend(session.exec(
                         select(Job.id, Job.source, Job.external_id, Job.content_hash,
-                               Job.last_seen, Job.cross_source_slug, Job.first_seen)
+                               Job.last_seen, Job.cross_source_slug, Job.first_seen,
+                               Job.location)
                         .where(Job.user_id == user_id, col.in_(chunk))
                     ).all())
         # Stamp the SHARED sighting onto the RawJob itself. The lanes hand these
@@ -599,9 +696,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         # _inherit_shared_first_seen for the door that arrives without it.
         _stamp = {(r.source, r.external_id): r for r in candidates} \
             if user_id == SHARED_POOL_USER else {}
-        for jid, src, ext, chash, lseen, slug, fseen in rows:
+        for jid, src, ext, chash, lseen, slug, fseen, ploc in rows:
             src_v = src.value if hasattr(src, "value") else str(src)
-            by_key[(src_v, ext)] = (jid, chash, lseen)
+            by_key[(src_v, ext)] = (jid, chash, lseen, ploc)
             if slug and slug not in by_slug:
                 by_slug[slug] = src_v
             if fseen is not None:
@@ -616,6 +713,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     # A per-user copy must never be younger than the posting it copies.
     if user_id not in (None, SHARED_POOL_USER):
         _inherit_shared_first_seen(candidates)
+
+    # Geography bookkeeping for the SHARED door: which postings are NEW to the
+    # pool and which re-seen ones changed their location evidence. Filled in
+    # the loop below and handed to geo_verify.capture once at the end — one
+    # record per posting, re-derived only on change, nothing for the unchanged
+    # thousands the pulse lane re-sees every tick.
+    _geo_new: set = set()
+    _geo_changed: set = set()
+    _geo_hashes: dict = {}
 
     _now = datetime.utcnow()
     # Work the prefetch has already fully decided, deferred into bulk statements
@@ -666,12 +772,16 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         inserted += _flush()
         content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
         slug = _cross_source_slug(r.company, r.title, r.location)
+        _geo_hashes[(r.source, str(r.external_id))] = content_hash
 
         if prefetched:
             hit = by_key.get((r.source, r.external_id))
             if hit:
-                row_id, prev_hash, prev_seen = hit
-                if prev_hash == content_hash:
+                row_id, prev_hash, prev_seen, prev_loc = hit
+                # A changed location is a change: the sites are what the
+                # eligibility gate decides on, and the row must render them.
+                loc_changed = (r.location or "") != (prev_loc or "")
+                if prev_hash == content_hash and not loc_changed:
                     if prev_seen is not None and \
                             (_now - prev_seen).total_seconds() <= _LAST_SEEN_REFRESH_SECONDS:
                         continue  # unchanged, recently-seen duplicate — no DB work
@@ -682,14 +792,17 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         # window) the case that describes almost every posting
                         # on almost every changed board.
                         touch_ids.append(row_id)
-                        by_key[(r.source, r.external_id)] = (row_id, prev_hash, _now)
+                        by_key[(r.source, r.external_id)] = (row_id, prev_hash, _now, prev_loc)
                         continue
                 elif row_id is not None:
                     content_updates.append({
                         "_id": row_id, "_description": r.description,
                         "_content_hash": content_hash, "_last_seen": _now,
+                        "_location": r.location or "", "_remote": bool(r.remote),
                     })
-                    by_key[(r.source, r.external_id)] = (row_id, content_hash, _now)
+                    by_key[(r.source, r.external_id)] = (row_id, content_hash, _now, r.location)
+                    if _shared_door:
+                        _geo_changed.add((r.source, str(r.external_id)))
                     continue
                 else:
                     queued = pending_by_key.get((r.source, r.external_id))
@@ -699,7 +812,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         # committed on its own.
                         queued.description = r.description
                         queued.content_hash = content_hash
-                        by_key[(r.source, r.external_id)] = (None, content_hash, _now)
+                        queued.location = r.location
+                        queued.remote = bool(r.remote)
+                        by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location)
                         continue
                 # No primary key in the snapshot and nothing queued (should not
                 # happen) — fall through and let the per-job path resolve it.
@@ -725,12 +840,14 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         # Brand-new posting: its first sighting is this row's,
                         # and the per-user routes that follow copy it.
                         r.first_seen = job.first_seen
+                    if _shared_door:
+                        _geo_new.add((r.source, str(r.external_id)))
                     # Keep the snapshot current so a later item in THIS batch
                     # that duplicates this one skips without a round-trip. The
                     # id is not known until the insert; None is enough to mark
                     # the key as claimed, and `_now` keeps it inside the
                     # refresh window so it is skipped rather than re-touched.
-                    by_key[(r.source, r.external_id)] = (None, content_hash, _now)
+                    by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location)
                     by_slug.setdefault(slug, r.source)
                     continue
 
@@ -746,14 +863,19 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     )
                 ).first()
                 if existing:
-                    # Update description/content_hash if changed
-                    if existing.content_hash != content_hash:
+                    # Update description/content_hash (and the sites) if changed
+                    _loc_changed = (r.location or "") != (existing.location or "")
+                    if existing.content_hash != content_hash or _loc_changed:
                         existing.description = r.description
                         existing.content_hash = content_hash
                         existing.embedding_id = None  # force re-embed
+                        existing.location = r.location or ""
+                        existing.remote = bool(r.remote)
                         existing.last_seen = datetime.utcnow()
                         session.add(existing)
                         session.commit()
+                        if _shared_door:
+                            _geo_changed.add((r.source, str(r.external_id)))
                     else:
                         # Unchanged duplicate: only refresh last_seen when it's
                         # meaningfully stale (>6h). Touching+committing every dup
@@ -854,16 +976,35 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                 job.id = new_id
                 FunnelTracker.record(new_id, "discovered", True)
                 inserted += 1
+                if _shared_door:
+                    _geo_new.add((r.source, str(r.external_id)))
                 if prefetched:
                     # Keep the snapshot current so later items in THIS batch that
                     # duplicate a just-inserted job skip without a round-trip.
-                    by_key[(r.source, r.external_id)] = (new_id, content_hash, job.last_seen)
+                    by_key[(r.source, r.external_id)] = (new_id, content_hash, job.last_seen, r.location)
                     by_slug.setdefault(slug, r.source)
         except IntegrityError:
             log.debug("IntegrityError (concurrent duplicate) skipped for '%s' @ '%s'", r.title, r.company)
 
     # Drain whatever is left: at most a handful of statements per board.
     inserted += _flush(force=True)
+
+    # ── Geography, established once per NEW posting ─────────────────────────
+    # After the writes so the record and the rows agree; only for postings the
+    # pool had never seen (or whose location evidence just changed). The
+    # geography is stamped back onto the RawJob objects, and the per-user
+    # routes that run next on the same objects decide from it with no lookup.
+    if _shared_door and settings.geo_verify_enabled and (_geo_new or _geo_changed):
+        try:
+            from app.discovery import geo_verify as _gv
+            _geo = _gv.capture(candidates, new_keys=_geo_new, changed_keys=_geo_changed,
+                               content_hashes=_geo_hashes)
+            for r in candidates:
+                g = _geo.get((r.source, str(r.external_id)))
+                if g is not None:
+                    r.geography = g
+        except Exception as e:      # never let geography stop discovery
+            log.warning("geography capture skipped: %s", e)
     return inserted
 
 
@@ -1183,6 +1324,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
     # discovery (e.g. the manual "Discover Jobs" button) only fills their pool
     # with on-role postings. None for the SHARED pool (it stays broad).
     _role_terms = None
+    _geo_prefs = None
     if user_id == SHARED_POOL_USER:
         # The shared pool serves users in every country: store everything and
         # let each user's adoption pass apply THEIR country preference.
@@ -1196,6 +1338,9 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 # (country-aware SOURCES below still fall back to a US query).
                 _country = (getattr(_p, "preferred_country", "") or "").strip() or None
                 _remote_ok = bool(getattr(_p, "remote_ok", True))
+                if _country:
+                    from app.common.tenant_prefs import geo_prefs as _gp
+                    _geo_prefs = _gp(_p, user_id)
                 _role_terms = [r.strip() for r in
                                (getattr(_p, "target_roles", "") or "").split(",") if r.strip()]
                 if not _role_terms:
@@ -1406,7 +1551,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             break
         try:
             if raw is not None:
-                new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms)
+                new = _upsert(raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms, geo_prefs=_geo_prefs)
                 total_new += new
                 _boards_fetched += len(raw)
                 _slug = (getattr(scraper, "board_slug", None) or getattr(scraper, "company_slug", None)
@@ -1457,7 +1602,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
             source_stats["HN Who-is-hiring"] = {"fetched": len(hn_raw or [])}
             _save_incremental()
             if hn_raw:
-                hn_new = _upsert(hn_raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms)
+                hn_new = _upsert(hn_raw, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms, geo_prefs=_geo_prefs)
                 total_new += hn_new
                 log.info("HN Who-is-hiring: %d postings fetched, %d new inserted", len(hn_raw), hn_new)
         except Exception as e:
@@ -1602,7 +1747,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         inserted = 0
         if all_raw_jobs:
             # JOB-FIRST: insert the postings directly into the DB.
-            inserted = _upsert(all_raw_jobs, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms)
+            inserted = _upsert(all_raw_jobs, user_id=user_id, preferred_country=_country, remote_ok=_remote_ok, user_keywords=_keywords, role_gate_terms=_role_terms, geo_prefs=_geo_prefs)
             log.info("Aggregator job-first upsert: %d new jobs from %d fetched", inserted, len(all_raw_jobs))
             # Stash the raw jobs so company-registration can run AFTER the run
             # summary is written (it's slow and must not delay the UI breakdown).

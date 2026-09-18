@@ -12,7 +12,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
@@ -68,16 +68,30 @@ class RemotiveSource:
                         except Exception:
                             pass
 
+                        # `candidate_required_location` is the board's own
+                        # statement of WHO may apply ("USA Only", "Europe",
+                        # "Worldwide") — a remote restriction, recorded as one.
+                        # Absent, the posting is a remote job with no stated
+                        # region: "Remote" alone establishes no country.
+                        required = (item.get("candidate_required_location") or "").strip()
                         jobs.append(RawJob(
                             source="remotive",
                             external_id=ext_id,
                             company=(item.get("company_name") or "Unknown").strip(),
                             title=item.get("title", "").strip(),
-                            location=(item.get("candidate_required_location") or "Remote").strip(),
+                            location=required or "Remote",
                             remote=True,
                             url=(item.get("url") or "").strip(),
                             description=(item.get("description") or "").strip(),
                             posted_at=posted_at,
+                            origin="remotive",
+                            geo=GeoEvidence(
+                                sites=[required] if required else [],
+                                sites_field="candidate_required_location" if required else "",
+                                work_mode="remote", work_mode_field="board",
+                                remote_regions=required,
+                                remote_regions_field="candidate_required_location" if required else "",
+                            ),
                         ))
                     except Exception as e:
                         log.debug("Remotive: failed to parse item %s: %s", item.get("id"), e)

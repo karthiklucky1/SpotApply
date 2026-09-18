@@ -3240,6 +3240,15 @@
                     } else {
                         statusBadge = `<span class="text-slate-500 font-medium" title="Scored at or above the bar — waiting for a place on today's board">Reviewed</span>`;
                     }
+                    // Location eligibility (app/common/eligibility.py): a held
+                    // row says WHY it is waiting, a refused one says why it was
+                    // filtered — never a bare "Queued" for a job that is not
+                    // actually in line. The sentence itself is under the title.
+                    if (!j.application && j.eligibility === 'unknown') {
+                        statusBadge = `<span class="text-amber-400/80 font-medium" title="${_esc(j.eligibility_reason || 'The posting states no location; SpotApply is checking the employer page before scoring it')}">Location pending</span>`;
+                    } else if (!j.application && j.eligibility === 'ineligible') {
+                        statusBadge = `<span class="text-slate-600 font-medium" title="${_esc(j.eligibility_reason || 'Outside your saved location preferences')}">Location filtered</span>`;
+                    }
                     if (j.application) {
                         const status = j.application.status;
                         if (status === 'shortlisted' || status === 'tailored') statusBadge = `<span class="bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
@@ -3271,7 +3280,8 @@
                         actionBtn = `<button onclick="manualShortlist('${encodeURIComponent(j.url)}', this)" class="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 px-4 rounded-full shadow shadow-indigo-600/25 transition">Shortlist</button>`;
                     }
 
-                    const subDetails = j.reason ? `<p class="text-[10px] text-slate-500 mt-1 line-clamp-1 italic">"${_esc(j.reason)}"</p>` : '';
+                    const _note = j.reason || ((j.eligibility === 'unknown' || j.eligibility === 'ineligible') ? j.eligibility_reason : '');
+                    const subDetails = _note ? `<p class="text-[10px] text-slate-500 mt-1 line-clamp-1 italic">"${_esc(_note)}"</p>` : '';
 
                     const srcBadge = sourceTrackBadge(j.source || 'manual');
                     html += `

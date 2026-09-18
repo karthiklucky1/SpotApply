@@ -610,6 +610,22 @@ def run_matching(user_id: str | None = None) -> List[int]:
             if job.rerank_score is not None:
                 continue
 
+            # 0. Location eligibility — the ONE verdict every lane reads
+            # (app/common/eligibility.py). INELIGIBLE leaves the queue here
+            # with no call; UNKNOWN is held for verification.
+            _elig = getattr(job, "eligibility", None)
+            if _elig == "ineligible":
+                from app.common.eligibility import Decision as _Decision
+                from app.discovery.geo_verify import stamp_ineligible
+                job.similarity_score = sim
+                stamp_ineligible(job, _Decision("ineligible", "stamped",
+                                                job.eligibility_reason or "ineligible location"))
+                session.add(job)
+                session.commit()
+                continue
+            if _elig == "unknown" and getattr(settings, "geo_hold_unresolved", True):
+                continue
+
             # 1. Rule Filter
             rule_res = rule_filter.filter(job)
             if not rule_res.passed:

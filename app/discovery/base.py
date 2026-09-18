@@ -34,6 +34,32 @@ class ContextField:
 
 
 @dataclass
+class GeoEvidence:
+    """What the SOURCE said about where a posting is — verbatim, untruncated.
+
+    `RawJob.location` is the string a card shows, and it is allowed to be
+    shortened for display (Ashby caps a 28-site posting at "+N more"). This is
+    the record the eligibility gate reads instead, so a US site hidden behind
+    the display cap still counts, and a structured country code the ATS
+    emitted is not lost to a free-text guess. Every field names the upstream
+    key it was read from so a verdict can be traced to the response.
+
+    Nothing here is inferred: an adapter fills a field only from a value the
+    response actually carried. A department, a board's home country, a
+    currency or a title suffix are never evidence of location (Teamtailor
+    stored "POS Integrations" as a city for months).
+    """
+    sites: List[str] = field(default_factory=list)      # every site, in source order
+    sites_field: str = ""                                # e.g. "categories.allLocations"
+    country: str = ""                                    # structured country, verbatim ("US", "Sweden")
+    country_field: str = ""                              # e.g. "address.postalAddress.addressCountry"
+    work_mode: str = ""                                  # remote | hybrid | onsite | "" (unknown)
+    work_mode_field: str = ""                            # e.g. "workplaceType"
+    remote_regions: str = ""                             # the source's own remote restriction text
+    remote_regions_field: str = ""                       # e.g. "candidate_required_location"
+
+
+@dataclass
 class RawJob:
     """Normalized job representation before DB insertion."""
     source: str
@@ -45,6 +71,10 @@ class RawJob:
     url: str
     description: str
     posted_at: Optional[datetime] = None
+    # Structured location evidence from the response (see GeoEvidence). None
+    # for sources that expose nothing structured; the geography pass then
+    # reads `location` alone, exactly as the gate always has.
+    geo: Optional[GeoEvidence] = None
     # When THIS posting first entered SpotApply anywhere — not when this copy of
     # the row was written. Scrapers leave it None (they ARE the first sighting);
     # only the copiers set it: adoption and the pulse lane's per-user route move

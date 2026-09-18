@@ -3293,6 +3293,9 @@ _JOB_LIST_COLS = (
     # its own columns (CLAUDE.md); these three are what let the UI tell them
     # apart without re-deriving the rule in JavaScript.
     Job.scored_at, Job.prescored_at, Job.expired_at,
+    # The location verdict for THIS user (app/common/eligibility.py) and the
+    # sentence behind it — what the explorer shows for a held or refused row.
+    Job.eligibility, Job.eligibility_reason,
     Application.id.label("app_id"),
     Application.status.label("app_status"),
     Application.apply_track.label("app_track"),
@@ -3665,6 +3668,7 @@ def api_jobs(
              jsimilarity, jrerank, jhire_prob, jblended, jreason,
              jis_closed, jclosed_reason,
              jscored_at, jprescored_at, jexpired_at,
+             jeligibility, jeligibility_reason,
              app_id, app_status, app_track, app_created, app_updated,
              app_tailored_at) = row
             _posted = jposted_at or jfirst_seen
@@ -3699,6 +3703,10 @@ def api_jobs(
                 "reason": jreason,
                 "is_closed": jis_closed,
                 "closed_reason": jclosed_reason,
+                # "eligible" | "ineligible" | "unknown" (held: location not yet
+                # verified) | null (decided before the verdict existed).
+                "eligibility": jeligibility,
+                "eligibility_reason": jeligibility_reason,
                 "application": {
                     "id": app_id,
                     "status": app_status.value if hasattr(app_status, "value") else app_status,

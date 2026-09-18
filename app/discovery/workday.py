@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 
 from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -197,6 +198,23 @@ class WorkdayScraper:
                     req_id = info.get("jobReqId") or (p.get("bulletFields") or [None])[0] or ext_path.split("_")[-1]
                     location = info.get("location") or p.get("locationsText") or ""  # coerce null → ""
                     remote = "remote" in location.lower()
+                    # Both fields, not one-or-the-other: `locationsText` names
+                    # EVERY site of a multi-site req ("2 Locations" boards list
+                    # them here), and the detail's `location` is the primary.
+                    # `remoteType`, when a tenant emits it, is the work mode.
+                    sites = []
+                    for v in (info.get("location"), p.get("locationsText"),
+                              info.get("additionalLocations")):
+                        for part in (v if isinstance(v, list) else [v]):
+                            if isinstance(part, str) and part.strip() and part.strip() not in sites:
+                                sites.append(part.strip())
+                    rt = str(info.get("remoteType") or p.get("remoteType") or "").strip().lower()
+                    work_mode = ("remote" if "remote" in rt and "hybrid" not in rt else "hybrid" if "hybrid" in rt
+                                 else "onsite" if ("site" in rt or "office" in rt) else "")
+                    geo = GeoEvidence(
+                        sites=sites, sites_field="jobPostingInfo.location+locationsText",
+                        work_mode=work_mode, work_mode_field="remoteType" if work_mode else "",
+                    ) if (sites or work_mode) else None
                     
                     posted = info.get("startDate")
                     posted_dt = None
@@ -238,6 +256,7 @@ class WorkdayScraper:
                             posted_at=posted_dt,
                             origin="workday",
                             context=ctx,
+                            geo=geo,
                         )
                     )
                     

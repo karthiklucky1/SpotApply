@@ -48,6 +48,49 @@ def effective_remote_ok(profile) -> bool:
     return bool(getattr(profile, "remote_ok", True))
 
 
+def geo_prefs(profile, user_id: str | None = None):
+    """The saved location preferences the eligibility decision reads
+    (app/common/eligibility.py) — country through the SAME resolution the
+    scoring prompt uses, plus remote/relocation/home area. One helper so every
+    door builds the identical object."""
+    from app.common.eligibility import GeoPrefs
+    from app.common.geo import norm_country
+    return GeoPrefs(
+        country=norm_country(effective_country(profile, user_id)),
+        remote_ok=effective_remote_ok(profile),
+        open_to_relocation=bool(getattr(profile, "open_to_relocation", False)),
+        home_location=(getattr(profile, "location", "") or "").strip(),
+    )
+
+
+def geo_prefs_for_user(user_id: str | None):
+    """Load the profile columns the decision needs for ONE user — projected,
+    no profile is created as a side effect. None/"local" is the local user."""
+    from sqlmodel import select
+    from app.db.init_db import get_session
+    from app.db.models import UserProfile
+
+    uid = user_id or "local"
+    row = None
+    try:
+        with get_session() as session:
+            row = session.exec(
+                select(UserProfile.preferred_country, UserProfile.remote_ok,
+                       UserProfile.open_to_relocation, UserProfile.location)
+                .where(UserProfile.user_id == uid)
+            ).first()
+    except Exception as e:
+        log.debug("geo prefs unavailable for %s: %s", uid, e)
+
+    class _P:
+        pass
+
+    p = _P()
+    if row is not None:
+        p.preferred_country, p.remote_ok, p.open_to_relocation, p.location = row
+    return geo_prefs(p if row is not None else None, uid)
+
+
 def reset_state() -> None:
     """Forget which users we have logged the country fallback for. Tests only."""
     _warned.clear()

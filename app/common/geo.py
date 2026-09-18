@@ -377,6 +377,65 @@ _REGION_RES = {
 _REGION_ORDER = ("eu", "emea", "apac", "latam", "europe")
 
 
+# ISO-3166 alpha-2 codes → the canonical names above. Structured ATS fields
+# (Lever `country`, Ashby `addressCountry`, SmartRecruiters `location.country`,
+# Workable `country`) frequently carry the CODE rather than the name, and a
+# code is not a token detect_country() can see — "SE" is not "sweden" to the
+# name tier. Only countries the tables above know are listed; a code we cannot
+# map resolves to "" (unknown), never to a guess.
+ISO2_COUNTRIES = {
+    "us": "united states", "gb": "united kingdom", "uk": "united kingdom",
+    "ca": "canada", "in": "india", "de": "germany", "fr": "france", "es": "spain",
+    "nl": "netherlands", "ie": "ireland", "au": "australia", "pl": "poland",
+    "pt": "portugal", "br": "brazil", "mx": "mexico", "sg": "singapore",
+    "jp": "japan", "ph": "philippines", "ua": "ukraine", "ng": "nigeria",
+    "pk": "pakistan", "ar": "argentina", "ch": "switzerland", "at": "austria",
+    "it": "italy", "se": "sweden", "no": "norway", "dk": "denmark", "fi": "finland",
+    "be": "belgium", "cz": "czechia", "ro": "romania", "hu": "hungary",
+    "gr": "greece", "tr": "turkey", "il": "israel", "ae": "united arab emirates",
+    "za": "south africa", "ke": "kenya", "eg": "egypt", "id": "indonesia",
+    "vn": "vietnam", "th": "thailand", "my": "malaysia", "kr": "south korea",
+    "cn": "china", "tw": "taiwan", "hk": "hong kong", "nz": "new zealand",
+    "cl": "chile", "co": "colombia", "pe": "peru", "cr": "costa rica",
+    "uy": "uruguay", "ee": "estonia", "lv": "latvia", "lt": "lithuania",
+    "bg": "bulgaria", "hr": "croatia", "rs": "serbia", "sk": "slovakia",
+    "si": "slovenia", "al": "albania", "ba": "bosnia and herzegovina",
+    "mk": "north macedonia", "me": "montenegro", "xk": "kosovo", "md": "moldova",
+    "by": "belarus", "ge": "georgia", "am": "armenia", "az": "azerbaijan",
+    "kz": "kazakhstan", "uz": "uzbekistan", "cy": "cyprus", "lu": "luxembourg",
+    "is": "iceland", "bd": "bangladesh", "lk": "sri lanka", "np": "nepal",
+    "sa": "saudi arabia", "qa": "qatar", "ma": "morocco", "tn": "tunisia",
+    "gh": "ghana", "ec": "ecuador", "bo": "bolivia", "py": "paraguay",
+    "ve": "venezuela", "gt": "guatemala", "do": "dominican republic",
+    "sv": "el salvador", "hn": "honduras", "kh": "cambodia", "mt": "malta",
+    "jo": "jordan", "lb": "lebanon", "pa": "panama", "pr": "united states",
+    "gu": "united states",
+}
+
+
+def known_country(name: str) -> bool:
+    """True when `name` (canonical lowercase) is a country the tables know."""
+    return name == "united states" or name in _COUNTRY_NAMES or name in _COUNTRY_CITIES
+
+
+def resolve_country_value(value) -> str:
+    """Canonical country from a STRUCTURED field value — an ISO code ("SE"), a
+    name ("Sweden"), an alias ("Deutschland") or a full string the ATS chose to
+    put there. '' when it names nothing we know; never a guess."""
+    if not isinstance(value, str):
+        return ""
+    v = value.strip()
+    if not v:
+        return ""
+    low = v.lower().rstrip(".")
+    if low in ISO2_COUNTRIES:
+        return ISO2_COUNTRIES[low]
+    n = norm_country(v)
+    if known_country(n):
+        return n
+    return detect_country(v)
+
+
 def norm_country(name: str) -> str:
     """Normalize a country name/alias to its canonical lowercase form."""
     n = (name or "").strip().lower().rstrip(".")

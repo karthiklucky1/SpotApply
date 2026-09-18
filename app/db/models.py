@@ -187,6 +187,18 @@ class Job(SQLModel, table=True):
     # Visa intelligence (persisted so we can filter/query, not just display).
     is_cap_exempt: bool = Field(default=False)
     urgency_score: float = Field(default=0.0)
+    # ── Location eligibility, THIS user's verdict on THIS posting ────────────
+    # "eligible" | "ineligible" | "unknown" | NULL. Decided once from the shared
+    # geography of the posting (JobGeography) and this user's saved location
+    # preferences (app/common/eligibility.py), written at intake and updated
+    # when the posting's geographic evidence changes or verification resolves.
+    # NULL = a row written before this existed, or a copy of a posting first
+    # seen before it existed: those keep the legacy behaviour untouched. Every
+    # scorer reads it before spending: "ineligible" never reaches Tier-1,
+    # "unknown" waits for verification (settings.geo_hold_unresolved), and the
+    # slate refuses both. `eligibility_reason` is the sentence the user sees.
+    eligibility: Optional[str] = Field(default=None)
+    eligibility_reason: Optional[str] = Field(default=None)
 
     class Config:
         arbitrary_types_allowed = True
@@ -963,6 +975,78 @@ class JobLiveness(SQLModel, table=True):
     # reported rather than silently retried forever.
     inconclusive_streak: int = Field(default=0)
     checked_url: Optional[str] = Field(default=None)
+
+
+class JobGeographyStatus(str, Enum):
+    """How far the posting's geography has been established. Only RESOLVED
+    carries a country or region the gate may act on; UNKNOWN and CONFLICT are
+    both "pending verification" and never become a country by default."""
+    RESOLVED = "resolved"      # at least one country or explicit region is known
+    UNKNOWN = "unknown"        # the source gave no usable evidence (yet)
+    CONFLICT = "conflict"      # two pieces of evidence disagree; a person decides
+
+
+class JobGeography(SQLModel, table=True):
+    """Where ONE distinct posting is, established once and shared by every
+    tenant — keyed by (source, external_id) like JobHiringContext, and for the
+    same reason: twelve users adopting a posting must not pay twelve page
+    fetches or twelve model calls to learn the same country.
+
+    What is stored is the POSTING's geography only: countries, sites, work
+    mode, any explicit remote restriction, and the evidence behind each. The
+    per-user verdict (eligible / ineligible / unknown) is NOT here — it depends
+    on the user's saved preferences and lives on their own Job row
+    (`Job.eligibility`). No résumé text, no user id, ever: this table is off
+    the account-deletion surface by construction.
+
+    `location_hash` names the evidence this row was derived from. When a later
+    sighting of the posting carries different location evidence the hash
+    differs, the row is re-derived and every user copy is re-decided. An
+    unresolved row is cached too, with `attempts` and `next_attempt_at`, so a
+    posting nobody can place is not re-fetched and re-asked on every tick.
+    """
+    __tablename__ = "job_geography"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_jgeo_source_external_id"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str = Field(index=True)
+    external_id: str = Field(index=True)
+
+    status: str = Field(default=JobGeographyStatus.UNKNOWN.value, index=True)
+    countries_json: str = Field(default="[]")      # canonical lowercase names
+    sites_json: str = Field(default="[]")          # every site string, untruncated
+    work_mode: Optional[str] = Field(default=None) # remote | hybrid | onsite | NULL
+    remote_regions_json: str = Field(default="[]") # country names / eu / europe / emea / apac / latam / worldwide
+    conflicts_json: str = Field(default="[]")      # what disagreed, when status is CONFLICT
+
+    # ── provenance ──
+    # ats_structured | ats_location | description | page_jsonld | ats_detail | llm | none
+    evidence_source: str = Field(default="none")
+    evidence_field: Optional[str] = Field(default=None)   # upstream key or URL that decided it
+    evidence_quote: Optional[str] = Field(default=None)   # verbatim text, when text decided it
+    source_url: Optional[str] = Field(default=None)
+
+    # ── invalidation + bounded retry ──
+    location_hash: str = Field(default="")
+    verifier_version: int = Field(default=1)
+    attempts: int = Field(default=0)               # paid/fetch verification attempts so far
+    next_attempt_at: Optional[datetime] = Field(default=None, index=True)
+    last_step: Optional[str] = Field(default=None) # intake | page | llm — the last thing tried
+    last_error: Optional[str] = Field(default=None)
+
+    # ── cost record for the verification that established this row ──
+    provider: Optional[str] = Field(default=None)
+    model: Optional[str] = Field(default=None)
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+    est_cost_usd: float = Field(default=0.0)
+    duration_ms: int = Field(default=0)
+    cache_hits: int = Field(default=0)             # times a door reused this row instead of re-deriving
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    verified_at: Optional[datetime] = Field(default=None)
 
 
 class Coupon(SQLModel, table=True):

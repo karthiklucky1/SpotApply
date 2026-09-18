@@ -12,7 +12,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
@@ -86,7 +86,12 @@ class JobicySource:
                                 except Exception:
                                     pass
 
-                                location = (item.get("jobGeo") or "Remote").strip()
+                                # `jobGeo` is the board's remote restriction
+                                # ("USA", "Anywhere", "Europe"): recorded as
+                                # such, not as a city. Absent, the posting is
+                                # remote with no stated region.
+                                geo_text = (item.get("jobGeo") or "").strip()
+                                location = geo_text or "Remote"
                                 remote = True  # Jobicy is a remote-jobs board
 
                                 jobs.append(RawJob(
@@ -99,6 +104,14 @@ class JobicySource:
                                     url=(item.get("url") or "").strip(),
                                     description=(item.get("jobDescription") or "").strip(),
                                     posted_at=posted_at,
+                                    origin="jobicy",
+                                    geo=GeoEvidence(
+                                        sites=[geo_text] if geo_text else [],
+                                        sites_field="jobGeo" if geo_text else "",
+                                        work_mode="remote", work_mode_field="board",
+                                        remote_regions=geo_text,
+                                        remote_regions_field="jobGeo" if geo_text else "",
+                                    ),
                                 ))
                             except Exception as e:
                                 log.debug("Jobicy: failed to parse item %s: %s", item.get("id"), e)

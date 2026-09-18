@@ -18,6 +18,7 @@ from app.discovery.base import (
     EVIDENCE_STRUCTURED_PERSON,
     EVIDENCE_TEAM_OR_DEPARTMENT,
     EVIDENCE_TITLE_ONLY,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -218,11 +219,25 @@ class SmartRecruitersScraper:
                     desc_parts.append(f"### {title_text}\n{_strip_html(text)}")
             description = "\n\n".join(desc_parts)
             
-            # Parse location
+            # Parse location. The DETAIL response carries the same `location`
+            # object and is preferred when the listing's is thin.
             loc = p.get("location") or {}
+            if not isinstance(loc, dict) or not (loc.get("fullLocation") or loc.get("city")):
+                loc = d.get("location") if isinstance(d.get("location"), dict) else (loc or {})
             # `or ""` — city can be JSON-null, and None.lower() crashed the board.
             full_loc = loc.get("fullLocation") or loc.get("city") or ""
             remote = loc.get("remote", False) or "remote" in full_loc.lower()
+            # Structured country (ISO-2, "us") and region beside the display
+            # string — the gate read only `fullLocation` before.
+            country = str(loc.get("country") or "").strip()
+            site = full_loc or ", ".join(str(loc.get(k) or "").strip() for k in ("city", "region", "country")
+                                         if str(loc.get(k) or "").strip())
+            geo = GeoEvidence(
+                sites=[site] if site else [], sites_field="location.fullLocation",
+                country=country, country_field="location.country" if country else "",
+                work_mode="remote" if loc.get("remote") is True else "",
+                work_mode_field="location.remote" if loc.get("remote") is True else "",
+            ) if (site or country or loc.get("remote") is True) else None
             
             # Parse date
             released = p.get("releasedDate")
@@ -248,6 +263,7 @@ class SmartRecruitersScraper:
                     posted_at=posted_dt,
                     origin="smartrecruiters",
                     context=_context_for(p, d),
+                    geo=geo,
                 )
             )
             

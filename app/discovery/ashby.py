@@ -34,6 +34,7 @@ from app.common.geo import detect_country
 from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     EVIDENCE_TEAM_OR_DEPARTMENT,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -104,8 +105,8 @@ def _site_text(node) -> str:
     return name
 
 
-def _location_of(j: dict) -> str:
-    """Every distinct site of the posting, ' · '-joined, primary first."""
+def _sites_of(j: dict) -> List[str]:
+    """Every distinct site of the posting, primary first, UNTRUNCATED."""
     primary = _site_text(j)
     if not primary:
         # Not an Ashby field, but harmless as a last resort should a payload
@@ -120,11 +121,47 @@ def _location_of(j: dict) -> str:
         if text and text.lower() not in seen:
             parts.append(text)
             seen.add(text.lower())
+    return parts
+
+
+def _location_of(j: dict) -> str:
+    """The DISPLAY string: ' · '-joined sites, capped with "+N more". The gate
+    does not read this — it reads `_geo_of`, which keeps every site — so a US
+    site hidden past the display cap still counts."""
+    parts = list(_sites_of(j))
     if len(parts) > 1 + _SECONDARY_LOCATION_CAP:
         hidden = len(parts) - (1 + _SECONDARY_LOCATION_CAP)
         parts = parts[: 1 + _SECONDARY_LOCATION_CAP]
         parts[-1] = f"{parts[-1]} +{hidden} more"
     return " · ".join(parts)
+
+
+def _country_of(node) -> str:
+    """The postal country of one site node, verbatim ('US', 'Poland'), or ''."""
+    if not isinstance(node, dict):
+        return ""
+    address = node.get("address")
+    if not isinstance(address, dict):
+        return ""
+    postal = address.get("postalAddress")
+    postal = postal if isinstance(postal, dict) else address
+    value = postal.get("addressCountry")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _geo_of(j: dict) -> Optional[GeoEvidence]:
+    """Structured evidence for the eligibility gate: every site (no cap), the
+    primary site's postal country, and `isRemote` as the work mode."""
+    sites = _sites_of(j)
+    country = _country_of(j)
+    remote = bool(j.get("isRemote"))
+    if not (sites or country or remote):
+        return None
+    return GeoEvidence(
+        sites=sites, sites_field="location+secondaryLocations[].location",
+        country=country, country_field="address.postalAddress.addressCountry" if country else "",
+        work_mode="remote" if remote else "", work_mode_field="isRemote" if remote else "",
+    )
 
 
 def _salary_of(j: dict) -> Optional[str]:
@@ -214,6 +251,7 @@ class AshbyScraper:
                     origin="ashby",
                     context=ctx,
                     salary_text=_salary_of(j),
+                    geo=_geo_of(j),
                 )
             )
         log.info("Ashby[%s]: %d jobs (%d unlisted skipped)",

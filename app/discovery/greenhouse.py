@@ -18,6 +18,7 @@ from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     EVIDENCE_TEAM_OR_DEPARTMENT,
     EVIDENCE_TITLE_ONLY,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -63,6 +64,41 @@ def _metadata_value(entry: dict) -> str:
 
 def _strip_html(html: str) -> str:
     return BeautifulSoup(html or "", "html.parser").get_text(separator="\n").strip()
+
+
+def _geo_of(j: dict, location: str) -> GeoEvidence | None:
+    """Every site the board states — `location.name` may itself list several
+    ("New York, NY; London") and `offices[]` names each office with its own
+    `location` — plus the tenant's "Workplace Type" metadata when exposed.
+    `offices` was never read before, so a posting with a US office beside a
+    foreign primary site was judged on the primary alone."""
+    sites: list = []
+    for part in [p.strip() for p in location.replace(";", "|").split("|")]:
+        if part and part not in sites:
+            sites.append(part)
+    for off in (j.get("offices") or []):
+        if not isinstance(off, dict):
+            continue
+        v = off.get("location") or off.get("name")
+        if isinstance(v, str) and v.strip() and v.strip() not in sites:
+            sites.append(v.strip())
+    work_mode, mode_field = "", ""
+    for entry in (j.get("metadata") or []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").lower()
+        if "workplace" not in name and "work location" not in name and "remote" not in name:
+            continue
+        v = _metadata_value(entry).lower()
+        mode = ("hybrid" if "hybrid" in v else "remote" if ("remote" in v or v in ("yes", "true"))
+                else "onsite" if ("site" in v or "office" in v) else "")
+        if mode:
+            work_mode, mode_field = mode, f"metadata[{entry.get('name')}]"
+            break
+    if not sites and not work_mode:
+        return None
+    return GeoEvidence(sites=sites, sites_field="location.name+offices[].location",
+                       work_mode=work_mode, work_mode_field=mode_field)
 
 
 class GreenhouseScraper:
@@ -146,6 +182,7 @@ class GreenhouseScraper:
                     posted_at=posted_dt,
                     origin="greenhouse",
                     context=ctx,
+                    geo=_geo_of(j, location),
                 )
             )
         log.info("Greenhouse[%s]: %d jobs", self.board_slug, len(jobs))

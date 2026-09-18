@@ -12,7 +12,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -56,9 +56,23 @@ class WorkableScraper:
             if not shortcode:
                 continue
             city = (j.get("city") or "").strip()
+            state = (j.get("state") or j.get("region") or "").strip()
             country = (j.get("country") or "").strip()
-            location = ", ".join(p for p in (city, country) if p)
-            remote = bool(j.get("telecommuting") or j.get("remote")) or "remote" in location.lower()
+            location = ", ".join(p for p in (city, state, country) if p)
+            # `workplace` (remote / hybrid / on_site) is the widget's own
+            # statement of the work mode; `telecommuting` is the older flag.
+            workplace = str(j.get("workplace") or "").strip().lower()
+            work_mode = ("remote" if workplace == "remote" else "hybrid" if workplace == "hybrid"
+                         else "onsite" if workplace in ("on_site", "onsite", "on-site") else "")
+            if not work_mode and (j.get("telecommuting") or j.get("remote")):
+                work_mode = "remote"
+            remote = work_mode == "remote" or "remote" in location.lower()
+            geo = GeoEvidence(
+                sites=[location] if location else [], sites_field="city+state+country",
+                country=country, country_field="country" if country else "",
+                work_mode=work_mode,
+                work_mode_field=("workplace" if workplace else "telecommuting") if work_mode else "",
+            ) if (location or country or work_mode) else None
             posted_dt = None
             published = j.get("published_on") or j.get("created_at")
             if published:
@@ -78,6 +92,8 @@ class WorkableScraper:
                         or f"https://apply.workable.com/{self.board_slug}/j/{shortcode}/",
                     description=_strip_html(j.get("description") or ""),
                     posted_at=posted_dt,
+                    origin="workable",
+                    geo=geo,
                 )
             )
         log.info("Workable[%s]: %d jobs", self.board_slug, len(jobs))

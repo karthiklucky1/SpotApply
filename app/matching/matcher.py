@@ -454,6 +454,12 @@ class Matcher:
                 q = (q.where(Job.rerank_score == None)  # noqa: E711
                       .order_by(Job.first_seen.desc())
                       .limit(corpus_cap))
+                # A copy still waiting on location verification is not a
+                # candidate for a paid score (app/common/eligibility.py). NULL
+                # = a row from before the verdict existed: the legacy path.
+                if getattr(settings, "geo_hold_unresolved", True):
+                    from sqlalchemy import or_ as _or
+                    q = q.where(_or(Job.eligibility.is_(None), Job.eligibility != "unknown"))
             jobs = [_Candidate(*row) for row in session.exec(q).all()]
 
         if not jobs:

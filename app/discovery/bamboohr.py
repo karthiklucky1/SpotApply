@@ -14,7 +14,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,10 @@ class BambooHRScraper:
                 loc_el = li.select_one(".BambooHR-ATS-Location")
                 location = loc_el.get_text(strip=True) if loc_el else ""
 
-                description, posted_dt, remote = "", None, "remote" in (title + location).lower()
+                # The TITLE is not location evidence: "remote" in a title
+                # ("Remote Sensing Engineer") used to make the posting remote.
+                description, posted_dt, remote = "", None, "remote" in location.lower()
+                country, is_remote = "", False
                 try:
                     d = client.get(_DETAIL.format(slug=self.board_slug, id=ext_id))
                     if d.status_code == 200:
@@ -85,15 +88,22 @@ class BambooHRScraper:
                                 pass
                         loc = detail.get("location") or {}
                         if isinstance(loc, dict):
+                            country = (loc.get("country") or "").strip()
                             better = ", ".join(p for p in (
                                 (loc.get("city") or "").strip(),
                                 (loc.get("state") or "").strip(),
-                                (loc.get("country") or "").strip(),
+                                country,
                             ) if p)
                             location = better or location
-                        remote = remote or bool(detail.get("isRemote"))
+                        is_remote = bool(detail.get("isRemote"))
+                        remote = remote or is_remote
                 except Exception:
                     pass  # widget row still usable without the detail enrichment
+                geo = GeoEvidence(
+                    sites=[location] if location else [], sites_field="location.city+state+country",
+                    country=country, country_field="location.country" if country else "",
+                    work_mode="remote" if is_remote else "", work_mode_field="isRemote" if is_remote else "",
+                ) if (location or country or is_remote) else None
 
                 if not title:
                     continue
@@ -108,6 +118,8 @@ class BambooHRScraper:
                         url=job_url,
                         description=description,
                         posted_at=posted_dt,
+                        origin="bamboohr",
+                        geo=geo,
                     )
                 )
         log.info("BambooHR[%s]: %d jobs", self.board_slug, len(jobs))

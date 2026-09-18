@@ -340,6 +340,43 @@ class Settings(BaseSettings):
     liveness_user_agent: str = (
         "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
     )
+    # ── Location eligibility for NEW postings (app/discovery/geo_verify.py) ──
+    # A posting first seen after this shipped gets its geography established
+    # ONCE (shared across users) and each user copy a verdict: eligible,
+    # ineligible, or unknown. Nothing here touches rows that predate it.
+    geo_verify_enabled: bool = True            # GEO_VERIFY_ENABLED — master switch for the shared geography record + per-user verdicts on new postings. Off = every door falls back to the string gate it had before.
+    # "unknown" (no country evidence) is HELD out of scoring and the shortlist
+    # until verification resolves it, and shown to the user with a reason.
+    # Set 0 to restore the old rule ("unknown is kept") while keeping the rest.
+    geo_hold_unresolved: bool = True           # GEO_HOLD_UNRESOLVED
+    # Step B: cross-check the posting's own public page / official ATS detail
+    # endpoint when the listing gave no usable location. One SSRF-guarded GET,
+    # bounded, only for postings whose source URL is a permalink we can trust.
+    geo_verify_fetch_enabled: bool = True      # GEO_VERIFY_FETCH_ENABLED
+    geo_verify_fetch_timeout_seconds: float = 6.0   # GEO_VERIFY_FETCH_TIMEOUT_SECONDS
+    # Step C: a small structured extraction call, ONLY when location-related
+    # text exists that the rules could not interpret. The model must quote the
+    # excerpt it relied on and the quote is checked against the supplied text;
+    # a confident answer with no quote is discarded. No text = no call.
+    geo_verify_llm_enabled: bool = True        # GEO_VERIFY_LLM_ENABLED
+    geo_verify_llm_daily_cap: int = 400        # GEO_VERIFY_LLM_DAILY_CAP — platform-wide calls/day (~$0.10/day at gpt-4o-mini's list price for ~1.2k in / 120 out tokens; measured cost is in the ledger under kind=geo_verify)
+    geo_verify_llm_max_chars: int = 1800       # GEO_VERIFY_LLM_MAX_CHARS — the excerpt budget sent per call; never the whole description, never a résumé
+    geo_verify_llm_timeout_seconds: float = 20.0   # GEO_VERIFY_LLM_TIMEOUT_SECONDS
+    # The cheapest configured model wins (priced from analytics/spend.py
+    # PRICES_PER_MTOK); these name the candidate per provider.
+    geo_verify_model_openai: str = "gpt-4o-mini"                 # GEO_VERIFY_MODEL_OPENAI
+    geo_verify_model_anthropic: str = "claude-haiku-4-5-20251001" # GEO_VERIFY_MODEL_ANTHROPIC
+    # The verification sweep runs inside the scoring cycle, BEFORE the work
+    # list is built, and is bounded three ways so it can never spend the
+    # cycle: at most this many postings, this much wall clock, and never past
+    # the cycle deadline. Unresolved postings simply wait for the next cycle.
+    geo_verify_max_per_cycle: int = 25         # GEO_VERIFY_MAX_PER_CYCLE
+    geo_verify_budget_seconds_per_cycle: float = 20.0   # GEO_VERIFY_BUDGET_SECONDS_PER_CYCLE
+    # Bounded retry for a posting that stays unresolved: attempts are spaced
+    # retry_hours × 2^attempts apart and stop at max_attempts. After that the
+    # row is a cached "we could not tell", and the copies age out normally.
+    geo_verify_max_attempts: int = 3           # GEO_VERIFY_MAX_ATTEMPTS
+    geo_verify_retry_hours: float = 4.0        # GEO_VERIFY_RETRY_HOURS
     scoring_lane_enabled: bool = True      # SCORING_LANE_ENABLED
     scoring_lane_interval_seconds: int = 90  # cadence; 0 disables
     scoring_workers: int = 20              # GLOBAL concurrent LLM scoring workers (size to your Anthropic/OpenAI rate limit, not user count)

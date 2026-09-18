@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 from app.discovery.base import (
     EVIDENCE_ORG_ENTITY,
     EVIDENCE_TEAM_OR_DEPARTMENT,
+    GeoEvidence,
     RawJob,
 )
 from app.discovery.hiring_context import put
@@ -61,10 +62,22 @@ class RecruiteeScraper:
             if (j.get("status") or "").lower() not in ("", "published", "open"):
                 continue
             location = (j.get("location") or "").strip()
+            city = (j.get("city") or "").strip()
+            country = (j.get("country") or "").strip()
+            country_code = (j.get("country_code") or "").strip()
             if not location:
-                location = ", ".join(p for p in ((j.get("city") or "").strip(),
-                                                 (j.get("country") or "").strip()) if p)
-            remote = bool(j.get("remote")) or "remote" in location.lower()
+                location = ", ".join(p for p in (city, country) if p)
+            # The offer carries three workplace booleans; read them rather than
+            # guessing from the location string.
+            work_mode = ("hybrid" if j.get("hybrid") else "remote" if j.get("remote")
+                         else "onsite" if j.get("on_site") else "")
+            remote = work_mode == "remote" or "remote" in location.lower()
+            geo = GeoEvidence(
+                sites=[location] if location else [], sites_field="location",
+                country=country_code or country,
+                country_field=("country_code" if country_code else "country") if (country_code or country) else "",
+                work_mode=work_mode, work_mode_field="remote/hybrid/on_site" if work_mode else "",
+            ) if (location or country or country_code or work_mode) else None
             posted_dt = None
             published = j.get("published_at") or j.get("created_at")
             if published:
@@ -99,6 +112,7 @@ class RecruiteeScraper:
                     posted_at=posted_dt,
                     origin="recruitee",
                     context=ctx,
+                    geo=geo,
                 )
             )
         log.info("Recruitee[%s]: %d jobs", self.board_slug, len(jobs))

@@ -227,8 +227,9 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
     # "no country gate here", while the prompt still told Claude the candidate
     # wants United States and scored everything else 0-30 — so we admitted
     # foreign postings for free and paid the LLM to reject them.
-    from app.common.tenant_prefs import effective_country, effective_remote_ok
+    from app.common.tenant_prefs import effective_country, effective_remote_ok, geo_prefs
     country, remote_ok = effective_country(None, user_id), True
+    prefs = geo_prefs(None, user_id)
     p = None
     try:
         from app.autofill.answer_pack import _get_or_create_profile
@@ -236,6 +237,7 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
         if p:
             country = effective_country(p, user_id)
             remote_ok = effective_remote_ok(p)
+            prefs = geo_prefs(p, user_id)
     except Exception as e:
         log.debug("adoption: profile unavailable (default %s): %s", country, e)
 
@@ -395,7 +397,8 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
     ) for j in candidates]
 
     inserted = _upsert(raw, user_id=user_id, preferred_country=country,
-                       remote_ok=remote_ok, user_keywords=roles or None)
+                       remote_ok=remote_ok, user_keywords=roles or None,
+                       geo_prefs=prefs)
     log.info("Adoption: %d shared candidates → %d new jobs for user %s%s",
              len(candidates), inserted, user_id or "local",
              " (cap hit — more may be waiting)" if hit_cap else "")

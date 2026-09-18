@@ -64,6 +64,11 @@ EST_COST_PER_CALL = {
     "score_prewarm": 0.006,
     "score_local": 0.0,       # local fallback — free
     "tailor": 0.05,           # résumé + cover letter generation pass
+    # One shared location-extraction call per unresolved NEW posting
+    # (app/discovery/geo_verify.py): ~1.2k excerpt tokens in, ~120 out on
+    # gpt-4o-mini list price. Real calls carry usage and are metered; this
+    # prices only a response without one.
+    "geo_verify": 0.0003,
 }
 
 # USD per MILLION tokens, keyed by model-id PREFIX. The longest matching prefix

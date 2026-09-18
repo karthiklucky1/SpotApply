@@ -20,7 +20,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
@@ -100,8 +100,14 @@ class TheMuseSource:
 
                             company = ((item.get("company") or {}).get("name") or "Unknown").strip()
                             locs = item.get("locations") or []
-                            location = ", ".join(loc.get("name", "") for loc in locs) or "Remote"
+                            # Every named location is a site of its own; the
+                            # display joins them with the site separator the
+                            # gate splits on (a comma is part of ONE address).
+                            sites = [str(loc.get("name") or "").strip() for loc in locs
+                                     if isinstance(loc, dict) and str(loc.get("name") or "").strip()]
+                            location = " · ".join(sites)
                             remote = "remote" in location.lower()
+                            geo = GeoEvidence(sites=sites, sites_field="locations[].name") if sites else None
                             url = ((item.get("refs") or {}).get("landing_page") or "").strip()
 
                             jobs.append(RawJob(
@@ -114,6 +120,8 @@ class TheMuseSource:
                                 url=url,
                                 description=(item.get("contents") or "").strip(),
                                 posted_at=_parse_dt(item.get("publication_date")),
+                                origin="themuse",
+                                geo=geo,
                             ))
                         except Exception as e:
                             log.debug("TheMuse: parse failed for %s: %s", item.get("id"), e)

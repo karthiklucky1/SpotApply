@@ -13,7 +13,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -66,15 +66,26 @@ class BreezyScraper:
             if not ext_id:
                 continue
             loc = j.get("location") or {}
+            country = ""
             if isinstance(loc, dict):
+                country = _text(loc.get("country"))
                 location = ", ".join(p for p in (
                     _text(loc.get("city")),
                     _text(loc.get("state")),
-                    _text(loc.get("country")),
-                ) if p)
+                    country,
+                ) if p) or _text(loc.get("name"))
+                is_remote = bool(loc.get("is_remote"))
             else:
                 location = str(loc)
-            remote = bool(loc.get("is_remote")) if isinstance(loc, dict) else "remote" in location.lower()
+                is_remote = False
+            # The flag AND the word: a dict location with is_remote absent
+            # used to make a location literally reading "Remote" non-remote.
+            remote = is_remote or "remote" in location.lower()
+            geo = GeoEvidence(
+                sites=[location] if location else [], sites_field="location.city+state+country",
+                country=country, country_field="location.country" if country else "",
+                work_mode="remote" if is_remote else "", work_mode_field="location.is_remote" if is_remote else "",
+            ) if (location or country or is_remote) else None
             posted_dt = None
             published = j.get("published_date") or j.get("creation_date")
             if published:
@@ -93,6 +104,8 @@ class BreezyScraper:
                     url=j.get("url") or f"https://{self.board_slug}.breezy.hr/p/{ext_id}",
                     description=_strip_html(j.get("description") or ""),
                     posted_at=posted_dt,
+                    origin="breezy",
+                    geo=geo,
                 )
             )
         log.info("Breezy[%s]: %d jobs", self.board_slug, len(jobs))

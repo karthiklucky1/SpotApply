@@ -14,7 +14,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -67,8 +67,12 @@ class PersonioScraper:
             if not ext_id or not title:
                 continue
             location = _text(pos, "office")
-            schedule = _text(pos, "schedule")
-            remote = "remote" in location.lower() or "remote" in schedule.lower()
+            # `schedule` is the employment schedule (full-time / part-time),
+            # not a workplace field, and it used to feed `remote`. Only the
+            # office string speaks to location here; the geography pass
+            # resolves the rest from the posting page.
+            remote = "remote" in location.lower()
+            geo = GeoEvidence(sites=[location], sites_field="office") if location else None
             posted_dt = None
             created = _text(pos, "createdAt")
             if created:
@@ -93,6 +97,8 @@ class PersonioScraper:
                     url=f"https://{self.board_slug}.jobs.personio.de/job/{ext_id}",
                     description="\n\n".join(desc_parts),
                     posted_at=posted_dt,
+                    origin="personio",
+                    geo=geo,
                 )
             )
         log.info("Personio[%s]: %d jobs", self.board_slug, len(jobs))

@@ -11,7 +11,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,23 @@ class RipplingScraper:
                 continue
             loc = j.get("workLocation") or {}
             location = (loc.get("label") or j.get("location") or "").strip() if isinstance(loc, dict) else str(loc)
-            remote = "remote" in location.lower() or bool(j.get("isRemote"))
+            # `workplaceType` (REMOTE / HYBRID / ONSITE) and the plural
+            # `locations[]` were never read; the gate saw one label.
+            sites = [location] if location else []
+            for extra in (j.get("locations") or []):
+                v = extra.get("label") if isinstance(extra, dict) else extra
+                if isinstance(v, str) and v.strip() and v.strip() not in sites:
+                    sites.append(v.strip())
+            wpt = str(j.get("workplaceType") or "").strip().lower()
+            work_mode = ("remote" if wpt == "remote" else "hybrid" if wpt == "hybrid"
+                         else "onsite" if wpt in ("onsite", "on_site", "on-site", "in_office") else "")
+            if not work_mode and j.get("isRemote"):
+                work_mode = "remote"
+            remote = "remote" in location.lower() or work_mode == "remote"
+            geo = GeoEvidence(
+                sites=sites, sites_field="workLocation.label+locations[].label",
+                work_mode=work_mode, work_mode_field=("workplaceType" if wpt else "isRemote") if work_mode else "",
+            ) if (sites or work_mode) else None
             posted_dt = None
             for key in ("publishedAt", "createdAt", "postedDate"):
                 v = j.get(key)
@@ -81,6 +97,8 @@ class RipplingScraper:
                         or f"https://app.rippling.com/jobs/{self.board_slug}/{ext_id}",
                     description=_strip_html(j.get("description") or ""),
                     posted_at=posted_dt,
+                    origin="rippling",
+                    geo=geo,
                 )
             )
         log.info("Rippling[%s]: %d jobs", self.board_slug, len(jobs))

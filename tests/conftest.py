@@ -154,6 +154,13 @@ def _reset_process_globals():
         _ttl.invalidate()
     except ImportError:
         pass
+    try:
+        # The geo verification counters and its daily LLM cap are process
+        # globals for the same reason as the breaker above.
+        from app.discovery import geo_verify as _gv
+        _gv.reset_state()
+    except ImportError:
+        pass
 
 
 @pytest.fixture(autouse=True)

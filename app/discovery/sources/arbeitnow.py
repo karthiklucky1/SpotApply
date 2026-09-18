@@ -12,7 +12,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
@@ -65,8 +65,17 @@ class ArbeitnowSource:
                                 continue
                             seen.add(slug)
 
-                            location = (item.get("location") or "Remote").strip()
-                            remote = item.get("remote", False) or "remote" in location.lower()
+                            # No location from the board is "not stated", not
+                            # "Remote": the old default fabricated a work mode.
+                            stated = (item.get("location") or "").strip()
+                            remote_flag = bool(item.get("remote", False))
+                            location = stated or ("Remote" if remote_flag else "")
+                            remote = remote_flag or "remote" in location.lower()
+                            geo = GeoEvidence(
+                                sites=[stated] if stated else [], sites_field="location" if stated else "",
+                                work_mode="remote" if remote_flag else "",
+                                work_mode_field="remote" if remote_flag else "",
+                            ) if (stated or remote_flag) else None
 
                             posted_at: datetime | None = None
                             ts = item.get("created_at")
@@ -86,6 +95,8 @@ class ArbeitnowSource:
                                 url=(item.get("url") or "").strip(),
                                 description=(item.get("description") or "").strip(),
                                 posted_at=posted_at,
+                                origin="arbeitnow",
+                                geo=geo,
                             ))
                         except Exception as e:
                             log.debug("Arbeitnow: parse failed for %s: %s", item.get("slug"), e)

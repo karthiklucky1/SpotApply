@@ -34,7 +34,7 @@ from typing import List, Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 
 log = logging.getLogger(__name__)
 
@@ -311,15 +311,27 @@ class JoinScraper:
                     title = (j.get("name") or j.get("title") or "").strip()
                     self.signature_entries.append((ext_id, title))
                     loc = j.get("location") or {}
+                    country = ""
                     if isinstance(loc, dict):
+                        country = (loc.get("countryCode") or loc.get("countryName")
+                                   or loc.get("country") or "").strip()
                         location = ", ".join(p for p in (
                             (loc.get("cityName") or loc.get("city") or "").strip(),
                             (loc.get("countryName") or loc.get("country") or "").strip(),
                         ) if p)
                     else:
                         location = str(loc or "")
-                    remote = (str(j.get("jobLocationType") or "").lower() == "remote"
-                              or "remote" in location.lower())
+                    # `jobLocationType` is join.com's work mode; it used to be
+                    # compared to "remote" and otherwise thrown away.
+                    jlt = str(j.get("jobLocationType") or "").lower()
+                    work_mode = ("remote" if jlt == "remote" else "hybrid" if "hybrid" in jlt or "partial" in jlt
+                                 else "onsite" if jlt in ("onsite", "on_site", "on-site", "office") else "")
+                    remote = work_mode == "remote" or "remote" in location.lower()
+                    geo = GeoEvidence(
+                        sites=[location] if location else [], sites_field="location.cityName+countryName",
+                        country=country, country_field="location.countryCode" if country else "",
+                        work_mode=work_mode, work_mode_field="jobLocationType" if work_mode else "",
+                    ) if (location or country or work_mode) else None
                     posted_dt = None
                     published = j.get("publishedAt") or j.get("createdAt")
                     if published:
@@ -338,6 +350,8 @@ class JoinScraper:
                             url=j.get("url") or f"{_BASE}/companies/{self.board_slug}/jobs/{ext_id}",
                             description=_strip_html(j.get("description") or ""),
                             posted_at=posted_dt,
+                            origin="join",
+                            geo=geo,
                         )
                     )
                 # The envelope's page-count field: read whichever spelling is
