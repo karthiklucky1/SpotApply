@@ -103,6 +103,8 @@ _HOT_PATHS = (
     "app/strategy/pulse_lane.py",
     "app/strategy/hot_lane.py",
     "app/strategy/adoption.py",
+    # Runs inside the shared _upsert (every pulse tick) and the scoring cycle.
+    "app/discovery/geo_verify.py",
 )
 
 # Whole-entity reads that are legitimately bounded (single row by id, or a write

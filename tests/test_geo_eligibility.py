@@ -33,7 +33,7 @@ import pytest
 from sqlmodel import delete, select
 
 from app.common.eligibility import (
-    CONFLICT, ELIGIBLE, INELIGIBLE, UNKNOWN, Geography, GeoPrefs, decide,
+    CONFLICT, ELIGIBLE, INELIGIBLE, UNKNOWN, GeoPrefs, decide,
 )
 from app.config import settings
 from app.db.init_db import get_session
@@ -326,6 +326,47 @@ def test_intake_drops_ineligible_holds_unknown_and_stamps_eligible():
     assert shared is None
 
 
+def test_a_door_that_cannot_decide_never_inherits_the_previous_users_verdict(monkeypatch):
+    """The lanes hand the SAME RawJob objects to every user's door in turn.
+    The verdict rides on the object, so a door whose geography lookup fails
+    used to leave the previous user's verdict in place — user B's row carried
+    a decision computed from user A's saved country, and that string reached
+    B's explorer and B's scoring prompt."""
+    _profile(U1)
+    _profile(U2, preferred_country="Germany")
+    raw = _raw("inherit", location="Remote", remote=True,
+               desc="Fully remote role. Germany residents only.")
+    P._upsert([raw], user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
+    # User B (Germany) decides first: ELIGIBLE, and the verdict is on the object.
+    P._upsert([raw], user_id=U2, preferred_country="Germany",
+              user_keywords=["machine learning engineer"], geo_prefs=DE)
+    assert _copy(U2, "inherit").eligibility == ELIGIBLE
+    # User A's door cannot read the geography at all.
+    raw.geography = None
+    monkeypatch.setattr(P, "_geography_for_user_door", lambda cands: (_ for _ in ()).throw(RuntimeError("db down")))
+    P._upsert([raw], user_id=U1, preferred_country="United States",
+              user_keywords=["machine learning engineer"], geo_prefs=US_HOME)
+    a = _copy(U1, "inherit")
+    assert a is not None, "the string gate keeps 'Remote' — legacy behaviour"
+    assert a.eligibility is None and a.eligibility_reason is None, (
+        "A's row must carry NO verdict, never B's 'Remote role in Germany'")
+
+
+def test_redecide_skips_a_user_whose_profile_cannot_be_read(monkeypatch):
+    _profile(U1)
+    raw = _raw("noprefs", location="")
+    _shared_then_user(raw, U1)
+    assert _copy(U1, "noprefs").eligibility == UNKNOWN
+    from app.common import tenant_prefs
+    monkeypatch.setattr(tenant_prefs, "geo_prefs_for_user", lambda uid: None)
+    from app.common.eligibility import Geography
+    sweden = Geography(status="resolved", countries=["sweden"], sites=["Stockholm"], work_mode="onsite")
+    assert gv.redecide_copies("greenhouse", _P + "noprefs", sweden) == 0
+    copy = _copy(U1, "noprefs")
+    assert copy.eligibility == UNKNOWN and copy.rerank_score is None, (
+        "no destructive stamp from a country the user never chose")
+
+
 def test_copying_an_older_shared_posting_does_not_make_it_new():
     """A shared row that predates the geography record has no row and gets
     none when adopted; the copy keeps the legacy string gate (NULL verdict)."""
@@ -591,7 +632,10 @@ def test_provider_down_or_budget_exhausted_defers_without_a_retry_storm(monkeypa
     out = gv.verify_pending()
     assert out["still_unknown"] == 1 and calls["n"] == 0
     row = _geo_row("down", "teamtailor")
-    assert row.attempts == 1 and row.next_attempt_at > datetime.utcnow() + timedelta(minutes=30)
+    # A platform-level skip is not the posting's fault: it is deferred one
+    # interval but spends NONE of its attempts, or a capped day would retire
+    # every posting it could not reach for good.
+    assert row.attempts == 0 and row.next_attempt_at > datetime.utcnow() + timedelta(minutes=30)
     assert row.last_error == "skipped:no_provider"
     # The very next cycle does NOT examine it again: it is deferred, not polled.
     out2 = gv.verify_pending()
@@ -610,6 +654,59 @@ def test_provider_down_or_budget_exhausted_defers_without_a_retry_storm(monkeypa
         s.add(r)
         s.commit()
     assert gv.verify_pending()["pending_examined"] == 0
+
+
+def test_a_failed_outcome_write_does_not_refetch_every_cycle(monkeypatch):
+    """The row is claimed BEFORE any network work, so a database failure while
+    recording the outcome (the statement-timeout class) leaves it deferred —
+    not re-fetched every 90 s at zero progress."""
+    _profile(U1)
+    _held_posting("claim")
+    fetches = {"n": 0}
+
+    def _fake_fetch(url, timeout):
+        fetches["n"] += 1
+        return _page(_jsonld(jobLocation={"address": {"addressLocality": "Austin",
+                                                      "addressRegion": "TX", "addressCountry": "US"}}))
+
+    monkeypatch.setattr(gv, "_fetch", _fake_fetch)
+    monkeypatch.setattr(gv, "_record_attempt",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("statement timeout")))
+    assert gv.verify_pending()["pending_examined"] == 1
+    assert fetches["n"] == 1
+    assert gv.verify_pending()["pending_examined"] == 0, "claimed: not due again this cycle"
+    assert fetches["n"] == 1
+    row = _geo_row("claim", "teamtailor")
+    assert row.status == "unknown" and row.next_attempt_at > datetime.utcnow() + timedelta(minutes=10)
+
+
+def test_a_location_only_change_does_not_rewrite_the_text_or_the_embedding():
+    """The first poll after a deploy that changes how an adapter spells a
+    location touches every posting from that adapter. That must be two small
+    columns per row — never a description rewrite, never a cleared embedding
+    (which forces a from-scratch FAISS rebuild per user per matching tick)."""
+    raw = _raw("locmove", location="Austin, TX")
+    P._upsert([raw], user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
+    with get_session() as s:
+        job = s.exec(select(Job).where(Job.user_id == P.SHARED_POOL_USER,
+                                       Job.external_id == _P + "locmove")).one()
+        job.embedding_id = 4242
+        s.add(job)
+        s.commit()
+    moved = _raw("locmove", location="Austin, TX · Berlin")     # same description
+    P._upsert([moved], user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
+    with get_session() as s:
+        job = s.exec(select(Job).where(Job.user_id == P.SHARED_POOL_USER,
+                                       Job.external_id == _P + "locmove")).one()
+    assert job.location == "Austin, TX · Berlin"
+    assert job.embedding_id == 4242, "a location-only change must not force a re-embed"
+    # ...whereas an edited description still does.
+    edited = _raw("locmove", location="Austin, TX · Berlin", desc="Entirely new text about models.")
+    P._upsert([edited], user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
+    with get_session() as s:
+        job = s.exec(select(Job).where(Job.user_id == P.SHARED_POOL_USER,
+                                       Job.external_id == _P + "locmove")).one()
+    assert job.embedding_id is None and job.description == "Entirely new text about models."
 
 
 def test_the_sweep_is_bounded_by_its_budget(monkeypatch):
@@ -633,6 +730,44 @@ def test_the_sweep_is_bounded_by_its_budget(monkeypatch):
     for i in range(3):
         row = _geo_row(f"budget{i}", "teamtailor")
         assert row.status == "resolved" and row.attempts == 1, "each posting was fetched exactly once"
+
+
+def test_a_due_row_nobody_is_waiting_on_cannot_starve_a_held_posting(monkeypatch):
+    """Production shape: the shared lane records many UNKNOWN postings no user
+    has adopted (or whose copies have since scored or expired). Those rows are
+    'due' forever and used to fill the sweep's window ahead of the postings a
+    user is actually waiting on."""
+    _profile(U1)
+    now = datetime.utcnow()
+    with get_session() as s:
+        for i in range(12):
+            s.add(JobGeography(source="teamtailor", external_id=f"{_P}orphan{i}", status="unknown",
+                               next_attempt_at=now - timedelta(minutes=30 + i), location_hash="h",
+                               created_at=now - timedelta(hours=1)))
+        s.commit()
+    monkeypatch.setattr(gv, "_PENDING_PAGE", 4)     # a small window, so the orphans would fill it
+    _held_posting("waiting")
+    monkeypatch.setattr(gv, "_fetch", lambda url, timeout: _page(_jsonld(
+        jobLocation={"address": {"addressLocality": "Austin", "addressRegion": "TX",
+                                 "addressCountry": "US"}})))
+    out = gv.verify_pending(budget=gv.Budget(seconds=60, items=3))
+    assert out["pending_examined"] == 1 and out["resolved"] == 1
+    assert _copy(U1, "waiting").eligibility == ELIGIBLE
+    assert out["geo_verify"]["deferred_no_held_copy"] == 12
+    with get_session() as s:
+        orphan = s.exec(select(JobGeography).where(JobGeography.external_id == _P + "orphan0")).one()
+    assert orphan.next_attempt_at > now + timedelta(hours=1), "pushed one retry interval out"
+    assert orphan.attempts == 0, "not an attempt: nothing was fetched or asked"
+    # ...and the moment a user copy of it is admitted as unknown, it is due again.
+    raw = _raw("orphan0", location="", source="teamtailor", company="Acme orphan",
+               url=f"https://acme.teamtailor.com/jobs/{_P}orphan0")
+    raw.first_seen = now - timedelta(hours=1)          # a copy of a known posting, not a new one
+    P._upsert([raw], user_id=U1, preferred_country="United States",
+              user_keywords=["machine learning engineer"], geo_prefs=US_HOME)
+    with get_session() as s:
+        orphan = s.exec(select(JobGeography).where(JobGeography.external_id == _P + "orphan0")).one()
+    assert orphan.next_attempt_at <= datetime.utcnow()
+    assert gv.verify_pending(budget=gv.Budget(seconds=60, items=3))["pending_examined"] == 1
 
 
 def test_changed_location_evidence_invalidates_the_cached_decision():

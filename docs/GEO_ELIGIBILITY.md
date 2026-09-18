@@ -78,13 +78,25 @@ model-verified result.
 | B | official ATS detail (Greenhouse, Lever) or the posting page's JSON-LD | one GET | `GEO_VERIFY_FETCH_TIMEOUT_SECONDS`, SSRF-guarded, direct-ATS URLs only, never LinkedIn/Indeed |
 | C | one extraction call on the cheapest configured model | ~1.2k in / 120 out tokens | only when location text exists the rules could not read; `GEO_VERIFY_LLM_DAILY_CAP`; `GEO_VERIFY_LLM_MAX_CHARS` of excerpts, never the whole posting, never a résumé |
 
-The sweep runs inside the scoring cycle before the work list is built and
-stops at `GEO_VERIFY_MAX_PER_CYCLE` postings, `GEO_VERIFY_BUDGET_SECONDS_PER_CYCLE`
-seconds, or 5 s before the cycle deadline. Provider breakers and the platform
-LLM budget are honoured before any call. The model must return
-`evidence_quote`; a quote not found in the supplied excerpts discards the
-answer (`rejected_quote`) and the posting stays UNKNOWN. Spend is metered
-under `kind=geo_verify`, user `__shared__`.
+The sweep runs inside the scoring cycle, after the provider/budget fast-exit
+guards and before the work list is built, and stops at
+`GEO_VERIFY_MAX_PER_CYCLE` postings, `GEO_VERIFY_BUDGET_SECONDS_PER_CYCLE`
+seconds, or one fetch-plus-model timeout before the cycle deadline. Provider
+breakers and the platform LLM budget are honoured before any call. The model
+must return `evidence_quote`; a quote not found in the supplied excerpts
+discards the answer (`rejected_quote`) and the posting stays UNKNOWN. Spend
+is metered under `kind=geo_verify`, user `__shared__`.
+
+Three rules keep the sweep from becoming a per-tick bill:
+
+* a row is **claimed** (`next_attempt_at` pushed one interval out) before any
+  network work, so a failed outcome write cannot re-fetch it every 90 s;
+* a **platform-level** skip (daily cap, platform budget, every provider in
+  cooldown) defers the row without spending one of its attempts — a capped
+  day never retires the postings it could not reach;
+* a due row **nobody is waiting on** (no open, unscored, held copy) is pushed
+  out of the due window instead of occupying its head forever; admitting a
+  new unknown copy (`mark_held`) makes it due again at once.
 
 ## Operating it
 

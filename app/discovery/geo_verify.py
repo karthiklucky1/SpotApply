@@ -412,6 +412,7 @@ def load_geographies(keys: Iterable[tuple]) -> Dict[tuple, Geography]:
         with get_session() as session:
             for start in range(0, len(wanted), 300):
                 chunk = wanted[start:start + 300]
+                asked = set(chunk)
                 rows = session.exec(
                     select(JobGeography).where(
                         JobGeography.source.in_({k[0] for k in chunk}),
@@ -419,7 +420,7 @@ def load_geographies(keys: Iterable[tuple]) -> Dict[tuple, Geography]:
                 ).all()
                 for row in rows:
                     key = (row.source, row.external_id)
-                    if key in set(chunk):
+                    if key in asked:
                         out[key] = _row_to_geo(row)
     except Exception as e:
         log.debug("geography lookup failed: %s", e)
@@ -524,9 +525,10 @@ def capture(raw_jobs: List[RawJob], *, new_keys: set, changed_keys: set,
         for key in keys:
             if key not in out:
                 out[key] = derive(todo[key])
+    prefs_cache: dict = {}          # one profile read per user for the whole batch
     for key in to_redecide:
         try:
-            redecide_copies(key[0], key[1], out[key])
+            redecide_copies(key[0], key[1], out[key], prefs_cache)
         except Exception as e:
             log.debug("redecide after evidence change failed: %s", e)
     return out
@@ -559,6 +561,7 @@ def redecide_copies(source: str, external_id: str, geo: Geography,
     left alone (see docs/GEO_ELIGIBILITY.md, limitations).
     """
     from sqlalchemy import or_
+    from sqlalchemy.orm import load_only
     from sqlmodel import select
     from app.common.tenant_prefs import geo_prefs_for_user
     from app.db.init_db import get_session
@@ -572,18 +575,30 @@ def redecide_copies(source: str, external_id: str, geo: Geography,
     cache = prefs_cache if prefs_cache is not None else {}
     changed = 0
     now = datetime.utcnow()
+    _NO_PREFS = object()
     try:
         with get_session() as session:
+            # Projected: the copies of one posting across every tenant, and
+            # only the columns the verdict reads and writes — never the
+            # description (CLAUDE.md, DB egress).
             rows = session.exec(
-                select(Job).where(
-                    Job.source == src_enum, Job.external_id == str(external_id),
-                    or_(Job.user_id.is_(None), Job.user_id != SHARED_POOL_USER))
+                select(Job)
+                .options(load_only(Job.id, Job.user_id, Job.eligibility, Job.eligibility_reason,
+                                   Job.rerank_score, Job.rerank_reasoning, Job.scored_at))
+                .where(Job.source == src_enum, Job.external_id == str(external_id),
+                       or_(Job.user_id.is_(None), Job.user_id != SHARED_POOL_USER))
             ).all()
             for job in rows:
                 uid = job.user_id or "local"
-                prefs = cache.get(uid)
-                if prefs is None:
+                prefs = cache.get(uid, _NO_PREFS)
+                if prefs is _NO_PREFS:
                     prefs = cache[uid] = geo_prefs_for_user(job.user_id)
+                if prefs is None:
+                    # This user's profile could not be read: no decision is
+                    # made from a country they never chose. Their copy keeps
+                    # its current verdict until the next pass can read it.
+                    _bump("copies_skipped_no_prefs")
+                    continue
                 d = decide(geo, prefs)
                 if d.status == INELIGIBLE:
                     if job.eligibility != INELIGIBLE or job.eligibility_reason != d.reason[:200]:
@@ -638,19 +653,46 @@ class PageEvidence:
 
 
 def _fetch(url: str, timeout: float) -> Tuple[Optional[int], str, Optional[str]]:
-    """One bounded, SSRF-guarded GET. Returns (status, body, error)."""
+    """One bounded, SSRF-guarded GET. Returns (status, body, error).
+
+    STREAMED, and every hop re-checked. A non-streaming request holds the whole
+    body before any slice runs — twice, once decoded — in the container that
+    also holds torch, MiniLM, FAISS and Chromium (docs/MEMORY.md). The body is
+    read in chunks and cut at _PAGE_BYTES; a response that declares itself far
+    larger is refused unread. Redirects are followed by hand so each hop goes
+    through the same public-host check (app/common/ssrf.py).
+    """
     import httpx
-    from app.common.ssrf import guarded_request
+    from app.common.ssrf import MAX_REDIRECTS, is_fetchable_url
+    current = url
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False,
                           headers={"User-Agent": settings.liveness_user_agent}) as client:
-            r, err = guarded_request(client, "GET", url)
-            if r is None:
-                return None, "", err or "blocked"
-            ctype = (r.headers.get("content-type") or "").lower()
-            if not (ctype.startswith("text") or "json" in ctype):
-                return r.status_code, "", None
-            return r.status_code, r.text[:_PAGE_BYTES], None
+            for _ in range(MAX_REDIRECTS):
+                if not is_fetchable_url(current):
+                    return None, "", "blocked_host"
+                with client.stream("GET", current) as r:
+                    location = r.headers.get("location")
+                    if r.status_code in (301, 302, 303, 307, 308) and location:
+                        current = str(httpx.URL(current).join(location))
+                        continue
+                    ctype = (r.headers.get("content-type") or "").lower()
+                    if not (ctype.startswith("text") or "json" in ctype):
+                        return r.status_code, "", None
+                    try:
+                        declared = int(r.headers.get("content-length") or 0)
+                    except ValueError:
+                        declared = 0
+                    if declared > _PAGE_BYTES * 4:
+                        return r.status_code, "", "too_large"
+                    buf = bytearray()
+                    for chunk in r.iter_bytes():
+                        buf.extend(chunk)
+                        if len(buf) >= _PAGE_BYTES:
+                            break
+                    enc = r.charset_encoding or "utf-8"
+                    return r.status_code, bytes(buf[:_PAGE_BYTES]).decode(enc, errors="replace"), None
+            return None, "", "too_many_redirects"
     except Exception as e:
         return None, "", type(e).__name__
 
@@ -1022,6 +1064,10 @@ class Budget:
         self.deadline = deadline
         self.started = time.monotonic()
         self.done = 0
+        # One item can take a full fetch timeout plus a full model timeout:
+        # never start one the cycle deadline would cut short.
+        self.margin = (float(settings.geo_verify_fetch_timeout_seconds or 0)
+                       + float(settings.geo_verify_llm_timeout_seconds or 0) + 1.0)
 
     @property
     def exhausted(self) -> bool:
@@ -1029,46 +1075,128 @@ class Budget:
             return True
         if self.seconds > 0 and time.monotonic() - self.started >= self.seconds:
             return True
-        # Leave the cycle a margin: never start a fetch the deadline would cut.
-        return bool(self.deadline and time.monotonic() >= self.deadline - 5.0)
+        return bool(self.deadline and time.monotonic() >= self.deadline - self.margin)
+
+
+#: Due rows scanned per page, and pages per sweep. The scan is bounded at
+#: _PENDING_PAGE × _PENDING_PAGES rows whatever the table holds.
+_PENDING_PAGE = 200
+_PENDING_PAGES = 5
+
+
+def _held_keys(session, rows) -> set:
+    """Which of these geography rows still have an open, unscored copy that a
+    user is waiting on. Job.source stores the enum NAME ("GREENHOUSE") and the
+    geography row the value ("greenhouse"), so this cannot be one SQL join —
+    it is one chunked indexed lookup on Job.external_id per page."""
+    from sqlalchemy import or_
+    from sqlmodel import select
+    from app.db.models import Job
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    ext_ids = [r.external_id for r in rows]
+    live: set = set()
+    for start in range(0, len(ext_ids), 300):
+        chunk = ext_ids[start:start + 300]
+        for src, ext in session.exec(
+                select(Job.source, Job.external_id).where(
+                    Job.external_id.in_(chunk), Job.eligibility == UNKNOWN,
+                    Job.rerank_score.is_(None), Job.is_closed == False,  # noqa: E712
+                    or_(Job.user_id.is_(None), Job.user_id != SHARED_POOL_USER))).all():
+            live.add((src.value if hasattr(src, "value") else str(src), ext))
+    return live
 
 
 def _pending_rows(limit: int) -> list:
     """Unresolved geography rows whose retry is due AND that still have an open,
-    unscored, held copy somewhere. Two queries on purpose: Job.source is an
-    enum column and a cross-table join on it needs a cast on Postgres."""
+    unscored, held copy somewhere — up to `limit` of them.
+
+    Due rows with NO held copy (nobody adopted the posting, or every copy has
+    since scored, expired or closed) are pushed one retry interval out, so
+    they cannot sit at the front of the due window forever and starve the
+    postings a user is actually waiting on; `mark_held` makes such a row due
+    again the moment a copy is admitted as unknown. The scan is bounded at
+    _PENDING_PAGE × _PENDING_PAGES rows per sweep.
+    """
+    from sqlalchemy import or_, update as _update
     from sqlmodel import select
     from app.db.init_db import get_session
-    from app.db.models import Job, JobGeography
-    from app.discovery.pipeline import SHARED_POOL_USER
-    from sqlalchemy import or_
+    from app.db.models import JobGeography
 
     now = datetime.utcnow()
     max_attempts = int(settings.geo_verify_max_attempts or 0)
+    want = max(1, limit)
+    out: list = []
+    stale_ids: list = []
     with get_session() as session:
         q = (select(JobGeography)
              .where(JobGeography.status != RESOLVED,
                     or_(JobGeography.next_attempt_at.is_(None), JobGeography.next_attempt_at <= now)))
         if max_attempts > 0:
             q = q.where(JobGeography.attempts < max_attempts)
-        rows = session.exec(q.order_by(JobGeography.next_attempt_at, JobGeography.id)
-                            .limit(max(1, limit) * 4)).all()
-        if not rows:
-            return []
-        ext_ids = [r.external_id for r in rows]
-        live: set = set()
-        for start in range(0, len(ext_ids), 300):
-            chunk = ext_ids[start:start + 300]
-            for src, ext in session.exec(
-                    select(Job.source, Job.external_id).where(
-                        Job.external_id.in_(chunk), Job.eligibility == UNKNOWN,
-                        Job.rerank_score.is_(None), Job.is_closed == False,  # noqa: E712
-                        or_(Job.user_id.is_(None), Job.user_id != SHARED_POOL_USER))).all():
-                live.add((src.value if hasattr(src, "value") else str(src), ext))
-        out = [r for r in rows if (r.source, r.external_id) in live]
+        q = q.order_by(JobGeography.next_attempt_at, JobGeography.id)
+        offset = 0
+        for _ in range(_PENDING_PAGES):
+            rows = session.exec(q.offset(offset).limit(_PENDING_PAGE)).all()
+            if not rows:
+                break
+            offset += len(rows)
+            live = _held_keys(session, rows)
+            for r in rows:
+                if (r.source, r.external_id) in live:
+                    if len(out) < want:
+                        out.append(r)
+                else:
+                    stale_ids.append(r.id)
+            if len(out) >= want or len(rows) < _PENDING_PAGE:
+                break
         for r in out:
             session.expunge(r)
-        return out[:max(1, limit)]
+        if stale_ids:
+            # One statement, ascending primary key — the lock order every
+            # multi-row write in this codebase takes.
+            bump = now + timedelta(hours=max(0.25, float(settings.geo_verify_retry_hours or 0)))
+            session.execute(
+                _update(JobGeography.__table__)
+                .where(JobGeography.__table__.c.id.in_(sorted(stale_ids)))
+                .values(next_attempt_at=bump, updated_at=now))
+            session.commit()
+            _bump("deferred_no_held_copy", len(stale_ids))
+    return out
+
+
+def mark_held(keys: Iterable[tuple]) -> int:
+    """A user copy of these postings was just admitted as UNKNOWN: make each
+    unresolved geography row due now, even if an earlier sweep found nothing
+    waiting and pushed it out. Idempotent; a resolved or exhausted row is
+    untouched. Returns rows made due."""
+    from sqlalchemy import update as _update
+    from app.db.init_db import get_session
+    from app.db.models import JobGeography
+
+    wanted = sorted({(k[0], str(k[1])) for k in keys if k and k[1]})
+    if not wanted or not settings.geo_verify_enabled:
+        return 0
+    now = datetime.utcnow()
+    max_attempts = int(settings.geo_verify_max_attempts or 0)
+    n = 0
+    try:
+        with get_session() as session:
+            for start in range(0, len(wanted), 300):
+                chunk = wanted[start:start + 300]
+                stmt = (_update(JobGeography.__table__)
+                        .where(JobGeography.__table__.c.source.in_({k[0] for k in chunk}),
+                               JobGeography.__table__.c.external_id.in_([k[1] for k in chunk]),
+                               JobGeography.__table__.c.status != RESOLVED,
+                               JobGeography.__table__.c.next_attempt_at > now)
+                        .values(next_attempt_at=now, updated_at=now))
+                if max_attempts > 0:
+                    stmt = stmt.where(JobGeography.__table__.c.attempts < max_attempts)
+                n += session.execute(stmt).rowcount or 0
+            session.commit()
+    except Exception as e:
+        log.debug("mark_held failed: %s", e)
+    return n
 
 
 def _posting_text(source: str, external_id: str) -> Tuple[str, str]:
@@ -1093,9 +1221,47 @@ def _posting_text(source: str, external_id: str) -> Tuple[str, str]:
     return rows[0][0] or "", rows[0][1] or ""
 
 
+def _retry_hours() -> float:
+    return max(0.25, float(settings.geo_verify_retry_hours or 0))
+
+
+def _claim_row(row_id: int) -> bool:
+    """Take the row off the due list BEFORE any network work. If the write
+    that records the outcome later fails (the Supabase statement-timeout
+    class), the row is still not due again until one retry interval has
+    passed — never re-fetched every 90 s at zero progress. False when the row
+    is no longer due (another process got it first)."""
+    from sqlalchemy import or_, update as _update
+    from app.db.init_db import get_session
+    from app.db.models import JobGeography
+    now = datetime.utcnow()
+    t = JobGeography.__table__
+    try:
+        with get_session() as session:
+            n = session.execute(
+                _update(t).where(t.c.id == row_id,
+                                 or_(t.c.next_attempt_at.is_(None), t.c.next_attempt_at <= now))
+                .values(next_attempt_at=now + timedelta(hours=_retry_hours()), updated_at=now)
+            ).rowcount or 0
+            session.commit()
+        return n > 0
+    except Exception as e:
+        log.debug("geo claim failed for one row: %s", e)
+        return False
+
+
+#: Model skips that say nothing about the posting — the platform was out of
+#: budget or providers. These never count against the posting's attempts, or
+#: a capped day would retire every posting it could not reach for good.
+_PLATFORM_SKIPS = ("skipped:daily_cap", "skipped:platform_budget", "skipped:no_provider")
+
+
 def _record_attempt(row_id: int, geo: Optional[Geography], *, step: str, error: str,
-                    llm: Optional[LlmResult], duration_ms: int) -> Optional[Geography]:
-    """Write one verification outcome. Returns the geography now on the row."""
+                    llm: Optional[LlmResult], duration_ms: int,
+                    counted: bool = True) -> Optional[Geography]:
+    """Write one verification outcome. Returns the geography now on the row.
+    ``counted=False`` records what happened without spending one of the
+    posting's attempts: the retry is one flat interval out, not exponential."""
     from app.db.init_db import get_session
     from app.db.models import JobGeography
     now = datetime.utcnow()
@@ -1103,7 +1269,8 @@ def _record_attempt(row_id: int, geo: Optional[Geography], *, step: str, error: 
         row = session.get(JobGeography, row_id)
         if row is None:
             return None
-        row.attempts = (row.attempts or 0) + 1
+        if counted:
+            row.attempts = (row.attempts or 0) + 1
         row.last_step = step
         row.last_error = (error or None) and error[:200]
         row.duration_ms = int(duration_ms)
@@ -1117,9 +1284,11 @@ def _record_attempt(row_id: int, geo: Optional[Geography], *, step: str, error: 
             _apply_geo(row, geo)
             row.verified_at = now
             row.next_attempt_at = None if geo.resolved else now + timedelta(days=365)
+        elif counted:
+            hours = _retry_hours() * (2 ** max(0, (row.attempts or 1) - 1))
+            row.next_attempt_at = now + timedelta(hours=hours)
         else:
-            hours = float(settings.geo_verify_retry_hours or 0) * (2 ** max(0, row.attempts - 1))
-            row.next_attempt_at = now + timedelta(hours=max(0.25, hours))
+            row.next_attempt_at = now + timedelta(hours=_retry_hours())
         session.add(row)
         session.commit()
         return _row_to_geo(row)
@@ -1128,6 +1297,8 @@ def _record_attempt(row_id: int, geo: Optional[Geography], *, step: str, error: 
 def verify_one(row) -> Tuple[Optional[Geography], str]:
     """Steps B then C for one posting, outside any session. Returns
     (geography or None, what happened)."""
+    if not _claim_row(row.id):
+        return None, "not_claimed"
     started = time.monotonic()
     url, description = _posting_text(row.source, row.external_id)
     page = page_evidence(url, row.source)
@@ -1150,7 +1321,8 @@ def verify_one(row) -> Tuple[Optional[Geography], str]:
     if page.how.startswith("error:") and not err:
         err = page.how
     geo = _record_attempt(row.id, llm.geo, step="llm" if llm.how not in ("no_evidence",) or page.text else "page",
-                          error=err, llm=llm, duration_ms=ms)
+                          error=err, llm=llm, duration_ms=ms,
+                          counted=llm.how not in _PLATFORM_SKIPS)
     if llm.geo is not None:
         _bump("verified_postings")
     return geo, llm.how

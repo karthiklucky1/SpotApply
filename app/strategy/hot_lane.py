@@ -320,7 +320,13 @@ def _run_hot_lane_cycle() -> dict:
                 continue
             routed_ids.update(r.external_id for r in relevant)
             try:
-                new = _upsert(relevant, user_id=u["user_id"], user_keywords=u["roles"] or None)
+                # SAME location gate as every other door into a user's pool
+                # (app/common/eligibility.py): the legacy lane routed the
+                # shared RawJob objects with no preferences at all.
+                new = _upsert(relevant, user_id=u["user_id"], user_keywords=u["roles"] or None,
+                              preferred_country=u.get("preferred_country") or None,
+                              remote_ok=bool(u.get("remote_ok", True)),
+                              geo_prefs=u.get("geo_prefs"))
                 inserted_jobs += new
                 board_new += new
                 if new:

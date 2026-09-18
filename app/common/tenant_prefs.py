@@ -65,13 +65,19 @@ def geo_prefs(profile, user_id: str | None = None):
 
 def geo_prefs_for_user(user_id: str | None):
     """Load the profile columns the decision needs for ONE user — projected,
-    no profile is created as a side effect. None/"local" is the local user."""
+    no profile is created as a side effect. None/"local" is the local user.
+
+    Returns None when the profile could NOT be read. A user with no profile
+    row gets the same defaults every door gives them; a user whose profile
+    read failed gets no decision at all — deciding their rows against the
+    platform default country would stamp INELIGIBLE (a destructive, queue-
+    draining write) from a country they never chose.
+    """
     from sqlmodel import select
     from app.db.init_db import get_session
     from app.db.models import UserProfile
 
     uid = user_id or "local"
-    row = None
     try:
         with get_session() as session:
             row = session.exec(
@@ -81,6 +87,7 @@ def geo_prefs_for_user(user_id: str | None):
             ).first()
     except Exception as e:
         log.debug("geo prefs unavailable for %s: %s", uid, e)
+        return None
 
     class _P:
         pass

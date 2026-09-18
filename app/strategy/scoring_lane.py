@@ -1215,12 +1215,24 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     if _exp.get("owners_swept"):
         stats["expiry_owners_swept"] = _exp["owners_swept"]
 
+    # Fast-exit guards: when every provider is cooling down (credit/quota) or
+    # the daily spend cap is hit, a cycle would only burn CPU and log noise —
+    # jobs stay Queued and the next eligible cycle picks them up. With the
+    # local-score fallback enabled, providers being down is NOT a stall: the
+    # cycle proceeds and Reranker.score() stamps free local estimates instead.
+    if not any_provider_available() and not settings.local_score_fallback:
+        return {**stats, "skipped": "all LLM providers cooling down"}
+    if llm_budget_exhausted():
+        return {**stats, "skipped": "LLM budget reached (hourly/daily cap)"}
+
     # Location verification for NEW postings still held as UNKNOWN: the
     # posting's own page, then (only when text exists the rules could not read)
     # one small extraction call — once per posting, shared by every copy. Bounded
     # like the expiry sweep: a count cap, a wall-clock cap and the cycle deadline
     # (app/discovery/geo_verify.py). Whatever it resolves re-enters the queue
     # built right below; whatever it cannot waits with backoff. Never fatal.
+    # AFTER the fast-exit guards on purpose: a full provider outage must not
+    # keep paying a fetch budget every 90 s for postings nobody can score yet.
     try:
         from app.discovery.geo_verify import verify_pending as _verify_geo
         _geo = _verify_geo(deadline=deadline)
@@ -1234,16 +1246,6 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             log.info("Geo verification: %s", _geo["geo_verify"])
     except Exception as e:
         log.warning("geo verification sweep failed (non-fatal): %s", e)
-
-    # Fast-exit guards: when every provider is cooling down (credit/quota) or
-    # the daily spend cap is hit, a cycle would only burn CPU and log noise —
-    # jobs stay Queued and the next eligible cycle picks them up. With the
-    # local-score fallback enabled, providers being down is NOT a stall: the
-    # cycle proceeds and Reranker.score() stamps free local estimates instead.
-    if not any_provider_available() and not settings.local_score_fallback:
-        return {**stats, "skipped": "all LLM providers cooling down"}
-    if llm_budget_exhausted():
-        return {**stats, "skipped": "LLM budget reached (hourly/daily cap)"}
 
     users = _scorable_user_ids()
     if not users:

@@ -230,17 +230,37 @@ def _flush_content_updates(rows: List[dict]) -> None:
     if not rows:
         return
     from sqlalchemy import bindparam, update as _update
+    # Two shapes. A changed DESCRIPTION rewrites the text and clears
+    # embedding_id (re-embed). A location-only change writes the two small
+    # columns and nothing else: the text is byte-identical, so re-sending it
+    # is write traffic for nothing, and clearing embedding_id would force a
+    # from-scratch FAISS rebuild per user per matching tick — on the first
+    # poll after a deploy that changes how an adapter spells locations, that
+    # is every posting from that adapter at once.
+    text_rows = [r for r in rows if r.get("_content_changed", True)]
+    loc_rows = [r for r in rows if not r.get("_content_changed", True)]
     with get_session() as session:
-        stmt = (_update(Job.__table__)
-                .where(Job.__table__.c.id == bindparam("_id"))
-                .values(description=bindparam("_description"),
-                        content_hash=bindparam("_content_hash"),
-                        embedding_id=None,
-                        location=bindparam("_location"),
-                        remote=bindparam("_remote"),
-                        last_seen=bindparam("_last_seen")))
-        for start in range(0, len(rows), _DEDUPE_PREFETCH_CHUNK):
-            session.execute(stmt, rows[start:start + _DEDUPE_PREFETCH_CHUNK])
+        if text_rows:
+            stmt = (_update(Job.__table__)
+                    .where(Job.__table__.c.id == bindparam("_id"))
+                    .values(description=bindparam("_description"),
+                            content_hash=bindparam("_content_hash"),
+                            embedding_id=None,
+                            location=bindparam("_location"),
+                            remote=bindparam("_remote"),
+                            last_seen=bindparam("_last_seen")))
+            for start in range(0, len(text_rows), _DEDUPE_PREFETCH_CHUNK):
+                session.execute(stmt, text_rows[start:start + _DEDUPE_PREFETCH_CHUNK])
+        if loc_rows:
+            slim = [{"_id": r["_id"], "_location": r["_location"], "_remote": r["_remote"],
+                     "_last_seen": r["_last_seen"]} for r in loc_rows]
+            stmt = (_update(Job.__table__)
+                    .where(Job.__table__.c.id == bindparam("_id"))
+                    .values(location=bindparam("_location"),
+                            remote=bindparam("_remote"),
+                            last_seen=bindparam("_last_seen")))
+            for start in range(0, len(slim), _DEDUPE_PREFETCH_CHUNK):
+                session.execute(stmt, slim[start:start + _DEDUPE_PREFETCH_CHUNK])
         session.commit()
 
 
@@ -596,17 +616,25 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         from app.common.geo import norm_country
         _prefs = GeoPrefs(country=norm_country(preferred_country), remote_ok=bool(remote_ok))
     _geo_map: dict = {}
+    _inherited = False
     if _prefs is not None and not _shared_door and pre_gate:
         # A per-user copy must never be younger than the posting, and "has the
         # pool seen this?" is also what tells a NEW posting from an old one.
         _inherit_shared_first_seen(pre_gate)
+        _inherited = True
         try:
             _geo_map = _geography_for_user_door(pre_gate)
         except Exception as e:      # the gate must never stop discovery
             log.debug("geography lookup for user door failed: %s", e)
             _geo_map = {}
     _geo_dropped = 0
+    _geo_held: List[tuple] = []
     for r in pre_gate:
+        # The lanes hand the SAME RawJob objects to every user's door in turn.
+        # The verdict is per user, so it is cleared before this door decides:
+        # a door whose geography lookup failed must fall back to the string
+        # gate with NO verdict, never inherit the previous user's.
+        r.eligibility_decision = None
         geo = _geo_map.get((r.source, str(r.external_id))) if _geo_map else None
         if geo is not None and _prefs is not None:
             from app.common.eligibility import decide as _decide
@@ -615,6 +643,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                 _geo_dropped += 1
                 continue
             r.eligibility_decision = (d.status, d.reason)
+            if d.unknown:
+                _geo_held.append((r.source, str(r.external_id)))
         elif preferred_country and not _location_allowed(
             r.location or "", bool(getattr(r, "remote", False)), preferred_country, remote_ok
         ):
@@ -624,6 +654,15 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     if _geo_dropped:
         log.info("Location gate: dropped %d ineligible posting(s) from user %s's pool",
                  _geo_dropped, user_id)
+    if _geo_held:
+        # Somebody is now waiting on these: make their geography rows due for
+        # the next verification sweep, even if an earlier sweep found nobody
+        # waiting and pushed them out of its window.
+        try:
+            from app.discovery import geo_verify as _gv
+            _gv.mark_held(_geo_held)
+        except Exception as e:
+            log.debug("mark_held skipped: %s", e)
     if not candidates:
         return 0
 
@@ -711,7 +750,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         log.warning("Upsert prefetch failed (using per-job dedupe): %s", e)
 
     # A per-user copy must never be younger than the posting it copies.
-    if user_id not in (None, SHARED_POOL_USER):
+    if user_id not in (None, SHARED_POOL_USER) and not _inherited:
         _inherit_shared_first_seen(candidates)
 
     # Geography bookkeeping for the SHARED door: which postings are NEW to the
@@ -799,6 +838,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         "_id": row_id, "_description": r.description,
                         "_content_hash": content_hash, "_last_seen": _now,
                         "_location": r.location or "", "_remote": bool(r.remote),
+                        "_content_changed": prev_hash != content_hash,
                     })
                     by_key[(r.source, r.external_id)] = (row_id, content_hash, _now, r.location)
                     if _shared_door:
@@ -866,9 +906,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     # Update description/content_hash (and the sites) if changed
                     _loc_changed = (r.location or "") != (existing.location or "")
                     if existing.content_hash != content_hash or _loc_changed:
-                        existing.description = r.description
-                        existing.content_hash = content_hash
-                        existing.embedding_id = None  # force re-embed
+                        if existing.content_hash != content_hash:
+                            existing.description = r.description
+                            existing.content_hash = content_hash
+                            existing.embedding_id = None  # force re-embed
                         existing.location = r.location or ""
                         existing.remote = bool(r.remote)
                         existing.last_seen = datetime.utcnow()
