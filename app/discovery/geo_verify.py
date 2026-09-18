@@ -112,10 +112,17 @@ def _llm_calls_today() -> int:
 
 
 def _register_llm_call() -> bool:
-    """Reserve one call under today's cap. False = refused (cap reached, or
-    the counter could not be read or written)."""
+    """Reserve one call under today's cap. False = refused (cap reached, cap
+    set to 0, or the counter could not be read or written).
+
+    A cap of 0 is NO calls, not no cap: this is a spend control, and an
+    operator zeroing it to stop the bill must get silence, not 24k calls a
+    day bounded only by the per-cycle count."""
     from app.common.daily_counter import reserve
-    return reserve(LLM_CAP_COUNTER, int(settings.geo_verify_llm_daily_cap or 0))
+    cap = int(settings.geo_verify_llm_daily_cap or 0)
+    if cap <= 0:
+        return False
+    return reserve(LLM_CAP_COUNTER, cap)
 
 
 def reset_state() -> None:
@@ -410,6 +417,17 @@ def evidence_hash(raw: RawJob) -> str:
         raw.location or "", bool(raw.remote),
     ], ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Characters of `evidence_hash` stored on the shared Job row and in the pulse
+#: lane's board signature. Change detection needs 2^64 states, not 2^256, and
+#: the prefetch that reads it is the widest query on the hottest lane.
+GEO_HASH_CHARS = 16
+
+
+def geo_hash(raw: RawJob) -> str:
+    """The stored form of `evidence_hash` (see `Job.geo_hash`)."""
+    return evidence_hash(raw)[:GEO_HASH_CHARS]
 
 
 def location_hash(raw: RawJob, content_hash: str = "") -> str:
@@ -1126,7 +1144,7 @@ def llm_extract(excerpts: str) -> LlmResult:
         _bump("llm_skipped_platform_budget")
         return LlmResult(how="skipped:platform_budget")
     cap = int(settings.geo_verify_llm_daily_cap or 0)
-    if cap > 0 and _llm_calls_today() >= cap:
+    if cap <= 0 or _llm_calls_today() >= cap:
         _bump("llm_skipped_daily_cap")
         return LlmResult(how="skipped:daily_cap")
     backend = _cheapest_backend()
@@ -1295,6 +1313,7 @@ def mark_held(keys: Iterable[tuple]) -> int:
     wanted = sorted({(k[0], str(k[1])) for k in keys if k and k[1]})
     if not wanted or not settings.geo_verify_enabled:
         return 0
+    from sqlalchemy import or_
     now = datetime.utcnow()
     max_attempts = int(settings.geo_verify_max_attempts or 0)
     n = 0
@@ -1302,11 +1321,20 @@ def mark_held(keys: Iterable[tuple]) -> int:
         with get_session() as session:
             for start in range(0, len(wanted), 300):
                 chunk = wanted[start:start + 300]
-                stmt = (_update(JobGeography.__table__)
-                        .where(JobGeography.__table__.c.source.in_({k[0] for k in chunk}),
-                               JobGeography.__table__.c.external_id.in_([k[1] for k in chunk]),
-                               JobGeography.__table__.c.status != RESOLVED,
-                               JobGeography.__table__.c.next_attempt_at > now)
+                t = JobGeography.__table__
+                stmt = (_update(t)
+                        .where(t.c.source.in_({k[0] for k in chunk}),
+                               t.c.external_id.in_([k[1] for k in chunk]),
+                               t.c.status != RESOLVED,
+                               # A conflict the page step already retained is
+                               # parked for a person: a new held copy is not
+                               # new evidence, and re-arming it would spend
+                               # the posting's remaining attempts re-reading
+                               # the same page. A conflict intake recorded and
+                               # nobody has looked at yet may still be armed.
+                               or_(t.c.status != CONFLICT, t.c.last_step == "intake",
+                                   t.c.last_step.is_(None)),
+                               t.c.next_attempt_at > now)
                         .values(next_attempt_at=now, updated_at=now))
                 if max_attempts > 0:
                     stmt = stmt.where(JobGeography.__table__.c.attempts < max_attempts)
@@ -1320,7 +1348,7 @@ def mark_held(keys: Iterable[tuple]) -> int:
 def _posting_text(source: str, external_id: str) -> Tuple[str, str]:
     """(url, description[:TEXT_SCAN_CHARS]) from any copy of the posting —
     shared row first. Projected: the description is truncated in SQL."""
-    from sqlalchemy import func
+    from sqlalchemy import case, func
     from sqlmodel import select
     from app.db.init_db import get_session
     from app.db.models import Job, JobSource
@@ -1330,13 +1358,16 @@ def _posting_text(source: str, external_id: str) -> Tuple[str, str]:
     except ValueError:
         return "", ""
     with get_session() as session:
-        q = (select(Job.url, func.substr(Job.description, 1, TEXT_SCAN_CHARS), Job.user_id)
-             .where(Job.source == src_enum, Job.external_id == str(external_id)).limit(6))
-        rows = session.exec(q).all()
-    if not rows:
+        # ONE row: the shared copy first, decided in SQL. Reading six
+        # descriptions to keep one was up to 100 KB discarded per posting.
+        q = (select(Job.url, func.substr(Job.description, 1, TEXT_SCAN_CHARS))
+             .where(Job.source == src_enum, Job.external_id == str(external_id))
+             .order_by(case((Job.user_id == SHARED_POOL_USER, 0), else_=1), Job.id)
+             .limit(1))
+        row = session.exec(q).first()
+    if not row:
         return "", ""
-    rows.sort(key=lambda r: 0 if r[2] == SHARED_POOL_USER else 1)
-    return rows[0][0] or "", rows[0][1] or ""
+    return row[0] or "", row[1] or ""
 
 
 def _retry_hours() -> float:

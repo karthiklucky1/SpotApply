@@ -198,6 +198,16 @@ def test_the_detail_endpoint_cannot_overturn_a_restriction_the_text_states(monke
     assert _copy(U1, "conflict").eligibility == UNKNOWN, "held: nobody invented a country"
     assert _copy(U1, "conflict").rerank_score is None
     assert gv.verify_pending()["pending_examined"] == 0
+    # A second user adopting the posting is a new held copy, not new evidence:
+    # mark_held leaves the retained conflict parked instead of spending the
+    # posting's remaining attempts re-reading the same page.
+    _profile(U2, location="Austin, TX")
+    P._upsert([raw], user_id=U2, preferred_country="United States",
+              user_keywords=["machine learning engineer"], geo_prefs=US_HOME)
+    assert _copy(U2, "conflict").eligibility == UNKNOWN
+    row = _geo_row("conflict", "lever")
+    assert row.next_attempt_at > datetime.utcnow() + timedelta(days=300), "still parked"
+    assert gv.verify_pending()["pending_examined"] == 0 and len(fetched) == 1
     # ...whereas an endpoint whose structured evidence AGREES with the text
     # resolves it: same posting, Lever now says country=DE.
     with get_session() as s:
@@ -374,7 +384,7 @@ def test_a_structured_only_country_change_re_decides_every_copy():
     assert json.loads(_geo_row("moved", "lever").countries_json) == ["united states"]
     with get_session() as s:
         shared = _shared("moved")
-        assert shared.geo_hash == gv.evidence_hash(us)
+        assert shared.geo_hash == gv.geo_hash(us)
         row = s.get(Job, shared.id)
         row.embedding_id = 4242
         s.add(row)
@@ -394,7 +404,7 @@ def test_a_structured_only_country_change_re_decides_every_copy():
     assert copy.eligibility == INELIGIBLE and copy.rerank_score == gv.INELIGIBLE_STAMP_SCORE
     assert "United Kingdom" in copy.eligibility_reason
     shared = _shared("moved")
-    assert shared.geo_hash == gv.evidence_hash(gb) and shared.geo_hash != gv.evidence_hash(us)
+    assert shared.geo_hash == gv.geo_hash(gb) and shared.geo_hash != gv.geo_hash(us)
     assert shared.embedding_id == 4242 and shared.description == desc, (
         "a geography-only change rewrites two small columns, never the text or the embedding")
 
@@ -419,13 +429,13 @@ def test_a_row_from_before_the_hash_adopts_a_baseline_without_re_deriving():
         s.commit()
     P._upsert([raw], user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
     shared = _shared("legacy")
-    assert shared.geo_hash == gv.evidence_hash(raw), "baseline adopted on the stale touch"
+    assert shared.geo_hash == gv.geo_hash(raw), "baseline adopted on the stale touch"
     assert shared.last_seen > now - timedelta(minutes=1)
     assert _geo_row("legacy", "lever") is None, "copying/touching an old posting never makes it new"
     # From here a real move IS seen.
     P._upsert([_lever_raw("legacy", "GB", desc)], user_id=P.SHARED_POOL_USER,
               user_keywords=["machine learning engineer"])
-    assert _shared("legacy").geo_hash == gv.evidence_hash(_lever_raw("legacy", "GB", desc))
+    assert _shared("legacy").geo_hash == gv.geo_hash(_lever_raw("legacy", "GB", desc))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -560,6 +570,12 @@ def test_the_daily_cap_is_persisted_and_reserved_atomically(monkeypatch):
     assert gv._register_llm_call() is True
     assert gv._register_llm_call() is False
     assert gv._llm_calls_today() == 1
+    # A cap of 0 is NO calls — a spend control never reads 0 as unlimited.
+    monkeypatch.setattr(settings, "geo_verify_llm_daily_cap", 0)
+    assert gv._register_llm_call() is False
+    assert gv.llm_extract("Applicants must be located in the kingdom of Narnia, "
+                          "near the wardrobe office.").how == "skipped:daily_cap"
+    assert gv._llm_calls_today() == 1, "nothing was reserved"
     with get_session() as s:
         row = s.exec(select(PlatformCounter).where(PlatformCounter.name == gv.LLM_CAP_COUNTER)).first()
     assert row is not None and row.count == 1 and row.day == datetime.utcnow().date()

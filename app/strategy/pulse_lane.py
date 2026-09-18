@@ -199,11 +199,11 @@ def _board_signature(raw: list) -> str:
     and hashing it is what lets a posting whose country moved under an
     unchanged title and display string reach the shared door at all.
     """
-    from app.discovery.geo_verify import evidence_hash
+    from app.discovery.geo_verify import geo_hash
     # Hash first: `_signature_from_entries` keeps 80 characters of the second
     # element, and a long title must not push the evidence off the end.
     return _signature_from_entries(
-        (r.external_id, f"{evidence_hash(r)[:16]}|{(r.title or '')[:60]}") for r in raw)
+        (r.external_id, f"{geo_hash(r)}|{(r.title or '')[:60]}") for r in raw)
 
 
 def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -> None:

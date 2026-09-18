@@ -393,19 +393,21 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   derives from the fetched structured fields PLUS the description, so a
   detail endpoint restating `country=US` cannot overturn "must be based in
   Germany"; a CONFLICT row is never sent to the model and is parked a year
-  (`conflict_retained`). "Must be based in California" is a STATE restriction
+  (`conflict_retained`; `mark_held` does not re-arm it — only changed
+  evidence does). "Must be based in California" is a STATE restriction
   (`Geography.areas`, `areas_json`): held when the profile names no state,
   never widened to the country. `remote_ok=False` makes a remote role
   INELIGIBLE unless it has an office in the user's area. The legacy string
   filters (`RuleFilter`, `matcher._passes_legacy_country_gate`) SKIP their
   country check for any row with a verdict — "Remote · Tiranë, Albania ·
   Austin, TX" is eligible by the verdict and Albanian to the regex. The
-  shared row carries `Job.geo_hash` (`evidence_hash`: structured evidence,
-  no text) so a Lever `country` moving under an unchanged string re-derives
-  and re-decides (location-only write, no re-embed); NULL rows adopt a
-  baseline on their next stale touch, never re-derived. `GEO_VERIFY_LLM_DAILY_CAP`
-  is RESERVED per call in `platform_counter` (`app/common/daily_counter.py`) —
-  the in-process counter reset on every deploy and was per replica. Guards:
+  shared row carries `Job.geo_hash` (16 chars of `evidence_hash`: structured
+  evidence, no text; projected by the SHARED door's prefetch only) so a Lever
+  `country` moving under an unchanged string re-derives and re-decides
+  (location-only write, no re-embed); NULL rows adopt a baseline on their
+  next stale touch, never re-derived. `GEO_VERIFY_LLM_DAILY_CAP` is RESERVED
+  per call in `platform_counter` (`app/common/daily_counter.py`; 0 = no
+  calls) — the in-process counter reset on every deploy and was per replica. Guards:
   `test_geo_eligibility`, `test_geo_review_followup`.
 - **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before

@@ -279,6 +279,7 @@ def _flush_geo_baselines(rows: List[dict]) -> None:
     if not rows:
         return
     from sqlalchemy import bindparam, update as _update
+    rows = sorted(rows, key=lambda r: r["_id"])       # ascending PK, the lock order every writer takes
     with get_session() as session:
         stmt = (_update(Job.__table__)
                 .where(Job.__table__.c.id == bindparam("_id"))
@@ -337,8 +338,8 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
     # The structured location evidence this row is written from, so the next
     # sighting can tell "same posting, same place" from "same text, moved".
     try:
-        from app.discovery.geo_verify import evidence_hash as _evidence_hash
-        job.geo_hash = _evidence_hash(r)
+        from app.discovery.geo_verify import geo_hash as _geo_hash
+        job.geo_hash = _geo_hash(r)
     except Exception:
         job.geo_hash = None
     # Card-face facets from the text we already have in hand, so the board never
@@ -754,11 +755,16 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     chunk = values[start:start + _DEDUPE_PREFETCH_CHUNK]
                     if not chunk:
                         continue
+                    # `geo_hash` is read by the SHARED door only (below), so
+                    # only the shared door pays for it on the wire: this is
+                    # the widest query on the hottest lane (docs/CAPACITY.md).
+                    _cols = [Job.id, Job.source, Job.external_id, Job.content_hash,
+                             Job.last_seen, Job.cross_source_slug, Job.first_seen,
+                             Job.location]
+                    if _shared_door:
+                        _cols.append(Job.geo_hash)
                     rows.extend(session.exec(
-                        select(Job.id, Job.source, Job.external_id, Job.content_hash,
-                               Job.last_seen, Job.cross_source_slug, Job.first_seen,
-                               Job.location, Job.geo_hash)
-                        .where(Job.user_id == user_id, col.in_(chunk))
+                        select(*_cols).where(Job.user_id == user_id, col.in_(chunk))
                     ).all())
         # Stamp the SHARED sighting onto the RawJob itself. The lanes hand these
         # same objects to the per-user routes right after the shared upsert, so
@@ -766,7 +772,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         # _inherit_shared_first_seen for the door that arrives without it.
         _stamp = {(r.source, r.external_id): r for r in candidates} \
             if user_id == SHARED_POOL_USER else {}
-        for jid, src, ext, chash, lseen, slug, fseen, ploc, ghash in rows:
+        for row in rows:
+            jid, src, ext, chash, lseen, slug, fseen, ploc = row[:8]
+            ghash = row[8] if _shared_door else None
             src_v = src.value if hasattr(src, "value") else str(src)
             by_key[(src_v, ext)] = (jid, chash, lseen, ploc, ghash)
             if slug and slug not in by_slug:
@@ -847,13 +855,13 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             pending_by_key.clear()
         return n
 
-    from app.discovery.geo_verify import evidence_hash as _evidence_hash
+    from app.discovery.geo_verify import geo_hash as _geo_hash
     for r in candidates:
         inserted += _flush()
         content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
         slug = _cross_source_slug(r.company, r.title, r.location)
         _geo_hashes[(r.source, str(r.external_id))] = content_hash
-        geo_hash = _evidence_hash(r)
+        geo_hash = _geo_hash(r)
 
         if prefetched:
             hit = by_key.get((r.source, r.external_id))

@@ -81,9 +81,11 @@ posting's text, exactly as intake derives a listing, so an official endpoint
 restating a structured country cannot overturn a restriction the text states.
 A CONFLICT row is never sent to the model (excerpts alone can only restate the
 text's side) and is parked for a person (`next_attempt_at` a year out,
-`conflict_retained`); it resolves only when a step's own combined evidence is
+`conflict_retained`, and `mark_held` does not re-arm it — a new held copy is
+not new evidence); it resolves only when a step's own combined evidence is
 conflict-free — Lever later saying `country=DE` under "must be based in
-Germany" does resolve it.
+Germany" does resolve it, because a changed `location_hash` re-derives the
+row and resets its attempts.
 
 **The legacy string filters defer to the verdict.** `RuleFilter` and the
 retrieval gate (`matcher._passes_legacy_country_gate`) skip their whole-string
@@ -105,11 +107,13 @@ model-verified result.
 compare only the description hash and the display string, so Lever's
 `country` moving US → GB under the same "Remote" and the same text was
 "unchanged, recently seen — no DB work", and every copy kept its verdict.
-The shared row now carries `Job.geo_hash` (`geo_verify.evidence_hash`: every
-site, the country code, the workplace type, the restriction field, the display
-string, the remote flag — everything `derive` reads except the text), the
-prefetch compares it, and a move is a location-only update: two small columns
-and a re-decision, never a description rewrite or a cleared embedding. Rows
+The shared row now carries `Job.geo_hash` (`geo_verify.geo_hash`: the first
+16 characters of `evidence_hash` — every site, the country code, the workplace
+type, the restriction field, the display string, the remote flag; everything
+`derive` reads except the text), the shared door's prefetch — and only the
+shared door's, it is the widest query on the hottest lane — compares it, and
+a move is a location-only update: two small columns and a re-decision, never
+a description rewrite or a cleared embedding. Rows
 written before the column existed (NULL) adopt the current evidence as their
 baseline on the next stale touch — a write that was happening anyway — and are
 NOT re-derived; the next move is what becomes visible. The pulse lane's
@@ -150,9 +154,11 @@ survives deploys and is shared by every replica — the first version counted
 in process memory, which reset on every restart and was private to each
 process, so "400/day" was really 400 per process per uptime. A reservation
 the database cannot record refuses the call (deferred as a platform skip, not
-charged to the posting). The cap is a COUNT of calls; what it costs depends on
-the model that serves them — read the ledger (`kind=geo_verify`,
-`scripts/geo_verification_report.py`), not a per-call estimate.
+charged to the posting). A cap of 0 is NO calls — a spend control never reads
+0 as unlimited (`GEO_VERIFY_LLM_ENABLED=0` has the same effect). The cap is a
+COUNT of calls; what it costs depends on the model that serves them — read the
+ledger (`kind=geo_verify`, `scripts/geo_verification_report.py`), not a
+per-call estimate.
 
 Three rules keep the sweep from becoming a per-tick bill:
 
