@@ -43,10 +43,11 @@ from urllib.parse import urlparse
 
 from app.common.eligibility import (
     CONFLICT, ELIGIBLE, INELIGIBLE, RESOLVED, STATUS_UNKNOWN,
-    UNKNOWN, WORLDWIDE, Decision, Geography, decide,
+    UNKNOWN, WORLDWIDE, Decision, Geography, area_token, decide,
 )
 from app.common.geo import (
-    _SITE_SPLIT, detect_country, detect_region, resolve_country_value,
+    _SITE_SPLIT, country_named_in, detect_country, detect_region, detect_us_state,
+    resolve_country_value,
 )
 from app.config import settings
 from app.discovery.base import GeoEvidence, RawJob
@@ -54,7 +55,9 @@ from app.discovery.base import GeoEvidence, RawJob
 log = logging.getLogger(__name__)
 
 #: Bumped when extraction rules change so stored rows can be told apart.
-VERIFIER_VERSION = 1
+#: 2 (2026-09-18): sub-national restrictions are kept as areas; a model's
+#: quote must support each claim; a conflict is retained through verification.
+VERIFIER_VERSION = 2
 
 #: The score an INELIGIBLE copy is stamped with as it leaves the queue — the
 #: same number the rule filter uses, so every reader that already understands
@@ -92,33 +95,38 @@ def metrics_snapshot(reset: bool = False) -> dict:
     return data
 
 
-# ── daily LLM cap (platform-wide, in-process like the card-mint cap) ─────────
-_llm_today = {"day": "", "count": 0}
-_llm_lock = threading.Lock()
+# ── daily LLM cap (platform-wide, PERSISTED) ─────────────────────────────────
+# `GEO_VERIFY_LLM_DAILY_CAP` is promised as a platform-wide ceiling, so it is
+# kept where a platform-wide number can live: one `PlatformCounter` row per
+# UTC day, reserved with a conditional UPDATE before each call
+# (app/common/daily_counter.py). The first version counted in process memory —
+# reset by every deploy, private to every replica — which made "400/day" mean
+# "400 per process per uptime". A reservation the database cannot record is a
+# refusal: the call is not made, and the posting is deferred, not charged.
+LLM_CAP_COUNTER = "geo_verify_llm_calls"
 
 
 def _llm_calls_today() -> int:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    with _llm_lock:
-        if _llm_today["day"] != today:
-            _llm_today["day"], _llm_today["count"] = today, 0
-        return _llm_today["count"]
+    from app.common.daily_counter import count
+    return int(count(LLM_CAP_COUNTER) or 0)
 
 
-def _register_llm_call() -> None:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    with _llm_lock:
-        if _llm_today["day"] != today:
-            _llm_today["day"], _llm_today["count"] = today, 0
-        _llm_today["count"] += 1
+def _register_llm_call() -> bool:
+    """Reserve one call under today's cap. False = refused (cap reached, or
+    the counter could not be read or written)."""
+    from app.common.daily_counter import reserve
+    return reserve(LLM_CAP_COUNTER, int(settings.geo_verify_llm_daily_cap or 0))
 
 
 def reset_state() -> None:
-    """Tests only: clear the counters and the daily cap."""
+    """Tests only: clear the counters and today's persisted cap."""
     with _metrics_lock:
         _METRICS.clear()
-    with _llm_lock:
-        _llm_today["day"], _llm_today["count"] = "", 0
+    try:
+        from app.common.daily_counter import reset
+        reset(LLM_CAP_COUNTER)
+    except Exception:
+        pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -172,13 +180,39 @@ def _sites_from_location(location: str) -> List[str]:
 
 def _resolve_place(text: str) -> Tuple[str, str]:
     """('country', '') / ('', 'region') / ('', WORLDWIDE) / ('', '') for a phrase."""
+    c, r, _area = _resolve_place_full(text)
+    return c, r
+
+
+_CITY_STATE_RE = re.compile(r"^\s*([A-Za-z.'\- ]{2,40}?)\s*,\s*([A-Za-z.]{2,20})\s*$")
+
+
+def _resolve_place_full(text: str) -> Tuple[str, str, str]:
+    """(country, region, area) for a phrase named in a restriction.
+
+    `area` is the sub-national token ("united states/ca", "united states/tx/
+    austin") when the phrase names a US state — with the country set to the
+    United States, since a state restriction is also a country restriction.
+    "California" alone used to resolve to nothing at all, so "must be based
+    in California" was an unreadable excerpt and, once a model read it as
+    "United States", a nationwide role."""
     if _WORLDWIDE_RE.search(text or ""):
-        return "", WORLDWIDE
+        return "", WORLDWIDE, ""
     c = detect_country(text)
+    state = detect_us_state(text) if c in ("", "united states") else ""
+    if state:
+        city = ""
+        m = _CITY_STATE_RE.match(text or "")
+        if m and (m.group(2).lower() == state or detect_us_state(m.group(2)) == state):
+            head = m.group(1).strip().lower()
+            # Only a real city-shaped head, never a region phrase ("Bay Area").
+            if head and not detect_us_state(head) and "area" not in head and "region" not in head:
+                city = head
+        return "united states", "", area_token("united states", state, city)
     if c:
-        return c, ""
+        return c, "", ""
     r = detect_region(text)
-    return "", r
+    return "", r, ""
 
 
 def _sentence_around(text: str, start: int, end: int, width: int = 160) -> str:
@@ -192,26 +226,31 @@ def _sentence_around(text: str, start: int, end: int, width: int = 160) -> str:
     return " ".join(chunk[left + 1 if left != -1 else 0:right].split())[:300]
 
 
-def scan_restrictions(text: str) -> Tuple[List[str], List[str], List[str], List[str]]:
+def scan_restrictions(text: str, *, with_areas: bool = False):
     """Explicit residence restrictions in prose.
 
     Returns (countries, regions, quotes, unresolved_excerpts): the first three
     are what the rules could read; the fourth is restriction-shaped text that
     named a place the tables do not know — the "useful evidence exists but
-    rules cannot interpret it" case that alone justifies a model call.
+    rules cannot interpret it" case that alone justifies a model call. With
+    ``with_areas`` a fifth list carries the sub-national tokens
+    ("united states/ca") the same phrases named.
     """
     body = (text or "")[:TEXT_SCAN_CHARS]
     countries: List[str] = []
     regions: List[str] = []
     quotes: List[str] = []
     unresolved: List[str] = []
+    areas: List[str] = []
     for rx in _RESTRICTION_RES:
         for m in rx.finditer(body):
             place = (m.group("place") or "").strip(" .,;:")
             if not place:
                 continue
-            country, region = _resolve_place(place)
+            country, region, area = _resolve_place_full(place)
             quote = _sentence_around(body, m.start(), m.end())
+            if area and area not in areas:
+                areas.append(area)
             if country and country not in countries:
                 countries.append(country)
                 quotes.append(quote)
@@ -221,6 +260,8 @@ def scan_restrictions(text: str) -> Tuple[List[str], List[str], List[str], List[
             elif not country and not region:
                 if quote not in unresolved:
                     unresolved.append(quote)
+    if with_areas:
+        return countries, regions, quotes, unresolved, areas
     return countries, regions, quotes, unresolved
 
 
@@ -305,7 +346,8 @@ def derive(raw: RawJob) -> Geography:
             evidence_source, evidence_field = "ats_structured", ev.remote_regions_field or "remote_regions"
 
     # Explicit restrictions in the description.
-    text_countries, text_regions, quotes, _unresolved = scan_restrictions(raw.description)
+    text_countries, text_regions, quotes, _unresolved, text_areas = scan_restrictions(
+        raw.description, with_areas=True)
     conflicts: List[str] = []
     site_countries = list(countries)
     if (text_countries or text_regions) and site_countries and not any(
@@ -349,22 +391,33 @@ def derive(raw: RawJob) -> Geography:
     else:
         status = STATUS_UNKNOWN
     return Geography(status=status, countries=countries, sites=sites, work_mode=work_mode,
-                     remote_regions=regions, conflicts=conflicts,
+                     remote_regions=regions, areas=text_areas, conflicts=conflicts,
                      evidence_source=evidence_source, evidence_field=evidence_field,
                      evidence_quote=evidence_quote)
 
 
-def location_hash(raw: RawJob, content_hash: str = "") -> str:
-    """Names the location evidence a geography row was derived from. Any
-    change to it (a new site, a country code, an edited description) makes a
-    later sighting re-derive the row and re-decide every copy."""
+def evidence_hash(raw: RawJob) -> str:
+    """Names the STRUCTURED location evidence of a sighting: every site, the
+    ATS country code, the workplace type, the remote-restriction field, the
+    display string and the remote flag — everything `derive` reads except the
+    description, which has its own content hash. Stored on the shared Job row
+    (`Job.geo_hash`) so the shared door notices a posting whose country moved
+    while its text and display string did not."""
     ev = getattr(raw, "geo", None)
     payload = json.dumps([
         sorted(ev.sites) if ev else [], (ev.country if ev else ""),
         (ev.work_mode if ev else ""), (ev.remote_regions if ev else ""),
-        raw.location or "", bool(raw.remote), content_hash or "",
+        raw.location or "", bool(raw.remote),
     ], ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def location_hash(raw: RawJob, content_hash: str = "") -> str:
+    """Names ALL the location evidence a geography row was derived from —
+    the structured evidence plus the description. Any change to it (a new
+    site, a country code, an edited description) makes a later sighting
+    re-derive the row and re-decide every copy."""
+    return hashlib.sha256(f"{evidence_hash(raw)}|{content_hash or ''}".encode("utf-8")).hexdigest()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -381,6 +434,7 @@ def _row_to_geo(row) -> Geography:
     return Geography(status=row.status or STATUS_UNKNOWN,
                      countries=_loads(row.countries_json), sites=_loads(row.sites_json),
                      work_mode=row.work_mode or "", remote_regions=_loads(row.remote_regions_json),
+                     areas=_loads(getattr(row, "areas_json", None)),
                      conflicts=_loads(row.conflicts_json),
                      evidence_source=row.evidence_source or "none",
                      evidence_field=row.evidence_field or "", evidence_quote=row.evidence_quote or "")
@@ -392,6 +446,7 @@ def _apply_geo(row, geo: Geography) -> None:
     row.sites_json = json.dumps(geo.sites[:64], ensure_ascii=False)
     row.work_mode = geo.work_mode or None
     row.remote_regions_json = json.dumps(geo.remote_regions)
+    row.areas_json = json.dumps(geo.areas[:16])
     row.conflicts_json = json.dumps(geo.conflicts[:8], ensure_ascii=False)
     row.evidence_source = geo.evidence_source or "none"
     row.evidence_field = (geo.evidence_field or None) and geo.evidence_field[:200]
@@ -813,9 +868,19 @@ def lever_geo(j: dict) -> GeoEvidence:
     return ev
 
 
-def page_evidence(url: str, source: str, timeout: Optional[float] = None) -> PageEvidence:
+def page_evidence(url: str, source: str, timeout: Optional[float] = None,
+                  description: str = "") -> PageEvidence:
     """Step B for one posting. Never raises; a failure is `how="error:…"` and
-    inconclusive — it establishes nothing and closes nothing."""
+    inconclusive — it establishes nothing and closes nothing.
+
+    ``description`` is the posting's own text. Every probe here is derived
+    from the fetched STRUCTURED evidence *together with* that text, exactly as
+    intake derives a listing: the official detail endpoint restating a
+    structured country does not outrank a restriction written in the posting
+    ("Candidates must be based in Germany"). The first version built the
+    detail probe with an empty description, so a conflict intake had found
+    was replaced by whichever side the endpoint happened to repeat.
+    """
     timeout = float(settings.geo_verify_fetch_timeout_seconds if timeout is None else timeout)
     src = source.value if hasattr(source, "value") else str(source)
     if not settings.geo_verify_fetch_enabled:
@@ -831,11 +896,15 @@ def page_evidence(url: str, source: str, timeout: Optional[float] = None) -> Pag
     if ev is not None:
         _bump("fetch_resolved_ats_detail")
         probe = RawJob(source=src, external_id="", company="", title="", location="",
-                       remote=(ev.work_mode == "remote"), url=url, description="", geo=ev)
+                       remote=(ev.work_mode == "remote"), url=url,
+                       description=description or "", geo=ev)
         geo = derive(probe)
         geo.evidence_source = "ats_detail"
         geo.evidence_field = api
-        return PageEvidence(geo=geo if geo.resolved else None, how=how, field=api)
+        if geo.status == CONFLICT:
+            _bump("fetch_conflict_ats_detail")
+        return PageEvidence(geo=geo if (geo.resolved or geo.status == CONFLICT) else None,
+                            how=how, field=api)
     if how.startswith("error:"):
         _bump("fetch_failed")
         return PageEvidence(how=how, field=api)
@@ -852,11 +921,12 @@ def page_evidence(url: str, source: str, timeout: Optional[float] = None) -> Pag
     text = " ".join(text.split())[:30_000]
     ev, how = _geo_from_jsonld(body)
     if ev is not None:
+        combined = ((description or "") + "\n" + text).strip()
         probe = RawJob(source=src, external_id="", company="", title="", location="",
-                       remote=(ev.work_mode == "remote"), url=url, description=text, geo=ev)
+                       remote=(ev.work_mode == "remote"), url=url, description=combined, geo=ev)
         geo = derive(probe)
         if geo.resolved or geo.status == CONFLICT:
-            _bump("fetch_resolved_jsonld")
+            _bump("fetch_resolved_jsonld" if geo.resolved else "fetch_conflict_jsonld")
             geo.evidence_source = "page_jsonld"
             geo.evidence_field = url
             return PageEvidence(geo=geo, text=text, how="page_jsonld", field=url)
@@ -941,14 +1011,45 @@ def _norm_text(s: str) -> str:
     return " ".join((s or "").casefold().replace("’", "'").split())
 
 
+_ELLIPSIS_RE = re.compile(r"(?:\s*(?:\.\.\.|…))+\s*$")
+
+
 def quote_is_verbatim(quote: str, supplied: str) -> bool:
-    """The model's evidence must appear in what it was shown. A 40-char prefix
-    is accepted too, since models trim long sentences; anything shorter is not
-    evidence of anything."""
-    q, s = _norm_text(quote), _norm_text(supplied)
+    """The model's evidence must appear IN FULL in what it was shown. A
+    trimmed quote is fine — it is still a substring — but a quote whose tail
+    is not in the text is not evidence: the first version accepted any quote
+    whose first 40 characters matched, which let a fabricated second half
+    ride in on a real opening. A trailing ellipsis is stripped first; anything
+    under 8 characters is not evidence of anything."""
+    q, s = _norm_text(_ELLIPSIS_RE.sub("", quote or "")), _norm_text(supplied)
     if len(q) < 8 or not s:
         return False
-    return q in s or (len(q) >= 40 and q[:40] in s)
+    return q in s
+
+
+def quote_supports(quote: str, countries: List[str], regions: List[str],
+                   areas: List[str]) -> Tuple[List[str], List[str], List[str]]:
+    """Which of the claimed countries / regions / areas the quote itself
+    names. A quote that is verbatim but says nothing about WHERE ("Our office
+    provides a comfortable and collaborative place to work") supports no
+    claim, and an unsupported claim is not adopted — the posting stays
+    unknown rather than becoming a country the model preferred."""
+    q = quote or ""
+    from app.common.geo import _REGION_MEMBERS
+    ok_countries = [c for c in countries if country_named_in(q, c)]
+    ok_regions: List[str] = []
+    for r in regions:
+        if r == WORLDWIDE:
+            if _WORLDWIDE_RE.search(q):
+                ok_regions.append(r)
+        elif r in _REGION_MEMBERS:
+            if detect_region(q) == r or (r == "europe" and detect_region(q) in ("eu", "europe")):
+                ok_regions.append(r)
+        elif country_named_in(q, r):
+            ok_regions.append(r)
+    q_state = detect_us_state(q)
+    ok_areas = [a for a in areas if q_state and a.split("/")[1:2] == [q_state]]
+    return ok_countries, ok_regions, ok_areas
 
 
 def interpret_llm_answer(text: str, supplied: str) -> Tuple[Optional[Geography], str]:
@@ -977,27 +1078,37 @@ def interpret_llm_answer(text: str, supplied: str) -> Tuple[Optional[Geography],
     if c:
         countries.append(c)
     regions: List[str] = []
+    areas: List[str] = []
     for r in regions_raw:
         if not isinstance(r, str):
             continue
-        cc, rr = _resolve_place(r)
+        cc, rr, area = _resolve_place_full(r)
         if cc and cc not in countries:
             countries.append(cc)
         if cc and cc not in regions:
             regions.append(cc)
         if rr and rr not in regions:
             regions.append(rr)
+        if area and area not in areas:
+            areas.append(area)
     if claims and not countries and not regions:
         # It named a place the tables do not know: unknown stays unknown.
         return None, "no_evidence"
+    if claims:
+        # Each claim must be SUPPORTED by the quote, not merely accompanied by
+        # one. What the quote does not name is dropped; if nothing survives
+        # the answer is discarded and the posting stays unknown.
+        countries, regions, areas = quote_supports(quote, countries, regions, areas)
+        if not countries and not regions:
+            return None, "unsupported_quote"
     mode = str(data.get("work_mode") or "").lower()
     mode = mode if mode in ("remote", "hybrid", "onsite") else ""
     sites = [str(s).strip() for s in (data.get("locations") or []) if isinstance(s, str) and str(s).strip()][:16] \
         if isinstance(data.get("locations"), list) else []
     status = CONFLICT if conflicts else (RESOLVED if (countries or regions) else STATUS_UNKNOWN)
     geo = Geography(status=status, countries=countries, sites=sites, work_mode=mode,
-                    remote_regions=regions, conflicts=conflicts, evidence_source="llm",
-                    evidence_quote=(quote or "")[:300])
+                    remote_regions=regions, areas=areas, conflicts=conflicts,
+                    evidence_source="llm", evidence_quote=(quote or "")[:300])
     return geo, "llm"
 
 
@@ -1023,8 +1134,15 @@ def llm_extract(excerpts: str) -> LlmResult:
         _bump("llm_skipped_no_provider")
         return LlmResult(how="skipped:no_provider")
     provider, model, client = backend
+    # The cap is a platform-wide promise, so the unit is RESERVED in the
+    # database right before the call (app/common/daily_counter.py): two
+    # processes cannot both take the last one, a restart cannot start the
+    # day over, and a counter that cannot be written means no call at all.
+    # The read above is only the cheap early exit; this is the decision.
+    if not _register_llm_call():
+        _bump("llm_skipped_daily_cap")
+        return LlmResult(how="skipped:daily_cap")
     try:
-        _register_llm_call()
         _bump("llm_attempted")
         text, usage, served = _call_llm(provider, model, client, excerpts)
         _note_provider_ok(provider)
@@ -1296,17 +1414,38 @@ def _record_attempt(row_id: int, geo: Optional[Geography], *, step: str, error: 
 
 def verify_one(row) -> Tuple[Optional[Geography], str]:
     """Steps B then C for one posting, outside any session. Returns
-    (geography or None, what happened)."""
+    (geography or None, what happened).
+
+    Evidence is COMBINED at every step, never replaced: the page probe is
+    derived from the fetched structured fields plus the posting's own text,
+    and a contradiction between them — or one intake already recorded — is
+    retained until a step's own evidence is conflict-free. The model reads
+    only text excerpts, so it cannot adjudicate a structured-vs-text
+    contradiction: a CONFLICT row is never sent to it, and a conflict the
+    page step finds ends the sequence. Nobody invents a country to break a
+    tie; the copies stay held and the row waits for a person.
+    """
     if not _claim_row(row.id):
         return None, "not_claimed"
     started = time.monotonic()
     url, description = _posting_text(row.source, row.external_id)
-    page = page_evidence(url, row.source)
+    page = page_evidence(url, row.source, description=description)
     if page.geo is not None:
         ms = int((time.monotonic() - started) * 1000)
-        geo = _record_attempt(row.id, page.geo, step="page", error="", llm=None, duration_ms=ms)
-        _bump("verified_postings")
+        geo = _record_attempt(row.id, page.geo, step="page",
+                              error="" if page.geo.resolved else "conflict",
+                              llm=None, duration_ms=ms)
+        _bump("verified_postings" if page.geo.resolved else "conflict_retained")
         return geo, page.how
+    if (row.status or "") == CONFLICT:
+        # Intake found the sites and the text disagreeing, and the page did
+        # not settle it. The rules already read both sides; excerpts alone
+        # would only restate the text's side. Keep the conflict on record.
+        ms = int((time.monotonic() - started) * 1000)
+        geo = _record_attempt(row.id, _row_to_geo(row), step="page", error="conflict_retained",
+                              llm=None, duration_ms=ms)
+        _bump("conflict_retained")
+        return geo, "conflict_retained"
     # Only text the rules could not read earns a model call: excerpts from the
     # description and, when we fetched it, the page. Never the whole posting.
     limit = int(settings.geo_verify_llm_max_chars or 1500)

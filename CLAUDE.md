@@ -384,10 +384,29 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   scoring cycle's bounded pre-step `geo_verify.verify_pending` resolves held
   postings: official ATS detail / page JSON-LD first, then ONE extraction
   call on the cheapest configured model only when location text exists the
-  rules could not read — the quote must be verbatim in the excerpts or the
-  answer is discarded; no text = no call. Unresolved rows are cached with
-  backoff (`GEO_VERIFY_*`). A copy of a pre-rollout posting gets no row and
-  keeps the string gate (`geo.location_allowed`). Guard: `test_geo_eligibility`.
+  rules could not read — the quote must be verbatim IN FULL in the excerpts
+  AND itself name the place claimed (`quote_supports`: name, city, US state,
+  demonym); an unsupported claim is dropped, none left = `unsupported_quote`;
+  no text = no call. Unresolved rows are cached with backoff (`GEO_VERIFY_*`).
+  A copy of a pre-rollout posting gets no row and keeps the string gate
+  (`geo.location_allowed`). **Second review (2026-09-18):** the page probe
+  derives from the fetched structured fields PLUS the description, so a
+  detail endpoint restating `country=US` cannot overturn "must be based in
+  Germany"; a CONFLICT row is never sent to the model and is parked a year
+  (`conflict_retained`). "Must be based in California" is a STATE restriction
+  (`Geography.areas`, `areas_json`): held when the profile names no state,
+  never widened to the country. `remote_ok=False` makes a remote role
+  INELIGIBLE unless it has an office in the user's area. The legacy string
+  filters (`RuleFilter`, `matcher._passes_legacy_country_gate`) SKIP their
+  country check for any row with a verdict — "Remote · Tiranë, Albania ·
+  Austin, TX" is eligible by the verdict and Albanian to the regex. The
+  shared row carries `Job.geo_hash` (`evidence_hash`: structured evidence,
+  no text) so a Lever `country` moving under an unchanged string re-derives
+  and re-decides (location-only write, no re-embed); NULL rows adopt a
+  baseline on their next stale touch, never re-derived. `GEO_VERIFY_LLM_DAILY_CAP`
+  is RESERVED per call in `platform_counter` (`app/common/daily_counter.py`) —
+  the in-process counter reset on every deploy and was per replica. Guards:
+  `test_geo_eligibility`, `test_geo_review_followup`.
 - **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
   that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —

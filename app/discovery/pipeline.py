@@ -237,7 +237,9 @@ def _flush_content_updates(rows: List[dict]) -> None:
     # from-scratch FAISS rebuild per user per matching tick — on the first
     # poll after a deploy that changes how an adapter spells locations, that
     # is every posting from that adapter at once.
-    text_rows = [r for r in rows if r.get("_content_changed", True)]
+    # Both shapes carry `geo_hash`: the structured location evidence the row
+    # was written from, which is what the next sighting is compared against.
+    text_rows = [dict(r, _geo_hash=r.get("_geo_hash")) for r in rows if r.get("_content_changed", True)]
     loc_rows = [r for r in rows if not r.get("_content_changed", True)]
     with get_session() as session:
         if text_rows:
@@ -248,19 +250,41 @@ def _flush_content_updates(rows: List[dict]) -> None:
                             embedding_id=None,
                             location=bindparam("_location"),
                             remote=bindparam("_remote"),
+                            geo_hash=bindparam("_geo_hash"),
                             last_seen=bindparam("_last_seen")))
             for start in range(0, len(text_rows), _DEDUPE_PREFETCH_CHUNK):
                 session.execute(stmt, text_rows[start:start + _DEDUPE_PREFETCH_CHUNK])
         if loc_rows:
             slim = [{"_id": r["_id"], "_location": r["_location"], "_remote": r["_remote"],
-                     "_last_seen": r["_last_seen"]} for r in loc_rows]
+                     "_geo_hash": r.get("_geo_hash"), "_last_seen": r["_last_seen"]}
+                    for r in loc_rows]
             stmt = (_update(Job.__table__)
                     .where(Job.__table__.c.id == bindparam("_id"))
                     .values(location=bindparam("_location"),
                             remote=bindparam("_remote"),
+                            geo_hash=bindparam("_geo_hash"),
                             last_seen=bindparam("_last_seen")))
             for start in range(0, len(slim), _DEDUPE_PREFETCH_CHUNK):
                 session.execute(stmt, slim[start:start + _DEDUPE_PREFETCH_CHUNK])
+        session.commit()
+
+
+def _flush_geo_baselines(rows: List[dict]) -> None:
+    """Adopt the current structured location evidence as the baseline of
+    shared rows written before `Job.geo_hash` existed — two small columns
+    per row, only for rows a stale-touch was writing anyway, and without
+    re-deriving anything. Backfilling by re-derivation would re-decide every
+    open copy in the pool at once; the baseline just makes the NEXT change
+    visible. Same executemany-by-primary-key shape as the content flush."""
+    if not rows:
+        return
+    from sqlalchemy import bindparam, update as _update
+    with get_session() as session:
+        stmt = (_update(Job.__table__)
+                .where(Job.__table__.c.id == bindparam("_id"))
+                .values(geo_hash=bindparam("_geo_hash"), last_seen=bindparam("_last_seen")))
+        for start in range(0, len(rows), _DEDUPE_PREFETCH_CHUNK):
+            session.execute(stmt, rows[start:start + _DEDUPE_PREFETCH_CHUNK])
         session.commit()
 
 
@@ -310,6 +334,13 @@ def _build_job(r: "RawJob", content_hash: str, slug: str,
     _decision = getattr(r, "eligibility_decision", None)
     if _decision:
         job.eligibility, job.eligibility_reason = _decision[0], (_decision[1] or "")[:200]
+    # The structured location evidence this row is written from, so the next
+    # sighting can tell "same posting, same place" from "same text, moved".
+    try:
+        from app.discovery.geo_verify import evidence_hash as _evidence_hash
+        job.geo_hash = _evidence_hash(r)
+    except Exception:
+        job.geo_hash = None
     # Card-face facets from the text we already have in hand, so the board never
     # has to load the posting to draw a salary chip or a sponsorship badge
     # (app/strategy/job_facets.py).
@@ -726,7 +757,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     rows.extend(session.exec(
                         select(Job.id, Job.source, Job.external_id, Job.content_hash,
                                Job.last_seen, Job.cross_source_slug, Job.first_seen,
-                               Job.location)
+                               Job.location, Job.geo_hash)
                         .where(Job.user_id == user_id, col.in_(chunk))
                     ).all())
         # Stamp the SHARED sighting onto the RawJob itself. The lanes hand these
@@ -735,9 +766,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
         # _inherit_shared_first_seen for the door that arrives without it.
         _stamp = {(r.source, r.external_id): r for r in candidates} \
             if user_id == SHARED_POOL_USER else {}
-        for jid, src, ext, chash, lseen, slug, fseen, ploc in rows:
+        for jid, src, ext, chash, lseen, slug, fseen, ploc, ghash in rows:
             src_v = src.value if hasattr(src, "value") else str(src)
-            by_key[(src_v, ext)] = (jid, chash, lseen, ploc)
+            by_key[(src_v, ext)] = (jid, chash, lseen, ploc, ghash)
             if slug and slug not in by_slug:
                 by_slug[slug] = src_v
             if fseen is not None:
@@ -777,6 +808,9 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
     # committed mid-batch any more, so the second occurrence has to find the
     # queued row here instead — otherwise it would insert a duplicate.
     pending_by_key: dict = {}
+    # Re-seen, unchanged, stale — and written before Job.geo_hash existed:
+    # the touch adopts the current evidence as the row's baseline.
+    geo_baselines: List[dict] = []
 
     def _flush(force: bool = False) -> int:
         """Drain the batches. BOUNDED, not accumulated to the end of the board —
@@ -793,6 +827,12 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             except Exception as e:
                 log.warning("Upsert last_seen flush failed for user %s: %s", user_id, e)
             touch_ids.clear()
+        if geo_baselines and (force or len(geo_baselines) >= _UPSERT_FLUSH_BATCH):
+            try:
+                _flush_geo_baselines(geo_baselines)
+            except Exception as e:
+                log.warning("Upsert geo baseline flush failed for user %s: %s", user_id, e)
+            geo_baselines.clear()
         if content_updates and (force or len(content_updates) >= _UPSERT_FLUSH_BATCH):
             try:
                 _flush_content_updates(content_updates)
@@ -807,20 +847,34 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             pending_by_key.clear()
         return n
 
+    from app.discovery.geo_verify import evidence_hash as _evidence_hash
     for r in candidates:
         inserted += _flush()
         content_hash = hashlib.sha256((r.description or "").encode("utf-8")).hexdigest()
         slug = _cross_source_slug(r.company, r.title, r.location)
         _geo_hashes[(r.source, str(r.external_id))] = content_hash
+        geo_hash = _evidence_hash(r)
 
         if prefetched:
             hit = by_key.get((r.source, r.external_id))
             if hit:
-                row_id, prev_hash, prev_seen, prev_loc = hit
+                row_id, prev_hash, prev_seen, prev_loc, prev_geo = hit
                 # A changed location is a change: the sites are what the
                 # eligibility gate decides on, and the row must render them.
+                # So is a change in the STRUCTURED evidence behind an
+                # unchanged display string — a Lever `country` that moved
+                # from US to GB under the same "Remote" — which is what the
+                # geography row is derived from. A row from before the hash
+                # existed (NULL) is not "changed": it adopts the current
+                # evidence as its baseline the next time it is touched.
+                # Shared door only: the geography is the SHARED row's to
+                # track (per-user copies are re-decided from it), and a copy
+                # adoption wrote from the pool (no structured evidence) that
+                # the pulse route re-sees with a scraper's evidence would
+                # otherwise earn a write for a difference in the messenger.
                 loc_changed = (r.location or "") != (prev_loc or "")
-                if prev_hash == content_hash and not loc_changed:
+                geo_changed = _shared_door and prev_geo is not None and prev_geo != geo_hash
+                if prev_hash == content_hash and not loc_changed and not geo_changed:
                     if prev_seen is not None and \
                             (_now - prev_seen).total_seconds() <= _LAST_SEEN_REFRESH_SECONDS:
                         continue  # unchanged, recently-seen duplicate — no DB work
@@ -830,17 +884,22 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         # (given a revisit interval longer than the refresh
                         # window) the case that describes almost every posting
                         # on almost every changed board.
-                        touch_ids.append(row_id)
-                        by_key[(r.source, r.external_id)] = (row_id, prev_hash, _now, prev_loc)
+                        if _shared_door and prev_geo is None:
+                            geo_baselines.append({"_id": row_id, "_geo_hash": geo_hash,
+                                                  "_last_seen": _now})
+                        else:
+                            touch_ids.append(row_id)
+                        by_key[(r.source, r.external_id)] = (row_id, prev_hash, _now, prev_loc, geo_hash)
                         continue
                 elif row_id is not None:
                     content_updates.append({
                         "_id": row_id, "_description": r.description,
                         "_content_hash": content_hash, "_last_seen": _now,
                         "_location": r.location or "", "_remote": bool(r.remote),
+                        "_geo_hash": geo_hash,
                         "_content_changed": prev_hash != content_hash,
                     })
-                    by_key[(r.source, r.external_id)] = (row_id, content_hash, _now, r.location)
+                    by_key[(r.source, r.external_id)] = (row_id, content_hash, _now, r.location, geo_hash)
                     if _shared_door:
                         _geo_changed.add((r.source, str(r.external_id)))
                     continue
@@ -854,7 +913,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         queued.content_hash = content_hash
                         queued.location = r.location
                         queued.remote = bool(r.remote)
-                        by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location)
+                        queued.geo_hash = geo_hash
+                        by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location, geo_hash)
                         continue
                 # No primary key in the snapshot and nothing queued (should not
                 # happen) — fall through and let the per-job path resolve it.
@@ -887,7 +947,7 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     # id is not known until the insert; None is enough to mark
                     # the key as claimed, and `_now` keeps it inside the
                     # refresh window so it is skipped rather than re-touched.
-                    by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location)
+                    by_key[(r.source, r.external_id)] = (None, content_hash, _now, r.location, geo_hash)
                     by_slug.setdefault(slug, r.source)
                     continue
 
@@ -905,13 +965,16 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                 if existing:
                     # Update description/content_hash (and the sites) if changed
                     _loc_changed = (r.location or "") != (existing.location or "")
-                    if existing.content_hash != content_hash or _loc_changed:
+                    _prev_geo = getattr(existing, "geo_hash", None)
+                    _geo_moved = _shared_door and _prev_geo is not None and _prev_geo != geo_hash
+                    if existing.content_hash != content_hash or _loc_changed or _geo_moved:
                         if existing.content_hash != content_hash:
                             existing.description = r.description
                             existing.content_hash = content_hash
                             existing.embedding_id = None  # force re-embed
                         existing.location = r.location or ""
                         existing.remote = bool(r.remote)
+                        existing.geo_hash = geo_hash
                         existing.last_seen = datetime.utcnow()
                         session.add(existing)
                         session.commit()
@@ -925,6 +988,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         _seen = existing.last_seen
                         if _seen is None or (datetime.utcnow() - _seen).total_seconds() > 6 * 3600:
                             existing.last_seen = datetime.utcnow()
+                            if _shared_door and _prev_geo is None:
+                                existing.geo_hash = geo_hash     # baseline, not a change
                             session.add(existing)
                             session.commit()
                     continue
@@ -1022,7 +1087,8 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                 if prefetched:
                     # Keep the snapshot current so later items in THIS batch that
                     # duplicate a just-inserted job skip without a round-trip.
-                    by_key[(r.source, r.external_id)] = (new_id, content_hash, job.last_seen, r.location)
+                    by_key[(r.source, r.external_id)] = (new_id, content_hash, job.last_seen,
+                                                         r.location, geo_hash)
                     by_slug.setdefault(slug, r.source)
         except IntegrityError:
             log.debug("IntegrityError (concurrent duplicate) skipped for '%s' @ '%s'", r.title, r.company)

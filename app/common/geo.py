@@ -60,6 +60,39 @@ _US_STATE_NAMES = [
     "virginia", "west virginia", "washington", "wisconsin", "wyoming",
 ]
 
+# Every state (and DC) by code, for SUB-NATIONAL residence restrictions
+# ("Candidates must be based in California"). This table is read only for a
+# place named inside a restriction phrase or a user's home location, where the
+# phrase itself says it is a place — so it can afford "california" and "maine",
+# which `_US_STATE_NAMES` above leaves out of the free-text country signals.
+# "georgia" stays out: bare "Georgia" is the country as often as the state on
+# the boards we read, and a restriction that names it is left for a person.
+_US_STATE_NAME_TO_CODE = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar",
+    "california": "ca", "colorado": "co", "connecticut": "ct", "delaware": "de",
+    "florida": "fl", "hawaii": "hi", "idaho": "id", "illinois": "il",
+    "indiana": "in", "iowa": "ia", "kansas": "ks", "kentucky": "ky",
+    "louisiana": "la", "maine": "me", "maryland": "md", "massachusetts": "ma",
+    "michigan": "mi", "minnesota": "mn", "mississippi": "ms", "missouri": "mo",
+    "montana": "mt", "nebraska": "ne", "nevada": "nv", "new hampshire": "nh",
+    "new jersey": "nj", "new mexico": "nm", "new york": "ny",
+    "north carolina": "nc", "north dakota": "nd", "ohio": "oh", "oklahoma": "ok",
+    "oregon": "or", "pennsylvania": "pa", "rhode island": "ri",
+    "south carolina": "sc", "south dakota": "sd", "tennessee": "tn",
+    "texas": "tx", "utah": "ut", "vermont": "vt", "virginia": "va",
+    "washington": "wa", "west virginia": "wv", "wisconsin": "wi", "wyoming": "wy",
+    "district of columbia": "dc", "washington dc": "dc", "washington, dc": "dc",
+    "washington d.c": "dc", "washington, d.c": "dc", "puerto rico": "pr", "guam": "gu",
+}
+US_STATE_LABELS = {code: name.title() for name, code in _US_STATE_NAME_TO_CODE.items()
+                   if name not in ("washington dc", "washington, dc", "washington d.c",
+                                   "washington, d.c")}
+US_STATE_LABELS["dc"] = "Washington, DC"
+# Longest names first so "west virginia" is not read as "virginia".
+_US_STATE_NAME_RES = [(re.compile(rf"(?<![a-z]){re.escape(n)}(?![a-z])"), c)
+                      for n, c in sorted(_US_STATE_NAME_TO_CODE.items(),
+                                         key=lambda kv: -len(kv[0]))]
+
 # Explicit US signals. NOTE: bare "america" is deliberately NOT one — "Latin
 # America", "South America" and "North America" (which also spans Canada and
 # Mexico) are not the United States. "United States of America" still matches
@@ -520,6 +553,88 @@ def detect_country(location: str) -> str:
             return "united states"
 
     return city
+
+
+def detect_us_state(text: str) -> str:
+    """The US state (lowercase code) a place phrase names, or ''.
+
+    Reads a spelled-out state name ("California", "New York") or a ``, XX``
+    state code ("Bay Area, CA", "Austin, TX"). Meant for a phrase that already
+    says it is a place — a residence restriction, a user's home location — so
+    it may read "california" and "maine", which the free-text country
+    detector leaves out. A code alone ("CA") is never enough: it is also
+    Canada's ISO-2 and the way a hundred other things are abbreviated.
+    """
+    loc = " " + (text or "").lower().strip() + " "
+    if not loc.strip():
+        return ""
+    for rx, code in _US_STATE_NAME_RES:
+        if rx.search(loc):
+            return code
+    codes = [c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES]
+    if codes:
+        city = _match_country(loc, _CITY_RES)
+        if not (city and _ISO2_US_STATE_COLLISIONS.get(city) in codes):
+            return codes[-1]
+    return ""
+
+
+# What a posting calls the people of a country. A model asked to quote its
+# evidence may be handed "must live and work within German borders" — a
+# sentence that names no country the tables know, yet plainly names Germany.
+# The quote validator accepts a claim only when the quote carries the country's
+# name, one of its cities, or one of these.
+COUNTRY_DEMONYMS = {
+    "united states": ["american", "u.s.", "us-based", "us based", "usa", "stateside"],
+    "united kingdom": ["british", "uk-based", "uk based", "english", "scottish", "welsh"],
+    "canada": ["canadian"], "india": ["indian"], "germany": ["german"],
+    "france": ["french"], "spain": ["spanish"], "netherlands": ["dutch"],
+    "ireland": ["irish"], "australia": ["australian"], "poland": ["polish"],
+    "portugal": ["portuguese"], "brazil": ["brazilian"], "mexico": ["mexican"],
+    "singapore": ["singaporean"], "japan": ["japanese"], "philippines": ["filipino", "philippine"],
+    "ukraine": ["ukrainian"], "nigeria": ["nigerian"], "pakistan": ["pakistani"],
+    "argentina": ["argentine", "argentinian"], "switzerland": ["swiss"],
+    "austria": ["austrian"], "italy": ["italian"], "sweden": ["swedish"],
+    "norway": ["norwegian"], "denmark": ["danish"], "finland": ["finnish"],
+    "belgium": ["belgian"], "czechia": ["czech"], "romania": ["romanian"],
+    "hungary": ["hungarian"], "greece": ["greek"], "turkey": ["turkish"],
+    "israel": ["israeli"], "united arab emirates": ["emirati"],
+    "south africa": ["south african"], "kenya": ["kenyan"], "egypt": ["egyptian"],
+    "indonesia": ["indonesian"], "vietnam": ["vietnamese"], "thailand": ["thai"],
+    "malaysia": ["malaysian"], "south korea": ["korean"], "china": ["chinese"],
+    "taiwan": ["taiwanese"], "new zealand": ["new zealander", "kiwi"],
+    "chile": ["chilean"], "colombia": ["colombian"], "peru": ["peruvian"],
+    "uruguay": ["uruguayan"], "estonia": ["estonian"], "latvia": ["latvian"],
+    "lithuania": ["lithuanian"], "bulgaria": ["bulgarian"], "croatia": ["croatian"],
+    "serbia": ["serbian"], "slovakia": ["slovak"], "slovenia": ["slovenian"],
+    "albania": ["albanian"], "cyprus": ["cypriot"], "luxembourg": ["luxembourgish"],
+    "iceland": ["icelandic"], "bangladesh": ["bangladeshi"], "sri lanka": ["sri lankan"],
+    "saudi arabia": ["saudi"], "qatar": ["qatari"], "morocco": ["moroccan"],
+    "ghana": ["ghanaian"], "ecuador": ["ecuadorian"], "costa rica": ["costa rican"],
+}
+_DEMONYM_RES = {c: _compile(toks) for c, toks in COUNTRY_DEMONYMS.items()}
+
+
+def country_named_in(text: str, country: str) -> bool:
+    """Does ``text`` itself name ``country`` (canonical lowercase) — by name,
+    alias, ISO code in a ", XX" position, city, state, or demonym? The check
+    behind "the quote must support the claim": a sentence about a comfortable
+    office supports no country at all."""
+    country = norm_country(country)
+    if not country or not (text or "").strip():
+        return False
+    if detect_country(text) == country:
+        return True
+    if country == "united states" and detect_us_state(text):
+        return True
+    loc = " " + text.lower().strip() + " "
+    if any(r.search(loc) for r in _DEMONYM_RES.get(country, ())):
+        return True
+    # A second country named beside the detected one ("US or Canada").
+    for table in (_NAME_RES, _CITY_RES):
+        if any(r.search(loc) for r in table.get(country, ())):
+            return True
+    return False
 
 
 def location_allowed(location: str, remote: bool, preferred_country: str, remote_ok: bool) -> bool:

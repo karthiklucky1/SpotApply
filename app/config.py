@@ -359,7 +359,7 @@ class Settings(BaseSettings):
     # excerpt it relied on and the quote is checked against the supplied text;
     # a confident answer with no quote is discarded. No text = no call.
     geo_verify_llm_enabled: bool = True        # GEO_VERIFY_LLM_ENABLED
-    geo_verify_llm_daily_cap: int = 400        # GEO_VERIFY_LLM_DAILY_CAP — platform-wide calls/day (~$0.10/day at gpt-4o-mini's list price for ~1.2k in / 120 out tokens; measured cost is in the ledger under kind=geo_verify)
+    geo_verify_llm_daily_cap: int = 400        # GEO_VERIFY_LLM_DAILY_CAP — platform-wide calls/day, PERSISTED in platform_counter and reserved per call (app/common/daily_counter.py), so it holds across restarts and replicas. A COUNT, not a dollar figure: what it costs depends on the model that serves the calls — read the ledger (kind=geo_verify), never estimate from here.
     geo_verify_llm_max_chars: int = 1800       # GEO_VERIFY_LLM_MAX_CHARS — the excerpt budget sent per call; never the whole description, never a résumé
     geo_verify_llm_timeout_seconds: float = 20.0   # GEO_VERIFY_LLM_TIMEOUT_SECONDS
     # The cheapest configured model wins (priced from analytics/spend.py

@@ -23,6 +23,14 @@ Three rules the decision is built on:
     separate checks they already are (rule_filter, sponsorship intelligence),
     and an on-site or hybrid role outside the user's home area is INELIGIBLE
     when they have said they will not relocate.
+  * **Narrower than a country is narrower.** "Candidates must be based in
+    California" is a restriction on the STATE, not a nationwide US role, and
+    is kept as one (`Geography.areas`). A user whose home state is known is
+    judged against it; one whose home state is not known is HELD — the
+    decision never infers nationwide eligibility from a statewide rule.
+  * **The user's remote preference is a preference.** With "Include remote
+    roles" off, a remote role is INELIGIBLE unless it also offers an office in
+    the user's own area.
 
 Pure: no database, no network, no LLM. `Geography` is the shape of
 `JobGeography` (app/db/models.py) and `GeoPrefs` is read off a UserProfile by
@@ -34,7 +42,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
 
-from app.common.geo import _REGION_MEMBERS, _US_STATE_CODES, norm_country
+from app.common.geo import (
+    _REGION_MEMBERS, _US_STATE_CODES, US_STATE_LABELS, detect_us_state, norm_country,
+)
 
 ELIGIBLE = "eligible"
 INELIGIBLE = "ineligible"
@@ -70,6 +80,10 @@ class Geography:
     sites: List[str] = field(default_factory=list)           # every site, untruncated
     work_mode: str = ""                                      # remote | hybrid | onsite | ""
     remote_regions: List[str] = field(default_factory=list)  # country names, REGION_KEYS, WORLDWIDE
+    # Sub-national residence restrictions, "<country>/<state>[/<city>]" —
+    # "united states/ca", "united states/tx/austin". Narrower than the country
+    # the same restriction also names in `remote_regions`.
+    areas: List[str] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
     evidence_source: str = "none"
     evidence_field: str = ""
@@ -127,7 +141,8 @@ _STATE_CODE_RE = re.compile(r",\s*([a-z]{2})\b")
 
 
 def _home_parts(home_location: str) -> tuple[str, str]:
-    """('cincinnati', 'oh') from 'Cincinnati, OH'; either may be ''."""
+    """('cincinnati', 'oh') from 'Cincinnati, OH' (or 'Cincinnati, Ohio');
+    either may be ''."""
     parts = [p.strip().lower() for p in (home_location or "").split(",") if p.strip()]
     if not parts:
         return "", ""
@@ -137,10 +152,68 @@ def _home_parts(home_location: str) -> tuple[str, str]:
         if len(p) == 2 and p in _US_STATE_CODES:
             state = p
             break
-    # A one-part home that is itself a state code ("OH").
-    if not state and len(city) == 2 and city in _US_STATE_CODES:
-        return "", city
+        code = detect_us_state(p)
+        if code:
+            state = code
+            break
+    # A one-part home that is itself a state ("OH", "Ohio").
+    if not state and len(parts) == 1:
+        if len(city) == 2 and city in _US_STATE_CODES:
+            return "", city
+        code = detect_us_state(city)
+        if code and city in (US_STATE_LABELS.get(code, "").lower(),):
+            return "", code
     return city, state
+
+
+def area_token(country: str, state: str = "", city: str = "") -> str:
+    """Canonical form of one sub-national restriction ("united states/ca",
+    "united states/tx/austin")."""
+    parts = [norm_country(country), (state or "").lower()]
+    if city:
+        parts.append(city.strip().lower())
+    return "/".join(p for p in parts if p)
+
+
+def _area_parts(token: str) -> tuple[str, str, str]:
+    p = (token or "").split("/") + ["", "", ""]
+    return p[0], p[1], p[2]
+
+
+def _fmt_areas(areas: Iterable[str]) -> str:
+    out: list = []
+    for a in areas:
+        _c, state, city = _area_parts(a)
+        label = US_STATE_LABELS.get(state, state.upper())
+        label = f"{city.title()}, {state.upper()}" if city else label
+        if label and label not in out:
+            out.append(label)
+    return ", ".join(out[:3]) + (" +more" if len(out) > 3 else "")
+
+
+def _area_check(areas: List[str], home_location: str) -> tuple[Optional[bool], str]:
+    """Does the user's home satisfy at least one area restriction?
+
+    True/False when it can be decided; None when the profile does not say
+    enough (no state, or a city-level restriction and no city). The second
+    value names what the user is in, for the sentence they read."""
+    city, state = _home_parts(home_location)
+    if not state:
+        return None, ""
+    where = f"{city.title()}, {state.upper()}" if city else US_STATE_LABELS.get(state, state.upper())
+    undecided = False
+    for a in areas:
+        _c, a_state, a_city = _area_parts(a)
+        if a_state != state:
+            continue
+        if not a_city:
+            return True, where
+        if not city:
+            undecided = True
+            continue
+        if a_city == city:
+            return True, where
+    return (None if undecided else False), where
 
 
 def _site_in_home_area(site: str, city: str, state: str) -> bool:
@@ -211,26 +284,65 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
                         f"Located in {_fmt_places(countries)}; "
                         f"you are searching in {_titled(country)}")
 
-    # Country check passed. Now the user's actual local-location preference:
-    # an on-site or hybrid role outside their home area, when they will not
-    # relocate, is not a job they can take — whatever the fit score says.
+    # Country check passed. The sites that are places, not a way of working.
+    physical = [s for s in geo.sites if not _is_remote_site(s)]
+
+    # The user's remote preference ("Include remote roles" off): a remote role
+    # is not a job they asked for, unless it also offers an office in their
+    # own area — then it is that office.
+    if not prefs.remote_ok and geo.work_mode == "remote":
+        near = home_area_matches(physical, prefs.home_location) if physical else None
+        if near is not True:
+            return Decision(INELIGIBLE, "remote_not_wanted",
+                            "Remote role; your profile keeps remote roles out of your search")
+
+    # A restriction narrower than the country ("must be based in California").
+    # It binds a remote role outright, and an on-site one for a user who will
+    # not relocate; a user who will relocate to the office is not held to a
+    # residence rule they would satisfy by taking the job. A home the profile
+    # does not place well enough to compare is HELD — never read as "anywhere
+    # in the country".
+    applicable = [a for a in geo.areas if _area_parts(a)[0] == country]
+    if applicable and not (physical and prefs.open_to_relocation):
+        ok, where = _area_check(applicable, prefs.home_location)
+        if ok is None:
+            return Decision(UNKNOWN, "area_restriction_unresolved",
+                            f"Restricted to {_fmt_areas(applicable)} residents — add your city "
+                            f"and state to your profile to confirm")
+        if ok is False:
+            return Decision(INELIGIBLE, "area_restriction_excluded",
+                            f"Restricted to {_fmt_areas(applicable)} residents; you are in {where}")
+        area_note = f"; restricted to {_fmt_areas(applicable)} residents, which you are"
+    else:
+        area_note = ""
+
+    # The user's actual local-location preference: an on-site or hybrid role
+    # outside their home area, when they will not relocate, is not a job they
+    # can take — whatever the fit score says.
     if geo.work_mode in ("onsite", "hybrid") and not prefs.open_to_relocation:
-        local_sites = [s for s in geo.sites if "remote" not in s.lower()]
-        near = home_area_matches(local_sites or geo.sites, prefs.home_location)
+        near = home_area_matches(physical or geo.sites, prefs.home_location)
         if near is False:
-            where = _fmt_places([s for s in (local_sites or geo.sites)][:2]) if (local_sites or geo.sites) else "another city"
+            where = _fmt_places([s for s in (physical or geo.sites)][:2]) if (physical or geo.sites) else "another city"
             return Decision(INELIGIBLE, "onsite_outside_home_area",
                             f"{geo.work_mode.capitalize()} in {where}; you are not open to relocation")
         if near is True:
             return Decision(ELIGIBLE, "onsite_in_home_area",
-                            f"{geo.work_mode.capitalize()} in your area")
+                            f"{geo.work_mode.capitalize()} in your area" + area_note)
 
+    if not prefs.remote_ok and geo.work_mode == "remote":
+        return Decision(ELIGIBLE, "office_in_home_area",
+                        f"Remote role with an office in your area ({_fmt_places(physical[:2])})" + area_note)
     if region_ok and not site_ok:
         return Decision(ELIGIBLE, "remote_region_match",
-                        f"Remote role open to {_fmt_places(regions)}")
+                        f"Remote role open to {_fmt_places(regions)}" + area_note)
     if geo.work_mode == "remote":
         return Decision(ELIGIBLE, "remote_in_country",
-                        f"Remote role in {_titled(country)}")
+                        f"Remote role in {_titled(country)}" + area_note)
     return Decision(ELIGIBLE, "country_match",
                     f"Located in {_titled(country)}"
-                    + ("" if geo.work_mode else "; work mode not stated"))
+                    + ("" if geo.work_mode else "; work mode not stated") + area_note)
+
+
+def _is_remote_site(site: str) -> bool:
+    s = (site or "").lower().replace(" ", "")
+    return "remote" in s or "homeoffice" in s or "anywhere" in s or "worldwide" in s

@@ -199,6 +199,15 @@ class Job(SQLModel, table=True):
     # slate refuses both. `eligibility_reason` is the sentence the user sees.
     eligibility: Optional[str] = Field(default=None)
     eligibility_reason: Optional[str] = Field(default=None)
+    # Hash of the LOCATION EVIDENCE this row was last written from (every
+    # structured site, the ATS country code, the workplace type, the remote
+    # restriction field, the display string) — see geo_verify.evidence_hash.
+    # The shared door compares it on every re-sighting, so a posting whose
+    # structured country moved while its text and display string stayed the
+    # same is still re-derived and re-decided. NULL = written before this
+    # existed; the next stale touch adopts the current evidence as baseline
+    # without re-deriving (no historical backfill).
+    geo_hash: Optional[str] = Field(default=None)
 
     class Config:
         arbitrary_types_allowed = True
@@ -1018,6 +1027,10 @@ class JobGeography(SQLModel, table=True):
     sites_json: str = Field(default="[]")          # every site string, untruncated
     work_mode: Optional[str] = Field(default=None) # remote | hybrid | onsite | NULL
     remote_regions_json: str = Field(default="[]") # country names / eu / europe / emea / apac / latam / worldwide
+    # Sub-national residence restrictions, "<country>/<state>[/<city>]" — a
+    # "California residents only" rule is narrower than the country it also
+    # names in remote_regions, and the decision reads it as such.
+    areas_json: str = Field(default="[]")
     conflicts_json: str = Field(default="[]")      # what disagreed, when status is CONFLICT
 
     # ── provenance ──
@@ -1047,6 +1060,26 @@ class JobGeography(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     verified_at: Optional[datetime] = Field(default=None)
+
+
+class PlatformCounter(SQLModel, table=True):
+    """A platform-wide daily allowance that has to hold across processes and
+    deploys — one row per (name, day), reserved atomically by
+    `app.common.daily_counter.reserve`.
+
+    An in-process counter is not a cap: it starts from zero on every restart
+    and every replica keeps its own, so "400 calls/day" meant "400 per process
+    per uptime". No user data: the name is a counter's name, never an id.
+    """
+    __tablename__ = "platform_counter"
+    __table_args__ = (
+        UniqueConstraint("name", "day", name="uq_platform_counter_name_day"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    day: date = Field(index=True)          # UTC calendar day
+    count: int = Field(default=0)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Coupon(SQLModel, table=True):

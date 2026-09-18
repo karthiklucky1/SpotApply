@@ -209,9 +209,28 @@ class RuleFilter:
         #    "US/Canada Remote" or "Remote (EU)" are still valid remote roles, and
         #    ambiguous/unknown locations are KEPT rather than over-filtered.
         # If location is empty, fall back to the title for explicit country tags.
+        #
+        # A row that carries a LOCATION VERDICT (`Job.eligibility`, decided once
+        # from the posting's shared geography — app/common/eligibility.py) is
+        # not re-judged by this string comparison: the verdict read every site
+        # untruncated and the user's full preferences, and this check reads
+        # one display string whole. "Remote · Tiranë, Albania · Austin, TX" is
+        # ELIGIBLE for a US user by the verdict and Albanian to this regex; the
+        # verdict wins. INELIGIBLE never normally reaches here (it is stamped
+        # out upstream) but is honoured as a backstop. NULL = a row from before
+        # the verdict existed: the legacy string gate, unchanged.
+        _verdict = getattr(job, "eligibility", None)
+        if _verdict == "ineligible":
+            return FilterResult(
+                passed=False,
+                reason=f"Location filtered: {getattr(job, 'eligibility_reason', None) or 'ineligible location'}",
+                score_override=10,
+            )
         haystack = loc_low if loc_low else title_low
         detected = detect_country(haystack)
-        if not job.remote:
+        if _verdict:
+            pass                                   # decided by the geography verdict
+        elif not job.remote:
             if self.preferred_country and detected and detected != self.preferred_country:
                 return FilterResult(
                     passed=False,

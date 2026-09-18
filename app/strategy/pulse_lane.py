@@ -188,8 +188,22 @@ def _signature_from_entries(entries) -> str:
 
 
 def _board_signature(raw: list) -> str:
-    """Signature of a board's posting list: which jobs exist (id + title)."""
-    return _signature_from_entries((r.external_id, r.title) for r in raw)
+    """Signature of a board's posting list: which jobs exist (id + title) and
+    WHERE each one is (its structured location evidence).
+
+    Only the parsed-list signature carries the evidence: a listing-phase
+    signature (`_signature_from_entries`) exists precisely because it is
+    immune to detail-fetch jitter, and location evidence is detail-phase
+    data for an N+1 adapter. For an adapter whose listing already carries the
+    sites (Lever, Ashby, Greenhouse) the evidence is as stable as the title,
+    and hashing it is what lets a posting whose country moved under an
+    unchanged title and display string reach the shared door at all.
+    """
+    from app.discovery.geo_verify import evidence_hash
+    # Hash first: `_signature_from_entries` keeps 80 characters of the second
+    # element, and a long title must not push the evidence off the end.
+    return _signature_from_entries(
+        (r.external_id, f"{evidence_hash(r)[:16]}|{(r.title or '')[:60]}") for r in raw)
 
 
 def _set_schedule(slug: str, ats, next_at: datetime, poll_hash: Optional[str]) -> None:

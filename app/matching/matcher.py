@@ -66,7 +66,35 @@ class _Candidate(NamedTuple):
     company: str
     location: Optional[str]
     remote: bool
-    description: Optional[str]
+    # The location verdict decided from the posting's shared geography
+    # (app/common/eligibility.py). Set = the string country gate below is
+    # skipped for this row; None = a legacy row that keeps it.
+    eligibility: Optional[str] = None
+    description: Optional[str] = None
+
+
+def _passes_legacy_country_gate(cand, preferred: str) -> bool:
+    """The retrieval-side country gate, for rows WITHOUT a location verdict.
+
+    A row whose `eligibility` is set was decided from the posting's shared
+    geography (every site untruncated, the user's full preferences —
+    app/common/eligibility.py), and an INELIGIBLE copy never reaches
+    retrieval (it is stamped out of the unscored corpus). So the string
+    comparison below applies only to legacy rows (`eligibility` NULL): for
+    the rest it would only disagree with a better-informed verdict —
+    "Remote · Tiranë, Albania · Austin, TX" reads as Albania whole, and is
+    ELIGIBLE for a US user site by site.
+    """
+    if getattr(cand, "eligibility", None):
+        return getattr(cand, "eligibility") != "ineligible"
+    # Remote roles can advertise a foreign HQ but still hire remote
+    # candidates — never location-filter them (matches rule_filter).
+    if cand.remote:
+        return True
+    loc_low = (cand.location or "").lower()
+    haystack = loc_low if loc_low else (cand.title or "").lower()
+    detected = detect_country(haystack)
+    return not (preferred and detected and detected != preferred)
 
 
 def _retrieval_desc_chars() -> int:
@@ -81,7 +109,7 @@ def _candidate_columns() -> tuple:
     rows are unpacked positionally — a mismatch would silently swap, say, title
     and company rather than raise. Tested in tests/test_retrieval_egress.py."""
     return (
-        Job.id, Job.title, Job.company, Job.location, Job.remote,
+        Job.id, Job.title, Job.company, Job.location, Job.remote, Job.eligibility,
         func.substr(Job.description, 1, _retrieval_desc_chars()),
     )
 
@@ -474,24 +502,7 @@ class Matcher:
             (getattr(profile, "preferred_country", "") or "") if profile else "United States"
         )
 
-        filtered_jobs = []
-        for j in jobs:
-            loc_low = (j.location or "").lower()
-            title_low = j.title.lower()
-
-            is_outside = False
-            # Remote roles can advertise a foreign HQ but still hire remote
-            # candidates — never location-filter them (matches rule_filter).
-            if not j.remote:
-                haystack = loc_low if loc_low else title_low
-                detected = detect_country(haystack)
-                if preferred and detected and detected != preferred:
-                    is_outside = True
-
-            if not is_outside:
-                filtered_jobs.append(j)
-
-        jobs = filtered_jobs
+        jobs = [j for j in jobs if _passes_legacy_country_gate(j, preferred)]
 
         if not jobs:
             return []
