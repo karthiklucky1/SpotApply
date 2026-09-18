@@ -117,6 +117,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also
   runs on resume upload + role edits = instant feeds). Scheduled discovery is
   ONE global pass with the union of all users' roles — never per-user.
+  Adoption also runs INCREMENTALLY every matching-lane tick
+  (`adopt_incremental`: shared rows `first_seen >=` a per-user watermark minus
+  one interval, cap 200; the watermark advances only after an UNCAPPED step, so
+  a capped step replays the same window and `_drop_already_adopted` makes the
+  replay free). It ran only on the ~6 h scheduler before: adoption p95 was
+  ~110 min for a DB copy the pulse route does in 4 s.
 - **Roles re-point the pool** (`strategy/realign.py`): `target_roles` are re-derived
   on every résumé upload (`target_roles_auto`; a hand edit pins them). On a real
   role change: on-role jobs are re-scored ONLY when RECENT + SHORTLISTED
@@ -186,7 +192,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   ceiling, and reports `expiry_stopped`. Stopping it early is free (`_user_queue`
   bounds by the same freshness expression, so unswept rows never reach a
   worker); stopping SCORING early is what users feel. Any new pre-scoring step
-  must be bounded the same way. The sweep runs PER OWNER on `ix_job_unscored`
+  must be bounded the same way. **The matching lane HOLDS its `inflight`
+  claims from the LLM call through the Phase-3 write** (`held_claims`, released
+  in one `finally`): `with claim()` let go the moment a score came back, and
+  the job read `rerank_score IS NULL` to the other two lanes for the minutes
+  until Phase 3 stored it. Its loop sleeps `interval − elapsed` (floor 30 s) —
+  the interval is a cadence, not a pause after the work. The sweep runs PER OWNER on `ix_job_unscored`
   with the known bound spelled index-friendly (`freshness.known_before_expr`:
   `first_seen < c OR (first_seen IS NULL AND discovered_at < c)` — provably the
   coalesce, guard: `test_expiry_sweep`); the old whole-table
@@ -256,7 +267,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   **`slate.place()` is the ONLY writer of a SHORTLISTED application** (guard:
   test_daily_slate) — capacity, the company cap and the challenger rule live
   there, because three lanes each carrying their own `today_count < cap` check
-  had already drifted. A challenger beating the cutoff by `slate_displace_margin`
+  had already drifted. **It is also the ONLY idempotency check**: it locks the
+  job row (`FOR UPDATE`) and answers `exists` when an Application is already
+  there — every caller's own "is there an application?" pre-check raced (one job
+  delivered twice, 1.7 s apart, by the matching and scoring lanes). Every
+  decision writes ONE `FunnelEvent(stage="placement", reason=outcome)` with
+  user/score/cutoff, so a qualified job that missed the board says why
+  (guard: test_delivery_race). A challenger beating the cutoff by `slate_displace_margin`
   (5) replaces the weakest **replaceable** entry = SHORTLISTED, delivered today,
   `viewed_at IS NULL`; anything opened/tailored/applied/dismissed is permanent.
   If nothing is replaceable, `slate_overflow_margin` (15) delivers it anyway, up
@@ -304,6 +321,8 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   miss and all pay the 1.25x write; cache telemetry every 25 finals; adoption
   extras bounded by `ADOPTION_SEMANTIC_MAX_EXTRAS`. **Every lane checks
   `llm_budget_exhausted()` BEFORE Tier-1** — prescores are cheap, not free.
+  `prewarm_cache` obeys the SAME breaker + budget (it had no gate: during the
+  09-14..16 outage it was the only call still asking, twice per user per cycle).
   **Attribution names the backend that ANSWERED, never the one requested**
   (`Reranker.score_with_meta` → meta `provider`/`model`/`usage`; `score()` stays
   the 4-tuple wrapper). 09-14..16 Anthropic rejected every call (unpaid
@@ -352,7 +371,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
   that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —
   labelled New, back inside the 5-day scoring window, against a promise to be
-  first to apply.
+  first to apply. The pulse route did it AGAIN (35 copies, one of a posting held
+  56 days), so `_upsert` now enforces it at the door: the shared upsert stamps
+  the shared sighting onto the RawJob objects the per-user routes reuse, and
+  `_inherit_shared_first_seen` looks it up for any door that arrives without it;
+  `adoption.repair_copied_first_seen` (daily, registry maintenance, bounded)
+  re-dates open copies still younger than their posting by >1 h.
 - **Company cap** (3 active apps/company, 40d cooldown): a new job outscoring the
   weakest merely-SHORTLISTED cap-holder by ≥`COMPANY_CAP_DISPLACE_MARGIN` (5)
   displaces it (→SKIPPED); TAILORED-and-beyond apps are never displaced.

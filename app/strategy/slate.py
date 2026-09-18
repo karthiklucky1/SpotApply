@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
 
@@ -165,6 +165,22 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
 
     uid_arg = user_id if (user_id and user_id != "local") else None
 
+    # ── One application per job row, decided HERE ───────────────────────────
+    # Every caller already did its own "is there an application?" check before
+    # calling us, and production still delivered one job twice, 1.7 s apart:
+    # the matching lane released its scoring claim before its Phase-3 write,
+    # the scoring lane picked the still-unscored job up, and both lanes passed
+    # their own check before either had committed. A check outside the writer
+    # is a check that can race. Inside the ONE writer, after taking the job
+    # row's lock (Postgres `FOR UPDATE`; SQLite renders no lock and is
+    # single-writer anyway), the second placer waits for the first to commit
+    # and then sees its row. The job's own copy is per user, so job_id alone
+    # identifies (user, posting).
+    session.exec(select(Job.id).where(Job.id == job.id).with_for_update())
+    if session.exec(select(Application.id).where(Application.job_id == job.id)
+                    .limit(1)).first() is not None:
+        return _record(session, job, score, user_id, Placement(False, "exists"))
+
     # ── Dead postings never reach a board ───────────────────────────────────
     # Cached read only: this runs with `session` open and the codebase never
     # holds a pooled connection across network I/O. The network refresh happens
@@ -194,7 +210,7 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
             job.closed_reason = f"Deactivated (posting {_state} before delivery)"
             session.add(job)
         log.info("Slate: refused '%s' — posting is %s before delivery", job.title, _state)
-        return Placement(False, "dead")
+        return _record(session, job, score, user_id, Placement(False, "dead"))
 
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)
@@ -208,12 +224,15 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
             provisional=is_local,
         ))
 
+    def _done(p: Placement) -> Placement:
+        return _record(session, job, score, user_id, p)
+
     # ── Room on the slate: the ordinary case ────────────────────────────────
     if visible < cap:
         if not _check_and_enforce_company_cap(session, job, score):
-            return Placement(False, "company_cap")
+            return _done(Placement(False, "company_cap"))
         _create()
-        return Placement(True, "placed")
+        return _done(Placement(True, "placed"))
 
     # ── Slate full: the challenger path ─────────────────────────────────────
     replaceable = _replaceable(session, entries)
@@ -222,7 +241,7 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
         weakest_score = _score_of(session, weakest)
         if float(score) >= weakest_score + max(0, settings.slate_displace_margin):
             if not _check_and_enforce_company_cap(session, job, score):
-                return Placement(False, "company_cap", cutoff=weakest_score)
+                return _done(Placement(False, "company_cap", cutoff=weakest_score))
             weakest.status = ApplicationStatus.SKIPPED
             weakest.notes = ((weakest.notes or "") + (
                 f"\n{SLATE_REPLACED_MARKER}: a stronger job arrived later today "
@@ -232,9 +251,9 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
             _create()
             log.info("Slate: '%s' (%.0f) replaced unviewed app %s (%.0f) for user %s",
                      job.title, float(score), weakest.id, weakest_score, user_id or "local")
-            return Placement(True, "replaced", displaced_id=weakest.id,
-                             cutoff=weakest_score)
-        return Placement(False, "below_cutoff", cutoff=weakest_score)
+            return _done(Placement(True, "replaced", displaced_id=weakest.id,
+                                   cutoff=weakest_score))
+        return _done(Placement(False, "below_cutoff", cutoff=weakest_score))
 
     # ── Nothing replaceable: overflow for an exceptional match ──────────────
     floor = min(_score_of(session, a) for a in entries) if entries else 0.0
@@ -242,12 +261,62 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     if overflow_used < max(0, settings.slate_overflow_daily) \
             and float(score) >= floor + max(0, settings.slate_overflow_margin):
         if not _check_and_enforce_company_cap(session, job, score):
-            return Placement(False, "company_cap", cutoff=floor)
+            return _done(Placement(False, "company_cap", cutoff=floor))
         _create()
         log.info("Slate: '%s' (%.0f) delivered as overflow %d/%d for user %s — every "
                  "slate entry has been opened or acted on (floor %.0f)",
                  job.title, float(score), overflow_used + 1,
                  settings.slate_overflow_daily, user_id or "local", floor)
-        return Placement(True, "overflow", cutoff=floor)
+        return _done(Placement(True, "overflow", cutoff=floor))
 
-    return Placement(False, "below_cutoff", cutoff=floor)
+    return _done(Placement(False, "below_cutoff", cutoff=floor))
+
+
+# Every qualified job leaves a record of what the slate decided. The audit
+# found a job that scored 78, missed placement, and only appeared on the board
+# a matching pass later — and nothing said why, because refusals were logged
+# selectively (dead and below_cutoff) or not at all (company cap, an existing
+# row). One FunnelEvent per decision, in the caller's session so it commits
+# with the decision it describes; bounded by the number of qualified jobs.
+PLACEMENT_STAGE = "placement"
+
+
+PLACEMENT_REPEAT_HOURS = 6
+
+
+def _record(session, job: Job, score: float, user_id: Optional[str],
+            placement: Placement) -> Placement:
+    try:
+        import json as _json
+        from datetime import datetime, timedelta
+
+        from app.db.models import FunnelEvent
+        if not placement.created:
+            # The re-shortlist backstop offers the same capped job to the
+            # slate every 5-minute pass; the SAME refusal again is not news.
+            # One indexed read (funnel_events.job_id) per refusal, bounded by
+            # the number of qualified jobs. A different outcome, or the same
+            # one after PLACEMENT_REPEAT_HOURS, is recorded again.
+            last = session.exec(
+                select(FunnelEvent.reason, FunnelEvent.created_at)
+                .where(FunnelEvent.job_id == job.id,
+                       FunnelEvent.stage == PLACEMENT_STAGE)
+                .order_by(FunnelEvent.id.desc()).limit(1)
+            ).first()
+            if last is not None and last[0] == placement.outcome and last[1] is not None \
+                    and datetime.utcnow() - last[1] < timedelta(hours=PLACEMENT_REPEAT_HOURS):
+                return placement
+        session.add(FunnelEvent(
+            job_id=job.id, stage=PLACEMENT_STAGE, passed=placement.created,
+            reason=placement.outcome,
+            metadata_json=_json.dumps({
+                "user_id": user_id or "local", "score": round(float(score), 1),
+                "cutoff": placement.cutoff, "displaced_id": placement.displaced_id,
+            }),
+        ))
+        if not placement.created and placement.outcome not in ("below_cutoff", "dead"):
+            log.info("Slate: '%s' (%.0f) not delivered for user %s — %s",
+                     job.title, float(score), user_id or "local", placement.outcome)
+    except Exception as e:                       # the record never blocks the decision
+        log.debug("placement record skipped: %s", e)
+    return placement

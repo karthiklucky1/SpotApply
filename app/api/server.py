@@ -794,6 +794,17 @@ async def _registry_maintenance_once(cycle: int) -> None:
             _log.info("Registry maintenance: orphan purge %s", _summary_counts(summary))
         except Exception as e:
             _log.warning("Orphan account purge failed: %s", e)
+    # Per-user copies that are YOUNGER than the shared posting they were copied
+    # from (the pulse route stamped first_seen=now on copies; the audit found
+    # 35, one of a posting the pool had held for 56 days). Bounded and daily;
+    # new copies inherit the shared first sighting at write time.
+    try:
+        from app.strategy.adoption import repair_copied_first_seen
+        _fixed = await asyncio.to_thread(repair_copied_first_seen, 2000)
+        if _fixed:
+            _log.info("Registry maintenance: re-dated %d per-user copies to their shared first sighting", _fixed)
+    except Exception as e:
+        _log.warning("Copied first_seen repair failed: %s", e)
     if cycle % 7 == 0:
         try:
             from app.discovery.registry_harvester import run_harvester
@@ -1058,7 +1069,9 @@ async def _matching_lane():
         return
     _log.info("Matching lane ENABLED — first run in 150s, then every %d min", minutes)
     await asyncio.sleep(150)  # let boot + first discovery settle
+    import time as _time
     while True:
+        started = _time.monotonic()
         try:
             uids = await asyncio.to_thread(_lane_user_ids)
             if uids:
@@ -1067,7 +1080,13 @@ async def _matching_lane():
                 _log.info("Matching lane: no active users with resumes")
         except Exception as e:
             _log.exception("Matching lane outer error: %s", e)
-        await asyncio.sleep(minutes * 60)
+        # The interval is a CADENCE, not a pause after the work: sleeping the
+        # full interval after a pass that itself took minutes stretched the
+        # effective period to interval + pass, which is part of why a job that
+        # scored 78 and missed placement waited another 15+ minutes for the
+        # next pass. Floor of 30 s so a slow pass can never spin the lane.
+        elapsed = _time.monotonic() - started
+        await asyncio.sleep(max(30.0, minutes * 60 - elapsed))
 
 
 async def _scoring_lane():
@@ -1176,6 +1195,22 @@ def _run_matching_lane(uids) -> None:
             user_short = 0
             passes = 0
             try:
+                # Incremental adoption FIRST, so this pass scores what the
+                # shared pool gained since the last one. Adoption used to run
+                # only on the ~6 h global scheduler (and on résumé/role edits),
+                # so a posting the pulse lane did not route — any feed or
+                # aggregator find, any board that changed while the user's
+                # roles did not match its titles — waited hours for a DB copy
+                # that takes seconds: measured adoption p95 was ~110 minutes
+                # against 4.4 s through the pulse route. Bounded, watermarked,
+                # replay-safe (app/strategy/adoption.adopt_incremental).
+                try:
+                    from app.strategy.adoption import adopt_incremental
+                    _adopted = adopt_incremental(_uid, interval_seconds=settings.matching_lane_interval_minutes * 60)
+                    if _adopted:
+                        log.info("Matching lane: user %s adopted %d new shared posting(s)", uid, _adopted)
+                except Exception as _ae:
+                    log.warning("Matching lane: incremental adoption failed for %s: %s", uid, _ae)
                 while True:
                     shortlisted = run_matching(_uid) or []
                     user_short += len(shortlisted)

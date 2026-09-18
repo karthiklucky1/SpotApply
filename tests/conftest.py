@@ -135,6 +135,18 @@ def _reset_process_globals():
     except ImportError:
         pass
     try:
+        # The incremental-adoption watermark and the scoring claim registry are
+        # process-local by design; under pytest a watermark one test advanced
+        # hides the next test's shared rows, and a claim a failed test never
+        # released makes every lane skip that (recycled) job id.
+        from app.strategy import adoption as _ad
+        _ad._ADOPT_WATERMARK.clear()
+        from app.common import inflight as _inf
+        with _inf._lock:
+            _inf._inflight.clear()
+    except ImportError:
+        pass
+    try:
         # Per-user dashboard aggregates (/api/jobs totals, the pool tile,
         # freshness-stats) live for minutes on purpose; under pytest a value
         # cached by one test is a stale count in the next file's assertion.

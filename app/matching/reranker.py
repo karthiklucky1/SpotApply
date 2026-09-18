@@ -1018,6 +1018,15 @@ class Reranker:
         Returns True when the prefix was (re)written."""
         if not self._anthropic_client:
             return False
+        # Same gates as a real final. The prewarm had none, so while Anthropic
+        # was rejecting every call for an unpaid balance (09-14..16) every
+        # scoring cycle still opened with two doomed prewarm requests per user
+        # — paid in latency and log noise, and once the breaker had tripped
+        # they were the only calls still asking. When the cooldown expires the
+        # first prewarm IS the recovery probe: cheap, and its 400 re-trips the
+        # breaker before any final is attempted.
+        if not provider_available("anthropic") or llm_budget_exhausted():
+            return False
         try:
             resp = self._anthropic_client.messages.create(
                 model=settings.scoring_model,

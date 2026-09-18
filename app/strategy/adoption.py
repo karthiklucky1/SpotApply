@@ -159,12 +159,65 @@ def _select_adoptable(fresh_jobs, roles, user_id, limit):
 
 
 def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAYS,
-                      limit: int = ADOPT_MAX_JOBS) -> int:
+                      limit: int = ADOPT_MAX_JOBS, since: datetime | None = None) -> int:
     """Copy recent, role-matching shared-pool postings into ``user_id``'s pool.
 
     Reuses ``_upsert`` so per-user dedupe (source+external_id and cross-source
     slug), the country gate, and direct-ATS upgrades behave exactly as if the
-    jobs had been scraped for this user. Returns the number of NEW rows."""
+    jobs had been scraped for this user. Returns the number of NEW rows.
+    ``since`` narrows the shared page to postings first seen at or after it
+    (the incremental step below); None walks the whole ``max_age_days`` window."""
+    return _adopt(user_id, max_age_days, limit, since)[0]
+
+
+# ── Incremental adoption: the 5-minute step between the 6-hour passes ────────
+# Adoption used to run only on the global discovery scheduler (~every 6 h) and
+# on résumé/role edits. The pulse lane routes a NEW posting to a user in the
+# same tick it lands (measured 4.4 s), but only when the posting arrives through
+# a changed pulse board AND the user's roles title-match it at that moment.
+# Everything else — feed and aggregator finds, a board that changed while the
+# user's roles did not match, a user whose roles changed since — waited for the
+# next global pass: measured adoption p95 was ~110 minutes for a DB copy that
+# takes seconds. This step runs every matching-lane tick and asks only "what
+# did the shared pool gain since I last looked?", so the query is one range
+# walk on ``ix_job_unscored (user_id, first_seen)`` (shared rows are never
+# scored, so the partial index covers them).
+#
+# WATERMARKS, done so nothing is lost: the watermark advances ONLY when the
+# pass did not hit its cap — a capped pass re-reads the same window next tick
+# and ``_drop_already_adopted`` makes the replay free. Every window overlaps
+# the previous one by the lane interval (a posting whose first_seen landed
+# between "select" and "commit" of the last pass is still inside it), and the
+# 6-hour full pass remains the reconciliation for anything a bounded step
+# could not reach. Process-local: a restart re-walks the full window once.
+_ADOPT_WATERMARK: dict[str, datetime] = {}
+ADOPT_INCREMENTAL_LIMIT = 200
+
+
+def adopt_incremental(user_id: str | None, *, interval_seconds: int = 300,
+                      limit: int = ADOPT_INCREMENTAL_LIMIT) -> int:
+    """One bounded adoption step for ``user_id``: shared postings first seen
+    since the last COMPLETE step (with overlap). Returns new rows adopted."""
+    key = user_id or "local"
+    started = datetime.utcnow()
+    mark = _ADOPT_WATERMARK.get(key)
+    overlap = timedelta(seconds=max(60, int(interval_seconds or 0)))
+    since = (mark - overlap) if mark is not None else started - timedelta(days=ADOPT_MAX_AGE_DAYS)
+    adopted, hit_cap = _adopt(user_id, ADOPT_MAX_AGE_DAYS, limit, since)
+    if not hit_cap:
+        _ADOPT_WATERMARK[key] = started
+    elif mark is None:
+        # A first pass that hit the cap has at least covered the newest slice;
+        # keep the watermark unset so the next pass walks the window again.
+        pass
+    return adopted
+
+
+def _adopt(user_id: str | None, max_age_days: int, limit: int,
+           since: datetime | None) -> tuple[int, bool]:
+    """The adoption pass. Returns (new_rows, hit_cap): ``hit_cap`` is True when
+    the pass selected as many candidates as it was allowed to, i.e. there may
+    be eligible postings it did not reach."""
     from app.api.server import _get_target_roles
     from app.discovery.base import RawJob
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert
@@ -203,13 +256,16 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
             log.debug("adoption role fallback failed: %s", _re)
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    # The incremental step narrows the walk to what the pool gained since the
+    # last complete step; never wider than the age window either way.
+    lower = max(cutoff, since) if since is not None else None
 
     def _page(offset: int):
         with get_session() as session:
             return _shared_page(session, cutoff, offset)
 
     def _shared_page(session, cutoff, offset: int):
-        return session.exec(
+        q = (
             select(Job)
             # Only load the columns adoption uses (RawJob fields + the freshness
             # timestamps) — the big JSON blobs (rerank_*/hire_probability_signals/
@@ -241,7 +297,12 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
                    # anything that rule keeps has known_age <= max_age_days and
                    # therefore satisfies the `first_seen >= cutoff` arm here.
                    (Job.posted_at >= cutoff) | (Job.first_seen >= cutoff))
-            .order_by(Job.first_seen.desc())
+        )
+        if lower is not None:
+            # Range on the indexed column: the incremental step's whole cost.
+            q = q.where(Job.first_seen >= lower)
+        return session.exec(
+            q.order_by(Job.first_seen.desc())
             .limit(ADOPT_PAGE_SIZE)
             .offset(offset)
         ).all()
@@ -307,8 +368,9 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
             break                      # the pool is exhausted, not the budget
 
     candidates = _select_adoptable(pool, roles, user_id, limit)
+    hit_cap = len(candidates) >= max(1, int(limit))
     if not candidates:
-        return 0
+        return 0, False
 
     raw = [RawJob(
         source=j.source.value if hasattr(j.source, "value") else str(j.source),
@@ -334,9 +396,71 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
 
     inserted = _upsert(raw, user_id=user_id, preferred_country=country,
                        remote_ok=remote_ok, user_keywords=roles or None)
-    log.info("Adoption: %d shared candidates → %d new jobs for user %s",
-             len(candidates), inserted, user_id or "local")
-    return inserted
+    log.info("Adoption: %d shared candidates → %d new jobs for user %s%s",
+             len(candidates), inserted, user_id or "local",
+             " (cap hit — more may be waiting)" if hit_cap else "")
+    return inserted, hit_cap
+
+
+def repair_copied_first_seen(limit: int = 2000, min_gap_hours: float = 1.0,
+                             statement_timeout_seconds: int = 30) -> int:
+    """Re-date per-user copies that are YOUNGER than the shared posting they
+    were copied from. Returns rows updated. Bounded, daily, never raises.
+
+    A copy must never make a posting younger (adoption has carried the shared
+    ``first_seen`` since 09-12), but the pulse lane's per-user route handed the
+    scraper's RawJob — no ``first_seen`` — straight to ``_upsert``, so a posting
+    the pool had held for 56 days entered a user's board as found today: back
+    inside the 5-day scoring window and the render window, against a promise
+    to be first to apply. The audit counted 35 such copies. New copies now
+    inherit the shared sighting at write time (``pipeline._upsert``); this is
+    the one-off repair for the rows written before that, kept as a daily
+    sweep because a stamp bug of this class has happened twice.
+
+    Only OPEN copies are touched (a closed row is history), only where the gap
+    exceeds ``min_gap_hours`` (clock skew between two lanes stamping the same
+    posting seconds apart is not a defect), and applications are never
+    modified — re-dating a shortlisted, unviewed copy older simply lets
+    shortlist hygiene apply the same window it applies to everything else.
+    """
+    from sqlalchemy.orm import aliased
+
+    from app.discovery.pipeline import SHARED_POOL_USER
+    from app.strategy.scoring_lane import _arm_statement_timeout
+
+    shared = aliased(Job)
+    gap = timedelta(hours=max(0.0, float(min_gap_hours)))
+    try:
+        with get_session() as session:
+            _arm_statement_timeout(session, statement_timeout_seconds)
+            pairs = session.exec(
+                select(Job.id, Job.first_seen, shared.first_seen)
+                .join(shared, (shared.source == Job.source)
+                      & (shared.external_id == Job.external_id)
+                      & (shared.user_id == SHARED_POOL_USER))
+                .where(Job.user_id.is_not(None),
+                       Job.user_id != SHARED_POOL_USER,
+                       Job.is_closed == False,  # noqa: E712
+                       Job.first_seen.is_not(None),
+                       shared.first_seen.is_not(None),
+                       Job.first_seen > shared.first_seen)
+                .limit(max(1, int(limit)))
+            ).all()
+            fixes = [{"id": jid, "first_seen": s_fs} for jid, u_fs, s_fs in pairs
+                     if u_fs is not None and s_fs is not None and (u_fs - s_fs) > gap]
+            if not fixes:
+                return 0
+            # By primary key, one bulk statement — the same shape as the
+            # prescore stampers in matching/pipeline.py. (An ORM `update()`
+            # with a bound WHERE refuses executemany outright.)
+            session.bulk_update_mappings(Job, fixes)
+            session.commit()
+            log.info("Adoption repair: re-dated %d per-user copies to the shared first sighting",
+                     len(fixes))
+            return len(fixes)
+    except Exception as e:
+        log.warning("Adoption repair skipped (non-fatal): %s", e)
+        return 0
 
 
 def adopt_and_match(user_id: str | None) -> int:

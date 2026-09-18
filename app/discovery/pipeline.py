@@ -418,6 +418,61 @@ def _insert_job_returning_id(session, job: "Job") -> int | None:
         return job.id
 
 
+def _inherit_shared_first_seen(candidates: List["RawJob"]) -> int:
+    """Give every RawJob without a ``first_seen`` the SHARED pool's sighting of
+    the same posting, so the per-user copy about to be written is exactly as
+    old as the posting we already hold. Returns how many were stamped.
+
+    Adoption has carried the shared timestamp since 09-12, but the pulse lane's
+    per-user route (and any other door that hands a scraper's RawJob straight
+    to a user's pool) did not: the copy was stamped ``first_seen=now``, so a
+    posting the pool had held for 56 days entered a user's board as found
+    today — back inside the 5-day scoring window and the render window,
+    against a promise to be first to apply. The audit counted 35 such copies.
+
+    One indexed lookup per source in the batch (``uq_job_user_source_external_id``
+    prefix), and only for candidates still missing the stamp — when the shared
+    upsert ran first on the same objects (the pulse lane's order) it has already
+    stamped them and this issues no query at all.
+    """
+    need = [r for r in candidates if getattr(r, "first_seen", None) is None and r.external_id]
+    if not need:
+        return 0
+    by_source: dict = {}
+    for r in need:
+        by_source.setdefault(r.source, set()).add(r.external_id)
+    seen: dict = {}
+    try:
+        with get_session() as session:
+            for src, ext_ids in by_source.items():
+                try:
+                    src_enum = JobSource(src)
+                except ValueError:
+                    continue
+                ids = list(ext_ids)
+                for start in range(0, len(ids), _DEDUPE_PREFETCH_CHUNK):
+                    chunk = ids[start:start + _DEDUPE_PREFETCH_CHUNK]
+                    for ext, fseen, dseen in session.exec(
+                        select(Job.external_id, Job.first_seen, Job.discovered_at)
+                        .where(Job.user_id == SHARED_POOL_USER,
+                               Job.source == src_enum,
+                               Job.external_id.in_(chunk))
+                    ).all():
+                        ref = fseen or dseen
+                        if ref is not None:
+                            seen[(src, ext)] = ref
+    except Exception as e:
+        log.debug("shared first_seen lookup skipped: %s", e)
+        return 0
+    stamped = 0
+    for r in need:
+        ref = seen.get((r.source, r.external_id))
+        if ref is not None:
+            r.first_seen = ref
+            stamped += 1
+    return stamped
+
+
 def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
             preferred_country: str | None = None, remote_ok: bool = True,
             user_keywords: List[str] | None = None,
@@ -535,18 +590,32 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                         continue
                     rows.extend(session.exec(
                         select(Job.id, Job.source, Job.external_id, Job.content_hash,
-                               Job.last_seen, Job.cross_source_slug)
+                               Job.last_seen, Job.cross_source_slug, Job.first_seen)
                         .where(Job.user_id == user_id, col.in_(chunk))
                     ).all())
-        for jid, src, ext, chash, lseen, slug in rows:
+        # Stamp the SHARED sighting onto the RawJob itself. The lanes hand these
+        # same objects to the per-user routes right after the shared upsert, so
+        # the copies inherit the posting's real first sighting for free — see
+        # _inherit_shared_first_seen for the door that arrives without it.
+        _stamp = {(r.source, r.external_id): r for r in candidates} \
+            if user_id == SHARED_POOL_USER else {}
+        for jid, src, ext, chash, lseen, slug, fseen in rows:
             src_v = src.value if hasattr(src, "value") else str(src)
             by_key[(src_v, ext)] = (jid, chash, lseen)
             if slug and slug not in by_slug:
                 by_slug[slug] = src_v
+            if fseen is not None:
+                r = _stamp.get((src_v, ext))
+                if r is not None and r.first_seen is None:
+                    r.first_seen = fseen
         prefetched = True
     except Exception as e:
         # Fall back to per-job checks — slower but identical behavior.
         log.warning("Upsert prefetch failed (using per-job dedupe): %s", e)
+
+    # A per-user copy must never be younger than the posting it copies.
+    if user_id not in (None, SHARED_POOL_USER):
+        _inherit_shared_first_seen(candidates)
 
     _now = datetime.utcnow()
     # Work the prefetch has already fully decided, deferred into bulk statements
@@ -652,6 +721,10 @@ def _upsert(raw_jobs: List[RawJob], user_id: str | None = None,
                     job = _build_job(r, content_hash, slug, user_id, user_keywords)
                     pending_new.append(job)
                     pending_by_key[(r.source, r.external_id)] = job
+                    if user_id == SHARED_POOL_USER and r.first_seen is None:
+                        # Brand-new posting: its first sighting is this row's,
+                        # and the per-user routes that follow copy it.
+                        r.first_seen = job.first_seen
                     # Keep the snapshot current so a later item in THIS batch
                     # that duplicates this one skips without a round-trip. The
                     # id is not known until the insert; None is enough to mark
