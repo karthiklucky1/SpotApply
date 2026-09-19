@@ -75,7 +75,9 @@ class _Bucket:
     def __init__(self, name, log):
         self.name, self.log = name, log
 
-    def list(self, prefix):
+    def list(self, prefix, options=None):
+        if options and options.get("offset"):
+            return []
         return [{"name": "resume.pdf"}, {"name": "photo.png"}]
 
     def remove(self, paths):
@@ -84,6 +86,7 @@ class _Bucket:
 
 class _NotFound(Exception):
     status = 404
+    code = "user_not_found"
 
 
 class _FakeSupabase:
@@ -291,7 +294,7 @@ def test_the_lookup_verdict_reads_every_shape_the_sdk_raises():
         return SimpleNamespace(auth=SimpleNamespace(admin=_Admin(b)))
 
     assert ap._auth_user_gone(_sb(_NotFound("User not found")), "u1") is True
-    assert ap._auth_user_gone(_sb(_Boom("user_not_found")), "u1") is True
+    assert ap._auth_user_gone(_sb(_Boom("user_not_found")), "u1") is None
     assert ap._auth_user_gone(_sb(_Boom("connection reset")), "u1") is None
     assert ap._auth_user_gone(_sb(SimpleNamespace(user=SimpleNamespace(id="U1"))), "u1") is False
     # A response naming a DIFFERENT user is not a confirmation either way.
@@ -367,3 +370,33 @@ def test_the_listing_shape_reader_accepts_every_shape_supabase_py_has_used():
     assert ap._users_from_listing({"users": users}) == users
     assert ap._users_from_listing(None) is None
     assert ap._users_from_listing("garbage") is None
+
+
+def test_a_failed_table_delete_rolls_back_the_entire_purge():
+    from sqlalchemy import event
+    from app.db.init_db import engine
+    uid = f"{_P}rollback"
+    _seed_tenant(uid)
+    before = _rows_for(uid)
+    def fail_jobs(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("DELETE FROM job "):
+            raise RuntimeError("simulated delete failure")
+    event.listen(engine, "before_cursor_execute", fail_jobs)
+    try:
+        with pytest.raises(RuntimeError, match="simulated delete failure"):
+            ap.purge_user_data(uid)
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_jobs)
+    assert _rows_for(uid) == before
+
+
+def test_orphan_with_failed_storage_keeps_its_rows_for_retry(monkeypatch):
+    uid = f"{_P}storage-retry"
+    _seed_tenant(uid)
+    _seed_tenant(f"{_P}live", jobs=0)
+    fake = _FakeSupabase(sorted(_others()) + [f"{_P}live"])
+    _wire(monkeypatch, fake)
+    monkeypatch.setattr(ap, "purge_user_storage", lambda *a: {"resume": False, "avatars": True})
+    out = ap.purge_orphaned_accounts()
+    assert not out["purged"]
+    assert _rows_for(uid) == {"profiles": 1, "jobs": 2, "apps": 2}

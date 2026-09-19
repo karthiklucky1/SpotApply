@@ -92,12 +92,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   buckets). `purge_orphaned_accounts` compares our tenants against the Supabase
   Auth listing and deletes NOTHING on any doubt — a listing that raised, came
   back empty, did not paginate to the end, or implies more orphans than live
-  users (guard: `test_account_purge`). One deleted auth user had left 33k job
-  copies, 2,860 applications and 13 storage objects behind.
+  users (guard: `test_account_purge`). Every candidate also requires Auth's
+  structured `user_not_found` code; generic 404/message text is unconfirmed.
+  Storage enumerates all pages/folders before chunked removal. Failed cleanup
+  retains tenant rows for retry; failed row deletion rolls back completely.
 - **PAID ≠ PLAN** (`app/billing.py`, 2026-09-17): `_get_user_plan` answers what
   LIMITS a user gets; `billing.is_paid_entitlement(row)` answers whether they
   are PAYING (a non-FREE, unexpired row that is either a manual/bank activation
-  or Stripe-backed under `sk_live_`). Only the latter overrides the dormancy
+  or Stripe-confirmed `stripe_livemode=True`). Deployment keys cannot establish
+  a subscription's mode; NULL legacy rows are reconciled, not assumed paid.
+  Only paid entitlement overrides the dormancy
   gate (`_user_paid_search_is_live`) or counts as MRR. A grandfathered PRO (no
   row, `PLAN_GRANDFATHER_UNTIL` unset) and a test-mode (sandbox) subscription
   are complimentary — reading `plan != FREE` as "paying" let 10 dormant
@@ -112,6 +116,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   completion now fetches the period end itself and `reconcile_subscriptions`
   (daily, `_billing_maintenance`) re-reads rows the stream let drift (the
   founder's row sat on `current_period_end=NULL` = never expires for two weeks).
+  Event claims and plan changes share ONE DB transaction; an error must leave
+  Stripe's retry usable. Checkout also rejects stale events before overwriting
+  subscription IDs. See `docs/OPERATIONS_CHECKS.md` for metrics and go-live order.
 - **Scrape once, serve many:** all scheduled lanes write postings ONCE to the
   shared pool (`Job.user_id == SHARED_POOL_USER`, pipeline.py); per-user pools
   are filled by `strategy/adoption.py` (cheap DB copy by roles+country; also
@@ -333,7 +340,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   A call that did not happen records nothing — ghost stamps, rule rejections and
   the empty-JD guard were booked as 26K prescores/week that OpenAI never saw,
   and the flat estimate ran 3.9x the bill. `LlmSpend` is keyed by
-  (user, day, kind, provider, model); `metered_share` in `/api/admin/spend`
+  (user, UTC call day, kind, provider, model); the buffer preserves the call
+  day across midnight and DB transaction locks serialize overlapping flushes.
+  `metered_share` in `/api/admin/spend`
   says how much is measured. `provider_status()` (down_since, sanitised
   last_error) feeds `/api/admin/health`; the breaker WARNING names the outage
   length and who is serving. Grounding (`_ask_verifier`, records

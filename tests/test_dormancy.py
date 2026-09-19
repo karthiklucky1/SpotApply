@@ -179,6 +179,7 @@ def test_a_live_stripe_subscription_is_a_paid_search(monkeypatch):
     _stripe(monkeypatch, "sk_live_x")
     p = _profile("live", days_idle=settings.dormant_user_grace_days + 30)
     _subscription("live", stripe_customer_id="cus_1", stripe_subscription_id="sub_1",
+                  stripe_livemode=True,
                   current_period_end=datetime.utcnow() + timedelta(days=17))
     assert server._user_paid_search_is_live(p)
     assert server._user_is_active(p)

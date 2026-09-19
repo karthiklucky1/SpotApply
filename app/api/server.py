@@ -7370,8 +7370,7 @@ def admin_metrics(request: Request) -> dict:
     """
     _require_admin_user(request)
     from datetime import timedelta
-    from app.billing import (entitlement_expired, is_paid_entitlement,
-                             stripe_live_mode, stripe_mode)
+    from app.billing import (entitlement_expired, is_paid_entitlement, stripe_mode)
     from app.db.models import (UserProfile, Application, UserSubscription,
                                TrialGrant, PlanTier, PLAN_PRICES)
     now = _dt.utcnow()
@@ -7400,8 +7399,7 @@ def admin_metrics(request: Request) -> dict:
         if grandfather_cutoff is not None:
             gf_q = gf_q.where(UserProfile.created_at < grandfather_cutoff)
         grandfathered = _scalar(session.exec(gf_q).one())
-    mrr, paid, sandbox, missing_end = 0, 0, 0, 0
-    live = stripe_live_mode()
+    mrr, paid, sandbox, missing_end, unknown_mode = 0, 0, 0, 0, 0
     by_plan = {}
     for s in subs:
         stripe_backed = bool(s.stripe_subscription_id)
@@ -7411,8 +7409,10 @@ def admin_metrics(request: Request) -> dict:
             mrr += PLAN_PRICES.get(s.plan, 0)
             paid += 1
             by_plan[s.plan.value] = by_plan.get(s.plan.value, 0) + 1
-        elif looks_active and stripe_backed and not live:
+        elif looks_active and stripe_backed and s.stripe_livemode is False:
             sandbox += 1
+        elif looks_active and stripe_backed and s.stripe_livemode is None:
+            unknown_mode += 1
         if stripe_backed and s.plan and s.plan != PlanTier.FREE and s.current_period_end is None:
             missing_end += 1
     return {
@@ -7427,6 +7427,7 @@ def admin_metrics(request: Request) -> dict:
         "arr_usd": mrr * 12,
         "by_plan": by_plan,
         "sandbox_subscriptions": sandbox,
+        "subscriptions_unverified_mode": unknown_mode,
         "grandfathered_users": grandfathered,
         "subscriptions_missing_period_end": missing_end,
         "stripe_mode": stripe_mode(),
@@ -10603,62 +10604,55 @@ def delete_account(request: Request) -> dict:
     if uid != "local" and is_sentinel(uid):
         raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
 
-    deleted: dict[str, int] = {}
-    if uid != "local":
-        deleted = purge_user_data(uid)
-    log.info("Account deletion for %s removed: %s", uid,
-             {k: v for k, v in sorted(deleted.items()) if v})
-
-    # Storage + Auth cleanup. These are SEPARATE try blocks on purpose: they
-    # used to share one `except Exception: pass`, so a storage listing that
-    # threw skipped the auth deletion entirely — the rows were gone but the
-    # login still worked, and the route still answered {"success": true}. From
-    # the user's side the account simply was not deleted.
     from app.config import settings
+    hosted = settings.use_supabase and uid != "local"
     storage_deleted = auth_deleted = None
-    if settings.use_supabase and uid and uid != "local":
-        sb = None
+    sb = None
+    if hosted:
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
         except Exception as e:
             log.exception("Account deletion: no Supabase client for %s: %s", uid, e)
+            return {"success": False, "partial": False, "data_deleted": False,
+                    "storage_deleted": False, "auth_deleted": False,
+                    "message": "Account deletion is temporarily unavailable. Please retry."}
+        try:
+            per_bucket = purge_user_storage(uid, sb)
+            storage_deleted = all(per_bucket.values())
+        except Exception as e:
+            storage_deleted = False
+            log.exception("Account deletion: storage cleanup failed for %s: %s", uid, e)
 
-        if sb is not None:
-            try:
-                per_bucket = purge_user_storage(uid, sb)
-                storage_deleted = all(per_bucket.values())
-            except Exception as e:
-                storage_deleted = False
-                log.exception("Account deletion: storage cleanup failed for %s: %s", uid, e)
+    # Keep a retry handle for the daily orphan reconcile if storage failed.
+    # A row-deletion failure raises and rolls back; do not delete Auth after a
+    # failed database purge. No success response may hide undeleted tables.
+    deleted: dict[str, int] = {}
+    data_deleted = storage_deleted is not False
+    if uid != "local" and data_deleted:
+        deleted = purge_user_data(uid)
+    log.info("Account deletion for %s removed: %s", uid,
+             {k: v for k, v in sorted(deleted.items()) if v})
 
-            # The one that actually ends the account. Never let the storage
-            # result above decide whether this runs.
-            try:
-                sb.auth.admin.delete_user(uid)
-                auth_deleted = True
-            except Exception as e:
-                auth_deleted = False
-                log.exception("Account deletion: Supabase Auth user NOT deleted for %s: %s", uid, e)
+    # End the sign-in even when files need another cleanup attempt. Retained
+    # rows then nominate this deleted auth user in the orphan reconcile.
+    if sb is not None:
+        try:
+            sb.auth.admin.delete_user(uid)
+            auth_deleted = True
+        except Exception as e:
+            auth_deleted = False
+            log.exception("Account deletion: Supabase Auth user NOT deleted for %s: %s", uid, e)
 
-    # Be honest about a partial deletion — the data is gone either way, but if
-    # the login survived, the user needs to know rather than discover it.
-    if auth_deleted is False:
-        return {
-            "success": False,
-            "partial": True,
-            "storage_deleted": storage_deleted,
-            "auth_deleted": False,
-            "message": ("Your data was deleted, but your sign-in could not be removed. "
-                        "Please contact support@spotapply.ai so we can finish closing "
-                        "the account."),
-        }
-    return {
-        "success": True,
-        "storage_deleted": storage_deleted,
-        "auth_deleted": auth_deleted,
-        "message": "All account data deleted.",
-    }
+    if auth_deleted is False or storage_deleted is False:
+        return {"success": False, "partial": True,
+                "data_deleted": data_deleted,
+                "storage_deleted": storage_deleted, "auth_deleted": auth_deleted,
+                "message": ("Account cleanup is incomplete. Please contact "
+                            "support@spotapply.ai so we can finish closing the account.")}
+    return {"success": True, "data_deleted": data_deleted,
+            "storage_deleted": storage_deleted, "auth_deleted": auth_deleted,
+            "message": "All account data deleted."}
 
 
 # ── Email sync (browser extension) ───────────────────────────────────────────
