@@ -7613,6 +7613,158 @@ def admin_health(request: Request) -> dict:
     return out
 
 
+def _budget_diagnostic(uid: str) -> dict:
+    """Why THIS user's scoring budget is where it is. Admin-only, no secrets.
+
+    Exists because the 2026-09-19 investigation could not answer "what plan is
+    this account on?" without the database, and inferred it from the shape of
+    the spend instead — which is a guess dressed as a finding. Every input to
+    `_get_user_plan` is reported here, so the answer is read rather than
+    reconstructed:
+
+      * `stripe_enabled` — while Stripe is unconfigured EVERYONE is PRO and
+        none of the rows below matter;
+      * the subscription row's plan and expiry, and whether the entitlement
+        has lapsed past ENTITLEMENT_GRACE_DAYS;
+      * `grandfathered` and whether PLAN_GRANDFATHER_UNTIL is even set — unset
+        means every user with a profile resolves to PRO with no row at all,
+        which is the case most likely to be read wrong from outside.
+
+    REDACTION. No key, token, customer id, subscription id or email appears.
+    The Stripe ids are reported as booleans; the account is identified by a
+    short fingerprint so an admin can confirm which account they asked about
+    without the payload becoming a user-id dump (the same rule /api/admin/health
+    follows). Guard: test_admin_observability.
+    """
+    from datetime import datetime as _dtd
+
+    from app.billing import entitlement_expired, is_paid_entitlement, stripe_enabled
+    from app.db.models import PLAN_LIMITS
+    from app.matching.finals_budget import allowance, day_counts, delivered_today
+    from app.strategy.scoring_lane import _stop_bucket
+
+    out: dict = {"user": (uid or "")[:8], "generated_at": _dtd.utcnow().isoformat() + "Z"}
+
+    # A diagnostic is read when things are ALREADY wrong, so no section may be
+    # able to 500 the route — and a section that could not be read reports
+    # null, never a confident false. "We could not check" and "there is no row"
+    # are different answers and the second one is how the 09-19 plan got
+    # guessed at in the first place.
+    row, row_read = None, True
+    try:
+        row = _subscription_row(uid)
+    except Exception as e:
+        row_read = False
+        out["subscription_error"] = type(e).__name__
+
+    try:
+        plan = _get_user_plan(uid)
+    except Exception as e:
+        out["plan"] = {"error": type(e).__name__}
+        out["note"] = ("plan unresolved — the lane falls open to the WIDEST plan "
+                       "ceiling in this case, never to unbounded")
+        return out
+    limits = PLAN_LIMITS[plan]
+    try:
+        grandfathered = _is_grandfathered(uid)
+    except Exception:
+        grandfathered = None
+    out["plan"] = {
+        "effective": plan.value,
+        "stripe_enabled": stripe_enabled(),
+        "has_subscription_row": (row is not None) if row_read else None,
+        "row_plan": row.plan.value if row is not None else None,
+        "current_period_end": (row.current_period_end.isoformat()
+                               if row is not None and row.current_period_end else None),
+        "entitlement_expired": bool(entitlement_expired(row)) if row is not None else None,
+        "is_paid_entitlement": bool(is_paid_entitlement(row)) if row is not None else False,
+        "stripe_customer": bool(row is not None and row.stripe_customer_id),
+        "stripe_subscription": bool(row is not None and row.stripe_subscription_id),
+        "grandfathered": grandfathered,
+        "grandfather_cutoff_set": bool(_grandfather_cutoff()),
+    }
+    out["limits"] = {
+        "shortlist_daily": limits.get("shortlist_daily"),
+        "finals_daily": limits.get("finals_daily"),
+        "tailor_daily": limits.get("tailor_daily"),
+    }
+
+    # The day, as the budget itself counts it — same functions, so a number
+    # here can never disagree with the number the lane acted on.
+    ceiling = int(limits.get("finals_daily") or 0)
+    target = int(limits.get("shortlist_daily") or 0)
+    try:
+        spent, hits = day_counts(uid)
+        delivered = delivered_today(uid, cached=False)
+    except Exception as e:
+        out["today"] = {"error": type(e).__name__}
+        return out
+    out["today"] = {
+        "delivered": delivered,
+        "finals_charged": spent,
+        "finals_hits": hits,
+        "hit_rate": round(hits / spent, 4) if spent else None,
+        "finals_per_delivered": round(spent / delivered, 2) if delivered else None,
+        "yield_has_verdict": spent >= max(1, settings.finals_yield_window),
+        "yield_continue_rate": settings.finals_yield_continue_rate,
+    }
+
+    try:
+        allow = allowance(uid, settings.scoring_per_user_cap, ceiling, target)
+    except Exception as e:
+        out["allowance"] = {"error": type(e).__name__}
+        return out
+    out["allowance"] = {
+        "n": allow.n,
+        "gate": allow.gate,
+        "reason": allow.reason,
+        "stop": _stop_bucket(allow.reason) if allow.n <= 0 else None,
+        # The SAME flag the lane classifies on, not a second derivation of it
+        # — a diagnostic that recomputes the verdict can disagree with the
+        # verdict, which is the whole failure this route exists to end.
+        "target_met": allow.target_met,
+        "counts_as": ("target_met" if (allow.target_met
+                                       or allow.reason.startswith("delivered"))
+                      else "plan_capped") if allow.n <= 0 else "running",
+    }
+
+    # Challenge mode is reachable only while the slate is full AND the ceiling
+    # still has room; `allowance()` tests the ceiling first, so a day that
+    # exhausted its budget cannot enter it even though the slate is full.
+    try:
+        from app.strategy.slate import cutoff as _slate_cutoff
+        cut = _slate_cutoff(uid)
+    except Exception as e:
+        cut = None
+        out["slate_error"] = type(e).__name__
+    out["challenge"] = {
+        "enabled": bool(settings.slate_challenge_enabled),
+        "slate_full": target > 0 and delivered >= target,
+        "budget_remaining": max(0, ceiling - spent) if ceiling > 0 else None,
+        "cutoff": cut,
+        "available": bool(settings.slate_challenge_enabled
+                          and target > 0 and delivered >= target
+                          and (ceiling <= 0 or spent < ceiling)),
+    }
+    return out
+
+
+@app.get("/api/admin/budget-diagnostic")
+def admin_budget_diagnostic(request: Request, user_id: str = "") -> dict:
+    """Effective plan, today's delivery and spend, and the exact allowance
+    reason for one account. Admin-only; defaults to the caller's own account.
+
+    Aggregates and booleans only — no credential, token, Stripe id or email.
+    """
+    admin = _require_admin_user(request)
+    uid = (user_id or "").strip() or _get_user_id(request) or ""
+    if not uid:
+        raise HTTPException(status_code=400,
+                            detail="No account to diagnose: pass ?user_id= or sign in.")
+    log.info("Admin %s read the budget diagnostic for %s…", admin, uid[:8])
+    return _budget_diagnostic(uid)
+
+
 # --- User Reviews APIs ---
 
 _REVIEW_MAX_CHARS = 2000

@@ -423,3 +423,211 @@ def test_a_user_stopped_by_the_cost_ceiling_is_reported(monkeypatch, caplog):
     assert stats.get("plan_capped_users") == 1
     assert "target_met_users" not in stats
     assert any("stopped SHORT" in r.getMessage() for r in caplog.records)
+
+
+# ── a completed day is not a stall, however the reason is worded ─────────────
+#
+# PRODUCTION 2026-09-19. `allowance()` tests the cost ceiling BEFORE the
+# delivered branch, so a user who received their whole target and then spent
+# the ceiling comes back with a reason that OPENS "daily cost ceiling" and only
+# mentions the delivery in its tail: "daily cost ceiling (140/120 finals) at
+# 26/20 delivered". The classifier keyed on the prefix, so a user on 130% of
+# their plan was filed under plan_capped_users and warned about as "stopped
+# SHORT of their day's shortlist target" every 30 minutes for thirteen hours.
+#
+# The taxonomy rule is unchanged and still load-bearing: a reason that means
+# "you get nothing" is never filed under healthy. What changed is how "did this
+# user get their jobs?" is answered — from the NUMBERS, not from the first word
+# of a sentence.
+
+def _rows_for(uid: str, n: int) -> list[int]:
+    """n delivered jobs for uid today. Returns the job ids to clean up."""
+    from app.db.init_db import get_session
+    from app.db.models import Application, ApplicationStatus, Job, JobSource
+    made = []
+    with get_session() as session:
+        for i in range(n):
+            j = Job(user_id=uid, source=JobSource.GREENHOUSE,
+                    external_id=f"{uid}-deliv-{i}", company="Acme",
+                    title="Engineer", url=f"https://e.com/{uid}/{i}", description="x")
+            session.add(j)
+            session.commit()
+            session.refresh(j)
+            session.add(Application(job_id=j.id, user_id=uid, apply_track="manual",
+                                    status=ApplicationStatus.SHORTLISTED,
+                                    created_at=fb._utc_now()))
+            session.commit()
+            made.append(j.id)
+    return made
+
+
+def _drop(job_ids: list[int]) -> None:
+    """Delete only OUR rows — a wholesale delete takes out other files' fixtures."""
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+    with get_session() as session:
+        for jid in job_ids:
+            for a in session.exec(select(Application).where(Application.job_id == jid)).all():
+                session.delete(a)
+            obj = session.get(Job, jid)
+            if obj:
+                session.delete(obj)
+        session.commit()
+
+
+def test_allowance_reports_the_target_met_even_when_the_ceiling_is_what_stopped(monkeypatch):
+    """The flag is set where the numbers live. The ceiling is tested FIRST, so
+    this Allowance's reason talks about money — but the day was a success and
+    the flag has to say so."""
+    uid = "u-met-and-spent"
+    made = _rows_for(uid, 3)
+    try:
+        _spend(uid, 5)
+        allow = fb.allowance(uid, per_cycle_cap=40, ceiling=5, target=3)
+        assert allow.n == 0
+        assert allow.reason.startswith("daily cost ceiling")
+        assert allow.target_met is True
+    finally:
+        _drop(made)
+
+
+def test_allowance_reports_the_target_unmet_when_the_ceiling_stopped_a_short_day(monkeypatch):
+    """Same reason PREFIX, opposite verdict — precisely what reading the
+    sentence could not distinguish."""
+    uid = "u-short-and-spent"
+    made = _rows_for(uid, 1)
+    try:
+        _spend(uid, 5)
+        allow = fb.allowance(uid, per_cycle_cap=40, ceiling=5, target=35)
+        assert allow.n == 0
+        assert allow.reason.startswith("daily cost ceiling")
+        assert allow.target_met is False
+    finally:
+        _drop(made)
+
+
+def test_an_allowance_built_without_the_flag_reads_as_not_met():
+    """Conservative default. A fake, or a caller that predates the field, must
+    not be able to SILENCE the stall warning: not knowing whether the user got
+    their jobs is not evidence that they did."""
+    assert fb.Allowance(0, 40, "daily cost ceiling (120/120 finals)").target_met is False
+
+
+def test_the_prescore_allowance_stop_keeps_the_day_s_verdict(monkeypatch):
+    """_finals_allowance REPLACES the Allowance when the Anthropic prescore
+    headroom is what ran out. That rewrite must carry the verdict through, or
+    the one stop that rebuilds the object loses the fact that the user already
+    had their jobs."""
+    monkeypatch.setattr(sl, "_plan_budget", lambda u: (250, 35))
+    monkeypatch.setattr(fb, "allowance",
+                        lambda *a, **kw: fb.Allowance(40, 40, "slate full at 35/35",
+                                                      target_met=True))
+    monkeypatch.setattr(settings, "prescore_budget_multiplier", 2)
+    from app.matching import reranker as rr
+    monkeypatch.setattr(rr, "user_prescores_today", lambda u: 10_000)   # headroom gone
+    allow = sl._finals_allowance("u-prescore", 40)
+    assert allow.n == 0
+    assert allow.reason == "anthropic prescore allowance"
+    assert allow.target_met is True
+
+
+def test_a_ceiling_stop_at_the_target_counts_as_delivered(monkeypatch, caplog):
+    """The 09-19 case end to end: ceiling reached AND the day's jobs delivered.
+    The reason opens "daily cost ceiling", but the user got everything the plan
+    promises, so this is target_met_users and the lane stays quiet."""
+    import logging
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda **kw: {"total": 0, "queue_stale": 0,
+                                      "ancient_posting": 0, "stopped": ""})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["u-a"])
+    monkeypatch.setattr(sl, "_finals_allowance", lambda u, cap: fb.Allowance(
+        0, 40, "daily cost ceiling (140/120 finals) at 26/20 delivered",
+        target_met=True))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    sl._last_capped_log[0] = float("-inf")
+    with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
+        stats = sl._run_scoring_cycle(None)
+    assert stats.get("target_met_users") == 1
+    assert "plan_capped_users" not in stats
+    assert "plan_capped_reasons" not in stats
+    assert not any("stopped SHORT" in r.getMessage() for r in caplog.records)
+
+
+def test_a_ceiling_stop_short_of_the_target_is_still_a_warning(monkeypatch, caplog):
+    """The other side, and the one the outage needed. Same reason PREFIX as the
+    test above — only the verdict differs."""
+    import logging
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda **kw: {"total": 0, "queue_stale": 0,
+                                      "ancient_posting": 0, "stopped": ""})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["u-b"])
+    monkeypatch.setattr(sl, "_finals_allowance", lambda u, cap: fb.Allowance(
+        0, 40, "daily cost ceiling (120/120 finals) at 2/35 delivered",
+        target_met=False))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    sl._last_capped_log[0] = float("-inf")
+    with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
+        stats = sl._run_scoring_cycle(None)
+    assert stats.get("plan_capped_users") == 1
+    assert "target_met_users" not in stats
+    assert any("stopped SHORT" in r.getMessage() for r in caplog.records)
+
+
+# ── the stop has a name ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("reason,bucket", [
+    ("daily cost ceiling (140/120 finals) at 2/20 delivered", "cost_ceiling"),
+    ("yield 0.0% below 2.0% over 60 finals today — Tier-1 is promising jobs "
+     "the final score rejects", "yield_collapsed"),
+    ("anthropic prescore allowance", "prescore_allowance"),
+    ("slate full at 20/20 — still watching, but a final is only worth buying "
+     "at prescore >= 70", "slate_full"),
+    ("something nobody has written yet", "other"),
+    ("", "other"),
+])
+def test_every_stop_reason_has_a_name(reason, bucket):
+    """The vocabulary is CLOSED. The reason string carries live counts, so it
+    can never be a stats key itself — every cycle would be a different shape."""
+    assert sl._stop_bucket(reason) == bucket
+
+
+def test_the_cycle_reports_which_stop_fired(monkeypatch):
+    """`plan_capped_users` counts users; `plan_capped_reasons` says which stop
+    each one hit. Without it, naming the stop in production meant reconstructing
+    it from three lanes' logs and a process-cumulative token counter."""
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda **kw: {"total": 0, "queue_stale": 0,
+                                      "ancient_posting": 0, "stopped": ""})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["u-a", "u-b", "u-c"])
+    monkeypatch.setattr(sl, "_plan_budget", lambda u: (120, 35))
+    reasons = {
+        "u-a": "daily cost ceiling (120/120 finals) at 3/35 delivered",
+        "u-b": "daily cost ceiling (120/120 finals) at 1/35 delivered",
+        "u-c": "yield 0.0% below 2.0% over 60 finals today",
+    }
+    monkeypatch.setattr(sl, "_finals_allowance",
+                        lambda u, cap: fb.Allowance(0, 40, reasons[u]))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    stats = sl._run_scoring_cycle(None)
+    assert stats.get("plan_capped_users") == 3
+    assert stats["plan_capped_reasons"] == {"cost_ceiling": 2, "yield_collapsed": 1}
+
+
+def test_the_warning_names_the_stop(monkeypatch, caplog):
+    """The 30-minute warning used to list all three possible stops and leave the
+    reader to guess. It now says which one actually fired."""
+    import logging
+    monkeypatch.setattr(sl, "_expire_stale_unscored",
+                        lambda **kw: {"total": 0, "queue_stale": 0,
+                                      "ancient_posting": 0, "stopped": ""})
+    monkeypatch.setattr(sl, "_scorable_user_ids", lambda: ["u-named"])
+    monkeypatch.setattr(sl, "_plan_budget", lambda u: (120, 35))
+    monkeypatch.setattr(sl, "_finals_allowance", lambda u, cap: fb.Allowance(
+        0, 40, "yield 0.0% below 2.0% over 60 finals today"))
+    monkeypatch.setattr(settings, "scoring_drain_cap", 0)
+    sl._last_capped_log[0] = float("-inf")
+    with caplog.at_level(logging.WARNING, logger="app.strategy.scoring_lane"):
+        sl._run_scoring_cycle(None)
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "yield_collapsed" in msg
+    assert "stopped SHORT" in msg

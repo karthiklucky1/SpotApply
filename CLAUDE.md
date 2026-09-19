@@ -291,8 +291,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   finals for 39 hours on 09-03 while reporting itself healthy. Two rules from
   that, pinned by test: a spend control must never retroactively invalidate
   spend already made, and a reason meaning "you get nothing" is never filed
-  under healthy (only `delivered` is quiet = `target_met_users`; everything else
-  warns = `plan_capped_users`). The **yield stop** needs a real sample — hits/finals TODAY, judged only past
+  under healthy — **decided by the NUMBERS, never the reason's wording**
+  (2026-09-19): the ceiling is tested BEFORE the delivered branch, so a
+  completed day that also ran out of budget reads "daily cost ceiling (…) at
+  26/20 delivered", and keying on the `delivered` prefix called a user on 130%
+  of their plan a stall for 13 hours. `allowance()` sets `Allowance.target_met`
+  where both numbers are already loaded (deriving it in the lane costs an
+  uncached `user_subscription` SELECT per capped user per cycle) and it
+  defaults FALSE — not knowing is never evidence the day went well. The lane
+  files that as `target_met_users`, everything else as `plan_capped_users` +
+  `plan_capped_reasons` (cost_ceiling / yield_collapsed / prescore_allowance /
+  slate_full; a bare count meant naming the stop took three lanes' logs).
+  `/api/admin/budget-diagnostic` answers all of it per account without DB
+  access (no secrets, no full user id).
+  The **yield stop** needs a real sample — hits/finals TODAY, judged only past
   `FINALS_YIELD_WINDOW` (50) finals, continue at ≥2%: at a 10% true rate zero
   hits in 10 finals happens 35% of the time, and the first version read an
   in-process ring only a purchased final could refill, so a coin-flip left users

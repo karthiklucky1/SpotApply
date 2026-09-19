@@ -139,7 +139,8 @@ def test_health_reports_a_tripped_breaker(client, monkeypatch):
 
 # ── the guard ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("route", [server.admin_settings, server.admin_health])
+@pytest.mark.parametrize("route", [server.admin_settings, server.admin_health,
+                                  server.admin_budget_diagnostic])
 def test_a_non_admin_is_refused(monkeypatch, route):
     monkeypatch.setattr(Settings, "use_supabase", property(lambda self: True))
     monkeypatch.setattr(server, "_get_user_email", lambda request: "someone@example.com")
@@ -148,10 +149,106 @@ def test_a_non_admin_is_refused(monkeypatch, route):
     assert ei.value.status_code == 403
 
 
-@pytest.mark.parametrize("route", [server.admin_settings, server.admin_health])
+@pytest.mark.parametrize("route", [server.admin_settings, server.admin_health,
+                                  server.admin_budget_diagnostic])
 def test_an_anonymous_caller_is_refused(monkeypatch, route):
     monkeypatch.setattr(Settings, "use_supabase", property(lambda self: True))
     monkeypatch.setattr(server, "_get_user_email", lambda request: None)
     with pytest.raises(HTTPException) as ei:
         route(request=None)
     assert ei.value.status_code == 403
+
+
+# ── /api/admin/budget-diagnostic ─────────────────────────────────────────────
+#
+# The 2026-09-19 investigation could not answer "what plan is this account on?"
+# without the database, and INFERRED it from the shape of the day's spend. That
+# is a guess dressed as a finding: _get_user_plan has four inputs (is Stripe
+# configured at all, the subscription row, whether its entitlement lapsed, and
+# grandfathering — which with PLAN_GRANDFATHER_UNTIL unset makes every profile
+# PRO with no row) and the spend only narrows them. This route reports all
+# four, so the answer is read.
+
+def test_the_diagnostic_reports_every_input_to_the_plan_decision(client):
+    r = client.get("/api/admin/budget-diagnostic?user_id=diag-user")
+    assert r.status_code == 200
+    plan = r.json()["plan"]
+    for key in ("effective", "stripe_enabled", "has_subscription_row", "row_plan",
+                "entitlement_expired", "is_paid_entitlement", "grandfathered",
+                "grandfather_cutoff_set"):
+        assert key in plan, key
+    # Without Stripe configured, _get_user_plan short-circuits to PRO for
+    # everyone and none of the rows matter — the field that says so must be
+    # present, or the payload invites exactly the wrong reading.
+    assert plan["stripe_enabled"] is False
+    assert plan["effective"] == "pro"
+
+
+def test_the_diagnostic_names_the_stop_and_how_it_is_counted(client):
+    body = client.get("/api/admin/budget-diagnostic?user_id=diag-user").json()
+    assert set(body["limits"]) >= {"shortlist_daily", "finals_daily"}
+    assert set(body["today"]) >= {"delivered", "finals_charged", "finals_hits"}
+    assert set(body["allowance"]) >= {"n", "gate", "reason", "stop", "counts_as"}
+    # A user who has spent nothing is running, not stopped.
+    assert body["allowance"]["counts_as"] == "running"
+    assert body["allowance"]["stop"] is None
+    assert set(body["challenge"]) >= {"enabled", "slate_full", "available",
+                                      "budget_remaining"}
+
+
+def test_the_diagnostic_never_returns_a_secret_or_a_stripe_id(client, secrets_set, monkeypatch):
+    """Same rule as every other admin surface: no secret VALUE, whatever the
+    field is called. The Stripe customer and subscription ids are reported as
+    booleans — an admin needs to know a row is Stripe-backed, never which row."""
+    monkeypatch.setattr(server, "_subscription_row", lambda uid: None)
+    r = client.get("/api/admin/budget-diagnostic?user_id=diag-user")
+    assert r.status_code == 200
+    assert "VERYSECRET" not in r.text
+    for value in secrets_set.values():
+        assert value not in r.text
+    body = r.json()
+    assert isinstance(body["plan"]["stripe_customer"], bool)
+    assert isinstance(body["plan"]["stripe_subscription"], bool)
+
+
+def test_the_diagnostic_does_not_echo_the_whole_account_id(client):
+    """/api/admin/health's rule is aggregates only — never a full user id. The
+    diagnostic is necessarily about ONE account, so it identifies it by a short
+    fingerprint: enough to confirm which account was asked about, not enough to
+    turn the payload into a user-id dump."""
+    uid = "93508136-dcd2-4969-acd0-0ac86a22091a"
+    r = client.get(f"/api/admin/budget-diagnostic?user_id={uid}")
+    assert r.status_code == 200
+    assert uid not in r.text
+    assert r.json()["user"] == uid[:8]
+
+
+def test_the_diagnostic_needs_an_account(client, monkeypatch):
+    monkeypatch.setattr(server, "_get_user_id", lambda request: None)
+    r = client.get("/api/admin/budget-diagnostic")
+    assert r.status_code == 400
+
+
+def test_an_unreadable_subscription_row_is_null_not_false(client, monkeypatch):
+    """"We could not check" and "there is no row" are different answers. Saying
+    False for the first is how a plan gets guessed at — the 09-19 mistake, in
+    the route built to stop it."""
+    def _boom(uid):
+        raise RuntimeError("supabase is having a day")
+    monkeypatch.setattr(server, "_subscription_row", _boom)
+    body = client.get("/api/admin/budget-diagnostic?user_id=diag-user").json()
+    assert body["plan"]["has_subscription_row"] is None
+    assert body["subscription_error"] == "RuntimeError"
+
+
+def test_the_diagnostic_degrades_instead_of_500ing(client, monkeypatch):
+    """It is read when things are already wrong, so a database that cannot
+    answer must produce a partial payload, never a 500."""
+    def _boom(uid):
+        raise RuntimeError("down")
+    monkeypatch.setattr(server, "_get_user_plan", _boom)
+    r = client.get("/api/admin/budget-diagnostic?user_id=diag-user")
+    assert r.status_code == 200
+    assert r.json()["plan"] == {"error": "RuntimeError"}
+    # The lane's own behaviour in this case is load-bearing and easy to forget.
+    assert "WIDEST" in r.json()["note"]

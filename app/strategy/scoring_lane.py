@@ -57,6 +57,33 @@ _last_capped_log = [float("-inf")]  # monotonic time of the last "all users plan
                                     #  stall needs to emit)
 _last_overrun_log = [float("-inf")]  # last "previous cycle is still running" warning, same reasoning
 
+# The stops a user can hit, as a FIXED vocabulary. `plan_capped_users` counts
+# HOW MANY users stopped short; this says WHICH stop each one hit. Production
+# 2026-09-19 needed that and did not have it: the reason string is built with
+# the numbers in it and then spent on a per-user log.debug nobody runs, so
+# naming the stop meant reconstructing it from three lanes' log lines and a
+# process-cumulative token counter.
+#
+# The reason STRING itself must never become a stats key — it carries live
+# counts ("140/120 finals"), so every cycle's stats would be a different shape
+# and no dashboard could aggregate them. Hence a closed vocabulary, matched on
+# the stable prefix each reason is built from in finals_budget.allowance().
+_STOP_BUCKETS = (
+    ("daily cost ceiling", "cost_ceiling"),
+    ("yield ", "yield_collapsed"),
+    ("anthropic prescore", "prescore_allowance"),
+    ("slate full", "slate_full"),
+)
+
+
+def _stop_bucket(reason: str) -> str:
+    """Which stop this reason describes. Unknown wording reads `other` rather
+    than raising — a new reason string must not be able to fail a cycle."""
+    for prefix, name in _STOP_BUCKETS:
+        if (reason or "").startswith(prefix):
+            return name
+    return "other"
+
 # One worker pool for the LIFE OF THE PROCESS, not one per cycle. A fresh
 # 20-thread ThreadPoolExecutor every 90s — abandoned with shutdown(wait=False)
 # — was ~19k new OS threads/day; every thread that touches malloc can pin a
@@ -694,7 +721,8 @@ def _finals_allowance(uid: Optional[str], per_cycle_cap: int):
         from app.matching.reranker import user_prescores_today
         headroom = int(ceiling) * mult - user_prescores_today(uid)
         if headroom < allow.n:
-            return Allowance(max(0, headroom), allow.gate, "anthropic prescore allowance")
+            return Allowance(max(0, headroom), allow.gate, "anthropic prescore allowance",
+                             target_met=allow.target_met)
     return allow
 
 
@@ -1300,6 +1328,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     queues: List[List[Tuple[Optional[str], int]]] = []
     capped_out = 0      # stopped short: cost ceiling, collapsed yield, prescore allowance
     delivered_out = 0   # finished: the day's promised jobs are already on the board
+    stop_reasons: dict = {}   # which stop the capped ones hit, by name
     gate_by_user: dict = {}
     drain_users: set = set()
     for uid in users:
@@ -1313,10 +1342,29 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             # 2026-09-03 outage run silently for 39 hours. "delivered" means the
             # user HAS their day's jobs — success, and the normal state of a
             # good afternoon. Everything else means they stopped short.
-            if allow.reason.startswith("delivered"):
+            #
+            # The test is on the NUMBERS, not on how the reason sentence
+            # happens to open. `allowance()` checks the cost ceiling BEFORE the
+            # delivered branch, so a user who received their whole target and
+            # then spent the ceiling comes back with "daily cost ceiling (...)
+            # at 26/20 delivered" — success, worded as a money stop. Production
+            # 2026-09-19 warned "stopped SHORT of their day's shortlist target"
+            # every 30 minutes for thirteen hours about a user on 130% of their
+            # plan. Keying on the prefix was also one reworded f-string away
+            # from reclassifying everybody.
+            #
+            # `target_met` is computed inside allowance() where `delivered` and
+            # `target` are already loaded, so reading it here is free; deriving
+            # it in this loop instead cost an uncached user_subscription SELECT
+            # per capped user per cycle. It defaults FALSE, so an Allowance
+            # built without it still reads as "we do not know that they got
+            # their jobs" and the warning still fires.
+            if allow.target_met or allow.reason.startswith("delivered"):
                 delivered_out += 1
             else:
                 capped_out += 1
+                _bucket = _stop_bucket(allow.reason)
+                stop_reasons[_bucket] = stop_reasons.get(_bucket, 0) + 1
             log.debug("Scoring: %s gets no slice this cycle (%s)", uid, allow.reason)
             # DRAIN-ONLY slice: a spent finals budget used to drop the user from
             # the cycle entirely, which also stopped the ~$0.0002 Tier-1 drain —
@@ -1342,6 +1390,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             queues.append(q)
     if capped_out:
         stats["plan_capped_users"] = capped_out
+        stats["plan_capped_reasons"] = stop_reasons
     if delivered_out:
         stats["target_met_users"] = delivered_out
     items: List[Tuple[Optional[str], int]] = []
@@ -1367,11 +1416,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
                 _last_capped_log[0] = now
                 log.warning(
                     "Scoring cycle: %d scorable user(s) stopped SHORT of their "
-                    "day's shortlist target — the cost ceiling "
-                    "(PLAN_LIMITS['finals_daily']), the marginal-yield test, or "
-                    "the Anthropic prescore allowance. Not the same as a user "
-                    "whose jobs are already delivered; DEBUG logs the per-user "
-                    "reason", capped_out)
+                    "day's shortlist target — %s. Not the same as a user whose "
+                    "jobs are already delivered (those count as target_met_users, "
+                    "including when the cost ceiling is what ended the day); "
+                    "DEBUG logs the per-user reason",
+                    capped_out,
+                    ", ".join(f"{n}x {name}" for name, n
+                              in sorted(stop_reasons.items(), key=lambda kv: -kv[1]))
+                    or "reason unrecorded")
         return stats
 
     # Per-user context (résumé + reranker), loaded ONCE and shared across workers.

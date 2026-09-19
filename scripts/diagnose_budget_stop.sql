@@ -12,6 +12,12 @@
 --
 --     \set uid 'auth-uuid-here'
 --
+-- PREFER THE ROUTE. `GET /api/admin/budget-diagnostic?user_id=...` answers Q1,
+-- Q2, Q3 and Q4 below from the SAME functions the lane calls, so its numbers
+-- cannot disagree with the ones the budget acted on. These queries exist for
+-- when the app is unreachable but the database is not, and for Q5-Q7, which
+-- the route does not cover.
+--
 -- or replace :'uid' inline. To find it from an address:
 --     SELECT user_id, email FROM userprofile WHERE lower(email) = lower('...');
 --

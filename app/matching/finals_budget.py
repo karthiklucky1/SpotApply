@@ -344,16 +344,36 @@ def recent_hit_rate(user_id: Optional[str]) -> tuple[float, bool]:
 
 class Allowance:
     """How many finals this user may buy right now, and how promising a
-    candidate has to be to qualify."""
-    __slots__ = ("n", "gate", "reason")
+    candidate has to be to qualify.
 
-    def __init__(self, n: int, gate: int, reason: str):
+    ``target_met`` is the answer to a different question: did this user already
+    receive the jobs their plan promises today? It is carried ALONGSIDE the
+    reason rather than derived from it, because the two do not always agree.
+    The ceiling is tested before the delivered branch, so a completed day that
+    also ran out of budget is reported as "daily cost ceiling (...) at 26/20
+    delivered" — a success worded as a money stop. A caller that read the
+    sentence instead of the number (scoring_lane's stall warning) called that
+    user stalled for thirteen hours while they sat on 130% of their plan.
+
+    Both numbers are already in hand where the decision is made, so answering
+    it here costs nothing; recomputing it in the caller costs an uncached
+    `user_subscription` SELECT per user per cycle.
+    """
+    __slots__ = ("n", "gate", "reason", "target_met")
+
+    def __init__(self, n: int, gate: int, reason: str, target_met: bool = False):
         self.n = n
         self.gate = gate
         self.reason = reason
+        # Defaults FALSE, which is the conservative side: an Allowance built
+        # without this (a test fake, a caller that predates it) reads as "we do
+        # not know that they got their jobs", so the stall warning still fires.
+        # Not knowing is never evidence that the day went well.
+        self.target_met = bool(target_met)
 
     def __repr__(self) -> str:          # pragma: no cover - debugging aid
-        return f"Allowance(n={self.n}, gate={self.gate}, reason={self.reason!r})"
+        return (f"Allowance(n={self.n}, gate={self.gate}, reason={self.reason!r}, "
+                f"target_met={self.target_met})")
 
 
 def normal_gate() -> int:
@@ -410,29 +430,36 @@ def allowance(user_id: Optional[str], per_cycle_cap: int,
     """
     spent, _hits = day_counts(user_id)
     delivered = delivered_today(user_id)
+    # Answered ONCE, here, where both numbers are already loaded, and carried
+    # on every Allowance below. Every stop that can fire after this line can
+    # fire on a day the user already has their jobs.
+    met = bool(target > 0 and delivered >= target)
 
     if ceiling > 0 and spent >= ceiling:
         return Allowance(0, normal_gate(),
                          f"daily cost ceiling ({spent}/{ceiling} finals) at "
-                         f"{delivered}/{target} delivered")
+                         f"{delivered}/{target} delivered", target_met=met)
 
     rate, evidenced = recent_hit_rate(user_id)
     if evidenced and rate < settings.finals_yield_continue_rate:
         return Allowance(0, normal_gate(),
                          f"yield {rate:.1%} below {settings.finals_yield_continue_rate:.1%} "
                          f"over {spent} finals today "
-                         f"— Tier-1 is promising jobs the final score rejects")
+                         f"— Tier-1 is promising jobs the final score rejects",
+                         target_met=met)
 
     n = per_cycle_cap if ceiling <= 0 else min(per_cycle_cap, ceiling - spent)
 
-    if target > 0 and delivered >= target:
+    if met:
         if not settings.slate_challenge_enabled:
             return Allowance(0, normal_gate(),
-                             f"delivered {delivered}/{target} — the day's jobs are on the board")
+                             f"delivered {delivered}/{target} — the day's jobs are on the board",
+                             target_met=True)
         gate = challenger_gate(user_id)
         return Allowance(max(0, n), gate,
                          f"slate full at {delivered}/{target} — still watching, but a "
-                         f"final is only worth buying at prescore >= {gate}")
+                         f"final is only worth buying at prescore >= {gate}",
+                         target_met=True)
 
     return Allowance(max(0, n), normal_gate(), f"delivering {delivered}/{target}")
 
