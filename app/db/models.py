@@ -532,6 +532,10 @@ class UserSubscription(SQLModel, table=True):
     plan: PlanTier = Field(default=PlanTier.FREE)
     stripe_customer_id: Optional[str] = Field(default=None)
     stripe_subscription_id: Optional[str] = Field(default=None)
+    # The mode of the Stripe OBJECT, not today's deployment key. NULL means
+    # legacy/unverified; changing sk_test_ to sk_live_ cannot turn a test
+    # subscription into revenue.
+    stripe_livemode: Optional[bool] = Field(default=None)
     current_period_end: Optional[datetime] = Field(default=None)
     # Stripe's `created` timestamp for the most recent billing event we ACTED
     # on. Webhooks are at-least-once and not ordered, so an `unpaid` update
@@ -1159,4 +1163,3 @@ class GroundingVerdict(SQLModel, table=True):
     # and nothing on the record said the fallback had served. This is that
     # record, per verdict.
     verifier_provider: Optional[str] = Field(default=None)
-

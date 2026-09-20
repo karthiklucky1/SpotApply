@@ -476,6 +476,8 @@ def init_db() -> None:
     ]:
         add_column_if_missing("discoveryrun", col, col_type)
 
+    add_column_if_missing("user_subscription", "stripe_livemode", "BOOLEAN")
+
     # Migrations for llm_spend (metered ledger: which provider/model answered,
     # and the token counts it billed — analytics/spend.py). Existing rows keep
     # NULL provider/model and zero tokens, which reads as "legacy, unmetered".
