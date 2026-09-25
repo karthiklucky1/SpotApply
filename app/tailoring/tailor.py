@@ -201,6 +201,77 @@ class Tailor:
         except Exception as e:
             log.warning("ATS keyword analysis failed (continuing without it): %s", e)
 
+        # ── evidence inventory: which claims are BACKED, strongest first ────
+        # The ATS block above says which phrases the JD wants. It cannot say
+        # which of them the candidate can actually stand behind on a screening
+        # call, and that is the difference between a résumé that earns a call and
+        # one that ends it. The inventory answers it from the master résumé:
+        # union-merged months of paid employment per skill, with academic,
+        # personal and internship work kept separate.
+        evidence_block = ""
+        try:
+            from app.tailoring.ats_keywords import extract_jd_phrases
+            from app.tailoring.inventory import (acronym_pairs, build_inventory,
+                                                 humanize_months, kind_label)
+            from app.tailoring.requirements import parse_requirements
+
+            reqs = parse_requirements(job.description or "")
+            jd_terms = extract_jd_phrases(job.description or "", top_n=24)
+            inv = build_inventory(master_resume_md,
+                                  extra_skills=[r.skill for r in reqs if r.skill] + jd_terms)
+            ranked = inv.ranked_skills(jd_terms + [r.skill for r in reqs if r.skill])
+
+            backed, unbacked = [], []
+            for ev in ranked[:14]:
+                if ev.employment_months:
+                    backed.append(f"  - {ev.display}: {humanize_months(ev.employment_months)} "
+                                  f"of paid work")
+                elif ev.internship_only:
+                    unbacked.append(f"  - {ev.display}: internship only "
+                                    f"({humanize_months(inv.internship_months)})")
+                elif ev.project_only:
+                    where = ", ".join(sorted(kind_label(k) for k in ev.kinds))
+                    unbacked.append(f"  - {ev.display}: {where} only — NOT employment")
+                elif ev.listed_only:
+                    unbacked.append(f"  - {ev.display}: named in the skills list only")
+
+            pairs = acronym_pairs(jd_terms + [r.skill for r in reqs if r.skill])
+            acronym_lines = "\n".join(f"  - {t} ({exp})" for t, exp in pairs)
+
+            if backed or unbacked or acronym_lines:
+                evidence_block = (
+                    "\n\nVERIFIED EVIDENCE — what this candidate can actually stand "
+                    f"behind. Total paid employment on the master résumé: "
+                    f"{humanize_months(inv.employment_months)}"
+                    + (f"; internships {humanize_months(inv.internship_months)}, counted "
+                       f"SEPARATELY" if inv.internship_months else "") + "."
+                )
+                if backed:
+                    evidence_block += (
+                        "\n\nBACKED BY PAID WORK — lead with these, strongest first:\n"
+                        + "\n".join(backed))
+                if unbacked:
+                    evidence_block += (
+                        "\n\nDEMONSTRATED BUT NOT EMPLOYMENT — a completed project or a "
+                        "skills list shows a skill; it is NOT years of professional "
+                        "experience. Keep these where the résumé already puts them "
+                        "(projects stay in the projects section) and never reword them "
+                        "into a job:\n" + "\n".join(unbacked))
+                if acronym_lines:
+                    evidence_block += (
+                        "\n\nEXPAND THESE ACRONYMS ONCE on first use, as "
+                        "'Acronym (expansion)', so both forms are searchable. Do not "
+                        "expand anything not on this list:\n" + acronym_lines)
+                if reqs:
+                    evidence_block += (
+                        "\n\nSTATED EXPERIENCE REQUIREMENTS, as the posting words them: "
+                        + "; ".join(r.describe() for r in reqs[:6])
+                        + ". Do NOT restate, inflate or imply a number of years the "
+                          "master résumé does not support, and never present project or "
+                          "internship time as professional experience.")
+        except Exception as e:
+            log.warning("evidence inventory unavailable (continuing without it): %s", e)
+
         highlights_block = ""
         if custom_highlight_block:
             highlights_block = (
@@ -231,7 +302,7 @@ class Tailor:
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----{ats_block}{highlights_block}{revision_block}{relocation_block}{user_block}
+---{ats_block}{evidence_block}{highlights_block}{revision_block}{relocation_block}{user_block}
 
 Return the tailored resume in markdown. No commentary.
 Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a separate section in the tailored resume."""

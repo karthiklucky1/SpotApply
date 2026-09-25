@@ -505,6 +505,31 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `Job.origin`/`origin_provider` record the real producer without moving rows
   between buckets, so existing analytics keep their meaning. Read
   `coalesce(origin, source)`.
+- **Tenure is a UNION of intervals** (`tailoring/inventory.py`,
+  docs/EVIDENCE_INVENTORY.md): `_years_experience` measured `min(start) →
+  max(end)` — the SPAN of a career — so a 2016 internship plus a 2024 job read as
+  **10 years**, and that number drives `reranker`'s seniority rules,
+  `RuleFilter.cand_years` and the UserCard, spending finals on Staff postings the
+  user can't be screened for. Summing periods is the mirror error (concurrent
+  roles counted twice). `merged_months` is the ONE implementation; contiguous
+  months merge, gaps don't. Work has FIVE kinds and they are not one substance:
+  professional + freelance = experience, internship reported SEPARATELY,
+  academic/personal/volunteer NEVER employment — a completed project proves a
+  skill but is not years of a job (`project_only` vs `internship_only`, which
+  differ because calling someone's internship "a personal project" is wrong).
+  Kind comes from the section heading then the TITLE overrides it ("… Intern"
+  under `## Experience`); an override never promotes coursework to employment.
+  `requirements.py` reads a posting's wording AS WRITTEN ("three (3) years",
+  "4-6", "2+", "18 months"; "up to 5 years" is a ceiling = no requirement) and
+  scopes preference to the CLAUSE and to a "Preferred Qualifications" HEADING —
+  both mis-scopings invent blocking gaps. `GET /application/{id}/review` is the
+  pre-download review: supported / genuine gaps (a PREFERRED shortfall is not
+  one) / open questions, plus an improvement plan where suggested projects stay
+  until confirmed (`unconfirmed_project_claims` fails the draft if one was
+  written in as done). **No score, no percentage, no chance of an interview** —
+  a keyword match is not a hiring probability. Year-only dates are admitted as
+  approximate, and only dates feeding a total can make a total approximate.
+  Guards: `evidence_inventory`, `requirement_review`.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

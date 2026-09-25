@@ -24,7 +24,6 @@ from app.intelligence.resume_xray import (
     _PHONE_RE,
     _RANGE_RE,
     _SECTION_HEADERS,
-    _months_between,
     _parse_month,
 )
 
@@ -195,16 +194,31 @@ def _extract_experience(section: str) -> List[dict]:
 
 
 def _years_experience(experience: List[dict]) -> Optional[int]:
-    periods = []
+    """Years of experience = the UNION of the periods worked.
+
+    This used to be `min(start) → max(end)` — the SPAN of a career rather than
+    the time inside it — so a 2016 summer internship followed by a job started in
+    2024 reported **10 years of experience** for someone with under three. The
+    number is not cosmetic: it reaches the reranker's seniority rules ("candidate
+    has ~{yoe} years"), `RuleFilter.cand_years` and the UserCard, so the
+    inflation spent a day's finals budget on Staff and Principal postings the
+    user would not be screened for. Summing the periods instead is the opposite
+    error — two roles held at once would count their overlap twice. Tenure is a
+    union, and `tailoring.inventory.merged_months` is the one implementation of
+    that (guard: `test_evidence_inventory`).
+    """
+    from app.tailoring.inventory import merged_months
+
+    intervals = []
     for e in experience:
         start, end = _parse_month(e.get("start") or ""), _parse_month(e.get("end") or "")
         if start and end:
-            periods.append((start, end))
-    if not periods:
+            # `_parse_month` yields (year, month); the inventory works in absolute
+            # months, and an inclusive range is what a résumé date range means.
+            intervals.append((start[0] * 12 + start[1], end[0] * 12 + end[1]))
+    if not intervals:
         return None
-    earliest = min(p[0] for p in periods)
-    latest = max(p[1] for p in periods)
-    months = _months_between(earliest, latest)
+    months = merged_months(intervals)
     return max(months // 12, 0) if months > 0 else None
 
 

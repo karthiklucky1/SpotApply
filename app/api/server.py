@@ -10592,6 +10592,72 @@ def download_tailored_resume(application_id: int, request: Request):
         )
 
 
+@app.get("/application/{application_id}/review")
+def application_pre_download_review(application_id: int, request: Request) -> dict:
+    """What this résumé actually answers — read BEFORE downloading it.
+
+    Three buckets and nothing else: the requirements the master résumé supports,
+    the genuine gaps, and the questions only the candidate can answer. There is
+    no score here and no estimated chance of an interview — a keyword match is
+    not a hiring probability, and presenting one as though it were is how someone
+    walks into a screening call expecting a number to speak for them.
+
+    Computed from the MASTER résumé (what is true) and the posting (what is
+    asked), then checked against the tailored draft (what we wrote). Read-only:
+    it never edits the document or the application.
+    """
+    _require_owned_application(request, application_id)
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        uid = application.user_id
+        jd = job.description or ""
+        job_title, job_company = job.title, job.company
+        tailored_path = application.tailored_resume_path
+        blocked = application.status == ApplicationStatus.ERROR
+        block_reason = application.notes or ""
+
+    from app.matching.pipeline import _load_resume
+    master = _load_resume(user_id=uid) or ""
+    if not master:
+        raise HTTPException(
+            status_code=409,
+            detail="No master résumé on file — upload one before reviewing a draft.")
+
+    tailored = ""
+    if tailored_path:
+        try:
+            from app.autofill.answer_pack import _load_resume_text_from_path
+            tailored = _load_resume_text_from_path(tailored_path) or ""
+        except Exception as exc:
+            log.warning("pre-download review: tailored draft unreadable: %s", exc)
+
+    from app.tailoring.requirements import review as build_review
+    try:
+        rep = build_review(master, tailored, jd)
+    except Exception as exc:
+        log.exception("pre-download review failed for application %s", application_id)
+        raise HTTPException(status_code=500,
+                            detail="Could not build the review for this draft.") from exc
+
+    payload = rep.as_dict()
+    payload.update({
+        "application_id": application_id,
+        "job_title": job_title,
+        "job_company": job_company,
+        "draft_available": bool(tailored),
+        # A draft grounding rejected is not downloadable; say so here too so the
+        # review and the download route cannot disagree about it.
+        "download_blocked": blocked,
+        "download_blocked_reason": block_reason if blocked else "",
+    })
+    return payload
+
+
 class AskCopilotRequest(BaseModel):
     question: str
 
