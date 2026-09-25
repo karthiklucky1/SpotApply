@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func
 from sqlmodel import select
 
+from app.config import settings
 from app.db.init_db import get_session, init_db
 from app.db.models import (Job, JobGeography, JobHiringContext, JobLiveness)
 from app.discovery.job_identity import (SCOPE_SEP, TENANT_SCOPED_SOURCES,
@@ -192,9 +193,14 @@ def main() -> int:
                     help="max rows to consider (default 5000)")
     args = ap.parse_args()
 
-    # Ensures the schema exists on a fresh checkout; a no-op against a live
-    # database, which already has every table this reads.
-    init_db()
+    # SQLite-only, and deliberately so. `init_db()` is NOT read-only — it runs
+    # `ensure_model_columns()`, `ALTER TYPE ... ADD VALUE` and index creation —
+    # so calling it against production would make a tool documented as
+    # read-only mutate the schema. A hosted database already has every table
+    # this reads; a fresh local checkout does not, and that is the only case
+    # that needs it.
+    if not settings.use_supabase:
+        init_db()
 
     with get_session() as s:
         collisions = report_collisions(s, args.limit)
