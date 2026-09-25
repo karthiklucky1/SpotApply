@@ -162,9 +162,22 @@ def test_san_francisco_onsite_applies_the_relocation_preference():
     # Same city as home → fine even without relocation.
     cin = gv.derive(_raw("cin", geo=GeoEvidence(sites=["Cincinnati, OH"], work_mode="onsite")))
     assert decide(cin, US_HOME).code == "onsite_in_home_area"
-    # Work mode NOT stated: the country check decides, the scorer sees the city.
+    # Work mode NOT stated, on a site this user does not live near: HELD.
+    #
+    # This assertion used to read ELIGIBLE, with the rationale "the country
+    # check decides, the scorer sees the city". Production falsified the second
+    # half on 2026-09-25: four of five delivered jobs were on-site or hybrid
+    # roles in cities the profile ruled out, every one stamped `eligible` with
+    # "work mode not stated" — and the scorer did not save them, it scored them
+    # 72-78 and shortlisted them. It has no commute gate. So the missing fact is
+    # necessary to decide, and the honest answer is to hold, not to guess the
+    # permissive branch.
     unk = gv.derive(_raw("unk", location="San Francisco, CA"))
-    assert decide(unk, US_HOME).status == ELIGIBLE
+    held = decide(unk, US_HOME)
+    assert held.status == UNKNOWN and held.code == "work_mode_unresolved"
+    assert "San Francisco, CA" in held.reason and "pending verification" in held.reason
+    # A user who WILL relocate is not blocked by a commute they would move for.
+    assert decide(unk, US_MOVER).status == ELIGIBLE
 
 
 def test_conflicting_ats_and_description_restrictions_stay_unresolved():
@@ -176,7 +189,14 @@ def test_conflicting_ats_and_description_restrictions_stay_unresolved():
     # ...and a compatible restriction is not a conflict.
     ok = gv.derive(_raw("ok", location="Austin, TX",
                         desc="Candidates must be located in the United States."))
-    assert ok.status == "resolved" and decide(ok, US_HOME).status == ELIGIBLE
+    # The COUNTRY resolves — a compatible restriction is not a conflict. The
+    # per-user decision is a separate question: Austin is not this user's area
+    # and the posting does not state a work mode, so it is held rather than
+    # delivered. `derive` stays "resolved" because it is per-posting and cannot
+    # know whose country it will be compared against.
+    assert ok.status == "resolved"
+    assert decide(ok, US_HOME).code == "work_mode_unresolved"
+    assert decide(ok, US_MOVER).status == ELIGIBLE
 
 
 def test_missing_evidence_never_invents_a_country():
@@ -309,18 +329,26 @@ def test_intake_drops_ineligible_holds_unknown_and_stamps_eligible():
     _profile(U1, location="Cincinnati, OH")
     raws = [_raw("in-se", location="Stockholm, Sweden"),
             _raw("in-blank", location=""),
-            _raw("in-us", location="Austin, TX")]
+            # In the user's OWN area: eligible whatever the work mode turns out
+            # to be, so this is the case that must still be stamped.
+            _raw("in-us", location="Cincinnati, OH"),
+            # In the user's country but NOT their area, work mode unstated: the
+            # 2026-09-25 production case, now held instead of delivered.
+            _raw("in-far", location="Austin, TX")]
     P._upsert(raws, user_id=P.SHARED_POOL_USER, user_keywords=["machine learning engineer"])
     n = P._upsert(raws, user_id=U1, preferred_country="United States",
                   user_keywords=["machine learning engineer"], geo_prefs=US_HOME)
-    assert n == 2
+    assert n == 3
     assert _copy(U1, "in-se") is None, "a Swedish on-site posting never enters a US pool"
-    blank, us = _copy(U1, "in-blank"), _copy(U1, "in-us")
+    blank, us, far = _copy(U1, "in-blank"), _copy(U1, "in-us"), _copy(U1, "in-far")
     assert blank.eligibility == UNKNOWN and blank.rerank_score is None
     assert "pending verification" in blank.eligibility_reason
     assert us.eligibility == ELIGIBLE and "United States" in us.eligibility_reason
+    assert far.eligibility == UNKNOWN and far.rerank_score is None, \
+        "an unstated work mode outside the user's area is held, not delivered"
+    assert "Austin, TX" in far.eligibility_reason
     # ONE geography row per posting, and the shared copy carries no verdict.
-    for ext in ("in-se", "in-blank", "in-us"):
+    for ext in ("in-se", "in-blank", "in-us", "in-far"):
         assert _geo_row(ext) is not None
     with get_session() as s:
         shared = s.exec(select(Job.eligibility).where(Job.user_id == P.SHARED_POOL_USER,
@@ -774,7 +802,9 @@ def test_a_due_row_nobody_is_waiting_on_cannot_starve_a_held_posting(monkeypatch
 
 def test_changed_location_evidence_invalidates_the_cached_decision():
     _profile(U1)
-    raw = _raw("chg", location="Austin, TX")
+    # Starts in the user's own area so the FIRST decision is eligible — the
+    # subject here is invalidation, not the work-mode hold.
+    raw = _raw("chg", location="Cincinnati, OH")
     _shared_then_user(raw, U1)
     assert _copy(U1, "chg").eligibility == ELIGIBLE
     first = _geo_row("chg")

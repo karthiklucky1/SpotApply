@@ -338,11 +338,52 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     if geo.work_mode == "remote":
         return Decision(ELIGIBLE, "remote_in_country",
                         f"Remote role in {_titled(country)}" + area_note)
+
+    # ── WORK MODE UNKNOWN, on a posting with a real place in it ──────────────
+    # This branch used to fall straight through to ELIGIBLE with the words
+    # "work mode not stated" appended, and Workday populates no work mode at
+    # all. Measured on one production board, 2026-09-25: four of five delivered
+    # jobs were on-site or hybrid roles in cities the user's profile said they
+    # would not move to, and all four read `eligible` for exactly this reason.
+    #
+    # We genuinely do not know whether a commute applies — the posting may be
+    # remote. So the answer is neither ELIGIBLE (the old guess, in the
+    # permissive direction) nor INELIGIBLE (a guess in the other): it is
+    # UNKNOWN, which HOLDS the job and hands it to `geo_verify.verify_pending`
+    # to resolve from the ATS detail or the description. The missing fact is
+    # necessary to establish eligibility, which is precisely what holding is
+    # for.
+    #
+    # Only when it MATTERS. A site the user already lives near is fine on
+    # either work mode, and a user open to relocation is not blocked by a
+    # commute they would move for — both of those stay eligible, so this holds
+    # no job whose answer we can already infer.
+    # ONLY when the home area is KNOWN and the site is demonstrably not near it.
+    # A home the profile does not place (`near is None`) falls through to
+    # eligible on purpose: the user has not given us the fact that would make
+    # the commute question answerable, and holding their entire board over a
+    # missing city is disproportionate — it would empty every board belonging to
+    # a user who never typed one. The narrower ask already exists for the case
+    # that justifies it, where the POSTING asserts a residence restriction
+    # (`area_restriction_unresolved`, which does prompt for the city).
+    if not geo.work_mode and physical and not prefs.open_to_relocation:
+        if home_area_matches(physical, prefs.home_location) is False:
+            where = _fmt_places(physical[:2])
+            return Decision(UNKNOWN, "work_mode_unresolved",
+                            f"Located in {where}, which is not your area, and the posting "
+                            f"does not say whether it is on-site or remote — pending "
+                            f"verification" + area_note)
+
     return Decision(ELIGIBLE, "country_match",
                     f"Located in {_titled(country)}"
                     + ("" if geo.work_mode else "; work mode not stated") + area_note)
 
 
-def _is_remote_site(site: str) -> bool:
+def is_remote_site(site: str) -> bool:
     s = (site or "").lower().replace(" ", "")
     return "remote" in s or "homeoffice" in s or "anywhere" in s or "worldwide" in s
+
+
+# `_is_remote_site` was private but geo_verify needs the same question when it
+# decides whether a posting has a real place in it, and the two must agree.
+_is_remote_site = is_remote_site

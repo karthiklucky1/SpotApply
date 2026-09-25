@@ -44,6 +44,7 @@ from urllib.parse import urlparse
 from app.common.eligibility import (
     CONFLICT, ELIGIBLE, INELIGIBLE, RESOLVED, STATUS_UNKNOWN,
     UNKNOWN, WORLDWIDE, Decision, Geography, area_token, decide,
+    is_remote_site,
 )
 from app.common.geo import (
     _SITE_SPLIT, country_named_in, detect_country, detect_region, detect_us_state,
@@ -298,6 +299,71 @@ def _work_mode_from_text(texts: Iterable[str]) -> str:
     return ""
 
 
+# Work mode read from the DESCRIPTION, which `_WORK_MODE_RES` must never be
+# pointed at: those patterns are a bare `\bremote\b` / `\bhybrid\b`, which are
+# safe on a short site string and catastrophic on 20 KB of prose — "hybrid
+# cloud", "remote monitoring", "Remote Desktop", "remote teams" would all
+# become a work-mode verdict, and a WRONG work mode produces a wrong
+# eligibility decision. That is worse than no work mode, because no work mode
+# merely HOLDS the posting.
+#
+# So each pattern here must pair the mode with a working-arrangement noun or an
+# actual schedule. When nothing matches, the answer is "" — unknown — and the
+# posting is held rather than guessed. Conservative in the only direction that
+# is safe.
+#
+# ORDER IS THE DESIGN. A bounded schedule is checked first: "telecommuting
+# permitted up to 2 days per week" is HYBRID, and a bare telecommuting pattern
+# would call it remote and hand a New York office job to someone who will not
+# move there.
+_DESC_WORK_MODE_RES = (
+    # 1. An explicit split week — hybrid however it is worded.
+    ("hybrid", re.compile(
+        r"\b(?:telecommut\w*|remote work|work(?:ing)? from home)\b[^.\n]{0,40}?"
+        r"\b(?:up to\s+)?\d+\s*(?:-|–|to)?\s*\d*\s*days?\s+(?:per|a|each)\s+week", re.I)),
+    ("hybrid", re.compile(
+        r"\b\d+\s*(?:-|–|to)?\s*\d*\s*days?\s+(?:per|a|each)\s+week\b[^.\n]{0,40}?"
+        r"\b(?:in|at|from)\s+(?:the\s+)?(?:office|onsite|on-site)\b", re.I)),
+    ("hybrid", re.compile(
+        r"\bhybrid\s+(?:role|position|job|schedule|work(?:ing)?(?:\s+(?:model|arrangement|environment))?|"
+        r"arrangement|model|setup|set-up)\b", re.I)),
+    ("hybrid", re.compile(
+        r"\b(?:this\s+)?(?:role|position|job)\s+is\s+hybrid\b", re.I)),
+    # 2. Unambiguously fully remote.
+    ("remote", re.compile(r"\b(?:fully|100\s*%|entirely|permanently)\s+remote\b", re.I)),
+    ("remote", re.compile(
+        r"\bremote[\s-](?:role|position|job|opportunity|first|based)\b", re.I)),
+    ("remote", re.compile(
+        r"\b(?:this\s+)?(?:role|position|job)\s+is\s+(?:fully\s+|100\s*%\s+)?remote\b", re.I)),
+    ("remote", re.compile(r"\bwork(?:ing)?\s+from\s+home\b", re.I)),
+    ("remote", re.compile(r"\bremote\s*\(\s*(?:us|usa|u\.s\.|united states)\b", re.I)),
+    # 3. Unambiguously in an office.
+    ("onsite", re.compile(
+        r"\b(?:fully\s+)?(?:on-?site|in-?office|office-based)\s+(?:role|position|job|only)\b", re.I)),
+    ("onsite", re.compile(
+        r"\b(?:this\s+)?(?:role|position|job)\s+is\s+(?:fully\s+)?(?:on-?site|in-?office|office-based)\b",
+        re.I)),
+    ("onsite", re.compile(
+        r"\b(?:required|expected)\s+to\s+(?:be|work)\s+(?:on-?site|in\s+(?:the\s+)?office)\b", re.I)),
+)
+
+
+def work_mode_from_description(description: str) -> str:
+    """The posting's stated working arrangement, or "" when it does not say.
+
+    Free: the full description is already stored at intake, so this resolves
+    most postings with no network call and no model call, which is what keeps
+    the held set small enough for the bounded verifier to clear.
+    """
+    text = (description or "").strip()
+    if not text:
+        return ""
+    for mode, rx in _DESC_WORK_MODE_RES:
+        if rx.search(text):
+            return mode
+    return ""
+
+
 def _admits(country: str, countries: List[str], regions: List[str]) -> bool:
     if country in countries:
         return True
@@ -388,9 +454,26 @@ def derive(raw: RawJob) -> Geography:
     work_mode = (ev.work_mode if ev and ev.work_mode in ("remote", "hybrid", "onsite") else "")
     if not work_mode:
         work_mode = _work_mode_from_text(sites)
+    if not work_mode:
+        # The description, read with patterns tight enough for prose. Free, and
+        # it is what keeps the held set small: a Workday posting carries no
+        # structured work mode, so without this almost every one of them would
+        # need the bounded verifier.
+        work_mode = work_mode_from_description(getattr(raw, "description", "") or "")
     if not work_mode and raw.remote and not any(detect_country(s) for s in sites):
         work_mode = "remote"
 
+    # RESOLVED means the COUNTRY is established, and nothing more. It must not
+    # also require a work mode: `derive` is per-posting and cannot know whose
+    # country it will be compared against, and a country MISMATCH is decidable
+    # with no work mode at all. Making resolution depend on work mode stopped
+    # `verify_pending` handing a page-verified Stockholm posting to
+    # `redecide_copies`, so a job that was provably ineligible stayed held.
+    #
+    # A posting that IS in the user's country but states no work mode is
+    # undecidable for a user who will not relocate — that is handled where the
+    # user is known (`eligibility.decide` -> `work_mode_unresolved`) and given a
+    # recovery path by `_pending_rows`, not by mislabelling the row here.
     if conflicts:
         status = CONFLICT
     elif countries or regions:
@@ -1265,8 +1348,16 @@ def _pending_rows(limit: int) -> list:
     out: list = []
     stale_ids: list = []
     with get_session() as session:
+        # Unresolved rows, PLUS rows whose country is resolved but which state
+        # no work mode. The second group is what gives an
+        # `eligibility.work_mode_unresolved` hold a way out: without it such a
+        # row is RESOLVED, never re-verified, and the hold is permanent — an
+        # empty board with no recovery. It costs nothing extra on postings
+        # nobody is waiting for, because `_held_keys` below already drops every
+        # row with no open, unscored, held copy.
         q = (select(JobGeography)
-             .where(JobGeography.status != RESOLVED,
+             .where(or_(JobGeography.status != RESOLVED,
+                        JobGeography.work_mode.is_(None)),
                     or_(JobGeography.next_attempt_at.is_(None), JobGeography.next_attempt_at <= now)))
         if max_attempts > 0:
             q = q.where(JobGeography.attempts < max_attempts)
