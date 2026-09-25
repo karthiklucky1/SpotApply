@@ -7,7 +7,16 @@ jinja2>=3.1              # server.py's Jinja2Templates renders EVERY page. FastA
                          # the ML stack (as CI does deliberately) and the app fails
                          # to import at startup.
 python-multipart>=0.0.9
-sqlmodel>=0.0.16
+# UPPER BOUND, 2026-09-25. sqlmodel 0.0.45 began rejecting naive datetimes at
+# write time ("Datetime values must have timezone information"), and every
+# model in app/db/models.py defaults its timestamps to datetime.utcnow().
+# The release landed between 09-19 and 09-25, so CI went from green to 648
+# failures with no code change on our side — the same fresh install that
+# broke main also breaks the last commit CI passed on (verified by running
+# ef75532 against it). Moving to tz-aware datetimes is a deliberate
+# migration with stored-data implications, not something to absorb from an
+# unpinned transitive upgrade; raise this bound in that change, not before.
+sqlmodel>=0.0.16,<0.0.45
 pydantic-settings>=2.2
 python-dotenv>=1.0
 apscheduler>=3.10
