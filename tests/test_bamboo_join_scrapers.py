@@ -64,7 +64,12 @@ def test_bamboohr(monkeypatch):
     jobs = m.BambooHRScraper("acme").fetch()
     assert len(jobs) == 1
     j = jobs[0]
-    assert j.title == "Senior Backend Engineer" and j.external_id == "101"
+    # BambooHR numbers jobs per subdomain, so the stored id is qualified by
+    # the board slug — a bare "101" collides across employers.
+    from app.discovery.job_identity import scoped_external_id
+    assert j.title == "Senior Backend Engineer"
+    assert j.external_id == scoped_external_id("bamboohr", "acme", "101")
+    assert j.external_id == "acme:101"
     assert j.source == "bamboohr" and "Kafka" in j.description
     assert j.posted_at is not None and "Austin" in j.location
 

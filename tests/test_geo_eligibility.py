@@ -223,13 +223,15 @@ def test_teamtailor_does_not_guess_location_from_the_title(monkeypatch):
     </channel></rss>"""
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(content=rss.encode()))
     jobs = {j.external_id: j for j in TeamtailorScraper("acme").fetch()}
-    pos = jobs[f"{_P}pos-backend-engineer"]
+    # Teamtailor ids are per-subdomain, so the stored id carries the board slug.
+    from app.discovery.job_identity import scoped_external_id
+    pos = jobs[scoped_external_id("teamtailor", "acme", f"{_P}pos-backend-engineer")]
     assert pos.location == "", "a department suffix must never become a city"
     assert pos.title == "Backend Engineer - POS Integrations"
     assert pos.geo is None
     assert gv.derive(pos).status == "unknown"
     # An explicit feed element IS evidence.
-    de = jobs[f"{_P}data-engineer"]
+    de = jobs[scoped_external_id("teamtailor", "acme", f"{_P}data-engineer")]
     assert de.location == "Stockholm" and de.geo.sites == ["Stockholm"]
     assert gv.derive(de).countries == ["sweden"]
 

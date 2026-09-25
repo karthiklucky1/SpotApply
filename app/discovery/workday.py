@@ -18,6 +18,7 @@ from app.discovery.base import (
     GeoEvidence,
     RawJob,
 )
+from app.discovery.job_identity import scoped_external_id
 from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
@@ -236,9 +237,11 @@ class WorkdayScraper:
                         hiring_org = hiring_org.get("name")
                     put(ctx, "hiring_entity", hiring_org, EVIDENCE_ORG_ENTITY,
                         "jobPostingInfo.hiringOrganization.name")
-                    # jobReqId is already the external_id; storing it as the
-                    # requisition too is what lets a later canonicalisation
-                    # layer join on it without knowing Workday's id scheme.
+                    # The requisition is kept as its own evidenced field
+                    # because `external_id` is no longer the bare req id: a
+                    # Workday req id is unique per TENANT, so it is qualified
+                    # (job_identity.scoped_external_id) to stop two employers
+                    # sharing `R29845` from merging into one posting.
                     put(ctx, "requisition_id", info.get("jobReqId"),
                         EVIDENCE_ORG_ENTITY, "jobPostingInfo.jobReqId")
                     put(ctx, "ats", "workday", EVIDENCE_ORG_ENTITY, "scraper")
@@ -246,7 +249,8 @@ class WorkdayScraper:
                     jobs.append(
                         RawJob(
                             source="workday",
-                            external_id=str(req_id),
+                            external_id=scoped_external_id(
+                                "workday", tenant, req_id),
                             company=tenant.replace("-", " ").replace("_", " ").title(),
                             title=title,
                             location=location,

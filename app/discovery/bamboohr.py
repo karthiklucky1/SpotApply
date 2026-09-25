@@ -15,6 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.job_identity import scoped_external_id
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +111,10 @@ class BambooHRScraper:
                 jobs.append(
                     RawJob(
                         source="bamboohr",
-                        external_id=str(ext_id),
+                        # BambooHR numbers jobs per subdomain, so the bare id
+                        # collides across employers (job_identity).
+                        external_id=scoped_external_id(
+                            "bamboohr", self.board_slug, ext_id),
                         company=self.board_slug.replace("-", " ").title(),
                         title=title,
                         location=location,

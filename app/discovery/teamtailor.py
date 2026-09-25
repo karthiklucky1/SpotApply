@@ -29,6 +29,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.job_identity import scoped_external_id
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +131,9 @@ class TeamtailorScraper:
             jobs.append(
                 RawJob(
                     source="teamtailor",
-                    external_id=str(ext_id),
+                    # Per-subdomain ids; see job_identity.
+                    external_id=scoped_external_id(
+                        "teamtailor", self.board_slug, ext_id),
                     company=self.board_slug.replace("-", " ").title(),
                     title=title,
                     location=location,
