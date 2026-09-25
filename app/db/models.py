@@ -429,7 +429,16 @@ class UserProfile(SQLModel, table=True):
     public_handle: Optional[str] = Field(default=None, index=True)   # app.spotapply.ai/u/<handle>
     # Work Readiness Passport — recruiter-facing "can they start?" answers
     availability: str = ""              # "Immediately" | "2 weeks" | "Interviewing" | "Not looking"
+    # WILL they move — a SEARCH preference, read by eligibility.decide to admit
+    # on-site roles away from home. NOT permission to print anything.
     open_to_relocation: bool = False
+    # MAY a generated résumé say so — a separate, document-facing consent.
+    # Defaults OFF for everyone, including users already open_to_relocation:
+    # consent to be shown a job is not consent to make a claim on a document an
+    # employer relies on. See app/tailoring/relocation.py.
+    relocation_resume_optin: bool = False
+    relocation_targets: str = ""        # approved US cities/states, or "nationwide"
+    relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR
     articulation_video_url: str = ""
     articulation_pr: str = ""           # which PR/repo the video explains

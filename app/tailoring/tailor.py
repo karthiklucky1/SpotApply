@@ -169,7 +169,8 @@ class Tailor:
     def tailor_resume(self, master_resume_md: str, job: Job, variant: str = "variant_a",
                       custom_highlight_block: Optional[str] = None,
                       revision_notes: Optional[str] = None,
-                      user_instruction: Optional[str] = None) -> str:
+                      user_instruction: Optional[str] = None,
+                      relocation_block: str = "") -> str:
         # ── ATS exact-phrase targeting ──────────────────────────────────────
         # Find the JD phrases an ATS will scan for that are NOT already verbatim
         # in the master resume, so the tailor can incorporate them honestly.
@@ -230,7 +231,7 @@ class Tailor:
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----{ats_block}{highlights_block}{revision_block}{user_block}
+---{ats_block}{highlights_block}{revision_block}{relocation_block}{user_block}
 
 Return the tailored resume in markdown. No commentary.
 Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a separate section in the tailored resume."""
@@ -484,6 +485,30 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         custom_highlight_block = app.custom_highlight_block  # optional extra bullets from SeniorReviewer
         app_user_id = app.user_id  # owner — used to name output files after the real user
 
+        # Relocation willingness — opt-in, U.S. postings only, and read from the
+        # VERIFIED geography rather than the raw location string so the
+        # destination printed on the document is one the posting actually
+        # established. Computed inside this short session; the LLM phase below
+        # holds nothing open.
+        relocation_block = ""
+        try:
+            from app.db.models import UserProfile
+            from app.discovery.geo_verify import load_geographies
+            from app.tailoring.relocation import offer_for, prompt_block
+            _prof = session.exec(select(UserProfile).where(
+                UserProfile.user_id == app_user_id)).first() if app_user_id else None
+            if _prof is not None and getattr(_prof, "relocation_resume_optin", False):
+                _src = getattr(job.source, "value", job.source)
+                _key = (str(_src).lower(), str(job.external_id))
+                _geo = load_geographies([_key]).get(_key)
+                _offer = offer_for(_prof, _geo)
+                relocation_block = prompt_block(_offer)
+                if _offer:
+                    log.info("Tailor app %d: relocation line for %s (%s)",
+                             application_id, _offer.destination, _offer.reason)
+        except Exception as e:
+            log.debug("relocation line skipped for app %d: %s", application_id, e)
+
     # --- Phase 2: all LLM work outside any session (no lock held) ---
     variant = random.choice(["variant_a", "variant_b"])
 
@@ -603,6 +628,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 custom_highlight_block=custom_highlight_block,
                 revision_notes=revision_notes,
                 user_instruction=user_instruction,
+                relocation_block=relocation_block,
             )
 
         # ── Lock layer ────────────────────────────────────────────────────────

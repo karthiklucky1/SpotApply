@@ -8644,6 +8644,11 @@ _USERPROFILE_COLUMNS = [
     ("account_type", "VARCHAR DEFAULT 'candidate'", "VARCHAR DEFAULT 'candidate'"),
     ("availability", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("open_to_relocation", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    # Document-facing relocation consent — defaults OFF, never backfilled
+    # from open_to_relocation (app/tailoring/relocation.py).
+    ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
+    ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_pr", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("trust_identity_score", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
@@ -8812,6 +8817,9 @@ class ProfileUpdate(BaseModel):
     remote_ok: Optional[bool] = None
     availability: Optional[str] = None
     open_to_relocation: Optional[bool] = None
+    relocation_resume_optin: Optional[bool] = None
+    relocation_targets: Optional[str] = None
+    relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
     articulation_pr: Optional[str] = None
     ead_end_date: Optional[str] = None
@@ -9613,6 +9621,9 @@ def public_trust_profile(handle: str, request: Request):
             "requires_sponsorship": bool(profile.requires_sponsorship),
             "remote_ok": bool(profile.remote_ok),
             "open_to_relocation": bool(profile.open_to_relocation),
+            "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
+            "relocation_targets": getattr(profile, "relocation_targets", "") or "",
+            "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
             "preferred_country": profile.preferred_country or "",
             "salary_min": profile.salary_min or 0,
             "salary_max": profile.salary_max or 0,
