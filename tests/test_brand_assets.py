@@ -224,3 +224,53 @@ def test_the_share_image_each_page_points_at_is_actually_served(client, path):
     assert m, f"{path} has no og:image"
     served = client.get(m.group(1).replace("https://app.spotapply.ai", ""))
     assert served.status_code == 200 and served.content
+
+
+# ── page weight ──────────────────────────────────────────────────────────────
+
+def test_every_landing_screenshot_has_a_webp_beside_it():
+    """The hero PNG was 305KB of a 362KB page — 86% of a first visit's transfer.
+    Regenerate with `python -m scripts.build_webp_shots`."""
+    shots = STATIC / "shots"
+    pngs = sorted(shots.glob("*.png"))
+    assert pngs, "the landing screenshots are missing"
+    for png in pngs:
+        webp = png.with_suffix(".webp")
+        assert webp.exists(), f"{png.name} has no WebP — run scripts/build_webp_shots.py"
+        assert webp.stat().st_size < png.stat().st_size, \
+            f"{webp.name} is not smaller than its PNG; re-encoding gained nothing"
+        assert webp.read_bytes()[:4] == b"RIFF", f"{webp.name} is not a WebP"
+
+
+def test_the_hero_offers_webp_first_and_keeps_the_png_as_a_fallback():
+    """Adding a format must never remove one: a browser that cannot decode WebP
+    still has to get the original."""
+    html = (ROOT / "app" / "templates" / "landing.html").read_text()
+    assert html.count("<picture>") == html.count("</picture>") >= 2
+    assert 'type="image/webp"' in html
+    assert "/static/shots/qualified-board.webp" in html
+    assert "/static/shots/qualified-board.png" in html, "the PNG fallback was dropped"
+    # The LCP image keeps its priority hints and explicit dimensions.
+    assert 'fetchpriority="high"' in html
+    assert 'width="1278" height="700"' in html
+
+
+def test_every_referenced_shot_is_actually_served(client):
+    import re
+    html = client.get("/").text
+    found = set(re.findall(r'/static/shots/[\w-]+\.(?:png|webp|jpg|jpeg|avif)', html))
+    assert found, "the landing page references no screenshots at all"
+    for path in sorted(found):
+        r = client.get(path)
+        assert r.status_code == 200 and r.content, f"{path} -> {r.status_code}"
+
+
+@pytest.mark.parametrize("page", ["pricing.html", "privacy.html", "terms.html"])
+def test_cdn_pages_preconnect_to_the_origins_they_block_on(page):
+    """These pages load a third-party stylesheet and the Tailwind CDN, both
+    render-blocking, and neither had a preconnect — so the TLS handshake only
+    started after the HTML was parsed."""
+    html = (ROOT / "app" / "templates" / page).read_text()
+    for origin in ("https://fonts.googleapis.com", "https://fonts.gstatic.com",
+                   "https://cdn.tailwindcss.com"):
+        assert f'rel="preconnect" href="{origin}"' in html, f"{page} lacks {origin}"

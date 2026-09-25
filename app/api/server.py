@@ -249,6 +249,38 @@ class SecurityAuditMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityAuditMiddleware)
 
 
+# ── Keep authenticated responses out of shared caches ─────────────────────────
+# No route set any Cache-Control at all, and that is only half-safe. RFC 9111
+# §3.5 forbids a shared cache from storing a response to a request carrying an
+# `Authorization` header — but SpotApply also authenticates by COOKIE
+# (`sb_token`, SupabaseSessionMiddleware), and a cookie-authenticated request
+# has no Authorization header, so that protection does not apply to it. A CDN or
+# corporate proxy applying heuristic freshness to a 200 could then serve one
+# tenant's board, profile or résumé list to another.
+#
+# Every `/api/*` response and every authenticated page is therefore marked
+# `no-store`, and `Vary` names the two things the answer actually depends on. A
+# route that has deliberately set its own Cache-Control (the favicon routes, the
+# company-logo proxy — all genuinely public and keyed only by their URL) is left
+# alone, so this cannot quietly de-optimise a public asset.
+_NEVER_SHARED_PREFIXES = ("/api/", "/application/", "/dashboard")
+
+
+class PrivateCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        if "cache-control" in response.headers:
+            return response                      # the route decided; respect it
+        path = request.url.path
+        if path.startswith(_NEVER_SHARED_PREFIXES):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Vary"] = "Authorization, Cookie"
+        return response
+
+
+app.add_middleware(PrivateCacheMiddleware)
+
+
 # ── Auth helpers ─────────────────────────────────────────────────────────────
 
 def _get_user_id(request: Request) -> str | None:

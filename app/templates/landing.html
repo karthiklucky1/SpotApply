@@ -356,10 +356,22 @@
                      nothing reflows once it lands. Phones get a narrower crop of
                      the same board — the two-column desktop shot is illegible in
                      a 342px column. -->
+                <!-- WebP first, PNG kept as the fallback. Measured on this
+                     checkout: the hero PNG was 305KB of a 362KB page — 86% of
+                     everything the landing page transfers — and re-encoding the
+                     same pixels to WebP at q=0.86 costs 174KB, with the card
+                     text still legible at full resolution. Regenerate both with
+                     scripts/build_webp_shots.py if a screenshot is replaced. -->
                 <picture>
+                    <source media="(max-width: 640px)" type="image/webp"
+                            srcset="/static/shots/qualified-board-narrow.webp"
+                            width="548" height="495">
                     <source media="(max-width: 640px)"
                             srcset="/static/shots/qualified-board-narrow.png"
                             width="548" height="495">
+                    <source type="image/webp"
+                            srcset="/static/shots/qualified-board.webp"
+                            width="1278" height="700">
                     <img src="/static/shots/qualified-board.png" width="1278" height="700"
                          fetchpriority="high" decoding="async"
                          alt="The SpotApply board showing qualified roles, each with a match
@@ -521,12 +533,16 @@
 
         <figure data-aos="fade-up" data-aos-delay="80" style="margin-top:56px;">
             <div class="shot-frame">
+                <picture>
+                <source type="image/webp" srcset="/static/shots/why-it-matches.webp"
+                        width="1152" height="432">
                 <img src="/static/shots/why-it-matches.png" width="1152" height="432"
                      loading="lazy" decoding="async"
                      alt="The match report for a Senior Backend Engineer role: a score of 94
                           with the note that Claude read the full job description and scored
                           it against the resume, a plain-language explanation of why it
                           matched, and a sponsorship status of not stated.">
+                </picture>
             </div>
             <figcaption>
                 One role's match report: the score, the reasoning behind it, and where

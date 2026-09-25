@@ -585,6 +585,35 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   stays. Footer years are server-rendered. Guard: `test_brand_assets` (live
   HTTP: content types, no-auth access, manifest icons on disk, case-exact
   paths, every og:image actually served).
+- **Authenticated responses are `no-store`** (`PrivateCacheMiddleware`,
+  docs/VERIFICATION_PHASE_10_11.md): no route set ANY Cache-Control, which is
+  only half-safe. RFC 9111 §3.5 stops a shared cache storing a response to a
+  request with an `Authorization` header — but we also authenticate by COOKIE
+  (`sb_token`, for full-page navigations), and those carry no such header, so a
+  CDN could serve one tenant's board to another. Every `/api/*`,
+  `/application/*` and `/dashboard` response gets `no-store` +
+  `Vary: Authorization, Cookie`; a route that set its own header is left alone;
+  the decision is BY PATH, not by whether a user was found (or a 401 and a later
+  200 share a key). Temporary Pro is a plan, never a door: it cannot
+  authenticate, nor grant admin/recruiter — the guards must never reference an
+  entitlement (pinned). Guard: `test_auth_boundaries`.
+- **Page weight is measured, and lab is labelled lab**
+  (`scripts/build_webp_shots.py`): the landing hero PNG was 305KB of a 362KB
+  page — 86% of a first visit — now 174KB WebP with the PNG kept as the
+  `<source>` fallback (362→227KB, −37%; 7 cold-context Chromium runs, medians).
+  Numbers from this container are a LOWER BOUND: it has no outbound network, so
+  Google Fonts and the Tailwind CDN record 0 bytes and real users pay for both.
+  `/pricing`, `/privacy`, `/terms` still load the Tailwind PLAY CDN (a dev tool,
+  render-blocking, third-party) — fixing it needs a third build config and
+  `npm run build`, so they got `preconnect` instead. Guard: `test_brand_assets`.
+- **The end-to-end sample is SYNTHETIC and says so** (`test_end_to_end_flow`):
+  13 fixtures over 6 sources × 4 work modes × 3 verdicts, plus a colliding
+  Workday req id, a state restriction, missing metadata and conflicting
+  evidence. Nothing is extrapolated to the platform. Two rules it pinned that
+  are easy to get wrong: on-site/hybrid in ANOTHER US CITY is INELIGIBLE while
+  `open_to_relocation` is off (same state is not enough), and a state
+  restriction is DECIDABLE when the profile names a state — held only when it
+  names none.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 
