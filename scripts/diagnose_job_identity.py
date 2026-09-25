@@ -37,6 +37,7 @@ from collections import defaultdict
 from typing import Iterable
 from urllib.parse import urlparse
 
+from sqlalchemy import String as _SQLString
 from sqlalchemy import func
 from sqlmodel import select
 
@@ -63,23 +64,82 @@ def _host(url: str | None) -> str:
 
 # ── report ───────────────────────────────────────────────────────────────────
 
-def report_collisions(session, limit: int) -> list[tuple]:
-    """Any source where one external_id maps to disagreeing employers.
+def report_collisions(session, limit: int) -> tuple[list, list]:
+    """(real collisions, spelling-only groups).
 
-    Deliberately generic rather than Workday-only: `TENANT_SCOPED_SOURCES` is an
-    allowlist built from evidence, and this is how a source that is not on it
-    yet gets caught — with its own rows as the evidence, instead of a guess.
+    A REAL collision is one external_id under two different EMPLOYER TENANTS,
+    derived from the posting URL. The first version of this counted
+    `DISTINCT company` strings instead, which is not the same question: a
+    company stored once as "CrowdStrike" and once as "Crowdstrike" counted as
+    two employers and was reported as a collision. Against production that
+    produced false positives on greenhouse, lever and ashby — sources whose ids
+    ARE globally unique — which would have argued for putting them on the
+    tenant-scoping allowlist they do not belong on.
+
+    Both groups are returned because the difference is the useful bit: the
+    second is a display-name inconsistency, not an identity defect.
     """
+    sub = (select(Job.source, Job.external_id)
+           .where(Job.external_id.is_not(None), Job.external_id != "")
+           .group_by(Job.source, Job.external_id)
+           .having(func.count(func.distinct(Job.company)) > 1)
+           .subquery())
     rows = session.exec(
-        select(Job.source, Job.external_id,
-               func.count(func.distinct(Job.company)).label("companies"),
-               func.count(Job.id).label("rows"))
-        .where(Job.external_id.is_not(None), Job.external_id != "")
-        .group_by(Job.source, Job.external_id)
-        .having(func.count(func.distinct(Job.company)) > 1)
-        .limit(limit)
+        select(Job.source, Job.external_id, Job.company, Job.url)
+        .join(sub, (Job.source == sub.c.source)
+              & (Job.external_id == sub.c.external_id))
     ).all()
-    return list(rows)
+
+    groups: dict[tuple, dict] = {}
+    for source, ext, company, url in rows:
+        src = str(getattr(source, "value", source)).lower()
+        g = groups.setdefault((src, ext), {"tenants": {}, "companies": set(), "rows": 0})
+        g["rows"] += 1
+        g["companies"].add(company or "")
+        t = tenant_from_url(src, url) or _host(url) or ""
+        if t:
+            g["tenants"].setdefault(t, set()).add(company or "")
+
+    real, spelling = [], []
+    for (src, ext), g in groups.items():
+        entry = (src, ext, len(g["tenants"]), g["rows"],
+                 sorted(g["companies"])[:6], sorted(g["tenants"])[:6])
+        (real if len(g["tenants"]) > 1 else spelling).append(entry)
+    real.sort(key=lambda e: (-e[2], -e[3]))
+    spelling.sort(key=lambda e: -e[3])
+    return real[:limit], spelling[:limit]
+
+
+def report_tenant_mapping(session, limit: int = 40) -> dict[str, list]:
+    """What each source's URLs actually derive as a tenant.
+
+    The repair keys off `tenant_from_url`, and "the first label of the host is
+    non-empty" is not evidence it is the EMPLOYER — a board on its own domain
+    (`careers.acme.com`) or a shortener would derive something else. This prints
+    the mapping so it can be eyeballed per source BEFORE `--apply` touches
+    anything, which is the check teamtailor in particular needs.
+    """
+    out: dict[str, list] = {}
+    for src in sorted(TENANT_SCOPED_SOURCES):
+        rows = session.exec(
+            select(Job.url, Job.company, func.count(Job.id).label("n"))
+            .where(func.lower(Job.source.cast(_SQLString)) == src,
+                   Job.url.is_not(None), Job.url != "")
+            .group_by(Job.url, Job.company)
+            .limit(4000)
+        ).all()
+        seen: dict[str, dict] = {}
+        for url, company, n in rows:
+            t = tenant_from_url(src, url)
+            e = seen.setdefault(t or "(none)",
+                                {"rows": 0, "companies": set(), "host": _host(url)})
+            e["rows"] += int(n or 0)
+            e["companies"].add(company or "")
+        out[src] = sorted(
+            ((t, e["rows"], sorted(e["companies"])[:3], e["host"])
+             for t, e in seen.items()),
+            key=lambda x: -x[1])[:limit]
+    return out
 
 
 def report_unscoped(session) -> dict[str, int]:
@@ -189,8 +249,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
                     help="perform the repair (default: report only)")
-    ap.add_argument("--limit", type=int, default=5000,
-                    help="max rows to consider (default 5000)")
+    ap.add_argument("--limit", type=int, default=50000,
+                    help="max rows to consider per run (default 50000). "
+                         "Production holds ~487k unscoped rows, so --apply is "
+                         "meant to be run repeatedly until `repairable` is 0.")
     args = ap.parse_args()
 
     # SQLite-only, and deliberately so. `init_db()` is NOT read-only — it runs
@@ -204,14 +266,37 @@ def main() -> int:
 
     with get_session() as s:
         collisions = report_collisions(s, args.limit)
+        tenant_map = report_tenant_mapping(s)
         unscoped = report_unscoped(s)
         repairable, unresolvable = plan(s, args.limit)
 
-    print("== employers sharing one external_id ==")
-    if not collisions:
+    real, spelling = collisions
+    print("== REAL collisions: one external_id, two employer tenants ==")
+    if not real:
         print("  none found")
-    for src, ext, companies, rows in collisions:
-        print(f"  {src:<12} {ext:<28} {companies} employers across {rows} rows")
+    for src, ext, tenants, rows, companies, tnames in real[:25]:
+        print(f"  {src:<12} {ext:<24} {tenants} tenants / {rows} rows  "
+              f"{', '.join(tnames)}")
+        print(f"  {'':<12} {'':<24} companies: {', '.join(companies)}")
+    if len(real) > 25:
+        print(f"  … {len(real) - 25} more")
+
+    print("\n== same employer, different spellings (NOT an identity defect) ==")
+    if not spelling:
+        print("  none found")
+    for src, ext, _t, rows, companies, _tn in spelling[:10]:
+        print(f"  {src:<12} {ext:<24} {rows} rows  {' | '.join(companies)}")
+    if len(spelling) > 10:
+        print(f"  … {len(spelling) - 10} more")
+
+    print("\n== derived tenant per source — CHECK THIS BEFORE --apply ==")
+    print("   'the first host label is non-empty' is not evidence it is the")
+    print("   employer. Confirm these look like employers, per source.")
+    for src, entries in tenant_map.items():
+        print(f"  {src}:")
+        for tenant, rows, companies, host in entries[:12]:
+            print(f"    {tenant:<24} {rows:>7} rows  host={host:<34} "
+                  f"{', '.join(companies)[:48]}")
 
     print("\n== rows predating tenant-scoped identity ==")
     for src, n in unscoped.items():

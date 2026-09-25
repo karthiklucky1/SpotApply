@@ -336,11 +336,11 @@ def test_the_diagnostic_detects_the_production_collision(clean):
     from scripts.diagnose_job_identity import report_collisions, report_unscoped
     req, _cs, _gn = _seed_prod_collision()
     with get_session() as s:
-        collisions = report_collisions(s, 500)
+        real, spelling = report_collisions(s, 500)
         unscoped = report_unscoped(s)
-    hit = [c for c in collisions if c[1] == req]
-    assert hit, f"collision on {req} not detected; got {collisions}"
-    assert hit[0][2] == 2, "should report two distinct employers"
+    hit = [c for c in real if c[1] == req]
+    assert hit, f"collision on {req} not detected; real={real} spelling={spelling}"
+    assert hit[0][2] == 2, "should report two distinct employer TENANTS"
     assert unscoped["workday"] >= 2
 
 
@@ -429,3 +429,78 @@ def test_the_repair_skips_rather_than_violating_the_unique_constraint(clean):
     assert stats["skipped_would_collide"] == 1
     with get_session() as s:
         assert s.get(Job, dup_id).external_id == bare, "left untouched"
+
+
+# ── telling a real collision from a spelling difference ─────────────────────
+#
+# Production, 2026-09-25: the first version of `report_collisions` counted
+# DISTINCT COMPANY STRINGS, so it reported collisions on greenhouse, lever and
+# ashby — sources whose ids ARE globally unique. Those were one employer stored
+# under two spellings. Acting on that reading would have put three sources on
+# the tenant-scoping allowlist they do not belong on, and rewritten the identity
+# of every row they own for nothing.
+
+def _job(ext, company, host, uid="local", source=None):
+    from app.db.models import Job, JobSource
+    return Job(user_id=uid, source=source or JobSource.GREENHOUSE, external_id=ext,
+               company=company, title="Engineer",
+               url=f"https://{host}/jobs/{ext}", description="d")
+
+
+def test_two_employers_on_one_id_are_reported_as_a_real_collision(clean):
+    from app.db.init_db import get_session
+    from app.db.models import JobSource
+    from scripts.diagnose_job_identity import report_collisions
+
+    ext = f"{PREFIX}R29845"
+    with get_session() as s:
+        s.add(_job(ext, "CrowdStrike", f"{PREFIX}crowdstrike.wd5.myworkdayjobs.com",
+                   source=JobSource.WORKDAY))
+        s.add(_job(ext, "GN", f"{PREFIX}gn.wd3.myworkdayjobs.com",
+                   uid="__shared__", source=JobSource.WORKDAY))
+        s.commit()
+
+    with get_session() as s:
+        real, spelling = report_collisions(s, 500)
+    mine = [r for r in real if r[1] == ext]
+    assert mine, f"a two-tenant collision must be reported as real; got {real}"
+    assert mine[0][2] == 2, "two distinct employer tenants"
+    assert not [r for r in spelling if r[1] == ext]
+
+
+def test_one_employer_under_two_spellings_is_not_a_collision(clean):
+    """The false positive itself. Same host, same employer, two spellings — a
+    display-name inconsistency, not an identity defect."""
+    from app.db.init_db import get_session
+    from scripts.diagnose_job_identity import report_collisions
+
+    ext = f"{PREFIX}7778289"
+    with get_session() as s:
+        s.add(_job(ext, "CrowdStrike", f"boards.greenhouse.io"))
+        s.add(_job(ext, "Crowdstrike", f"boards.greenhouse.io", uid="__shared__"))
+        s.commit()
+
+    with get_session() as s:
+        real, spelling = report_collisions(s, 500)
+    assert not [r for r in real if r[1] == ext], \
+        "one employer spelled two ways is NOT a real collision"
+    mine = [r for r in spelling if r[1] == ext]
+    assert mine and mine[0][3] == 2, "it should still be reported, as a spelling group"
+
+
+def test_the_tenant_mapping_shows_what_the_repair_would_key_off(clean):
+    """The check the repair needs before it runs: not "is the first host label
+    non-empty" but "is it actually the employer"."""
+    from app.db.init_db import get_session
+    from app.db.models import JobSource
+    from scripts.diagnose_job_identity import report_tenant_mapping
+
+    with get_session() as s:
+        s.add(_job(f"{PREFIX}m1", "Acme", f"{PREFIX}acme.wd5.myworkdayjobs.com",
+                   source=JobSource.WORKDAY))
+        s.commit()
+
+    with get_session() as s:
+        mapping = report_tenant_mapping(s)
+    tenants = [t for t, _rows, _companies, _host in mapping.get("workday", [])]
+    assert f"{PREFIX}acme" in tenants, f"expected the tenant in {tenants}"
