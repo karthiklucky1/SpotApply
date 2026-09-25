@@ -1816,16 +1816,48 @@ templates.env.globals["urgency_of"] = _urgency_of
 
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
+_ASSET_CACHE = "public, max-age=86400"
+
+
 @app.get("/favicon.svg")
-@app.get("/favicon.ico")
-def serve_favicon():
-    """Serve the brand mark at the canonical paths browsers and search crawlers
-    request by default (a data-URI <link> alone isn't reliably picked up by
-    Google's favicon crawler, so the search result showed a generic globe)."""
+def serve_favicon_svg():
+    """The brand mark as SVG, at the canonical path.
+
+    A data-URI <link> alone is not reliably picked up by Google's favicon
+    crawler, which is why the search result showed a generic globe.
+    """
     import os
     from fastapi.responses import FileResponse
     file_path = os.path.join(os.path.dirname(__file__), "..", "static", "favicon.svg")
-    return FileResponse(file_path, media_type="image/svg+xml")
+    return FileResponse(file_path, media_type="image/svg+xml",
+                        headers={"Cache-Control": _ASSET_CACHE})
+
+
+@app.get("/favicon.ico")
+def serve_favicon_ico():
+    """A REAL .ico — three PNG frames (16/32/48) in an ICO container.
+
+    This path used to return the SVG file with `media_type="image/svg+xml"`:
+    SVG bytes, an SVG content type, at a `.ico` URL. Modern Chrome will often
+    render that anyway, but it is not what a `.ico` request asks for, and the
+    clients that ignore the content type and trust the extension — older
+    Chrome, several crawlers, bookmark and tab-restore surfaces — get an image
+    they cannot decode and fall back to a blank or generic icon. That is
+    consistent with a "no logo in Chrome" report that does not reproduce for
+    the developer, whose browser has the SVG cached from a page visit.
+
+    The .ico is generated FROM `favicon.svg` (rendered in Chromium), so the two
+    cannot drift into different marks. Regenerate with
+    `scripts/build_favicon_ico.py` if the SVG changes; `test_brand_assets`
+    fails if the file stops being a valid multi-size ICO.
+    """
+    import os
+    from fastapi.responses import FileResponse
+    file_path = os.path.join(os.path.dirname(__file__), "..", "static", "favicon.ico")
+    if not os.path.exists(file_path):          # never 500 over an icon
+        return serve_favicon_svg()
+    return FileResponse(file_path, media_type="image/x-icon",
+                        headers={"Cache-Control": _ASSET_CACHE})
 
 
 @app.get("/robots.txt")
@@ -1919,6 +1951,17 @@ def clear_all_notifications(request: Request) -> dict:
         return {"ok": True}
 
 
+def _current_year() -> int:
+    """The year the page is SERVED, not the year it was written.
+
+    Both public footers carried a hard-coded "© 2026". Correct on the day it was
+    typed and wrong every 1 January after — the class of stale copy Phase 9 asks
+    to fix, so it is fixed at the source rather than re-typed each year.
+    """
+    from datetime import datetime
+    return datetime.utcnow().year
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     # The price comes from PLAN_PRICES like every other surface — the landing
@@ -1930,7 +1973,8 @@ def index(request: Request):
     return templates.TemplateResponse(request=request, name="landing.html",
                                       context={"pro_price": pro_price_usd(),
                                                "temporary_pro": temporary_pro_active(),
-                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE})
+                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE,
+                                               "current_year": _current_year()})
 
 
 @app.get("/pricing", response_class=HTMLResponse)
@@ -1942,7 +1986,8 @@ def pricing_page(request: Request):
     return templates.TemplateResponse(request=request, name="pricing.html",
                                       context={"pro_price": pro_price_usd(),
                                                "temporary_pro": temporary_pro_active(),
-                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE})
+                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE,
+                                               "current_year": _current_year()})
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -7449,6 +7494,46 @@ def admin_metrics(request: Request) -> dict:
         # tell a complimentary month from a sales quarter.
         "temporary_pro_for_all": temporary_pro_active(),
     }
+
+
+@app.get("/api/admin/contact-research")
+def admin_contact_research(request: Request) -> dict:
+    """Readiness telemetry for contact research. Admin-only, no identifiers.
+
+    Phase 8 asks for observed elapsed time and cost per stage with successful,
+    empty, failed and timed-out runs reported SEPARATELY — and the honest answer
+    before this existed was that no log could support it: the X-Ray search logged
+    only on exception and the draft builder logged nothing at all.
+
+    Four things are kept apart here, because collapsing any of them into "0" is
+    how a readiness report claims a capability the product does not have:
+
+      * `implemented: false` — the stage was never built. `relevance_verification`
+        is the live example: nothing checks that a person a search returned still
+        holds the role their snippet implied.
+      * `observed_runs > 0, measured: false` — attempted, but no provider call
+        was made (no SERPAPI_KEY), so there is no timing. Not zero time.
+      * `by_outcome.empty` — ran, succeeded, found nobody. The most common real
+        result, and not a failure.
+      * `by_outcome.ok` — returned at least one candidate.
+
+    Counters are aggregate and reset on deploy. No name, profile URL, employer,
+    job id or user id appears in any label — these are real people who did not
+    ask to be in our metrics (guard: `test_contact_research`).
+    """
+    _require_admin_user(request)
+    from app.config import settings
+    from app.intelligence.contact_research import snapshot
+
+    snap = snapshot()
+    snap["providers"] = {
+        # Configured-ness only, never a key. Without this the report cannot tell
+        # "found nobody" from "never asked anybody".
+        "serpapi_configured": bool(settings.serpapi_key),
+    }
+    snap["counters_reset_on_deploy"] = True
+    snap["feature_status"] = "on_hold"
+    return snap
 
 
 @app.get("/api/admin/referrals")

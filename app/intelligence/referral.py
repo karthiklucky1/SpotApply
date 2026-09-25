@@ -155,6 +155,16 @@ def get_company_github_repos(company: str) -> list[str]:
 
 def generate_referral_drafts(application_id: int, user_id: str | None = None) -> dict:
     """Return draft outreach messages for one application (user must send them)."""
+    from app.intelligence import contact_research as _cr
+    with _cr.timed(_cr.OUTPUT_GENERATION) as _t:
+        out = _generate_referral_drafts(application_id, user_id=user_id)
+        drafts = out.get("drafts") or []
+        _t.outcome = _cr.OK if drafts else _cr.EMPTY
+        _t.results = len(drafts)
+        return out
+
+
+def _generate_referral_drafts(application_id: int, user_id: str | None = None) -> dict:
     from app.db.init_db import get_session
     from app.db.models import Application, Job
     from app.autofill.answer_pack import _get_or_create_profile
@@ -213,23 +223,57 @@ def generate_referral_drafts(application_id: int, user_id: str | None = None) ->
     # University Alumni check
     uni = getattr(profile, "university", "").strip()
     if uni:
+        # WHAT A SEARCH SNIPPET ESTABLISHES, AND WHAT IT DOES NOT.
+        #
+        # This draft used to tell a REAL, NAMED person: "I noticed you also went
+        # to <university> and now work at <company> as a <role>" — where `role`
+        # is the title of the job THE USER IS APPLYING FOR, not anything about
+        # the recipient. Two invented claims in one sentence, in a message the
+        # product then invites the user to send:
+        #
+        #   * their job title, asserted from the requisition;
+        #   * their alma mater, matched by a substring against a Google snippet,
+        #     which can mention a university for any number of reasons.
+        #
+        # The name comes from a public result title and is the only part with
+        # any evidence behind it. So the draft now says what we actually saw
+        # ("your profile came up …") and leaves the connection for the user to
+        # confirm — `unverified` and `evidence` travel with the draft so the UI
+        # can say so too. Guard: `test_contact_research`.
         matched_alum = None
         for w in winners:
-            if uni.lower() in w.get("headline", "").lower():
+            if uni.lower() in (w.get("headline", "") or "").lower():
                 matched_alum = w
                 break
-        target_name = matched_alum["name"] if matched_alum else "{Alumni Name}"
-        drafts.append({
+        alum_draft = {
             "type": "university_alumni",
             "label": "University Alumni connection",
             "channel": "LinkedIn connection request to a fellow alum",
-            "body": (
-                f"Hi {target_name.split(' ')[0] if target_name else 'there'}, I noticed you also went to {uni} "
-                f"and now work at {company} as a {role}. I'm exploring the team there "
-                f"and would love to connect with a fellow alum to hear about your experience. Go "
-                f"{uni.split(' ')[-1]}!"
-            )
-        })
+            "unverified": True,
+            "verify_before_sending": (
+                f"Confirm this person actually went to {uni} before you send this — "
+                f"a search snippet mentioning a school is not proof of attendance, "
+                f"and we have not checked their current role."),
+        }
+        if matched_alum:
+            alum_draft["suggested_contact"] = {
+                "name": matched_alum.get("name", ""),
+                "profile_url": matched_alum.get("url", ""),
+                # The snippet VERBATIM — the user can see for themselves what we
+                # matched on rather than taking our word for the connection.
+                "evidence": (matched_alum.get("headline", "") or "")[:200],
+                "evidence_type": "public_search_snippet",
+            }
+            first = (matched_alum.get("name", "") or "").split(" ")[0] or "there"
+        else:
+            first = "{Alumni Name}"
+        alum_draft["body"] = (
+            f"Hi {first}, your profile came up while I was looking into {company} — "
+            f"I'm a {uni} alum too, and I'm exploring the {role} role there. "
+            f"Would you be open to connecting? I'd love to hear about your experience "
+            f"of the team."
+        )
+        drafts.append(alum_draft)
 
     # GitHub check
     repos = []

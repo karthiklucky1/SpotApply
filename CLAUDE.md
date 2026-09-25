@@ -552,6 +552,39 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   not a hiring probability. Year-only dates are admitted as approximate, and only
   dates feeding a total can make a total approximate. Guards:
   `evidence_inventory`, `requirement_review`.
+- **Contact research is ON HOLD, and "no data" is not zero**
+  (`intelligence/contact_research.py`, docs/RECRUITER_RESEARCH_READINESS.md):
+  THREE features wear the word recruiter — `/recruiter` is an INBOUND portal
+  (verified recruiters find candidates; intro needs candidate consent),
+  `hiring_context` extracts what a posting already states, and only
+  `linkedin_xray` + `referral` is outbound contact research. Before this,
+  `find_champions` logged only on exception and `generate_referral_drafts`
+  logged nothing, so NO elapsed time or cost can be reported for any period
+  before 2026-09-25. Counters now keep four states apart: `implemented: false`
+  (relevance verification does not exist — nothing checks a person still holds
+  the role a snippet implied), attempted-but-never-called (no SERPAPI_KEY → no
+  timing, NOT 0ms), `empty` (ran, found nobody — the common answer, not a
+  failure) and `ok`. Quota ≠ failure. Aggregate labels only, never a name or
+  profile URL. `/api/admin/contact-research`. **Why no contacts: employers don't
+  publish them** — 3 samples, 66 postings, 2.2% named recruiter, 0 named
+  managers. The alumni draft used to tell a REAL named person they "went to X
+  and now work at Y as a <the job the USER is applying for>" — two invented
+  claims from a search snippet; it now ships the snippet verbatim plus a
+  verify-before-sending step. Guard: `test_contact_research`.
+- **Brand assets and dates** (docs/BRAND_ASSETS_AND_DATES.md): `/favicon.ico`
+  served the SVG file under `image/svg+xml` — SVG bytes at a `.ico` URL, which
+  modern Chrome renders and older Chrome/crawlers/bookmark surfaces do not,
+  so it never reproduced for a developer whose browser had the mark cached.
+  It now serves a real multi-size ICO GENERATED from `favicon.svg`
+  (`scripts/build_favicon_ico.py`, Chromium raster) so the two marks can't
+  drift; a missing file falls back to SVG rather than 500ing. The privacy
+  policy never declared the immigration data the product stores
+  (`work_authorization`/`visa_status`/`ead_end_date`/`requires_sponsorship`/
+  `stem_opt` + relocation targets) — now declared against implemented
+  behaviour only, which is why its date moved; TERMS' date is historical and
+  stays. Footer years are server-rendered. Guard: `test_brand_assets` (live
+  HTTP: content types, no-auth access, manifest icons on disk, case-exact
+  paths, every og:image actually served).
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

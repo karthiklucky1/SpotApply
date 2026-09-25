@@ -4,6 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Privacy Policy — SpotApply</title>
+    <!-- Social + canonical. These three pages had neither: a shared link
+         rendered as a bare URL with no card, and with no canonical the
+         trailing-slash and query-string variants of one page can split
+         indexing between them. -->
+    <link rel="canonical" href="https://app.spotapply.ai/privacy">
+    <meta property="og:title" content="Privacy Policy — SpotApply">
+    <meta property="og:description" content="What SpotApply collects, how it is used, who processes it, and how to delete it.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://app.spotapply.ai/privacy">
+    <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Privacy Policy — SpotApply">
+    <meta name="twitter:description" content="What SpotApply collects, how it is used, who processes it, and how to delete it.">
+    <meta name="twitter:image" content="https://app.spotapply.ai/static/og-card.png">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%230EA5E9'/><stop offset='100%25' stop-color='%230077C2'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(255,255,255,0.8)'/></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -42,7 +56,7 @@
     <div class="max-w-2xl mx-auto">
         <div class="mb-10">
             <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Privacy Policy</h1>
-            <p class="text-sm" style="color:var(--muted);">Last updated: August 2026</p>
+            <p class="text-sm" style="color:var(--muted);">Last updated: September 2026</p>
         </div>
 
         <div class="prose-dark space-y-2">
@@ -54,6 +68,22 @@
                 <li><strong>Account data:</strong> Email address and name provided at sign-up via Supabase Auth or Google OAuth.</li>
                 <li><strong>Resume data:</strong> The resume file you upload and the structured profile fields extracted from it (name, skills, experience, education, etc.).</li>
                 <li><strong>Application data:</strong> Job listings discovered, matching scores, tailored documents generated, and application statuses.</li>
+                <!-- Added September 2026. The product has stored these fields
+                     since before this policy was written and the policy never
+                     said so: work_authorization, visa_status, ead_end_date,
+                     requires_sponsorship and stem_opt on UserProfile. Described
+                     here against the implemented behaviour, with no promise the
+                     code does not already keep. -->
+                <li><strong>Work-authorisation and preference data (only what you enter):</strong>
+                    your work-authorisation status, visa status, EAD end date, whether you
+                    expect to need sponsorship, your preferred country and locations, and —
+                    if you turn it on — the places you are willing to relocate to and by when.
+                    You enter these yourself; none of them is inferred from your resume.
+                    We use them to filter out jobs you are not eligible for, and to prepare
+                    answers to the work-authorisation questions application forms ask. Where
+                    the answer depends on something we do not hold, the product asks you to
+                    confirm rather than answering for you. You can clear any of these fields
+                    from your profile at any time.</li>
                 <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
                 <li><strong>Email content (only if you turn on Email Sync):</strong> when you enable Email Sync in the browser extension, it reads job-related messages from the webmail page you have open and sends the sender, subject, date and message body to SpotApply. We use them to detect employer replies, rejections and interview invitations, and to add applications you made outside SpotApply. Message bodies we cannot match to a known application are stored with that application record. Email Sync is off unless you enable it, and turning it off stops any further reading.</li>
             </ul>
