@@ -722,6 +722,14 @@
         <div data-aos="fade-up" style="text-align:center;max-width:56ch;margin:0 auto;">
             <span class="eyebrow">Pricing</span>
             <h2 class="h2" style="margin-top:14px;">One plan. Cancel anytime.</h2>
+            {% if temporary_pro %}
+            <!-- Server-rendered from billing.temporary_pro_active(). Inline styles
+                 only: both stylesheets are compiled and committed, so a new class
+                 here would ship unstyled until someone runs `npm run build`. -->
+            <p class="body" style="margin-top:18px;padding:14px 18px;border-radius:14px;background:#ECFDF5;border:1px solid #047857;color:#065F46;font-weight:700;">
+                {{ temporary_pro_notice }} The price below is what Pro will cost when paid plans reopen.
+            </p>
+            {% endif %}
         </div>
 
         <div class="card rounded-2xl" data-aos="fade-up" data-aos-delay="80"
@@ -748,8 +756,14 @@
 
             <a href="/login?mode=signup" class="btn btn-primary" style="width:100%;margin-top:32px;">Start free</a>
             <p style="font-size:13.5px;color:var(--muted);text-align:center;margin:16px 0 0;">
+                {% if temporary_pro %}
+                No card required, and nothing to upgrade right now — every account
+                already has the Pro daily caps and unlimited auto-fill. Nothing is
+                charged or started automatically when that ends.
+                {% else %}
                 The Free plan is the trial — the full pipeline with daily caps, no card required.
                 Upgrade for higher daily caps and unlimited auto-fill.
+                {% endif %}
             </p>
         </div>
     </div>

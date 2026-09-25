@@ -5084,6 +5084,7 @@
         const SETTINGS_DOCS = {
             pricing: { title: ' Plans & Pricing', html: `
                 <div class="space-y-4">
+                  <div id="temp-pro-banner" class="hidden rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4"></div>
                   <div class="rounded-2xl border border-slate-700/60 p-4 bg-white/[0.02]">
                     <div class="flex items-center justify-between mb-3">
                       <div><p class="font-black text-white text-sm">Free</p><p class="text-[10px] text-slate-500">The full pipeline, with daily caps</p></div>
@@ -5103,12 +5104,12 @@
                       <div class="text-right"><span class="text-2xl font-black text-white">${{ pro_price }}</span><span class="text-slate-500 text-xs">/mo</span></div>
                     </div>
                     <ul class="space-y-1.5 text-xs text-slate-400">
-                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited tailored resumes &amp; cover letters</li>
-                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Unlimited auto-fills — you always click Submit</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> <strong>35</strong> tailored resumes &amp; cover letters / day</li>
+                      <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> <strong>Unlimited</strong> auto-fills — you always click Submit</li>
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Priority matching queue</li>
                       <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Full analytics &amp; funnel insights</li>
                     </ul>
-                    <button onclick="startProCheckout(this)" class="w-full text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — ${{ pro_price }}/mo</button>
+                    <button id="pro-checkout-btn" onclick="startProCheckout(this)" class="w-full text-center mt-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs transition">Upgrade to Pro — ${{ pro_price }}/mo</button>
                     <button onclick="openBillingPortal(this)" class="w-full text-center mt-2 border border-slate-700/60 text-slate-300 hover:text-white font-bold py-2 rounded-xl text-xs transition">Manage or cancel subscription</button>
                     <div id="manual-pay-options" class="hidden mt-3 rounded-xl border border-slate-700/60 bg-white/[0.02] p-3 text-xs text-slate-400"></div>
                   </div>
@@ -5203,12 +5204,63 @@
             }
         }
 
+        // ── Temporary Pro ────────────────────────────────────────────────────
+        // One server answer (/api/billing/options → purchase_available,
+        // temporary_pro) decides every paid surface. Each screen deciding for
+        // itself is how a "Start Pro — $100/mo" button survives on a page whose
+        // features are free that day.
+        async function applyTemporaryProToPlans() {
+            let opts = null;
+            try {
+                const r = await fetch('/api/billing/options');
+                opts = r.ok ? await r.json() : null;
+            } catch (e) { return null; }
+            if (!opts) return null;
+            const temp = opts.temporary_pro || {};
+            const banner = document.getElementById('temp-pro-banner');
+            const buy = document.getElementById('pro-checkout-btn');
+            if (temp.active) {
+                if (banner) {
+                    banner.innerHTML =
+                        '<p class="text-xs font-black text-emerald-300">' +
+                        (temp.notice || 'Pro features are temporarily available to everyone.') +
+                        '</p><p class="text-[11px] text-slate-400 mt-1">Your account already has ' +
+                        'Pro limits. There is nothing to pay, nothing starts automatically ' +
+                        'when this ends, and we have not set an end date.</p>';
+                    banner.classList.remove('hidden');
+                }
+                // REMOVED, not disabled: a disabled button still advertises a
+                // price for something that is free right now.
+                if (buy) buy.remove();
+            } else if (banner) {
+                banner.classList.add('hidden');
+                banner.innerHTML = '';
+            }
+            return opts;
+        }
+
         async function openPricingFlow() {
             // Real upgrade path — the old code short-circuited to 'coming soon'
             // unconditionally, orphaning the live billing endpoints.
             try {
                 const r = await fetch('/api/billing/options');
                 const opts = r.ok ? await r.json() : {};
+                // Nothing to sell while Pro is free to everyone. Checked before
+                // Stripe, because stripe_enabled stays true and the checkout
+                // call would otherwise fire and 503 on every click.
+                if (opts.temporary_pro && opts.temporary_pro.active) {
+                    openComingSoonModal(
+                        'Pro features are temporarily available to everyone',
+                        'Your account already has Pro limits — there is nothing to buy ' +
+                        'right now. We have not set an end date, and nothing will be ' +
+                        'charged or started automatically when this ends.');
+                    return;
+                }
+                if (opts.purchase_available === false) {
+                    openComingSoonModal('Plans & Pricing',
+                        'Paid plans are not open right now. Nothing is charged.');
+                    return;
+                }
                 if (opts.stripe_enabled) {
                     const c = await fetch('/api/billing/checkout', { method: 'POST' });
                     if (c.ok) {
@@ -5234,6 +5286,9 @@
             document.getElementById('settings-modal').classList.remove('hidden')
             loadReferral();
             if (doc && SETTINGS_DOCS[doc]) showSettingsDoc(doc); else backToSettings()
+            // The pricing doc is also reachable from the settings index, not just
+            // openSettings('pricing'), so the paid CTAs are neutralised here too.
+            applyTemporaryProToPlans();
             const ns = document.getElementById('notif-state')
             if (ns) ns.textContent = ('Notification' in window) ? (Notification.permission === 'granted' ? 'On' : 'Off') : 'N/A'
 

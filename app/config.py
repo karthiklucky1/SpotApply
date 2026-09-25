@@ -258,6 +258,24 @@ class Settings(BaseSettings):
     stripe_price_id_pro: str = ""         # STRIPE_PRICE_ID_PRO — monthly recurring Price id for PLAN_PRICES[PRO] ($100/mo); a test-mode Price with test keys, a live one with live keys
     stripe_webhook_secret: str = ""       # STRIPE_WEBHOOK_SECRET — signs /api/billing/webhook. The endpoint must be subscribed to checkout.session.completed, customer.subscription.created/updated/deleted AND invoice.paid (app/billing.py header) — production's was missing the invoice events and received 0 deliveries in a week.
     billing_reconcile_interval_hours: int = 24  # BILLING_RECONCILE_INTERVAL_HOURS — how often server._billing_maintenance re-reads Stripe for rows the webhook stream let drift (NULL or long-past current_period_end; billing.reconcile_subscriptions, 50 rows/run). The founder's PRO row sat on a NULL period end — "never expires" — for two weeks because checkout.session.completed was the only event that ever arrived. 0 = warn-only, no reconcile.
+    # ── Temporary Pro for everyone (reversible, one switch) ──────────────────
+    # ON = every legitimate tenant gets PRO *limits* (PLAN_LIMITS[PRO]) through
+    # the one entitlement function server._get_user_plan, which every backend
+    # gate and every background lane already reaches (directly, or through
+    # common/plan_limits). It grants the PLAN. It deliberately does NOT touch
+    # billing.is_paid_entitlement, so nobody is marked as paying: MRR stays
+    # honest, the dormancy gate (dormant_user_grace_days) still parks inactive
+    # free riders, and no premium background work is created for someone who
+    # has not opened the app. Provider spend is unchanged in kind — PRO's own
+    # finals_daily/shortlist_daily ceilings, the platform backstops
+    # (llm_daily_final_cap) and tailor_abuse_daily_cap all still apply, so this
+    # is "Pro allowances for all", never "unlimited". While it is ON the Stripe
+    # checkout route refuses server-side (billing_checkout): charging for
+    # features everyone already has is the one thing this must not do. The
+    # customer portal and the webhook keep working, so existing subscribers keep
+    # account access and their rows keep reconciling. Flip to 0 and every user
+    # returns to whatever their own row/grandfathering says, with no migration.
+    temporary_pro_for_all: bool = False   # TEMPORARY_PRO_FOR_ALL
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
     # A branded address on customer-facing surfaces (receipts, billing help) —
     # a personal gmail on a payment screen reads as a scam.

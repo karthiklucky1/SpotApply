@@ -94,6 +94,28 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   back empty, did not paginate to the end, or implies more orphans than live
   users (guard: `test_account_purge`). One deleted auth user had left 33k job
   copies, 2,860 applications and 13 storage objects behind.
+- **Temporary Pro is a PLAN grant, never a payment** (`TEMPORARY_PRO_FOR_ALL`,
+  `billing.temporary_pro_active`, docs/TEMPORARY_PRO_AND_SUBSCRIPTIONS.md): ON =
+  every tenant resolves PRO through the ONE entitlement lookup
+  (`_get_user_plan`, which every gate and lane already reaches directly or via
+  `common/plan_limits`), so no second check can drift. It writes NO rows —
+  flipping it off needs no migration. `is_paid_entitlement` must NEVER learn
+  about it (pinned structurally): if it did, MRR would be a headcount and the
+  dormancy gate would apply to nobody — the 90.8%-of-a-week's-spend bug exactly.
+  PRO's own ceilings + the platform backstops still bound spend: "Pro allowances
+  for all", never unlimited. While ON nothing is for sale SERVER-SIDE
+  (`purchase_available()`; `/api/billing/checkout` 503s before any Stripe call,
+  bank details withheld) but `/api/billing/portal` and the webhook stay OPEN — a
+  subscriber keeps their card, invoices and cancel button precisely because the
+  month is free. Copy is one string, NO end date, NO auto-enrolment
+  (`TEMPORARY_PRO_NOTICE`), rendered server-side on `/` and `/pricing` so a page
+  can't advertise a price the route is refusing. **No $100/mo recruiter-research
+  product exists** — every `$100` is the Pro price, `/recruiter` is a free
+  recruiter-facing portal, and `payment_options().recruiter_research` states the
+  absence so one isn't invented. Charging is Stripe's, not ours:
+  `scripts/audit_subscriptions.py` (READ-ONLY, no `--apply`, no mutator) buckets
+  the rows and answers it; a live-key row IS still billed and stopping it is an
+  unauthorised financial mutation. Guard: `test_temporary_pro`.
 - **PAID ≠ PLAN** (`app/billing.py`, 2026-09-17): `_get_user_plan` answers what
   LIMITS a user gets; `billing.is_paid_entitlement(row)` answers whether they
   are PAYING (a non-FREE, unexpired row that is either a manual/bank activation
@@ -508,28 +530,28 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Tenure is a UNION of intervals** (`tailoring/inventory.py`,
   docs/EVIDENCE_INVENTORY.md): `_years_experience` measured `min(start) →
   max(end)` — the SPAN of a career — so a 2016 internship plus a 2024 job read as
-  **10 years**, and that number drives `reranker`'s seniority rules,
-  `RuleFilter.cand_years` and the UserCard, spending finals on Staff postings the
-  user can't be screened for. Summing periods is the mirror error (concurrent
-  roles counted twice). `merged_months` is the ONE implementation; contiguous
-  months merge, gaps don't. Work has FIVE kinds and they are not one substance:
-  professional + freelance = experience, internship reported SEPARATELY,
-  academic/personal/volunteer NEVER employment — a completed project proves a
-  skill but is not years of a job (`project_only` vs `internship_only`, which
-  differ because calling someone's internship "a personal project" is wrong).
-  Kind comes from the section heading then the TITLE overrides it ("… Intern"
+  **10 years**, which drives `reranker`'s seniority rules, `RuleFilter.cand_years`
+  and the UserCard, spending finals on Staff postings nobody will screen for.
+  Summing periods is the mirror error (concurrent roles counted twice);
+  `merged_months` is the ONE implementation (contiguous merges, gaps don't).
+  FIVE kinds of work, not one substance: professional + freelance = experience,
+  internship reported SEPARATELY, academic/personal/volunteer NEVER employment —
+  a project proves a skill but is not years of a job (`project_only` vs
+  `internship_only`, distinct because calling an internship "a personal project"
+  is wrong). Kind = section heading, then the TITLE overrides it ("… Intern"
   under `## Experience`); an override never promotes coursework to employment.
-  `requirements.py` reads a posting's wording AS WRITTEN ("three (3) years",
-  "4-6", "2+", "18 months"; "up to 5 years" is a ceiling = no requirement) and
-  scopes preference to the CLAUSE and to a "Preferred Qualifications" HEADING —
-  both mis-scopings invent blocking gaps. `GET /application/{id}/review` is the
-  pre-download review: supported / genuine gaps (a PREFERRED shortfall is not
-  one) / open questions, plus an improvement plan where suggested projects stay
-  until confirmed (`unconfirmed_project_claims` fails the draft if one was
-  written in as done). **No score, no percentage, no chance of an interview** —
-  a keyword match is not a hiring probability. Year-only dates are admitted as
-  approximate, and only dates feeding a total can make a total approximate.
-  Guards: `evidence_inventory`, `requirement_review`.
+  `requirements.py` reads wording AS WRITTEN ("three (3) years", "4-6", "2+",
+  "18 months"; "up to 5" is a ceiling = no requirement) and scopes preference to
+  the CLAUSE and to a "Preferred Qualifications" HEADING — both mis-scopings
+  invent blocking gaps. `GET /application/{id}/review` = the pre-download review:
+  supported / genuine gaps (a PREFERRED shortfall is NOT one) / open questions +
+  an improvement plan where suggested projects stay until confirmed
+  (`unconfirmed_project_claims` fails a draft that wrote one in as done — a class
+  `fabrication_violations` can't catch, since a skill is not an employer or a
+  date). **No score, no percentage, no interview chance** — a keyword match is
+  not a hiring probability. Year-only dates are admitted as approximate, and only
+  dates feeding a total can make a total approximate. Guards:
+  `evidence_inventory`, `requirement_review`.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

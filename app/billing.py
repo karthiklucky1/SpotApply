@@ -122,14 +122,30 @@ def pro_price_usd() -> int:
 
 
 def payment_options() -> dict:
-    """What the UI shows on the upgrade screen. Never includes secrets."""
+    """What the UI shows on the upgrade screen. Never includes secrets.
+
+    Carries the temporary-Pro state so every client — web, the Plans modal, the
+    mobile app, the extension — reads ONE answer about whether there is anything
+    to buy. A surface that decided for itself is how a "Start Pro — $100/mo"
+    button survives on a page whose features are free that day.
+    """
+    temp = temporary_pro_status()
+    buyable = purchase_available()
     return {
         "price_monthly_usd": pro_price_usd(),
         "stripe_enabled": stripe_enabled(),
         "stripe_live": stripe_live_mode(),
-        "bank_transfer": bool(settings.payment_bank_details.strip()),
-        "bank_details": settings.payment_bank_details.strip() or None,
+        # Paid paths are OFF while temporary Pro is on — including the manual
+        # bank transfer, which is still someone sending us money for nothing.
+        "purchase_available": buyable,
+        "bank_transfer": bool(settings.payment_bank_details.strip()) and buyable,
+        "bank_details": (settings.payment_bank_details.strip() or None) if buyable else None,
         "contact_email": settings.payment_contact_email.strip() or None,
+        "temporary_pro": temp,
+        # There is no priced recruiter-research product. This says so in the one
+        # payload every upgrade surface already reads, so no page can invent one.
+        "recruiter_research": {"available": False, "for_sale": False,
+                               "status": RECRUITER_RESEARCH_STATUS},
     }
 
 
@@ -144,6 +160,52 @@ def entitlement_expired(row, now: Optional[datetime] = None) -> bool:
         from datetime import timezone
         end = end.astimezone(timezone.utc).replace(tzinfo=None)
     return end + timedelta(days=ENTITLEMENT_GRACE_DAYS) < (now or datetime.utcnow())
+
+
+#: The one sentence every surface shows while temporary Pro is on. No end date:
+#: inventing one ("free until October 31") is a promise nobody has made, and a
+#: date that slips is worse than no date at all.
+TEMPORARY_PRO_NOTICE = "Pro features are temporarily available to everyone."
+
+#: What to say instead of selling a recruiter-research add-on. Phase 7's wording.
+RECRUITER_RESEARCH_STATUS = "On hold while we improve matching quality"
+
+
+def temporary_pro_active() -> bool:
+    """Is every legitimate tenant currently riding on PRO limits?
+
+    ONE switch (`TEMPORARY_PRO_FOR_ALL`), read through ONE function, so there is
+    no second entitlement check to drift from this one. It answers a question
+    about the PLAN only. `is_paid_entitlement` below is untouched by it on
+    purpose — see its docstring: conflating the two is exactly how 10 dormant
+    free riders came to spend 90.8% of a week's LLM budget at the PRO ceiling.
+    """
+    return bool(settings.temporary_pro_for_all)
+
+
+def purchase_available() -> bool:
+    """May we take money for Pro right now?
+
+    False while temporary Pro is on. Asking someone to pay $100/month to unlock
+    features they already have is not an upsell, it is a false sale, and hiding
+    the button is not enough — `billing_checkout` refuses on this too, so a
+    direct POST cannot open a Checkout session either.
+    """
+    return stripe_enabled() and not temporary_pro_active()
+
+
+def temporary_pro_status() -> dict:
+    """The banner state for every client surface. Never implies payment."""
+    active = temporary_pro_active()
+    return {
+        "active": active,
+        "notice": TEMPORARY_PRO_NOTICE if active else "",
+        # Spelled out because it is the invariant, not an implementation detail:
+        # temporary access never marks anyone as a paying subscriber.
+        "marks_user_as_paying": False,
+        "ends_at": None,                 # deliberately unknown
+        "auto_enrolls_on_end": False,    # nothing charges anyone when it stops
+    }
 
 
 def is_paid_entitlement(row, now: Optional[datetime] = None) -> bool:
@@ -161,6 +223,12 @@ def is_paid_entitlement(row, now: Optional[datetime] = None) -> bool:
     set-plan) and counts as paid: someone paid outside Stripe and an operator
     wrote the row. A row WITH Stripe ids counts only under `sk_live_`.
     An expired period (past ENTITLEMENT_GRACE_DAYS) is never paid.
+
+    `temporary_pro_active()` is NOT consulted here and must never be: temporary
+    access grants the PLAN, not revenue. If this function ever learned about it,
+    every dormant account would read as a paying customer, the dormancy gate
+    would stop applying to anyone, and the MRR figure would be the count of our
+    users (guard: `test_temporary_pro`).
     """
     if row is None:
         return False

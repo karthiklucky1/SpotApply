@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pricing — SpotApply</title>
-    <meta name="description" content="Simple, transparent pricing. Start free and upgrade as your job search scales.">
+    <meta name="description" content="{% if temporary_pro %}Pro features are temporarily available to everyone — no card required. Here is what plans will cost when paid plans reopen.{% else %}Simple, transparent pricing. Start free and upgrade as your job search scales.{% endif %}">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%230EA5E9'/><stop offset='100%25' stop-color='%230077C2'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(255,255,255,0.8)'/></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -51,7 +51,21 @@
         <!-- Header -->
         <div class="text-center mb-16">
             <h1 class="text-5xl font-black mb-4" style="color:var(--ink);">One price. No games.</h1>
+            {% if temporary_pro %}
+            <!-- Rendered server-side from billing.temporary_pro_active(), so the
+                 page cannot advertise a price the checkout route is refusing.
+                 No end date: inventing one is a promise nobody has made. -->
+            <div class="max-w-2xl mx-auto mb-5 rounded-2xl p-4" style="background:var(--sage-tint);border:1px solid var(--sage);">
+                <p class="text-base font-black" style="color:var(--sage);">{{ temporary_pro_notice }}</p>
+                <p class="text-sm mt-1" style="color:var(--ink-soft);">Every account is on Pro
+                limits right now — there is nothing to buy, nothing to cancel, and nothing
+                will be charged or started automatically when this ends.</p>
+            </div>
+            <p class="text-lg" style="color:var(--muted);">The prices below are what Pro
+            will cost when paid plans reopen.</p>
+            {% else %}
             <p class="text-lg" style="color:var(--muted);">Free to start. ${{ pro_price }}/month for everything. One plan, billed monthly, cancel any time.</p>
+            {% endif %}
         </div>
 
         <!-- Plans -->
@@ -71,7 +85,7 @@
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>2 auto-fills / week</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Dashboard, kanban &amp; instant match alerts</li>
                 </ul>
-                <a href="/login" class="block text-center py-3 rounded-xl border text-sm font-black transition-all" style="border-color:var(--border);color:var(--ink-soft);">Get started free</a>
+                <a href="/login" class="block text-center py-3 rounded-xl border text-sm font-black transition-all" style="border-color:var(--border);color:var(--ink-soft);">{% if temporary_pro %}Get started — Pro features included{% else %}Get started free{% endif %}</a>
             </div>
 
             <!-- Pro — featured -->
@@ -94,7 +108,12 @@
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Priority matching queue</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Full analytics &amp; funnel insights</li>
                 </ul>
+                {% if temporary_pro %}
+                <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Sign up — these features are free right now</a>
+                <p class="text-xs text-center mt-2" style="color:var(--muted);">No card, no charge.</p>
+                {% else %}
                 <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Start Pro — ${{ pro_price }}/mo</a>
+                {% endif %}
             </div>
 
         </div>
@@ -108,14 +127,14 @@
                         Is there a free trial for Pro?
                         <svg class="w-4 h-4 group-open:rotate-180 transition-transform" style="color:var(--muted);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </summary>
-                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">The Free plan IS the trial — the full pipeline with daily caps (5 tailored resumes/day, 2 auto-fills/week), free forever. No credit card required to start.</p>
+                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">{% if temporary_pro %}Right now every account has Pro limits, so there is nothing to trial — sign up and you get them. When paid plans reopen, the Free plan is the full pipeline with daily caps (5 tailored resumes/day, 2 auto-fills/week), free forever.{% else %}The Free plan IS the trial — the full pipeline with daily caps (5 tailored resumes/day, 2 auto-fills/week), free forever.{% endif %} No credit card required to start.</p>
                 </details>
                 <details class="plan-card rounded-xl p-5 cursor-pointer group">
                     <summary class="font-bold list-none flex justify-between items-center" style="color:var(--ink);">
                         Can I cancel any time?
                         <svg class="w-4 h-4 group-open:rotate-180 transition-transform" style="color:var(--muted);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </summary>
-                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">Absolutely. Open Settings → Plans &amp; Pricing → "Manage or cancel subscription" any time — it takes you to your secure Stripe billing page. You keep Pro access until the end of the billing period you already paid for; nothing renews after that.</p>
+                    <p class="text-sm mt-3 leading-relaxed" style="color:var(--ink-soft);">Absolutely. Open Settings → Plans &amp; Pricing → "Manage or cancel subscription" any time — it takes you to your secure Stripe billing page. You keep Pro access until the end of the billing period you already paid for; nothing renews after that.{% if temporary_pro %} If you do not have a subscription, there is nothing to cancel — Pro features are free for everyone right now, and nothing starts automatically when that ends.{% endif %}</p>
                 </details>
                 <details class="plan-card rounded-xl p-5 cursor-pointer group">
                     <summary class="font-bold list-none flex justify-between items-center" style="color:var(--ink);">

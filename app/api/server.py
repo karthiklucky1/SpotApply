@@ -1922,17 +1922,27 @@ def clear_all_notifications(request: Request) -> dict:
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     # The price comes from PLAN_PRICES like every other surface — the landing
-    # page is where a stale hard-coded number is most expensive.
-    from app.billing import pro_price_usd
+    # page is where a stale hard-coded number is most expensive. Temporary Pro
+    # is rendered server-side for the same reason: the page must not promise an
+    # upgrade that buys nothing this month.
+    from app.billing import (TEMPORARY_PRO_NOTICE, pro_price_usd,
+                             temporary_pro_active)
     return templates.TemplateResponse(request=request, name="landing.html",
-                                      context={"pro_price": pro_price_usd()})
+                                      context={"pro_price": pro_price_usd(),
+                                               "temporary_pro": temporary_pro_active(),
+                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE})
 
 
 @app.get("/pricing", response_class=HTMLResponse)
 def pricing_page(request: Request):
-    from app.billing import pro_price_usd
+    """Public pricing. The temporary-Pro state is rendered SERVER-SIDE so the
+    page can never advertise a price the checkout route is refusing."""
+    from app.billing import (TEMPORARY_PRO_NOTICE, pro_price_usd,
+                             temporary_pro_active)
     return templates.TemplateResponse(request=request, name="pricing.html",
-                                      context={"pro_price": pro_price_usd()})
+                                      context={"pro_price": pro_price_usd(),
+                                               "temporary_pro": temporary_pro_active(),
+                                               "temporary_pro_notice": TEMPORARY_PRO_NOTICE})
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -7371,7 +7381,8 @@ def admin_metrics(request: Request) -> dict:
     _require_admin_user(request)
     from datetime import timedelta
     from app.billing import (entitlement_expired, is_paid_entitlement,
-                             stripe_live_mode, stripe_mode)
+                             stripe_live_mode, stripe_mode,
+                             temporary_pro_active)
     from app.db.models import (UserProfile, Application, UserSubscription,
                                TrialGrant, PlanTier, PLAN_PRICES)
     now = _dt.utcnow()
@@ -7431,6 +7442,12 @@ def admin_metrics(request: Request) -> dict:
         "subscriptions_missing_period_end": missing_end,
         "stripe_mode": stripe_mode(),
         "plan_grandfather_until": getattr(settings, "plan_grandfather_until", "") or "",
+        # Why the plan distribution looks the way it does. MRR above is computed
+        # from is_paid_entitlement, which temporary Pro does not touch, so this
+        # being true explains "everyone is on PRO" WITHOUT changing a revenue
+        # number — an operator seeing PRO limits everywhere needs to be able to
+        # tell a complimentary month from a sales quarter.
+        "temporary_pro_for_all": temporary_pro_active(),
     }
 
 
@@ -7650,6 +7667,8 @@ def _budget_diagnostic(uid: str) -> dict:
     # null, never a confident false. "We could not check" and "there is no row"
     # are different answers and the second one is how the 09-19 plan got
     # guessed at in the first place.
+    from app.billing import temporary_pro_active as _temp_pro_active
+
     row, row_read = None, True
     try:
         row = _subscription_row(uid)
@@ -7682,6 +7701,10 @@ def _budget_diagnostic(uid: str) -> dict:
         "stripe_subscription": bool(row is not None and row.stripe_subscription_id),
         "grandfathered": grandfathered,
         "grandfather_cutoff_set": bool(_grandfather_cutoff()),
+        # Why "effective" is PRO when the row says otherwise. The diagnostic
+        # exists to explain an entitlement, and "everyone is on PRO this month"
+        # is the first thing to rule out before anyone goes looking at rows.
+        "temporary_pro_for_all": _temp_pro_active(),
     }
     out["limits"] = {
         "shortlist_daily": limits.get("shortlist_daily"),
@@ -8001,9 +8024,25 @@ def _get_user_plan(uid: str) -> PlanTier:
     means "this user is paying us" (the dormancy override, MRR) may be derived
     from this function; that derivation is exactly how dormant free riders
     were scored at the PRO ceiling for weeks.
+
+    Temporary Pro (`billing.temporary_pro_active`) is a THIRD complimentary case
+    with the same rule: PRO limits, never revenue.
     """
-    from app.billing import entitlement_expired, stripe_enabled
+    from app.billing import (entitlement_expired, stripe_enabled,
+                             temporary_pro_active)
     if uid == "local" or not stripe_enabled():
+        return PlanTier.PRO
+    # TEMPORARY PRO FOR EVERYONE (settings.temporary_pro_for_all). One switch,
+    # read here — the single entitlement function every backend gate and every
+    # background lane already resolves through (directly, or via
+    # common/plan_limits.plan_limit) — so there is no second check to drift.
+    # It answers the LIMITS question and nothing else: is_paid_entitlement is
+    # untouched, so nobody reads as paying, MRR is unaffected, the dormancy gate
+    # still parks inactive free riders, and PRO's own ceilings plus the platform
+    # backstops still bound provider spend. Subscription rows are not written,
+    # read differently, or migrated; flipping the switch off restores every
+    # user's own entitlement immediately.
+    if temporary_pro_active():
         return PlanTier.PRO
     row = _subscription_row(uid)
     if not row:
@@ -8026,7 +8065,13 @@ def billing_options() -> dict:
 def billing_portal(request: Request) -> dict:
     """Stripe Customer Portal for the signed-in user: update the card, see
     invoices, cancel. This is "cancel any time" — nothing here cancels on the
-    user's behalf; Stripe does, and reports back through the webhook."""
+    user's behalf; Stripe does, and reports back through the webhook.
+
+    Deliberately NOT gated on temporary Pro. An existing subscriber must keep
+    access to their own card, invoices and cancel button precisely BECAUSE the
+    features are free that month — closing this would be trapping someone in a
+    subscription they can no longer see a reason for (guard: `test_temporary_pro`).
+    """
     uid = _require_user(request)
     from app.billing import create_portal_session, stripe_enabled
     if not stripe_enabled():
@@ -8051,7 +8096,19 @@ def billing_checkout(request: Request) -> dict:
     uid = _get_user_id(request)
     if not uid:
         raise HTTPException(status_code=401, detail="Sign in to upgrade.")
-    from app.billing import AlreadySubscribed, create_checkout_session, stripe_enabled
+    from app.billing import (AlreadySubscribed, TEMPORARY_PRO_NOTICE,
+                             create_checkout_session, stripe_enabled,
+                             temporary_pro_active)
+    # SERVER-SIDE, not just a hidden button. While Pro features are free to
+    # everyone there is nothing to sell, and opening a Checkout session would
+    # charge $100/month for what this account already has. A direct POST from a
+    # stale page, a cached client or a bookmarked URL must be refused here.
+    if temporary_pro_active():
+        raise HTTPException(
+            status_code=503,
+            detail=(f"{TEMPORARY_PRO_NOTICE} There is nothing to buy right now — "
+                    f"your account already has Pro limits, and no payment will be "
+                    f"taken or started."))
     if not stripe_enabled():
         raise HTTPException(
             status_code=503,
@@ -8295,6 +8352,7 @@ def get_usage(request: Request) -> dict:
     # app rendered "Founding trial: N of N boosted jobs left" permanently. Report
     # the truth instead; re-populate this only if the trial is ever switched back on.
     trial = None
+    from app.billing import temporary_pro_status
     return {
         "plan": plan,
         "tailor_used": tailor_used,
@@ -8303,6 +8361,11 @@ def get_usage(request: Request) -> dict:
         "autofill_weekly_limit": limits["autofill_weekly"],
         "week_start": week_start.isoformat(),
         "trial": trial,
+        # Why the plan reads PRO. The meter is where a user looks when their
+        # limits change, so the explanation belongs in the same payload rather
+        # than in a banner some surfaces render and others do not. It never
+        # claims the account is paying.
+        "temporary_pro": temporary_pro_status(),
     }
 
 
