@@ -163,6 +163,29 @@ def _reset_process_globals():
         pass
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "compute_policy: run with app/common/compute_policy.py ENFORCED "
+                   "(the production default); other tests run with it off so their "
+                   "fixtures need not stamp a meaningful action on every profile")
+
+
+@pytest.fixture(autouse=True)
+def _compute_policy_off_unless_asked(request, monkeypatch):
+    """Production enforces the background-compute policy (a user with no
+    meaningful action in 24 h gets no automatic paid AI). Lane tests that
+    pre-date it build profiles with no activity at all, which the policy
+    correctly treats as not spending; they opt out here, and the policy's own
+    tests (tests/test_compute_policy.py, test_dormancy.py) opt in."""
+    from app.config import settings
+    from app.common import compute_policy as _cp
+    _cp.reset_state()
+    if request.node.get_closest_marker("compute_policy") is None:
+        monkeypatch.setattr(settings, "compute_policy_enforced", False, raising=False)
+    yield
+    _cp.reset_state()
+
+
 @pytest.fixture(autouse=True)
 def _pin_finals_budget_clock(monkeypatch):
     """The finals ledger is keyed by UTC day, so an unpinned clock makes every

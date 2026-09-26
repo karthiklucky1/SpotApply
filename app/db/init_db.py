@@ -464,6 +464,9 @@ def init_db() -> None:
         ("stem_opt", "BOOLEAN DEFAULT FALSE"),
         ("last_active_at", "DATETIME"),
         ("dormancy_notified_at", "DATETIME"),
+        ("last_meaningful_activity_at", "DATETIME"),
+        ("search_paused_at", "DATETIME"),
+        ("pause_reason", "VARCHAR DEFAULT ''"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
 

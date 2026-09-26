@@ -363,15 +363,23 @@ def _duplicate_on_record(session, job: Job, uid_arg: Optional[str]):
     title_key = _norm_key(job.title)
     if not company or not title_key:
         return None, None
-    q = (select(Application, Job.title, Job.source)
+    loc_key = _norm_key(job.location)
+    q = (select(Application, Job.title, Job.source, Job.location)
          .join(Job, Job.id == Application.job_id)
          .where(Application.status.in_(_ACTIVE_STATUSES),
                 Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
                 func.lower(Job.company) == company.lower(),
                 Application.job_id != job.id))
     q = q.where(Application.user_id == uid_arg) if uid_arg else q.where(Application.user_id.is_(None))
-    for app_row, title, source in session.exec(q.limit(50)).all():
-        if _norm_key(title) == title_key:
+    for app_row, title, source, location in session.exec(q.limit(50)).all():
+        if _norm_key(title) != title_key:
+            continue
+        # The same role arriving through ANOTHER door (an aggregator and the
+        # ATS) is a duplicate. Within ONE source, the same title is often two
+        # real requisitions (another team, another city), so only an identical
+        # location makes it a repost.
+        if getattr(source, "value", source) != getattr(job.source, "value", job.source) \
+                or _norm_key(location) == loc_key:
             return app_row, source
     return None, None
 

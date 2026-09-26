@@ -7534,6 +7534,53 @@
         }
         b.innerHTML = `<span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span><span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span></span> ↻ ${n} new match${n === 1 ? '' : 'es'} ready — tap to load`;
     }
+    // ── Search state notice (app/common/compute_policy.py) ──────────────────
+    // While a complimentary search is idle, dormant or paused, say so plainly
+    // and offer Resume; while it runs, offer Pause. In-app only — no email or
+    // message is ever sent for this. Inline styles on purpose: the compiled
+    // dashboard CSS need not be rebuilt for a notice.
+    async function _renderSearchState(state) {
+        const container = document.getElementById('shortlisted-container');
+        if (!container || !container.parentNode) return;
+        let b = document.getElementById('hp-search-state');
+        if (!b) {
+            b = document.createElement('div');
+            b.id = 'hp-search-state';
+            b.setAttribute('role', 'status');
+            container.parentNode.insertBefore(b, container);
+        }
+        const running = state.state === 'active' || state.state === 'paid';
+        if (state.state === 'setup') { b.style.display = 'none'; return; }
+        b.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;'
+            + 'padding:10px 12px;margin-bottom:8px;border-radius:14px;font-size:12.5px;'
+            + (running ? 'border:1px solid transparent;color:var(--muted,#94a3b8);'
+                       : 'border:1px solid rgba(217,119,6,.45);background:rgba(217,119,6,.08);color:var(--ink,#e2e8f0);font-weight:700;');
+        const msg = running ? '' : _esc(state.message || 'Your search is paused.');
+        const btn = running
+            ? `<button type="button" data-search-action="pause" style="margin-left:auto;background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11.5px;">Pause my search</button>`
+            : `<button type="button" data-search-action="resume" style="border:1px solid rgba(217,119,6,.6);border-radius:999px;padding:5px 12px;background:transparent;color:inherit;font-weight:800;cursor:pointer;">Resume search</button>`;
+        b.innerHTML = `<span>${msg}</span>${btn}`;
+        const el = b.querySelector('[data-search-action]');
+        if (el) el.onclick = async () => {
+            const action = el.getAttribute('data-search-action');
+            el.disabled = true;
+            try {
+                const r = await fetch('/api/search/' + action, {
+                    method: 'POST', headers: Object.assign({'Content-Type': 'application/json'}, _hpHeaders()),
+                    body: JSON.stringify({}) });
+                if (r.ok) _renderSearchState(await r.json());
+            } catch (e) { /* the next load shows the state */ }
+            el.disabled = false;
+        };
+    }
+    async function loadSearchState() {
+        try {
+            const r = await fetch('/api/search/state', { headers: _hpHeaders() });
+            if (r.ok) _renderSearchState(await r.json());
+        } catch (e) { /* non-critical */ }
+    }
+    setTimeout(loadSearchState, 1500);
+
     // Loop guard: never auto-reload more than once per 30s (protects against any
     // edge where the server count and the rendered count can't converge).
     function _canAutoReload() {

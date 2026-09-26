@@ -50,7 +50,10 @@ def _clean():
 def _mk_job(ext: str, user_id: str, *, source=JobSource.GREENHOUSE,
             url: str = "https://job-boards.greenhouse.io/acme/jobs/1") -> int:
     with get_session() as s:
-        j = Job(source=source, external_id=ext, company="Acme", title="Engineer",
+        # A distinct title per posting: the slate now refuses a second copy of
+        # the same role (company + title + location), which is not what these
+        # liveness tests are about.
+        j = Job(source=source, external_id=ext, company="Acme", title=f"Engineer {ext}",
                 url=url, user_id=user_id, rerank_score=90.0)
         s.add(j)
         s.commit()

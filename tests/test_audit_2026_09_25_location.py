@@ -361,3 +361,20 @@ def test_a_country_only_posting_with_no_work_mode_is_held_for_a_non_relocator():
     assert decide(g, GeoPrefs(country="united states", home_location="Cincinnati, OH",
                               open_to_relocation=True)).status == ELIGIBLE
     assert decide(g, GeoPrefs(country="united states")).status == ELIGIBLE
+
+
+def test_two_requisitions_with_one_title_in_different_cities_are_both_kept(clean):
+    with get_session() as s:
+        ids = []
+        for ext, loc in (("reqNY", "New York, NY"), ("reqSF", "San Francisco, CA")):
+            j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                    company="Multico", title="Software Engineer", url=f"https://x/{ext}",
+                    description="d", location=loc, rerank_score=85, first_seen=datetime.utcnow())
+            s.add(j)
+            s.commit()
+            s.refresh(j)
+            s.exec(delete(FunnelEvent).where(FunnelEvent.job_id == j.id))
+            s.exec(delete(Application).where(Application.job_id == j.id))
+            s.commit()
+            ids.append(j.id)
+    assert _place(ids[0]).created and _place(ids[1]).created

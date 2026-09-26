@@ -459,6 +459,16 @@ class UserProfile(SQLModel, table=True):
     # Stamped once per dormancy episode (cleared implicitly by a later
     # last_active_at), so the notice is not re-sent on every lane tick.
     dormancy_notified_at: Optional[datetime] = None
+    # ── Background-compute lifecycle (app/common/compute_policy.py) ──────────
+    # The last MEANINGFUL action (a write, a document fetch, starting a fill,
+    # "Resume search") — never a poll, a page view, a token refresh or a
+    # notification fetch. NULL = no verified engagement since the policy began:
+    # the old polling-based `last_active_at` is deliberately NOT copied in.
+    last_meaningful_activity_at: Optional[datetime] = None
+    # Set when the user pauses their own search (or it is paused for them);
+    # NULL = not paused. Cleared by "Resume search" or any meaningful action.
+    search_paused_at: Optional[datetime] = None
+    pause_reason: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

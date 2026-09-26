@@ -33,6 +33,10 @@ from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import PlanTier, UserNotification, UserProfile, UserSubscription
 
+# The lifecycle policy is what these tests are ABOUT, so it is enforced here
+# (conftest turns it off for suites that pre-date it).
+pytestmark = pytest.mark.compute_policy
+
 _P = "dm_"
 
 
@@ -68,8 +72,9 @@ def _stripe(monkeypatch, key: str) -> None:
 
 def _profile(uid: str, days_idle: float) -> UserProfile:
     with get_session() as s:
-        p = UserProfile(user_id=_P + uid,
-                        last_active_at=datetime.utcnow() - timedelta(days=days_idle))
+        when = datetime.utcnow() - timedelta(days=days_idle)
+        p = UserProfile(user_id=_P + uid, last_active_at=when,
+                        last_meaningful_activity_at=when)
         s.add(p)
         s.commit()
         s.refresh(p)
@@ -92,11 +97,15 @@ def test_a_recently_active_user_is_active():
 def test_the_default_window_is_one_day(monkeypatch):
     """AUDIT 2026-09-25 (finding 7): a complimentary trial kept its paid search
     running for 21 days after the person left. Active on day one and gone:
-    no personalized automatic work after 24 hours."""
+    no automatic paid AI after 24 hours; queues pause after 72."""
     from app.config import Settings
-    assert Settings.model_fields["dormant_user_grace_days"].default == 1
+    assert Settings.model_fields["trial_idle_after_hours"].default == 24
+    assert Settings.model_fields["trial_dormant_after_hours"].default == 72
     monkeypatch.setattr(server, "_user_paid_search_is_live", lambda p: False)
-    assert not server._user_is_active(_profile("day2", days_idle=1.1))
+    idle = _profile("day2", days_idle=1.1)
+    assert not server._user_may_spend(idle), "no paid AI after 24 h"
+    assert server._user_is_active(idle), "adoption (free) continues while idle"
+    assert not server._user_is_active(_profile("day4", days_idle=3.1)), "queues pause after 72 h"
 
 
 # ── Polling is not activity ──────────────────────────────────────────────────
@@ -143,7 +152,8 @@ def test_a_poll_never_stamps_last_active(monkeypatch):
     """End to end through `_get_user_id`: the stamp is only written for a
     meaningful request."""
     stamped = []
-    monkeypatch.setattr(server, "_touch_last_active", lambda uid: stamped.append(uid))
+    monkeypatch.setattr(server, "_touch_last_active",
+                        lambda uid, meaningful=False: stamped.append((uid, meaningful)))
     monkeypatch.setattr(type(settings), "use_supabase", property(lambda self: True))
     import app.db.supabase_client as sc
     monkeypatch.setattr(sc, "get_user_id_from_token", lambda tok: "u-poll")
@@ -156,7 +166,9 @@ def test_a_poll_never_stamps_last_active(monkeypatch):
     assert server._get_user_id(R("GET", "/api/pipeline/live")) == "u-poll"
     assert stamped == []
     server._get_user_id(R("POST", "/application/1/viewed"))
-    assert stamped == ["u-poll"]
+    assert stamped == [("u-poll", True)]
+    server._get_user_id(R("GET", "/dashboard"))
+    assert stamped[-1] == ("u-poll", False), "a page view is 'seen', not meaningful"
 
 
 def test_an_idle_free_user_goes_dormant(monkeypatch):
@@ -294,6 +306,7 @@ def test_coming_back_re_arms_the_notice():
             user_id=_P + "return",
             dormancy_notified_at=datetime.utcnow() - timedelta(days=grace * 2 + 20),
             last_active_at=datetime.utcnow() - timedelta(days=grace + 9),
+            last_meaningful_activity_at=datetime.utcnow() - timedelta(days=grace + 9),
         ))
         s.commit()
         p = s.exec(select(UserProfile).where(
@@ -316,4 +329,5 @@ def test_the_notice_says_what_happened_and_how_to_undo_it():
     server._notify_if_newly_dormant(p)
     msg = _notices("copy")[0].message.lower()
     assert "paused" in msg
-    assert "open spotapply" in msg, "the notice must say how to restart the feed"
+    assert "resume search" in msg, "the notice must say how to restart the search"
+    assert "kept" in msg, "and that nothing was deleted"

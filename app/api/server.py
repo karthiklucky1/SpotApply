@@ -308,8 +308,9 @@ def _get_user_id(request: Request) -> str | None:
             continue
         uid = get_user_id_from_token(token)
         if uid:
-            if _is_meaningful_request(request):
-                _touch_last_active(uid)
+            kind = _activity_kind(request)
+            if kind is not None:
+                _touch_last_active(uid, meaningful=(kind == "meaningful"))
             return uid
     return None
 
@@ -331,19 +332,37 @@ _MEANINGFUL_GET_SUFFIXES = ("/download-resume", "/details",
                             "/review", "/answer-pack")
 
 
-def _is_meaningful_request(request) -> bool:
+def _activity_kind(request) -> str | None:
+    """'meaningful' | 'seen' | None for one authenticated request.
+
+    'meaningful' (a write, fetching/downloading a document, starting a fill)
+    renews background-compute eligibility (app/common/compute_policy.py).
+    'seen' (navigating to the dashboard) only records that the person looked:
+    it updates `last_active_at`, never the compute window — a page left open
+    or reloaded is not someone asking for paid work. Everything else — polls,
+    notification fetches, token refreshes, every other GET — is None.
+    """
     try:
         method = (request.method or "GET").upper()
         path = request.url.path or ""
     except Exception:
-        return False
+        return None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
-        return True
+        return "meaningful"
     if method != "GET":
-        return False
-    if path.startswith(_MEANINGFUL_GET_PREFIXES):
-        return True
-    return path.startswith("/application/") and path.endswith(_MEANINGFUL_GET_SUFFIXES)
+        return None
+    if path.startswith("/api/fill-pack/"):
+        return "meaningful"
+    if path.startswith("/application/") and path.endswith(_MEANINGFUL_GET_SUFFIXES):
+        return "meaningful"
+    if path.startswith("/dashboard"):
+        return "seen"
+    return None
+
+
+def _is_meaningful_request(request) -> bool:
+    """Does this request renew `last_active_at` at all (meaningful or seen)?"""
+    return _activity_kind(request) is not None
 
 
 def _require_user(request: Request) -> str:
@@ -360,13 +379,16 @@ _LAST_ACTIVE_STAMP: dict[str, float] = {}
 _LAST_ACTIVE_STAMP_SECONDS = 900
 
 
-def _touch_last_active(uid: str) -> None:
+def _touch_last_active(uid: str, meaningful: bool = False) -> None:
     import time as _time
     mono = _time.monotonic()
-    last = _LAST_ACTIVE_STAMP.get(uid)
+    key = f"m:{uid}" if meaningful else uid
+    last = _LAST_ACTIVE_STAMP.get(key)
     if last is not None and mono - last < _LAST_ACTIVE_STAMP_SECONDS:
         return
-    _LAST_ACTIVE_STAMP[uid] = mono
+    _LAST_ACTIVE_STAMP[key] = mono
+    if meaningful:
+        _LAST_ACTIVE_STAMP[uid] = mono          # a meaningful stamp is also a "seen" one
     try:
         from datetime import datetime as _now_dt
         from app.db.models import UserProfile
@@ -376,8 +398,13 @@ def _touch_last_active(uid: str) -> None:
             ).first()
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
+                if meaningful:
+                    prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
+        if meaningful:
+            from app.common.compute_policy import forget
+            forget(uid)
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
 
@@ -460,33 +487,29 @@ def _user_paid_search_is_live(profile) -> bool:
 
 
 def _user_is_active(profile) -> bool:
-    """Dormancy gate for the scheduled lanes.
+    """May the scheduled lanes QUEUE personalised work for this user?
 
-    False when the user hasn't made an authenticated request in
-    dormant_user_grace_days — their pool stops refilling and no LLM money is
-    spent on them until they come back (the next visit re-stamps and the next
-    lane tick picks them up again). NULL last_active_at (rows predating
-    tracking, backfilled at startup) and a disabled gate (0) count as active.
-
-    A LIVE PAID SUBSCRIPTION overrides the gate entirely: see
-    _user_paid_search_is_live. A free user who crosses the line is told, once
-    (_notify_if_newly_dormant) — the old behaviour removed a user from every
-    lane on 2026-09-10 with no notification of any kind, while shortlist hygiene
-    carried on emptying their board.
+    Decided by `app/common/compute_policy.search_state` from the last
+    MEANINGFUL action (never a poll or a page view): ACTIVE and IDLE users keep
+    adoption/placement (free database work, board kept); DORMANT, PAUSED and
+    never-engaged users are skipped until they act or press Resume. A live
+    PAID entitlement keeps its search running unless the user paused it.
+    Paid model calls have a stricter gate, `_user_may_spend`.
+    `DORMANT_USER_GRACE_DAYS=0` still disables the gate entirely.
     """
-    days = settings.dormant_user_grace_days
-    if days <= 0:
+    if settings.dormant_user_grace_days <= 0 or not settings.compute_policy_enforced:
         return True
-    la = getattr(profile, "last_active_at", None)
-    if la is None:
+    from app.common.compute_policy import QUEUE, search_state
+    return search_state(profile, paid=_user_paid_search_is_live).allows(QUEUE)
+
+
+def _user_may_spend(profile) -> bool:
+    """May the platform make AUTOMATIC paid model calls for this user now?
+    ACTIVE (meaningful action within TRIAL_IDLE_AFTER_HOURS) or PAID only."""
+    if settings.dormant_user_grace_days <= 0 or not settings.compute_policy_enforced:
         return True
-    from datetime import datetime as _dt2, timedelta as _td2
-    if la.tzinfo is not None:
-        from datetime import timezone as _tz2
-        la = la.astimezone(_tz2.utc).replace(tzinfo=None)
-    if la >= _dt2.utcnow() - _td2(days=days):
-        return True
-    return _user_paid_search_is_live(profile)
+    from app.common.compute_policy import PAID_AI, search_state
+    return search_state(profile, paid=_user_paid_search_is_live).allows(PAID_AI)
 
 
 def _notify_if_newly_dormant(profile) -> bool:
@@ -501,7 +524,7 @@ def _notify_if_newly_dormant(profile) -> bool:
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
         return False
-    la = getattr(profile, "last_active_at", None)
+    la = getattr(profile, "last_meaningful_activity_at", None)
     notified = getattr(profile, "dormancy_notified_at", None)
     if notified is not None and (la is None or notified >= la):
         return False              # already told them about THIS episode
@@ -512,11 +535,11 @@ def _notify_if_newly_dormant(profile) -> bool:
         with get_session() as session:
             session.add(UserNotification(
                 user_id=uid,
-                title="Your job feed is paused",
-                message=(f"We haven't seen you in {days} day{'s' if days != 1 else ''}, "
-                         "so we've paused your search to save resources — your board, "
-                         "résumé and history are kept. Open SpotApply and it starts "
-                         "again within a few minutes."),
+                title="Your job search is paused",
+                message=("Your search is paused to save resources while you're away — "
+                         "your board, résumé and history are kept. Press \"Resume "
+                         "search\" on your dashboard (or open any job) and it starts "
+                         "again with a fresh batch."),
                 type="feed_paused",
                 link="/dashboard",
             ))
@@ -8955,6 +8978,9 @@ _USERPROFILE_COLUMNS = [
     ("opt_unemployment_days_used", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
     ("stem_opt", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("last_active_at", "TIMESTAMP", "TIMESTAMP"),
+    ("last_meaningful_activity_at", "TIMESTAMP", "TIMESTAMP"),
+    ("search_paused_at", "TIMESTAMP", "TIMESTAMP"),
+    ("pause_reason", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
@@ -9343,6 +9369,87 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
         log.debug("trust recompute spawn failed: %s", _te)
 
     return {"success": True}
+
+
+# ── Search state: pause / resume (app/common/compute_policy.py) ────────────
+
+def _own_profile_query(uid: str):
+    """The caller's own profile row: their user_id, or the NULL-owner row in
+    local single-user mode. Never an unscoped select."""
+    from app.db.models import UserProfile
+    if uid and uid != "local":
+        return select(UserProfile).where(UserProfile.user_id == uid)
+    return select(UserProfile).where(UserProfile.user_id.is_(None))
+
+
+def _search_state_payload(uid: str) -> dict:
+    from app.common.compute_policy import (PAID_AI, QUEUE, dormant_after, idle_after,
+                                           search_state)
+    from app.db.models import UserProfile
+    with get_session() as session:
+        prof = session.exec(_own_profile_query(uid)).first()
+    st = search_state(prof, paid=_user_paid_search_is_live)
+    return {
+        "state": st.state,
+        "message": st.reason,
+        "since": st.since.isoformat() + "Z" if st.since else None,
+        "automatic_scoring": st.allows(PAID_AI),
+        "queueing": st.allows(QUEUE),
+        "idle_after_hours": int(idle_after().total_seconds() // 3600),
+        "pause_after_hours": int(dormant_after().total_seconds() // 3600),
+    }
+
+
+@app.get("/api/search/state")
+def search_state_api(request: Request) -> dict:
+    """Whether this user's background search is running, and why not."""
+    uid = _require_user(request)
+    return _search_state_payload(uid)
+
+
+class SearchPauseRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+def _set_search_pause(uid: str, paused: bool, reason: str = "") -> None:
+    from datetime import datetime as _dtp
+    from app.common.compute_policy import forget
+    from app.db.models import UserProfile
+    with get_session() as session:
+        prof = session.exec(_own_profile_query(uid)).first()
+        if prof is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        now = _dtp.utcnow()
+        if paused:
+            prof.search_paused_at = now
+            prof.pause_reason = (reason or "").strip()[:120]
+        else:
+            prof.search_paused_at = None
+            prof.pause_reason = ""
+            prof.last_meaningful_activity_at = now
+            prof.last_active_at = now
+        session.add(prof)
+        session.commit()
+    forget(uid)
+
+
+@app.post("/api/search/pause")
+def pause_search(request: Request, body: SearchPauseRequest) -> dict:
+    """The user pauses their own search: no automatic personalised work until
+    they resume. Their board, résumé and history are kept."""
+    uid = _require_user(request)
+    _set_search_pause(uid, True, body.reason or "")
+    return _search_state_payload(uid)
+
+
+@app.post("/api/search/resume")
+def resume_search(request: Request) -> dict:
+    """Resume: clears a pause and counts as a meaningful action. The next lane
+    tick adopts a FRESH, bounded batch (adoption's age window + per-step cap,
+    the 5-day scoring window and the day's finals budget) — never the backlog."""
+    uid = _require_user(request)
+    _set_search_pause(uid, False)
+    return _search_state_payload(uid)
 
 
 class RecruiterRegister(BaseModel):
