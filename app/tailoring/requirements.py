@@ -486,6 +486,46 @@ def unconfirmed_project_claims(tailored_md: str,
     return found
 
 
+def _number_forms(phrase: str) -> List[str]:
+    """The phrase plus its singular/plural twin ("LLMs" <-> "LLM",
+    "systems" <-> "system"). A draft that pluralises a word the résumé uses in
+    the singular has changed grammar, not made a claim — and the export gate
+    withheld a real LLM engineer's résumé for writing "LLMs" (2026-09-26)."""
+    p = (phrase or "").strip()
+    if not p:
+        return []
+    words = p.split()
+    last, low = words[-1], words[-1].lower()
+    if low.endswith("ies") and len(low) > 4:
+        alt = last[:-3] + "y"
+    elif low.endswith("es") and low[:-2].endswith(("s", "x", "ch", "sh")):
+        alt = last[:-2]
+    elif low.endswith("s") and not low.endswith("ss") and len(low) > 3:
+        alt = last[:-1]
+    else:
+        alt = last + "s"
+    return [p, " ".join(words[:-1] + [alt])]
+
+
+_STOP = {"and", "or", "of", "the", "a", "an", "in", "on", "for", "with", "to"}
+
+
+def _words_share_a_line(phrase: str, text: str) -> bool:
+    """A 2-3 word phrase whose every word (either number) appears in ONE line
+    or sentence of the résumé. "production systems" is evidenced by "designed
+    backend systems in production"; it is the same experience in a different
+    order. Bounded to one line so words scattered across a résumé never add up
+    to a claim."""
+    from app.tailoring.inventory import _skill_pattern
+    words = [w for w in re.findall(r"[\w+#.]+", (phrase or "").lower()) if w not in _STOP]
+    if not 2 <= len(words) <= 3:
+        return False
+    for line in re.split(r"[\n\r]+|(?<=[.;!?])\s+", text or ""):
+        if all(any(_skill_pattern(f).search(line) for f in _number_forms(w)) for w in words):
+            return True
+    return False
+
+
 def _present_in(phrase: str, text: str) -> bool:
     """Is this phrase on the résumé under either of its names?
 
@@ -497,7 +537,10 @@ def _present_in(phrase: str, text: str) -> bool:
     """
     from app.tailoring.inventory import ACRONYMS, _skill_pattern
     text = text or ""
-    if _skill_pattern(phrase).search(text):
+    for form in _number_forms(phrase):
+        if _skill_pattern(form).search(text):
+            return True
+    if _words_share_a_line(phrase, text):
         return True
     key = (phrase or "").strip().lower().rstrip(".")
     exp = ACRONYMS.get(key)

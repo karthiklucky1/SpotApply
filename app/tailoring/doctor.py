@@ -332,7 +332,7 @@ Be blunt. No fluff. Finish both sentences."""
                 **sampling(settings.doctor_model,
                            float(getattr(settings, "verifier_temperature", 0.0))),
             )
-            return resp.content[0].text.strip()
+            return drop_false_future_claims(resp.content[0].text.strip())
         except Exception as e:
             log.warning("Doctor LLM verdict failed: %s", e)
             return None
@@ -453,3 +453,60 @@ Be blunt. No fluff. Finish both sentences."""
         integrity_pts = max(0, 10 - len(integrity) * 5)
 
         return min(100, ats_pts + bullet_pts + banned_pts + integrity_pts)
+
+
+# ── post-check on the recruiter verdict ───────────────────────────────────────
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+_ACCUSE_RE = re.compile(r"\bfuture\b|fabricat|not yet (?:happened|occurred)|hasn.t happened|"
+                        r"impossible date|dishonest", re.I)
+_MONTH_YEAR_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+                            r"(?:\s+\d{1,2},?)?\s+((?:19|20)\d{2})\b", re.I)
+_ISO_RE = re.compile(r"\b((?:19|20)\d{2})-(\d{2})(?:-\d{2})?\b")
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+
+
+def _dates_in(sentence: str):
+    """(year, month) pairs a sentence names; month 0 = year only."""
+    found = [(int(y), _MONTHS[m[:3].lower()]) for m, y in _MONTH_YEAR_RE.findall(sentence)]
+    found += [(int(y), int(mo)) for y, mo in _ISO_RE.findall(sentence)]
+    if not found:
+        found = [(int(y), 0) for y in _YEAR_RE.findall(sentence)]
+    return found
+
+
+def drop_false_future_claims(verdict: Optional[str], today=None) -> Optional[str]:
+    """Remove any sentence that calls a PAST date future-dated or fabricated.
+
+    The prompt states today's date and forbids exactly this, and the model still
+    told a user on 2026-09-26 that projects dated "June 2026 and April 2026 …
+    are in the future … making them look fabricated". Telling someone their real
+    résumé is fraudulent is the most damaging thing this feature can say, so the
+    instruction is backed by a deterministic check: a sentence that accuses a
+    date of being in the future is kept only if a date it names really is.
+    """
+    if not verdict:
+        return verdict
+    from datetime import date as _date
+    today = today or _date.today()
+    now = (today.year, today.month)
+    # Split on sentence ends and on numbered items ("1. … 2. …").
+    raw = re.split(r"(?<=[.!?])\s+(?=\d+\.\s|\*|[A-Z\"“])", verdict)
+    parts: list = []
+    for piece in raw:                    # "2." alone belongs to the sentence after it
+        if parts and re.fullmatch(r"\d+\.", parts[-1].strip()):
+            parts[-1] = parts[-1] + " " + piece
+        else:
+            parts.append(piece)
+    kept = []
+    for part in parts:
+        if _ACCUSE_RE.search(part):
+            dates = _dates_in(part)
+            if dates and all((y, m or 1) <= now if m else y <= today.year for y, m in dates):
+                log.info("Doctor verdict: dropped a sentence calling past dates future-dated")
+                continue
+        kept.append(part)
+    out = " ".join(kept).strip()
+    out = out.replace("**", "")           # rendered as text, not markdown
+    return out or None
