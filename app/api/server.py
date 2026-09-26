@@ -7817,6 +7817,11 @@ def admin_health(request: Request) -> dict:
         "grandfather_cutoff_parsed": bool(_grandfather_cutoff()),
     }
     out["dormancy"] = {"grace_days": settings.dormant_user_grace_days}
+    try:
+        from app.common.db_health import snapshot as _db_health
+        out["db_writes"] = _db_health()
+    except Exception as e:                                   # pragma: no cover
+        out["db_writes"] = {"error": type(e).__name__}
 
     try:
         from app.db.init_db import engine as _engine
