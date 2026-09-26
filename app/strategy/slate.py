@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location | duplicate
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -259,6 +259,23 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     if _elig == "unknown" and settings.geo_hold_unresolved:
         return _refuse("unverified_location")
 
+    # ── One posting, one recommendation — the employer's own copy preferred ─
+    # The same role arrives through several doors (LinkedIn, SerpAPI, the
+    # employer's ATS; old and new identity forms). Production 2026-09-26: 182
+    # shortlisted rows were 176 distinct roles, one delivered three times.
+    dup, dup_source = _duplicate_on_record(session, job, uid_arg)
+    if dup is not None:
+        if _replaceable_by_first_party(dup, dup_source, job):
+            dup.status = ApplicationStatus.SKIPPED
+            dup.notes = ((dup.notes or "") + f"\n{SLATE_REPLACED_MARKER}: replaced by the "
+                         f"employer's own posting of the same role.").strip()
+            session.add(dup)
+            log.info("Slate: '%s' — the employer's posting replaced an aggregator copy (app %s)",
+                     job.title, dup.id)
+        else:
+            return _record(session, job, score, user_id,
+                           Placement(False, "duplicate", eligibility=_elig_meta))
+
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)
     visible = len(entries)
@@ -319,6 +336,52 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
         return _done(Placement(True, "overflow", cutoff=floor))
 
     return _done(Placement(False, "below_cutoff", cutoff=floor))
+
+
+# Statuses that mean "this role is already in front of the user, or was acted
+# on". A SKIPPED row is a dismissal or our own housekeeping — it does not stop a
+# better copy of the same role arriving later.
+_ACTIVE_STATUSES = (ApplicationStatus.SHORTLISTED,) + PROTECTED_STATUSES
+
+#: How far back a delivered role blocks a repeat of itself.
+DUPLICATE_LOOKBACK_DAYS = 40
+
+
+def _norm_key(text: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def _duplicate_on_record(session, job: Job, uid_arg: Optional[str]):
+    """(Application, its job's source) for the user's active application to
+    the SAME role (same company, same title after normalisation), else
+    (None, None). Bounded: one indexed read of the
+    user's recent active applications at this company."""
+    from datetime import timedelta
+    from sqlalchemy import func
+    company = (job.company or "").strip()
+    title_key = _norm_key(job.title)
+    if not company or not title_key:
+        return None, None
+    q = (select(Application, Job.title, Job.source)
+         .join(Job, Job.id == Application.job_id)
+         .where(Application.status.in_(_ACTIVE_STATUSES),
+                Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
+                func.lower(Job.company) == company.lower(),
+                Application.job_id != job.id))
+    q = q.where(Application.user_id == uid_arg) if uid_arg else q.where(Application.user_id.is_(None))
+    for app_row, title, source in session.exec(q.limit(50)).all():
+        if _norm_key(title) == title_key:
+            return app_row, source
+    return None, None
+
+
+def _replaceable_by_first_party(existing: Application, existing_source, job: Job) -> bool:
+    """An untouched aggregator copy gives way to the employer's own posting."""
+    from app.matching.filters.constants import source_quality
+    if existing.status != ApplicationStatus.SHORTLISTED or existing.viewed_at is not None:
+        return False
+    return source_quality(job.source) >= 1.0 > source_quality(existing_source)
 
 
 # Every qualified job leaves a record of what the slate decided. The audit

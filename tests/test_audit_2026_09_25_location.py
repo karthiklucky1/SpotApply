@@ -302,3 +302,50 @@ def test_a_delivered_job_keeps_its_verdict_on_a_profile_edit(clean):
     server._release_location_stamps(UID)
     with get_session() as s:
         assert s.get(Job, jid).eligibility == INELIGIBLE
+
+
+# ── one role, one recommendation; the employer's own posting preferred ──────
+
+def _plain_job(ext, *, source=JobSource.GREENHOUSE, title="Backend Engineer", company="Dupco"):
+    with get_session() as s:
+        j = Job(user_id=UID, source=source, external_id=_P + ext, company=company,
+                title=title, url=f"https://x/{ext}", description="d", location="Remote",
+                rerank_score=85, first_seen=datetime.utcnow())
+        s.add(j)
+        s.commit()
+        s.refresh(j)
+        s.exec(delete(FunnelEvent).where(FunnelEvent.job_id == j.id))
+        s.exec(delete(Application).where(Application.job_id == j.id))
+        s.commit()
+        return j.id
+
+
+def test_the_same_role_is_not_delivered_twice(clean):
+    a = _plain_job("dupA")
+    b = _plain_job("dupB", title="Backend  Engineer")        # same role, other door
+    assert _place(a).created
+    p = _place(b)
+    assert not p.created and p.outcome == "duplicate"
+
+
+def test_the_employers_posting_replaces_an_unopened_aggregator_copy(clean):
+    agg = _plain_job("aggA", source=JobSource.SERPAPI)
+    own = _plain_job("ownA", source=JobSource.GREENHOUSE)
+    assert _place(agg).created
+    assert _place(own).created
+    with get_session() as s:
+        agg_app = s.exec(select(Application).where(Application.job_id == agg)).first()
+        assert agg_app.status.value == "skipped"
+        assert "employer's own posting" in agg_app.notes
+
+
+def test_an_opened_aggregator_copy_is_kept(clean):
+    agg = _plain_job("aggB", source=JobSource.SERPAPI)
+    own = _plain_job("ownB", source=JobSource.GREENHOUSE)
+    assert _place(agg).created
+    with get_session() as s:
+        row = s.exec(select(Application).where(Application.job_id == agg)).first()
+        row.viewed_at = datetime.utcnow()
+        s.add(row)
+        s.commit()
+    assert _place(own).outcome == "duplicate"
