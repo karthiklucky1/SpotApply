@@ -739,6 +739,9 @@ function answerWorkAuthField(el, pack, label) {
   const l = String(label || "").toLowerCase();
   if (!/sponsor|authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l)) return false;
 
+  // null/undefined = the server could not state the answer with certainty
+  // (a dated status such as OPT): leave every sponsorship question for the user.
+  const sponsorKnown = typeof pack.requires_sponsorship === 'boolean';
   const requires = pack.requires_sponsorship === true;
   const authorized = _isAuthorized(pack);
   const asksAuth = /authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l);
@@ -748,11 +751,12 @@ function answerWorkAuthField(el, pack, label) {
     /without\s+(visa\s+)?sponsor|not\s+requir\w*\s+sponsor|no\s+sponsor/.test(l);
 
   let answer = null;
-  if (combined) answer = authorized === null ? null : (authorized && !requires);
-  else if (asksSponsor) answer = requires;          // "do you require sponsorship?"
+  if (combined) answer = (authorized === null || !sponsorKnown) ? null : (authorized && !requires);
+  else if (asksSponsor) answer = sponsorKnown ? requires : null;   // "do you require sponsorship?"
   else if (asksAuth) answer = authorized;           // "are you authorized to work?"
 
   const yn = el.tagName === "SELECT" ? _yesNoOptions(el) : null;
+  if (asksSponsor && answer === null) return false;  // never fill a status string into it
   if (yn) {
     if (answer === null) return false;              // unknown — leave for the user
     el.value = (answer ? yn.yes : yn.no).value;

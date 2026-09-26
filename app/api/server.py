@@ -4931,6 +4931,34 @@ def application_autopsy(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
+    """The value the extension may put in a "do you (now or in future) require
+    sponsorship?" field, or None to leave it for the user.
+
+    True when the profile says sponsorship is needed (a truthful Yes never
+    bypasses screening). False ONLY for a status that never needs sponsorship
+    (citizen, permanent resident, a plain "authorized" default). A DATED status
+    (OPT, STEM OPT, H-1B, EAD…) is the user's to answer: its future depends on
+    plans and filings we do not hold, and the audit found a live F-1 OPT
+    profile with `requires_sponsorship: false` that the extension would have
+    answered "No" for — a knockout answer given on someone's behalf.
+    """
+    if profile is None:
+        return None
+    if bool(getattr(profile, "requires_sponsorship", False)):
+        return True
+    try:
+        from app.intelligence.work_auth import assess_profile
+        fr = assess_profile(profile)
+    except Exception:
+        return None
+    if fr.validity != "not_applicable" or fr.needs_future_sponsorship:
+        return None
+    blob = ((getattr(profile, "work_authorization", "") or "")
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    return False if blob else None
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
@@ -5018,7 +5046,9 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "years_experience": p.years_experience if p else 0,
         "salary_min": p.salary_min if p else 0,
         "work_authorization": p.work_authorization if p else "",
-        "requires_sponsorship": p.requires_sponsorship if p else False,
+        # Only a CERTAIN answer is sent; None makes the extension leave the
+        # future-sponsorship question for the user (sponsorship_answer_for_pack).
+        "requires_sponsorship": _sponsorship_answer_for_pack(p),
         "gender": p.gender if p else "Decline to self-identify",
         "ethnicity": p.ethnicity if p else "Decline to self-identify",
         "veteran_status": p.veteran_status if p else "I am not a protected veteran",
