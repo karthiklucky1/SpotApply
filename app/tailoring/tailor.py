@@ -896,6 +896,26 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     out_dir.mkdir(parents=True, exist_ok=True)
     resume_path = out_dir / resume_filename
     cover_path = out_dir / cover_filename
+    # A skill the posting wants but the master résumé never shows is REMOVED
+    # from the draft, not left in to get the whole document withheld. The user
+    # gets a résumé every time, plus the list of those skills to learn — or to
+    # confirm, which adds them to the master for the next rebuild.
+    removed_claims: list = []
+    skills_to_learn: list = []
+    try:
+        from app.tailoring.export_gate import strip_unconfirmed
+        from app.tailoring.requirements import review as _pre_review
+        _rv = _pre_review(master, resume_md, job_description or "")
+        skills_to_learn = list(_rv.missing_skills)
+        if _rv.unconfirmed_claims:
+            resume_md, removed_claims = strip_unconfirmed(resume_md, list(_rv.unconfirmed_claims))
+            cover, _ = strip_unconfirmed(cover, list(_rv.unconfirmed_claims))
+            log.info("Tailor app %d: removed %d unsupported skill mention(s) before export",
+                     application_id, len(removed_claims))
+    except Exception as _se:
+        # The export gate still judges the saved draft, so a failure here can
+        # only lead to a withheld document, never an unchecked one.
+        log.warning("Tailor app %d: unsupported-skill cleanup skipped: %s", application_id, _se)
     _md_to_docx(resume_md, resume_path)
     # Keep the markdown the .docx was rendered from. Re-verifying a résumé by
     # parsing its own .docx back would check a lossy reconstruction rather than
@@ -955,6 +975,10 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             # in the UI as "locked", so the user sees their degree/dates are
             # protected rather than seeing a scary "altered credential" flag).
             "locked_fields": locked_fields,
+            # Skills taken OUT of this draft because the master résumé does not
+            # show them, and the posting's skills the résumé lacks entirely.
+            "removed_claims": removed_claims,
+            "skills_to_learn": skills_to_learn,
             "generated_at": datetime.utcnow().isoformat(),
         }), encoding="utf-8")
     except Exception as _re:

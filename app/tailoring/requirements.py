@@ -435,6 +435,9 @@ class PreDownloadReview:
     questions: Tuple[str, ...] = ()
     improvement_plan: Tuple[str, ...] = ()
     unconfirmed_claims: Tuple[str, ...] = ()
+    #: Skills the posting asks for that the master résumé shows nowhere — what
+    #: to learn (or to confirm, if the résumé simply leaves them out).
+    missing_skills: Tuple[str, ...] = ()
     employment_summary: str = ""
 
     @property
@@ -542,13 +545,16 @@ def _present_in(phrase: str, text: str) -> bool:
             return True
     if _words_share_a_line(phrase, text):
         return True
-    key = (phrase or "").strip().lower().rstrip(".")
-    exp = ACRONYMS.get(key)
-    if exp and _skill_pattern(exp).search(text):
-        return True
-    for acro, expansion in ACRONYMS.items():
-        if expansion.lower() == key and _skill_pattern(acro).search(text):
+    for form in _number_forms(phrase):
+        key = form.strip().lower().rstrip(".")
+        exp = ACRONYMS.get(key)
+        if exp and any(_skill_pattern(f).search(text) for f in _number_forms(exp)):
             return True
+        for acro, expansion in ACRONYMS.items():
+            # "large language models" is the plural of LLM's expansion.
+            if expansion.lower() == key and any(
+                    _skill_pattern(f).search(text) for f in _number_forms(acro)):
+                return True
     return False
 
 
@@ -683,5 +689,6 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
         questions=tuple(dict.fromkeys(questions)),
         improvement_plan=tuple(plan),
         unconfirmed_claims=tuple(leaked),
+        missing_skills=tuple(dict.fromkeys(unevidenced))[:8],
         employment_summary=summary,
     )

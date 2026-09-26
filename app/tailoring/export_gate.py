@@ -29,6 +29,7 @@ claim the DOCUMENT makes that the résumé cannot back does.
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -117,3 +118,87 @@ def reset_state() -> None:
     """Tests only."""
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+# ── removing an unsupported claim instead of withholding the document ────────
+
+_ITEM_SPLIT = re.compile(r"\s*(?:,|\||·|;|•)\s*")
+
+
+def strip_unconfirmed(md: str, claims) -> "tuple[str, list[str]]":
+    """Remove every mention of a skill the master résumé does not evidence.
+
+    Withholding the whole document for one word ("Rust" in a skills line) left
+    users with no résumé at all (2026-09-26). The honest fix is narrower: the
+    claim comes OUT, everything the résumé does support stays, and the skill is
+    reported back as something to learn — or to confirm, if the person really
+    has used it. Never adds anything; only removes.
+
+      * a skills/list line loses just that item;
+      * in a sentence, "Python and Rust" / "Python, Rust" loses the coordinated
+        item; if the claim is still there, the bullet (or sentence) is dropped.
+    Returns (new_markdown, claims_actually_removed).
+    """
+    from app.tailoring.inventory import _skill_pattern
+    from app.tailoring.requirements import _number_forms
+
+    claims = [c for c in (claims or []) if (c or "").strip()]
+    if not claims or not (md or "").strip():
+        return md, []
+    pats = {c: [_skill_pattern(f) for f in _number_forms(c)] for c in claims}
+
+    def hits_in(text: str):
+        return [c for c, ps in pats.items() if any(p.search(text) for p in ps)]
+
+    removed: list = []
+    out: list = []
+    section = ""
+    for line in md.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            section = s.lstrip("#").strip().lower()
+            out.append(line)
+            continue
+        hits = hits_in(line)
+        if not hits:
+            out.append(line)
+            continue
+        for c in hits:
+            if c not in removed:
+                removed.append(c)
+        bullet = re.match(r"^(\s*[-*]\s+)", line)
+        lead = bullet.group(1) if bullet else ""
+        body = line[len(lead):]
+        seps = sum(body.count(x) for x in (",", "|", "·", ";", "•"))
+        is_list = ("skill" in section or "technolog" in section or "tool" in section
+                   or (seps >= 2 and not re.search(r"[.!?]\s*$", body.strip())))
+        if is_list:
+            label = re.match(r"^((?:\*\*[^*]+\*\*|[^:,|]{1,40}):\s*)", body)
+            head = label.group(1) if label else ""
+            items = [i for i in _ITEM_SPLIT.split(body[len(head):]) if i.strip()]
+            kept = [i for i in items if not hits_in(i)]
+            if kept:
+                joiner = " | " if "|" in body else " · " if "·" in body else ", "
+                out.append(lead + head + joiner.join(kept))
+            continue
+        # A sentence: drop the coordinated item first ("A, B and Rust").
+        new = body
+        for c in hits:
+            for p in pats[c]:
+                src = p.pattern
+                # a trailing modifier: ", with Rust experience" / "using Rust"
+                new = re.sub(rf",?\s+(?:with|using|in|including|and)\s+(?:hands-on\s+)?(?:{src})"
+                             rf"(?:\s+(?:experience|skills|expertise|knowledge))?(?=[.;!?]|$)",
+                             "", new, flags=re.I)
+                new = re.sub(rf"(?:\s*,\s*|\s+(?:and|or)\s+|\s*/\s*)(?:{src})", "", new, flags=re.I)
+                new = re.sub(rf"(?:{src})(?:\s*,\s*|\s+(?:and|or)\s+|\s*/\s*)", "", new, flags=re.I)
+        if not hits_in(new):
+            out.append(lead + new)
+            continue
+        if bullet:
+            continue                              # the bullet was about the claim
+        sentences = re.split(r"(?<=[.!?])\s+", new)
+        kept = [x for x in sentences if not hits_in(x)]
+        if kept:
+            out.append(" ".join(kept))
+    return "\n".join(out), removed

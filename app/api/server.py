@@ -4503,6 +4503,7 @@ def application_details(application_id: int, request: Request) -> dict:
             str(Path(application.tailored_resume_path).parent / "report.json"), _uid)
 
     resume_text = ""
+    resume_md = ""
     cover_text = ""
 
     # A draft the grounding check rejected is parked at ERROR with the file
@@ -4529,6 +4530,16 @@ def application_details(application_id: int, request: Request) -> dict:
                 resume_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
             except Exception as e:
                 resume_text = f"(Could not read resume: {e})"
+            # The markdown the .docx was rendered from, so the studio can show
+            # the résumé laid out like the document (headings, bullets).
+            try:
+                _md_path = Path(application.tailored_resume_path).parent / "resume.md"
+                if not _md_path.exists():
+                    _rehydrate_tailored_file(str(_md_path), _uid)
+                if _md_path.exists():
+                    resume_md = _md_path.read_text(encoding="utf-8")
+            except Exception:
+                resume_md = ""
 
         if application.cover_letter_path:
             try:
@@ -4551,6 +4562,12 @@ def application_details(application_id: int, request: Request) -> dict:
             report_path = Path(application.tailored_resume_path).parent / "report.json"
             if report_path.exists():
                 quality = _json.loads(report_path.read_text(encoding="utf-8"))
+                # Reports written before the verdict post-check still carry a
+                # false "future-dated" sentence or a dangling "2." — clean at
+                # read time too, so old drafts stop saying it.
+                if isinstance(quality, dict) and quality.get("verdict"):
+                    from app.tailoring.doctor import drop_false_future_claims
+                    quality["verdict"] = drop_false_future_claims(quality["verdict"])
         except Exception:
             quality = None
 
@@ -4580,6 +4597,7 @@ def application_details(application_id: int, request: Request) -> dict:
         "status": application.status.value,
         "source": job.source.value,
         "resume": resume_text,
+        "resume_md": resume_md,
         "cover_letter": cover_text,
         "rejection_analysis": rejection_data,
         "quality": quality,

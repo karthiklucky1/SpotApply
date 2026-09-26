@@ -509,4 +509,7 @@ def drop_false_future_claims(verdict: Optional[str], today=None) -> Optional[str
         kept.append(part)
     out = " ".join(kept).strip()
     out = out.replace("**", "")           # rendered as text, not markdown
+    # A numbered item left with no text ("… 2.") — a dropped sentence, or the
+    # model running out of tokens right after the number.
+    out = re.sub(r"\s+\d+\.\s*$", "", out).strip()
     return out or None
