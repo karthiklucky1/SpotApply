@@ -55,7 +55,7 @@ def _semantic_query_vector(matcher, user_id, roles):
         if resume:
             parts.append(resume)
     except Exception as e:
-        log.debug("adoption semantic: résumé unavailable (%s)", e)
+        log.debug("adoption semantic: resume unavailable (%s)", e)
     text = "\n\n".join(p for p in parts if p).strip()
     if not text:
         return None

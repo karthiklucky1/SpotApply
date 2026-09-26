@@ -107,7 +107,7 @@ def test_a_none_bound_is_dropped_not_guessed():
 
 
 @pytest.mark.parametrize("months,text", [
-    (0, "none on the résumé"), (1, "1 month"), (11, "11 months"),
+    (0, "none on the resume"), (1, "1 month"), (11, "11 months"),
     (12, "1 year"), (13, "1 year 1 month"), (33, "2 years 9 months"),
     (35, "2 years 11 months"),               # never rounded up to "3 years"
 ])

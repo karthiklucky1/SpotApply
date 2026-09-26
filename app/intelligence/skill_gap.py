@@ -143,7 +143,7 @@ def _load_resume_text(user_id: Optional[str], profile: Optional[UserProfile]) ->
         from app.matching.pipeline import _load_resume
         return _load_resume(user_id=_user_arg(user_id)), True
     except Exception as e:
-        log.info("Skill-gap: no résumé loaded (%s) — falling back to profile skills", e)
+        log.info("Skill-gap: no resume loaded (%s) — falling back to profile skills", e)
         fallback = " ".join([
             getattr(profile, "key_skills", "") or "",
             getattr(profile, "professional_summary", "") or "",
@@ -156,7 +156,7 @@ def _advice(skill: str, status: str, demand: int, repo: str = "") -> str:
         where = f" (your GitHub repo “{repo}” already shows it)" if repo else " (found in your LinkedIn text)"
         return (
             f"You already have proof of {skill}{where}, but it's invisible to "
-            f"recruiters scanning your résumé — add it to your résumé and your "
+            f"recruiters scanning your resume — add it to your resume and your "
             f"LinkedIn skills yourself."
         )
     return (

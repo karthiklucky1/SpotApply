@@ -313,7 +313,7 @@ def test_the_improvement_plan_is_derived_when_no_advice_is_passed():
     jd = "## Minimum Qualifications\n- 3 years of experience with Kafka.\n"
     r = review(master, master, jd)
     assert any(p.startswith("Kafka") for p in r.improvement_plan)
-    assert "does not belong on the résumé until then" in r.improvement_plan[0]
+    assert "does not belong on the resume until then" in r.improvement_plan[0]
 
 
 def test_a_draft_that_starts_claiming_an_unevidenced_skill_is_caught():
@@ -381,7 +381,7 @@ def test_an_empty_posting_reviews_without_raising():
 
 def test_a_missing_master_resume_does_not_raise():
     r = review("", "", JD)
-    assert r.employment_summary.startswith("none on the résumé")
+    assert r.employment_summary.startswith("none on the resume")
 
 
 # ── the route is owner-scoped and read-only ──────────────────────────────────

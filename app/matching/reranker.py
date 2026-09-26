@@ -573,20 +573,20 @@ def _legacy_system_prompt() -> str:
     profile signal yet. Judges fit purely from the résumé text (passed in the
     user prompt), with no hardcoded personal assumptions, so it is safe in a
     multi-tenant setting (no other user's defaults leak in)."""
-    return f"""You evaluate how well a candidate's résumé fits a job posting. {_JSON_CONTRACT}
+    return f"""You evaluate how well a candidate's resume fits a job posting. {_JSON_CONTRACT}
 
 {_SCORE_BANDS}
 
-Scoring guidance (judge everything from the résumé provided — do not assume facts not present in it):
-- SKILLS: score on overlap between the résumé's skills/experience and the job's stated requirements.
-- EXPERIENCE: estimate the candidate's years from the résumé. If the JD requires noticeably more
+Scoring guidance (judge everything from the resume provided — do not assume facts not present in it):
+- SKILLS: score on overlap between the resume's skills/experience and the job's stated requirements.
+- EXPERIENCE: estimate the candidate's years from the resume. If the JD requires noticeably more
   years than the candidate appears to have (roughly 4+ years beyond), lower the experience score; if
   the JD is silent on years or asks for less, score normally. Do not invent a seniority gap.
 - WORK AUTHORIZATION: score work_auth low (0-15) ONLY if the posting explicitly states "no sponsorship",
   "US citizens/permanent residents only", or requires an active security clearance. If the posting is
   silent on sponsorship, assume it is possible and score work_auth high.
 - LOCATION: prefer US-based or fully-remote roles. Score location low only for clearly non-remote roles
-  located outside the candidate's region as indicated by the résumé.
+  located outside the candidate's region as indicated by the resume.
 
 Be fair and realistic — do not invent disqualifications. Return JSON only. No prose."""
 
@@ -672,7 +672,7 @@ def _prescore_system_prompt(profile=None) -> str:
         )
     return (
         f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
-        "Judge fit purely from the résumé provided (do not assume facts not in it).\n"
+        "Judge fit purely from the resume provided (do not assume facts not in it).\n"
         + bands.replace("{country}", "the candidate's country")
     )
 
@@ -774,9 +774,9 @@ def _resume_context_block(resume_text: str, feedback: str = "") -> str:
         unit = body + "\n"
         pad = (unit * (-(-short_by // len(unit))))[:short_by]
         block += (
-            "\n<resume_repeat>\nThe following is a verbatim repetition of the résumé "
+            "\n<resume_repeat>\nThe following is a verbatim repetition of the resume "
             "above, included only for prompt-cache alignment. It contains no new "
-            "information — read the résumé once and ignore the repetition.\n"
+            "information — read the resume once and ignore the repetition.\n"
             f"{pad}\n</resume_repeat>"
         )
     return block

@@ -479,7 +479,7 @@ function reportTelemetry(pack, event, meta) {
 // isTrusted is the whole point: fillInput dispatches input/change to notify
 // React, and these listeners used to treat OUR OWN events as a manual edit.
 // Every field we filled was instantly flagged user-modified, so no later pass
-// could correct it — nothing self-healed when the résumé or ai_answers finally
+// could correct it — nothing self-healed when the resume or ai_answers finally
 // arrived. Only a real user gesture sets the flag.
 const _markUserModified = (e) => {
   if (!e.isTrusted) return;                    // synthetic = ours, not the user
@@ -627,7 +627,7 @@ function fillInput(el, value) {
   _lastWriteSkippedEmpty = false;
 
   // Never treat a file input as a text field. Browsers forbid setting .value on
-  // <input type="file"> (it throws "accepts a filename"), and the résumé is
+  // <input type="file"> (it throws "accepts a filename"), and the resume is
   // handled separately by attachResume.
   if (el.tagName === 'INPUT' && el.type === 'file') return false;
 
@@ -2263,18 +2263,18 @@ function observeAnswer(ta, pack) {
 // ── Resume file attachment ──────────────────────────────────────────────────────
 // Fetches the tailored resume .docx (base64) via the background worker and sets
 // it on any empty file inputs using a synthetic DataTransfer.
-// Returns true when the résumé is handled (attached now, or already present),
+// Returns true when the resume is handled (attached now, or already present),
 // false when we tried and couldn't — so the caller retries on a later pass
 // instead of wrongly marking it "done".
 async function attachResume(root, pack) {
   if (!packBase(pack) || !pack.auth_token || !pack.app_id) return false;
 
-  // The server already told us the résumé cannot be built until the user fixes
+  // The server already told us the resume cannot be built until the user fixes
   // something. Hammering the endpoint three times a page and then failing
   // silently is exactly what made "resume never attaches" so hard to see.
   if (_resumeBlockedReason) {
     showOverlay(
-      `📎 <b>Résumé not attached</b><br><small style="color:#c4b5fd;font-weight:400">${_resumeBlockedReason}</small>`,
+      `📎 <b>Resume not attached</b><br><small style="color:#c4b5fd;font-weight:400">${_resumeBlockedReason}</small>`,
       [], true);
     return false;
   }
@@ -2287,7 +2287,7 @@ async function attachResume(root, pack) {
   // enough to plausibly be this one field's wrapper. Checking the old broad
   // closest('div,section,fieldset') matched page-level wrappers, so a Remove
   // button on an unrelated field (education entry, cover letter) marked the
-  // résumé as already-uploaded and it was silently skipped forever.
+  // resume as already-uploaded and it was silently skipped forever.
   const fieldScope = (fi) => {
     let n = fi.parentElement, best = fi.parentElement, depth = 0;
     while (n && depth < 6) {
@@ -2308,7 +2308,7 @@ async function attachResume(root, pack) {
   };
   const isUploaded = (fi) => (fi.files && fi.files.length) || hasUploadedMarker(fi);
 
-  // "Autofill from résumé" widgets are a TRAP. Ashby (and others) put an
+  // "Autofill from resume" widgets are a TRAP. Ashby (and others) put an
   // optional parser upload next to the real Resume field; its container also
   // says "resume", so it matched, we attached to both, and the parser then
   // re-read the .docx and OVERWROTE the identity we had just filled — same
@@ -2320,22 +2320,22 @@ async function attachResume(root, pack) {
     return /autofill|auto-fill|fill (?:it |this |the form )?(?:in |out )?(?:from|with)|parse|prefill|pre-fill|populate (?:the )?(?:form|fields)/.test(text);
   };
 
-  // Only skip a parser widget when there is a REAL résumé input to use
-  // instead. On Rippling the dropzone IS the résumé field (and it renders two
+  // Only skip a parser widget when there is a REAL resume input to use
+  // instead. On Rippling the dropzone IS the resume field (and it renders two
   // inputs for the one dropzone), so blanket-skipping parsers meant the
-  // required résumé never attached at all — trading one failure for another.
+  // required resume never attached at all — trading one failure for another.
   // Pick exactly ONE input to attach to, by SCORING every unattached file
   // input rather than filtering first. The filter-then-pick version could
   // eliminate everything and return silently: on Rippling the dropzone renders
   // two inputs, one looked like a parser so it was skipped, and the other had a
-  // generic name and a wrapper div with no "Résumé" text — so it matched none
-  // of the résumé tests, candidates came back empty, and the required upload
+  // generic name and a wrapper div with no "Resume" text — so it matched none
+  // of the resume tests, candidates came back empty, and the required upload
   // never happened with no log line either way.
   const resumeCtx = (fi) => (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
                              (fi.getAttribute("aria-label") || "") + " " +
                              (fi.getAttribute("data-automation-id") || "")).toLowerCase();
 
-  // Walk several ancestors, not just the immediate div — the "Résumé *" label
+  // Walk several ancestors, not just the immediate div — the "Resume *" label
   // usually sits a couple of levels above the input inside a dropzone.
   const scopeSaysResume = (fi) => {
     let node = fi.parentElement;
@@ -2352,11 +2352,11 @@ async function attachResume(root, pack) {
     else if (scopeSaysResume(fi)) s += 3;
     if (isFieldRequired(fi)) s += 2;
     // A parser upload is a poor choice, never an impossible one — on Rippling
-    // the dropzone IS the résumé field and its copy mentions autofill. The
-    // penalty must stay SMALLER than the résumé signal, or it cancels it out
+    // the dropzone IS the resume field and its copy mentions autofill. The
+    // penalty must stay SMALLER than the resume signal, or it cancels it out
     // exactly and the required upload is skipped (which is what happened).
     if (isParserWidget(fi)) s -= 2;
-    // Clearly a different document — never the résumé.
+    // Clearly a different document — never the resume.
     if (/cover.?letter|portfolio|transcript|writing sample/i.test(resumeCtx(fi))) s -= 10;
     return { fi, s };
   }).sort((a, b) => b.s - a.s);
@@ -2367,15 +2367,15 @@ async function attachResume(root, pack) {
   } else if (scored[0].s > 0) {
     targets = [scored[0].fi];
     if (scored.length > 1) {
-      console.log(`[SpotApply] Résumé target chosen (score ${scored[0].s}) from ` +
+      console.log(`[SpotApply] Resume target chosen (score ${scored[0].s}) from ` +
                   `${scored.length} file inputs`);
     }
   } else if (available.length === 1) {
     targets = [available[0]];
-    console.log('[SpotApply] Single unlabelled file input — treating it as the résumé');
+    console.log('[SpotApply] Single unlabelled file input — treating it as the resume');
   } else {
     // Never fail silently: say which inputs were seen and why none was used.
-    console.warn('[SpotApply] Could not identify the résumé field among',
+    console.warn('[SpotApply] Could not identify the resume field among',
                  available.length, 'file inputs —',
                  available.map((fi) => fi.name || fi.id || '(unnamed)').join(', '));
   }
@@ -2400,18 +2400,18 @@ async function attachResume(root, pack) {
       // missing. Show that instead of retrying into the void, and stop trying.
       reason = 'profile_incomplete';
       hint = (res.data && res.data.detail) ||
-             "Your profile is missing information needed to build a résumé.";
+             "Your profile is missing information needed to build a resume.";
       _resumeBlockedReason = hint;
     } else if (status === 503) {
       reason = 'tailoring_failed';
-      hint = "Your tailored résumé isn't generated yet. Open this application on the SpotApply dashboard, generate the résumé, then return here.";
+      hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
     } else {
       reason = 'fetch_failed';
-      hint = "Couldn't download your résumé from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
+      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
     }
     console.warn("[SpotApply] resume fetch failed:", status, res.error || '');
     showOverlay(
-      `📎 Résumé not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
+      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
       [], true
     );
     reportTelemetry(pack, 'resume_attach_failed', { reason, status });
@@ -2475,16 +2475,16 @@ async function attachResume(root, pack) {
     reportTelemetry(pack, 'resume_attached', { source: kind });
     return true;
   }
-  console.warn("[SpotApply] Résumé set but the form didn't register it — asking user to attach manually.");
+  console.warn("[SpotApply] Resume set but the form didn't register it — asking user to attach manually.");
   showResumeHint(filename);
   reportTelemetry(pack, 'resume_attach_failed', { reason: 'not_registered' });
   return false;
 }
 
-// Non-blocking nudge when we can't auto-attach the résumé (custom uploaders).
+// Non-blocking nudge when we can't auto-attach the resume (custom uploaders).
 function showResumeHint(filename) {
   showOverlay(
-    `📎 Please attach your résumé.<br><small style="color:#c4b5fd;font-weight:400">This site's upload box blocks auto-attach. Click its upload button and pick your file${filename ? `: <b>${filename}</b>` : ''}.</small>`,
+    `📎 Please attach your resume.<br><small style="color:#c4b5fd;font-weight:400">This site's upload box blocks auto-attach. Click its upload button and pick your file${filename ? `: <b>${filename}</b>` : ''}.</small>`,
     [], true
   );
 }
@@ -2499,7 +2499,7 @@ let _fillingInProgress = false;
 let _resumeAttachedOnPage = null;
 // True when the last fillInput bailed because the pack had no value for it.
 let _lastWriteSkippedEmpty = false;
-// Set when the server says the résumé can't be built for a reason the user must
+// Set when the server says the resume can't be built for a reason the user must
 // fix (422). Retrying is pointless until they do, so we stop and keep saying why.
 let _resumeBlockedReason = null;
 let _lastFillTimestamp = 0;
@@ -2652,7 +2652,7 @@ async function runCopilotStep() {
     _lastFillTimestamp = Date.now();
   }
 
-  // The résumé attach and the AI essay answers finish AFTER the first overlay
+  // The resume attach and the AI essay answers finish AFTER the first overlay
   // render, so recount now that everything has landed — and keep it live while
   // the user works through the yellow fields.
   refreshStepOverlay(pack);
@@ -2744,15 +2744,15 @@ async function fillCurrentPage(pack) {
 
 /**
  * Count and highlight what is filled vs outstanding. Split out of the fill
- * so it can be re-run: the overlay used to be rendered before the résumé
+ * so it can be re-run: the overlay used to be rendered before the resume
  * attach and the AI essay answers landed, so it went stale the moment those
  * completed ("5 filled" while seven fields held values).
  */
 function auditPageFields(pack, platformFilled) {
-  // Visibility, but not naively. A résumé file input and custom-styled radios
+  // Visibility, but not naively. A resume file input and custom-styled radios
   // are almost always the real input hidden behind a styled label, so
   // `offsetParent !== null` dropped them from BOTH sides of the tally — which
-  // is why two required radio questions and the résumé stayed invisible to the
+  // is why two required radio questions and the resume stayed invisible to the
   // count. For those, fall back to whether their LABEL or container is visible.
   // Rippling proved the label-visibility fallback was not enough: its real
   // file and radio inputs sit OUTSIDE the styled label's subtree, so they
@@ -2789,7 +2789,7 @@ function auditPageFields(pack, platformFilled) {
 
   for (const el of allInputs) {
     // File and choice inputs used to be dropped from BOTH counts, so a form
-    // with a required résumé upload and unanswered radios reported far fewer
+    // with a required resume upload and unanswered radios reported far fewer
     // outstanding fields than it had. Count them honestly instead.
     if (el.type === 'file') {
       if (el.files && el.files.length) { filled++; highlightField(el, 'green'); }
@@ -4574,7 +4574,7 @@ function isActionablePage() {
         '<button data-hp-close style="margin-left:auto;background:none;border:none;color:#64748b;cursor:pointer;font-size:14px">✕</button>' +
       '</div>' +
       '<div style="font-size:11px;color:#94a3b8;line-height:1.4;margin-bottom:10px">' +
-        'Import <b>your own</b> profile so SpotApply can tailor résumés and cover letters more accurately.' +
+        'Import <b>your own</b> profile so SpotApply can tailor resumes and cover letters more accurately.' +
       '</div>' +
       '<button data-hp-import style="display:block;width:100%;padding:10px 14px;border:none;border-radius:10px;font-weight:800;font-size:12px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#4f46e5,#7c3aed)">⚡ Import my LinkedIn profile</button>' +
       '<div data-hp-status style="display:none;font-size:11px;text-align:center;margin-top:8px;line-height:1.4"></div>';

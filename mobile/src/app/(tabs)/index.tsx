@@ -138,8 +138,8 @@ export default function JobsScreen() {
         <View>
           <EmptyState
             icon="document-text-outline"
-            title="Upload your résumé to start matching"
-            message="SpotApply scores every job against your résumé. Upload it on the web dashboard and your feed will fill in automatically."
+            title="Upload your resume to start matching"
+            message="SpotApply scores every job against your resume. Upload it on the web dashboard and your feed will fill in automatically."
           />
           <Pressable
             onPress={() => WebBrowser.openBrowserAsync(`${API_URL}/dashboard`)}

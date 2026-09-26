@@ -633,6 +633,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   an upper bound); ONE export verdict (`tailoring/export_gate.py`) for review,
   details, download and fill-pack; polling never counts as activity
   (`_is_meaningful_request`), grace 1 day.
+- **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
+  emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
+  still strips diacritics so employer forms that write "Résumé" are recognised.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

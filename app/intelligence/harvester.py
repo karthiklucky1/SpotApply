@@ -118,7 +118,7 @@ def _llm_brief(profile, gh: dict) -> tuple[str, str]:
             f"{(' — ' + top['description']) if top['description'] else ''}.")
     if new_langs:
         fallback_lines.append(
-            f"- Consider adding to your résumé skills: **{', '.join(new_langs)}** "
+            f"- Consider adding to your resume skills: **{', '.join(new_langs)}** "
             "(seen in recent repos but not in your key skills).")
     if events:
         fallback_lines.append(f"- {len(events)} recent commits — keep the streak visible on your profile.")
@@ -217,7 +217,7 @@ def ingest_linkedin_text(user_id: str | None, text: str) -> dict:
 
     recommendations = (
         "### From your LinkedIn paste\n"
-        "- Saved — we'll weave these details into résumé tailoring and cover letters."
+        "- Saved — we'll weave these details into resume tailoring and cover letters."
     )
     try:
         from app.config import settings

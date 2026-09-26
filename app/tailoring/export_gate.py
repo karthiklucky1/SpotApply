@@ -74,7 +74,7 @@ def evaluate(*, grounding_rejected: bool, grounding_reason: str,
         return ExportVerdict(
             False, "grounding_rejected",
             (grounding_reason or "").strip()
-            or "This résumé did not pass the grounding check and cannot be exported. "
+            or "This resume did not pass the grounding check and cannot be exported. "
                "Re-run tailoring for this application.")
     if not (tailored or "").strip():
         # Nothing to judge — the caller has no draft to hand out either.
@@ -99,9 +99,9 @@ def evaluate(*, grounding_rejected: bool, grounding_reason: str,
     if claims:
         verdict = ExportVerdict(
             False, "unconfirmed_claims",
-            ("This draft states experience your résumé does not show: "
+            ("This draft states experience your resume does not show: "
              + ", ".join(claims[:5])
-             + ". Remove it (or add where you really did it to your master résumé) "
+             + ". Remove it (or add where you really did it to your master resume) "
                "and re-run tailoring before exporting."),
             unconfirmed_claims=claims, basis=key, review=rep)
     else:

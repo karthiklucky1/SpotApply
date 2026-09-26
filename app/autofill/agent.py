@@ -2625,7 +2625,7 @@ def autofill(application_id: int, bypass_delay: bool = False) -> List[UnknownFie
         _notify_owner(
             _owner_uid,
             title=f"Ready to apply — {job_company}",
-            message=(f"Your tailored résumé and cover letter for {job_title} are ready. "
+            message=(f"Your tailored resume and cover letter for {job_title} are ready. "
                      f"This one is applied to on the company's own site."),
             type_="manual_ready",
             link=apply_url or "/dashboard",

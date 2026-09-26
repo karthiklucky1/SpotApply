@@ -566,7 +566,7 @@ def _notify_if_newly_dormant(profile) -> bool:
                 user_id=uid,
                 title="Your job search is paused",
                 message=("Your search is paused to save resources while you're away — "
-                         "your board, résumé and history are kept. Press \"Resume "
+                         "your board, resume and history are kept. Press \"Resume "
                          "search\" on your dashboard (or open any job) and it starts "
                          "again with a fresh batch."),
                 type="feed_paused",
@@ -2240,7 +2240,7 @@ async def upload_resume(request: Request):
     if len(content) > _MAX_RESUME_BYTES:
         raise HTTPException(
             status_code=413,
-            detail=f"Résumé too large — max {_MAX_RESUME_BYTES // (1024 * 1024)} MB.")
+            detail=f"Resume too large — max {_MAX_RESUME_BYTES // (1024 * 1024)} MB.")
     content_type = file.content_type
 
     def _store() -> dict:
@@ -2481,7 +2481,7 @@ Return only valid JSON, no markdown, no explanation."""
                 session.add(p)
                 session.commit()
                 if _previous_roles and _previous_roles != p.target_roles:
-                    log.info("Target roles re-derived from the new résumé for %s: %r → %r",
+                    log.info("Target roles re-derived from the new resume for %s: %r → %r",
                              uid, _previous_roles, ", ".join(seeded_roles))
                 _roles_before = [r.strip() for r in _previous_roles.split(",") if r.strip()]
                 _roles_after = list(seeded_roles)
@@ -2538,14 +2538,15 @@ Return only valid JSON, no markdown, no explanation."""
                             select(UserNotification)
                             .where(
                                 UserNotification.user_id == uid,
-                                UserNotification.title == f"Résumé Suggestion: {f['label']} 📄",
+                                UserNotification.title.in_((f"Resume Suggestion: {f['label']} 📄",
+                                                             f"R\u00e9sum\u00e9 Suggestion: {f['label']} 📄")),
                                 UserNotification.read == False
                             )
                         ).first()
                         if not existing_notif:
                             notif = UserNotification(
                                 user_id=uid,
-                                title=f"Résumé Suggestion: {f['label']} 📄",
+                                title=f"Resume Suggestion: {f['label']} 📄",
                                 message=f.get("detail") or "Consider improving this section of your resume.",
                                 type="resume_suggestions",
                                 link="/dashboard",
@@ -2620,7 +2621,7 @@ def analyze_resume_text(text: str, uid: str) -> dict:
     # 6. Target-role alignment
     roles = _get_target_roles(uid)
     if not roles:
-        _add("Target-role match", False, "Add target roles to check résumé alignment")
+        _add("Target-role match", False, "Add target roles to check resume alignment")
     else:
         role_terms = set()
         for r in roles:
@@ -2630,8 +2631,8 @@ def analyze_resume_text(text: str, uid: str) -> dict:
         covered = [t for t in role_terms if t in low]
         role_ok = bool(role_terms) and (len(covered) / len(role_terms) >= 0.5)
         _add("Target-role match", role_ok,
-             f"Résumé reflects your target roles ({len(covered)}/{len(role_terms)} terms)" if role_ok
-             else "Résumé weakly matches your target roles — weave in relevant keywords")
+             f"Resume reflects your target roles ({len(covered)}/{len(role_terms)} terms)" if role_ok
+             else "Resume weakly matches your target roles — weave in relevant keywords")
 
     score = round(sum(1 for f in findings if f["ok"]) / len(findings) * 100)
     grade = "Strong" if score >= 80 else "Good" if score >= 60 else "Needs work"
@@ -2658,9 +2659,9 @@ def resume_analysis(request: Request) -> dict:
         from app.matching.pipeline import _load_resume
         text = _load_resume(user_id=uid)
     except Exception as e:
-        return {"has_resume": True, "error": f"Could not read résumé: {e}"}
+        return {"has_resume": True, "error": f"Could not read resume: {e}"}
     if not text or len(text.strip()) < 30:
-        return {"has_resume": True, "error": "Résumé appears empty or unreadable."}
+        return {"has_resume": True, "error": "Resume appears empty or unreadable."}
 
     return analyze_resume_text(text, uid)
 
@@ -2705,16 +2706,16 @@ def resume_recruiter_read(request: Request) -> dict:
         from app.matching.pipeline import _load_resume
         text = _load_resume(user_id=uid)
     except Exception as e:
-        return {"has_resume": True, "error": f"Could not read résumé: {e}"}
+        return {"has_resume": True, "error": f"Could not read resume: {e}"}
     if not text or len(text.strip()) < 30:
-        return {"has_resume": True, "error": "Résumé appears empty or unreadable."}
+        return {"has_resume": True, "error": "Resume appears empty or unreadable."}
     roles = _get_target_roles(uid or "local") or []
     role_ctx = f"Target roles: {', '.join(roles[:6])}." if roles else "Target roles: not specified."
     prompt = (
         "You are a senior technical recruiter screening hundreds of candidates for a competitive role. "
-        "Give a RAW, realistic assessment of the résumé below — the way you'd actually react in the first "
+        "Give a RAW, realistic assessment of the resume below — the way you'd actually react in the first "
         "10 seconds and then on a closer read. Be specific and honest, not encouraging. Do NOT rewrite the "
-        "résumé.\n\n" + role_ctx + "\n\nRésumé:\n---\n" + text[:14000] + "\n---\n\n"
+        "resume.\n\n" + role_ctx + "\n\nResume:\n---\n" + text[:14000] + "\n---\n\n"
         "Return ONLY a JSON object with these keys:\n"
         '{"first_impression": "2-3 sentences: what you register in the first 10 seconds",\n'
         ' "stands_out": ["3-4 things that land immediately and well"],\n'
@@ -2722,7 +2723,7 @@ def resume_recruiter_read(request: Request) -> dict:
         ' "missing_credibility": ["specific credibility signals that are absent — metrics, scope, seniority markers"],\n'
         ' "competitive_verdict": "1-2 blunt sentences: does this look interview-worthy or just average among hundreds, and why",\n'
         ' "top_fixes": ["3-5 concrete, high-leverage changes, most impactful first"],\n'
-        ' "score_out_of_10": <integer 1-10, how competitive this résumé is for the target roles>}'
+        ' "score_out_of_10": <integer 1-10, how competitive this resume is for the target roles>}'
     )
     data = _resume_llm_json(prompt, max_tokens=1400)
     if not data:
@@ -2747,15 +2748,15 @@ def resume_metric_gaps(request: Request) -> dict:
         from app.matching.pipeline import _load_resume
         text = _load_resume(user_id=uid)
     except Exception as e:
-        return {"has_resume": True, "gaps": [], "error": f"Could not read résumé: {e}"}
+        return {"has_resume": True, "gaps": [], "error": f"Could not read resume: {e}"}
     prompt = (
-        "Below is a résumé. Find up to 6 EXPERIENCE bullets that describe a responsibility or task but "
+        "Below is a resume. Find up to 6 EXPERIENCE bullets that describe a responsibility or task but "
         "have NO measurable outcome (no number, %, scale, time saved, revenue, or performance gain). For each, "
         "write ONE specific follow-up question that would surface a real metric from the candidate. Ask about "
         "concrete facts they'd actually know (users served, latency cut, records processed, team size, time saved). "
         "Do NOT invent numbers. Return ONLY a JSON object: "
         '{"gaps": [{"bullet": "the exact bullet text (trimmed to ~120 chars)", "question": "your follow-up question"}]}'
-        "\n\nRésumé:\n---\n" + text[:14000] + "\n---"
+        "\n\nResume:\n---\n" + text[:14000] + "\n---"
     )
     data = _resume_llm_json(prompt, max_tokens=1200)
     gaps = data.get("gaps") if isinstance(data, dict) else None
@@ -2936,7 +2937,7 @@ def resume_text_view(request: Request) -> dict:
         from app.matching.pipeline import _load_resume
         text = _load_resume(user_id=uid)
     except Exception as e:
-        return {"has_resume": True, "text": "", "error": f"Could not read résumé: {e}"}
+        return {"has_resume": True, "text": "", "error": f"Could not read resume: {e}"}
     return {"has_resume": True, "text": (text or "").strip()}
 
 
@@ -4521,7 +4522,7 @@ def application_details(application_id: int, request: Request) -> dict:
             "This draft did not pass the grounding check."
         resume_text = (f"(Withheld — {_reason}\nRe-run tailoring to produce a "
                        "draft that passes the check.)")
-        cover_text = "(Withheld — generated in the same pass as the rejected résumé.)"
+        cover_text = "(Withheld — generated in the same pass as the rejected resume.)"
     else:
         if application.tailored_resume_path:
             try:
@@ -5254,7 +5255,7 @@ def _base_resume_bytes(uid: str | None):
         p = _PP(matches[0])
         return p.name, _MIMES.get(p.suffix.lower(), "application/octet-stream"), p.read_bytes()
     except Exception as e:
-        log.warning("Base résumé fetch failed for %s: %s", uid, e)
+        log.warning("Base resume fetch failed for %s: %s", uid, e)
         return None
 
 
@@ -5327,7 +5328,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         # No master résumé on file (profile built by hand, or storage is down).
         # Falling through to the tailored path beats failing the fill — the
         # extension treats a missing file as a hard, latched error.
-        log.info("autofill_resume_source=original for %s but no master résumé "
+        log.info("autofill_resume_source=original for %s but no master resume "
                  "on file; falling back to the tailored draft", uid)
 
     def _grounding_blocked_response():
@@ -5340,7 +5341,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         base = _base_resume_bytes(uid)
         if base:
             filename, mime, blob = base
-            log.info("Serving base résumé for app %d (tailored draft failed grounding)",
+            log.info("Serving base resume for app %d (tailored draft failed grounding)",
                      application_id)
             return {
                 "filename": filename, "mime": mime,
@@ -5348,13 +5349,13 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                 "tailored": False,
                 "notice": ((app_notes or "The tailored draft did not pass the "
                             "grounding check.").strip()
-                           + " Attaching your base résumé instead — re-run "
+                           + " Attaching your base resume instead — re-run "
                              "tailoring from the dashboard for a checked draft."),
             }
         raise HTTPException(
             status_code=409,
             detail=(app_notes
-                    or "This résumé did not pass the grounding check and cannot be "
+                    or "This resume did not pass the grounding check and cannot be "
                        "attached. Re-run tailoring for this application."),
         )
 
@@ -5384,7 +5385,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                     "base64": base64.b64encode(blob).decode(),
                     "tailored": False,
                     "notice": ("Daily tailoring limit reached, so this is your base "
-                               "résumé — review it before submitting."),
+                               "resume — review it before submitting."),
                 }
             raise HTTPException(status_code=429, detail=_detail)
         # A generation may already be running for this application (fill-pack
@@ -5426,13 +5427,13 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
                     raise HTTPException(
                         status_code=422,
                         detail=(f"Add your {' and '.join(missing)} in Settings → Profile "
-                                "(or upload a résumé) so SpotApply can build a tailored résumé."),
+                                "(or upload a resume) so SpotApply can build a tailored resume."),
                     )
                 if missing:
                     raise HTTPException(
                         status_code=422,
                         detail=(f"Your profile has no {' and '.join(missing)}. Add it in "
-                                "Settings → Profile so the tailored résumé can be generated."),
+                                "Settings → Profile so the tailored resume can be generated."),
                     )
             except HTTPException:
                 raise
@@ -5446,18 +5447,18 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             base = _base_resume_bytes(uid)
             if base:
                 filename, mime, blob = base
-                log.info("Serving base résumé for app %d (tailoring unavailable)", application_id)
+                log.info("Serving base resume for app %d (tailoring unavailable)", application_id)
                 return {
                     "filename": filename,
                     "mime": mime,
                     "base64": base64.b64encode(blob).decode(),
                     "tailored": False,
                     "notice": ("Tailoring is unavailable right now, so this is your base "
-                               "résumé — review it before submitting."),
+                               "resume — review it before submitting."),
                 }
             raise HTTPException(
                 status_code=422,
-                detail=("No résumé available. Upload one in Settings → Résumé so SpotApply "
+                detail=("No resume available. Upload one in Settings → Resume so SpotApply "
                         "can attach it to applications."),
             )
         finally:
@@ -8819,7 +8820,7 @@ def _notify_tailor_rejected(uid: str, application_id: int, reason: str) -> None:
             session.add(UserNotification(
                 user_id=uid or "local",
                 title="Tailoring blocked — no credit used",
-                message=("We stopped this résumé before sending it to you because "
+                message=("We stopped this resume before sending it to you because "
                          "it did not pass verification. Your daily credit was NOT "
                          "used. " + detail),
                 type="tailor_rejected",
@@ -11204,7 +11205,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                 from app.matching.pipeline import _load_resume
                 master = _load_resume(user_id=uid) or ""
             except Exception as exc:
-                log.debug("export gate: master résumé unavailable for app %s: %s",
+                log.debug("export gate: master resume unavailable for app %s: %s",
                           application_id, exc)
         try:
             return evaluate(grounding_rejected=False, grounding_reason="",
@@ -11239,7 +11240,7 @@ def download_tailored_resume(application_id: int, request: Request):
             raise HTTPException(
                 status_code=409,
                 detail=(application.notes
-                        or "This résumé did not pass the grounding check and cannot be downloaded. "
+                        or "This resume did not pass the grounding check and cannot be downloaded. "
                            "Re-run tailoring for this application."),
             )
         path = application.tailored_resume_path
@@ -11305,7 +11306,7 @@ def application_pre_download_review(application_id: int, request: Request) -> di
     if not master:
         raise HTTPException(
             status_code=409,
-            detail="No master résumé on file — upload one before reviewing a draft.")
+            detail="No master resume on file — upload one before reviewing a draft.")
 
     tailored = ""
     if tailored_path:

@@ -135,7 +135,7 @@ export default function JobDetailScreen() {
 
         {job.similarity !== null ? (
           <Text style={[styles.similarity, { color: colors.textTertiary }]}>
-            Résumé similarity {percent(job.similarity)}
+            Resume similarity {percent(job.similarity)}
           </Text>
         ) : null}
       </Section>

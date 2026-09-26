@@ -237,7 +237,7 @@ class ResumeDoctor:
             if not human_passed:
                 issues.append(
                     f"Tailoring made this read more machine-written than your own "
-                    f"résumé (uniformity {master_penalty} → {fp_penalty}) — vary "
+                    f"resume (uniformity {master_penalty} → {fp_penalty}) — vary "
                     f"bullet length and openings, and bold less"
                 )
         else:

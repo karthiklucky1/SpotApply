@@ -63,7 +63,7 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
 
 // ── Free ghost-check / fit-check on the current tab ──────────────────────────
 // Works with no account: ghost score + freshness. Signed-in users (auth token
-// stashed by the dashboard) also get a keyword fit-check vs their résumé.
+// stashed by the dashboard) also get a keyword fit-check vs their resume.
 function showCheckStatus(msg, type) {
   const el = document.getElementById("check-status");
   el.textContent = msg;

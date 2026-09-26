@@ -118,3 +118,14 @@ def test_a_trailing_skill_phrase_is_trimmed_not_the_whole_sentence():
 
 def test_old_reports_are_cleaned_when_read():
     assert "quality[\"verdict\"] = drop_false_future_claims(quality[\"verdict\"])" in SERVER
+
+
+def test_user_facing_text_says_resume_not_the_accented_form():
+    """Founder's rule (2026-09-26): "resume", never "résumé", in what users see."""
+    for rel in ("app/templates/dashboard.html", "extension/popup.js"):
+        text = (ROOT / rel).read_text()
+        assert "résumé" not in text and "Résumé" not in text, rel
+    from app.tailoring.export_gate import evaluate as _ev
+    reset_state()
+    v = _ev(grounding_rejected=True, grounding_reason="", master="", tailored="x", jd="")
+    assert "résumé" not in v.reason and "resume" in v.reason

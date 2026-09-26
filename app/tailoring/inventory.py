@@ -216,7 +216,7 @@ def humanize_months(months: int) -> str:
     """'2 years 11 months'. Never rounded up — 35 months is not "3 years"."""
     months = max(int(months or 0), 0)
     if months == 0:
-        return "none on the résumé"
+        return "none on the resume"
     years, rem = divmod(months, 12)
     parts = []
     if years:

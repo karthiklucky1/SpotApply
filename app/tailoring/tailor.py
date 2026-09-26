@@ -225,7 +225,7 @@ class Tailor:
             for ev in ranked[:14]:
                 if ev.employment_months:
                     backed.append(f"  - {ev.display}: {humanize_months(ev.employment_months)} "
-                                  f"of paid work, dated on the résumé")
+                                  f"of paid work, dated on the resume")
                 elif ev.paid_work:
                     # Mentioned inside a role, duration never stated. The role's
                     # length is NOT the skill's (audit 2026-09-25: one month of
@@ -248,7 +248,7 @@ class Tailor:
             if backed or unbacked or acronym_lines:
                 evidence_block = (
                     "\n\nVERIFIED EVIDENCE — what this candidate can actually stand "
-                    f"behind. Total paid employment on the master résumé: "
+                    f"behind. Total paid employment on the master resume: "
                     f"{humanize_months(inv.employment_months)}"
                     + (f"; internships {humanize_months(inv.internship_months)}, counted "
                        f"SEPARATELY" if inv.internship_months else "") + "."
@@ -261,7 +261,7 @@ class Tailor:
                     evidence_block += (
                         "\n\nDEMONSTRATED BUT NOT EMPLOYMENT — a completed project or a "
                         "skills list shows a skill; it is NOT years of professional "
-                        "experience. Keep these where the résumé already puts them "
+                        "experience. Keep these where the resume already puts them "
                         "(projects stay in the projects section) and never reword them "
                         "into a job:\n" + "\n".join(unbacked))
                 if acronym_lines:
@@ -274,7 +274,7 @@ class Tailor:
                         "\n\nSTATED EXPERIENCE REQUIREMENTS, as the posting words them: "
                         + "; ".join(r.describe() for r in reqs[:6])
                         + ". Do NOT restate, inflate or imply a number of years the "
-                          "master résumé does not support, and never present project or "
+                          "master resume does not support, and never present project or "
                           "internship time as professional experience.")
         except Exception as e:
             log.warning("evidence inventory unavailable (continuing without it): %s", e)
@@ -609,7 +609,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         else:
             log.warning(
                 "Tailor app %d: ignoring profile_variant=%s for non-founder user %s — "
-                "tailoring from their own résumé (a variant file is another person's CV).",
+                "tailoring from their own resume (a variant file is another person's CV).",
                 application_id, profile_variant, app_user_id)
     if _variant_path and _variant_path.exists():
         master = _variant_path.read_text(encoding="utf-8")
@@ -652,9 +652,9 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         _skip_bar = float(getattr(settings, "tailor_skip_coverage_pct", 0.0) or 0.0)
         if _skip_bar and master_coverage >= _skip_bar:
             skipped_reason = (
-                f"Your résumé already covers {master_coverage:.0%} of this posting's "
+                f"Your resume already covers {master_coverage:.0%} of this posting's "
                 f"key terms, so it was sent as-is rather than rewritten. Rewriting a "
-                f"résumé that already fits only makes it read machine-written."
+                f"resume that already fits only makes it read machine-written."
             )
             log.info("Tailor app %d: L0 skip — master coverage %.0f%% >= %.0f%%",
                      application_id, master_coverage * 100, _skip_bar * 100)
@@ -750,7 +750,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             fabrications = fabrication_violations(master, resume_md)
             if fabrications:
                 log.warning("Fabrication guard: app %d added %d fact(s) not in the "
-                            "master résumé: %s", application_id, len(fabrications),
+                            "master resume: %s", application_id, len(fabrications),
                             "; ".join(f"{k}: {v}" for k, v in fabrications[:5]))
         except Exception as _fe:
             fabrications = []
@@ -812,7 +812,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             # so a missing/broken ML stack or an unreachable model download lands
             # here), NOT a clean résumé — log it as such and let the honest
             # `grounding_ran=False` state flow through to the report and the UI.
-            log.error("Grounding check DID NOT RUN for app %d — résumé is "
+            log.error("Grounding check DID NOT RUN for app %d — resume is "
                       "unverified: %s", application_id, e)
             grounding_ran = False
 
@@ -851,8 +851,8 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         fabrication_notes = None
         if fabrications:
             fabrication_notes = (
-                "Facts appeared in the tailored résumé that are NOT in the master "
-                "résumé. Remove or correct every one — use only what the master "
+                "Facts appeared in the tailored resume that are NOT in the master "
+                "resume. Remove or correct every one — use only what the master "
                 "actually says:\n"
                 + "\n".join(f"- invented {kind}: {value}" for kind, value in fabrications[:10])
             )
@@ -1012,12 +1012,12 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
 
         _unverified_note = (
             "⚠ Grounding could not be verified — the anti-hallucination check did "
-            "not run for this résumé (see server logs). Read every bullet against "
-            "your master résumé before you submit."
+            "not run for this resume (see server logs). Read every bullet against "
+            "your master resume before you submit."
         )
         _style_note = (
             "⚠ This draft still reads machine-written (uniform bullet lengths and "
-            "openings). Every fact in it is verified against your master résumé — "
+            "openings). Every fact in it is verified against your master resume — "
             "but vary a couple of bullets in your own words before you submit."
         )
         if fabrications:
@@ -1027,10 +1027,10 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             # somewhere they did not.
             app.status = ApplicationStatus.ERROR
             app.notes = (
-                "Blocked: the tailored résumé asserted facts your master résumé "
+                "Blocked: the tailored resume asserted facts your master resume "
                 "does not contain — "
                 + "; ".join(f"{kind} “{value}”" for kind, value in fabrications[:5])
-                + ". Nothing was delivered. Rebuild, or edit your master résumé if "
+                + ". Nothing was delivered. Rebuild, or edit your master resume if "
                 "these are real."
             )
             log.error("Application %d blocked at ERROR: %d fabricated fact(s)",
@@ -1107,7 +1107,7 @@ def reverify_application(application_id: int) -> dict:
     md_path = out_dir / "resume.md"
     if not md_path.exists():
         raise FileNotFoundError(
-            "No tailored résumé markdown on file for this application — "
+            "No tailored resume markdown on file for this application — "
             "re-run tailoring before requesting a re-check."
         )
     resume_md = md_path.read_text(encoding="utf-8")

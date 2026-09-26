@@ -68,7 +68,7 @@ def test_skill_gap_classification(monkeypatch):
     assert "kafka" in vis, f"kafka should be add_visibility, got matched={matched} vis={vis} learn={learn}"
     kafka = next(i for i in out["add_visibility"] if i["skill"] == "kafka")
     assert kafka["evidence"]["repo"] == "event-pipeline"
-    assert "add it to your résumé" in kafka["advice"]
+    assert "add it to your resume" in kafka["advice"]
     assert "aws" in learn
     aws = next(i for i in out["learn"] if i["skill"] == "aws")
     assert "GitHub" in aws["advice"] and "LinkedIn" in aws["advice"]

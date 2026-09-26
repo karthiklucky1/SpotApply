@@ -258,7 +258,7 @@ def prompt_block(offer: Optional[RelocationOffer]) -> str:
         f"  {offer.line}\n"
         "Rules: do NOT change the candidate's current city, state or contact "
         "details anywhere in the document — they still live where the master "
-        "résumé says they live, and this is a separate statement of willingness. "
+        "resume says they live, and this is a separate statement of willingness. "
         "Do not reword the line, do not add a second relocation sentence, and do "
         "not claim any destination other than the one above."
     )

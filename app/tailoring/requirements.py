@@ -325,17 +325,17 @@ class RequirementAssessment:
         """
         req = self.requirement.describe()
         held = humanize_months(self.held_months)
-        approx = " (approximate — the résumé dates some roles by year only)" \
+        approx = " (approximate — the resume dates some roles by year only)" \
             if self.approximate else ""
         note = f" {self.note}." if self.note else ""
         if self.status == SUPPORTED:
-            return f"{req}: résumé shows {held}{approx}.{note}"
+            return f"{req}: resume shows {held}{approx}.{note}"
         if self.status == SHORT:
-            return (f"{req}: résumé shows {held}{approx} — short of what the "
+            return (f"{req}: resume shows {held}{approx} — short of what the "
                     f"posting asks for.{note}")
         if self.status in (PROJECT_ONLY, LISTED_ONLY, UNDATED):
             return f"{req}: {self.note}."
-        return f"{req}: nothing on the résumé evidences this."
+        return f"{req}: nothing on the resume evidences this."
 
 
 def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
@@ -364,7 +364,7 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
                               for i in ev.engagements
                               if inv.engagements[i].kind == INTERNSHIP
                               and inv.engagements[i].start and inv.engagements[i].end)
-        where = (f"used during an internship, which this résumé counts separately "
+        where = (f"used during an internship, which this resume counts separately "
                  f"from professional experience")
         return _duration_verdict(req, ev.internship_dated_months, upper, backing, where,
                                  inv.approximate)
@@ -372,7 +372,7 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
     if ev is not None and ev.listed_only:
         return RequirementAssessment(
             req, LISTED_ONLY, 0,
-            note=("in your skills list, but no role or project on the résumé "
+            note=("in your skills list, but no role or project on the resume "
                   "describes using it"),
             approximate=inv.approximate)
 
@@ -392,7 +392,7 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
     note = ""
     if status == SHORT and inv.internship_months and ev is None:
         note = (f"{humanize_months(inv.internship_months)} of internship experience "
-                f"is on the résumé and is counted separately")
+                f"is on the resume and is counted separately")
     return RequirementAssessment(req, status, held, backing=backing, note=note,
                                  approximate=inv.approximate)
 
@@ -414,12 +414,12 @@ def _duration_verdict(req: ExperienceRequirement, dated: int, upper: int,
             note=(lead + "that is the length of the roles that mention it — an upper "
                   "bound, not a measured time with the skill"),
             approximate=approximate)
-    roles = ", ".join(backing[:2]) or "a role on the résumé"
+    roles = ", ".join(backing[:2]) or "a role on the resume"
     dated_bit = (f" It dates {humanize_months(dated)} of it." if dated else "")
     return RequirementAssessment(
         req, UNDATED, dated, backing=backing,
         note=(f"{lead}used at {roles} ({humanize_months(upper)} in total), but the "
-              f"résumé does not say for how long you used it.{dated_bit} Confirm the "
+              f"resume does not say for how long you used it.{dated_bit} Confirm the "
               f"time yourself before claiming it — mentioning a skill in a role is "
               f"not years of that skill"),
         approximate=approximate)
@@ -456,11 +456,11 @@ class PreDownloadReview:
         }
 
     def as_text(self) -> str:
-        blocks = [f"Experience on the résumé: {self.employment_summary}"]
-        for title, items in (("Requirements this résumé supports", self.supported),
+        blocks = [f"Experience on the resume: {self.employment_summary}"]
+        for title, items in (("Requirements this resume supports", self.supported),
                              ("Genuine gaps", self.gaps),
                              ("Open questions — only you can answer these", self.questions),
-                             ("Improvement plan (not on the résumé)", self.improvement_plan),
+                             ("Improvement plan (not on the resume)", self.improvement_plan),
                              ("Unverified claims found in the draft", self.unconfirmed_claims)):
             if items:
                 blocks.append(title + ":\n" + "\n".join(f"  - {i}" for i in items))
@@ -617,18 +617,18 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
         shortfall = req.months_min - a.held_months
         if a.status == SHORT and 0 < shortfall <= 12:
             questions.append(
-                f"The posting asks for {req.wording}; the résumé shows "
+                f"The posting asks for {req.wording}; the resume shows "
                 f"{humanize_months(a.held_months)}. Whether that gap matters here "
                 f"is the employer's call — decide if you want to apply.")
         elif a.status == PROJECT_ONLY:
             questions.append(
                 f"{req.skill or req.wording} appears only outside paid employment. "
-                f"If you used it in a role the résumé does not mention, add it; "
+                f"If you used it in a role the resume does not mention, add it; "
                 f"otherwise leave it as project evidence and say so if asked.")
         elif a.status == LISTED_ONLY:
             questions.append(
                 f"{req.skill or req.wording} is in your skills list but nothing on "
-                f"the résumé describes using it. Add where you used it, or remove "
+                f"the resume describes using it. Add where you used it, or remove "
                 f"it — a recruiter will ask.")
 
     # Skills the posting asks for that the résumé evidences nowhere at all. Kept
@@ -645,13 +645,13 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
             continue          # present in the document, just not as an attributed skill
         missing_entirely.append(phrase)
     for phrase in missing_entirely:
-        gaps.append(f"{phrase}: not present anywhere on the résumé.")
+        gaps.append(f"{phrase}: not present anywhere on the resume.")
         if phrase not in unevidenced:
             unevidenced.append(phrase)
 
     if inv.approximate:
         questions.append(
-            "Some roles on the résumé are dated by year only, so the totals above "
+            "Some roles on the resume are dated by year only, so the totals above "
             "are approximate. Adding months would make them exact.")
     if inv.internship_months:
         questions.append(
@@ -668,11 +668,11 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
     # skill is not an employer, a date or a number.
     to_check = list(suggested_projects or ()) or unevidenced[:6]
     if suggested_projects:
-        plan = [f"{p} — suggested, not on the résumé until you confirm you have done it"
+        plan = [f"{p} — suggested, not on the resume until you confirm you have done it"
                 for p in suggested_projects]
     else:
-        plan = [f"{p} — no evidence on your résumé. Doing something real with it and "
-                f"adding that is the fix; it does not belong on the résumé until then"
+        plan = [f"{p} — no evidence on your resume. Doing something real with it and "
+                f"adding that is the fix; it does not belong on the resume until then"
                 for p in to_check]
     leaked = unconfirmed_project_claims(tailored_md, to_check)
 

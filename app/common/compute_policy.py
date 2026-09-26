@@ -118,7 +118,7 @@ def search_state(profile, *, now: Optional[datetime] = None,
         return SearchState(PAUSED, _naive(profile.search_paused_at),
                            "You paused your search" + (f" ({why})" if why else ""))
     if has_resume is False:
-        return SearchState(SETUP, None, "Upload a résumé to start your search")
+        return SearchState(SETUP, None, "Upload a resume to start your search")
     last = _naive(getattr(profile, "last_meaningful_activity_at", None))
     if last is not None and now - last < idle_after():
         return SearchState(ACTIVE, last, "Your search is running")

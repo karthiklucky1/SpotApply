@@ -1446,7 +1446,7 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
             try:
                 resume = _load_resume(user_id=uid_arg)
             except Exception as e:
-                log.debug("scoring: no résumé for %s (%s) — skipping", uid, e)
+                log.debug("scoring: no resume for %s (%s) — skipping", uid, e)
                 ctx_cache[uid] = None
                 return None
             profile = None

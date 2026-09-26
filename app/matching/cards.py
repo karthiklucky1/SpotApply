@@ -380,7 +380,7 @@ def get_or_mint_job_card(job, allow_mint: bool = True) -> Optional[dict]:
 
 # ── UserCard ──────────────────────────────────────────────────────────────────
 
-_USER_CARD_SYSTEM = """You turn ONE candidate (résumé + profile facts) into a
+_USER_CARD_SYSTEM = """You turn ONE candidate (resume + profile facts) into a
 machine-readable UserCard. Judge only from the material given. Return a single
 JSON object, no prose, exactly this shape:
 {
@@ -409,17 +409,17 @@ Evidence rubric (Layer 3 — depth, not presence), for BOTH lists:
 
 "evidence" is the important list: 10-20 claims that a job requirement could be
 matched AGAINST. Write each one the way a posting words a requirement — a verb,
-the thing done, the technology, the scale where the résumé states it:
+the thing done, the technology, the scale where the resume states it:
   GOOD: "built and deployed FastAPI backends on AWS ECS serving production traffic"
   GOOD: "managed Kubernetes workloads and CI/CD pipelines on GCP"
   GOOD: "translated requirements across product, compliance and business teams"
   BAD:  "python"          <- that is a skill, it belongs in "skills"
   BAD:  "strong engineer" <- no capability, nothing to match against
 Cover NON-technical capabilities too (collaboration, mentoring, ownership,
-stakeholder communication, on-call) whenever the résumé shows them: those are
+stakeholder communication, on-call) whenever the resume shows them: those are
 real requirements in postings and a skills list can never carry them.
 Every claim must be supported by the material — do not invent scale, seniority
-or technologies the résumé does not state.
+or technologies the resume does not state.
 
 effective_level weighs impact + scale + ownership, not just years — a 2-year
 engineer who built and owned a system serving real users can be "mid"; never
@@ -436,7 +436,7 @@ def user_card_material(profile, resume_text: str) -> str:
             f"Current title: {g('current_title')}\n"
             f"Stated years of experience: {g('years_experience', 0)}\n"
             f"Stated key skills: {g('key_skills')}\n\n"
-            f"Résumé:\n{(resume_text or '')[:12000]}")
+            f"Resume:\n{(resume_text or '')[:12000]}")
 
 
 def profile_facts(profile) -> dict:

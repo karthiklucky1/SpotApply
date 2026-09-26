@@ -184,7 +184,7 @@ export default function ProfileScreen() {
         </Section>
       ) : null}
 
-      <Section title="Résumé">
+      <Section title="Resume">
         <View style={styles.resumeRow}>
           <Ionicons
             name={hasResume ? "checkmark-circle" : "alert-circle-outline"}
@@ -192,7 +192,7 @@ export default function ProfileScreen() {
             color={hasResume ? colors.accent : colors.warning}
           />
           <Text style={[styles.resumeText, { color: colors.text }]}>
-            {hasResume ? "Résumé on file — matching is live" : "No résumé yet — matching is paused"}
+            {hasResume ? "Resume on file — matching is live" : "No resume yet — matching is paused"}
           </Text>
         </View>
         <Pressable
