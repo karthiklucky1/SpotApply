@@ -281,6 +281,32 @@ class PrivateCacheMiddleware(BaseHTTPMiddleware):
 app.add_middleware(PrivateCacheMiddleware)
 
 
+class JourneyMiddleware(BaseHTTPMiddleware):
+    """Record a journey milestone (app/analytics/journey.py) for a SUCCESSFUL
+    request to an action route. Polls and page views match nothing; the user
+    is resolved only for the handful of routes that do."""
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        try:
+            if 200 <= response.status_code < 300:
+                from app.analytics.journey import milestone_for, record
+                name = milestone_for(request.method, request.url.path)
+                if name:
+                    uid = _get_user_id(request)
+                    if uid:
+                        outcome = (request.query_params.get("outcome") or "").lower() or None \
+                            if name == "outcome_recorded" else None
+                        import anyio
+                        await anyio.to_thread.run_sync(
+                            lambda: record(uid if uid != "local" else None, name, outcome=outcome))
+        except Exception as e:                    # a metric never fails a request
+            log.debug("journey middleware: %s", e)
+        return response
+
+
+app.add_middleware(JourneyMiddleware)
+
+
 # ── Auth helpers ─────────────────────────────────────────────────────────────
 
 def _get_user_id(request: Request) -> str | None:
@@ -405,6 +431,9 @@ def _touch_last_active(uid: str, meaningful: bool = False) -> None:
         if meaningful:
             from app.common.compute_policy import forget
             forget(uid)
+            from app.analytics.journey import record as _journey
+            _journey(uid, "signup")          # once per user, ever
+            _journey(uid, "active_day")      # once per user per day
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
 
@@ -4292,14 +4321,30 @@ def dashboard(request: Request, all_submitted: bool = False):
      )
 
 
+_PIPELINE_LIVE_TTL_SECONDS = 10
+
+
 @app.get("/api/pipeline/live")
 def pipeline_live(request: Request) -> dict:
     """Lightweight JSON snapshot of the pipeline for live (poll-driven) updates —
-    lets the dashboard surface freshly-ranked jobs without a full page reload."""
+    lets the dashboard surface freshly-ranked jobs without a full page reload.
+
+    Cached per user for 10 s: two open tabs, or a tab regaining focus right
+    after its timer fired, share one computation instead of each paying for it
+    (audit 2026-09-25, finding 8). A degraded (timed-out) answer is not cached."""
     from app.config import settings
     uid = _get_user_id(request)
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.common import ttl_cache as _ttl_live
+    return _ttl_live.get_or_compute(
+        f"pipeline_live:{uid or 'local'}", _PIPELINE_LIVE_TTL_SECONDS,
+        lambda: _pipeline_live_uncached(uid),
+        cache_if=lambda v: not v.get("degraded"))
+
+
+def _pipeline_live_uncached(uid) -> dict:
+    from app.config import settings
     _uid_filter = uid and uid != "local"
 
     # DERIVED from the SSR board's status list, not restated — a disagreement
@@ -4364,6 +4409,12 @@ def pipeline_live(request: Request) -> dict:
             q = q.where(_live_fresh)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
+        # Only the statuses this payload counts or lists. The production user
+        # had ~2,700 SKIPPED applications that were loaded, joined and sorted on
+        # every poll only to be discarded in Python.
+        q = q.where(Application.status.in_(sorted(
+            _SHORTLIST | _INPROGRESS | _SUBMITTED | {ApplicationStatus.REJECTED},
+            key=lambda x: x.value)))
         for (app_id, st, apply_track, apply_url,
              j_title, j_company, j_location, j_remote,
              j_rerank, j_url) in reads.get([], lambda: list(session.exec(q).all())):
@@ -4390,11 +4441,12 @@ def pipeline_live(request: Request) -> dict:
     try:
         from app.db.models import DiscoveryRun
         with get_session() as session:
-            rq = select(DiscoveryRun).order_by(DiscoveryRun.id.desc())
+            rq = select(DiscoveryRun.status).order_by(DiscoveryRun.id.desc())
             if _uid_filter:
                 rq = rq.where(DiscoveryRun.user_id == uid)
-            last = session.exec(rq).first()
-            if last and (last.status or "") in ("discovering", "ranking", "running", "pending"):
+            last = session.exec(rq.limit(1)).first()
+            last_status = last[0] if isinstance(last, tuple) else last
+            if (last_status or "") in ("discovering", "ranking", "running", "pending"):
                 running = True
     except Exception:
         running = False
@@ -7724,6 +7776,12 @@ def admin_contact_research(request: Request) -> dict:
     }
     snap["counters_reset_on_deploy"] = True
     snap["feature_status"] = "on_hold"
+    # The same observations, persisted — these survive deploys.
+    try:
+        from app.analytics.research_log import persisted_summary
+        snap["persisted_30d"] = persisted_summary(30)
+    except Exception as e:
+        snap["persisted_30d"] = {"error": type(e).__name__}
     return snap
 
 
@@ -7827,6 +7885,33 @@ def admin_settings(request: Request) -> dict:
                                     if _grandfather_cutoff() else None),
         "admin_emails_configured": len(settings.admin_emails_list),
     }
+    return out
+
+
+@app.get("/api/admin/journey")
+def admin_journey(request: Request, days: int = 30) -> dict:
+    """The user journey from action routes only (app/analytics/journey.py):
+    distinct people per milestone, day-1/3/7 returns, and — when the spend
+    ledger has rows — metered model spend per activated user. Aggregates only;
+    no user id, résumé or authorization data."""
+    _require_admin_user(request)
+    from app.analytics.journey import summary
+    days = max(1, min(int(days or 30), 90))
+    out = summary(days)
+    try:
+        from datetime import datetime as _dtj, timedelta as _tdj
+        from app.db.models import LlmSpend
+        since = (_dtj.utcnow() - _tdj(days=days)).date()
+        with get_session() as session:
+            spend = session.exec(select(func.coalesce(func.sum(LlmSpend.est_cost_usd), 0.0))
+                                 .where(LlmSpend.day >= since)).one()
+        spend = float(spend[0] if isinstance(spend, tuple) else spend or 0.0)
+        activated = out["distinct_users"].get("first_shortlist", 0)
+        out["spend"] = {"metered_usd": round(spend, 4), "activated_users": activated,
+                        "usd_per_activated_user": round(spend / activated, 4) if activated else None,
+                        "note": "Ledger estimate from metered token usage, not a provider invoice."}
+    except Exception as e:
+        out["spend"] = {"error": type(e).__name__}
     return out
 
 
@@ -9232,6 +9317,8 @@ def _record_profile_completed_once(uid: str | None) -> bool:
         FunnelTracker.record(None, "profile_completed", True, reason=who,
                              metadata={"user_id": who, "has_skills": has_skills,
                                        "has_resume": bool(has_resume)})
+        from app.analytics.journey import record as _journey
+        _journey(user_id_arg, "profile_ready")
         return True
     except Exception as e:                                   # never fail the request
         log.debug("profile_completed event skipped for %s: %s", uid, e)

@@ -184,6 +184,9 @@ def _compute_policy_off_unless_asked(request, monkeypatch):
     # are about the plan logic underneath it, so the suite runs with it off;
     # tests of the flag itself (test_temporary_pro.py) switch it on explicitly.
     monkeypatch.setattr(settings, "temporary_pro_for_all", False, raising=False)
+    # Contact-research observations are written on a daemon thread in
+    # production; inline here so no write lands in the NEXT test's database.
+    monkeypatch.setattr(settings, "research_log_sync", True, raising=False)
     if request.node.get_closest_marker("compute_policy") is None:
         monkeypatch.setattr(settings, "compute_policy_enforced", False, raising=False)
     yield

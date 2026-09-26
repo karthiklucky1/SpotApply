@@ -291,6 +291,12 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     def _done(p: Placement) -> Placement:
         if p.eligibility is None:
             p.eligibility = _elig_meta
+        if p.created:
+            try:                        # once per user, ever (app/analytics/journey.py)
+                from app.analytics.journey import record as _journey
+                _journey(uid_arg, "first_shortlist", session=session)
+            except Exception:
+                pass
         return _record(session, job, score, user_id, p)
 
     # ── Room on the slate: the ordinary case ────────────────────────────────
