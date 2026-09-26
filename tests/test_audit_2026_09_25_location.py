@@ -349,3 +349,15 @@ def test_an_opened_aggregator_copy_is_kept(clean):
         s.add(row)
         s.commit()
     assert _place(own).outcome == "duplicate"
+
+
+def test_a_country_only_posting_with_no_work_mode_is_held_for_a_non_relocator():
+    """Match review 2026-09-26: 'United States' + no work mode read as eligible
+    for a Cincinnati user who will not move."""
+    g = Geography(status="resolved", countries=["united states"], sites=["United States"])
+    d = decide(g, GeoPrefs(country="united states", home_location="Cincinnati, OH"))
+    assert d.status == UNKNOWN and d.code == "work_mode_unresolved"
+    # …but not for someone who will move anywhere, nor one with no home on file.
+    assert decide(g, GeoPrefs(country="united states", home_location="Cincinnati, OH",
+                              open_to_relocation=True)).status == ELIGIBLE
+    assert decide(g, GeoPrefs(country="united states")).status == ELIGIBLE
