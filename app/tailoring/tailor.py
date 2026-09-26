@@ -496,6 +496,42 @@ def _set_ats_safe_styles(doc) -> None:
         pass
 
 
+_PHONE_RE = re.compile(r"(?<![\d+])\(?(\d{3})\)?[\s.\-]*(\d{3})\s*[\-.]?\s*(\d{4})(?!\d)")
+
+
+def polish_contact_line(md: str, profile_location: str = "") -> str:
+    """Tidy the header a recruiter and an ATS read first. Changes FORMAT only,
+    never facts:
+
+      * a US phone number is written one way — "(513) 400 -3765" had a stray
+        space that some parsers split into two tokens;
+      * the city the user put in their profile is added to the contact line
+        when the header names no location at all (ATS and recruiters filter
+        by it; many resumes only mention it under Education).
+    """
+    lines = (md or "").split("\n")
+    try:
+        end = next(i for i, ln in enumerate(lines) if ln.strip().startswith("## "))
+    except StopIteration:
+        end = min(len(lines), 4)
+    contact_idx = None
+    for i in range(end):
+        ln = lines[i]
+        if ln.strip().startswith("#") or not ln.strip():
+            continue
+        if "@" in ln or "|" in ln or _PHONE_RE.search(ln):
+            lines[i] = _PHONE_RE.sub(lambda m: f"({m.group(1)}) {m.group(2)}-{m.group(3)}", ln)
+            if contact_idx is None:
+                contact_idx = i
+    loc = (profile_location or "").strip()
+    if loc and contact_idx is not None:
+        header = " ".join(lines[:end]).lower()
+        city = loc.split(",")[0].strip().lower()
+        if city and city not in header:
+            lines[contact_idx] = f"{loc} | {lines[contact_idx].strip()}"
+    return "\n".join(lines)
+
+
 def _md_to_docx(md_text: str, out_path: Path) -> None:
     """Convert markdown resume to ATS-safe DOCX using standard Word styles.
 
@@ -883,6 +919,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # Prefer the user's saved profile (multi-tenant); fall back to the static
     # QA store identity, then a generic name. Never use another user's name.
     first, last = "", ""
+    profile_location = ""
     if app_user_id:
         from app.db.models import UserProfile
         with get_session() as session:
@@ -892,6 +929,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             if prof:
                 first = (prof.first_name or "").strip()
                 last = (prof.last_name or "").strip()
+                profile_location = (getattr(prof, "location", "") or "").strip()
     if not first and not last:
         identity = qa_resolver.data.get("identity", {})
         first = identity.get("first_name", "")
@@ -912,6 +950,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # from the draft, not left in to get the whole document withheld. The user
     # gets a résumé every time, plus the list of those skills to learn — or to
     # confirm, which adds them to the master for the next rebuild.
+    resume_md = polish_contact_line(resume_md, profile_location)
     removed_claims: list = []
     skills_to_learn: list = []
     try:

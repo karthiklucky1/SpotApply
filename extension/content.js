@@ -297,6 +297,15 @@ function classifyScreeningQuestion(q, pack) {
   const t = String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
   if (!t) return null;
 
+  // Relocation — "are you willing to relocate?" is answered YES only when the
+  // user ticked "Open to relocation" (their own statement). Otherwise left for
+  // them. Never "Do you need relocation assistance/package?" — that asks for a
+  // benefit, not willingness, and Yes there is a request we must not make.
+  if (/relocat|willing to move/.test(t)) {
+    if (/assist|package|benefit|support|stipend|reimburs|expense|cover/.test(t)) return null;
+    return pack.open_to_relocation === true ? true : null;
+  }
+
   // Never auto-answer these — a wrong answer here is damaging, and the profile
   // does not actually establish any of them.
   const NEVER = /citizen|green ?card|permanent resident|felony|convicted|criminal|background check|drug (test|screen)|w-?2\b|c2c|corp.to.corp|1099|relocat|willing to move|salary|compensation|notice period/;

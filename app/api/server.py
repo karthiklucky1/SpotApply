@@ -2444,11 +2444,14 @@ Return only valid JSON, no markdown, no explanation."""
     seeded_roles: list[str] = []
     _roles_before: list[str] = []
     _roles_after: list[str] = []
+    _roles_pinned: list[str] = []     # roles the user set by hand — never re-derived
     with get_session() as session:
         q = select(UserProfile)
         if user_id_arg:
             q = q.where(UserProfile.user_id == user_id_arg)
         p = session.exec(q).first()
+        if p and (p.target_roles or "").strip() and not p.target_roles_auto:
+            _roles_pinned = [r.strip() for r in p.target_roles.split(",") if r.strip()]
         if p and (not (p.target_roles or "").strip() or p.target_roles_auto):
             seen_r: set[str] = set()
             def _add_role(r: str):
@@ -2558,7 +2561,12 @@ Return only valid JSON, no markdown, no explanation."""
 
     return {"success": True, "method": method,
             "extracted": {k: extracted.get(k) for k in field_map},
-            "seeded_roles": seeded_roles}
+            "seeded_roles": seeded_roles,
+            # What the dashboard needs to remind the user after a new resume:
+            # did the target roles move, or are they pinned by hand and maybe stale?
+            "roles_before": _roles_before,
+            "roles_after": _roles_after,
+            "roles_pinned": _roles_pinned}
 
 
 @app.get("/api/resume/status")
@@ -9239,6 +9247,14 @@ def get_profile(request: Request) -> dict:
         "remote_ok": getattr(profile, "remote_ok", True),
         "autofill_resume_source": (
             getattr(profile, "autofill_resume_source", "") or "tailored"),
+        # Were missing: the form ticks only the fields returned here, so "Open
+        # to relocation" always rendered unticked and the next save of ANY
+        # profile field quietly switched it off.
+        "availability": getattr(profile, "availability", "") or "",
+        "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
+        "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
+        "relocation_targets": getattr(profile, "relocation_targets", "") or "",
+        "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
     }
 
 
