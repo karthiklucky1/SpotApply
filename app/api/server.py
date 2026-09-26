@@ -9521,11 +9521,11 @@ def _set_search_pause(uid: str, paused: bool, reason: str = "") -> None:
 
 
 @app.post("/api/search/pause")
-def pause_search(request: Request, body: SearchPauseRequest) -> dict:
+def pause_search(request: Request, body: Optional[SearchPauseRequest] = None) -> dict:
     """The user pauses their own search: no automatic personalised work until
     they resume. Their board, résumé and history are kept."""
     uid = _require_user(request)
-    _set_search_pause(uid, True, body.reason or "")
+    _set_search_pause(uid, True, (body.reason if body else "") or "")
     return _search_state_payload(uid)
 
 

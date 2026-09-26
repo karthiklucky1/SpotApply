@@ -290,7 +290,7 @@
                 <div>
                     <div style="display:flex;align-items:center;justify-content:space-between;">
                         <label style="margin-bottom:0;">Password</label>
-                        <button type="button" onclick="handleForgot()" style="background:none;border:none;cursor:pointer;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;color:var(--sage-700);padding:0;">Forgot?</button>
+                        <button type="button" id="btn-forgot" onclick="handleForgot()" style="background:none;border:none;cursor:pointer;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;color:var(--sage-700);padding:0;">Forgot?</button>
                     </div>
                     <input type="password" id="signin-password" required placeholder="••••••••" class="hp-input" style="margin-top:6px;" />
                 </div>
@@ -534,14 +534,32 @@
             emailEl.focus()
             return
         }
+        const btn = document.getElementById('btn-forgot')
+        if (btn) { btn.disabled = true; btn.textContent = 'Sending…' }
+        // supabase-js v2 does NOT throw on failure — it RETURNS { error }. The
+        // old code only caught throws, so a refused send (rate limit, email
+        // provider not configured) still told the user a link was on its way.
+        // Showing a send failure reveals nothing about the account: Supabase
+        // answers an unknown address exactly like a known one.
+        let error = null
         try {
-            await sb.auth.resetPasswordForEmail(email, {
+            const res = await sb.auth.resetPasswordForEmail(email, {
                 redirectTo: window.location.origin + '/auth/reset'
             })
-        } catch (e) { /* swallow — never reveal whether the email exists */ }
-        // Always show the same generic message regardless of whether the
-        // account exists (prevents account-enumeration via the reset form).
-        showMsg('If an account exists for that email, a password reset link is on its way.', 'success')
+            error = res && res.error
+        } catch (e) { error = e }
+        if (btn) { btn.disabled = false; btn.textContent = 'Forgot?' }
+        if (!error) {
+            showMsg('If an account exists for that email, a password reset link is on its way. Check your spam folder too.', 'success')
+            return
+        }
+        const status = error.status || 0
+        const m = (error.message || '').toLowerCase()
+        if (status === 429 || m.includes('rate') || m.includes('seconds')) {
+            showMsg('Too many reset requests. Please wait a few minutes and try again.')
+        } else {
+            showMsg("We couldn't send the reset email right now. Please try again later, or continue with Google if that is how you signed up.")
+        }
     }
 
     window.handleGoogle = async () => {

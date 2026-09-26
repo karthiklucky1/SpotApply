@@ -204,3 +204,14 @@ def test_pause_and_resume_routes():
     r = c.post("/api/search/resume").json()
     assert r["state"] in ("active", "paid") and r["automatic_scoring"] is True
     assert r["idle_after_hours"] == 24 and r["pause_after_hours"] == 72
+
+
+def test_pause_accepts_an_empty_request():
+    """The body is optional: a client that POSTs nothing (mobile, curl, an
+    older dashboard) must pause, not get a 422 while the notice says running."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    c = TestClient(app)
+    r = c.post("/api/search/pause")
+    assert r.status_code == 200 and r.json()["state"] == "paused"
+    assert c.post("/api/search/resume").json()["state"] in ("active", "paid")
