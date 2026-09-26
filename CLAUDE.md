@@ -41,9 +41,9 @@ APScheduler · Jinja + Tailwind + Chart.js (server-rendered).
 After editing classes in either run `npm run build` — never hand-edit the output
 (the dashboard's hand-compiled file went stale and silently dropped JS-built
 badge classes). tests/test_landing_assets.py guards both;
-`.claude/hooks/build-tailwind.sh` rebuilds the affected one automatically. All
-OTHER authed/public templates (auth, pricing, extension, messages, privacy,
-terms, recruiter, public_profile) stay on the Tailwind Play CDN.
+`.claude/hooks/build-tailwind.sh` rebuilds the affected one automatically.
+pricing/privacy/terms/auth share `tailwind-public.css` (`build:css:public`,
+2026-09-26); extension, messages, recruiter, public_profile stay on the Play CDN.
 
 ## File structure
 ```
@@ -614,6 +614,17 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `open_to_relocation` is off (same state is not enough), and a state
   restriction is DECIDABLE when the profile names a state — held only when it
   names none.
+- **Background compute ≠ feature access** (`app/common/compute_policy.py`,
+  2026-09-26): the plan says what a user may DO; `search_state` says what we do
+  FOR them unasked — setup/active/idle/dormant/paused/paid from
+  `last_meaningful_activity_at` (polls never stamp it; NULL = dormant, not
+  grandfathered). Paid AI only while active or paid, checked when queued AND
+  before each provider call (`reranker._paid_call_allowed`), plus atomic daily
+  per-user/platform reservations. Kill switch `COMPUTE_POLICY_ENFORCED=0`.
+  Temporary Pro now defaults ON — it grants limits, never compute. Journey
+  metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
+  Dedup: same company + normalised title within 40 d is one role (`slate.py`).
+  Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.
 - **Audit 2026-09-25** (`docs/AUDIT_2026_09_25.md` — fixed vs still open):
   `slate.place()` RE-DECIDES eligibility at delivery (`geo_verify.current_decision`,
   versions in the placement event) — never trust the stamp alone; relocation
