@@ -4557,7 +4557,10 @@ def application_details(application_id: int, request: Request) -> dict:
     # ATS keyword analysis for the Tailoring Studio highlighter — deterministic
     # phrase matching, no LLM cost.
     ats = None
-    if resume_text and (job.description or "").strip():
+    # Not for a withheld draft: resume_text is then the "(Withheld — …)"
+    # notice, and scoring THAT told a Python engineer "Not covered: python"
+    # (15% coverage) on 2026-09-26.
+    if resume_text and not _verdict.blocked and (job.description or "").strip():
         try:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
             report = _ats_analyze(job.description, resume_text)
@@ -8616,10 +8619,9 @@ def _check_tailor_limit(uid: str) -> tuple[bool, str, dict]:
         used = row.tailor_count
         session.commit()
     if used >= daily_limit:
-        from app.billing import pro_price_usd
         return False, (
             f"Daily tailoring limit reached ({used}/{daily_limit}). "
-            f"Resets at midnight UTC. Upgrade to Pro (${pro_price_usd()}/mo) for more."
+            f"Resets at midnight UTC.{_limit_upsell(plan, 'for more')}"
         ), {"plan": plan, "used": used, "daily_limit": daily_limit}
     return True, "", {"plan": plan, "used": used, "daily_limit": daily_limit}
 
@@ -8654,6 +8656,17 @@ def _increment_tailor(uid: str):
         session.commit()
 
 
+def _limit_upsell(plan, benefit: str) -> str:
+    """The upgrade sentence for a limit message — empty for a Pro account.
+    With temporary Pro on, every account resolves PRO, and telling someone who
+    already has Pro to "Upgrade to Pro ($100/mo)" is both wrong and a price
+    the checkout route is refusing."""
+    if str(getattr(plan, "value", plan)).lower() == "pro":
+        return " This is the Pro limit."
+    from app.billing import pro_price_usd
+    return f" Upgrade to Pro (${pro_price_usd()}/mo) {benefit}."
+
+
 def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     if uid == "local":
         return True, "", {}
@@ -8673,8 +8686,7 @@ def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     if used >= weekly_limit:
         return False, (
             f"Weekly auto-fill limit reached ({used}/{weekly_limit}). "
-            f"Resets Monday midnight UTC. Upgrade to Pro (${pro_price_usd()}/mo) "
-            f"for unlimited auto-fills."
+            f"Resets Monday midnight UTC.{_limit_upsell(plan, 'for unlimited auto-fills')}"
         ), {"plan": plan, "used": used, "weekly_limit": weekly_limit}
     return True, "", {"plan": plan, "used": used, "weekly_limit": weekly_limit}
 

@@ -174,11 +174,17 @@ def test_the_privacy_date_moved_with_the_revision():
     assert "Last updated: September 2026" in html
 
 
-def test_the_terms_date_is_left_alone():
-    """Phase 9: preserve genuinely historical effective dates. The terms body
-    has not been substantively revised, so its date must not be touched."""
+def test_the_terms_date_moved_only_with_a_real_revision():
+    """Phase 9 kept "June 2025" because the body had not changed. The
+    September 2026 revision added plans/payments (temporary Pro, no
+    auto-enrolment), the inactivity pause of automatic search and the
+    AI-document check — the date may say September 2026 only while those
+    sections exist."""
     html = (ROOT / "app" / "templates" / "terms.html").read_text()
-    assert "Last updated: June 2025" in html
+    assert "Last updated: September 2026" in html
+    for section in ("Plans and payments", "Automatic job search", "AI-generated documents"):
+        assert section in html
+    assert "not enrolled in a paid plan" in html
 
 
 @pytest.mark.parametrize("page", ["landing.html", "pricing.html"])

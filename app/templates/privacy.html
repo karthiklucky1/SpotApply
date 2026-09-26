@@ -88,6 +88,8 @@
                     confirm rather than answering for you. You can clear any of these fields
                     from your profile at any time.</li>
                 <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
+                <li><strong>Activity data:</strong> the time of your last meaningful action in the app (for example uploading a resume, opening or tailoring a job, or pressing Resume). Background polling by an open tab does not count. We use it only to decide whether to keep running your automatic job search: after a period with no activity it pauses, and you can resume it at any time.</li>
+                <li><strong>Product analytics:</strong> whether you reached steps such as signing up, uploading a resume or downloading a document, recorded under a one-way coded identifier instead of your name, email or user ID. We use these counts in aggregate to see where people get stuck. They contain no resume text, job text or work-authorisation data.</li>
                 <li><strong>Email content (only if you turn on Email Sync):</strong> when you enable Email Sync in the browser extension, it reads job-related messages from the webmail page you have open and sends the sender, subject, date and message body to SpotApply. We use them to detect employer replies, rejections and interview invitations, and to add applications you made outside SpotApply. Message bodies we cannot match to a known application are stored with that application record. Email Sync is off unless you enable it, and turning it off stops any further reading.</li>
             </ul>
 
@@ -110,7 +112,8 @@
                 <li><strong>Railway</strong> (US) — hosting for the application itself.</li>
                 <li><strong>Anthropic (Claude)</strong> (US) — the model that scores jobs against your resume and writes your tailored resume and cover letters. It receives your resume text and the job posting. Governed by Anthropic's data processing terms.</li>
                 <li><strong>OpenAI</strong> (US) — the cheap first-pass model that pre-screens jobs before Claude sees them, and a fallback for one fact-checking step. It receives an extract of your resume (about the first 4,000 characters) and the job title, company and description. Governed by OpenAI's API data policy. This runs on essentially every job we score for you, so in practice your resume text reaches both providers.</li>
-                <li><strong>Stripe</strong> (US) — payment processing. Not active yet; when it is, Stripe receives only what is needed to take a payment, and we never see or store your card details.</li>
+                <li><strong>Stripe</strong> (US) — payment processing. Payments are on hold while Pro features are free for everyone; when they are open, Stripe receives only what is needed to take a payment, and we never see or store your card details.</li>
+                <li><strong>Google Workspace</strong> (US) — sends our account emails, such as password-reset and sign-up confirmation messages, and receives mail sent to our @spotapply.ai addresses. It receives your email address and the message we send you.</li>
             </ul>
             <p>None of these providers is permitted to use your data to train their models under the API terms we use. We do not sell or license your data, and we do not share it for advertising.</p>
 

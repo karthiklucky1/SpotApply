@@ -83,3 +83,31 @@ def test_withheld_draft_is_not_labelled_grounded():
 def test_pause_lives_in_settings_and_the_banner_only_shows_when_not_running():
     assert 'id="settings-search-toggle"' in DASH and "toggleSearchFromSettings" in DASH
     assert "if (state.state === 'setup' || running) { b.style.display = 'none'; return; }" in DASH
+
+
+SERVER = (Path(__file__).resolve().parents[1] / "app" / "api" / "server.py").read_text()
+
+
+def test_no_ats_score_is_computed_for_a_withheld_draft():
+    assert "if resume_text and not _verdict.blocked and (job.description" in SERVER
+
+
+def test_pro_accounts_are_not_told_to_upgrade_to_pro():
+    from app.api.server import _limit_upsell
+    from app.db.models import PlanTier
+    assert "Upgrade" not in _limit_upsell(PlanTier.PRO, "for more")
+    assert "Pro limit" in _limit_upsell(PlanTier.PRO, "for more")
+    assert "Upgrade to Pro" in _limit_upsell(PlanTier.FREE, "for more")
+
+
+def test_sidebar_plan_card_follows_the_plan():
+    # `.sb-upgrade{display:flex}` beat Tailwind's `.hidden`, so the card showed
+    # to everyone; and under temporary Pro it must say what they HAVE.
+    assert ".sb-upgrade.hidden { display: none; }" in DASH
+    assert "You're on Pro" in DASH and "_renderPlanCard(d);" in DASH
+    assert 'id="settings-plan-label"' in DASH
+    assert '<span class="ml-auto text-[10px] text-indigo-400 font-bold">Free</span>' not in DASH
+
+
+def test_notifications_pill_has_the_profile_outline():
+    assert 'id="header-notif-btn"' in DASH and "#header-notif-btn {" in DASH
