@@ -84,6 +84,18 @@ FIRST PRINCIPLE — RESTRAINT (this overrides everything below):
 6. SKILLS SECTION:
    - Reorder to put JD-relevant skills first. Do not pad with skills the candidate doesn't have.
 
+7. WORD CHOICE (university career-office guidance, e.g. Harvard's resume guide):
+   - When a bullet leads with a verb, make it precise and specific to what was done:
+     technical — built, designed, engineered, configured, debugged, programmed, migrated, upgraded;
+     analysis — analyzed, assessed, diagnosed, measured, investigated, validated;
+     leadership — coordinated, directed, mentored, oversaw, prioritized;
+     improvement — consolidated, standardized, simplified, restructured, tuned;
+     communication — authored, documented, presented, negotiated.
+     Rule 2 still wins: these make the bullets that DO lead with a verb precise; they do not license leading every bullet with one.
+   - Replace weak duty phrasing ("responsible for", "duties included", "tasked with", "worked on", "helped with", "assisted in") with what the candidate actually did.
+   - No first-person pronouns ("I", "my", "me"). Past tense for past roles, present tense for the current one — consistently.
+   - Specific beats general: name the system, scale or outcome the master resume states. Quantify only with numbers the master resume already has.
+
 GOAL: the same person, edited for this role — never a new person generated for it."""
 
 COVER_SYSTEM = """You write tight cover letters (180-220 words) using a Problem→Solution→Proof structure. They must NOT sound like generic cover letters.

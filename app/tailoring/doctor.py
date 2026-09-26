@@ -23,6 +23,8 @@ BANNED_WORDS = [
     "passionate about", "results-driven", "detail-oriented", "self-starter",
     "go-getter", "thought leader", "proactive", "dynamic", "innovative solution",
     "best-of-breed", "value-add", "deep dive", "move the needle",
+    # Duty phrasing career offices tell you to replace with what you did.
+    "responsible for", "duties included", "tasked with",
 ]
 
 # ── Strong action verbs (first word of a bullet should be one of these) ───────
@@ -33,6 +35,12 @@ ACTION_VERBS = {
     "migrated","refactored","integrated","launched","shipped","streamlined",
     "monitored","instrumented","accelerated","collaborated","partnered",
     "authored","researched","evaluated","benchmarked","maintained","extended",
+    # University career-office verb lists (e.g. Harvard's resume guide).
+    "configured","debugged","programmed","upgraded","analyzed","assessed",
+    "diagnosed","measured","investigated","validated","coordinated","directed",
+    "mentored","oversaw","prioritized","consolidated","standardized","simplified",
+    "restructured","tuned","documented","presented","negotiated","containerized",
+    "tested","resolved","modernized","secured","owned",
 }
 
 # ── Metric patterns (number + unit or % or x multiplier) ──────────────────────

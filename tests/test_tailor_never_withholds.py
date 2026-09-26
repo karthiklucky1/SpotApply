@@ -129,3 +129,17 @@ def test_user_facing_text_says_resume_not_the_accented_form():
     reset_state()
     v = _ev(grounding_rejected=True, grounding_reason="", master="", tailored="x", jd="")
     assert "résumé" not in v.reason and "resume" in v.reason
+
+
+def test_rebuild_uses_an_in_app_dialog_not_a_browser_prompt():
+    assert "window.prompt(" not in DASH.split("async function tailorJob")[1].split("function ")[0]
+    assert "function _askRebuildDirection()" in DASH and "Rebuild this resume" in DASH
+    assert "if (answer === null) return;" in DASH          # Cancel no longer rebuilds
+
+
+def test_career_office_word_choice_is_in_the_prompt_and_checker():
+    from app.tailoring.doctor import ACTION_VERBS, BANNED_WORDS
+    from app.tailoring.tailor import TAILOR_SYSTEM
+    assert "WORD CHOICE" in TAILOR_SYSTEM and "Rule 2 still wins" in TAILOR_SYSTEM
+    assert "responsible for" in BANNED_WORDS
+    assert {"diagnosed", "consolidated", "mentored"} <= ACTION_VERBS

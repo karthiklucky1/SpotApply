@@ -4144,6 +4144,52 @@
                 data.blocked ? 'blocked' : (data.tailored ? 'done' : 'none'));
         }
 
+        // The rebuild dialog (was a browser prompt()). Resolves to the user's
+        // direction ('' = rebuild as-is) or null when they cancel.
+        function _askRebuildDirection() {
+            return new Promise(resolve => {
+                const CHIPS = ['Keep it to one page', 'Make the bullets more concise',
+                    'Emphasize backend & API work', 'Emphasize leadership & ownership',
+                    'Match the job description wording more closely', 'Less formal tone'];
+                const wrap = document.createElement('div');
+                wrap.setAttribute('role', 'dialog');
+                wrap.setAttribute('aria-modal', 'true');
+                wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.55);backdrop-filter:blur(3px)';
+                wrap.innerHTML = `
+                  <div style="width:100%;max-width:520px;background:var(--surface,#fff);color:var(--ink,#0f172a);border-radius:20px;box-shadow:0 24px 60px rgba(2,6,23,.35);padding:24px 24px 20px;font-family:inherit">
+                    <div style="font-size:18px;font-weight:800;margin-bottom:4px">Rebuild this resume</div>
+                    <div style="font-size:12.5px;color:var(--muted,#64748b);line-height:1.5;margin-bottom:14px">Optional — tell us what to change. Your real experience stays the source; nothing is invented.</div>
+                    <div data-chips style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+                      ${CHIPS.map(c => `<button type="button" data-chip="${c}" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:999px;border:1px solid rgba(var(--sage-rgb,0,119,194),.35);background:transparent;color:inherit;cursor:pointer">${c}</button>`).join('')}
+                    </div>
+                    <textarea data-text maxlength="300" rows="3" placeholder="e.g. Emphasize my Kafka and event-driven work" style="width:100%;box-sizing:border-box;border:1.5px solid rgba(var(--sage-rgb,0,119,194),.35);border-radius:12px;padding:10px 12px;font-size:13px;font-family:inherit;resize:vertical;background:transparent;color:inherit;outline:none"></textarea>
+                    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+                      <button type="button" data-cancel style="font-size:13px;font-weight:700;padding:10px 18px;border-radius:12px;border:1px solid rgba(100,116,139,.35);background:transparent;color:inherit;cursor:pointer">Cancel</button>
+                      <button type="button" data-ok style="font-size:13px;font-weight:800;padding:10px 20px;border-radius:12px;border:0;background:linear-gradient(135deg,#0EA5E9,#0077C2);color:#fff;cursor:pointer">Rebuild resume</button>
+                    </div>
+                  </div>`;
+                const ta = wrap.querySelector('[data-text]');
+                const close = (val) => { document.removeEventListener('keydown', onKey); wrap.remove(); resolve(val); };
+                const onKey = (e) => { if (e.key === 'Escape') close(null); };
+                wrap.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => {
+                    const on = b.dataset.on === '1';
+                    b.dataset.on = on ? '' : '1';
+                    b.style.background = on ? 'transparent' : 'rgba(var(--sage-rgb,0,119,194),.12)';
+                    b.style.borderColor = on ? 'rgba(var(--sage-rgb,0,119,194),.35)' : 'var(--sage,#0077C2)';
+                });
+                wrap.querySelector('[data-cancel]').onclick = () => close(null);
+                wrap.addEventListener('click', (e) => { if (e.target === wrap) close(null); });
+                wrap.querySelector('[data-ok]').onclick = () => {
+                    const picked = [...wrap.querySelectorAll('[data-chip]')].filter(b => b.dataset.on === '1').map(b => b.dataset.chip);
+                    const typed = (ta.value || '').trim();
+                    close([...picked, typed].filter(Boolean).join('. ').slice(0, 400));
+                };
+                document.addEventListener('keydown', onKey);
+                document.body.appendChild(wrap);
+                setTimeout(() => ta.focus(), 30);
+            });
+        }
+
         async function tailorJob(appId, btn) {
             // On a re-tailor, let the user steer it in their own words — human
             // authorship that makes the result theirs (honesty guardrails still
@@ -4154,9 +4200,9 @@
             // label to "Tailor Again" would have silently removed the prompt.
             let instruction = '';
             if (btn && btn.dataset && btn.dataset.tailorAgain === '1') {
-                instruction = (window.prompt(
-                    'Any direction for this rewrite? (optional)\n\ne.g. "emphasize my Kubernetes work", "keep it to one page", "make it less formal"',
-                    '') || '').trim();
+                const answer = await _askRebuildDirection();
+                if (answer === null) return;          // Cancel = no rebuild
+                instruction = answer;
             }
             const orig = btn.innerHTML;
             btn.innerHTML = '⏳ Tailoring...';
