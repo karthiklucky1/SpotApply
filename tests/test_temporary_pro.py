@@ -62,10 +62,14 @@ def _row(plan=PlanTier.PRO, **kw) -> UserSubscription:
 
 # ── the switch ───────────────────────────────────────────────────────────────
 
-def test_the_flag_is_off_by_default():
-    """Nothing is granted by merely deploying this."""
+def test_the_flag_is_on_for_the_beta_and_is_one_env_var():
+    """2026-09-26 release: Pro features for everyone during the beta, as the
+    product owner asked. TEMPORARY_PRO_FOR_ALL=0 turns it off with no
+    migration. Feature access is not background compute — that is gated by
+    app/common/compute_policy.py regardless of this flag."""
     from app.config import Settings
-    assert Settings().temporary_pro_for_all is False
+    assert Settings().temporary_pro_for_all is True
+    assert Settings(temporary_pro_for_all=False).temporary_pro_for_all is False
 
 
 def test_the_switch_is_one_function(temp_pro):

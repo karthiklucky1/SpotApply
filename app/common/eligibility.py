@@ -436,9 +436,14 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # a user who never typed one. The narrower ask already exists for the case
     # that justifies it, where the POSTING asserts a residence restriction
     # (`area_restriction_unresolved`, which does prompt for the city).
-    if not geo.work_mode and physical and not will_move:
-        if home_area_matches(physical, prefs.home_location) is False:
-            where = _fmt_places(physical[:2])
+    # A bare country counts as a place HERE (but not for relocation or the
+    # home-area match above): "United States" with no work mode is exactly the
+    # Workday shape this branch exists for, and treating it as "no place"
+    # admitted it for a user who will not move (match review, 2026-09-26).
+    placed = physical or [s for s in geo.sites if not _is_remote_site(s)]
+    if not geo.work_mode and placed and not will_move:
+        if home_area_matches(placed, prefs.home_location) is False:
+            where = _fmt_places(placed[:2])
             return Decision(UNKNOWN, "work_mode_unresolved",
                             f"Located in {where}, which is not your area, and the posting "
                             f"does not say whether it is on-site or remote — pending "

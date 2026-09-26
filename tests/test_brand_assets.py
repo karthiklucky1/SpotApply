@@ -266,14 +266,29 @@ def test_every_referenced_shot_is_actually_served(client):
 
 
 @pytest.mark.parametrize("page", ["pricing.html", "privacy.html", "terms.html"])
-def test_cdn_pages_preconnect_to_the_origins_they_block_on(page):
-    """These pages load a third-party stylesheet and the Tailwind CDN, both
-    render-blocking, and neither had a preconnect — so the TLS handshake only
-    started after the HTML was parsed."""
+def test_public_pages_preconnect_to_the_font_origins_they_block_on(page):
+    """The Google Fonts stylesheet is render-blocking and third-party; without a
+    preconnect the TLS handshake only started after the HTML was parsed."""
     html = (ROOT / "app" / "templates" / page).read_text()
-    for origin in ("https://fonts.googleapis.com", "https://fonts.gstatic.com",
-                   "https://cdn.tailwindcss.com"):
+    for origin in ("https://fonts.googleapis.com", "https://fonts.gstatic.com"):
         assert f'rel="preconnect" href="{origin}"' in html, f"{page} lacks {origin}"
+
+
+@pytest.mark.parametrize("page", ["pricing.html", "privacy.html", "terms.html", "auth.html"])
+def test_public_pages_use_the_compiled_stylesheet_not_the_play_cdn(page):
+    """AUDIT 2026-09-25 (finding 13): the Tailwind PLAY CDN compiles in the
+    browser, blocks render, and prints a production warning."""
+    html = (ROOT / "app" / "templates" / page).read_text()
+    assert "cdn.tailwindcss.com" not in html
+    assert '/static/tailwind-public.css' in html
+    css = (ROOT / "app" / "static" / "tailwind-public.css").read_text()
+    assert len(css) > 5_000, "run `npm run build` and commit app/static/tailwind-public.css"
+
+
+def test_the_public_stylesheet_covers_classes_the_pages_use():
+    css = (ROOT / "app" / "static" / "tailwind-public.css").read_text()
+    for cls in (".max-w-2xl", ".rounded-xl", ".font-black", ".text-5xl"):
+        assert cls in css, f"{cls} missing — the public CSS is stale; run npm run build"
 
 
 def test_every_page_links_the_shared_favicon_not_an_inline_copy():
@@ -286,3 +301,17 @@ def test_every_page_links_the_shared_favicon_not_an_inline_copy():
         for line in html.splitlines():
             if 'rel="icon"' in line:
                 assert "data:image" not in line, f"{page.name} inlines its favicon"
+
+
+def test_sitemap_and_robots_use_the_canonical_host():
+    """AUDIT 2026-09-25 (finding 13): the sitemap listed spotapply.ai while every
+    page's canonical and og:url name app.spotapply.ai — two hosts for one page."""
+    import re
+    sitemap = (ROOT / "app" / "static" / "sitemap.xml").read_text()
+    robots = (ROOT / "app" / "static" / "robots.txt").read_text()
+    landing = (ROOT / "app" / "templates" / "landing.html").read_text()
+    canon = re.search(r'rel="canonical" href="(https://[^/"]+)/', landing)
+    host = canon.group(1) if canon else "https://app.spotapply.ai"
+    locs = re.findall(r"<loc>([^<]+)</loc>", sitemap)
+    assert locs and all(loc.startswith(host + "/") for loc in locs), locs
+    assert f"Sitemap: {host}/sitemap.xml" in robots

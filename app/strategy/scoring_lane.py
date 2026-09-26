@@ -251,11 +251,12 @@ def _scorable_user_ids(limit: int = 1000) -> List[Optional[str]]:
             ).first()
             if hit is not None:
                 users.append(uid)
-    # Dormancy gate: even with adoption stopped, a vanished user's existing
-    # unscored backlog would keep burning LLM budget (and round-robin slots
-    # active users need). Skip them here too; their queue resumes on return.
+    # Compute gate: only users whose search may SPEND (active within
+    # TRIAL_IDLE_AFTER_HOURS, or genuinely paid) are scored. An idle user's
+    # queue waits — adoption keeps filling it for free — and resumes the moment
+    # they act (app/common/compute_policy.py).
     if settings.dormant_user_grace_days > 0 and users:
-        from app.api.server import _user_is_active
+        from app.api.server import _user_may_spend as _user_is_active  # paid AI gate
         from app.db.models import UserProfile
         with get_session() as session:
             profiles = {p.user_id: p for p in session.exec(

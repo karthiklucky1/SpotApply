@@ -245,6 +245,83 @@ def apply_repair(repairable: Iterable[tuple], batch: int = 200) -> dict:
     return stats
 
 
+# ── old/new identity PAIRS ───────────────────────────────────────────────────
+# The repair above rewrites `R29845` -> `acme:R29845` in place — unless the
+# scoped id already exists for that user, in which case it SKIPS the row
+# forever (`skipped_would_collide`). Production 2026-09-26 (read-only dry run):
+# 19,648 such pairs (bamboohr 13,251 / workday 5,196 / teamtailor 1,201). Each
+# pair is one posting shown to one user twice, and a distinct-job count that is
+# too high. Resolution is NON-DESTRUCTIVE and reversible:
+#
+#   the copy that carries an Application keeps its place (history preserved);
+#   the other copy is CLOSED with SUPERSEDED_MARKER in closed_reason —
+#   never deleted, never re-dated, its evidence rows untouched;
+#   a pair where BOTH copies carry applications is left alone and reported.
+#
+# Rollback: UPDATE job SET is_closed = false, closed_reason = NULL
+#           WHERE closed_reason = '<SUPERSEDED_MARKER>';
+SUPERSEDED_MARKER = "Superseded: duplicate of the tenant-scoped copy (identity repair)"
+
+
+def plan_pairs(session, limit: int) -> list[tuple]:
+    """(close_id, keep_id, source, reason) for each resolvable pair, plus
+    (None, None, source, 'both_have_applications') for the ones to leave."""
+    from app.db.models import Application
+    rows = session.exec(
+        select(Job.id, Job.user_id, Job.source, Job.external_id, Job.is_closed)
+        .where(Job.source.in_(sorted(TENANT_SCOPED_SOURCES)),
+               Job.external_id.is_not(None), Job.external_id != "",
+               Job.external_id.notlike(f"%{SCOPE_SEP}%"))
+        .order_by(Job.id).limit(limit)).all()
+    out: list[tuple] = []
+    for jid_, uid, src, ext, closed in rows:
+        twin = session.exec(
+            select(Job.id, Job.is_closed).where(
+                Job.user_id == uid if uid is not None else Job.user_id.is_(None),
+                Job.source == src,
+                Job.external_id.like(f"%{SCOPE_SEP}{ext}"))
+            .limit(1)).first()
+        if twin is None:
+            continue
+        new_id, new_closed = twin
+        old_app = session.exec(select(Application.id).where(Application.job_id == jid_).limit(1)).first()
+        new_app = session.exec(select(Application.id).where(Application.job_id == new_id).limit(1)).first()
+        if old_app is not None and new_app is not None:
+            out.append((None, None, src, "both_have_applications"))
+        elif old_app is not None:
+            if not new_closed:
+                out.append((new_id, jid_, src, "keep_old_with_application"))
+        elif not closed:
+            out.append((jid_, new_id, src, "close_old_unscoped"))
+    return out
+
+
+def resolve_pairs(pairs, batch: int = 200) -> dict:
+    """Close the redundant copy of each pair. Ascending id, bounded batches,
+    never a row that carries an application, never a delete."""
+    from app.db.models import Application
+    stats: dict = defaultdict(int)
+    to_close = sorted({p[0] for p in pairs if p[0] is not None})
+    for i in range(0, len(to_close), batch):
+        with get_session() as s:
+            for jid_ in to_close[i:i + batch]:
+                job = s.get(Job, jid_)
+                if job is None or job.is_closed:
+                    stats["already_closed"] += 1
+                    continue
+                if s.exec(select(Application.id).where(Application.job_id == jid_)
+                          .limit(1)).first() is not None:
+                    stats["refused_has_application"] += 1
+                    continue
+                job.is_closed = True
+                job.closed_reason = SUPERSEDED_MARKER
+                s.add(job)
+                stats["closed"] += 1
+            s.commit()
+    stats["left_both_have_applications"] = sum(1 for p in pairs if p[0] is None)
+    return dict(stats)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
@@ -253,6 +330,9 @@ def main() -> int:
                     help="max rows to consider per run (default 50000). "
                          "Production holds ~487k unscoped rows, so --apply is "
                          "meant to be run repeatedly until `repairable` is 0.")
+    ap.add_argument("--resolve-pairs", action="store_true",
+                    help="also plan (and with --apply, close) the redundant copy of "
+                         "each old/new identity pair — reversible, never deletes")
     args = ap.parse_args()
 
     # SQLite-only, and deliberately so. `init_db()` is NOT read-only — it runs
@@ -313,10 +393,25 @@ def main() -> int:
     if len(repairable) > 10:
         print(f"    … {len(repairable) - 10} more")
 
+    pairs = []
+    if args.resolve_pairs:
+        with get_session() as s:
+            pairs = plan_pairs(s, args.limit)
+        by = defaultdict(int)
+        for _c, _k, src, why in pairs:
+            by[(str(getattr(src, "value", src)).lower(), why)] += 1
+        print(f"\n== old/new identity pairs (limit {args.limit}) ==")
+        for (src, why), n in sorted(by.items()):
+            print(f"  {src:<12} {why:<28} {n}")
+
     if not args.apply:
         print("\nREAD-ONLY: nothing was written. Re-run with --apply to repair.")
         return 0
 
+    if pairs:
+        print(f"\n== pairs resolved ==\n  {resolve_pairs(pairs)}")
+        print(f"  Rollback: UPDATE job SET is_closed=false, closed_reason=NULL "
+              f"WHERE closed_reason='{SUPERSEDED_MARKER}';")
     stats = apply_repair(repairable)
     print(f"\n== applied ==\n  {stats}")
     print("  Reversible: strip the '<tenant>:' prefix to restore the original id.")

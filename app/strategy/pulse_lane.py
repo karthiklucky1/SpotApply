@@ -466,6 +466,12 @@ def _fast_path_user(uid: str, score_budget: int,
     # 1,440 ticks/day that leaked thousands of prescores a day for nothing.
     if llm_budget_exhausted():
         return 0, 0, 0
+    # Queue-time compute gate (app/common/compute_policy.py): an IDLE user's
+    # new jobs are routed into their pool for free but not paid for; they are
+    # scored when the user acts again. The reranker re-checks at call time.
+    from app.common.compute_policy import paid_ai_allowed
+    if not paid_ai_allowed(None if (not uid or uid == "local") else uid):
+        return 0, 0, 0
     # And this user's own plan allowance — the fast path spends the same budget
     # as the scoring lane, so it has to respect the same ceiling AND the same
     # promise bar. Taking only the slice size would let burst money be spent

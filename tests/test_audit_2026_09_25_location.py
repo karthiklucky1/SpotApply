@@ -302,3 +302,79 @@ def test_a_delivered_job_keeps_its_verdict_on_a_profile_edit(clean):
     server._release_location_stamps(UID)
     with get_session() as s:
         assert s.get(Job, jid).eligibility == INELIGIBLE
+
+
+# ── one role, one recommendation; the employer's own posting preferred ──────
+
+def _plain_job(ext, *, source=JobSource.GREENHOUSE, title="Backend Engineer", company="Dupco"):
+    with get_session() as s:
+        j = Job(user_id=UID, source=source, external_id=_P + ext, company=company,
+                title=title, url=f"https://x/{ext}", description="d", location="Remote",
+                rerank_score=85, first_seen=datetime.utcnow())
+        s.add(j)
+        s.commit()
+        s.refresh(j)
+        s.exec(delete(FunnelEvent).where(FunnelEvent.job_id == j.id))
+        s.exec(delete(Application).where(Application.job_id == j.id))
+        s.commit()
+        return j.id
+
+
+def test_the_same_role_is_not_delivered_twice(clean):
+    a = _plain_job("dupA")
+    b = _plain_job("dupB", title="Backend  Engineer")        # same role, other door
+    assert _place(a).created
+    p = _place(b)
+    assert not p.created and p.outcome == "duplicate"
+
+
+def test_the_employers_posting_replaces_an_unopened_aggregator_copy(clean):
+    agg = _plain_job("aggA", source=JobSource.SERPAPI)
+    own = _plain_job("ownA", source=JobSource.GREENHOUSE)
+    assert _place(agg).created
+    assert _place(own).created
+    with get_session() as s:
+        agg_app = s.exec(select(Application).where(Application.job_id == agg)).first()
+        assert agg_app.status.value == "skipped"
+        assert "employer's own posting" in agg_app.notes
+
+
+def test_an_opened_aggregator_copy_is_kept(clean):
+    agg = _plain_job("aggB", source=JobSource.SERPAPI)
+    own = _plain_job("ownB", source=JobSource.GREENHOUSE)
+    assert _place(agg).created
+    with get_session() as s:
+        row = s.exec(select(Application).where(Application.job_id == agg)).first()
+        row.viewed_at = datetime.utcnow()
+        s.add(row)
+        s.commit()
+    assert _place(own).outcome == "duplicate"
+
+
+def test_a_country_only_posting_with_no_work_mode_is_held_for_a_non_relocator():
+    """Match review 2026-09-26: 'United States' + no work mode read as eligible
+    for a Cincinnati user who will not move."""
+    g = Geography(status="resolved", countries=["united states"], sites=["United States"])
+    d = decide(g, GeoPrefs(country="united states", home_location="Cincinnati, OH"))
+    assert d.status == UNKNOWN and d.code == "work_mode_unresolved"
+    # …but not for someone who will move anywhere, nor one with no home on file.
+    assert decide(g, GeoPrefs(country="united states", home_location="Cincinnati, OH",
+                              open_to_relocation=True)).status == ELIGIBLE
+    assert decide(g, GeoPrefs(country="united states")).status == ELIGIBLE
+
+
+def test_two_requisitions_with_one_title_in_different_cities_are_both_kept(clean):
+    with get_session() as s:
+        ids = []
+        for ext, loc in (("reqNY", "New York, NY"), ("reqSF", "San Francisco, CA")):
+            j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                    company="Multico", title="Software Engineer", url=f"https://x/{ext}",
+                    description="d", location=loc, rerank_score=85, first_seen=datetime.utcnow())
+            s.add(j)
+            s.commit()
+            s.refresh(j)
+            s.exec(delete(FunnelEvent).where(FunnelEvent.job_id == j.id))
+            s.exec(delete(Application).where(Application.job_id == j.id))
+            s.commit()
+            ids.append(j.id)
+    assert _place(ids[0]).created and _place(ids[1]).created

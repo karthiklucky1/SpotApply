@@ -1035,6 +1035,8 @@ class Reranker:
         # breaker before any final is attempted.
         if not provider_available("anthropic") or llm_budget_exhausted():
             return False
+        if not self._paid_call_allowed():
+            return False
         try:
             resp = self._anthropic_client.messages.create(
                 model=settings.scoring_model,
@@ -1107,6 +1109,17 @@ class Reranker:
         usage = _usage_from_openai(resp)
         _buffer_spend(self._user_id, "score_final", "openai", served, usage)
         return _LlmCall(resp.choices[0].message.content, served, usage)
+
+    def _paid_call_allowed(self) -> bool:
+        """Immediately before EACH automatic paid provider attempt (retries and
+        fallback providers included): is this user's search still allowed to
+        spend (app/common/compute_policy.py), and can one attempt be reserved
+        atomically against the per-user and platform daily ceilings? A job
+        queued while the user was active is not paid for after they left."""
+        from app.common.compute_policy import paid_ai_allowed, reserve_paid_call
+        if not paid_ai_allowed(self._user_id):
+            return False
+        return reserve_paid_call(self._user_id)
 
     def _pre_filter_job(self, job: Job) -> Optional[Tuple[float, str, List[str], dict]]:
         """Apply rule-based pre-filters to catch obvious misfits without calling the LLM."""
@@ -1223,6 +1236,8 @@ class Reranker:
             # returning None advances the job; score() enforces the same budget.
             if name == "anthropic" and llm_budget_exhausted():
                 continue
+            if not self._paid_call_allowed():
+                return None             # fail-open to Tier-2, which refuses the same way
             try:
                 call = _as_call(call_fn(prompt), self._prescore_model_for(name))
                 _note_provider_ok(name)
@@ -1358,6 +1373,10 @@ class Reranker:
             raise RuntimeError(f"rerank skipped for job {job.id}: all providers cooling down")
         for backend_name, call_fn in backends:
             for attempt in range(max_retries):
+                if not self._paid_call_allowed():
+                    raise RuntimeError(
+                        f"rerank deferred for job {job.id}: search paused or daily "
+                        f"paid-call ceiling reached (left unscored, not failed)")
                 try:
                     call = _as_call(call_fn(resume_block, job_block), _final_model_for(backend_name))
                     _note_provider_ok(backend_name)

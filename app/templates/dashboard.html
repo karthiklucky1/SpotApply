@@ -7450,7 +7450,7 @@
         if (e.key === 'Escape' && document.getElementById('connOverlay').classList.contains('open')) closeConnections();
     });
 </script> <div id="referralOverlay" onclick="if(event.target===this) closeReferral()"> <div id="referralModal" role="dialog" aria-modal="true" aria-label="Referral drafts"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> Referral &amp; outreach drafts</h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Personalize the recipient, then send from your own account.</p> </div> <button type="button" id="referralClose" onclick="closeReferral()" title="Close (Esc)">&times;</button> </div> <div id="referralBody" class="jd-body"></div> </div>
-</div> <div id="connOverlay" onclick="if(event.target===this) closeConnections()"> <div id="connModal" role="dialog" aria-modal="true" aria-label="Find referrers"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> People who can refer you</h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Public LinkedIn profiles found via Google — no login or scraping. Connect &amp; ask from your own account.</p> </div> <button type="button" id="connClose" onclick="closeConnections()" title="Close (Esc)">&times;</button> </div> <div id="connBody" class="jd-body"></div> </div>
+</div> <div id="connOverlay" onclick="if(event.target===this) closeConnections()"> <div id="connModal" role="dialog" aria-modal="true" aria-label="Find referrers"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> Possible contacts <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:999px;border:1px solid rgba(217,119,6,.55);color:rgb(217,119,6);vertical-align:middle;">Research preview · on hold</span></h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Unverified public search results (Google, no login or scraping). We do not yet check that a person still works there or has anything to do with this role — confirm both yourself before contacting anyone. Nothing is ever sent for you.</p> </div> <button type="button" id="connClose" onclick="closeConnections()" title="Close (Esc)">&times;</button> </div> <div id="connBody" class="jd-body"></div> </div>
 </div> <!-- Add Job from Link modal (moved out of the main board into the sidebar) -->
 <!-- Insights modal — Fit-Score Distribution + Discovery Sources (moved out of the main board) -->
 <div id="insights-modal" style="position:fixed;inset:0;z-index:80;background:rgba(8,11,20,0.6);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this) closeInsightsModal()"> <div style="background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:20px;max-width:640px;width:100%;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.45);max-height:90vh;overflow-y:auto;"> <div class="flex items-start justify-between gap-4 mb-4"> <div> <h2 class="text-base font-black flex items-center gap-2" style="color:var(--ink);"> Insights</h2> <p class="text-[11px] mt-1" style="color:var(--muted);">How your pool scores against your resume, and where the jobs come from.</p> </div> <button onclick="closeInsightsModal()" title="Close (Esc)" style="font-size:22px;line-height:1;color:var(--muted);background:none;border:none;cursor:pointer;">&times;</button> </div> <!-- Fit-Score Distribution --> <div class="glass rounded-2xl p-5 mb-4"> <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2"> <span></span> LLM Fit-Score Distribution
@@ -7534,6 +7534,53 @@
         }
         b.innerHTML = `<span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span><span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span></span> ↻ ${n} new match${n === 1 ? '' : 'es'} ready — tap to load`;
     }
+    // ── Search state notice (app/common/compute_policy.py) ──────────────────
+    // While a complimentary search is idle, dormant or paused, say so plainly
+    // and offer Resume; while it runs, offer Pause. In-app only — no email or
+    // message is ever sent for this. Inline styles on purpose: the compiled
+    // dashboard CSS need not be rebuilt for a notice.
+    async function _renderSearchState(state) {
+        const container = document.getElementById('shortlisted-container');
+        if (!container || !container.parentNode) return;
+        let b = document.getElementById('hp-search-state');
+        if (!b) {
+            b = document.createElement('div');
+            b.id = 'hp-search-state';
+            b.setAttribute('role', 'status');
+            container.parentNode.insertBefore(b, container);
+        }
+        const running = state.state === 'active' || state.state === 'paid';
+        if (state.state === 'setup') { b.style.display = 'none'; return; }
+        b.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;'
+            + 'padding:10px 12px;margin-bottom:8px;border-radius:14px;font-size:12.5px;'
+            + (running ? 'border:1px solid transparent;color:var(--muted,#94a3b8);'
+                       : 'border:1px solid rgba(217,119,6,.45);background:rgba(217,119,6,.08);color:var(--ink,#e2e8f0);font-weight:700;');
+        const msg = running ? '' : _esc(state.message || 'Your search is paused.');
+        const btn = running
+            ? `<button type="button" data-search-action="pause" style="margin-left:auto;background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11.5px;">Pause my search</button>`
+            : `<button type="button" data-search-action="resume" style="border:1px solid rgba(217,119,6,.6);border-radius:999px;padding:5px 12px;background:transparent;color:inherit;font-weight:800;cursor:pointer;">Resume search</button>`;
+        b.innerHTML = `<span>${msg}</span>${btn}`;
+        const el = b.querySelector('[data-search-action]');
+        if (el) el.onclick = async () => {
+            const action = el.getAttribute('data-search-action');
+            el.disabled = true;
+            try {
+                const r = await fetch('/api/search/' + action, {
+                    method: 'POST', headers: Object.assign({'Content-Type': 'application/json'}, _hpHeaders()),
+                    body: JSON.stringify({}) });
+                if (r.ok) _renderSearchState(await r.json());
+            } catch (e) { /* the next load shows the state */ }
+            el.disabled = false;
+        };
+    }
+    async function loadSearchState() {
+        try {
+            const r = await fetch('/api/search/state', { headers: _hpHeaders() });
+            if (r.ok) _renderSearchState(await r.json());
+        } catch (e) { /* non-critical */ }
+    }
+    setTimeout(loadSearchState, 1500);
+
     // Loop guard: never auto-reload more than once per 30s (protects against any
     // edge where the server count and the rendered count can't converge).
     function _canAutoReload() {

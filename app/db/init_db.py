@@ -79,6 +79,14 @@ else:
 )
 
 
+# Count writes the database refuses as read-only (a leaked pooled session
+# setting took production writes down for ~93 minutes on 2026-09-26 with no
+# alert). No query, no behaviour change — see app/common/db_health.py.
+from app.common.db_health import install as _install_db_health  # noqa: E402
+
+_install_db_health(engine)
+
+
 def _missing_enum_labels(existing: set[str], enum_cls) -> list[str]:
     """Labels to ADD to a pg enum type for members not yet represented.
 
@@ -456,6 +464,9 @@ def init_db() -> None:
         ("stem_opt", "BOOLEAN DEFAULT FALSE"),
         ("last_active_at", "DATETIME"),
         ("dormancy_notified_at", "DATETIME"),
+        ("last_meaningful_activity_at", "DATETIME"),
+        ("search_paused_at", "DATETIME"),
+        ("pause_reason", "VARCHAR DEFAULT ''"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
 

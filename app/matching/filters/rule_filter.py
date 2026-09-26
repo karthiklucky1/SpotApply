@@ -117,6 +117,127 @@ def classify_job_type(title: str, description: str = "") -> str:
     return "full_time"
 
 
+# ── Job kinds (audit 2026-09-25, finding 10) ─────────────────────────────────
+# "Engineer" in a title does not make a posting a job. Gig work training AI
+# models ("AI Trainer — Software Engineers", data annotation, RLHF raters) is
+# piece-rate freelance work sold through aggregators; staffing agencies and
+# fixed-term contracts are real jobs of a different kind. Classified
+# explicitly so the gate can act on the kind, and so the kind is recorded
+# rather than guessed downstream. Order matters: internship first (it has its
+# own preference), then gig, then contract, then agency.
+# Unambiguous on their own: the job IS rating/labelling for a model.
+_GIG_AI_TRAINING_RE = re.compile(
+    r"\b(?:ai|llm|model)\s+(?:trainer|training\s+(?:specialist|contributor|expert))\b"
+    r"|\bdata\s+annotat\w*|\bannotator\b|\brlhf\s+(?:rater|annotator|contributor|specialist)\b"
+    r"|\bevaluat\w+\s+(?:ai|model|chatbot)[-\s]generated\b|\bdataannotation\.tech\b",
+    re.I)
+# Ambiguous alone ("train AI models" is also what an ML engineer does); counts
+# only beside gig-work terms.
+_GIG_TRAIN_RE = re.compile(r"\b(?:help\s+)?train\s+(?:ai|llm|generative\s+ai)\s+models?\b", re.I)
+_GIG_TERMS_RE = re.compile(
+    r"\b(?:freelance|independent\s+contractor|contributor|flexible\s+hours|per\s+hour|"
+    r"project[-\s]based|work\s+from\s+anywhere\s+on\s+your\s+own\s+schedule|"
+    r"outlier|remotasks|dataannotation|alignerr|mercor)\b", re.I)
+_CONTRACT_RE = re.compile(
+    r"\b(?:contract(?:\s+position|\s+role|\s*-\s*to\s*-\s*hire|\s+to\s+hire)|fixed[-\s]term|"
+    r"temporary\s+(?:position|role|assignment)|\d+\s*(?:-|to)?\s*\d*\s*months?\s+contract|c2c|corp[-\s]to[-\s]corp|w2\s+contract)\b",
+    re.I)
+_AGENCY_RE = re.compile(
+    r"\b(?:our\s+client|on\s+behalf\s+of\s+(?:our|a)\s+client|staffing\s+(?:agency|firm)|"
+    r"recruitment\s+agency|we\s+are\s+(?:a\s+)?(?:staffing|recruiting)\s+(?:firm|agency))\b",
+    re.I)
+
+
+def classify_job_kind(title: str, description: str = "") -> str:
+    """'internship' | 'gig_ai_training' | 'contract' | 'agency' | 'permanent'.
+
+    Deterministic, text-only. 'permanent' is the default and means "nothing
+    says otherwise", not a verified employment type."""
+    if classify_job_type(title, description) == "internship":
+        return "internship"
+    head = f"{title or ''}\n{(description or '')[:3000]}"
+    if _GIG_AI_TRAINING_RE.search(head) or (_GIG_TRAIN_RE.search(head) and _GIG_TERMS_RE.search(head)):
+        return "gig_ai_training"
+    if _CONTRACT_RE.search(head):
+        return "contract"
+    if _AGENCY_RE.search(head):
+        return "agency"
+    return "permanent"
+
+
+# ── Citizenship / clearance (confirmed status only) ─────────────────────────
+# `NO_SPONSORSHIP_HARD` only blocks users who NEED sponsorship. A permanent
+# resident needs none and still cannot take a citizens-only or clearance role,
+# which went through to paid scoring. Only an explicit citizenship or
+# clearance requirement counts; "citizen OR permanent resident" does not.
+_CITIZEN_ONLY_RE = re.compile(
+    r"\b(?:must\s+be\s+(?:a\s+)?u\.?s\.?\s+citizen(?!\s+or\b)|u\.?s\.?\s+citizenship\s+(?:is\s+)?required"
+    r"|(?:active\s+)?(?:secret|top\s+secret|ts/sci|security)\s+clearance\s+(?:is\s+)?required"
+    r"|must\s+(?:hold|possess|have)\s+an?\s+active\s+(?:secret|top\s+secret|ts/sci|security)\s+clearance)",
+    re.I)
+
+
+def requires_citizenship(description: str) -> Optional[str]:
+    """The sentence stating a citizenship/clearance requirement, or None."""
+    text = description or ""
+    m = _CITIZEN_ONLY_RE.search(text)
+    if not m:
+        return None
+    lo = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+    hi_c = [i for i in (text.find(".", m.end()), text.find("\n", m.end())) if i != -1]
+    sentence = " ".join(text[lo:(min(hi_c) if hi_c else len(text))].split())
+    # "not required", "no clearance required" and similar negations.
+    if re.search(r"\b(?:not|no|nor)\b[^.]{0,20}(?:citizen|clearance)", sentence, re.I) and \
+            not re.search(r"\bmust\b", sentence, re.I):
+        return None
+    return sentence[:200]
+
+
+def _is_confirmed_citizen(profile) -> Optional[bool]:
+    """True / False from the saved status; None when the profile says nothing."""
+    blob = " ".join(str(getattr(profile, f, "") or "") for f in
+                    ("work_authorization", "visa_status")).lower()
+    if not blob.strip():
+        return None
+    return "citizen" in blob and "non-citizen" not in blob and "not a citizen" not in blob
+
+
+# ── Required degree level (confirmed degree only) ───────────────────────────
+_DEGREE_LEVELS = (("phd", 3), ("doctor", 3), ("master", 2), ("m.s", 2), ("msc", 2), ("mba", 2),
+                  ("m.eng", 2), ("bachelor", 1), ("b.s", 1), ("bsc", 1), ("b.tech", 1),
+                  ("b.e.", 1), ("b.a", 1), ("associate", 0))
+_DEGREE_REQ_RE = re.compile(
+    r"\b(?P<deg>ph\.?d|doctora(?:te|l)|master'?s?|bachelor'?s?)\b[^.\n]{0,60}?\b(?:is\s+)?required\b"
+    r"|\brequires?\s+(?:a|an)\s+(?P<deg2>ph\.?d|doctora(?:te|l)|master'?s?|bachelor'?s?)\b",
+    re.I)
+
+
+def _degree_level(text: str) -> Optional[int]:
+    t = (text or "").lower()
+    best = None
+    for key, lvl in _DEGREE_LEVELS:
+        if key in t:
+            best = lvl if best is None else max(best, lvl)
+    return best
+
+
+def required_degree_level(description: str) -> Optional[Tuple[int, str]]:
+    """(level, sentence) for an explicit REQUIRED degree, else None. A sentence
+    that also accepts equivalent experience is not a requirement."""
+    text = description or ""
+    for m in _DEGREE_REQ_RE.finditer(text):
+        lo = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+        hi_c = [i for i in (text.find(".", m.end()), text.find("\n", m.end())) if i != -1]
+        sentence = " ".join(text[lo:(min(hi_c) if hi_c else len(text))].split())
+        if re.search(r"\bor\s+(?:equivalent|comparable|related)\b|\bequivalent\s+(?:practical\s+)?experience\b"
+                     r"|\bpreferred\b|\bnice\s+to\s+have\b", sentence, re.I):
+            continue
+        lvl = _degree_level(m.group("deg") or m.group("deg2") or "")
+        if lvl is not None:
+            return lvl, sentence[:200]
+    return None
+
+
 class RuleFilter:
     """Rule-based pre-filter.
 
@@ -204,6 +325,20 @@ class RuleFilter:
                     score_override=10,
                 )
 
+        # 0b. Job kind: AI-training gig work is not the job a tech seeker asked
+        #     for (audit 2026-09-25, finding 10). Only when a profile exists and
+        #     its target roles do not themselves ask for such work.
+        if self.enforce_job_type:
+            kind = classify_job_kind(job.title, job.description)
+            wanted_roles = (getattr(self.profile, "target_roles", "") or "").lower()
+            if kind == "gig_ai_training" and not any(
+                    w in wanted_roles for w in ("annotat", "ai trainer", "rlhf", "data label")):
+                return FilterResult(
+                    passed=False,
+                    reason="Job kind filtered: AI-training gig work, not an employer posting",
+                    score_override=10,
+                )
+
         # 1. Country Filter — onsite roles in a different country than the user's
         #    preferred one are dropped. Skipped entirely for remote jobs since
         #    "US/Canada Remote" or "Remote (EU)" are still valid remote roles, and
@@ -281,6 +416,31 @@ class RuleFilter:
                     reason=(f"Sponsorship pre-filtered: matches '{_refusal.phrase}' "
                             f"in \"{_refusal.sentence[:120]}\""),
                     score_override=10
+                )
+
+        # 2b. Citizenship / clearance — against the CONFIRMED status only. A
+        #     permanent resident needs no sponsorship and still cannot take a
+        #     citizens-only role; an unset status never blocks.
+        if not self.requires_sponsorship and self.profile is not None:
+            _cit = requires_citizenship(job.description)
+            if _cit and _is_confirmed_citizen(self.profile) is False:
+                return FilterResult(
+                    passed=False,
+                    reason=f"Work authorization: requires U.S. citizenship or a clearance — \"{_cit[:120]}\"",
+                    score_override=10,
+                )
+
+        # 2c. Required degree above the candidate's confirmed degree. A sentence
+        #     that accepts equivalent experience, or says "preferred", is not a
+        #     requirement; an unknown degree never blocks.
+        if self.profile is not None and self.user_degree:
+            _req = required_degree_level(job.description)
+            _have = _degree_level(self.user_degree)
+            if _req and _have is not None and _req[0] > _have:
+                return FilterResult(
+                    passed=False,
+                    reason=f"Education: the posting requires a higher degree — \"{_req[1][:120]}\"",
+                    score_override=12,
                 )
 
         # 3. Experience Gap Filter — only active when resume-extracted years are

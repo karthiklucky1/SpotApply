@@ -281,6 +281,32 @@ class PrivateCacheMiddleware(BaseHTTPMiddleware):
 app.add_middleware(PrivateCacheMiddleware)
 
 
+class JourneyMiddleware(BaseHTTPMiddleware):
+    """Record a journey milestone (app/analytics/journey.py) for a SUCCESSFUL
+    request to an action route. Polls and page views match nothing; the user
+    is resolved only for the handful of routes that do."""
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        try:
+            if 200 <= response.status_code < 300:
+                from app.analytics.journey import milestone_for, record
+                name = milestone_for(request.method, request.url.path)
+                if name:
+                    uid = _get_user_id(request)
+                    if uid:
+                        outcome = (request.query_params.get("outcome") or "").lower() or None \
+                            if name == "outcome_recorded" else None
+                        import anyio
+                        await anyio.to_thread.run_sync(
+                            lambda: record(uid if uid != "local" else None, name, outcome=outcome))
+        except Exception as e:                    # a metric never fails a request
+            log.debug("journey middleware: %s", e)
+        return response
+
+
+app.add_middleware(JourneyMiddleware)
+
+
 # ── Auth helpers ─────────────────────────────────────────────────────────────
 
 def _get_user_id(request: Request) -> str | None:
@@ -308,8 +334,9 @@ def _get_user_id(request: Request) -> str | None:
             continue
         uid = get_user_id_from_token(token)
         if uid:
-            if _is_meaningful_request(request):
-                _touch_last_active(uid)
+            kind = _activity_kind(request)
+            if kind is not None:
+                _touch_last_active(uid, meaningful=(kind == "meaningful"))
             return uid
     return None
 
@@ -331,19 +358,37 @@ _MEANINGFUL_GET_SUFFIXES = ("/download-resume", "/details",
                             "/review", "/answer-pack")
 
 
-def _is_meaningful_request(request) -> bool:
+def _activity_kind(request) -> str | None:
+    """'meaningful' | 'seen' | None for one authenticated request.
+
+    'meaningful' (a write, fetching/downloading a document, starting a fill)
+    renews background-compute eligibility (app/common/compute_policy.py).
+    'seen' (navigating to the dashboard) only records that the person looked:
+    it updates `last_active_at`, never the compute window — a page left open
+    or reloaded is not someone asking for paid work. Everything else — polls,
+    notification fetches, token refreshes, every other GET — is None.
+    """
     try:
         method = (request.method or "GET").upper()
         path = request.url.path or ""
     except Exception:
-        return False
+        return None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
-        return True
+        return "meaningful"
     if method != "GET":
-        return False
-    if path.startswith(_MEANINGFUL_GET_PREFIXES):
-        return True
-    return path.startswith("/application/") and path.endswith(_MEANINGFUL_GET_SUFFIXES)
+        return None
+    if path.startswith("/api/fill-pack/"):
+        return "meaningful"
+    if path.startswith("/application/") and path.endswith(_MEANINGFUL_GET_SUFFIXES):
+        return "meaningful"
+    if path.startswith("/dashboard"):
+        return "seen"
+    return None
+
+
+def _is_meaningful_request(request) -> bool:
+    """Does this request renew `last_active_at` at all (meaningful or seen)?"""
+    return _activity_kind(request) is not None
 
 
 def _require_user(request: Request) -> str:
@@ -360,13 +405,16 @@ _LAST_ACTIVE_STAMP: dict[str, float] = {}
 _LAST_ACTIVE_STAMP_SECONDS = 900
 
 
-def _touch_last_active(uid: str) -> None:
+def _touch_last_active(uid: str, meaningful: bool = False) -> None:
     import time as _time
     mono = _time.monotonic()
-    last = _LAST_ACTIVE_STAMP.get(uid)
+    key = f"m:{uid}" if meaningful else uid
+    last = _LAST_ACTIVE_STAMP.get(key)
     if last is not None and mono - last < _LAST_ACTIVE_STAMP_SECONDS:
         return
-    _LAST_ACTIVE_STAMP[uid] = mono
+    _LAST_ACTIVE_STAMP[key] = mono
+    if meaningful:
+        _LAST_ACTIVE_STAMP[uid] = mono          # a meaningful stamp is also a "seen" one
     try:
         from datetime import datetime as _now_dt
         from app.db.models import UserProfile
@@ -376,8 +424,16 @@ def _touch_last_active(uid: str) -> None:
             ).first()
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
+                if meaningful:
+                    prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
+        if meaningful:
+            from app.common.compute_policy import forget
+            forget(uid)
+            from app.analytics.journey import record as _journey
+            _journey(uid, "signup")          # once per user, ever
+            _journey(uid, "active_day")      # once per user per day
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
 
@@ -460,33 +516,29 @@ def _user_paid_search_is_live(profile) -> bool:
 
 
 def _user_is_active(profile) -> bool:
-    """Dormancy gate for the scheduled lanes.
+    """May the scheduled lanes QUEUE personalised work for this user?
 
-    False when the user hasn't made an authenticated request in
-    dormant_user_grace_days — their pool stops refilling and no LLM money is
-    spent on them until they come back (the next visit re-stamps and the next
-    lane tick picks them up again). NULL last_active_at (rows predating
-    tracking, backfilled at startup) and a disabled gate (0) count as active.
-
-    A LIVE PAID SUBSCRIPTION overrides the gate entirely: see
-    _user_paid_search_is_live. A free user who crosses the line is told, once
-    (_notify_if_newly_dormant) — the old behaviour removed a user from every
-    lane on 2026-09-10 with no notification of any kind, while shortlist hygiene
-    carried on emptying their board.
+    Decided by `app/common/compute_policy.search_state` from the last
+    MEANINGFUL action (never a poll or a page view): ACTIVE and IDLE users keep
+    adoption/placement (free database work, board kept); DORMANT, PAUSED and
+    never-engaged users are skipped until they act or press Resume. A live
+    PAID entitlement keeps its search running unless the user paused it.
+    Paid model calls have a stricter gate, `_user_may_spend`.
+    `DORMANT_USER_GRACE_DAYS=0` still disables the gate entirely.
     """
-    days = settings.dormant_user_grace_days
-    if days <= 0:
+    if settings.dormant_user_grace_days <= 0 or not settings.compute_policy_enforced:
         return True
-    la = getattr(profile, "last_active_at", None)
-    if la is None:
+    from app.common.compute_policy import QUEUE, search_state
+    return search_state(profile, paid=_user_paid_search_is_live).allows(QUEUE)
+
+
+def _user_may_spend(profile) -> bool:
+    """May the platform make AUTOMATIC paid model calls for this user now?
+    ACTIVE (meaningful action within TRIAL_IDLE_AFTER_HOURS) or PAID only."""
+    if settings.dormant_user_grace_days <= 0 or not settings.compute_policy_enforced:
         return True
-    from datetime import datetime as _dt2, timedelta as _td2
-    if la.tzinfo is not None:
-        from datetime import timezone as _tz2
-        la = la.astimezone(_tz2.utc).replace(tzinfo=None)
-    if la >= _dt2.utcnow() - _td2(days=days):
-        return True
-    return _user_paid_search_is_live(profile)
+    from app.common.compute_policy import PAID_AI, search_state
+    return search_state(profile, paid=_user_paid_search_is_live).allows(PAID_AI)
 
 
 def _notify_if_newly_dormant(profile) -> bool:
@@ -501,7 +553,7 @@ def _notify_if_newly_dormant(profile) -> bool:
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
         return False
-    la = getattr(profile, "last_active_at", None)
+    la = getattr(profile, "last_meaningful_activity_at", None)
     notified = getattr(profile, "dormancy_notified_at", None)
     if notified is not None and (la is None or notified >= la):
         return False              # already told them about THIS episode
@@ -512,11 +564,11 @@ def _notify_if_newly_dormant(profile) -> bool:
         with get_session() as session:
             session.add(UserNotification(
                 user_id=uid,
-                title="Your job feed is paused",
-                message=(f"We haven't seen you in {days} day{'s' if days != 1 else ''}, "
-                         "so we've paused your search to save resources — your board, "
-                         "résumé and history are kept. Open SpotApply and it starts "
-                         "again within a few minutes."),
+                title="Your job search is paused",
+                message=("Your search is paused to save resources while you're away — "
+                         "your board, résumé and history are kept. Press \"Resume "
+                         "search\" on your dashboard (or open any job) and it starts "
+                         "again with a fresh batch."),
                 type="feed_paused",
                 link="/dashboard",
             ))
@@ -4269,14 +4321,30 @@ def dashboard(request: Request, all_submitted: bool = False):
      )
 
 
+_PIPELINE_LIVE_TTL_SECONDS = 10
+
+
 @app.get("/api/pipeline/live")
 def pipeline_live(request: Request) -> dict:
     """Lightweight JSON snapshot of the pipeline for live (poll-driven) updates —
-    lets the dashboard surface freshly-ranked jobs without a full page reload."""
+    lets the dashboard surface freshly-ranked jobs without a full page reload.
+
+    Cached per user for 10 s: two open tabs, or a tab regaining focus right
+    after its timer fired, share one computation instead of each paying for it
+    (audit 2026-09-25, finding 8). A degraded (timed-out) answer is not cached."""
     from app.config import settings
     uid = _get_user_id(request)
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.common import ttl_cache as _ttl_live
+    return _ttl_live.get_or_compute(
+        f"pipeline_live:{uid or 'local'}", _PIPELINE_LIVE_TTL_SECONDS,
+        lambda: _pipeline_live_uncached(uid),
+        cache_if=lambda v: not v.get("degraded"))
+
+
+def _pipeline_live_uncached(uid) -> dict:
+    from app.config import settings
     _uid_filter = uid and uid != "local"
 
     # DERIVED from the SSR board's status list, not restated — a disagreement
@@ -4341,6 +4409,12 @@ def pipeline_live(request: Request) -> dict:
             q = q.where(_live_fresh)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
+        # Only the statuses this payload counts or lists. The production user
+        # had ~2,700 SKIPPED applications that were loaded, joined and sorted on
+        # every poll only to be discarded in Python.
+        q = q.where(Application.status.in_(sorted(
+            _SHORTLIST | _INPROGRESS | _SUBMITTED | {ApplicationStatus.REJECTED},
+            key=lambda x: x.value)))
         for (app_id, st, apply_track, apply_url,
              j_title, j_company, j_location, j_remote,
              j_rerank, j_url) in reads.get([], lambda: list(session.exec(q).all())):
@@ -4367,11 +4441,12 @@ def pipeline_live(request: Request) -> dict:
     try:
         from app.db.models import DiscoveryRun
         with get_session() as session:
-            rq = select(DiscoveryRun).order_by(DiscoveryRun.id.desc())
+            rq = select(DiscoveryRun.status).order_by(DiscoveryRun.id.desc())
             if _uid_filter:
                 rq = rq.where(DiscoveryRun.user_id == uid)
-            last = session.exec(rq).first()
-            if last and (last.status or "") in ("discovering", "ranking", "running", "pending"):
+            last = session.exec(rq.limit(1)).first()
+            last_status = last[0] if isinstance(last, tuple) else last
+            if (last_status or "") in ("discovering", "ranking", "running", "pending"):
                 running = True
     except Exception:
         running = False
@@ -4931,6 +5006,34 @@ def application_autopsy(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
+    """The value the extension may put in a "do you (now or in future) require
+    sponsorship?" field, or None to leave it for the user.
+
+    True when the profile says sponsorship is needed (a truthful Yes never
+    bypasses screening). False ONLY for a status that never needs sponsorship
+    (citizen, permanent resident, a plain "authorized" default). A DATED status
+    (OPT, STEM OPT, H-1B, EAD…) is the user's to answer: its future depends on
+    plans and filings we do not hold, and the audit found a live F-1 OPT
+    profile with `requires_sponsorship: false` that the extension would have
+    answered "No" for — a knockout answer given on someone's behalf.
+    """
+    if profile is None:
+        return None
+    if bool(getattr(profile, "requires_sponsorship", False)):
+        return True
+    try:
+        from app.intelligence.work_auth import assess_profile
+        fr = assess_profile(profile)
+    except Exception:
+        return None
+    if fr.validity != "not_applicable" or fr.needs_future_sponsorship:
+        return None
+    blob = ((getattr(profile, "work_authorization", "") or "")
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    return False if blob else None
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
@@ -5018,7 +5121,9 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "years_experience": p.years_experience if p else 0,
         "salary_min": p.salary_min if p else 0,
         "work_authorization": p.work_authorization if p else "",
-        "requires_sponsorship": p.requires_sponsorship if p else False,
+        # Only a CERTAIN answer is sent; None makes the extension leave the
+        # future-sponsorship question for the user (sponsorship_answer_for_pack).
+        "requires_sponsorship": _sponsorship_answer_for_pack(p),
         "gender": p.gender if p else "Decline to self-identify",
         "ethnicity": p.ethnicity if p else "Decline to self-identify",
         "veteran_status": p.veteran_status if p else "I am not a protected veteran",
@@ -7671,6 +7776,12 @@ def admin_contact_research(request: Request) -> dict:
     }
     snap["counters_reset_on_deploy"] = True
     snap["feature_status"] = "on_hold"
+    # The same observations, persisted — these survive deploys.
+    try:
+        from app.analytics.research_log import persisted_summary
+        snap["persisted_30d"] = persisted_summary(30)
+    except Exception as e:
+        snap["persisted_30d"] = {"error": type(e).__name__}
     return snap
 
 
@@ -7777,6 +7888,33 @@ def admin_settings(request: Request) -> dict:
     return out
 
 
+@app.get("/api/admin/journey")
+def admin_journey(request: Request, days: int = 30) -> dict:
+    """The user journey from action routes only (app/analytics/journey.py):
+    distinct people per milestone, day-1/3/7 returns, and — when the spend
+    ledger has rows — metered model spend per activated user. Aggregates only;
+    no user id, résumé or authorization data."""
+    _require_admin_user(request)
+    from app.analytics.journey import summary
+    days = max(1, min(int(days or 30), 90))
+    out = summary(days)
+    try:
+        from datetime import datetime as _dtj, timedelta as _tdj
+        from app.db.models import LlmSpend
+        since = (_dtj.utcnow() - _tdj(days=days)).date()
+        with get_session() as session:
+            spend = session.exec(select(func.coalesce(func.sum(LlmSpend.est_cost_usd), 0.0))
+                                 .where(LlmSpend.day >= since)).one()
+        spend = float(spend[0] if isinstance(spend, tuple) else spend or 0.0)
+        activated = out["distinct_users"].get("first_shortlist", 0)
+        out["spend"] = {"metered_usd": round(spend, 4), "activated_users": activated,
+                        "usd_per_activated_user": round(spend / activated, 4) if activated else None,
+                        "note": "Ledger estimate from metered token usage, not a provider invoice."}
+    except Exception as e:
+        out["spend"] = {"error": type(e).__name__}
+    return out
+
+
 @app.get("/api/admin/health")
 def admin_health(request: Request) -> dict:
     """Live operational state: provider breakers (who is serving finals and
@@ -7817,6 +7955,11 @@ def admin_health(request: Request) -> dict:
         "grandfather_cutoff_parsed": bool(_grandfather_cutoff()),
     }
     out["dormancy"] = {"grace_days": settings.dormant_user_grace_days}
+    try:
+        from app.common.db_health import snapshot as _db_health
+        out["db_writes"] = _db_health()
+    except Exception as e:                                   # pragma: no cover
+        out["db_writes"] = {"error": type(e).__name__}
 
     try:
         from app.db.init_db import engine as _engine
@@ -8920,6 +9063,9 @@ _USERPROFILE_COLUMNS = [
     ("opt_unemployment_days_used", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
     ("stem_opt", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("last_active_at", "TIMESTAMP", "TIMESTAMP"),
+    ("last_meaningful_activity_at", "TIMESTAMP", "TIMESTAMP"),
+    ("search_paused_at", "TIMESTAMP", "TIMESTAMP"),
+    ("pause_reason", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
@@ -9171,6 +9317,8 @@ def _record_profile_completed_once(uid: str | None) -> bool:
         FunnelTracker.record(None, "profile_completed", True, reason=who,
                              metadata={"user_id": who, "has_skills": has_skills,
                                        "has_resume": bool(has_resume)})
+        from app.analytics.journey import record as _journey
+        _journey(user_id_arg, "profile_ready")
         return True
     except Exception as e:                                   # never fail the request
         log.debug("profile_completed event skipped for %s: %s", uid, e)
@@ -9308,6 +9456,87 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
         log.debug("trust recompute spawn failed: %s", _te)
 
     return {"success": True}
+
+
+# ── Search state: pause / resume (app/common/compute_policy.py) ────────────
+
+def _own_profile_query(uid: str):
+    """The caller's own profile row: their user_id, or the NULL-owner row in
+    local single-user mode. Never an unscoped select."""
+    from app.db.models import UserProfile
+    if uid and uid != "local":
+        return select(UserProfile).where(UserProfile.user_id == uid)
+    return select(UserProfile).where(UserProfile.user_id.is_(None))
+
+
+def _search_state_payload(uid: str) -> dict:
+    from app.common.compute_policy import (PAID_AI, QUEUE, dormant_after, idle_after,
+                                           search_state)
+    from app.db.models import UserProfile
+    with get_session() as session:
+        prof = session.exec(_own_profile_query(uid)).first()
+    st = search_state(prof, paid=_user_paid_search_is_live)
+    return {
+        "state": st.state,
+        "message": st.reason,
+        "since": st.since.isoformat() + "Z" if st.since else None,
+        "automatic_scoring": st.allows(PAID_AI),
+        "queueing": st.allows(QUEUE),
+        "idle_after_hours": int(idle_after().total_seconds() // 3600),
+        "pause_after_hours": int(dormant_after().total_seconds() // 3600),
+    }
+
+
+@app.get("/api/search/state")
+def search_state_api(request: Request) -> dict:
+    """Whether this user's background search is running, and why not."""
+    uid = _require_user(request)
+    return _search_state_payload(uid)
+
+
+class SearchPauseRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+def _set_search_pause(uid: str, paused: bool, reason: str = "") -> None:
+    from datetime import datetime as _dtp
+    from app.common.compute_policy import forget
+    from app.db.models import UserProfile
+    with get_session() as session:
+        prof = session.exec(_own_profile_query(uid)).first()
+        if prof is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        now = _dtp.utcnow()
+        if paused:
+            prof.search_paused_at = now
+            prof.pause_reason = (reason or "").strip()[:120]
+        else:
+            prof.search_paused_at = None
+            prof.pause_reason = ""
+            prof.last_meaningful_activity_at = now
+            prof.last_active_at = now
+        session.add(prof)
+        session.commit()
+    forget(uid)
+
+
+@app.post("/api/search/pause")
+def pause_search(request: Request, body: SearchPauseRequest) -> dict:
+    """The user pauses their own search: no automatic personalised work until
+    they resume. Their board, résumé and history are kept."""
+    uid = _require_user(request)
+    _set_search_pause(uid, True, body.reason or "")
+    return _search_state_payload(uid)
+
+
+@app.post("/api/search/resume")
+def resume_search(request: Request) -> dict:
+    """Resume: clears a pause and counts as a meaningful action. The next lane
+    tick adopts a FRESH, bounded batch (adoption's age window + per-step cap,
+    the 5-day scoring window and the day's finals budget) — never the backlog."""
+    uid = _require_user(request)
+    _set_search_pause(uid, False)
+    return _search_state_payload(uid)
 
 
 class RecruiterRegister(BaseModel):

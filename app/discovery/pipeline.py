@@ -1355,27 +1355,29 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
                 app_model.notes = (app_model.notes or "") + f"\nJob closed/removed from company {source_name} ATS."
                 session.add(app_model)
 
-        # Free liveness evidence. This function is only ever reached for a
-        # fetch the caller already proved COMPLETE (`fetch_complete`), and a
-        # posting absent from a complete board listing is genuinely gone. It
-        # costs no request, it is shared by every tenant's copy through the
-        # (source, external_id) key, and it is what lets the pre-delivery gate
-        # skip a network check for most postings it would otherwise verify.
-        # Deliberately AFTER the close loop and outside it: recording evidence
-        # must never be able to stop a job from being closed.
-        _gone = sorted(set(gone_ext))
-        if _gone:
-            try:
-                from app.discovery import liveness as _lv
-                _lv.record_board_absence(source_name, present_ids=active,
-                                         known_ids=_gone, board_complete=True)
-            except Exception as _e:
-                log.debug("liveness board-absence record skipped for %s: %s",
-                          source_name, _e)
-
         session.commit()
         if closed_count > 0:
             log.info("Closed %d ghost jobs for %s (%s)", closed_count, company, source)
+
+    # Free liveness evidence. This function is only ever reached for a fetch
+    # the caller already proved COMPLETE (`fetch_complete`), and a posting
+    # absent from a complete board listing is genuinely gone. It costs no
+    # request, it is shared by every tenant's copy through the (source,
+    # external_id) key, and it is what lets the pre-delivery gate skip a
+    # network check for most postings it would otherwise verify.
+    # AFTER the closes have committed, in its own session: recording evidence
+    # must never be able to stop a job from being closed, and opening a second
+    # write connection while the first held its locks made every call wait out
+    # SQLite's 30 s lock timeout (and then drop the evidence).
+    _gone = sorted(set(gone_ext))
+    if _gone:
+        try:
+            from app.discovery import liveness as _lv
+            _lv.record_board_absence(source_name, present_ids=active,
+                                     known_ids=_gone, board_complete=True)
+        except Exception as _e:
+            log.debug("liveness board-absence record skipped for %s: %s",
+                      source_name, _e)
 
 
 async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):

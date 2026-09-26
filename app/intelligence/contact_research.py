@@ -131,6 +131,29 @@ def record(stage: str, outcome: str, *, elapsed_ms: Optional[float] = None,
                     _latency_max[stage] = ms
     except Exception:                                # pragma: no cover
         pass
+    _persist(stage, outcome, elapsed_ms, results, provider_call)
+
+
+#: Persisted form of each observation (audit 2026-09-25, finding 12): the
+#: counters above live in process memory and reset on every deploy, so no
+#: elapsed time, call count or empty-result rate survived long enough to price
+#: the feature. One FunnelEvent per observation, aggregate labels ONLY — never
+#: a person's name, a profile URL, a company or a job id.
+PERSIST_STAGE = "contact_research"
+
+
+def _persist(stage: str, outcome: str, elapsed_ms: Optional[float], results: int,
+             provider_call: bool) -> None:
+    """Hand the observation to app/analytics/research_log.py, which writes it
+    OFF this thread — this module itself never touches the network or the DB."""
+    try:
+        if stage not in STAGES:
+            return
+        from app.analytics.research_log import persist_async
+        persist_async(stage, outcome if outcome in OUTCOMES else FAILED,
+                      elapsed_ms, results, provider_call, ok=(outcome == OK))
+    except Exception:                                # metrics never break the feature
+        pass
 
 
 class timed:

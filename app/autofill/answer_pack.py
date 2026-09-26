@@ -103,6 +103,21 @@ def _get_or_create_profile(user_id: str | None = None) -> UserProfile:
         return profile
 
 
+def _sponsorship_text(profile) -> str:
+    if bool(getattr(profile, "requires_sponsorship", False)):
+        return "Yes"
+    try:
+        from app.intelligence.work_auth import assess_profile
+        fr = assess_profile(profile)
+        if fr.validity == "not_applicable" and not fr.needs_future_sponsorship \
+                and ((getattr(profile, "work_authorization", "") or "")
+                     + (getattr(profile, "visa_status", "") or "")).strip():
+            return "No"
+    except Exception:
+        pass
+    return "Needs your confirmation"
+
+
 def _profile_to_dict(profile: UserProfile) -> dict:
     salary = ""
     if profile.salary_min and profile.salary_max:
@@ -120,7 +135,9 @@ def _profile_to_dict(profile: UserProfile) -> dict:
         "github_url": profile.github_url,
         "portfolio_url": profile.portfolio_url,
         "work_authorization": profile.work_authorization,
-        "requires_sponsorship": "Yes" if profile.requires_sponsorship else "No",
+        # A dated status (OPT, H-1B, EAD…) is never pre-answered "No": the
+        # future is the candidate's to state (audit 2026-09-25, finding 6).
+        "requires_sponsorship": _sponsorship_text(profile),
         "current_title": profile.current_title,
         "years_experience": str(profile.years_experience) if profile.years_experience else "",
         "_salary": salary,
