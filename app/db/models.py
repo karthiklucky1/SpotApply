@@ -437,6 +437,12 @@ class UserProfile(SQLModel, table=True):
     # consent to be shown a job is not consent to make a claim on a document an
     # employer relies on. See app/tailoring/relocation.py.
     relocation_resume_optin: bool = False
+    # The user's own choice (2026-09-26): for on-site/hybrid US jobs, show the
+    # JOB's city as the location on the tailored resume, for people ready to
+    # move as soon as they are hired. Off unless picked; exclusive with the
+    # "Open to relocation to …" line; application-form address fields keep
+    # the real location.
+    resume_use_job_city: bool = False
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

@@ -499,7 +499,7 @@ def _set_ats_safe_styles(doc) -> None:
 _PHONE_RE = re.compile(r"(?<![\d+])\(?(\d{3})\)?[\s.\-]*(\d{3})\s*[\-.]?\s*(\d{4})(?!\d)")
 
 
-def polish_contact_line(md: str, profile_location: str = "") -> str:
+def polish_contact_line(md: str, profile_location: str = "", show_location: str = "") -> str:
     """Tidy the header a recruiter and an ATS read first. Changes FORMAT only,
     never facts:
 
@@ -507,7 +507,9 @@ def polish_contact_line(md: str, profile_location: str = "") -> str:
         space that some parsers split into two tokens;
       * the city the user put in their profile is added to the contact line
         when the header names no location at all (ATS and recruiters filter
-        by it; many resumes only mention it under Education).
+        by it; many resumes only mention it under Education);
+      * ``show_location`` — only when the user CHOSE "use the job's city" for
+        an on-site/hybrid US job — replaces their city in the header.
     """
     lines = (md or "").split("\n")
     try:
@@ -524,6 +526,24 @@ def polish_contact_line(md: str, profile_location: str = "") -> str:
             if contact_idx is None:
                 contact_idx = i
     loc = (profile_location or "").strip()
+    show = (show_location or "").strip()
+    if show and contact_idx is not None:
+        replaced = False
+        city = loc.split(",")[0].strip() if loc else ""
+        for i in range(end):
+            if lines[i].strip().startswith("#"):
+                continue
+            new = lines[i]
+            if loc and re.search(rf"\b{re.escape(loc)}\b", new, re.I):
+                new = re.sub(rf"\b{re.escape(loc)}\b", show, new, flags=re.I)
+            elif city and re.search(rf"\b{re.escape(city)}\b", new, re.I):
+                new = re.sub(rf"\b{re.escape(city)}\b(?:,\s*[A-Za-z .]+?(?=\s*(?:\||$)))?", show, new, flags=re.I)
+            if new != lines[i]:
+                lines[i] = new
+                replaced = True
+        if not replaced and show.split(",")[0].strip().lower() not in " ".join(lines[:end]).lower():
+            lines[contact_idx] = f"{show} | {lines[contact_idx].strip()}"
+        return "\n".join(lines)
     if loc and contact_idx is not None:
         header = " ".join(lines[:end]).lower()
         city = loc.split(",")[0].strip().lower()
@@ -617,6 +637,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         # established. Computed inside this short session; the LLM phase below
         # holds nothing open.
         relocation_block = ""
+        job_city_location = ""        # the job's city, when the user chose to show it
         try:
             from app.db.models import UserProfile
             from app.discovery.geo_verify import load_geographies
@@ -632,6 +653,23 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 if _offer:
                     log.info("Tailor app %d: relocation line for %s (%s)",
                              application_id, _offer.destination, _offer.reason)
+            if (_prof is not None and getattr(_prof, "resume_use_job_city", False)
+                    and getattr(_prof, "open_to_relocation", False)):
+                # Same verified destination and the same approved-places rule as
+                # the relocation line; only a real "City, ST" is ever shown.
+                from types import SimpleNamespace
+                _src = getattr(job.source, "value", job.source)
+                _key = (str(_src).lower(), str(job.external_id))
+                _geo = load_geographies([_key]).get(_key)
+                _shim = SimpleNamespace(
+                    relocation_resume_optin=True, open_to_relocation=True,
+                    relocation_targets=(getattr(_prof, "relocation_targets", "") or "nationwide"),
+                    relocation_timeline="")
+                _dest = offer_for(_shim, _geo)
+                if _dest and "," in _dest.destination:
+                    job_city_location = _dest.destination
+                    relocation_block = ""      # the two are exclusive
+                    log.info("Tailor app %d: resume location set to the job's city", application_id)
         except Exception as e:
             log.debug("relocation line skipped for app %d: %s", application_id, e)
 
@@ -950,7 +988,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # from the draft, not left in to get the whole document withheld. The user
     # gets a résumé every time, plus the list of those skills to learn — or to
     # confirm, which adds them to the master for the next rebuild.
-    resume_md = polish_contact_line(resume_md, profile_location)
+    resume_md = polish_contact_line(resume_md, profile_location, show_location=job_city_location)
     removed_claims: list = []
     skills_to_learn: list = []
     try:

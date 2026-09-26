@@ -9118,6 +9118,7 @@ _USERPROFILE_COLUMNS = [
     # Document-facing relocation consent — defaults OFF, never backfilled
     # from open_to_relocation (app/tailoring/relocation.py).
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9253,6 +9254,7 @@ def get_profile(request: Request) -> dict:
         "availability": getattr(profile, "availability", "") or "",
         "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
+        "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
     }
@@ -9297,6 +9299,7 @@ class ProfileUpdate(BaseModel):
     availability: Optional[str] = None
     open_to_relocation: Optional[bool] = None
     relocation_resume_optin: Optional[bool] = None
+    resume_use_job_city: Optional[bool] = None
     relocation_targets: Optional[str] = None
     relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
