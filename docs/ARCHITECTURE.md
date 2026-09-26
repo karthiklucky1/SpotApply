@@ -162,7 +162,7 @@ per-user file (`matcher.py:186-198`).
 
 ### 3.4 Two things that bound per-user cost
 
-- **Dormancy gate** — `DORMANT_USER_GRACE_DAYS=21` (`config.py:276`). Users idle >21 days
+- **Dormancy gate** — `DORMANT_USER_GRACE_DAYS=1` (was 21 until the 2026-09-25 audit; `config.py`). Users with no meaningful action (`server._is_meaningful_request` — polling never counts) for >1 day
   drop out of every lane's work list, so they consume no adoption, no scoring, no budget.
   This is what makes "N users" mean *active*, not *registered*.
 - **Global LLM budget, divided fairly** — `LLM_DAILY_FINAL_CAP=1500` platform-wide, split

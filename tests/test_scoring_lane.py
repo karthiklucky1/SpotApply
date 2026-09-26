@@ -15,6 +15,14 @@ from app.db.models import (
 def _clean(session):
     for model in (Application, UserNotification, FunnelEvent, Job, UserProfile):
         session.exec(delete(model))
+    # slate.place() re-decides eligibility from the posting's CURRENT geography
+    # (audit 2026-09-25, finding 1). Other files' discovery runs record
+    # geography for greenhouse ids "1".."9" too, so clear it for the ids THIS
+    # file uses — otherwise their "Remote, no country" row holds these jobs.
+    from app.db.models import JobGeography
+    session.exec(delete(JobGeography).where(
+        JobGeography.source == "greenhouse",
+        JobGeography.external_id.in_([str(i) for i in range(1, 10)])))
     session.commit()
 
 

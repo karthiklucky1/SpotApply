@@ -58,7 +58,11 @@ log = logging.getLogger(__name__)
 #: Bumped when extraction rules change so stored rows can be told apart.
 #: 2 (2026-09-18): sub-national restrictions are kept as areas; a model's
 #: quote must support each claim; a conflict is retained through verification.
-VERIFIER_VERSION = 2
+VERIFIER_VERSION = 3
+#: 3 (2026-09-26 audit, finding 2): an explicit attendance requirement in the
+#: description ("3 days a week in our San Francisco office") overrides a
+#: structured "remote"/TELECOMMUTE work mode, and the office it names is kept
+#: as a site — the employer's own sentence is more specific than a form field.
 
 #: The score an INELIGIBLE copy is stamped with as it leaves the queue — the
 #: same number the rule filter uses, so every reader that already understands
@@ -364,6 +368,53 @@ def work_mode_from_description(description: str) -> str:
     return ""
 
 
+# Attendance requirements that CONTRADICT a structured "remote": the hybrid
+# schedule patterns above plus the two unambiguous on-site ones. Deliberately
+# not "required to be on-site" alone — a remote role that asks for a quarterly
+# on-site week says exactly that, and is still remote.
+_ATTENDANCE_RES = tuple((m, rx) for m, rx in _DESC_WORK_MODE_RES
+                        if m == "hybrid") + tuple(
+    (m, rx) for m, rx in _DESC_WORK_MODE_RES
+    if m == "onsite" and "required|expected" not in rx.pattern)
+
+_OFFICE_PLACE_RE = re.compile(
+    r"\b(?:in|at|from|near)\s+(?:our|the|one of our)?\s*"
+    r"(?P<place>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}(?:,\s*[A-Z]{2})?)\s+"
+    r"(?:office|offices|hub|headquarters|HQ|campus|studio)\b"
+    r"|\b(?:office|offices|hub|headquarters|HQ|campus)\s+(?:in|near)\s+(?:the\s+)?"
+    r"(?P<place2>[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,3}(?:,\s*[A-Z]{2})?)")
+_NOT_A_PLACE = frozenset({
+    "our", "the", "an", "a", "main", "local", "nearest", "company", "corporate",
+    "regional", "global", "home", "hybrid", "remote", "one", "any", "your",
+})
+
+
+def attendance_from_description(description: str) -> Tuple[str, str, str]:
+    """(work mode, the sentence that says so, the office place it names).
+
+    ("", "", "") when the description states no attendance requirement. The
+    place is "" when the sentence names no office we can read; it is returned
+    exactly as written ("San Francisco"), never resolved to a country here.
+    """
+    text = (description or "")[:TEXT_SCAN_CHARS]
+    if not text.strip():
+        return "", "", ""
+    for mode, rx in _ATTENDANCE_RES:
+        m = rx.search(text)
+        if not m:
+            continue
+        sentence = _sentence_around(text, m.start(), m.end())
+        place = ""
+        for pm in _OFFICE_PLACE_RE.finditer(sentence):
+            cand = (pm.group("place") or pm.group("place2") or "").strip(" .,;:")
+            first = cand.split()[0].lower() if cand else ""
+            if cand and first not in _NOT_A_PLACE and cand.lower() not in _NOT_A_PLACE:
+                place = cand
+                break
+        return mode, sentence, place
+    return "", "", ""
+
+
 def _admits(country: str, countries: List[str], regions: List[str]) -> bool:
     if country in countries:
         return True
@@ -462,6 +513,29 @@ def derive(raw: RawJob) -> Geography:
         work_mode = work_mode_from_description(getattr(raw, "description", "") or "")
     if not work_mode and raw.remote and not any(detect_country(s) for s in sites):
         work_mode = "remote"
+
+    # A structured "remote" (Ashby TELECOMMUTE, a "US Remote" site) that the
+    # employer's own description contradicts with an attendance requirement.
+    # Audit 2026-09-25: a Hinge Health posting was stored as US remote while its
+    # text required three days a week in San Francisco — a false remote
+    # recommendation for everyone who will not commute there. The sentence is
+    # the more specific evidence, so it wins, and the office it names becomes a
+    # site the home-area check can compare. When it names no office the
+    # decision holds the posting (`attendance_place_unresolved`) rather than
+    # guessing.
+    if work_mode == "remote":
+        a_mode, a_sentence, a_place = attendance_from_description(
+            getattr(raw, "description", "") or "")
+        if a_mode in ("hybrid", "onsite"):
+            work_mode = a_mode
+            if a_place and a_place not in sites:
+                sites.append(a_place)
+                c = detect_country(a_place)
+                if c and c not in countries:
+                    countries.append(c)
+            if not evidence_quote:
+                evidence_quote = a_sentence
+            evidence_field = (evidence_field + "+" if evidence_field else "") + "description_attendance"
 
     # RESOLVED means the COUNTRY is established, and nothing more. It must not
     # also require a work mode: `derive` is per-posting and cannot know whose
@@ -774,6 +848,69 @@ def redecide_copies(source: str, external_id: str, geo: Geography,
     except Exception as e:
         log.debug("redecide_copies failed for %s: %s", source, e)
     return changed
+
+
+def current_decision(session, source, external_id: str, user_id: Optional[str]):
+    """The verdict for ONE copy, decided NOW from the posting's current
+    geography, the user's current preferences and the current rules.
+
+    Returns ``(Decision | None, meta)``. None when there is nothing fresher to
+    decide from — a pre-rollout posting with no geography row, or a profile
+    that could not be read — and the caller keeps the stamped verdict. ``meta``
+    names the versions the answer came from, for the delivery record.
+
+    AUDIT 2026-09-25 (finding 1): the scorer and the slate trusted the verdict
+    STAMPED on the Job row, and a stamp outlives the rules and the preferences
+    it was written under — 92 of 182 shortlisted rows re-read as needing
+    clarification under the current rules, and one was delivered after the
+    deploy. Uses the caller's session: two indexed point reads, no network.
+    """
+    from sqlmodel import select
+    from app.common.eligibility import RULES_VERSION
+    from app.db.models import JobGeography, UserProfile
+
+    src = getattr(source, "value", source) or ""
+    meta = {"rules_version": RULES_VERSION}
+    row = session.exec(
+        select(JobGeography).where(JobGeography.source == str(src),
+                                   JobGeography.external_id == str(external_id))
+    ).first()
+    if row is None:
+        meta["geography"] = "none"
+        return None, meta
+    meta.update({"geography": row.status, "verifier_version": row.verifier_version,
+                 "geography_updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                 "evidence_source": row.evidence_source})
+    uid = user_id or "local"
+    # One profile read per user per session: the re-shortlist backstop places
+    # a whole user's candidates in one session, and the profile is the same
+    # row for every one of them.
+    memo = session.info.setdefault("_geo_prefs_memo", {})
+    prefs = memo.get(uid)
+    if prefs is None:
+        try:
+            prow = session.exec(
+                select(UserProfile.preferred_country, UserProfile.remote_ok,
+                       UserProfile.open_to_relocation, UserProfile.location,
+                       UserProfile.relocation_targets)
+                .where(UserProfile.user_id == uid)).first()
+        except Exception as e:
+            log.debug("current_decision: profile unreadable for %s: %s", uid, e)
+            meta["prefs"] = "unreadable"
+            return None, meta
+        from app.common.tenant_prefs import geo_prefs
+
+        class _P:
+            pass
+        p = None
+        if prow is not None:
+            p = _P()
+            (p.preferred_country, p.remote_ok, p.open_to_relocation, p.location,
+             p.relocation_targets) = prow
+        prefs = memo[uid] = geo_prefs(p, uid)
+    d = decide(_row_to_geo(row), prefs)
+    meta.update({"decision": d.status, "code": d.code})
+    return d, meta
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -55,11 +55,13 @@ def geo_prefs(profile, user_id: str | None = None):
     door builds the identical object."""
     from app.common.eligibility import GeoPrefs
     from app.common.geo import norm_country
+    from app.tailoring.relocation import parse_targets
     return GeoPrefs(
         country=norm_country(effective_country(profile, user_id)),
         remote_ok=effective_remote_ok(profile),
         open_to_relocation=bool(getattr(profile, "open_to_relocation", False)),
         home_location=(getattr(profile, "location", "") or "").strip(),
+        relocation_targets=tuple(parse_targets(getattr(profile, "relocation_targets", "") or "")),
     )
 
 
@@ -82,7 +84,8 @@ def geo_prefs_for_user(user_id: str | None):
         with get_session() as session:
             row = session.exec(
                 select(UserProfile.preferred_country, UserProfile.remote_ok,
-                       UserProfile.open_to_relocation, UserProfile.location)
+                       UserProfile.open_to_relocation, UserProfile.location,
+                       UserProfile.relocation_targets)
                 .where(UserProfile.user_id == uid)
             ).first()
     except Exception as e:
@@ -94,7 +97,8 @@ def geo_prefs_for_user(user_id: str | None):
 
     p = _P()
     if row is not None:
-        p.preferred_country, p.remote_ok, p.open_to_relocation, p.location = row
+        (p.preferred_country, p.remote_ok, p.open_to_relocation, p.location,
+         p.relocation_targets) = row
     return geo_prefs(p if row is not None else None, uid)
 
 

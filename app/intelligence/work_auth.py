@@ -51,6 +51,17 @@ _DATED_STATUSES = ("opt", "stem opt", "stem-opt", "f-1", "f1", "ead", "h-1b",
                    "h1b", "h1-b", "l-1", "l1", "tn", "j-1", "j1", "cpt")
 
 
+def _parse_end(raw: str):
+    """The end date as a `date`, or None when the free-text field is unreadable."""
+    from datetime import datetime
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime((raw or "")[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _validity(profile) -> tuple[str, str]:
     """('current'|'expired'|'unknown', the date as stored).
 
@@ -61,14 +72,34 @@ def _validity(profile) -> tuple[str, str]:
     raw = (getattr(profile, "ead_end_date", "") or "").strip()
     if not raw:
         return "unknown", ""
-    from datetime import date, datetime
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d", "%d-%m-%Y"):
-        try:
-            end = datetime.strptime(raw[:10], fmt).date()
-        except ValueError:
-            continue
-        return ("current" if end >= date.today() else "expired"), raw
-    return "unknown", raw
+    from datetime import date
+    end = _parse_end(raw)
+    if end is None:
+        return "unknown", raw
+    return ("current" if end >= date.today() else "expired"), raw
+
+
+#: Below this many days of remaining authorisation the framing stops offering a
+#: line to say to an employer and asks the user to confirm their status first:
+#: a hiring process routinely outlasts it, and "I can start immediately" from
+#: someone whose card ends next week is a promise the document cannot keep.
+SHORT_RUNWAY_DAYS = 90
+
+
+def _runway_text(days: int) -> str:
+    """'about 7 months' / '23 days'. Never rounded up."""
+    if days < 60:
+        return f"{days} day{'s' if days != 1 else ''}"
+    months = days // 30
+    return f"about {months} month{'s' if months != 1 else ''}"
+
+
+def remaining_days(profile) -> "int | None":
+    """Days of authorisation left from the saved end date, or None when the
+    date is absent/unreadable. Negative when it has passed."""
+    from datetime import date
+    end = _parse_end((getattr(profile, "ead_end_date", "") or "").strip())
+    return None if end is None else (end - date.today()).days
 
 
 def _apply_validity(framing: "WorkAuthFraming", profile) -> "WorkAuthFraming":
@@ -86,7 +117,27 @@ def _apply_validity(framing: "WorkAuthFraming", profile) -> "WorkAuthFraming":
     framing = dataclasses.replace(framing, validity=state, valid_through=raw,
                                   extension_possible=framing.needs_future_sponsorship)
     if state == "current":
-        return framing
+        # The runway is the SAVED date, not the category's maximum. The STEM
+        # OPT framing used to promise "up to 3 years" to a profile whose card
+        # ended in seven days — true of the category, false of this person, and
+        # the selling point is pasted straight to employers.
+        days = remaining_days(profile)
+        if days is None:            # cannot happen for "current"; stay safe
+            return framing
+        through = f"through {raw} ({_runway_text(days)} remaining)"
+        if days < SHORT_RUNWAY_DAYS:
+            return dataclasses.replace(
+                framing,
+                headline=(f"⚠️ Your {framing.basis} authorisation runs {through}. "
+                          "Confirm your status (and any extension you have actually "
+                          "filed) before telling an employer how long you can work."),
+                review_flag=True,
+                selling_point="")
+        return dataclasses.replace(
+            framing,
+            headline=f"✅ Authorized via {framing.basis} {through}. " + _obligations(framing),
+            selling_point=(f"I'm currently authorized to work on {framing.basis} {through}. "
+                           + _obligations(framing)).strip())
     if state == "expired":
         return dataclasses.replace(
             framing,
@@ -98,12 +149,29 @@ def _apply_validity(framing: "WorkAuthFraming", profile) -> "WorkAuthFraming":
             future_sponsorship_answer="Needs your confirmation",
             review_flag=True,
             selling_point="")
+    # UNKNOWN — no readable end date. We can say what the status IS, never how
+    # long it lasts: the category's maximum is not this person's runway, so the
+    # line offered to employers goes too.
     return dataclasses.replace(
         framing,
         headline=(f"{framing.basis} — add your authorisation end date in Profile "
                   "so application answers can be filled with confidence."),
         auth_answer="Needs your confirmation",
-        review_flag=True)
+        review_flag=True,
+        selling_point="")
+
+
+def _obligations(framing: "WorkAuthFraming") -> str:
+    """What an employer must do for this status — stated, never waved away."""
+    basis = (framing.basis or "").lower()
+    if "stem opt" in basis:
+        return ("It needs an E-Verify-enrolled employer and a signed Form I-983 "
+                "training plan; H-1B sponsorship would be needed later.")
+    if "opt" in basis:
+        return "No employer filing is needed to start; sponsorship would be needed later."
+    if "h-1b" in basis:
+        return "A new employer files an H-1B transfer, which is not subject to the lottery."
+    return ""
 
 
 def assess_profile(profile) -> WorkAuthFraming:

@@ -301,7 +301,7 @@ UNSUITABLE_JD = """Principal Backend Engineer — Far Co
 def test_end_to_end_a_suitable_job_reaches_a_truthful_document():
     """discovery identity -> eligibility -> requirements -> evidence -> review."""
     from app.discovery.job_identity import scoped_external_id
-    from app.tailoring.requirements import SUPPORTED, assess, parse_requirements
+    from app.tailoring.requirements import UNDATED, assess, parse_requirements
     from app.tailoring.inventory import build_inventory
     from app.tailoring.requirements import review
 
@@ -318,16 +318,20 @@ def test_end_to_end_a_suitable_job_reaches_a_truthful_document():
     reqs = parse_requirements(SUITABLE_JD)
     assert [r.months_min for r in reqs] == [24, 12]
 
-    # 4. evidence — every requirement is backed by paid work
+    # 4. evidence — every requirement is USED in paid work. The résumé does
+    # not date how long Python and Postgres were used inside the role, so the
+    # skill time is an open question for the candidate, never "supported" by
+    # the length of the job (audit 2026-09-25, finding 4) and never a gap.
     inv = build_inventory(MASTER, extra_skills=["Python", "Postgres"])
     assert inv.employment_months >= 24
     for req in reqs:
-        assert assess(req, inv).status == SUPPORTED, req.describe()
+        assert assess(req, inv).status == UNDATED, req.describe()
 
     # 5. the pre-download review says so, and claims nothing more
     rep = review(MASTER, MASTER, SUITABLE_JD)
-    assert rep.supported and rep.ok
+    assert rep.ok
     assert not any("Python" in g for g in rep.gaps)
+    assert any("Python" in q and "does not say for how long" in q for q in rep.questions)
     for banned in ("%", "chance", "likelihood", "guaranteed"):
         assert banned not in rep.as_text().lower()
 

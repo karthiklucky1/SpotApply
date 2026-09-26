@@ -274,3 +274,15 @@ def test_cdn_pages_preconnect_to_the_origins_they_block_on(page):
     for origin in ("https://fonts.googleapis.com", "https://fonts.gstatic.com",
                    "https://cdn.tailwindcss.com"):
         assert f'rel="preconnect" href="{origin}"' in html, f"{page} lacks {origin}"
+
+
+def test_every_page_links_the_shared_favicon_not_an_inline_copy():
+    """AUDIT 2026-09-25 (finding 13): pricing, privacy, terms and the reset page
+    carried an old inline data-URI icon, so the mark differed page to page and
+    the generated /favicon.ico never reached them."""
+    from pathlib import Path
+    for page in Path("app/templates").glob("*.html"):
+        html = page.read_text(encoding="utf-8")
+        for line in html.splitlines():
+            if 'rel="icon"' in line:
+                assert "data:image" not in line, f"{page.name} inlines its favicon"

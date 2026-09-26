@@ -1394,7 +1394,12 @@ def _lever_radio_answer(label_text: str, job: Job | None = None) -> str | None:
                         + (getattr(p, "visa_status", "") or "")).strip()
                 if not blob:
                     return None
-                return "Yes" if assess_profile(p).authorized_now else "No"
+                fr = assess_profile(p)
+                # An undated or expired authorisation is the user's to answer,
+                # the same rule `work_auth.answer_for` applies to the answer pack.
+                if fr.validity in ("expired", "unknown"):
+                    return None
+                return "Yes" if fr.authorized_now else "No"
             except Exception:
                 return None
         auth = (qa_resolver.data.get("work_authorization", {}) or {}).get("authorized_to_work_us")

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
+from sqlalchemy import or_
 from sqlalchemy.orm import load_only
 from sqlmodel import select
 
@@ -380,6 +381,13 @@ def _reset_incident_frozen_scores(user_id: str | None) -> int:
     return cleared
 
 
+def _held_verdicts() -> list:
+    """Stamped verdicts the re-shortlist backstop does not re-offer: refused
+    outright, or held while `geo_hold_unresolved` is on."""
+    return ["ineligible", "unknown"] if getattr(settings, "geo_hold_unresolved", True) \
+        else ["ineligible"]
+
+
 def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[List[int], int]:
     """(Re)shortlist jobs that are ALREADY LLM-scored above the threshold but
     have no Application yet (e.g. the daily limit was hit when they were scored,
@@ -407,12 +415,21 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
             # from streaming megabytes out of Postgres every matching pass.
             .options(load_only(
                 Job.id, Job.url, Job.source, Job.company, Job.title,
-                Job.rerank_score, Job.user_id,
+                Job.rerank_score, Job.user_id, Job.external_id,
+                Job.eligibility, Job.eligibility_reason,
             ))
             .where(
                 Job.is_closed == False,  # noqa: E712
                 Job.user_id == user_id,
                 Job.rerank_score >= settings.shortlist_score_threshold,
+                # A job the slate has already REFUSED on location is not
+                # offered again every 5-minute pass: `place()` re-decides it
+                # from current evidence (two point reads) and would refuse it
+                # again. Geography changes re-release it (geo_verify.
+                # redecide_copies) and a location-profile edit clears these
+                # stamps (server.update_profile), so it comes back when the
+                # answer can actually change.
+                or_(Job.eligibility.is_(None), Job.eligibility.notin_(_held_verdicts())),
                 # Never a posting the ghost or expiry sweep already wrote off:
                 # both sentinels sit below the bar today, but only by arithmetic.
                 Job.rerank_score.notin_(SENTINEL_SCORES),

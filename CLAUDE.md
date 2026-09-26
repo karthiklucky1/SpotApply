@@ -614,6 +614,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `open_to_relocation` is off (same state is not enough), and a state
   restriction is DECIDABLE when the profile names a state — held only when it
   names none.
+- **Audit 2026-09-25** (`docs/AUDIT_2026_09_25.md` — fixed vs still open):
+  `slate.place()` RE-DECIDES eligibility at delivery (`geo_verify.current_decision`,
+  versions in the placement event) — never trust the stamp alone; relocation
+  TARGETS bind (`GeoPrefs.relocation_targets`); a skill's time is only what the
+  résumé DATES (`SkillEvidence.employment_months`; role length is `role_months`,
+  an upper bound); ONE export verdict (`tailoring/export_gate.py`) for review,
+  details, download and fill-pack; polling never counts as activity
+  (`_is_meaningful_request`), grace 1 day.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
 

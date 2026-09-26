@@ -167,3 +167,36 @@ def test_future_sponsorship_always_goes_to_the_user():
 def test_an_unrelated_question_is_not_answered_from_work_auth():
     f = assess_profile(_P(ead_end_date=_FUTURE))
     assert answer_for("What is your preferred start date?", f) == ("", False)
+
+
+# ── the runway is the saved date, not the category's maximum ─────────────────
+
+def test_a_week_of_stem_opt_is_not_sold_as_three_years():
+    """AUDIT 2026-09-25 (finding 6). A STEM OPT profile whose end date was seven
+    days away still produced a selling point promising "up to 3 years"."""
+    soon = (date.today() + timedelta(days=7)).isoformat()
+    f = assess_profile(_P(work_authorization="F-1 STEM OPT", ead_end_date=soon))
+    assert f.validity == "current"
+    assert "3 years" not in f.selling_point and "3 years" not in f.headline
+    assert f.selling_point == "", "a week of runway offers no line to say to employers"
+    assert f.review_flag is True
+    assert soon in f.headline and "7 days" in f.headline
+
+
+def test_a_long_runway_is_stated_from_the_date():
+    far = (date.today() + timedelta(days=400)).isoformat()
+    f = assess_profile(_P(work_authorization="F-1 STEM OPT", ead_end_date=far))
+    assert far in f.selling_point
+    assert "3 years" not in f.selling_point
+    # The employer's obligations stay stated, never waved away.
+    assert "E-Verify" in f.selling_point and "I-983" in f.selling_point
+    # And the future-sponsorship question still goes to the user.
+    assert answer_for("Do you now or in the future require sponsorship?", f)[1] is True
+
+
+def test_an_undated_status_offers_no_runway_claim():
+    """Unknown validity used to keep the optimistic selling point."""
+    f = assess_profile(_P(work_authorization="F-1 STEM OPT", ead_end_date=""))
+    assert f.validity == "unknown"
+    assert f.selling_point == ""
+    assert "3 years" not in f.headline

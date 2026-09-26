@@ -138,7 +138,7 @@
 | `TAILOR_ABUSE_DAILY_CAP` | 150 | tailors/user/day | **The only ceiling on user-triggered Sonnet spend.** Applies even to "unlimited" plans. | `app/config.py:275` |
 | `PLAN_LIMITS[FREE]` | 5 / 2 | tailors/day, autofills/week | **Unreachable** — everyone resolves PRO while Stripe is unconfigured | `app/db/models.py:339`; `server.py:5674` |
 | `DAILY_APPLY_LIMIT` | 25 | submissions/user/day | Autofill only | `app/config.py:268` |
-| `DORMANT_USER_GRACE_DAYS` | 21 | days | Idle users dropped from all lanes — **defines "active user"** | `app/config.py:276` |
+| `DORMANT_USER_GRACE_DAYS` | 1 (was 21) | days | Users with no meaningful action (polling excluded) dropped from all lanes — **defines "active user"** | `app/config.py:276` |
 | `JOB_PURGE_MAX_AGE_DAYS` | 60 | days | Hard-DELETE closed, unapplied jobs (batch 2000 × 100) | `app/config.py:279` |
 
 ### 1.7 Infrastructure

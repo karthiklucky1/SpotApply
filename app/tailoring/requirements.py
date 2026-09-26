@@ -40,8 +40,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from app.tailoring.inventory import (Inventory, SkillEvidence, humanize_months,
-                                     kind_label)
+from app.tailoring.inventory import (INTERNSHIP, Inventory, SkillEvidence,
+                                     humanize_months, kind_label, merged_months)
 
 # ── parsing an experience requirement ────────────────────────────────────────
 
@@ -295,6 +295,11 @@ SHORT = "short"
 PROJECT_ONLY = "project_only"     # demonstrated in academic/personal work only
 LISTED_ONLY = "listed_only"       # named in a skills list; nothing describes using it
 GAP = "gap"
+# Used in paid work, but the résumé never says for how long, and the roles that
+# mention it are long enough that it COULD meet the requirement. Neither
+# supported nor a gap: an open question only the candidate can answer. A skill
+# mentioned once inside a six-year job is not six years of the skill.
+UNDATED = "undated"
 
 
 @dataclass(frozen=True)
@@ -328,7 +333,7 @@ class RequirementAssessment:
         if self.status == SHORT:
             return (f"{req}: résumé shows {held}{approx} — short of what the "
                     f"posting asks for.{note}")
-        if self.status in (PROJECT_ONLY, LISTED_ONLY):
+        if self.status in (PROJECT_ONLY, LISTED_ONLY, UNDATED):
             return f"{req}: {self.note}."
         return f"{req}: nothing on the résumé evidences this."
 
@@ -351,14 +356,18 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
     if ev is not None and ev.internship_only:
         # Real work at a real employer, and most postings asking for "N years of
         # professional experience" do not mean an internship. Say both facts
-        # rather than picking the flattering one.
-        held = inv.internship_months
-        return RequirementAssessment(
-            req, SHORT if held < req.months_min else SUPPORTED, held,
-            backing=tuple(inv.engagements[i].label for i in ev.engagements),
-            note=(f"used during an internship ({humanize_months(held)}), which this "
-                  f"résumé counts separately from professional experience"),
-            approximate=inv.approximate)
+        # rather than picking the flattering one. The time is the skill's own
+        # DATED time, bounded by the internships that mention it — never the
+        # résumé's whole internship total.
+        backing = tuple(inv.engagements[i].label for i in ev.engagements)
+        upper = merged_months((inv.engagements[i].start, inv.engagements[i].end)
+                              for i in ev.engagements
+                              if inv.engagements[i].kind == INTERNSHIP
+                              and inv.engagements[i].start and inv.engagements[i].end)
+        where = (f"used during an internship, which this résumé counts separately "
+                 f"from professional experience")
+        return _duration_verdict(req, ev.internship_dated_months, upper, backing, where,
+                                 inv.approximate)
 
     if ev is not None and ev.listed_only:
         return RequirementAssessment(
@@ -367,15 +376,17 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
                   "describes using it"),
             approximate=inv.approximate)
 
-    # Skill-specific time when the requirement named a skill; otherwise the
-    # résumé's overall employment time.
-    held = ev.employment_months if ev is not None else inv.employment_months
-    backing: Tuple[str, ...] = ()
     if ev is not None:
+        # Skill-specific time: only what the résumé DATES for the skill, bounded
+        # above by the paid roles that mention it.
         backing = tuple(inv.engagements[i].label for i in ev.engagements
                         if inv.engagements[i].is_employment)
-    else:
-        backing = tuple(e.label for e in inv.engagements if e.is_employment)
+        return _duration_verdict(req, ev.employment_months, ev.role_months, backing, "",
+                                 inv.approximate)
+
+    # No skill named: the résumé's overall employment time.
+    held = inv.employment_months
+    backing: Tuple[str, ...] = tuple(e.label for e in inv.engagements if e.is_employment)
 
     status = SUPPORTED if held >= req.months_min else SHORT
     note = ""
@@ -384,6 +395,34 @@ def assess(req: ExperienceRequirement, inv: Inventory) -> RequirementAssessment:
                 f"is on the résumé and is counted separately")
     return RequirementAssessment(req, status, held, backing=backing, note=note,
                                  approximate=inv.approximate)
+
+
+def _duration_verdict(req: ExperienceRequirement, dated: int, upper: int,
+                      backing: Tuple[str, ...], where: str,
+                      approximate: bool) -> RequirementAssessment:
+    """SUPPORTED only on time the résumé dates; SHORT when even the whole of every
+    role that mentions the skill falls short; otherwise UNDATED — the candidate
+    may well have the years, and only they can say so."""
+    lead = f"{where}; " if where else ""
+    if dated >= req.months_min:
+        return RequirementAssessment(req, SUPPORTED, dated, backing=backing,
+                                     note=where, approximate=approximate)
+    if upper < req.months_min:
+        held = max(dated, upper)
+        return RequirementAssessment(
+            req, SHORT, held, backing=backing,
+            note=(lead + "that is the length of the roles that mention it — an upper "
+                  "bound, not a measured time with the skill"),
+            approximate=approximate)
+    roles = ", ".join(backing[:2]) or "a role on the résumé"
+    dated_bit = (f" It dates {humanize_months(dated)} of it." if dated else "")
+    return RequirementAssessment(
+        req, UNDATED, dated, backing=backing,
+        note=(f"{lead}used at {roles} ({humanize_months(upper)} in total), but the "
+              f"résumé does not say for how long you used it.{dated_bit} Confirm the "
+              f"time yourself before claiming it — mentioning a skill in a role is "
+              f"not years of that skill"),
+        approximate=approximate)
 
 
 # ── the pre-download review ──────────────────────────────────────────────────
@@ -447,6 +486,29 @@ def unconfirmed_project_claims(tailored_md: str,
     return found
 
 
+def _present_in(phrase: str, text: str) -> bool:
+    """Is this phrase on the résumé under either of its names?
+
+    The tailor is TOLD to expand known acronyms ("AWS (Amazon Web Services)"),
+    so a draft carrying the expansion of something the résumé writes as an
+    acronym — or the reverse — has added a spelling, not a claim. Since this
+    feeds the export gate, reading that as a fabrication would block honest
+    documents.
+    """
+    from app.tailoring.inventory import ACRONYMS, _skill_pattern
+    text = text or ""
+    if _skill_pattern(phrase).search(text):
+        return True
+    key = (phrase or "").strip().lower().rstrip(".")
+    exp = ACRONYMS.get(key)
+    if exp and _skill_pattern(exp).search(text):
+        return True
+    for acro, expansion in ACRONYMS.items():
+        if expansion.lower() == key and _skill_pattern(acro).search(text):
+            return True
+    return False
+
+
 def review(master_md: str, tailored_md: str, jd_text: str, *,
            suggested_projects: Sequence[str] = ()) -> PreDownloadReview:
     """The short review a user reads before downloading the document.
@@ -483,6 +545,12 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
             supported.append(line)
             continue
 
+        # Used in paid work, duration not stated: a question for the candidate,
+        # never a supported requirement and never a gap.
+        if a.status == UNDATED:
+            questions.append(line)
+            continue
+
         # A PREFERRED requirement we fall short of is not a genuine gap. Filing
         # it as one invents a blocker and talks someone out of a job the posting
         # says they can have without it.
@@ -493,7 +561,8 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
             continue
 
         gaps.append(line)
-        if a.status == GAP and req.skill and req.skill not in unevidenced:
+        if a.status == GAP and req.skill and req.skill not in unevidenced \
+                and not _present_in(req.skill, master_md):
             unevidenced.append(req.skill)
 
         shortfall = req.months_min - a.held_months
@@ -523,8 +592,7 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
             break
         if phrase.lower() in named or inv.skill(phrase) is not None:
             continue
-        from app.tailoring.inventory import _skill_pattern
-        if _skill_pattern(phrase).search(master_md or ""):
+        if _present_in(phrase, master_md):
             continue          # present in the document, just not as an attributed skill
         missing_entirely.append(phrase)
     for phrase in missing_entirely:

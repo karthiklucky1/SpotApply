@@ -79,6 +79,9 @@ class Placement:
     outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
+    # The eligibility decision this placement was made under, with the rule /
+    # verifier versions it came from (geo_verify.current_decision).
+    eligibility: Optional[dict] = None
 
     def __bool__(self) -> bool:            # `if place(...)` reads naturally
         return self.created
@@ -217,12 +220,44 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     # the row; this is the last door, and a fit score — however high — does
     # not override it. "unknown" is held while verification is pending
     # (settings.geo_hold_unresolved). Both leave a placement event that says so.
+    #
+    # The stamp is not trusted on its own (audit 2026-09-25, finding 1): it
+    # was written under whatever rules, preferences and evidence held when the
+    # copy was admitted, and all three move. So the verdict is decided AGAIN
+    # here from the posting's current geography, the user's current profile and
+    # the current rules — two indexed point reads in this session — and the
+    # fresh answer is written back onto the row. A posting with no geography
+    # row (pre-rollout) keeps its stamp and the string gate that admitted it.
     _elig = (getattr(job, "eligibility", None) or "")
+    _elig_meta: Optional[dict] = None
+    try:
+        from app.discovery.geo_verify import current_decision
+        _fresh, _elig_meta = current_decision(session, job.source, job.external_id, user_id)
+    except Exception as e:                    # never let the recheck crash placement
+        log.debug("Slate: eligibility recheck skipped for job %s: %s", job.id, e)
+        _fresh = None
+    if _fresh is not None:
+        if _fresh.status != _elig or (job.eligibility_reason or "") != _fresh.reason[:200]:
+            if _elig and _fresh.status != _elig:
+                log.info("Slate: '%s' re-decided %s -> %s at delivery (%s)",
+                         job.title, _elig, _fresh.status, _fresh.code)
+            job.eligibility = _fresh.status
+            job.eligibility_reason = _fresh.reason[:200]
+            session.add(job)
+        _elig = _fresh.status
+    elif _elig_meta is not None:
+        _elig_meta["decision"] = _elig or "unstamped"
+        _elig_meta["code"] = "stamped"
+
+    def _refuse(outcome: str) -> Placement:
+        return _record(session, job, score, user_id,
+                       Placement(False, outcome, eligibility=_elig_meta))
+
     if _elig == "ineligible":
         log.info("Slate: refused '%s' — %s", job.title, job.eligibility_reason or "ineligible location")
-        return _record(session, job, score, user_id, Placement(False, "ineligible"))
+        return _refuse("ineligible")
     if _elig == "unknown" and settings.geo_hold_unresolved:
-        return _record(session, job, score, user_id, Placement(False, "unverified_location"))
+        return _refuse("unverified_location")
 
     cap = shortlist_daily_limit(user_id)
     entries = todays_entries(session, user_id)
@@ -237,6 +272,8 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
         ))
 
     def _done(p: Placement) -> Placement:
+        if p.eligibility is None:
+            p.eligibility = _elig_meta
         return _record(session, job, score, user_id, p)
 
     # ── Room on the slate: the ordinary case ────────────────────────────────
@@ -324,6 +361,7 @@ def _record(session, job: Job, score: float, user_id: Optional[str],
             metadata_json=_json.dumps({
                 "user_id": user_id or "local", "score": round(float(score), 1),
                 "cutoff": placement.cutoff, "displaced_id": placement.displaced_id,
+                "eligibility": placement.eligibility,
             }),
         ))
         if not placement.created and placement.outcome not in ("below_cutoff", "dead"):

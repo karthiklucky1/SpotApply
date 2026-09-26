@@ -265,8 +265,28 @@ class SkillEvidence:
     kinds: FrozenSet[str]
     engagements: Tuple[int, ...]     # indices into Inventory.engagements
     span_ids: Tuple[str, ...]
-    employment_months: int           # union of EMPLOYMENT engagements only
+    # Months of paid employment the résumé DATES for this skill — a bullet that
+    # carries its own dates, or a job title that names the skill. A skill merely
+    # mentioned somewhere inside a six-year job is NOT six years of the skill
+    # (audit 2026-09-25: one month of Python in Dec 2025 read as 72 months and
+    # "supported" a five-year requirement). 0 = the duration is not stated.
+    employment_months: int
     listed_only: bool = False        # only in a skills list; no engagement backs it
+    # The union of the EMPLOYMENT engagements the skill appears in. Context for
+    # the reader ("used at Acme, a 6-year role") and an upper bound — never a
+    # skill duration, and never compared with a requirement.
+    role_months: int = 0
+    internship_dated_months: int = 0  # same rule as employment_months, for internships
+
+    @property
+    def paid_work(self) -> bool:
+        """Used in professional or freelance work at all (dated or not)."""
+        return bool(self.kinds & EMPLOYMENT_KINDS)
+
+    @property
+    def duration_unknown(self) -> bool:
+        """Used in paid work, but the résumé never says for how long."""
+        return self.paid_work and not self.employment_months
 
     @property
     def project_only(self) -> bool:
@@ -288,7 +308,7 @@ class SkillEvidence:
     @property
     def strength(self) -> int:
         """Sort key: strongest evidence first. Not a score shown to anyone."""
-        base = self.employment_months * 4
+        base = self.employment_months * 4 + len(self.engagements)
         if self.kinds & EMPLOYMENT_KINDS:
             base += 1000
         if INTERNSHIP in self.kinds:
@@ -569,19 +589,83 @@ def _attribute_skills(lines: Sequence[str], engagements: Sequence[Engagement],
             sid = _span_id(line.strip().lstrip("-*•·–—‣▪◦●» \t").strip())
             if sid not in span_ids:
                 span_ids.append(sid)
+        # Engagements whose TITLE names the skill ("Python Developer") are
+        # evidence for the whole engagement — the title is a claim about the
+        # entire role. Such a role counts as hit even with no matching bullet.
+        titled = [i for i, e in enumerate(engagements) if e.title and pattern.search(e.title)]
+        for i in titled:
+            if i not in hit_engagements:
+                hit_engagements.append(i)
         kinds = frozenset(engagements[i].kind for i in hit_engagements)
-        months = merged_months(
+        role_months = merged_months(
             (engagements[i].start, engagements[i].end)
             for i in hit_engagements
             if engagements[i].is_employment and engagements[i].start and engagements[i].end
         )
+        dated = _dated_skill_intervals(lines, engagements, owner, pattern, titled)
+        months = merged_months(iv for idx, iv in dated if engagements[idx].is_employment)
+        intern_months = merged_months(iv for idx, iv in dated
+                                      if engagements[idx].kind == INTERNSHIP)
         if not hit_engagements and key not in listed_norm:
             continue          # not evidenced anywhere: not in the inventory at all
         out[key] = SkillEvidence(
             skill=key, display=seen[key], kinds=kinds,
             engagements=tuple(hit_engagements), span_ids=tuple(span_ids),
             employment_months=months, listed_only=not hit_engagements,
+            role_months=role_months, internship_dated_months=intern_months,
         )
+    return out
+
+
+#: One "Mon YYYY" token that is not part of a range ("in Dec 2025").
+#: Month names spelled exactly — `(mar)[a-z]*` would read "market 2024" as a date.
+_SINGLE_MONTH_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{4})\b", re.I)
+
+
+def _dated_skill_intervals(lines: Sequence[str], engagements: Sequence[Engagement],
+                           owner: Dict[int, int], pattern: re.Pattern,
+                           titled: Sequence[int]) -> List[Tuple[int, Tuple[int, int]]]:
+    """(engagement index, (start, end)) for every span of time the résumé
+    itself DATES for this skill.
+
+    Three sources, nothing else:
+      * a job title naming the skill → the whole engagement;
+      * a bullet naming the skill and carrying a date range → that range;
+      * a bullet naming the skill and a single month ("in Dec 2025") → that month.
+    Each is clipped to its engagement, so a typo'd bullet date cannot extend a
+    role. A bare year in a bullet ("in 2023") dates nothing — it bounds the use
+    to some part of a year, and quoting 12 months from it would be the same
+    inflation this exists to stop.
+    """
+    out: List[Tuple[int, Tuple[int, int]]] = []
+    for i in titled:
+        e = engagements[i]
+        if e.start and e.end:
+            out.append((i, (e.start, e.end)))
+    for li, line in enumerate(lines):
+        idx = owner.get(li)
+        if idx is None or not pattern.search(line):
+            continue
+        e = engagements[idx]
+        if not (e.start and e.end):
+            continue
+        consumed: List[Tuple[int, int]] = []
+        for m in _RANGE_RE.finditer(line):
+            s_abs, _ = _abs_month(m.group("start"))
+            e_abs, _ = _abs_month(m.group("end"))
+            consumed.append(m.span())
+            if s_abs and e_abs:
+                s_abs, e_abs = max(s_abs, e.start), min(e_abs, e.end)
+                if e_abs >= s_abs:
+                    out.append((idx, (s_abs, e_abs)))
+        for m in _SINGLE_MONTH_RE.finditer(line):
+            if any(a <= m.start() < b for a, b in consumed):
+                continue
+            mon, _ = _abs_month(m.group(0))
+            if mon and e.start <= mon <= e.end:
+                out.append((idx, (mon, mon)))
     return out
 
 

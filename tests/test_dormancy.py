@@ -86,7 +86,77 @@ def _notices(uid: str) -> list:
 # ── The gate itself ──────────────────────────────────────────────────────────
 
 def test_a_recently_active_user_is_active():
-    assert server._user_is_active(_profile("recent", days_idle=1))
+    assert server._user_is_active(_profile("recent", days_idle=0.25))
+
+
+def test_the_default_window_is_one_day(monkeypatch):
+    """AUDIT 2026-09-25 (finding 7): a complimentary trial kept its paid search
+    running for 21 days after the person left. Active on day one and gone:
+    no personalized automatic work after 24 hours."""
+    from app.config import Settings
+    assert Settings.model_fields["dormant_user_grace_days"].default == 1
+    monkeypatch.setattr(server, "_user_paid_search_is_live", lambda p: False)
+    assert not server._user_is_active(_profile("day2", days_idle=1.1))
+
+
+# ── Polling is not activity ──────────────────────────────────────────────────
+
+class _Req:
+    def __init__(self, method, path):
+        self.method = method
+
+        class _U:
+            pass
+        self.url = _U()
+        self.url.path = path
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/pipeline/live"),          # the 20 s heartbeat
+    ("GET", "/api/notifications"),          # the 60 s poll
+    ("GET", "/api/freshness-stats"),
+    ("GET", "/api/jobs"),
+    ("GET", "/api/usage"),
+    ("OPTIONS", "/api/profile"),
+    ("HEAD", "/dashboard"),
+])
+def test_passive_requests_do_not_renew_the_window(method, path):
+    """A tab left open kept an account "active" forever."""
+    assert not server._is_meaningful_request(_Req(method, path))
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/application/12/viewed"),
+    ("POST", "/run/tailor/12"),
+    ("PUT", "/api/profile"),
+    ("POST", "/application/12/skip"),
+    ("GET", "/dashboard"),                   # a person navigated here
+    ("GET", "/application/12/download-resume"),
+    ("GET", "/application/12/review"),
+    ("GET", "/api/fill-pack/12"),            # started filling an application
+])
+def test_meaningful_actions_renew_the_window(method, path):
+    assert server._is_meaningful_request(_Req(method, path))
+
+
+def test_a_poll_never_stamps_last_active(monkeypatch):
+    """End to end through `_get_user_id`: the stamp is only written for a
+    meaningful request."""
+    stamped = []
+    monkeypatch.setattr(server, "_touch_last_active", lambda uid: stamped.append(uid))
+    monkeypatch.setattr(type(settings), "use_supabase", property(lambda self: True))
+    import app.db.supabase_client as sc
+    monkeypatch.setattr(sc, "get_user_id_from_token", lambda tok: "u-poll")
+
+    class R(_Req):
+        def __init__(self, method, path):
+            super().__init__(method, path)
+            self.headers = {"Authorization": "Bearer t"}
+            self.cookies = {}
+    assert server._get_user_id(R("GET", "/api/pipeline/live")) == "u-poll"
+    assert stamped == []
+    server._get_user_id(R("POST", "/application/1/viewed"))
+    assert stamped == ["u-poll"]
 
 
 def test_an_idle_free_user_goes_dormant(monkeypatch):

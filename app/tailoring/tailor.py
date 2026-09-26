@@ -225,10 +225,17 @@ class Tailor:
             for ev in ranked[:14]:
                 if ev.employment_months:
                     backed.append(f"  - {ev.display}: {humanize_months(ev.employment_months)} "
-                                  f"of paid work")
+                                  f"of paid work, dated on the résumé")
+                elif ev.paid_work:
+                    # Mentioned inside a role, duration never stated. The role's
+                    # length is NOT the skill's (audit 2026-09-25: one month of
+                    # Python in a six-year job was handed to the model as six
+                    # years of verified paid work).
+                    backed.append(f"  - {ev.display}: used in paid work — duration NOT "
+                                  f"stated; never write or imply a number of years of it")
                 elif ev.internship_only:
-                    unbacked.append(f"  - {ev.display}: internship only "
-                                    f"({humanize_months(inv.internship_months)})")
+                    unbacked.append(f"  - {ev.display}: internship only — duration of "
+                                    f"use not stated")
                 elif ev.project_only:
                     where = ", ".join(sorted(kind_label(k) for k in ev.kinds))
                     unbacked.append(f"  - {ev.display}: {where} only — NOT employment")

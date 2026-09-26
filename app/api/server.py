@@ -308,9 +308,42 @@ def _get_user_id(request: Request) -> str | None:
             continue
         uid = get_user_id_from_token(token)
         if uid:
-            _touch_last_active(uid)
+            if _is_meaningful_request(request):
+                _touch_last_active(uid)
             return uid
     return None
+
+
+# ── What counts as a person using the product ────────────────────────────────
+# AUDIT 2026-09-25 (finding 7). Every authenticated request stamped
+# `last_active_at`, and the dashboard polls /api/pipeline/live every 20 s and
+# notifications every minute — so a tab left open kept an account "active", and
+# its paid background search running, with nobody there. The dormancy gate can
+# only be as good as this signal.
+#
+# Meaningful = something a person did: any write (open a job, shortlist, edit
+# the profile, tailor, apply, dismiss…), fetching a document or starting a fill,
+# or navigating to the dashboard. A GET that a timer, a poller or a token
+# refresh makes is NOT — and every other GET is treated as one, because a new
+# poller must not silently re-open the hole.
+_MEANINGFUL_GET_PREFIXES = ("/dashboard", "/api/fill-pack/")
+_MEANINGFUL_GET_SUFFIXES = ("/download-resume", "/details",
+                            "/review", "/answer-pack")
+
+
+def _is_meaningful_request(request) -> bool:
+    try:
+        method = (request.method or "GET").upper()
+        path = request.url.path or ""
+    except Exception:
+        return False
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return True
+    if method != "GET":
+        return False
+    if path.startswith(_MEANINGFUL_GET_PREFIXES):
+        return True
+    return path.startswith("/application/") and path.endswith(_MEANINGFUL_GET_SUFFIXES)
 
 
 def _require_user(request: Request) -> str:
@@ -480,9 +513,9 @@ def _notify_if_newly_dormant(profile) -> bool:
             session.add(UserNotification(
                 user_id=uid,
                 title="Your job feed is paused",
-                message=(f"We haven't seen you in {days} days, so we've paused the "
-                         "search to avoid filling your board with jobs that will be "
-                         "stale by the time you look. Open SpotApply and it starts "
+                message=(f"We haven't seen you in {days} day{'s' if days != 1 else ''}, "
+                         "so we've paused your search to save resources — your board, "
+                         "résumé and history are kept. Open SpotApply and it starts "
                          "again within a few minutes."),
                 type="feed_paused",
                 link="/dashboard",
@@ -4401,8 +4434,14 @@ def application_details(application_id: int, request: Request) -> dict:
     # still on disk. The download route refuses it with a 409; this preview
     # returned its FULL text anyway, so the rejected document could be read and
     # copy-pasted from the Tailoring Studio. Show the reason, not the draft.
-    if application.status == ApplicationStatus.ERROR:
-        _reason = (application.notes or "").strip() or \
+    # The same export verdict the download route and the review read — a draft
+    # claiming work the résumé never evidences is withheld here too.
+    _verdict = _export_verdict(application_id, loaded={
+        "rejected": application.status == ApplicationStatus.ERROR,
+        "notes": application.notes or "", "path": application.tailored_resume_path,
+        "uid": application.user_id, "jd": (job.description or "") if job else ""})
+    if _verdict.blocked:
+        _reason = (_verdict.reason or "").strip() or \
             "This draft did not pass the grounding check."
         resume_text = (f"(Withheld — {_reason}\nRe-run tailoring to produce a "
                        "draft that passes the check.)")
@@ -4472,10 +4511,13 @@ def application_details(application_id: int, request: Request) -> dict:
         # `blocked` is not the inverse of `tailored`: an ERROR draft has both
         # document paths written and neither is readable.
         "tailored": bool(application.tailored_at)
-                    and application.status != ApplicationStatus.ERROR,
+                    and application.status != ApplicationStatus.ERROR
+                    and not _verdict.blocked,
         "tailored_at": (application.tailored_at.isoformat()
                         if application.tailored_at else None),
-        "blocked": application.status == ApplicationStatus.ERROR,
+        "blocked": _verdict.blocked,
+        "blocked_reason": _verdict.reason if _verdict.blocked else "",
+        "export_check": _verdict.code,
     }
 
 
@@ -4905,6 +4947,15 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
         needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
         grounding_blocked = application.status == ApplicationStatus.ERROR
+        has_draft = bool(application.tailored_resume_path)
+        _loaded = {"rejected": grounding_blocked, "notes": application.notes or "",
+                   "path": application.tailored_resume_path, "uid": application.user_id,
+                   "jd": (job.description or "") if job else ""}
+    # Draft text only leaves through the ONE export verdict (review, download,
+    # details and attach read the same one). Re-tailoring is still gated on the
+    # grounding status alone — an unconfirmed claim is fixed by the user.
+    export_blocked = grounding_blocked or (
+        has_draft and _export_verdict(application_id, loaded=_loaded).blocked)
 
     # Auto-tailor in background — don't block the fill-pack response.
     # The extension gets the master resume immediately; tailored version
@@ -4937,7 +4988,7 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     # Never hand out text from a draft the grounding check rejected — the
     # browser download route already refuses these with a 409, and the résumé
     # attach route serves the base résumé instead.
-    if not grounding_blocked:
+    if not export_blocked:
         if application.cover_letter_path:
             try:
                 cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
@@ -5183,6 +5234,13 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
 
     if app_status == ApplicationStatus.ERROR:
         return _grounding_blocked_response()
+    if path:
+        # One export verdict for every door: a draft that claims work the
+        # résumé never evidences is not attached either — the base résumé is.
+        _verdict = _export_verdict(application_id)
+        if _verdict.blocked:
+            app_notes = _verdict.reason
+            return _grounding_blocked_response()
 
     if not path or not _P(path).exists():
         # Auto-tailoring is a full paid generation — it must respect the same
@@ -5714,55 +5772,102 @@ def _compute_freshness_stats(user_id_arg: str | None) -> dict:
     }
 
 
+# Single-flight guard for the public aggregate: at most ONE computation runs at a
+# time in this process; everyone else is served the last completed snapshot.
+import threading as _pf_threading  # noqa: E402
+
+_PUBLIC_FRESHNESS_LOCK = _pf_threading.Lock()
+_PUBLIC_FRESHNESS_TTL_S = 300
+_PUBLIC_FRESHNESS_EMPTY = {
+    "active_boards": None, "jobs_tracked_7d": None,
+    "median_detection_latency_hours": None, "detected_within_24h_pct": None,
+    "fresh_alerts_7d": None, "median_post_to_alert_min": None,
+}
+
+
 @app.get("/api/public/freshness")
 def public_freshness() -> dict:
     """Global, measured freshness numbers for the landing page — the credible
     version of a 'fresh jobs' claim. Aggregates across all users; no auth, no
-    per-user data. Cached in-process for 5 min so the landing page is cheap."""
-    import statistics
-    import time as _time
-    from datetime import datetime, timedelta
+    per-user data.
 
-    global _PUBLIC_FRESHNESS_CACHE
+    STALE-WHILE-REVALIDATE, SINGLE-FLIGHT (audit 2026-09-25, finding 8: one
+    request took 186.7 s). A fresh snapshot is served from memory. An expired
+    one is STILL served, immediately, while one background thread recomputes;
+    a request that arrives while a computation is already running never
+    starts a second one. Only a cold process with no snapshot at all computes
+    inline, and even then every statement is bounded
+    (`_public_freshness_uncached`). A landing page therefore never waits on
+    this aggregate for longer than its own bounded first computation."""
+    import time as _time
+
     now_ts = _time.time()
     cached = globals().get("_PUBLIC_FRESHNESS_CACHE")
     if cached and cached[0] > now_ts:
         return cached[1]
-
-    now = datetime.utcnow()
-    from app.db.models import CompanyRegistry, FunnelEvent
-
-    def _naive(dt):
-        return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
-
+    last = globals().get("_PUBLIC_FRESHNESS_LAST")
+    if last is not None:
+        # Serve the last completed snapshot now; refresh behind it.
+        if _PUBLIC_FRESHNESS_LOCK.acquire(blocking=False):
+            def _bg():
+                try:
+                    _refresh_public_freshness()
+                finally:
+                    _PUBLIC_FRESHNESS_LOCK.release()
+            try:
+                _pf_threading.Thread(target=_bg, daemon=True,
+                                 name="public-freshness-refresh").start()
+            except Exception:
+                _PUBLIC_FRESHNESS_LOCK.release()
+        return last
+    # Cold: nothing to serve. Compute inline — once. A concurrent cold request
+    # gets the empty shape rather than a second copy of the same aggregate.
+    if not _PUBLIC_FRESHNESS_LOCK.acquire(blocking=False):
+        return dict(_PUBLIC_FRESHNESS_EMPTY)
     try:
-        result = _public_freshness_uncached(now, now_ts)
-        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 300, result)
-        globals()["_PUBLIC_FRESHNESS_LAST"] = result
+        return _refresh_public_freshness()
+    finally:
+        _PUBLIC_FRESHNESS_LOCK.release()
+
+
+def _refresh_public_freshness() -> dict:
+    """Compute, cache and return the public snapshot. Caller holds the lock."""
+    import time as _time
+    from datetime import datetime
+
+    now_ts = _time.time()
+    try:
+        result = _public_freshness_uncached(datetime.utcnow(), now_ts)
+        degraded = bool(result.pop("_degraded", False))
+        ttl = 60 if degraded else _PUBLIC_FRESHNESS_TTL_S
+        globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + ttl, result)
+        if not degraded or globals().get("_PUBLIC_FRESHNESS_LAST") is None:
+            globals()["_PUBLIC_FRESHNESS_LAST"] = result
         return result
     except Exception as e:
         # THE FAILURE IS THE EXPENSIVE PART. This route is public, unauthenticated
-        # and un-rate-limited, and it runs a full-table COUNT the schema has no
-        # usable index for; it hit the statement timeout on 2026-09-09 01:33.
-        # Because the cache was only written on SUCCESS, every landing-page hit
-        # after that re-ran the same heavy queries against a database that had
-        # just told us it could not answer them. Cache the failure too — briefly,
-        # so a transient stall costs one slow request rather than a stampede.
-        _log = logging.getLogger("api")
-        _log.warning("public freshness aggregate failed (%s) — serving the last "
-                     "known figures for 60s", e)
+        # and un-rate-limited; it hit the statement timeout on 2026-09-09 01:33.
+        # Cache the failure too — briefly, so a transient stall costs one slow
+        # computation rather than a stampede.
+        logging.getLogger("api").warning(
+            "public freshness aggregate failed (%s) — serving the last known "
+            "figures for 60s", e)
         stale = globals().get("_PUBLIC_FRESHNESS_LAST")
-        fallback = stale if stale else {
-            "active_boards": None, "jobs_tracked_7d": None,
-            "median_detection_latency_hours": None, "detected_within_24h_pct": None,
-            "fresh_alerts_7d": None, "median_post_to_alert_min": None,
-        }
+        fallback = stale if stale else dict(_PUBLIC_FRESHNESS_EMPTY)
         globals()["_PUBLIC_FRESHNESS_CACHE"] = (now_ts + 60, fallback)
         return fallback
 
 
 def _public_freshness_uncached(now, now_ts) -> dict:
-    """The aggregate itself. Split out so the caller can cache a FAILURE."""
+    """The aggregate itself. Split out so the caller can cache a FAILURE.
+
+    Every statement runs under the dashboard's per-statement budget
+    (`_BoundedReads`, `SET LOCAL statement_timeout`) and projects only the
+    columns it reads: the old version loaded up to 50,000 latency rows and
+    EVERY fresh-alert FunnelEvent row in full, with no deadline. A statement
+    that exceeds the budget yields None for its figure and marks the snapshot
+    `_degraded` (cached for 60 s instead of 5 min, and never allowed to
+    replace a complete snapshot as the fallback)."""
     import statistics
     import json as _json
     from datetime import timedelta
@@ -5771,63 +5876,64 @@ def _public_freshness_uncached(now, now_ts) -> dict:
     def _naive(dt):
         return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
+    def _one(v):
+        return v[0] if isinstance(v, tuple) else v
+
+    week_ago = now - timedelta(days=7)
     with get_session() as session:
-        boards = session.exec(
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        boards = reads.get(None, lambda: _one(session.exec(
             select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)  # noqa: E712
-        ).one()
-        boards = boards[0] if isinstance(boards, tuple) else boards
-        # Load ONLY the two timestamps this metric needs — never whole Job rows.
-        # The pool is 200k+ postings with multi-KB descriptions each; SELECT *
-        # over the 7-day slice materialized tens of thousands of full rows and
-        # blew Supabase's statement_timeout (the query that was cancelled here).
-        # A bounded, column-only sample keeps the median/percentile stats cheap
-        # and accurate. jobs_tracked_7d is a separate COUNT so the headline
-        # number stays exact even though the latency sample is capped.
-        recent_count = session.exec(
+        ).one()))
+        # jobs_tracked_7d is a separate COUNT so the headline number stays exact
+        # even though the latency sample below is capped.
+        recent_count = reads.get(None, lambda: _one(session.exec(
             select(func.count(Job.id)).where(
                 Job.posted_at != None,  # noqa: E711
-                Job.discovered_at > now - timedelta(days=7),
-            )
-        ).one()
-        recent_count = recent_count[0] if isinstance(recent_count, tuple) else recent_count
-        recent = session.exec(
+                Job.discovered_at > week_ago,
+            )).one()))
+        recent = reads.get([], lambda: list(session.exec(
             select(Job.posted_at, Job.discovered_at).where(
                 Job.posted_at != None,  # noqa: E711
-                Job.discovered_at > now - timedelta(days=7),
-            ).order_by(Job.discovered_at.desc()).limit(50000)
-        ).all()
-        alerts = session.exec(
-            select(FunnelEvent).where(FunnelEvent.stage == "fresh_alert",
-                                      FunnelEvent.created_at > now - timedelta(days=7))
-        ).all()
+                Job.discovered_at > week_ago,
+            ).order_by(Job.discovered_at.desc()).limit(_FRESHNESS_SAMPLE_ROWS)
+        ).all()))
+        alert_meta = reads.get([], lambda: list(session.exec(
+            select(FunnelEvent.metadata_json).where(
+                FunnelEvent.stage == "fresh_alert",
+                FunnelEvent.created_at > week_ago)
+            .order_by(FunnelEvent.id.desc()).limit(_FRESHNESS_EVENT_LIMIT)
+        ).all()))
+        degraded = reads.degraded
 
-    lat_h = [max(0.0, (disc - _naive(posted)).total_seconds() / 3600)
-             for posted, disc in recent]
+    lat_h = [max(0.0, (_naive(disc) - _naive(posted)).total_seconds() / 3600)
+             for posted, disc in recent if posted and disc]
     lat_h = [x for x in lat_h if x < 24 * 30]
     # Same split as /api/freshness-stats: alerts fired on KNOWN age carry no
     # trustworthy posting reference, so they are counted but not averaged into
     # a "post to alert" figure.
     alert_min = []
-    for e in alerts:
+    for mj in alert_meta:
+        mj = _one(mj)
         try:
-            meta = _json.loads(e.metadata_json or "{}")
+            meta = _json.loads(mj or "{}")
         except Exception:
             continue
         v = meta.get("latency_min")
         if isinstance(v, (int, float)) and meta.get("posted_trusted", True):
             alert_min.append(v)
-    med = lambda xs: round(statistics.median(xs), 1) if xs else None
+    med = lambda xs: round(statistics.median(xs), 1) if xs else None  # noqa: E731
 
-    result = {
-        "active_boards": int(boards or 0),
-        "jobs_tracked_7d": int(recent_count or 0),
+    return {
+        "active_boards": None if boards is None else int(boards or 0),
+        "jobs_tracked_7d": None if recent_count is None else int(recent_count or 0),
         "median_detection_latency_hours": med(lat_h),
         "detected_within_24h_pct": (round(100 * sum(1 for x in lat_h if x <= 24) / len(lat_h))
                                     if lat_h else None),
         "fresh_alerts_7d": len(alert_min),
         "median_post_to_alert_min": med(alert_min),
+        "_degraded": degraded,
     }
-    return result
 
 
 @app.get("/api/skill-gap")
@@ -9082,6 +9188,42 @@ def _record_document_downloaded(kind: str, application_id: int | None,
         log.debug("document_downloaded event skipped (%s): %s", kind, e)
 
 
+# The saved preferences `eligibility.decide` reads (tenant_prefs.geo_prefs).
+_LOCATION_PREF_FIELDS = ("preferred_country", "location", "remote_ok",
+                         "open_to_relocation", "relocation_targets")
+
+
+def _release_location_stamps(user_id_arg: str | None) -> int:
+    """A location preference changed: clear the location verdict on this user's
+    scored, open, undelivered jobs that were refused or held on it, so the
+    re-shortlist backstop offers them to `slate.place()` again, which decides
+    them afresh against the NEW profile. Without this a job refused under the
+    old preferences stayed refused (the backstop no longer re-offers stamped
+    refusals every pass). One bounded UPDATE; never touches a delivered job —
+    those keep their verdict and the board's "Location: check" marker."""
+    from sqlalchemy import update as _upd
+    try:
+        with get_session() as session:
+            owner = (Job.user_id == user_id_arg) if user_id_arg else Job.user_id.is_(None)
+            app_owner = (Application.user_id == user_id_arg) if user_id_arg \
+                else Application.user_id.is_(None)
+            res = session.execute(
+                _upd(Job)
+                .where(owner,
+                       Job.is_closed == False,  # noqa: E712
+                       Job.eligibility.in_(("ineligible", "unknown")),
+                       Job.rerank_score >= settings.shortlist_score_threshold,
+                       Job.id.notin_(select(Application.job_id)
+                                     .where(app_owner, Application.job_id.is_not(None))))
+                .values(eligibility=None, eligibility_reason=None)
+                .execution_options(synchronize_session=False))
+            session.commit()
+            return int(res.rowcount or 0)
+    except Exception as e:
+        log.debug("location stamp release failed for %s: %s", user_id_arg, e)
+        return 0
+
+
 @app.put("/api/profile")
 def update_profile(request: Request, update: ProfileUpdate) -> dict:
     """Update user profile fields."""
@@ -9130,11 +9272,14 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
             if exp is not None:
                 exp = [e for e in exp if isinstance(e, dict) and any(str(v or "").strip() for v in e.values())]
                 db_profile.experience_json = _json.dumps(exp[:15])
+            _before = {f: getattr(db_profile, f, None) for f in _LOCATION_PREF_FIELDS}
             for field, value in payload.items():
                 setattr(db_profile, field, value)
             db_profile.updated_at = _dt.utcnow()
             session.add(db_profile)
             session.commit()
+            if any(getattr(db_profile, f, None) != _before[f] for f in _LOCATION_PREF_FIELDS):
+                _release_location_stamps(user_id_arg)
 
     try:
         _do_update()
@@ -10731,6 +10876,92 @@ def get_answer_pack(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
+    """The ONE export decision for a tailored draft (app/tailoring/export_gate.py).
+
+    Every route that hands the draft out asks this — review, details, DOCX
+    download, fill-pack text, fill-pack attach — so none of them can disagree
+    about whether a document that claims unevidenced work may leave the product.
+    Callers have already checked ownership. Never raises for a missing draft or
+    résumé: those are answered by the verdict itself.
+
+    ``loaded`` lets a caller that already read the application hand over what
+    it has (``rejected``, ``notes``, ``path``, ``uid``, ``jd``) instead of this
+    re-reading the Application and the full Job row. The verdict for one draft
+    FILE is also kept for 60 s (keyed by path + mtime + status): `/details` is
+    polled every few seconds while a tailor runs, and re-reading the master
+    résumé and re-parsing the DOCX on every poll bought nothing.
+    """
+    import os
+    from app.common import ttl_cache as _ttl
+    from app.tailoring.export_gate import ExportVerdict, evaluate
+    if loaded is None:
+        with get_session() as session:
+            application = session.get(Application, application_id)
+            if not application:
+                return ExportVerdict(True, "no_draft", "")
+            job = session.get(Job, application.job_id)
+            loaded = {
+                "rejected": application.status == ApplicationStatus.ERROR,
+                "notes": application.notes or "",
+                "path": application.tailored_resume_path,
+                "uid": application.user_id,
+                "jd": (job.description or "") if job else None,
+            }
+    rejected, notes, path, uid = (loaded.get("rejected"), loaded.get("notes") or "",
+                                  loaded.get("path"), loaded.get("uid"))
+    if rejected:
+        return evaluate(grounding_rejected=True, grounding_reason=notes,
+                        master="", tailored="", jd="")
+    if not path:
+        return ExportVerdict(True, "no_draft", "")
+    try:
+        if not os.path.exists(path):
+            _rehydrate_tailored_file(path, uid)
+        mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+    except Exception:
+        mtime = 0
+    key = f"export_verdict:{application_id}:{path}:{mtime}"
+    hit = _ttl.peek(key)
+    if hit is not _ttl._MISS:
+        return hit
+
+    def _compute():
+        jd = loaded.get("jd")
+        if jd is None:
+            with get_session() as session:
+                app_row = session.get(Application, application_id)
+                job = session.get(Job, app_row.job_id) if app_row else None
+                jd = (job.description or "") if job else ""
+        tailored = ""
+        try:
+            from app.autofill.answer_pack import _load_resume_text_from_path
+            tailored = _load_resume_text_from_path(path) or ""
+        except Exception as exc:
+            log.debug("export gate: draft unreadable for app %s: %s", application_id, exc)
+        master = ""
+        if tailored:
+            try:
+                from app.matching.pipeline import _load_resume
+                master = _load_resume(user_id=uid) or ""
+            except Exception as exc:
+                log.debug("export gate: master résumé unavailable for app %s: %s",
+                          application_id, exc)
+        try:
+            return evaluate(grounding_rejected=False, grounding_reason="",
+                            master=master, tailored=tailored, jd=jd)
+        except Exception as exc:
+            # The check itself failing is not evidence the draft is clean — but
+            # it is not evidence of a fabrication either, and grounding already
+            # ran at generation time. Log loudly and allow, rather than lock
+            # the user out of every document on a parser bug. Not cached.
+            log.warning("export gate evaluation failed for app %s: %s", application_id, exc)
+            return ExportVerdict(True, "gate_error", "")
+
+    return _ttl.get_or_compute(key, 60, _compute,
+                               cache_if=lambda v: v.code != "gate_error")
+
+
 @app.get("/application/{application_id}/download-resume")
 def download_tailored_resume(application_id: int, request: Request):
     """Serve the tailored DOCX resume file as a direct download."""
@@ -10752,24 +10983,32 @@ def download_tailored_resume(application_id: int, request: Request):
                         or "This résumé did not pass the grounding check and cannot be downloaded. "
                            "Re-run tailoring for this application."),
             )
-
-
-        import os
-        from fastapi.responses import FileResponse
         path = application.tailored_resume_path
-        # Re-fetch from durable storage if the ephemeral copy was wiped on deploy.
-        if not os.path.exists(path):
-            _rehydrate_tailored_file(path, application.user_id)
-        if not os.path.exists(path):
-            raise HTTPException(status_code=404, detail="Resume file not found on disk")
-            
-        filename = os.path.basename(path)
-        _record_document_downloaded("resume", application_id, application.user_id)
-        return FileResponse(
-            path,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            filename=filename
-        )
+        owner_uid = application.user_id
+        _loaded = {"rejected": False, "notes": application.notes or "",
+                   "path": path, "uid": owner_uid, "jd": None}
+
+    # The same verdict the review shows: a draft claiming work the résumé
+    # does not evidence is not downloadable either.
+    verdict = _export_verdict(application_id, loaded=_loaded)
+    if verdict.blocked:
+        raise HTTPException(status_code=409, detail=verdict.reason)
+
+    import os
+    from fastapi.responses import FileResponse
+    # Re-fetch from durable storage if the ephemeral copy was wiped on deploy.
+    if not os.path.exists(path):
+        _rehydrate_tailored_file(path, owner_uid)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Resume file not found on disk")
+
+    filename = os.path.basename(path)
+    _record_document_downloaded("resume", application_id, owner_uid)
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename
+    )
 
 
 @app.get("/application/{application_id}/review")
@@ -10798,8 +11037,9 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         jd = job.description or ""
         job_title, job_company = job.title, job.company
         tailored_path = application.tailored_resume_path
-        blocked = application.status == ApplicationStatus.ERROR
-        block_reason = application.notes or ""
+        _loaded = {"rejected": application.status == ApplicationStatus.ERROR,
+                   "notes": application.notes or "", "path": tailored_path,
+                   "uid": uid, "jd": jd}
 
     from app.matching.pipeline import _load_resume
     master = _load_resume(user_id=uid) or ""
@@ -10816,9 +11056,14 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         except Exception as exc:
             log.warning("pre-download review: tailored draft unreadable: %s", exc)
 
+    # The review and every export route read ONE verdict, so they cannot
+    # disagree: the audit reproduced `unconfirmed_claims: ["Kafka"]` beside
+    # `download_blocked: false`, because this flag only looked at the status.
+    verdict = _export_verdict(application_id, loaded=_loaded)
+
     from app.tailoring.requirements import review as build_review
     try:
-        rep = build_review(master, tailored, jd)
+        rep = getattr(verdict, "review", None) or build_review(master, tailored, jd)
     except Exception as exc:
         log.exception("pre-download review failed for application %s", application_id)
         raise HTTPException(status_code=500,
@@ -10830,10 +11075,9 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         "job_title": job_title,
         "job_company": job_company,
         "draft_available": bool(tailored),
-        # A draft grounding rejected is not downloadable; say so here too so the
-        # review and the download route cannot disagree about it.
-        "download_blocked": blocked,
-        "download_blocked_reason": block_reason if blocked else "",
+        "download_blocked": verdict.blocked,
+        "download_blocked_reason": verdict.reason if verdict.blocked else "",
+        "export_check": verdict.code,
     })
     return payload
 

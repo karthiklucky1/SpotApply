@@ -29,7 +29,7 @@ import pytest
 
 from app.tailoring.inventory import build_inventory
 from app.tailoring.requirements import (GAP, LISTED_ONLY, PROJECT_ONLY, SHORT,
-                                        SUPPORTED, ExperienceRequirement,
+                                        SUPPORTED, UNDATED, ExperienceRequirement,
                                         assess, parse_requirements, review,
                                         unconfirmed_project_claims)
 
@@ -174,9 +174,42 @@ def _req(months, skill="", required=True):
                                  months_min=months, skill=skill, required=required)
 
 
-def test_enough_time_in_paid_work_is_supported(inv):
+def test_a_skill_mentioned_in_a_role_is_not_the_length_of_the_role(inv):
+    """AUDIT 2026-09-25 (finding 4). FastAPI appears in one bullet of a
+    33-month job; the résumé never says how long it was used. That is an open
+    question for the candidate, not 33 months of FastAPI."""
     a = assess(_req(24, "FastAPI"), inv)
-    assert a.status == SUPPORTED and a.held_months == 33
+    assert a.status == UNDATED and a.held_months == 0
+    assert "does not say for how long" in a.line()
+    assert not a.is_gap
+
+
+def test_one_dated_month_inside_six_years_does_not_support_five_years():
+    """The audit's reproduction: Python in Dec 2025 only, during a six-year job."""
+    master = ("## Experience\n**Software Engineer** | Acme | Jan 2020 - Dec 2025\n"
+              "- Wrote a Python script in Dec 2025 to migrate billing data.\n"
+              "- Built Java services handling 40k requests per day.\n")
+    inv2 = build_inventory(master, extra_skills=["Python"])
+    assert inv2.skill("Python").employment_months == 1
+    assert inv2.skill("Python").role_months == 72
+    a = assess(_req(60, "Python"), inv2)
+    assert a.status != SUPPORTED
+    assert a.status == UNDATED and a.held_months == 1
+
+
+def test_dated_time_with_a_skill_is_supported():
+    master = ("## Experience\n**Python Engineer** | Acme | Jan 2020 - Dec 2022\n"
+              "- Built services handling 40k requests per day.\n")
+    a = assess(_req(24, "Python"), build_inventory(master, extra_skills=["Python"]))
+    assert a.status == SUPPORTED and a.held_months == 36
+
+
+def test_roles_too_short_for_the_requirement_are_short_even_undated():
+    master = ("## Experience\n**Engineer** | Acme | Jan 2024 - Dec 2024\n"
+              "- Built services in Go handling 40k requests per day.\n")
+    a = assess(_req(36, "Go"), build_inventory(master, extra_skills=["Go"]))
+    assert a.status == SHORT and a.held_months == 12
+    assert "upper bound" in a.line()
 
 
 def test_not_enough_time_is_short_and_says_how_much_is_held(inv):

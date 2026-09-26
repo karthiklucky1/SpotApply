@@ -63,6 +63,17 @@ WORLDWIDE = "worldwide"
 REGION_KEYS = tuple(_REGION_MEMBERS.keys())
 
 
+#: Bumped whenever `decide()` can return a different answer for the same
+#: inputs. Recorded with every delivery (slate placement events) so a verdict
+#: can always be traced to the rules that produced it, and so a stamp written
+#: by older rules is recognisably older.
+#:   1 — the 2026-09-18 evidence rules
+#:   2 — 2026-09-26 audit: relocation DESTINATIONS bind (not just the flag); a
+#:       known on-site/hybrid role with no home location on file is held; a
+#:       hybrid/on-site role with no physical site is held, never "not near".
+RULES_VERSION = 2
+
+
 @dataclass(frozen=True)
 class GeoPrefs:
     """The saved preferences the decision reads. All canonical/lowercase."""
@@ -70,6 +81,25 @@ class GeoPrefs:
     remote_ok: bool = True
     open_to_relocation: bool = False
     home_location: str = ""            # UserProfile.location, verbatim ("Cincinnati, OH")
+    # Where they will move to — `relocation.parse_targets` of
+    # UserProfile.relocation_targets. () = not stated (read as anywhere in the
+    # searched country, the meaning `open_to_relocation` always had);
+    # ("nationwide",) = anywhere, said explicitly; otherwise ONLY these
+    # cities/states. Willingness to move to Chicago is not willingness to move
+    # to Dallas (audit 2026-09-25, finding 3).
+    relocation_targets: tuple = ()
+
+    def relocation_covers(self, sites: Iterable[str]) -> bool:
+        """Would this user move to (one of) these physical sites?"""
+        if not self.open_to_relocation:
+            return False
+        targets = list(self.relocation_targets or ())
+        if not targets:
+            return True
+        from app.tailoring.relocation import NATIONWIDE, _approved
+        if NATIONWIDE in targets:
+            return True
+        return any(_approved(s, targets) for s in sites if s)
 
 
 @dataclass
@@ -237,6 +267,21 @@ def home_area_matches(sites: Iterable[str], home_location: str) -> Optional[bool
     return any(_site_in_home_area(s, city, state) for s in sites)
 
 
+def _is_bare_country(site: str) -> bool:
+    """A site that is only a country name ("United States", "Germany")."""
+    from app.common.geo import _COUNTRY_NAMES
+    c = norm_country(site or "")
+    return c == "united states" or c in _COUNTRY_NAMES
+
+
+def _specific_sites(sites: List[str]) -> List[str]:
+    """Sites more specific than a whole country, for the sentence a user reads
+    ("Hybrid in San Francisco", not "Hybrid in United States, San Francisco").
+    Falls back to every site when none is narrower."""
+    narrow = [s for s in sites if not _is_bare_country(s)]
+    return narrow or list(sites)
+
+
 def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     """The decision. Deterministic; the same inputs give the same answer at
     intake, adoption, retrieval, scoring and delivery."""
@@ -284,8 +329,13 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
                         f"Located in {_fmt_places(countries)}; "
                         f"you are searching in {_titled(country)}")
 
-    # Country check passed. The sites that are places, not a way of working.
-    physical = [s for s in geo.sites if not _is_remote_site(s)]
+    # Country check passed. The sites that are places, not a way of working —
+    # and narrower than a whole country: "United States" as a site says where
+    # the job is legally, not where anyone has to commute to.
+    physical = [s for s in geo.sites if not _is_remote_site(s) and not _is_bare_country(s)]
+    # Will they move to where this job is? The flag alone used to answer it, so
+    # "relocate to Chicago only" admitted an on-site role in Dallas.
+    will_move = prefs.relocation_covers(physical)
 
     # The user's remote preference ("Include remote roles" off): a remote role
     # is not a job they asked for, unless it also offers an office in their
@@ -303,7 +353,7 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # does not place well enough to compare is HELD — never read as "anywhere
     # in the country".
     applicable = [a for a in geo.areas if _area_parts(a)[0] == country]
-    if applicable and not (physical and prefs.open_to_relocation):
+    if applicable and not (physical and will_move):
         ok, where = _area_check(applicable, prefs.home_location)
         if ok is None:
             return Decision(UNKNOWN, "area_restriction_unresolved",
@@ -319,15 +369,35 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # The user's actual local-location preference: an on-site or hybrid role
     # outside their home area, when they will not relocate, is not a job they
     # can take — whatever the fit score says.
-    if geo.work_mode in ("onsite", "hybrid") and not prefs.open_to_relocation:
-        near = home_area_matches(physical or geo.sites, prefs.home_location)
+    if geo.work_mode in ("onsite", "hybrid") and not will_move:
+        mode = geo.work_mode.capitalize()
+        if not physical:
+            # An attendance requirement with no place we can read ("3 days a
+            # week in the office", structured site "Remote"). Comparing
+            # "Remote" with a home city answered "not near" and so INELIGIBLE —
+            # a guess. The office is the missing fact; hold for it.
+            return Decision(UNKNOWN, "attendance_place_unresolved",
+                            f"{mode} role, but the posting does not say where the office is "
+                            f"— pending verification" + area_note)
+        near = home_area_matches(physical, prefs.home_location)
+        where = _fmt_places(_specific_sites(physical)[:2])
         if near is False:
-            where = _fmt_places([s for s in (physical or geo.sites)][:2]) if (physical or geo.sites) else "another city"
+            if prefs.open_to_relocation:
+                return Decision(INELIGIBLE, "relocation_target_excluded",
+                                f"{mode} in {where}, which is not one of the places you "
+                                f"will relocate to")
             return Decision(INELIGIBLE, "onsite_outside_home_area",
-                            f"{geo.work_mode.capitalize()} in {where}; you are not open to relocation")
+                            f"{mode} in {where}; you are not open to relocation")
         if near is True:
             return Decision(ELIGIBLE, "onsite_in_home_area",
-                            f"{geo.work_mode.capitalize()} in your area" + area_note)
+                            f"{mode} in your area" + area_note)
+        # near is None: no home location on file. A commute is required and we
+        # cannot tell whether this one is feasible — the old answer was
+        # ELIGIBLE, which delivered a Dallas office job to a profile with no
+        # city and relocation off. Ask for the city instead of guessing.
+        return Decision(UNKNOWN, "home_location_missing",
+                        f"{mode} in {where} — add your city and state to your profile "
+                        f"so we can tell whether it is within reach" + area_note)
 
     if not prefs.remote_ok and geo.work_mode == "remote":
         return Decision(ELIGIBLE, "office_in_home_area",
@@ -366,7 +436,7 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # a user who never typed one. The narrower ask already exists for the case
     # that justifies it, where the POSTING asserts a residence restriction
     # (`area_restriction_unresolved`, which does prompt for the city).
-    if not geo.work_mode and physical and not prefs.open_to_relocation:
+    if not geo.work_mode and physical and not will_move:
         if home_area_matches(physical, prefs.home_location) is False:
             where = _fmt_places(physical[:2])
             return Decision(UNKNOWN, "work_mode_unresolved",

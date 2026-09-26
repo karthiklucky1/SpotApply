@@ -155,11 +155,35 @@ def test_the_employer_is_read_from_the_pipe_field_not_the_city(inv):
 
 # ── attribution: which work backs which skill ────────────────────────────────
 
-def test_a_skill_used_in_paid_work_carries_that_time(inv):
+def test_a_skill_used_in_paid_work_is_paid_work_of_unstated_duration(inv):
+    """AUDIT 2026-09-25 (finding 4). A skill named in one bullet of a 33-month
+    job was credited with all 33 months. The role's length is kept as context
+    (`role_months`, an upper bound); the skill's own time is what the résumé
+    dates, and here it dates none."""
     fastapi = inv.skill("FastAPI")
     assert fastapi.kinds == frozenset({PROFESSIONAL})
-    assert fastapi.employment_months == 33
+    assert fastapi.paid_work is True
+    assert fastapi.employment_months == 0
+    assert fastapi.role_months == 33
+    assert fastapi.duration_unknown is True
     assert fastapi.project_only is False
+
+
+def test_a_title_naming_the_skill_dates_the_whole_role():
+    inv2 = build_inventory("## Experience\n**Python Developer** | Beta | Jan 2018 - Dec 2018\n"
+                           "- Maintained internal tooling for the data team.\n",
+                           extra_skills=["Python"])
+    assert inv2.skill("Python").employment_months == 12
+
+
+def test_a_dated_bullet_dates_only_its_own_span():
+    inv2 = build_inventory(
+        "## Experience\n**Engineer** | Acme | Jan 2020 - Dec 2025\n"
+        "- Led the Go rewrite (Mar 2022 - Aug 2022) of the ingest service.\n"
+        "- Planned the market 2024 roadmap with the Go team.\n",
+        extra_skills=["Go"])
+    # Mar–Aug 2022 only; "market 2024" is not March 2024.
+    assert inv2.skill("Go").employment_months == 6
 
 
 def test_a_skill_shown_only_in_a_project_carries_no_employment_time(inv):
@@ -206,7 +230,7 @@ def test_punctuated_skills_still_match(written):
         "- Ran the CI/CD pipeline and the Node.js build.\n",
         extra_skills=[written, "Node.js", "nodejs"])
     assert inv2.skill(written) is not None
-    assert inv2.skill("Node.js").employment_months == 12
+    assert inv2.skill("Node.js").role_months == 12
 
 
 # ── selection order ──────────────────────────────────────────────────────────

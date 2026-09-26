@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>SpotApply — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#0077C2"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="SpotApply"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/static/icon-192.svg"> <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%230EA5E9'/><stop offset='100%25' stop-color='%230077C2'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M10 16h12M16 10l6 6-6 6' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/><circle cx='10' cy='16' r='2' fill='rgba(255,255,255,0.8)'/></svg>"> <link rel="stylesheet" href="/static/tailwind.css"> {#- defer: both libs are only called from user-triggered/post-load functions
+<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>SpotApply — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#0077C2"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="SpotApply"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/static/icon-192.svg"> <link rel="icon" href="/favicon.ico" sizes="any"> <link rel="icon" type="image/svg+xml" href="/favicon.svg"> <link rel="stylesheet" href="/static/tailwind.css"> {#- defer: both libs are only called from user-triggered/post-load functions
     (renderChart, avatar Cropper) — without it these two CDN fetches block HTML
     parsing on every page load. -#}
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css"> <script defer src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script> <script type="module"> // Auth guard — redirect to /login if no session or token expired
@@ -1838,7 +1838,8 @@
             loadSidebarAvatar();
             loadTrustProfile(false);
             loadNotifications();
-            window._notifPoll = setInterval(loadNotifications, 60000);
+            // Hidden tabs do not poll (audit 2026-09-25, finding 8).
+            window._notifPoll = setInterval(() => { if (!document.hidden) loadNotifications(); }, 60000);
             loadIntros();
             claimReferralIfPending();
             revealAdminIfOwner();
@@ -3255,6 +3256,13 @@
                         else if (status === 'submitted' || status === 'interviewing') statusBadge = `<span class="bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
                         else if (status === 'autofilled' || status === 'awaiting_user') statusBadge = `<span class="bg-amber-500/15 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full uppercase font-extrabold tracking-wider text-[9px]">${status}</span>`;
                         else statusBadge = `<span class="bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-full uppercase tracking-wider text-[9px]">${status}</span>`;
+                        // Already on the board, but the location verdict was
+                        // re-decided since (new rules, new evidence or a profile
+                        // change). The entry and any work on it are kept; the
+                        // user is told plainly that it needs a second look.
+                        if (j.eligibility === 'unknown' || j.eligibility === 'ineligible') {
+                            statusBadge += ` <span class="text-amber-400/80 font-medium" title="${_esc(j.eligibility_reason || 'Location needs checking')}">· Location: check</span>`;
+                        }
                     }
 
                     let actionBtn = '';
@@ -7536,10 +7544,22 @@
             return true;
         } catch (e) { return true; }
     }
+    // Polling discipline (audit 2026-09-25, finding 8): a hidden tab does not
+    // poll, a tick never overlaps the previous one, and a failing endpoint is
+    // backed off (20s → 40s → … → 5 min) instead of hammered every 20s.
+    let _liveInFlight = false, _liveFailures = 0, _liveNextAt = 0;
     async function livePipelineTick() {
+        if (document.hidden || _liveInFlight || Date.now() < _liveNextAt) return;
+        _liveInFlight = true;
         try {
             const r = await fetch('/api/pipeline/live', { headers: _hpHeaders() });
-            if (!r.ok) return;
+            if (!r.ok) {
+                _liveFailures += 1;
+                _liveNextAt = Date.now() + Math.min(300000, 20000 * Math.pow(2, _liveFailures));
+                return;
+            }
+            _liveFailures = 0;
+            _liveNextAt = 0;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
             // null = the count timed out server-side (degraded read). Leave the
@@ -7569,12 +7589,22 @@
             const fresh = server - _shortlistBaseline;
             if (fresh > 0) _showNewMatchesBanner(fresh);
             else _clearNewMatchesBanner();
-        } catch (e) { /* silent */ }
+        } catch (e) {
+            _liveFailures += 1;
+            _liveNextAt = Date.now() + Math.min(300000, 20000 * Math.pow(2, _liveFailures));
+        } finally {
+            _liveInFlight = false;
+        }
     }
     // Steady heartbeat so background-scored jobs appear on their own (a discovery
     // run polls faster via _discoverPoll). 20s keeps the light endpoint cheap.
+    // Polling is not activity: the server never counts it toward keeping a
+    // search running (server._is_meaningful_request).
     setInterval(livePipelineTick, 20000);
     setTimeout(livePipelineTick, 3000);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) { _liveNextAt = 0; livePipelineTick(); }
+    });
 
     // ── Shortlist sort: Freshest (default) vs Best match — client-side, instant ──
     // Reorders the rendered cards without a reload. Choice persists in localStorage
