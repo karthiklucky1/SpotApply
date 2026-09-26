@@ -180,6 +180,10 @@ def _compute_policy_off_unless_asked(request, monkeypatch):
     from app.config import settings
     from app.common import compute_policy as _cp
     _cp.reset_state()
+    # Temporary Pro is ON in production for the beta. Plan-resolution tests
+    # are about the plan logic underneath it, so the suite runs with it off;
+    # tests of the flag itself (test_temporary_pro.py) switch it on explicitly.
+    monkeypatch.setattr(settings, "temporary_pro_for_all", False, raising=False)
     if request.node.get_closest_marker("compute_policy") is None:
         monkeypatch.setattr(settings, "compute_policy_enforced", False, raising=False)
     yield

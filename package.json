@@ -5,8 +5,9 @@
   "scripts": {
     "build:css": "tailwindcss -c tailwind.config.js -i app/static/tailwind.in.css -o app/static/tailwind-landing.css --minify",
     "vendor:aos": "node -e \"const fs=require('fs');fs.mkdirSync('app/static/vendor',{recursive:true});for(const f of ['aos.css','aos.js']){fs.copyFileSync(require.resolve('aos/dist/'+f),'app/static/vendor/'+f)}\"",
-    "build": "npm run build:css && npm run build:css:dashboard && npm run vendor:aos",
-    "build:css:dashboard": "tailwindcss -c tailwind.dashboard.config.js -i app/static/tailwind.in.css -o app/static/tailwind.css --minify"
+    "build": "npm run build:css && npm run build:css:dashboard && npm run build:css:public && npm run vendor:aos",
+    "build:css:dashboard": "tailwindcss -c tailwind.dashboard.config.js -i app/static/tailwind.in.css -o app/static/tailwind.css --minify",
+    "build:css:public": "tailwindcss -c tailwind.public.config.js -i app/static/tailwind.in.css -o app/static/tailwind-public.css --minify"
   },
   "devDependencies": {
     "aos": "2.3.4",

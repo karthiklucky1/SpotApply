@@ -275,7 +275,7 @@ class Settings(BaseSettings):
     # customer portal and the webhook keep working, so existing subscribers keep
     # account access and their rows keep reconciling. Flip to 0 and every user
     # returns to whatever their own row/grandfathering says, with no migration.
-    temporary_pro_for_all: bool = False   # TEMPORARY_PRO_FOR_ALL
+    temporary_pro_for_all: bool = True    # TEMPORARY_PRO_FOR_ALL — ON for the beta (2026-09-26 release): every account gets PRO LIMITS through _get_user_plan, nothing is for sale, no row is written. Set 0 to turn it off; no migration either way. Background compute is still gated separately (app/common/compute_policy.py).
     payment_bank_details: str = ""        # PAYMENT_BANK_DETAILS — bank-transfer/UPI instructions (multi-line ok)
     # A branded address on customer-facing surfaces (receipts, billing help) —
     # a personal gmail on a payment screen reads as a scam.
