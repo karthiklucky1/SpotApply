@@ -336,3 +336,29 @@ def test_apple_touch_icon_is_a_real_png_at_both_ios_paths():
         html = (ROOT / "app" / "templates" / page).read_text()
         if "apple-touch-icon" in html:
             assert 'href="/apple-touch-icon.png"' in html
+
+
+# ── the legal entity ─────────────────────────────────────────────────────────
+
+def test_the_legal_pages_name_the_llc_as_the_counterparty():
+    """SpotApply LLC (Ohio, registered — confirmed by the founder 2026-09-27)
+    is who a user contracts with and who controls their data. Before this the
+    Terms named nobody and the Privacy Policy named "its founder", so the
+    liability limits had no company to attach to."""
+    terms = (ROOT / "app" / "templates" / "terms.html").read_text()
+    assert "binding agreement between you and <strong>SpotApply LLC</strong>" in terms
+    assert "an Ohio limited liability company" in terms
+    assert "governed by the laws of the State of Ohio" in terms
+    assert "Hamilton County, Ohio" in terms
+    assert "SpotApply and its operators" not in terms
+    privacy = (ROOT / "app" / "templates" / "privacy.html").read_text()
+    assert "SpotApply LLC, an Ohio limited liability company" in privacy
+    assert "is the data controller" in privacy
+    assert "operated by its founder" not in privacy
+
+
+def test_the_footers_carry_the_company_name(client):
+    for path in ("/", "/pricing"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert "SpotApply LLC" in r.text, f"{path} footer does not name the company"

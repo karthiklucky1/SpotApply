@@ -582,7 +582,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`work_authorization`/`visa_status`/`ead_end_date`/`requires_sponsorship`/
   `stem_opt` + relocation targets) — now declared against implemented
   behaviour only, which is why its date moved. TERMS moved to September 2026
-  only with a real revision (plans/payments, inactivity pause, AI documents). Footer years are server-rendered. Guard: `test_brand_assets` (live
+  only with a real revision (plans/payments, inactivity pause, AI documents). The
+  counterparty is **SpotApply LLC** (Ohio; Ohio law, Hamilton County courts), named in
+  Terms, Privacy and the landing/pricing footers. Footer years are server-rendered. Guard: `test_brand_assets` (live
   HTTP: content types, no-auth access, manifest icons on disk, case-exact
   paths, every og:image actually served).
 - **Authenticated responses are `no-store`** (`PrivateCacheMiddleware`,
