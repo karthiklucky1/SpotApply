@@ -369,8 +369,11 @@ class UserProfile(SQLModel, table=True):
     # EEOC (decline to answer by default — safest)
     gender: str = "Decline to self-identify"
     ethnicity: str = "Decline to self-identify"
-    veteran_status: str = "I am not a protected veteran"
-    disability_status: str = "No, I do not have a disability, or history/record of having a disability"
+    # Voluntary self-identification. Default = decline: the old defaults were
+    # affirmative claims ("I am not a protected veteran") that no UI could
+    # change and the extension filled into employer forms for everyone.
+    veteran_status: str = "Decline to self-identify"
+    disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""
     key_skills: str = ""                # comma-separated

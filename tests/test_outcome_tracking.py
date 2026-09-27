@@ -90,3 +90,25 @@ def test_funnel_reports_ghosting_and_response_rate(client):
     assert d["presumed_ghosted"] == 1
     assert d["interviewing"] == 1 and d["rejected"] == 1
     assert d["response_rate"] == 40  # 2 of 5
+
+
+def test_mark_ghosted_twice_records_one_outcome(client):
+    """A second 👻 click is the same outcome, not a new one: no second note
+    line, no second funnel event (it would halve the honest response rate)."""
+    import sqlmodel
+    with get_session() as session:
+        _clean(session)
+        application = _mk_app(session, 3)
+        app_id, job_id = application.id, application.job_id
+
+    assert client.post(f"/application/{app_id}/outcome?outcome=ghosted").status_code == 200
+    again = client.post(f"/application/{app_id}/outcome?outcome=ghosted")
+    assert again.status_code == 200
+    assert again.json().get("unchanged") is True
+
+    with get_session() as session:
+        row = session.get(Application, app_id)
+        assert (row.notes or "").count("Outcome 'ghosted'") == 1
+        events = session.exec(sqlmodel.select(FunnelEvent).where(
+            FunnelEvent.stage == "responded", FunnelEvent.job_id == job_id)).all()
+        assert len(events) == 1

@@ -1950,6 +1950,21 @@ def serve_favicon_svg():
                         headers={"Cache-Control": _ASSET_CACHE})
 
 
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+def serve_apple_touch_icon():
+    """Home-screen icon for iPhone/iPad. iOS ignores SVG touch icons and then
+    asks for these two fixed paths itself — both were 404 (2026-09-27), so a
+    saved shortcut showed a blank tile. 180x180 PNG rendered from the mark."""
+    import os
+    from fastapi.responses import FileResponse
+    file_path = os.path.join(os.path.dirname(__file__), "..", "static", "apple-touch-icon.png")
+    if not os.path.exists(file_path):
+        return serve_favicon_svg()
+    return FileResponse(file_path, media_type="image/png",
+                        headers={"Cache-Control": _ASSET_CACHE})
+
+
 @app.get("/favicon.ico")
 def serve_favicon_ico():
     """A REAL .ico — three PNG frames (16/32/48) in an ICO container.
@@ -3946,6 +3961,8 @@ def _dashboard_load_options():
             # Tailor Again. Leaving it off the allowlist means one deferred
             # SELECT per rendered card.
             Application.tailored_at,
+            # Submitted cards swap the 👻 button for a "Marked ghosted" label.
+            Application.response_type,
         ),
         Load(Job).load_only(
             Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
@@ -5036,6 +5053,22 @@ def application_autopsy(application_id: int, request: Request) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# The pre-2026-09-27 column defaults. No UI could ever set them, so a row
+# holding one of these means "never chosen" — never the user's answer.
+_EEO_LEGACY_DEFAULTS = frozenset({
+    "I am not a protected veteran",
+    "No, I do not have a disability, or history/record of having a disability",
+})
+
+
+def _eeo_answer(value) -> str:
+    """A self-identification answer the USER chose, else "Decline to self-identify"."""
+    v = (value or "").strip()
+    if not v or v in _EEO_LEGACY_DEFAULTS:
+        return "Decline to self-identify"
+    return v
+
+
 def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
     """The value the extension may put in a "do you (now or in future) require
     sponsorship?" field, or None to leave it for the user.
@@ -5154,10 +5187,12 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # Only a CERTAIN answer is sent; None makes the extension leave the
         # future-sponsorship question for the user (sponsorship_answer_for_pack).
         "requires_sponsorship": _sponsorship_answer_for_pack(p),
-        "gender": p.gender if p else "Decline to self-identify",
-        "ethnicity": p.ethnicity if p else "Decline to self-identify",
-        "veteran_status": p.veteran_status if p else "I am not a protected veteran",
-        "disability_status": p.disability_status if p else "No, I do not have a disability, or history/record of having a disability",
+        # Voluntary self-identification: only what the user chose; anything else
+        # is sent as "decline" (never the old affirmative defaults).
+        "gender": _eeo_answer(p.gender if p else ""),
+        "ethnicity": _eeo_answer(p.ethnicity if p else ""),
+        "veteran_status": _eeo_answer(p.veteran_status if p else ""),
+        "disability_status": _eeo_answer(p.disability_status if p else ""),
         "cover_letter": cover_text,
         "resume_text": resume_text,
         # Screening answers are derived from these. They were absent, so the
@@ -6486,6 +6521,11 @@ def mark_outcome(application_id: int, request: Request, outcome: str) -> dict:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
+        if key == "ghosted" and application.response_type == "ghosted":
+            # A second click is not a second outcome: no note, no funnel event.
+            return {"success": True, "application_id": application_id,
+                    "status": application.status.value if hasattr(application.status, "value") else application.status,
+                    "response_type": "ghosted", "unchanged": True}
         if status:
             application.status = status
         application.response_type = _RESPONSE_TYPES.get(key, application.response_type)
@@ -9081,7 +9121,7 @@ _USERPROFILE_COLUMNS = [
     ("experience_json", "TEXT", "TEXT"),
     ("gender", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("ethnicity", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
-    ("veteran_status", "VARCHAR DEFAULT 'I am not a protected veteran'", "VARCHAR DEFAULT 'I am not a protected veteran'"),
+    ("veteran_status", "VARCHAR DEFAULT 'Decline to self-identify'", "VARCHAR DEFAULT 'Decline to self-identify'"),
     ("disability_status",
      "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'",
      "VARCHAR DEFAULT 'No, I do not have a disability, or history/record of having a disability'"),
@@ -9233,10 +9273,10 @@ def get_profile(request: Request) -> dict:
             if (profile.degree or profile.university) else []
         ),
         "experience": _profile_history_list(profile, "experience_json"),
-        "gender": profile.gender,
-        "ethnicity": profile.ethnicity,
-        "veteran_status": profile.veteran_status,
-        "disability_status": profile.disability_status,
+        "gender": _eeo_answer(profile.gender),
+        "ethnicity": _eeo_answer(profile.ethnicity),
+        "veteran_status": _eeo_answer(profile.veteran_status),
+        "disability_status": _eeo_answer(profile.disability_status),
         "professional_summary": profile.professional_summary,
         "key_skills": profile.key_skills,
         "target_roles": profile.target_roles,
@@ -9257,6 +9297,11 @@ def get_profile(request: Request) -> dict:
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
+        # Also edited by the form; missing here meant a save wiped them.
+        "articulation_video_url": getattr(profile, "articulation_video_url", "") or "",
+        "ead_end_date": getattr(profile, "ead_end_date", "") or "",
+        "opt_unemployment_days_used": int(getattr(profile, "opt_unemployment_days_used", 0) or 0),
+        "stem_opt": bool(getattr(profile, "stem_opt", False)),
     }
 
 

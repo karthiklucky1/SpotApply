@@ -37,6 +37,7 @@ PUBLIC_PATHS = {
     "/", "/login", "/pricing", "/privacy", "/terms", "/extension",
     "/auth/callback", "/auth/reset",
     "/robots.txt", "/sitemap.xml", "/favicon.ico", "/api/favicon", "/favicon.svg",
+    "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
     "/health",
     # Server-rendered page SHELLS. These return HTML only; every byte of tenant
     # data on them is fetched client-side from the guarded APIs below. /dashboard

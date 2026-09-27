@@ -321,3 +321,18 @@ def test_sitemap_and_robots_use_the_canonical_host():
     locs = re.findall(r"<loc>([^<]+)</loc>", sitemap)
     assert locs and all(loc.startswith(host + "/") for loc in locs), locs
     assert f"Sitemap: {host}/sitemap.xml" in robots
+
+
+def test_apple_touch_icon_is_a_real_png_at_both_ios_paths():
+    """iOS ignores SVG touch icons and requests these fixed paths (both 404'd)."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    c = TestClient(app)
+    for path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"):
+        r = c.get(path)
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png", path
+        assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
+    for page in ("dashboard.html", "landing.html"):
+        html = (ROOT / "app" / "templates" / page).read_text()
+        if "apple-touch-icon" in html:
+            assert 'href="/apple-touch-icon.png"' in html

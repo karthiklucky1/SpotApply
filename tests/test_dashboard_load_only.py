@@ -54,6 +54,19 @@ def seeded():
         s.refresh(job)
         s.add(Application(user_id=None, job_id=job.id,
                           status=ApplicationStatus.SHORTLISTED, apply_track="autofill"))
+        # A SUBMITTED card too: its macro reads columns the shortlist one does
+        # not (response_type), and a board with only shortlisted cards never
+        # ran it — that gap would have shipped a 500 to anyone who had applied.
+        sub = Job(user_id=None, source=JobSource.GREENHOUSE, external_id="dashld-2",
+                  company="AppliedCo", title="Data Engineer", location="Remote",
+                  remote=True, url="https://lo.example/2", description=_JD,
+                  rerank_score=75.0, blended_score=76.0, first_seen=now - timedelta(days=3),
+                  last_seen=now)
+        s.add(sub)
+        s.commit()
+        s.refresh(sub)
+        s.add(Application(user_id=None, job_id=sub.id, status=ApplicationStatus.SUBMITTED,
+                          submitted_at=now - timedelta(days=2), response_type="ghosted"))
         s.commit()
         jid = job.id
     yield jid
@@ -80,6 +93,8 @@ def test_the_board_renders_everything_it_reads(seeded):
     html = res.text
     assert "LoadOnlyCo" in html
     assert "Backend Engineer" in html
+    assert "AppliedCo" in html
+    assert "Marked ghosted" in html
     # The salary chip and the sponsorship badge still render — from the facets
     # stamped on the row, not from a live regex over the posting.
     assert "$150,000 - $180,000" in html
