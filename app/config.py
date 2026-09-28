@@ -329,6 +329,11 @@ class Settings(BaseSettings):
     # A bounded read makes a slow database cost a degraded panel instead of a
     # login nobody can complete. 0 disables the bound (pre-2026-09 behaviour).
     dashboard_query_timeout_seconds: int = 5   # DASHBOARD_QUERY_TIMEOUT_SECONDS
+    # /api/stats (every dashboard load): cached per user this long, and the whole
+    # computation stops adding reads after this budget. 2026-09-28: ~30 uncached
+    # counts over an 87k-row pool took sign-in to 17-32 s.
+    stats_cache_seconds: int = 300             # STATS_CACHE_SECONDS
+    stats_total_budget_seconds: int = 10       # STATS_TOTAL_BUDGET_SECONDS
     # Capture hiring context (department / team / requisition / recruiter) from
     # fields the ATS responses ALREADY contain, plus deterministic extraction
     # from the full description. Zero extra HTTP requests and no LLM call, so
@@ -497,7 +502,7 @@ class Settings(BaseSettings):
     # 0 disables.
     job_description_strip_age_days: int = 14
     job_purge_max_age_days: int = 60     # JOB_PURGE_MAX_AGE_DAYS — hard-DELETE closed jobs older than this that have no Application attached, so the job table (and every scan's DB egress) stays bounded. Applied jobs are never deleted. 0 disables.
-    user_job_close_age_days: int = 45    # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application (a 45-day-old posting is filled/ghost; SHORTLIST_MAX_AGE_DAYS is 5). Shared-pool rows have their own 45d close; per-user rows previously NEVER closed by age, so the table grew forever (the 3.8 GB job-table finding). Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
+    user_job_close_age_days: int = 7     # USER_JOB_CLOSE_AGE_DAYS — age-close OPEN per-user job rows older than this that have no Application. The board, All Jobs and scoring all work on the last 5 days (SHORTLIST/EXPLORER/SCORING windows), so an untouched copy older than a week is never shown, scored or delivered again — but at 45d it kept one account at 68k open rows, and every per-user count read them all (2026-09-28: sign-in 17-32 s). Anything the user acted on has an Application and is never closed. Closed rows are then purged by JOB_PURGE_MAX_AGE_DAYS. 0 disables.
     orphan_purge_enabled: bool = True    # ORPHAN_PURGE_ENABLED — daily (registry maintenance, Supabase only): purge our rows + storage objects for tenants whose Supabase Auth user no longer exists. Nothing reconciled auth against our tables: one deleted auth user left a userprofile (with summary text), 2,860 applications, 33,192 job copies, 13 storage objects, 25 usage rows and a subscription row behind. Bounded (5 users/run) and aborts on ANY doubt about the auth listing — app/common/account_purge.py.
     scoring_max_job_age_days: int = 5    # SCORING_MAX_JOB_AGE_DAYS — the KNOWN-age bound: an unscored job that has sat in the queue this long is stamped out of it (score 8, expired_at set) instead of paying prescores/finals. 'Be first to apply' is the product, so a posting we have held unscored for days has missed its moment. Measured from coalesce(first_seen, discovered_at) — NOT from posted_at; see scoring_max_posted_age_days and app/common/freshness.py for why the two are separate. One indexed UPDATE per cycle replaces thousands of LLM calls during a backlog drain. 0 disables.
     # SCORING_MAX_POSTED_AGE_DAYS — the POSTED-age bound, and it is deliberately

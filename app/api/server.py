@@ -336,6 +336,10 @@ def _get_user_id(request: Request) -> str | None:
         if uid:
             kind = _activity_kind(request)
             if kind is not None:
+                if kind == "meaningful":
+                    # An action can move the counts /api/stats caches.
+                    from app.common import ttl_cache as _tc
+                    _tc.invalidate(f"stats:{uid}")
                 _touch_last_active(uid, meaningful=(kind == "meaningful"),
                                    welcome=_may_welcome(request))
             return uid
@@ -3294,41 +3298,93 @@ def shortlist(request: Request):
     ]
 
 
+# /api/stats is fetched on EVERY dashboard load. It used to run ~30 unbounded,
+# uncached COUNTs over the user's whole pool — for one account 87,624 rows in
+# a 7.9 GB table — and on 2026-09-28 those counts sat 8-31 s each waiting on
+# disk while the dashboard's own reads timed out behind them: sign-in took
+# 17-32 s and a phone reloaded six times, each reload starting the whole set
+# again. Now: one computation per user at a time, cached STATS_CACHE_SECONDS,
+# every statement bounded, and an overall budget after which the remaining
+# counts are skipped. A count that did not finish is None (never 0 — an empty
+# pool and an unanswered question are different things) and a degraded result
+# is never cached; the last good answer is served instead, marked stale.
+_STATS_LOCKS: dict = {}
+_STATS_LAST_GOOD: dict = {}
+_STATS_LAST_GOOD_MAX = 2000
+
+
+def _stats_lock(key: str):
+    import threading
+    lock = _STATS_LOCKS.get(key)
+    if lock is None:
+        lock = _STATS_LOCKS.setdefault(key, threading.Lock())
+    return lock
+
+
 @app.get("/api/stats")
 def api_stats(request: Request) -> dict:
     uid = _get_user_id(request)
     # Fail closed: never fall through to an unscoped (all-tenants) count.
     if settings.use_supabase and not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.common import ttl_cache
+    key = f"stats:{uid or 'local'}"
+    hit = ttl_cache.get(key)
+    if hit is not None:
+        return hit
+    with _stats_lock(key):
+        hit = ttl_cache.get(key)          # computed while we waited
+        if hit is not None:
+            return hit
+        out = _compute_stats(uid)
+        if out.get("degraded"):
+            last = _STATS_LAST_GOOD.get(key)
+            if last is not None:
+                return {**last, "degraded": True, "stale": True}
+            return out
+        ttl_cache.put(key, out, max(1, int(settings.stats_cache_seconds)))
+        if len(_STATS_LAST_GOOD) >= _STATS_LAST_GOOD_MAX:
+            _STATS_LAST_GOOD.pop(next(iter(_STATS_LAST_GOOD)), None)
+        _STATS_LAST_GOOD[key] = out
+        return out
+
+
+def _compute_stats(uid) -> dict:
+    import time as _time
     _uid_filter = (uid and uid != "local")
+    budget_end = _time.monotonic() + max(1.0, float(settings.stats_total_budget_seconds))
     with get_session() as session:
-        # Total OPEN jobs — the WHOLE pool, deliberately unwindowed. This is
-        # the Pool stat card and `funnel.total_pool`, and the onboarding
-        # banner reads `total_jobs == 0` as "this user has nothing yet". Bound
-        # it by the explorer's 5-day window and a user with 60k rows and a
-        # quiet week looks like a brand-new account, and the funnel reports a
-        # windowed denominator over unwindowed stage counters.
-        #
-        # The tab badges are a different question and get their own windowed
-        # counts: /api/jobs `total_open` for All Jobs, `closed_jobs_recent`
-        # below for Ghost Jobs.
-        jq = select(func.count(Job.id)).where(Job.is_closed == False)
-        if _uid_filter:
-            jq = jq.where(Job.user_id == uid)
-        total_jobs = session.exec(jq).first() or 0
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
 
-        # Closed/ghosted jobs, whole pool — kept for the same reason.
-        gq = select(func.count(Job.id)).where(Job.is_closed == True)  # noqa: E712
-        if _uid_filter:
-            gq = gq.where(Job.user_id == uid)
-        closed_jobs = session.exec(gq).first() or 0
+        def _run(default, fn):
+            """One bounded read; skipped once the budget is spent or a read
+            already timed out (the database is busy — stop adding to it)."""
+            if reads.degraded or _time.monotonic() > budget_end:
+                reads.degraded = True
+                return default
+            return reads.get(default, fn)
 
-        # Closed jobs INSIDE the explorer's window — this and only this fills
-        # the Ghost Jobs tab badge at page load (previously that badge stayed
-        # a "..." placeholder until the tab was first clicked, because only the
-        # tab's own loader wrote it). It must be built from the same setting
-        # the tab's own query defaults to, or the badge changes value the
-        # moment the user opens the tab.
+        def _n(q):
+            return _run(None, lambda: _scalar(session.exec(q).first() or 0))
+
+        def _mine(q, open_only: bool = True):
+            if _uid_filter:
+                q = q.where(Job.user_id == uid)
+            if open_only:
+                q = q.where(Job.is_closed == False)  # noqa: E712
+            return q
+
+        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed. This is
+        # the Pool stat card and `funnel.total_pool`, and the onboarding banner
+        # reads `total_jobs == 0` as "this user has nothing yet". The tab badges
+        # are a different question and get their own windowed counts.
+        total_jobs = _n(_mine(select(func.count(Job.id))))
+        closed_jobs = _n(_mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
+                               open_only=False))
+
+        # Closed jobs INSIDE the explorer's window — fills the Ghost Jobs tab
+        # badge at page load; built from the setting the tab's query defaults
+        # to, or the badge changes value the moment the tab opens.
         from app.common.freshness import is_fresh_expr as _fresh_expr
         _explorer_age = int(getattr(settings, "explorer_max_age_days", 0) or 0)
         _recent_filter = _fresh_expr(
@@ -3337,59 +3393,41 @@ def api_stats(request: Request) -> dict:
             for_render=True,
         ) if _explorer_age > 0 else None
         if _recent_filter is not None:
-            grq = select(func.count(Job.id)).where(Job.is_closed == True)  # noqa: E712
-            if _uid_filter:
-                grq = grq.where(Job.user_id == uid)
-            closed_jobs_recent = session.exec(grq.where(_recent_filter)).first() or 0
+            closed_jobs_recent = _n(_mine(
+                select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
+                open_only=False).where(_recent_filter))
         else:
             closed_jobs_recent = closed_jobs
 
-        # Unique companies in Job db
-        cq = select(func.count(func.distinct(Job.company)))
-        if _uid_filter:
-            cq = cq.where(Job.user_id == uid)
-        total_companies = session.exec(cq).first() or 0
+        # Everything below describes the CURRENT (open) pool. It counted every
+        # row the account ever held — closed history included — which is what
+        # made one dashboard load read tens of thousands of rows off disk.
+        total_companies = _n(_mine(select(func.count(func.distinct(Job.company)))))
 
-        # Funnel metrics
         def _jcount(extra=None):
-            q = select(func.count(Job.id))
-            if _uid_filter:
-                q = q.where(Job.user_id == uid)
+            q = _mine(select(func.count(Job.id)))
             if extra is not None:
                 q = q.where(extra)
-            return session.exec(q).first() or 0
+            return _n(q)
 
         cross_encoder_passed = _jcount(Job.similarity_score.is_not(None))
         # `rerank_score IS NOT NULL` is NOT "was scored" — the age gate stamps a
-        # sentinel on rows it drains without ever calling a scorer, so this
-        # counter reported expiries as scoring work (production's "621k scored
-        # jobs" was mostly those stamps). Count real verdicts, and report the
-        # expiries under their own name instead of hiding them in this one.
+        # sentinel on rows it drains without calling a scorer. `reranker_scored`
+        # counts every TERMINAL VERDICT (Tier-2 finals, Tier-1 drains, rule/ghost
+        # stamps); the name is kept for API compatibility.
         from app.common.freshness import (
             expired_without_scoring_expr, terminal_verdict_expr, tier1_drain_expr,
         )
-        # NAMING: `reranker_scored` counts every TERMINAL VERDICT — Tier-2 Claude
-        # finals, Tier-1 drains and rule/ghost stamps alike. It does NOT mean
-        # "Claude finals", and reading it that way cost a real investigation an
-        # hour: a production sample showed 78 of these against a cycle stat of
-        # `scored=0`, which looked contradictory until the tiers were separated
-        # (75 were drains). The field name is kept for API compatibility; the two
-        # below say what is actually in it.
         reranker_scored = _jcount(terminal_verdict_expr())
         tier1_drains = _jcount(tier1_drain_expr())
         expired_unscored = _jcount(expired_without_scoring_expr())
         pending_scoring = _jcount(Job.rerank_score.is_(None))
 
-        # Application counts by status — JOIN Job so orphan applications (whose
-        # Job row was deleted) are excluded; otherwise counts here disagree with
-        # the dashboard kanban, which inner-joins Job and never shows orphans.
+        # Application counts by status — JOIN Job so orphan applications are
+        # excluded (the kanban inner-joins Job too), and the shortlist freshness
+        # window applied, because every surface that COUNTS the shortlist must
+        # use the predicate of the surface that LISTS it.
         app_counts = {}
-        # The freshness window is applied HERE too. /api/stats feeds the header
-        # pill and the section badge, while the dashboard render and
-        # /api/pipeline/live both filter — so without this the badge said N and
-        # the board showed fewer, with no way for the user to find the missing
-        # ones by scrolling. Every surface that COUNTS the shortlist has to use
-        # the same predicate as the surface that LISTS it.
         _stats_fresh = _shortlist_fresh_clause()
         for status in ApplicationStatus:
             aq = (
@@ -3404,74 +3442,62 @@ def api_stats(request: Request) -> dict:
                 aq = aq.where(_stats_fresh)
             if _uid_filter:
                 aq = aq.where(Application.user_id == uid)
-            count = session.exec(aq).first() or 0
-            app_counts[status.value] = count
+            app_counts[status.value] = _n(aq)
 
-        shortlisted = app_counts[ApplicationStatus.SHORTLISTED.value] + app_counts[ApplicationStatus.TAILORED.value]
+        _sl = app_counts[ApplicationStatus.SHORTLISTED.value]
+        _tl = app_counts[ApplicationStatus.TAILORED.value]
+        shortlisted = None if _sl is None or _tl is None else _sl + _tl
 
         # Score distribution
         band_85_100 = _jcount(Job.rerank_score >= 85)
         band_60_84 = _jcount((Job.rerank_score >= 60) & (Job.rerank_score < 85))
         band_40_59 = _jcount((Job.rerank_score >= 40) & (Job.rerank_score < 60))
         band_0_39 = _jcount((Job.rerank_score >= 0) & (Job.rerank_score < 40))
-        unranked = _jcount(Job.rerank_score.is_(None))
+        unranked = pending_scoring            # the same question, asked once
 
-        # Top companies
-        top_q = select(Job.company, func.count(Job.id)).group_by(Job.company).order_by(desc(func.count(Job.id))).limit(10)
-        if _uid_filter:
-            top_q = top_q.where(Job.user_id == uid)
-        top_companies_res = session.exec(top_q).all()
-        top_companies = [{"company": company, "count": count} for company, count in top_companies_res]
+        top_q = _mine(select(Job.company, func.count(Job.id))).group_by(Job.company) \
+            .order_by(desc(func.count(Job.id))).limit(10)
+        top_companies = [{"company": c, "count": n}
+                         for c, n in (_run([], lambda: session.exec(top_q).all()) or [])]
 
-        # Per-source job counts (for source breakdown bar in UI).
-        # ONE GROUP BY instead of a query per enum member — grouping only
-        # touches labels that exist in the data, so a pg enum label that
-        # hasn't been migrated yet can never 500 the whole stats endpoint
-        # (comparing `Job.source == <new member>` did exactly that).
+        # Per-source job counts: ONE GROUP BY (a pg enum label not migrated yet
+        # can never 500 the endpoint this way).
         source_counts: dict[str, int] = {}
         try:
-            gq = select(Job.source, func.count(Job.id)).group_by(Job.source)
-            if _uid_filter:
-                gq = gq.where(Job.user_id == uid)
-            for src, cnt in session.exec(gq).all():
+            gq = _mine(select(Job.source, func.count(Job.id))).group_by(Job.source)
+            for src, cnt in (_run([], lambda: session.exec(gq).all()) or []):
                 if cnt:
                     source_counts[getattr(src, "value", str(src))] = cnt
         except Exception as se:
             log.warning("stats: per-source counts unavailable: %s", se)
 
-        # Company registry stats (global — not per-user). Best-effort: stats
-        # must degrade, never 500 the dashboard.
-        total_boards = active_boards = total_validated_jobs = 0
+        # Company registry stats (global — not per-user). Best-effort.
+        total_boards = active_boards = total_validated_jobs = None
         try:
             from app.db.models import CompanyRegistry
-            total_boards = session.exec(select(func.count(CompanyRegistry.id))).first() or 0
-            active_boards = session.exec(select(func.count(CompanyRegistry.id)).where(CompanyRegistry.is_active == True)).first() or 0
-            total_validated_jobs = session.exec(select(func.sum(CompanyRegistry.job_count))).first() or 0
+            total_boards = _n(select(func.count(CompanyRegistry.id)))
+            active_boards = _n(select(func.count(CompanyRegistry.id)).where(
+                CompanyRegistry.is_active == True))  # noqa: E712
+            total_validated_jobs = _n(select(func.coalesce(func.sum(CompanyRegistry.job_count), 0)))
         except Exception as re_:
             log.warning("stats: registry counts unavailable: %s", re_)
+        degraded = reads.degraded
+
+    def _minus(a, b):
+        return None if a is None or b is None else a - b
 
     return {
         "total_jobs": total_jobs,
         "closed_jobs": closed_jobs,
-        # What the Ghost Jobs tab will actually page through, so the badge and
-        # the table agree before the first click.
         "closed_jobs_recent": closed_jobs_recent,
         "total_companies": total_companies,
         "funnel": {
             "total_pool": total_jobs,
             "cross_encoder_passed": cross_encoder_passed,
-            # Real scoring verdicts only. The two lifecycle states that used to
-            # be folded in here are now named, so "how much did we actually
-            # score?" and "how much aged out unscored?" are separable.
-            #
-            # `reranker_scored` is kept for compatibility but is a TERMINAL
-            # VERDICT count across all tiers — `terminal_verdicts` is the same
-            # number under an honest name, and the tier split says how much of
-            # it actually cost a Tier-2 call.
             "reranker_scored": reranker_scored,
             "terminal_verdicts": reranker_scored,
             "tier1_drains": tier1_drains,
-            "tier2_or_rule_verdicts": reranker_scored - tier1_drains,
+            "tier2_or_rule_verdicts": _minus(reranker_scored, tier1_drains),
             "expired_unscored": expired_unscored,
             "pending_scoring": pending_scoring,
             "shortlisted": shortlisted,
@@ -3490,7 +3516,8 @@ def api_stats(request: Request) -> dict:
             "total_boards": total_boards,
             "active_boards": active_boards,
             "total_validated_jobs": total_validated_jobs,
-        }
+        },
+        "degraded": degraded,
     }
 
 

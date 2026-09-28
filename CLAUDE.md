@@ -672,6 +672,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   account being purged). `/api/welcome/status` feeds the progress panel and the
   seniority tip (1-2 stated years vs Senior/Architect roles → junior versions;
   0 years = unparsed, no tip). Off in the suite (conftest). Guard: `test_welcome`.
+- **Sign-in never waits on history** (2026-09-28): `/api/stats` (every dashboard
+  load) is cached per user `STATS_CACHE_SECONDS` (300), single-flighted, every
+  statement bounded + an overall `STATS_TOTAL_BUDGET_SECONDS`; an unanswered
+  count is None (never 0), a degraded answer is never cached and the last good
+  one is served `stale`; any meaningful request clears the user's entry. Its
+  distributions count OPEN rows only. `USER_JOB_CLOSE_AGE_DAYS` is 7 (was 45 —
+  one account held 68k open rows; ~30 counts over them took sign-in to 17-32 s);
+  batches paced. Guard: `test_dashboard_load`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

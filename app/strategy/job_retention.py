@@ -21,7 +21,8 @@ from sqlmodel import select, update
 log = logging.getLogger(__name__)
 
 
-def close_stale_user_jobs(days: int = 45, batch: int = 2000, max_batches: int = 100) -> int:
+def close_stale_user_jobs(days: int = 7, batch: int = 2000, max_batches: int = 100,
+                          pause_seconds: float = 0.5) -> int:
     """Age-close OPEN per-user rows older than ``days`` that have no Application.
 
     The missing half of retention (CAPACITY.md §5.1): shared-pool rows are
@@ -30,7 +31,13 @@ def close_stale_user_jobs(days: int = 45, batch: int = 2000, max_batches: int = 
     is filled or ghost; anything a user acted on has an Application and is
     never touched. Batched id-select → targeted UPDATE, mirroring the purge,
     so no single statement can hit the statement timeout.
+
+    The window is USER_JOB_CLOSE_AGE_DAYS (7 since 2026-09-28; was 45, which
+    kept one account at 68k open rows). ``pause_seconds`` spaces the batches:
+    the first run after that change closes tens of thousands of rows, and a
+    database that is already disk-bound must keep serving sign-ins meanwhile.
     """
+    import time as _time
     from app.db.init_db import get_session
     from app.db.models import Application, Job
     from app.discovery.pipeline import SHARED_POOL_USER
@@ -65,6 +72,8 @@ def close_stale_user_jobs(days: int = 45, batch: int = 2000, max_batches: int = 
             closed += len(ids)
         if len(ids) < batch:
             break
+        if pause_seconds > 0:
+            _time.sleep(pause_seconds)
     if closed:
         log.info("Job retention: age-closed %d stale per-user job(s) older than %dd", closed, days)
     return closed
