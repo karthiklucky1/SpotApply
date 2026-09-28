@@ -546,6 +546,13 @@ class Settings(BaseSettings):
     # next 6h global pass — their domain fills within minutes. 0 disables the scrape.
     onboarding_active_discovery: bool = True  # ONBOARDING_ACTIVE_DISCOVERY
     onboarding_min_jobs: int = 25             # ONBOARDING_MIN_JOBS — adopt-count floor below which onboarding actively scrapes the user's domain
+    # The first hour (app/strategy/welcome.py): resume upload, a role save, or a
+    # return after TRIAL_IDLE_AFTER_HOURS opens a window in which the user's
+    # pool is refreshed at once and the scoring lane serves them FIRST with a
+    # larger per-cycle slice. Spend-neutral: the plan's daily budget still
+    # decides how many finals they get; the boost only decides WHEN. 0 disables.
+    welcome_boost_minutes: int = 60           # WELCOME_BOOST_MINUTES
+    welcome_boost_cap_multiplier: float = 2.0  # WELCOME_BOOST_CAP_MULTIPLIER — per-cycle slice x this while boosted
 
     # When a user's target roles change (new résumé or a manual edit), the pool
     # is re-pointed at the new roles: on-role jobs lose their old-résumé score

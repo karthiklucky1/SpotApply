@@ -1314,7 +1314,7 @@
             </button> <button id="view-tab-skills" onclick="switchViewTab('skills')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-target"/></svg> Skill Gap
             </button> <button id="view-tab-xray" onclick="switchViewTab('xray')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-scan"/></svg> Resume X-Ray
             </button> <button id="view-tab-registry" onclick="switchViewTab('registry')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-sliders"/></svg> Boards
-            </button> </div></div> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div>  <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(79,70,229,0.07),rgba(124,58,237,0.03))"> <svg class="ic ic-lg shrink-0" style="color:#4F46E5"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Install the SpotApply Extension to fill any job form</p> <p class="text-[10px] text-slate-400 mt-0.5">Works on LinkedIn, Indeed, Workday, Greenhouse, Lever, Ashby — fills in your browser, you control Submit.</p> </div> <a href="/extension" target="_blank" class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Install →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
+            </button> </div></div> <!-- Main Tab Control — top of the page so Pipeline / All Jobs come first --> <div id="opt-strip" class="hidden mb-4"></div>  <!-- Recruiter intros (verified demand reaching out) --> <div id="intros-banner" class="hidden mb-4"></div> <!-- First hour: live progress + role check (app/strategy/welcome.py) --> <div id="welcome-panel" class="mb-4" style="display:none"></div> <!-- Extension install banner --> <div id="ext-install-banner" class="glass rounded-2xl px-5 py-3.5 border border-indigo-500/20 flex items-center gap-4 mb-4" style="background:linear-gradient(135deg,rgba(79,70,229,0.07),rgba(124,58,237,0.03))"> <svg class="ic ic-lg shrink-0" style="color:#4F46E5"><use href="#i-puzzle"/></svg> <div class="flex-1 min-w-0"> <p class="text-xs font-bold text-white">Install the SpotApply Extension to fill any job form</p> <p class="text-[10px] text-slate-400 mt-0.5">Works on LinkedIn, Indeed, Workday, Greenhouse, Lever, Ashby — fills in your browser, you control Submit.</p> </div> <a href="/extension" target="_blank" class="text-[10px] font-black bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl transition whitespace-nowrap shrink-0">Install →</a> <button onclick="document.getElementById('ext-install-banner').style.display='none'; localStorage.setItem('hp_ext_dismissed','1')" class="text-slate-500 hover:text-white transition text-lg shrink-0 leading-none">✕</button> </div> <!-- Onboarding checklist — shown only to new users with no jobs in pool --> <!-- Guided-tour launcher (interactive walkthrough — replaces the static welcome) -->  <!-- TAB 1: Kanban Board View --> <div id="view-content-kanban" class="flex flex-col gap-6"> {#- Compact, scannable job row. Full detail + actions live inside an
                 inert <template> that the slide-in drawer clones on click, so the
                 list stays short and easy to scroll. Per-column buttons are passed
                 in via {% call %} and rendered through caller(). -#}
@@ -5235,6 +5235,99 @@
         }
         document.addEventListener('DOMContentLoaded', loadMeasuredStatus);
 
+        // ── First hour: live progress while the welcome boost runs, plus the
+        // role check when target roles are more senior than the resume's years.
+        let _welcomeTimer = null, _welcomeSeenMatches = null;
+        function _wEsc(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function _welcomeTipKey(tip) { return 'welcomeTipDismissed:' + (tip.senior_roles || []).join('|'); }
+        function _welcomeTipDismissed(tip) {
+            try { return localStorage.getItem(_welcomeTipKey(tip)) === '1'; } catch (e) { return false; }
+        }
+        function dismissWelcomeTip() {
+            try { if (window._welcomeTip) localStorage.setItem(_welcomeTipKey(window._welcomeTip), '1'); } catch (e) {}
+            window._welcomeTip = null;
+            loadWelcomePanel();
+        }
+        async function addSuggestedJuniorRoles(btn) {
+            const tip = window._welcomeTip;
+            if (!tip) return;
+            btn.disabled = true;
+            try {
+                const pr = await fetch('/api/profile', { headers: authHeaders() });
+                const cur = pr.ok ? ((await pr.json()).target_roles || '') : '';
+                const roles = cur.split(',').map(s => s.trim()).filter(Boolean).concat(tip.suggest || []);
+                const r = await fetch('/api/target-roles', { method: 'PUT',
+                    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ roles }) });
+                if (r.ok) {
+                    showToast('Added ' + (tip.suggest || []).join(', ') + ' — new matches are on the way.', 'success');
+                    window._welcomeTip = null;
+                    setTimeout(loadWelcomePanel, 1500);
+                    return;
+                }
+            } catch (e) {}
+            btn.disabled = false;
+            showToast('Could not add the roles — try Target Roles instead.', 'error');
+        }
+        function _renderWelcomePanel(d) {
+            const el = document.getElementById('welcome-panel');
+            if (!el) return;
+            const parts = [];
+            if (d.boost_active) {
+                const checked = d.checked || 0, pool = d.pool_fresh || 0, found = d.new_matches || 0;
+                const headline = found > 0
+                    ? found + ' strong match' + (found === 1 ? '' : 'es') + ' so far — more arriving'
+                    : 'Finding your first matches';
+                const line = pool > 0
+                    ? 'Checked ' + checked + ' of ' + pool + ' fresh jobs for you'
+                    : 'Pulling in fresh jobs for your roles';
+                const pct = pool > 0 ? Math.min(100, Math.round(checked / pool * 100)) : 8;
+                const more = (_welcomeSeenMatches != null && found > _welcomeSeenMatches)
+                    ? ' <button onclick="location.reload()" class="jbtn jbtn-primary text-xs px-3 py-1.5" data-w="show">Show new matches</button>' : '';
+                parts.push(`<div class="glass rounded-2xl px-5 py-4" data-w="progress" style="border:1px solid var(--border);">
+                    <div class="flex items-center justify-between gap-3 flex-wrap">
+                      <p class="text-sm font-bold text-white">${_wEsc(headline)}</p>
+                      <span class="text-[11px]" style="color:var(--muted);">${d.minutes_left || 0} min of priority scoring left${more}</span>
+                    </div>
+                    <p class="text-xs mt-1" style="color:var(--muted);">${_wEsc(line)} · only jobs that fit your resume reach the board.</p>
+                    <div class="mt-3 rounded-full overflow-hidden" style="height:6px;background:var(--surface-2);">
+                      <div style="height:6px;width:${pct}%;background:linear-gradient(90deg,var(--sage),var(--sage-600));transition:width .6s;"></div>
+                    </div>
+                  </div>`);
+                _welcomeSeenMatches = _welcomeSeenMatches == null ? found : _welcomeSeenMatches;
+            }
+            const tip = d.role_tip;
+            if (tip && !_welcomeTipDismissed(tip)) {
+                window._welcomeTip = tip;
+                const yrs = tip.years + ' year' + (tip.years === 1 ? '' : 's');
+                parts.push(`<div class="glass rounded-2xl px-5 py-4 ${parts.length ? 'mt-3' : ''}" data-w="tip" style="border:1px solid var(--border);">
+                    <p class="text-sm font-bold text-white">Get more interviews: add roles that match your experience</p>
+                    <p class="text-xs mt-1" style="color:var(--muted);">${_wEsc(tip.senior_roles.join(', '))} usually ask for 5+ years; your resume shows about ${_wEsc(yrs)}. Add these too so you also see jobs you are likely to hear back from:</p>
+                    <div class="flex flex-wrap gap-2 mt-2">${(tip.suggest || []).map(s => `<span class="text-[11px] font-semibold px-3 py-1 rounded-full" style="background:var(--surface-2);border:1px solid var(--border);">${_wEsc(s)}</span>`).join('')}</div>
+                    <div class="flex gap-2 mt-3">
+                      <button onclick="addSuggestedJuniorRoles(this)" class="jbtn jbtn-primary text-xs px-4 py-2" data-w="add">Add these roles</button>
+                      <button onclick="dismissWelcomeTip()" class="text-xs px-3 py-2" style="color:var(--muted);" data-w="dismiss">Not now</button>
+                    </div>
+                  </div>`);
+            }
+            el.innerHTML = parts.join('');
+            el.style.display = parts.length ? '' : 'none';
+        }
+        async function loadWelcomePanel() {
+            try {
+                const r = await fetch('/api/welcome/status', { headers: authHeaders() });
+                if (!r.ok) return;
+                const d = await r.json();
+                _renderWelcomePanel(d);
+                clearTimeout(_welcomeTimer);
+                if (d.boost_active) _welcomeTimer = setTimeout(loadWelcomePanel, 20000);
+            } catch (e) {}
+        }
+        document.addEventListener('DOMContentLoaded', loadWelcomePanel);
+
         // ── Billing: Pro checkout (Stripe when live, manual options otherwise) ──
         async function startProCheckout(btn) {
             const orig = btn.textContent;
@@ -5738,6 +5831,7 @@
         // as. Say what moved and send them to check it, instead of a toast that
         // disappears: target roles drive which jobs reach the board.
         function _afterResumeChange(d) {
+            setTimeout(loadWelcomePanel, 4000);   // the first-hour boost starts in the background
             const esc = (x) => String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             const before = d.roles_before || [], after = d.roles_after || [], pinned = d.roles_pinned || [];
             const changed = after.length && after.join('|').toLowerCase() !== before.join('|').toLowerCase();
@@ -6416,6 +6510,7 @@
                     showToast('Target roles saved!', 'success');
                     closeRolesModal();
                     loadTargetRoles();
+                    setTimeout(loadWelcomePanel, 4000);
                 } else {
                     showToast('Could not save roles.', 'error');
                 }

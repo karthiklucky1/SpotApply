@@ -545,6 +545,10 @@ def seed_new_user(user_id: str | None) -> int:
     leaves them under ``onboarding_min_jobs`` on-role jobs, actively scrape THEIR
     roles right away — the same path as the manual Discover button — instead of
     making them wait for the next 6h global pass. Returns the adopted count."""
+    # The first hour: this user is served first by the scoring lane while the
+    # feed fills (app/strategy/welcome.py).
+    from app.strategy.welcome import begin as _begin_welcome
+    _begin_welcome(user_id, "resume or roles saved")
     adopted = adopt_and_match(user_id)
 
     if not settings.onboarding_active_discovery or settings.onboarding_min_jobs <= 0:

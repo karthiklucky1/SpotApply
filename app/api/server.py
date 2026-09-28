@@ -336,7 +336,8 @@ def _get_user_id(request: Request) -> str | None:
         if uid:
             kind = _activity_kind(request)
             if kind is not None:
-                _touch_last_active(uid, meaningful=(kind == "meaningful"))
+                _touch_last_active(uid, meaningful=(kind == "meaningful"),
+                                   welcome=_may_welcome(request))
             return uid
     return None
 
@@ -405,7 +406,18 @@ _LAST_ACTIVE_STAMP: dict[str, float] = {}
 _LAST_ACTIVE_STAMP_SECONDS = 900
 
 
-def _touch_last_active(uid: str, meaningful: bool = False) -> None:
+def _may_welcome(request) -> bool:
+    """A return may start the first-hour refresh — except on the way OUT: a
+    DELETE (or anything under /api/account) must never start a background
+    adoption that could write rows for an account being purged."""
+    try:
+        return (request.method or "").upper() != "DELETE" and \
+            not (request.url.path or "").startswith("/api/account")
+    except Exception:
+        return False
+
+
+def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False) -> None:
     import time as _time
     mono = _time.monotonic()
     key = f"m:{uid}" if meaningful else uid
@@ -422,15 +434,25 @@ def _touch_last_active(uid: str, meaningful: bool = False) -> None:
             prof = session.exec(
                 select(UserProfile).where(UserProfile.user_id == uid)
             ).first()
+            returning = False
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
                 if meaningful:
+                    from app.strategy.welcome import returning_after_idle
+                    # Only someone who already HAS roles can be welcomed back
+                    # with jobs; a role-less account starts at resume upload.
+                    returning = welcome and bool((prof.target_roles or "").strip()) and \
+                        returning_after_idle(prof.last_meaningful_activity_at,
+                                             prof.last_active_at)
                     prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
         if meaningful:
             from app.common.compute_policy import forget
             forget(uid)
+            if returning:
+                from app.strategy.welcome import welcome_back
+                welcome_back(uid)
             from app.analytics.journey import record as _journey
             _journey(uid, "signup")          # once per user, ever
             _journey(uid, "active_day")      # once per user per day
@@ -9625,6 +9647,32 @@ def search_state_api(request: Request) -> dict:
     return _search_state_payload(uid)
 
 
+@app.get("/api/welcome/status")
+def welcome_status_api(request: Request) -> dict:
+    """The first-hour panel: is the welcome boost on, how much of the user's
+    fresh pool has been checked, what reached the board, and — when their
+    target roles are more senior than their resume's years — which roles to
+    add. Counts for ONE user, cached 20 s (the panel polls while boosted)."""
+    uid = _require_user(request)
+    from app.common import ttl_cache
+    from app.strategy import welcome
+
+    def _build() -> dict:
+        user_arg = uid if uid != "local" else None
+        out = welcome.status(user_arg) if user_arg else {"boost_active": False}
+        tip = None
+        try:
+            with get_session() as session:
+                prof = session.exec(_own_profile_query(uid)).first()
+            tip = welcome.seniority_tip(prof, _get_target_roles(uid) or [])
+        except Exception as e:
+            log.debug("welcome role tip unavailable: %s", e)
+        out["role_tip"] = tip
+        return out
+
+    return ttl_cache.get_or_compute(f"welcome:{uid}", 20, _build)
+
+
 class SearchPauseRequest(BaseModel):
     reason: Optional[str] = None
 
@@ -10563,6 +10611,8 @@ def update_target_roles(request: Request, body: TargetRolesUpdate,
             background_tasks.add_task(seed_new_user, user_id_arg)
         except Exception as _ae:
             log.debug("role-edit adoption not scheduled: %s", _ae)
+    from app.common import ttl_cache as _tc
+    _tc.invalidate(f"welcome:{uid}")       # the role tip must reflect the new roles
     return {"success": True, "roles": cleaned}
 
 

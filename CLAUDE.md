@@ -664,6 +664,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`claims_junk_field`), and the Workday/SmartRecruiters non-tech skip keeps what
   the published demand wants (`title_filter.set_title_demand`, set by the shared
   discovery pass and the pulse/hot lanes). Guard: `test_all_fields`.
+- **The first hour** (`strategy/welcome.py`, 2026-09-28): resume upload, a role
+  save or a return past `TRIAL_IDLE_AFTER_HOURS` opens a `WELCOME_BOOST_MINUTES`
+  window — full-window adoption NOW, and the scoring lane serves the user FIRST
+  with a 2x slice (spend-neutral: the plan budget still decides how many). Never
+  on DELETE / `/api/account` (`_may_welcome`; a refresh must not write rows for an
+  account being purged). `/api/welcome/status` feeds the progress panel and the
+  seniority tip (1-2 stated years vs Senior/Architect roles → junior versions;
+  0 years = unparsed, no tip). Off in the suite (conftest). Guard: `test_welcome`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

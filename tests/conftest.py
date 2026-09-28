@@ -30,6 +30,10 @@ os.environ["DATABASE_URL"] = ""
 os.environ["SUPABASE_URL"] = ""
 os.environ["SUPABASE_ANON_KEY"] = ""
 os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
+# The first-hour boost starts a background refresh thread (adoption + a scoring
+# cycle) when a returning user makes a request; off for the suite so a request
+# in one test cannot start work that runs into the next. test_welcome turns it on.
+os.environ.setdefault("WELCOME_BOOST_MINUTES", "0")
 
 import importlib.util
 import sys

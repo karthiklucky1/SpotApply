@@ -153,7 +153,7 @@ def test_a_poll_never_stamps_last_active(monkeypatch):
     meaningful request."""
     stamped = []
     monkeypatch.setattr(server, "_touch_last_active",
-                        lambda uid, meaningful=False: stamped.append((uid, meaningful)))
+                        lambda uid, meaningful=False, **kw: stamped.append((uid, meaningful)))
     monkeypatch.setattr(type(settings), "use_supabase", property(lambda self: True))
     import app.db.supabase_client as sc
     monkeypatch.setattr(sc, "get_user_id_from_token", lambda tok: "u-poll")

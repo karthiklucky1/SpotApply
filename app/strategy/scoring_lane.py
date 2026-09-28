@@ -1325,6 +1325,14 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         users = sorted(users, key=lambda u: (u in has_scored,))
     except Exception as e:
         log.debug("new-user priority ordering skipped: %s", e)
+    # First-hour boost (app/strategy/welcome.py): a user who just uploaded a
+    # resume, saved roles or came back after the idle window goes FIRST — even
+    # one with old scored jobs, whom the empty-board rule above does not see.
+    from app.strategy import welcome as _welcome
+    boosted = [u for u in users if _welcome.is_boosted(u)]
+    if boosted:
+        users = boosted + [u for u in users if u not in boosted]
+        stats["boosted_users"] = len(boosted)
 
     queues: List[List[Tuple[Optional[str], int]]] = []
     capped_out = 0      # stopped short: cost ceiling, collapsed yield, prescore allowance
@@ -1337,7 +1345,8 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         # promising a candidate has to be to earn one. It aims at the plan's
         # shortlist target and stops when that target is DELIVERED, so a user
         # with nothing left contributes nothing to this cycle's work list.
-        allow = _finals_allowance(uid, settings.scoring_per_user_cap)
+        allow = _finals_allowance(
+            uid, _welcome.per_cycle_cap(uid, settings.scoring_per_user_cap))
         if allow.n <= 0:
             # Two very different zeros, and conflating them is what let the
             # 2026-09-03 outage run silently for 39 hours. "delivered" means the
