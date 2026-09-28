@@ -23,34 +23,11 @@ from app.discovery.hiring_context import put
 
 log = logging.getLogger(__name__)
 
-# Lightweight tech title filter to avoid fetching details for obvious non-tech jobs
-_TECH_TITLE_RE = re.compile(
-    r'\b(engineer|scientist|developer|researcher|architect|analyst|'
-    r'mlops|devops|sre|quantitative|quant|statistician|'
-    r'programmer|technologist|intelligence|nlp|llm|'
-    r'platform|infrastructure|backend|fullstack|full[\-\s]stack|frontend|front[\-\s]stack|'
-    r'machine\s*learning|deep\s*learning|computer\s*vision|data|technical|member\s+of\s+technical\s+staff)\b',
-    re.IGNORECASE,
-)
+# Skip the detail fetch for postings nobody on the platform wants. The gate
+# reads the published demand (every user's target roles), so a nurse or
+# accountant posting is kept once someone is looking for one.
+from app.discovery.title_filter import is_obvious_non_tech as _is_obvious_non_tech  # noqa: E402
 
-_NON_TECH_TITLE_RE = re.compile(
-    r'\b(sales|marketing|recruiter|hr|talent\s+acquisition|people\s+ops|'
-    r'finance|accountant|accounting|payroll|billing|auditor|'
-    r'legal|counsel|lawyer|compliance|'
-    r'receptionist|administrative|assistant|secretary|office\s+manager|'
-    r'customer\s+support|customer\s+success|sales\s+rep|account\s+exec|'
-    r'copywriter|content\s+writer|editor|translator|'
-    r'nurse|doctor|medical|therapist|chef|cook|driver|cashier|'
-    r'facilities|janitor|security\s+guard|maintenance)\b',
-    re.IGNORECASE,
-)
-
-def _is_obvious_non_tech(title: str) -> bool:
-    if _NON_TECH_TITLE_RE.search(title):
-        if _TECH_TITLE_RE.search(title):
-            return False
-        return True
-    return False
 
 def _strip_html(html: str) -> str:
     return BeautifulSoup(html or "", "html.parser").get_text(separator="\n").strip()

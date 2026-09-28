@@ -23,34 +23,12 @@ from app.discovery.lever import LeverScraper
 
 log = logging.getLogger(__name__)
 
-# Permissive/Negative filtering to exclude obvious non-tech roles
-_TECH_TITLE_RE = re.compile(
-    r'\b(engineer|scientist|developer|researcher|architect|analyst|'
-    r'mlops|devops|sre|quantitative|quant|statistician|'
-    r'programmer|technologist|intelligence|nlp|llm|'
-    r'platform|infrastructure|backend|fullstack|full[\-\s]stack|frontend|front[\-\s]stack|'
-    r'machine\s*learning|deep\s*learning|computer\s*vision|data|technical|member\s+of\s+technical\s+staff)\b',
-    re.IGNORECASE,
-)
-
-_NON_TECH_TITLE_RE = re.compile(
-    r'\b(sales|marketing|recruiter|hr|talent\s+acquisition|people\s+ops|'
-    r'finance|accountant|accounting|payroll|billing|auditor|'
-    r'legal|counsel|lawyer|compliance|'
-    r'receptionist|administrative|assistant|secretary|office\s+manager|'
-    r'customer\s+support|customer\s+success|sales\s+rep|account\s+exec|'
-    r'copywriter|content\s+writer|editor|translator|'
-    r'nurse|doctor|medical|therapist|chef|cook|driver|cashier|'
-    r'facilities|janitor|security\s+guard|maintenance)\b',
-    re.IGNORECASE,
-)
-
 def is_obvious_non_tech(title: str) -> bool:
-    if _NON_TECH_TITLE_RE.search(title):
-        if _TECH_TITLE_RE.search(title):
-            return False
-        return True
-    return False
+    """The bare regex verdict (no demand): the upsert door pairs it with the
+    caller's own ``user_keywords`` via keyword_hit. One implementation, in
+    title_filter, shared with the board scrapers."""
+    from app.discovery.title_filter import is_obvious_non_tech as _non_tech
+    return _non_tech(title, [])
 
 
 def _all_scrapers():
@@ -1446,6 +1424,10 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
         # The shared pool serves users in every country: store everything and
         # let each user's adoption pass apply THEIR country preference.
         _country = None
+        # Its keywords are the union of every user's roles: the board scrapers'
+        # non-tech skip must keep what any of them is looking for.
+        from app.discovery.title_filter import set_title_demand
+        set_title_demand(_keywords)
     else:
         try:
             from app.autofill.answer_pack import _get_or_create_profile

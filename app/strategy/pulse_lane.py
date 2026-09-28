@@ -915,6 +915,9 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     users = _active_users()
     terms = _watchlist_terms()
     all_roles = sorted({r for u in users for r in (u["roles"] or [])})
+    # The board scrapers' non-tech skip keeps what some user is looking for.
+    from app.discovery.title_filter import set_title_demand
+    set_title_demand(all_roles)
 
     def _fetch(board):
         """Runs on the pool. Times itself so the tick can report REAL fetch

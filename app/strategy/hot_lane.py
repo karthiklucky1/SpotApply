@@ -258,6 +258,8 @@ def _run_hot_lane_cycle() -> dict:
     # Union of every user's roles: lets department users' titles survive the
     # non-tech gate when writing to the SHARED pool, which serves everyone.
     _all_roles: list = sorted({r for u in users for r in (u["roles"] or [])})
+    from app.discovery.title_filter import set_title_demand
+    set_title_demand(_all_roles)
 
     # Fetch boards CONCURRENTLY — the fetches are pure I/O, and doing 400 of
     # them sequentially held the global discovery lock for the whole sweep,

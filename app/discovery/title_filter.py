@@ -226,6 +226,69 @@ def keyword_hit(title: str, keywords: List[str] | None) -> bool:
     return False
 
 
+def claims_junk_field(title: str, keywords: List[str] | None) -> bool:
+    """A junk-list title (HR, recruiter, account executive, customer success…)
+    passes only for a user whose OWN role is that kind of work: one of their
+    keywords must itself be a junk-list role AND the title must match it. A
+    mechanical user's "HVAC Engineer" never rescues "Sales Engineer - HVAC"."""
+    own = [k for k in (keywords or []) if k and _exclude_junk_re.search(k)]
+    return bool(own) and keyword_hit(title, own)
+
+
+# ── Non-tech pre-gate (board scrapers + the upsert door) ─────────────────────
+# Cheap regexes that let scrapers skip a detail fetch for postings nobody on
+# the platform is looking for. They used to be the only word: Workday and
+# SmartRecruiters (the ATSs most hospitals, utilities and manufacturers use)
+# dropped every nurse, accountant, HR and legal posting before it reached the
+# shared pool — so a nursing or finance user's feed could only fill from the
+# keyword sources. Now a title the platform's DEMAND claims (the union of every
+# user's target roles, published by the discovery lanes) is kept.
+_TECH_TITLE_RE = re.compile(
+    r'\b(engineer|scientist|developer|researcher|architect|analyst|'
+    r'mlops|devops|sre|quantitative|quant|statistician|'
+    r'programmer|technologist|intelligence|nlp|llm|'
+    r'platform|infrastructure|backend|fullstack|full[\-\s]stack|frontend|front[\-\s]stack|'
+    r'machine\s*learning|deep\s*learning|computer\s*vision|data|technical|member\s+of\s+technical\s+staff)\b',
+    re.IGNORECASE,
+)
+
+_NON_TECH_TITLE_RE = re.compile(
+    r'\b(sales|marketing|recruiter|hr|talent\s+acquisition|people\s+ops|'
+    r'finance|accountant|accounting|payroll|billing|auditor|'
+    r'legal|counsel|lawyer|compliance|'
+    r'receptionist|administrative|assistant|secretary|office\s+manager|'
+    r'customer\s+support|customer\s+success|sales\s+rep|account\s+exec|'
+    r'copywriter|content\s+writer|editor|translator|'
+    r'nurse|doctor|medical|therapist|chef|cook|driver|cashier|'
+    r'facilities|janitor|security\s+guard|maintenance)\b',
+    re.IGNORECASE,
+)
+
+# The platform's current demand: every user's target roles. Empty until a
+# discovery lane publishes it, which keeps the old behaviour (skip non-tech).
+_DEMAND: tuple = ()
+
+
+def set_title_demand(keywords: List[str] | None) -> None:
+    """Publish the union of all users' target roles for the board scrapers.
+    Called by the global discovery pass and the pulse lane before they fetch."""
+    global _DEMAND
+    _DEMAND = tuple(sorted({(k or "").strip() for k in (keywords or []) if (k or "").strip()}))
+
+
+def title_demand() -> tuple:
+    return _DEMAND
+
+
+def is_obvious_non_tech(title: str, keywords: List[str] | None = None) -> bool:
+    """True when the title is clearly outside tech AND nobody wants it:
+    ``keywords`` (a caller's own roles) or, when omitted, the platform demand."""
+    title = title or ""
+    if not _NON_TECH_TITLE_RE.search(title) or _TECH_TITLE_RE.search(title):
+        return False
+    return not keyword_hit(title, _DEMAND if keywords is None else keywords)
+
+
 # ── Role routing (hot lane) ──────────────────────────────────────────────────
 # Alias expansions for role terms, so a "Machine Learning Engineer" user also
 # receives "Senior ML Engineer" / "MLOps Engineer" / "Deep Learning Engineer"
@@ -459,9 +522,11 @@ def matches_title(title: str, extra_keywords: List[str] | None = None) -> bool:
     title_lower = title.lower()
 
     # Stage 0: junk roles are junk for every department — even a keyword hit
-    # ("Sales Engineer - HVAC" for a mechanical user) doesn't rescue them.
+    # ("Sales Engineer - HVAC" for a mechanical user) doesn't rescue them —
+    # UNLESS that kind of role is the user's own field: an HR generalist's
+    # "Human Resources" or a recruiter's "Recruiter" roles are their jobs.
     if _exclude_junk_re.search(title):
-        return False
+        return claims_junk_field(title, extra_keywords)
 
     # Fast-pass: exact keyword phrase match from the caller's list
     if extra_keywords:

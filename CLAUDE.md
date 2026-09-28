@@ -657,6 +657,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `realign.realign_job_type` (re-opens fresh type-only rejections, takes
   unopened wrong-type jobs off the board). Form answers for dated statuses stay
   the user's (`_sponsorship_answer_for_pack`). Guard: `test_student_options`.
+- **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
+  clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
+  allied health, education, HR, sales and legal. The title filter's junk list
+  (HR/recruiter/account exec) passes only for a user whose OWN role is that kind
+  (`claims_junk_field`), and the Workday/SmartRecruiters non-tech skip keeps what
+  the published demand wants (`title_filter.set_title_demand`, set by the shared
+  discovery pass and the pulse/hot lanes). Guard: `test_all_fields`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.
