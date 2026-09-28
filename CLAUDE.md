@@ -91,9 +91,21 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `app/common/account_purge.py` (schema-driven, children-first, both storage
   buckets). `purge_orphaned_accounts` compares our tenants against the Supabase
   Auth listing and deletes NOTHING on any doubt — a listing that raised, came
-  back empty, did not paginate to the end, or implies more orphans than live
-  users (guard: `test_account_purge`). One deleted auth user had left 33k job
-  copies, 2,860 applications and 13 storage objects behind.
+  back empty, did not paginate to the end, implies more orphans than live
+  users, or misses most of our tenants (another project's listing) (guard:
+  `test_account_purge`). One deleted auth user had left 33k job
+  copies, 2,860 applications and 13 storage objects behind. **The purge is
+  ALL-OR-NOTHING** (2026-09-28): it skipped a failing table and said "All
+  account data deleted" — and `job` failed on EVERY deletion, because
+  `funnel_events.job_id` references it and has no owner column (18,882 jobs +
+  18,990 events outlived one account). Rows pointing at a tenant's rows
+  (`_dependent_links`, from the FKs) and rows naming it in text (job-less
+  events by `_USER_REASON_STAGES`, journey keys, `…:user:<uid>` counters) go first; storage is walked
+  recursively and is clean only when a re-listing is EMPTY (tailored docs sit
+  3 levels down). The reconcile also finds tenants by job owner (skip scan)
+  and by storage folder, and confirms ONLY on Auth's `user_not_found` code — a
+  gateway 404 is not proof. Route: no admin client → 503 before anything is
+  deleted. Guard: `test_deletion_leftovers`.
 - **Temporary Pro is a PLAN grant, never a payment** (`TEMPORARY_PRO_FOR_ALL`,
   `billing.temporary_pro_active`, docs/TEMPORARY_PRO_AND_SUBSCRIPTIONS.md): ON =
   every tenant resolves PRO through the ONE entitlement lookup

@@ -22,6 +22,10 @@ import tempfile
 _TEST_DB = pathlib.Path(tempfile.gettempdir()) / f"jobagent_test_{os.getpid()}.db"
 os.environ["SQLITE_PATH"] = str(_TEST_DB)
 os.environ["FAISS_INDEX_PATH"] = str(_TEST_DB.with_suffix(".faiss"))
+# The data dir too: account deletion removes <data_dir>/tailored/app_<id>/, and
+# test application ids (1, 2, 3…) would otherwise match a developer's real local
+# tailored documents in ./data — or another pytest process's.
+os.environ["DATA_DIR"] = str(_TEST_DB.with_suffix(".data"))
 os.environ["DATABASE_URL"] = ""
 os.environ["SUPABASE_URL"] = ""
 os.environ["SUPABASE_ANON_KEY"] = ""
@@ -79,14 +83,19 @@ def _init_db():
         f"Test DB isolation failed — tests are pointing at {settings.sqlite_path}. "
         "SQLITE_PATH must resolve to a temp file (see top of conftest.py)."
     )
+    assert "jobagent_test_" in str(settings.data_dir), (
+        f"Test data-dir isolation failed — tests are pointing at {settings.data_dir}. "
+        "DATA_DIR must resolve to a temp dir (see top of conftest.py).")
     init_db()
     yield
-    # Tear down the throwaway DB + index after the session.
+    # Tear down the throwaway DB + index + data dir after the session.
     for p in (_TEST_DB, _TEST_DB.with_suffix(".faiss")):
         try:
             p.unlink(missing_ok=True)
         except OSError:
             pass
+    import shutil
+    shutil.rmtree(_TEST_DB.with_suffix(".data"), ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

@@ -11552,7 +11552,7 @@ from app.common.account_purge import _EXTRA_OWNER_COLUMNS  # noqa: E402
 
 
 @app.delete("/api/account")
-def delete_account(request: Request) -> dict:
+def delete_account(request: Request):
     """Permanently delete all data for the authenticated user.
 
     Schema-driven ON PURPOSE. The hand-written list this replaced named 7 tables
@@ -11567,10 +11567,25 @@ def delete_account(request: Request) -> dict:
     in Supabase (which this route never sees). Both storage buckets are
     cleaned; the route used to know only "resume" while "avatars" kept the
     user's photo under their id.
+
+    ORDER, and what each failure means (2026-09-28):
+      0. No Supabase admin client → 503 BEFORE anything is deleted. It used to
+         delete the rows, skip storage and sign-in, and answer success.
+      1. Rows — all or nothing. A failure rolls back and answers 503: nothing
+         was deleted, the account still works, trying again is safe. It used
+         to skip the failing table and say "All account data deleted".
+      2. Files — every object under ``<uid>/``, nested folders included. A
+         failure does NOT stop the deletion: once the sign-in is gone, the
+         daily reconcile finds the folder at the bucket root and removes it,
+         and the answer says so.
+      3. Sign-in — the step that ends the account. A failure answers 502 with
+         the data already gone; retrying finishes it.
     """
+    from fastapi.responses import JSONResponse
+
     uid = _require_user(request)
     from app.common.account_purge import (
-        is_sentinel, purge_user_data, purge_user_storage,
+        PurgeError, is_sentinel, purge_user_data, purge_user_storage,
     )
 
     # Never let a sentinel identity through: SHARED_POOL_USER owns the pool every
@@ -11580,61 +11595,82 @@ def delete_account(request: Request) -> dict:
     if uid != "local" and is_sentinel(uid):
         raise HTTPException(status_code=400, detail="Refusing to delete a system account.")
 
-    deleted: dict[str, int] = {}
-    if uid != "local":
-        deleted = purge_user_data(uid)
-    log.info("Account deletion for %s removed: %s", uid,
-             {k: v for k, v in sorted(deleted.items()) if v})
-
-    # Storage + Auth cleanup. These are SEPARATE try blocks on purpose: they
-    # used to share one `except Exception: pass`, so a storage listing that
-    # threw skipped the auth deletion entirely — the rows were gone but the
-    # login still worked, and the route still answered {"success": true}. From
-    # the user's side the account simply was not deleted.
     from app.config import settings
-    storage_deleted = auth_deleted = None
-    if settings.use_supabase and uid and uid != "local":
-        sb = None
+    sb = None
+    if settings.use_supabase and uid != "local":
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
         except Exception as e:
-            log.exception("Account deletion: no Supabase client for %s: %s", uid, e)
+            log.error("Account deletion: no Supabase admin client: %s", type(e).__name__)
+        if sb is None:
+            return JSONResponse(status_code=503, content={
+                "success": False, "deleted": False,
+                "message": ("Account deletion is temporarily unavailable — nothing was "
+                            "deleted. Please try again in a few minutes, or email "
+                            "privacy@spotapply.ai."),
+            })
 
-        if sb is not None:
-            try:
-                per_bucket = purge_user_storage(uid, sb)
-                storage_deleted = all(per_bucket.values())
-            except Exception as e:
-                storage_deleted = False
-                log.exception("Account deletion: storage cleanup failed for %s: %s", uid, e)
+    deleted: dict[str, int] = {}
+    if uid != "local":
+        try:
+            deleted = purge_user_data(uid)
+        except PurgeError as e:
+            log.error("Account deletion for %s rolled back at %s — nothing deleted", uid, e.step)
+            return JSONResponse(status_code=503, content={
+                "success": False, "deleted": False,
+                "message": ("We couldn't delete your account just now — nothing was "
+                            "deleted and your account still works. Please try again in a "
+                            "few minutes, or email privacy@spotapply.ai."),
+            })
+    log.info("Account deletion for %s removed: %s", uid,
+             {k: v for k, v in sorted(deleted.items()) if v})
 
-            # The one that actually ends the account. Never let the storage
-            # result above decide whether this runs.
-            try:
-                sb.auth.admin.delete_user(uid)
-                auth_deleted = True
-            except Exception as e:
-                auth_deleted = False
-                log.exception("Account deletion: Supabase Auth user NOT deleted for %s: %s", uid, e)
+    # Storage and Auth are SEPARATE try blocks on purpose: they used to share one
+    # `except Exception: pass`, so a storage listing that threw skipped the auth
+    # deletion entirely — the rows were gone but the login still worked.
+    storage_deleted = auth_deleted = None
+    if sb is not None:
+        try:
+            per_bucket = purge_user_storage(uid, sb)
+            storage_deleted = all(per_bucket.values())
+        except Exception as e:
+            storage_deleted = False
+            log.error("Account deletion: storage cleanup failed for %s: %s", uid, type(e).__name__)
 
-    # Be honest about a partial deletion — the data is gone either way, but if
-    # the login survived, the user needs to know rather than discover it.
+        try:
+            sb.auth.admin.delete_user(uid)
+            auth_deleted = True
+            # The token verification cache would keep this user signed in for
+            # up to a minute; a deleted account's open tab must stop at once.
+            from app.db.supabase_client import forget_user
+            forget_user(uid)
+        except Exception as e:
+            auth_deleted = False
+            log.error("Account deletion: Supabase Auth user NOT deleted for %s: %s",
+                      uid, type(e).__name__)
+
+    # Honest about a partial deletion: the data is gone, but if the login
+    # survived the user needs to know rather than discover it.
     if auth_deleted is False:
-        return {
+        return JSONResponse(status_code=502, content={
             "success": False,
             "partial": True,
             "storage_deleted": storage_deleted,
             "auth_deleted": False,
             "message": ("Your data was deleted, but your sign-in could not be removed. "
-                        "Please contact support@spotapply.ai so we can finish closing "
-                        "the account."),
-        }
+                        "Please try again, or email support@spotapply.ai so we can "
+                        "finish closing the account."),
+        })
+    message = "All account data deleted."
+    if storage_deleted is False:
+        message = ("Your account and data were deleted. A few stored files could not be "
+                   "removed just now; our daily cleanup removes them automatically.")
     return {
         "success": True,
         "storage_deleted": storage_deleted,
         "auth_deleted": auth_deleted,
-        "message": "All account data deleted.",
+        "message": message,
     }
 
 

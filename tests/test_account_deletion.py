@@ -19,6 +19,7 @@ from sqlmodel import SQLModel, select
 from app.api import server
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job
+from tests.supabase_fakes import FakeBucket, FakeStorage
 
 _GONE = "deleted-tenant"
 _KEEP = "surviving-tenant"
@@ -212,20 +213,6 @@ def test_the_schema_enumeration_is_not_empty():
 # skipped the AUTH deletion silently and the route still answered success — the
 # rows were gone but the login still worked, which reads as "it didn't delete".
 
-class _FakeStorageBucket:
-    def __init__(self, fail=False):
-        self.fail = fail
-        self.removed = None
-
-    def list(self, uid):
-        if self.fail:
-            raise RuntimeError("storage listing exploded")
-        return [{"name": "resume.pdf"}]
-
-    def remove(self, paths):
-        self.removed = paths
-
-
 class _FakeAdmin:
     def __init__(self, fail=False):
         self.fail = fail
@@ -239,19 +226,19 @@ class _FakeAdmin:
 
 class _FakeSupabase:
     def __init__(self, storage_fail=False, auth_fail=False):
-        self._bucket = _FakeStorageBucket(storage_fail)
+        self._bucket = FakeBucket({f"{_GONE}/resume.pdf"}, fail_list=storage_fail)
+        self.storage = FakeStorage(resume=self._bucket)
         self.auth = type("A", (), {"admin": _FakeAdmin(auth_fail)})()
 
-    def storage(self):  # pragma: no cover - attribute style below
-        raise NotImplementedError
 
-    def from_(self, _name):
-        return self._bucket
+def _body(result) -> dict:
+    """The route answers a dict on success and a JSONResponse (5xx) otherwise."""
+    import json
+    return json.loads(result.body) if hasattr(result, "body") else result
 
 
 def _run_delete_with(monkeypatch, storage_fail=False, auth_fail=False):
     fake = _FakeSupabase(storage_fail, auth_fail)
-    fake.storage = type("S", (), {"from_": staticmethod(lambda n: fake._bucket)})()
     monkeypatch.setattr(server, "_require_user", lambda request: _GONE)
     # use_supabase is a computed property, so it has to be patched on the CLASS.
     from app.config import Settings, settings as _settings
@@ -272,20 +259,24 @@ def test_auth_user_is_deleted_even_when_storage_cleanup_fails(monkeypatch):
     assert result["storage_deleted"] is False
     assert result["auth_deleted"] is True
     assert result["success"] is True
+    # ...and the answer says the files are still being removed, by whom.
+    assert "daily cleanup" in result["message"]
 
 
 def test_a_failed_auth_delete_is_reported_not_swallowed(monkeypatch):
     """Data gone but sign-in alive is a PARTIAL deletion — never 'success'."""
     result, _ = _run_delete_with(monkeypatch, auth_fail=True)
-    assert result["success"] is False
-    assert result["partial"] is True
-    assert result["auth_deleted"] is False
-    assert "support@spotapply.ai" in result["message"]
+    assert result.status_code == 502
+    body = _body(result)
+    assert body["success"] is False
+    assert body["partial"] is True
+    assert body["auth_deleted"] is False
+    assert "support@spotapply.ai" in body["message"]
 
 
 def test_happy_path_removes_storage_and_auth(monkeypatch):
     result, fake = _run_delete_with(monkeypatch)
-    assert fake._bucket.removed == [f"{_GONE}/resume.pdf"]
+    assert fake._bucket.removed == [f"{_GONE}/resume.pdf"] and not fake._bucket.objects
     assert fake.auth.admin.deleted == _GONE
     assert result["success"] is True and result["auth_deleted"] is True
 

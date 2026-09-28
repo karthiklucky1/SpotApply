@@ -9,8 +9,6 @@ Resume goes through the same encoder so queries and corpus are in the same space
 from __future__ import annotations
 
 import logging
-import re
-from pathlib import Path
 from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -262,13 +260,10 @@ class Matcher:
         # A file per user holds only that tenant's pool: small, incremental, no
         # cross-tenant thrash. Encode-only callers (embedding filter, extractor)
         # never persist, so they keep the default path.
-        base: Path = settings.faiss_index_path
-        if user_id and user_id not in ("local",):
-            safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(user_id))
-            self.index_path: Path = base.with_name(f"{base.stem}_{safe}{base.suffix}")
-        else:
-            self.index_path = base
-        self.id_map_path: Path = self.index_path.with_suffix(".ids.npy")
+        # The naming rule lives in app.common.user_files so the account purge
+        # deletes exactly the files written here.
+        from app.common.user_files import user_index_paths
+        self.index_path, self.id_map_path = user_index_paths(user_id, settings.faiss_index_path)
         self.index: "faiss.Index" | None = None
         self.job_ids: np.ndarray | None = None  # index position -> Job.id
 

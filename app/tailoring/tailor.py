@@ -21,6 +21,7 @@ from typing import Tuple, Optional
 from docx import Document
 from sqlmodel import select
 
+from app.common.user_files import tailored_dir
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job
@@ -980,7 +981,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     resume_filename = f"{name_part}_Resume.docx"
     cover_filename = f"{name_part}_Cover_Letter.txt"
 
-    out_dir = settings.data_dir / "tailored" / f"app_{application_id}"
+    out_dir = tailored_dir(application_id, settings.data_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     resume_path = out_dir / resume_filename
     cover_path = out_dir / cover_filename
@@ -1192,7 +1193,7 @@ def reverify_application(application_id: int) -> dict:
         job = session.get(Job, app.job_id)
         job_description = job.description if job else ""
 
-    out_dir = settings.data_dir / "tailored" / f"app_{application_id}"
+    out_dir = tailored_dir(application_id, settings.data_dir)
     md_path = out_dir / "resume.md"
     if not md_path.exists():
         raise FileNotFoundError(

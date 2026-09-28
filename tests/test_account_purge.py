@@ -26,6 +26,7 @@ from app.common import account_purge as ap
 from app.config import Settings, settings
 from app.db.init_db import get_session
 from app.db.models import Application, ApplicationStatus, Job, JobSource, UserProfile, UserSubscription
+from tests.supabase_fakes import AuthApiError, FakeBucket, FakeStorage, user_not_found
 
 _P = "purge-"
 
@@ -71,25 +72,11 @@ def _rows_for(uid: str) -> dict:
         }
 
 
-class _Bucket:
-    def __init__(self, name, log):
-        self.name, self.log = name, log
-
-    def list(self, prefix):
-        return [{"name": "resume.pdf"}, {"name": "photo.png"}]
-
-    def remove(self, paths):
-        self.log.append((self.name, tuple(paths)))
-
-
-class _NotFound(Exception):
-    status = 404
-
-
 class _FakeSupabase:
     """auth.admin.list_users pages like supabase-py; auth.admin.get_user_by_id
-    answers from ``known_ids`` (defaults to the listing) — a 404-shaped error
-    for a missing user, a generic error when ``lookup_fails``; storage.from_(bucket)."""
+    answers from ``known_ids`` (defaults to the listing) — the SDK's own
+    ``user_not_found`` error for a missing user, a generic error when
+    ``lookup_fails``; ``storage`` is an in-memory FakeStorage."""
 
     def __init__(self, auth_ids, *, raise_on_page=None, per_page_short=True,
                  known_ids=None, lookup_fails=False):
@@ -98,7 +85,6 @@ class _FakeSupabase:
         self.raise_on_page = raise_on_page
         self.per_page_short = per_page_short
         self.lookup_fails = lookup_fails
-        self.removed: list = []
         self.lookups: list = []
         fake = self
 
@@ -109,7 +95,7 @@ class _FakeSupabase:
                     raise RuntimeError("auth unreachable")
                 if uid.lower() in fake.known_ids:
                     return SimpleNamespace(user=SimpleNamespace(id=uid))
-                raise _NotFound("User not found")
+                raise user_not_found()
 
             def list_users(self, page=1, per_page=1000):
                 if fake.raise_on_page == page:
@@ -123,7 +109,7 @@ class _FakeSupabase:
                 return [SimpleNamespace(id=u) for u in chunk]
 
         self.auth = SimpleNamespace(admin=_Admin())
-        self.storage = SimpleNamespace(from_=lambda name: _Bucket(name, fake.removed))
+        self.storage = FakeStorage()
 
 
 def _wire(monkeypatch, fake):
@@ -164,12 +150,16 @@ def test_the_shared_pool_owner_is_a_sentinel():
 
 
 def test_storage_cleanup_covers_both_buckets_independently():
+    uid = f"{_P}x"
     fake = _FakeSupabase([])
-    out = ap.purge_user_storage(f"{_P}x", fake)
+    fake.storage = FakeStorage(
+        resume=FakeBucket({f"{uid}/resume.pdf", f"{uid}/tailored/app_1/resume.docx"}),
+        avatars=FakeBucket({f"{uid}/photo.png"}))
+    out = ap.purge_user_storage(uid, fake)
     assert out == {"resume": True, "avatars": True}
-    assert {b for b, _ in fake.removed} == {"resume", "avatars"}
-    for _bucket, paths in fake.removed:
-        assert all(p.startswith(f"{_P}x/") for p in paths)
+    for bucket in fake.storage.buckets.values():
+        assert not bucket.objects
+        assert bucket.removed and all(p.startswith(f"{uid}/") for p in bucket.removed)
 
 
 # ── the reconcile: doing nothing when in doubt ───────────────────────────────
@@ -211,6 +201,23 @@ def test_more_orphans_than_live_accounts_is_a_truncated_listing_not_a_purge(monk
     assert out["aborted"] and "exceed" in out["aborted"]
     for i in range(3):
         assert _rows_for(f"{_P}gone{i}")["profiles"] == 1
+
+
+def test_a_listing_from_another_project_deletes_nothing(monkeypatch):
+    """SUPABASE_URL pointing at a different project than DATABASE_URL: the
+    listing is complete and non-empty and that Auth truthfully says
+    user_not_found for every one of our tenants. Most of our tenants missing
+    at once must read as the wrong listing, not as a wave of deletions."""
+    for i in range(6):
+        _seed_tenant(f"{_P}real{i}", jobs=1)
+    strangers = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1000)]
+    fake = _FakeSupabase(strangers)
+    _wire(monkeypatch, fake)
+    out = ap.purge_orphaned_accounts()
+    assert out["aborted"] and "another project" in out["aborted"]
+    assert fake.lookups == [], "nothing may even be looked up"
+    for i in range(6):
+        assert _rows_for(f"{_P}real{i}")["profiles"] == 1
 
 
 def test_disabled_or_not_supabase_does_nothing(monkeypatch):
@@ -274,9 +281,16 @@ def test_an_unanswerable_lookup_keeps_the_tenant_for_tomorrow(monkeypatch):
     assert _rows_for(f"{_P}gone")["profiles"] == 1
 
 
-def test_the_lookup_verdict_reads_every_shape_the_sdk_raises():
+def test_only_auths_own_user_not_found_verdict_confirms_a_deletion():
+    """True means "purge", so it takes Auth's own code for THIS user. The old
+    reader also accepted any 404 and any message containing "not found" — a
+    gateway's HTML 404 page or a DNS "host not found" would have deleted a
+    live account."""
     class _Boom(Exception):
         pass
+
+    class _Gateway404(Exception):
+        status = 404
 
     class _Admin:
         def __init__(self, behaviour):
@@ -290,8 +304,13 @@ def test_the_lookup_verdict_reads_every_shape_the_sdk_raises():
     def _sb(b):
         return SimpleNamespace(auth=SimpleNamespace(admin=_Admin(b)))
 
-    assert ap._auth_user_gone(_sb(_NotFound("User not found")), "u1") is True
-    assert ap._auth_user_gone(_sb(_Boom("user_not_found")), "u1") is True
+    assert ap._auth_user_gone(_sb(user_not_found()), "u1") is True
+    # Not evidence: a bare 404, the words in a message, another Auth error.
+    assert ap._auth_user_gone(_sb(_Gateway404("404 Not Found")), "u1") is None
+    assert ap._auth_user_gone(_sb(_Boom("user_not_found")), "u1") is None
+    assert ap._auth_user_gone(_sb(_Boom("[Errno -2] Name or service not known: host not found")), "u1") is None
+    assert ap._auth_user_gone(_sb(AuthApiError("Database error", 500, "unexpected_failure")), "u1") is None
+    assert ap._auth_user_gone(_sb(AuthApiError("Not found", 404, None)), "u1") is None
     assert ap._auth_user_gone(_sb(_Boom("connection reset")), "u1") is None
     assert ap._auth_user_gone(_sb(SimpleNamespace(user=SimpleNamespace(id="U1"))), "u1") is False
     # A response naming a DIFFERENT user is not a confirmation either way.

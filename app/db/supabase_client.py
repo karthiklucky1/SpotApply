@@ -43,6 +43,17 @@ def _jwt_cache_put(token: str, payload: dict, now: float) -> None:
             _JWT_CACHE.clear()
     _JWT_CACHE[token] = (now + _JWT_CACHE_TTL, payload)
 
+
+def forget_user(uid: str) -> int:
+    """Drop every cached verification for ``uid``. Called when the account is
+    deleted: without it the deleted user's open tab stays authenticated for up
+    to ``_JWT_CACHE_TTL`` — long enough for a poll to act as a live tenant."""
+    stale = [t for t, (_exp, payload) in list(_JWT_CACHE.items())
+             if (payload or {}).get("sub") == uid]
+    for t in stale:
+        _JWT_CACHE.pop(t, None)
+    return len(stale)
+
 try:
     from supabase import Client, create_client
     _SUPABASE_AVAILABLE = True

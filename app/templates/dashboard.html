@@ -4889,13 +4889,24 @@
                     return;
                 }
                 closeDeleteAccountModal();
-                showToast('Account deleted. Signing you out…', 'success');
+                // Files still being cleaned up is said, not hidden.
+                showToast(data.storage_deleted === false && data.message
+                          ? data.message : 'Account deleted. Signing you out…', 'success');
+                // Clear the Supabase session too, as Logout does. Without it the
+                // sign-in page finds the stored session and sends a deleted
+                // account straight back to the dashboard. 'local': the user no
+                // longer exists, so there is nothing to revoke server-side.
+                try {
+                    const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+                    const sbc = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}');
+                    await sbc.auth.signOut({ scope: 'local' });
+                } catch (_) {}
                 setTimeout(() => {
                     localStorage.removeItem('sb_token');
                     localStorage.removeItem('sb_refresh');
                     document.cookie = 'sb_token=; path=/; max-age=0; SameSite=Lax';
                     window.location.href = '/';
-                }, 1500);
+                }, data.storage_deleted === false ? 4000 : 1500);
             } catch (e) {
                 fail('Network error — nothing was deleted. Please try again.');
             }
@@ -6773,8 +6784,8 @@
     </div>
     <h2 class="text-lg font-extrabold text-white mb-2">Delete your account?</h2>
     <p class="text-[13px] text-slate-400 leading-relaxed mb-4">
-      This permanently removes your profile, resume, every job and application, and your
-      sign-in. <b class="text-slate-200">It cannot be undone.</b>
+      This permanently removes your profile, resume, tailored documents, every job and
+      application, and your sign-in. <b class="text-slate-200">It cannot be undone.</b>
     </p>
     <label for="delete-confirm-input" class="block text-[11px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">
       Type <span class="text-rose-300">DELETE</span> to confirm

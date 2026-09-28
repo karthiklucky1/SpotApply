@@ -1097,7 +1097,9 @@ class PlatformCounter(SQLModel, table=True):
 
     An in-process counter is not a cap: it starts from zero on every restart
     and every replica keeps its own, so "400 calls/day" meant "400 per process
-    per uptime". No user data: the name is a counter's name, never an id.
+    per uptime". Per-user allowances are named ``…:user:<uid>``
+    (``compute_policy.reserve_paid_call``) and are deleted with the account
+    (``account_purge._text_keyed_deletes``).
     """
     __tablename__ = "platform_counter"
     __table_args__ = (
