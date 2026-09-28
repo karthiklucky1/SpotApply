@@ -6616,6 +6616,34 @@ def _discover_then_match(user_id) -> None:
         _discover_then_match_locked(user_id)
 
 
+def _internship_keywords(roles: list[str], prof) -> list[str]:
+    """The discovery keywords for an internship / co-op seeker, in order.
+
+    Sources read only the FIRST 3-8 keywords, so the "<role> intern" variants
+    this used to APPEND were never searched for anyone with three or more
+    roles. Internships-only leads with them; Both alternates them with the
+    full-time terms; full-time is unchanged. Every term is anchored to the
+    user's own role: a bare "internship" matched every internship title
+    (Marketing, HR…) at the role gate and paid to score them.
+    """
+    from app.common.tenant_prefs import internships_only, wants_internships
+    roles = list(roles or [])
+    if not roles or prof is None or not wants_internships(prof):
+        return roles
+    base = roles[:3]
+    interns = [f"{b} intern" for b in base]
+    extra = [f"{base[0]} co-op", f"{base[0]} internship"]
+    if internships_only(prof):
+        ordered = interns + extra + roles
+    else:
+        ordered = [t for pair in zip(base, interns) for t in pair] + roles[len(base):] + extra
+    out: list[str] = []
+    for term in ordered:
+        if term and term.lower() not in {o.lower() for o in out}:
+            out.append(term)
+    return out
+
+
 def _discover_then_match_locked(user_id) -> None:
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
@@ -6639,16 +6667,13 @@ def _discover_then_match_locked(user_id) -> None:
         if not roles:
             roles = _department_keywords(_prof) or None
         if roles:
+            base = list(roles[:3])
+            roles = _internship_keywords(roles, _prof)
             # Sponsorship-needing users: nudge toward cap-exempt (no-lottery) roles.
             if _user_needs_sponsorship(user_id):
-                primary = roles[0]
+                primary = base[0]
                 _add_kw(roles, f"research {primary}")
                 _add_kw(roles, f"{primary} university")
-            # Internship toggle: append internship variants of the primary roles.
-            if _prof is not None and getattr(_prof, "include_internships_in_discovery", False):
-                for base in roles[:3]:
-                    _add_kw(roles, f"{base} intern")
-                _add_kw(roles, "internship")
     except Exception as _se:
         log.debug("discovery keyword augmentation skipped: %s", _se)
     # ── Wave 1 (fast): concurrent aggregator APIs only → match → first results
@@ -9434,6 +9459,7 @@ def _record_document_downloaded(kind: str, application_id: int | None,
 # The saved preferences `eligibility.decide` reads (tenant_prefs.geo_prefs).
 _LOCATION_PREF_FIELDS = ("preferred_country", "location", "remote_ok",
                          "open_to_relocation", "relocation_targets")
+_JOB_TYPE_PREF_FIELDS = ("job_type_preference", "include_internships_in_discovery")
 
 
 def _release_location_stamps(user_id_arg: str | None) -> int:
@@ -9516,6 +9542,7 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
                 exp = [e for e in exp if isinstance(e, dict) and any(str(v or "").strip() for v in e.values())]
                 db_profile.experience_json = _json.dumps(exp[:15])
             _before = {f: getattr(db_profile, f, None) for f in _LOCATION_PREF_FIELDS}
+            _before_type = {f: getattr(db_profile, f, None) for f in _JOB_TYPE_PREF_FIELDS}
             for field, value in payload.items():
                 setattr(db_profile, field, value)
             db_profile.updated_at = _dt.utcnow()
@@ -9523,6 +9550,15 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
             session.commit()
             if any(getattr(db_profile, f, None) != _before[f] for f in _LOCATION_PREF_FIELDS):
                 _release_location_stamps(user_id_arg)
+            if any(getattr(db_profile, f, None) != _before_type[f] for f in _JOB_TYPE_PREF_FIELDS):
+                # "Looking for" changed: re-open type-only rejections and take
+                # unopened jobs of the wrong type off the board. Never fails
+                # the save.
+                try:
+                    from app.strategy.realign import realign_job_type
+                    realign_job_type(user_id_arg)
+                except Exception as _je:
+                    log.warning("job-type realign failed (non-fatal): %s", _je)
 
     try:
         _do_update()

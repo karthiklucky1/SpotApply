@@ -40,9 +40,16 @@ class WorkAuthFraming:
 
 
 def _blob(profile) -> str:
+    """The saved status, as lower-case text: the free-text fields AND the
+    Profile's "Work-auth status" dropdown. The dropdown was read by nothing
+    here, so a student who picked "F-1 CPT" or "F-1 OPT" there (and left the
+    text empty) was framed as needing no sponsorship. "Other" says nothing."""
     wa = (getattr(profile, "work_authorization", "") or "")
     vs = (getattr(profile, "visa_status", "") or "")
-    return f"{wa} {vs}".lower()
+    ws = (getattr(profile, "work_auth_status", "") or "")
+    if ws.strip().lower() == "other":
+        ws = ""
+    return f" {wa} {vs} {ws} ".lower()
 
 
 # Statuses whose authorisation is DATED: the document carries an end date, so
@@ -212,8 +219,17 @@ def _assess_status(profile) -> WorkAuthFraming:
     def has(*keys) -> bool:
         return any(k in blob for k in keys)
 
-    # Fully authorized, never needs sponsorship
+    # Fully authorized, never needs sponsorship. The dropdown's "Citizen" is
+    # "citizen of the country I'm applying in" — a U.S. label only for a U.S.
+    # search.
     if has("citizen", "u.s. citizen", "us citizen"):
+        if _non_us and not has("u.s. citizen", "us citizen"):
+            return WorkAuthFraming(
+                True, f"Citizen ({_place})", False, False,
+                f"✅ Citizen of {_place} — fully authorized, no sponsorship ever required.",
+                "Yes", "No", False,
+                "No work authorization or sponsorship needed at any point.",
+            )
         return WorkAuthFraming(
             True, "U.S. Citizen", False, False,
             "✅ U.S. Citizen — fully authorized, no sponsorship ever required.",
@@ -221,6 +237,13 @@ def _assess_status(profile) -> WorkAuthFraming:
             "No work authorization or sponsorship needed at any point.",
         )
     if has("green card", "permanent resident", "lawful permanent", "lpr"):
+        if _non_us and not has("green card"):
+            return WorkAuthFraming(
+                True, "Permanent resident", False, False,
+                f"✅ Permanent resident of {_place} — fully authorized, no sponsorship required.",
+                "Yes", "No", False,
+                "Authorized to work permanently with no employer sponsorship.",
+            )
         return WorkAuthFraming(
             True, "Permanent Resident (Green Card)", False, False,
             "✅ Green Card holder — fully authorized, no sponsorship required.",
@@ -245,6 +268,19 @@ def _assess_status(profile) -> WorkAuthFraming:
             "I can start immediately and work up to 3 years on STEM OPT — no "
             "H-1B petition, filing fee or lottery involved. It does need an "
             "E-Verify-enrolled employer and a signed I-983 training plan.",
+        )
+    # F-1 CPT — the internship/co-op authorization. The school authorizes it
+    # for a role that is part of the degree program; the employer files
+    # nothing. Checked before OPT because "F-1 CPT" also contains "f-1".
+    if has("cpt"):
+        return WorkAuthFraming(
+            True, "F-1 CPT", False, True,
+            "✅ Authorized via F-1 CPT for internships and co-ops that are part of "
+            "your degree program — your school authorizes it; the employer files "
+            "nothing. After graduation: OPT, then H-1B sponsorship.",
+            "Yes", "Yes — in the future, after my degree and OPT", True,
+            "My school authorizes this role through CPT — no petition, fee or "
+            "filing on your side.",
         )
     if has("opt", "f-1", "f1"):
         return WorkAuthFraming(
@@ -276,8 +312,21 @@ def _assess_status(profile) -> WorkAuthFraming:
             "I'm currently authorized to work in the U.S.",
         )
 
+    # A student visa without CPT/OPT named: work rights depend on the visa and
+    # the school, and a job after graduation will need sponsorship.
+    if has("student visa", "study permit", "student route", "tier 4"):
+        return WorkAuthFraming(
+            False, "Student visa", False, True,
+            "Student visa — work rights depend on your visa and school "
+            "(in the U.S., CPT for internships, OPT after graduation); most "
+            "roles need sponsorship after you graduate.",
+            "Depends on my student work permission — I'll confirm per role",
+            "Yes — in the future", True,
+            "I can confirm my student work permission for this role.",
+        )
+
     # Explicitly requires sponsorship (no current authorization)
-    if requires:
+    if requires or has("needs sponsorship"):
         if _non_us:
             # H-1B/cap-exempt framing is meaningless outside the US.
             return WorkAuthFraming(

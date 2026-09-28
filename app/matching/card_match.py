@@ -71,8 +71,16 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 
 def _work_auth_factor(user_card: dict, job_card: dict) -> Tuple[float, str]:
     prof = user_card.get("_profile") or {}
-    needs = bool(prof.get("requires_sponsorship", False))
-    wa = f"{prof.get('work_authorization') or ''} {prof.get('visa_status') or ''}".lower()
+    # The same answer the rule filter and the scorer use: the visa status
+    # decides, the checkbox only when the status says neither (tenant_prefs).
+    from types import SimpleNamespace
+    from app.common.tenant_prefs import needs_sponsorship
+    needs = needs_sponsorship(SimpleNamespace(**{
+        k: prof.get(k) for k in ("work_authorization", "visa_status", "work_auth_status",
+                                 "requires_sponsorship", "preferred_country")}))
+    _status = str(prof.get("work_auth_status") or "")
+    wa = (f"{prof.get('work_authorization') or ''} {prof.get('visa_status') or ''} "
+          f"{'' if _status.strip().lower() == 'other' else _status}").lower()
     # "US citizens only" and "citizens OR PERMANENT RESIDENTS only" are different
     # bars, and conflating them is wrong in both directions. The first is real
     # ITAR/cleared work that genuinely excludes a green-card holder; the second

@@ -647,6 +647,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   an upper bound); ONE export verdict (`tailoring/export_gate.py`) for review,
   details, download and fill-pack; polling never counts as activity
   (`_is_meaningful_request`), grace 1 day.
+- **Students: ONE answer for "internships?" and "sponsorship?"** (2026-09-28,
+  `app/common/tenant_prefs.py`): `wants_internships` (Looking for = internship
+  or both, or the old switch) and `needs_sponsorship` (the VISA STATUS decides
+  via `work_auth.assess_profile` — dropdown included — the checkbox only when
+  the status says neither) are read by RuleFilter, both scoring prompts and
+  card_match. "Both" used to mean full-time-only and every F-1 OPT/CPT user
+  had the checkbox unticked. Changing Looking for runs
+  `realign.realign_job_type` (re-opens fresh type-only rejections, takes
+  unopened wrong-type jobs off the board). Form answers for dated statuses stay
+  the user's (`_sponsorship_answer_for_pack`). Guard: `test_student_options`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

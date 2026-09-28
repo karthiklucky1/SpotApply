@@ -102,6 +102,44 @@ def geo_prefs_for_user(user_id: str | None):
     return geo_prefs(p if row is not None else None, uid)
 
 
+# ── Job type and work authorization (2026-09-28) ─────────────────────────────
+# Students exposed both. "Looking for: Both" was read as full-time-only unless a
+# SECOND control ("Also search internships") was also ticked — both production
+# users who chose Both got no internships. And every F-1 OPT/CPT student had
+# the "Requires visa sponsorship" checkbox unticked, so the rule filter and the
+# scorer treated them as never needing sponsorship while their visa status said
+# OPT. One answer each, read by every filter and prompt.
+
+def wants_internships(profile) -> bool:
+    """Internships and co-ops are wanted: "Looking for" is Internships or Both,
+    or the older "Also search internships" switch is on."""
+    pref = (getattr(profile, "job_type_preference", "") or "full_time").strip().lower()
+    return pref in ("internship", "both") or bool(
+        getattr(profile, "include_internships_in_discovery", False))
+
+
+def internships_only(profile) -> bool:
+    """Only internships and co-ops — full-time roles are not wanted."""
+    return (getattr(profile, "job_type_preference", "") or "").strip().lower() == "internship"
+
+
+def needs_sponsorship(profile) -> bool:
+    """Will this user need visa sponsorship, now or later?
+
+    The saved status decides (app/intelligence/work_auth.py: F-1 OPT, STEM OPT,
+    CPT, a student visa and H-1B do; citizens and permanent residents never
+    do); the checkbox decides only when the status says neither.
+    """
+    if profile is None:
+        return False
+    try:
+        from app.intelligence.work_auth import assess_profile
+        return bool(assess_profile(profile).needs_future_sponsorship)
+    except Exception as e:
+        log.debug("work-auth assessment failed, using the checkbox: %s", e)
+        return bool(getattr(profile, "requires_sponsorship", False))
+
+
 def reset_state() -> None:
     """Forget which users we have logged the country fallback for. Tests only."""
     _warned.clear()

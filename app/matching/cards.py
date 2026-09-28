@@ -456,6 +456,9 @@ def profile_facts(profile) -> dict:
         "requires_sponsorship": bool(getattr(profile, "requires_sponsorship", False)),
         "work_authorization": (getattr(profile, "work_authorization", "")
                                or getattr(profile, "work_auth_status", "") or ""),
+        # The Profile's status dropdown, raw: card_match derives the
+        # sponsorship need from it the way the scorer does (tenant_prefs).
+        "work_auth_status": (getattr(profile, "work_auth_status", "") or ""),
         # card_match reads this alongside work_authorization, the same pair
         # intelligence/work_auth.py assesses — a clearance or visa category
         # recorded only here would otherwise be invisible to the matcher.

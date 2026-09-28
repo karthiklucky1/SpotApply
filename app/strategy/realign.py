@@ -65,6 +65,98 @@ OFF_ROLE_PREFIX = "Off-role"
 _SKIP_MARKER = "[roles-realign]"
 
 
+# The job-type counterpart: its own marker, so a role realign never undoes a
+# job-type removal and vice versa.
+_JOB_TYPE_SKIP_MARKER = "[job-type-realign]"
+
+# What RuleFilter writes for a job-type mismatch, behind whatever prefix a lane
+# put in front ("Rule filtered: …", "Pre-screened (Tier-1 fit 10): …").
+_JOB_TYPE_VERDICTS = ("Internship filtered: user did not opt into internships",
+                      "Full-time filtered: user wants internships only")
+
+
+def realign_job_type(user_id: Optional[str]) -> dict:
+    """"Looking for" changed (full-time / internships & co-ops / both): bring the
+    pool in line with it, cheaply. Returns a stat dict.
+
+    A student who picked "Internships only" a minute after signing up kept every
+    internship the first pass had rejected as unwanted — a scored job is never
+    looked at again — and kept the full-time jobs it had already delivered.
+
+    * A job the OLD choice rejected on type alone is re-opened (score and Tier-1
+      stamps cleared) while it is still fresh, so the lane judges it under the
+      new choice. The rule filter runs before any paid call, so a job that
+      still does not fit costs nothing.
+    * A SHORTLISTED job the user has not opened that the new choice excludes
+      leaves the board (SKIPPED with our marker); one we removed earlier comes
+      back when it fits again. Opened, tailored or applied jobs are never
+      touched.
+    """
+    from sqlalchemy import func, or_, update as _upd
+
+    from app.common.freshness import is_fresh_expr
+    from app.common.tenant_prefs import internships_only, wants_internships
+    from app.db.models import UserProfile
+    from app.matching.filters.rule_filter import classify_job_type
+
+    stats = {"reopened": 0, "unshortlisted": 0, "restored": 0}
+    uid_arg = None if (not user_id or user_id == "local") else user_id
+    owner = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
+    app_owner = (Application.user_id == uid_arg) if uid_arg else Application.user_id.is_(None)
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == uid_arg) if uid_arg else UserProfile.user_id.is_(None))).first()
+        if prof is None:
+            return stats
+        want_intern, only_intern = wants_internships(prof), internships_only(prof)
+        label = ("internships and co-ops only" if only_intern else
+                 "full-time roles only" if not want_intern else "")
+
+        def _fits(title, desc) -> bool:
+            if classify_job_type(title or "", desc or "") == "internship":
+                return want_intern
+            return not only_intern
+
+        rows = session.exec(
+            select(Application, Job.title, func.substr(Job.description, 1, 600))
+            .join(Job, Job.id == Application.job_id)
+            .where(app_owner, or_(
+                (Application.status == ApplicationStatus.SHORTLISTED)
+                & Application.viewed_at.is_(None),
+                (Application.status == ApplicationStatus.SKIPPED)
+                & Application.notes.contains(_JOB_TYPE_SKIP_MARKER)))
+        ).all()
+        for app, title, desc in rows:
+            fits = _fits(title, desc)
+            if app.status == ApplicationStatus.SHORTLISTED and not fits:
+                app.status = ApplicationStatus.SKIPPED
+                app.notes = ((app.notes or "") + f"\n{_JOB_TYPE_SKIP_MARKER} Removed from "
+                             f"the board: you are looking for {label}.").strip()
+                session.add(app)
+                stats["unshortlisted"] += 1
+            elif app.status == ApplicationStatus.SKIPPED and fits:
+                session.delete(app)          # back to "not applied": the backstop re-offers it
+                stats["restored"] += 1
+
+        conds = [owner, Job.is_closed == False, Job.rerank_score <= 10.0,  # noqa: E712
+                 or_(*[Job.rerank_reasoning.contains(v) for v in _JOB_TYPE_VERDICTS]),
+                 Job.id.notin_(select(Application.job_id).where(
+                     app_owner, Application.job_id.is_not(None)))]
+        fresh = is_fresh_expr(settings.scoring_max_job_age_days,
+                              settings.scoring_max_posted_age_days)
+        if fresh is not None:
+            conds.append(fresh)
+        res = session.execute(
+            _upd(Job).where(*conds)
+            .values(rerank_score=None, rerank_reasoning=None, prescore=None,
+                    prescored_at=None, scored_at=None)
+            .execution_options(synchronize_session=False))
+        stats["reopened"] = int(res.rowcount or 0)
+        session.commit()
+    log.info("Job-type realign for %s → %s", user_id or "local", stats)
+    return stats
+
+
 def roles_changed(old_roles: Iterable[str], new_roles: Iterable[str]) -> bool:
     """True when the two role lists differ in substance.
 

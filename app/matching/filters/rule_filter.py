@@ -194,9 +194,14 @@ def requires_citizenship(description: str) -> Optional[str]:
 
 
 def _is_confirmed_citizen(profile) -> Optional[bool]:
-    """True / False from the saved status; None when the profile says nothing."""
-    blob = " ".join(str(getattr(profile, f, "") or "") for f in
-                    ("work_authorization", "visa_status")).lower()
+    """True / False from the saved status; None when the profile says nothing.
+
+    Reads the SAME status text as work_auth.assess_profile, the "Work-auth
+    status" dropdown included — it read only the free-text fields, so a student
+    who picked "F-1 OPT" from the dropdown was "unknown" here and US-citizens-
+    only roles went on to paid scoring."""
+    from app.intelligence.work_auth import _blob
+    blob = _blob(profile)
     if not blob.strip():
         return None
     return "citizen" in blob and "non-citizen" not in blob and "not a citizen" not in blob
@@ -273,7 +278,10 @@ class RuleFilter:
 
         # Only block jobs that refuse sponsorship when the user needs it. A
         # citizen / green-card holder should NOT lose "must be US citizen" roles.
-        self.requires_sponsorship = True if legacy else bool(getattr(profile, "requires_sponsorship", False))
+        # The visa status decides, not only the checkbox: every F-1 OPT/CPT
+        # student in production had the checkbox unticked (tenant_prefs).
+        from app.common.tenant_prefs import internships_only, needs_sponsorship, wants_internships
+        self.requires_sponsorship = True if legacy else needs_sponsorship(profile)
 
         # Country the user wants jobs in — onsite roles in a DIFFERENT country are
         # filtered out. Legacy (no profile) keeps the original US-targeting default.
@@ -289,13 +297,14 @@ class RuleFilter:
 
         # Job-type preference: "full_time" | "internship" | "both". Only enforced
         # when a profile is present (legacy single-user runs are unfiltered).
+        # Internships and co-ops are wanted for "internship" or "both", or with
+        # the older discovery switch on; the default ("full_time") never pulls
+        # them in. "Both" used to count as full-time-only unless that switch was
+        # ALSO ticked — both production users who chose it got no internships.
         self.job_type_pref = None if legacy else (getattr(profile, "job_type_preference", "full_time") or "full_time")
-        # Internships are surfaced ONLY when the user explicitly opts in via the
-        # discovery toggle (or an "internship" job-type preference). "both" or an
-        # unset preference does NOT silently pull in internships.
         self.enforce_job_type = not legacy
-        self.include_internships = False if legacy else bool(
-            getattr(profile, "include_internships_in_discovery", False))
+        self.include_internships = False if legacy else wants_internships(profile)
+        self.internships_only = False if legacy else internships_only(profile)
 
     def _has_skill(self, *needles: str) -> bool:
         return any(n in self.user_skills for n in needles)
@@ -308,17 +317,16 @@ class RuleFilter:
         # 0. Job-type preference (students: internship vs full-time).
         if self.enforce_job_type:
             jtype = classify_job_type(job.title, job.description)
-            internships_wanted = self.include_internships or self.job_type_pref == "internship"
             # Internships only appear when the user opted in — fixes internships
             # leaking in for users who never asked for them.
-            if jtype == "internship" and not internships_wanted:
+            if jtype == "internship" and not self.include_internships:
                 return FilterResult(
                     passed=False,
                     reason="Internship filtered: user did not opt into internships",
                     score_override=10,
                 )
             # An internship-only seeker shouldn't get full-time roles.
-            if self.job_type_pref == "internship" and jtype != "internship":
+            if self.internships_only and jtype != "internship":
                 return FilterResult(
                     passed=False,
                     reason="Full-time filtered: user wants internships only",

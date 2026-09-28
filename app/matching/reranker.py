@@ -524,7 +524,11 @@ def _profile_system_prompt(profile) -> str:
     from app.common.tenant_prefs import effective_country
     country = effective_country(profile)
     remote_ok = bool(getattr(profile, "remote_ok", True))
-    needs_sponsor = bool(getattr(profile, "requires_sponsorship", False))
+    # The visa status decides, not only the checkbox (tenant_prefs): an F-1
+    # OPT/CPT student with the box unticked was told to Claude as "does NOT
+    # need sponsorship".
+    from app.common.tenant_prefs import needs_sponsorship
+    needs_sponsor = needs_sponsorship(profile)
     work_auth = (getattr(profile, "work_authorization", "")
                  or getattr(profile, "work_auth_status", "")
                  or getattr(profile, "visa_status", "")).strip() or "not specified"
@@ -659,7 +663,8 @@ def _prescore_system_prompt(profile=None) -> str:
             or (getattr(profile, "current_title", "") or "").strip() or "not specified"
         from app.common.tenant_prefs import effective_country
         country = effective_country(profile)
-        needs_sponsor = bool(getattr(profile, "requires_sponsorship", False))
+        from app.common.tenant_prefs import needs_sponsorship
+        needs_sponsor = needs_sponsorship(profile)
         sponsor = (" The candidate needs visa sponsorship — score low only if the posting "
                    "explicitly refuses sponsorship or requires citizenship/clearance. "
                    'Phrases like "must be authorized to work" are NOT a refusal.'
@@ -712,7 +717,8 @@ def _sponsor_note(job: Job, profile) -> str:
     """When the candidate needs sponsorship AND the employer has a strong public
     H-1B filing record, tell the scorer explicitly: OPT is not a blocker here."""
     try:
-        if not bool(getattr(profile, "requires_sponsorship", False)):
+        from app.common.tenant_prefs import needs_sponsorship
+        if not needs_sponsorship(profile):
             return ""
         from app.intelligence.h1b_data import lookup as _h1b_lookup
         rec = _h1b_lookup(job.company or "")
