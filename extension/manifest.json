@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "SpotApply Autofill",
-  "version": "1.4.0",
+  "version": "1.0.0",
   "description": "Fills job applications on Greenhouse, Lever, Ashby, Workday and more from your SpotApply profile. You review and submit.",
-  "permissions": ["activeTab", "storage", "tabs"],
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
   "host_permissions": [
-    "*://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "*://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -15,11 +17,11 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "*://*/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }

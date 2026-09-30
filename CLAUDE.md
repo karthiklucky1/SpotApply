@@ -699,7 +699,7 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   one account held 68k open rows; ~30 counts over them took sign-in to 17-32 s);
   batches paced. Guard: `test_dashboard_load`.
 - **Extension: sessions are per TAB, "Submitted" needs confirmation** (audit
-  2026-09-30, extension 1.4.0): a session exists only in the tab SpotApply opened
+  2026-09-30, extension 1.4.0, published to the Store as 1.0.0): a session exists only in the tab SpotApply opened
   (or the popup's active tab) plus the tabs it opens — never a global pack any
   ATS page resumes. Hosts match exactly or by real subdomain (`ATS_SUFFIXES`,
   identical in background.js + content.js). Submit = ATTEMPT (after browser
