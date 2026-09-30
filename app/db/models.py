@@ -373,6 +373,11 @@ class UserProfile(SQLModel, table=True):
     # affirmative claims ("I am not a protected veteran") that no UI could
     # change and the extension filled into employer forms for everyone.
     veteran_status: str = "Decline to self-identify"
+    # Set when the USER saved their self-identification answers in SpotApply.
+    # The old column defaults ("I am not a protected veteran", "No disability…")
+    # are indistinguishable from a real answer by value, so only this flag lets
+    # the fill pack send them (see server._eeo_answer).
+    eeo_confirmed: bool = False
     disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""

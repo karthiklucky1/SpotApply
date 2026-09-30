@@ -129,9 +129,18 @@ function isDemographicQuestion(text) {
   return _DEMOGRAPHIC_RE.test(deaccent(String(text || '')));
 }
 
+/** An answer the user CHOSE in their profile (not a default, not "decline"). */
+function eeoStated(value) {
+  const v = String(value || '').trim();
+  return !!(v && _copilotPack && _copilotPack.eeo_confirmed && !/^decline\b|decline to|prefer not/i.test(v));
+}
+
 /** Write an EEO answer only with explicit consent. Returns true if written. */
 function fillEEOField(el, value) {
-  if (!_eeoAutofillEnabled) {
+  // Consent = the popup switch, OR the user having stated this answer in their
+  // own SpotApply profile (owner's rule, 2026-09-30). A remembered answer from
+  // another form is still never consent (recall skips these questions).
+  if (!_eeoAutofillEnabled && !eeoStated(value)) {
     console.log('[SpotApply] Leaving demographic question for you (EEO autofill is off):',
                 (el && (el.name || el.id)) || 'field');
     return false;
@@ -354,17 +363,21 @@ function classifyScreeningQuestion(q, pack) {
   // about Rust (audit 2026-09-30: seven total years answered Yes).
   const yrs = t.match(/(\d{1,2})\s*\+?\s*(?:or more\s*)?(?:years?|yrs)/);
   if (yrs && /experience|working|hands.?on|worked/.test(t)) {
-    if (!yearsQuestionIsGeneric(t)) {
-      // A named skill: only the months the résumé DATES for it (skill_months,
-      // from the server's evidence inventory). Short of the bar is not a "No"
-      // we can prove either — the dates may be incomplete — so it is left.
-      const months = skillMonthsFor(t, pack);
-      if (months === null) return null;
-      return months >= Number(yrs[1]) * 12 ? true : null;
-    }
+    const need = Number(yrs[1]);
     const have = Number(pack.years_experience || 0);
+    if (!yearsQuestionIsGeneric(t)) {
+      // "3+ years of software engineering": the field the user's own job
+      // titles name — their total years answer it.
+      if (subjectMatchesTitles(t, pack)) return have ? have >= need : null;
+      // A named skill: the résumé's time with it — dated months first, else
+      // the length of the jobs it was used in. Not in the résumé = No (the
+      // user could not truthfully say Yes either). Owner's rule, 2026-09-30.
+      const months = skillMonthsFor(t, pack);
+      if (months === null) return null;      // not a skill-shaped question: leave it
+      return months >= need * 12;
+    }
     if (!have) return null;
-    return have >= Number(yrs[1]);
+    return have >= need;
   }
 
   // "Do you hold a Bachelor's degree or higher?" — the LEVEL from the profile,
@@ -431,8 +444,11 @@ function classifyScreeningQuestion(q, pack) {
     const parts = object.split(/\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
     if (!parts.length) return null;
     const hits = parts.map(has);
-    if (isOr) return hits.some(Boolean) ? true : null;
-    return hits.every(Boolean) ? true : null;
+    // Not in the résumé = No (owner's rule, 2026-09-30) — but only for
+    // skill-shaped answers; a long phrase is a description we cannot look up.
+    const skillShaped = parts.every((x) => x.split(/\s+/).length <= 3);
+    if (isOr) return hits.some(Boolean) ? true : (skillShaped ? false : null);
+    return hits.every(Boolean) ? true : (skillShaped ? false : null);
   }
   return null;
 }
@@ -443,25 +459,45 @@ function classifyScreeningQuestion(q, pack) {
  * question must be matched: "Python and Kubernetes" needs both.
  */
 function skillMonthsFor(t, pack) {
-  const sm = (pack && pack.skill_months && typeof pack.skill_months === 'object') ? pack.skill_months : null;
-  if (!sm) return null;
   const rest = String(t).toLowerCase()
     .replace(/\d+/g, ' ').replace(/[^a-z0-9#+./\s-]/g, ' ').replace(/[.?]+(\s|$)/g, ' ')
     .replace(_GENERIC_YEARS_WORDS, ' ').replace(/\s+/g, ' ').trim();
   if (!rest) return null;
-  const parts = rest.split(/\s+(?:and|&)\s+|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+  const parts = rest.split(/\s+(?:and|&)\s+|\s*,\s*|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+  // A long phrase is a description ("a fast paced startup environment"), not a
+  // skill we can look up — never answer it No.
+  if (parts.some((x) => x.split(/\s+/).length > 3)) return null;
+  const dated = (pack && typeof pack.skill_months === 'object' && pack.skill_months) || {};
+  const role = (pack && typeof pack.skill_role_months === 'object' && pack.skill_role_months) || {};
+  const matches = (skill, part) => {
+    const k = String(skill).toLowerCase().replace(/\.js$/, '');
+    const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`).test(part) ||
+      (part.length >= 3 && !/\s/.test(part) && new RegExp(`(^|[^a-z0-9])${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(k));
+  };
   let least = null;
   for (const part of parts) {
-    const hit = Object.entries(sm).find(([skill]) => {
-      const esc = String(skill).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`).test(part) &&
-        // the skill must BE the part, not one word of a longer subject
-        part.replace(new RegExp(esc), '').trim().split(/\s+/).filter((w) => w.length > 2).length === 0;
-    });
-    if (!hit) return null;
-    least = least === null ? Number(hit[1]) : Math.min(least, Number(hit[1]));
+    const monthsOf = (map) => {
+      const hit = Object.entries(map).find(([skill]) => matches(skill, part));
+      return hit ? Number(hit[1]) || 0 : 0;
+    };
+    const m = monthsOf(dated) || monthsOf(role);
+    least = least === null ? m : Math.min(least, m);
   }
   return least;
+}
+
+/** Does a years-question's subject name the field of the user's own job titles? */
+function subjectMatchesTitles(t, pack) {
+  const titles = [pack.current_title].concat(
+    Array.isArray(pack.work_experience) ? pack.work_experience.map((w) => w && w.title) : [])
+    .filter(Boolean).join(' | ').toLowerCase();
+  if (!titles) return false;
+  const words = String(t).toLowerCase().replace(/\d+/g, ' ').replace(/[^a-z\s]/g, ' ')
+    .replace(_GENERIC_YEARS_WORDS, ' ').split(/\s+/).filter((w) => w.length > 2);
+  if (!words.length || words.length > 3) return false;
+  const stem = (w) => w.replace(/(ing|ment|ers|er|s)$/, '');
+  return words.every((w) => titles.includes(stem(w)) || titles.includes(w));
 }
 
 // Words that describe tenure, not a subject: what is left of a years question
@@ -567,17 +603,16 @@ function interpretWorkAuthQuestion(q, pack) {
   const authorized = (qCountry && facts.country && qCountry !== facts.country)
     ? null : facts.authorized;
 
-  if (asksAuth && withoutSponsor) {
-    // Combined: "authorized to work WITHOUT sponsorship?" — No whenever we know
-    // either half is No; Yes only when both halves are known Yes.
-    if (authorized === false) return false;
-    if (sponsorKnown && requires) return false;
+  if (withoutSponsor && (asksAuth || asksSponsor)) {
+    // Combined: "authorized to work WITHOUT sponsorship?" — the applicant
+    // decides (owner's rule, 2026-09-30), except the one case with nothing to
+    // decide: authorized and never needing sponsorship (citizen, green card).
     if (authorized === true && sponsorKnown && !requires) return true;
     return null;
   }
   if (asksSponsor) {
     if (!sponsorKnown) return null;
-    return withoutSponsor ? !requires : requires;   // "can you work without sponsorship?" inverts
+    return requires;                                // "will you require sponsorship?"
   }
   if (asksAuth) return authorized;
   return null;
@@ -2058,7 +2093,9 @@ async function fillAvature(pack) {
     const ctx = (labelText(combo) + " " + (combo.getAttribute("aria-label") || "")).toLowerCase();
     let want = null;
     const _isEEO = /gender|race|ethnic|veteran|disability/i.test(ctx);
-    if (_isEEO && !_eeoAutofillEnabled) continue;   // voluntary self-ID — user's call
+    const _eeoVal = /gender/i.test(ctx) ? pack.gender : /race|ethnic/i.test(ctx) ? pack.ethnicity
+      : /veteran/i.test(ctx) ? pack.veteran_status : pack.disability_status;
+    if (_isEEO && !_eeoAutofillEnabled && !eeoStated(_eeoVal)) continue;   // voluntary self-ID — user's call
     if (/gender/i.test(ctx)) want = pack.gender || "decline";
     else if (/race|ethnic/i.test(ctx)) want = pack.ethnicity || "decline";
     else if (/veteran/i.test(ctx)) want = pack.veteran_status || "decline";

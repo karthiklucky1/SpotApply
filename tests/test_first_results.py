@@ -293,11 +293,15 @@ def test_every_upload_path_shows_the_panel_while_the_resume_is_read():
     for name in ("uploadResume", "obUploadResume"):
         body = _function(name)
         assert body.index("welcomeStarting('reading')") < body.index("/api/resume/extract-profile"), name
-    assert "welcomeStarting('finding')" in _function("_afterResumeChange")
+    # Since the setup flow (2026-09-30) the live panel resumes once the roles
+    # are saved — that is when the search starts.
+    assert "welcomeStarting('finding')" in _function("saveRoles")
 
 
-def test_the_resume_questions_do_not_cover_the_panel():
-    body = _function("_afterResumeChange")
+def test_the_resume_review_does_not_hide_the_board():
+    """The setup dialog replaced the old card; the old card still sits below
+    the panel for any other caller."""
+    body = _function("_resumeReviewCard")
     assert "position:fixed" not in body and "backdrop-filter" not in body
     assert "insertAdjacentElement('afterend'" in body
 

@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 FUNCTIONS = [
     "deaccent", "isDemographicQuestion", "classifyScreeningQuestion",
-    "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "_countryIn",
+    "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "subjectMatchesTitles", "_countryIn",
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
 ]
@@ -107,17 +107,18 @@ BA = dict(years_experience=7, key_skills="Python, SQL", degree="Bachelor of Arts
 # ── screening: only what the profile proves ─────────────────────────────────
 
 @pytest.mark.parametrize("question,want", [
-    ("Do you have 5+ years of Rust experience?", None),               # audit
+    ("Do you have 5+ years of Rust experience?", False),              # not in the résumé = No (owner, 09-30)
     ("Do you have 5+ years of professional experience?", True),
     ("Do you have 10+ years of relevant work experience?", False),
     ("Do you have a Bachelor's degree in Computer Science?", None),   # audit
     ("Do you have a Bachelor's degree or higher?", True),
     ("Do you have a Master's degree?", None),                         # below the bar: not an auto "No"
-    ("Do you have experience with Python and Kubernetes?", None),     # audit
+    ("Do you have experience with Python and Kubernetes?", False),    # Kubernetes is not in the résumé
     ("Do you have experience with Python?", True),
     ("Do you have experience with Python or Go?", True),
     ("Are you proficient in SQL, Python?", True),
-    ("Do you have experience with Rust?", None),                      # absence is not evidence
+    ("Do you have experience with Rust?", False),                     # not in the résumé = No (owner, 09-30)
+    ("Do you have experience with building products in a regulated healthcare environment?", None),
     # found filling a real profile (2026-09-30): a required-field "*" made a
     # generic question look like a named skill, and "Apache Kafka" didn't
     # answer "Kafka".
@@ -133,17 +134,31 @@ def test_a_listed_skill_answers_its_distinctive_part():
     kafka = dict(BA, key_skills="Apache Kafka, Kubernetes, React.js")
     assert ask("Do you have experience with Kafka and Kubernetes?", **kafka) is True
     assert ask("Do you have experience with React?", **kafka) is True
-    assert ask("Do you have experience with Apache Spark?", **kafka) is None   # "apache" alone proves nothing
+    assert ask("Do you have experience with Apache Spark?", **kafka) is False  # "apache" alone proves nothing
 
 
-def test_skill_years_come_from_dated_evidence_only():
+def test_skill_years_come_from_the_resume():
+    """Owner's rule (2026-09-30): a skill-years question gets Yes or No from the
+    résumé — dated months first, else the length of the jobs the skill was used
+    in; a skill the résumé does not show is No (the user could not say Yes)."""
     q = "Do you have 3+ years of Data Science experience?"
-    assert ask(q, **BA) is None                                        # no evidence at all
+    assert ask(q, **BA) is False                                       # not in the résumé
     assert ask(q, **dict(BA, skill_months={"data science": 48})) is True
-    assert ask(q, **dict(BA, skill_months={"data science": 24})) is None   # short: left, not "No"
+    assert ask(q, **dict(BA, skill_months={"data science": 24})) is False
+    assert ask(q, **dict(BA, skill_role_months={"data science": 40})) is True   # used in 40 months of jobs
     both = "Do you have 3+ years of Python and SQL experience?"
-    assert ask(both, **dict(BA, skill_months={"python": 48})) is None
+    assert ask(both, **dict(BA, skill_months={"python": 48})) is False
     assert ask(both, **dict(BA, skill_months={"python": 48, "sql": 40})) is True
+    # A description, not a skill: never answered No.
+    assert ask("Do you have 3+ years of experience in a fast paced early stage startup environment?", **BA) is None
+
+
+def test_a_field_named_by_the_users_own_titles_uses_total_years():
+    eng = dict(BA, years_experience=3, current_title="Software Engineer",
+               work_experience=[{"title": "Software Developer"}])
+    assert ask("Do you have 3+ years of professional software engineering experience?", **eng) is True
+    assert ask("Do you have 5+ years of software development experience?", **eng) is False
+    assert ask("Do you have 3+ years of nursing experience?", **eng) is False   # not their field, not in résumé
 
 
 def test_a_degree_subject_needs_the_subject():
@@ -172,29 +187,36 @@ def auth(question: str, **profile):
     ({"work_authorization": "Needs Sponsorship"}, "Are you authorized to work in the US?", None),
     ({"work_authorization": "Not authorized"}, "Are you authorized to work in the US?", False),
     # audit: combined question with a NOT-authorized profile
+    # combined "authorized WITHOUT sponsorship?": the applicant decides, unless
+    # there is nothing to decide (owner's rule, 2026-09-30)
     ({"work_authorization": "Not authorized", "requires_sponsorship": False},
-     "Are you authorized to work in the US without sponsorship?", False),
+     "Are you authorized to work in the US without sponsorship?", None),
     ({"work_authorization": "US Citizen", "requires_sponsorship": False},
      "Are you authorized to work in the US without sponsorship?", True),
     ({"work_authorization": "H1B", "requires_sponsorship": True},
-     "Are you authorized to work in the US without sponsorship?", False),
+     "Are you authorized to work in the US without sponsorship?", None),
     # audit: inverted sponsorship wording
-    ({"requires_sponsorship": False}, "Can you work without visa sponsorship?", True),
+    # "without sponsorship" in any wording = the combined question: the
+    # applicant decides unless nothing is in doubt (citizen / green card)
+    ({"work_authorization": "US Citizen", "requires_sponsorship": False}, "Can you work without visa sponsorship?", True),
+    ({"requires_sponsorship": False}, "Can you work without visa sponsorship?", None),
     # found filling a real profile: the longer Lever wording was read as
     # "do you require sponsorship?" and answered Yes for someone who needs it
     ({"work_authorization": "US Citizen", "requires_sponsorship": True},
-     "Are you authorized to work in the US without the need for visa sponsorship now or in the future?", False),
+     "Are you authorized to work in the US without the need for visa sponsorship now or in the future?", None),
+    ({"work_authorization": "US Citizen", "requires_sponsorship": False},
+     "Are you authorized to work in the US without the need for visa sponsorship now or in the future?", True),
     ({"requires_sponsorship": True},
-     "Are you able to work for us without the need for employer sponsorship?", False),
-    ({"requires_sponsorship": False},
+     "Are you able to work for us without the need for employer sponsorship?", None),
+    ({"work_authorization": "Green Card", "requires_sponsorship": False},
      "Are you able to work for us without the need for employer sponsorship?", True),
-    ({"requires_sponsorship": True}, "Do you not require visa sponsorship?", False),
+    ({"requires_sponsorship": True}, "Do you not require visa sponsorship?", None),
     # an expired dated status: the server's verdict wins over the status text
     ({"work_authorization": "F-1 OPT", "authorized_now": None},
      "Are you legally authorized to work in the United States?", None),
     ({"work_authorization": "F-1 OPT", "authorized_now": True},
      "Are you legally authorized to work in the United States?", True),
-    ({"requires_sponsorship": True}, "Can you work without visa sponsorship?", False),
+    ({"requires_sponsorship": True}, "Can you work without visa sponsorship?", None),
     ({"requires_sponsorship": True}, "Will you now or in the future require sponsorship?", True),
     ({"requires_sponsorship": False}, "Will you now or in the future require visa sponsorship?", False),
     ({"requires_sponsorship": None}, "Will you require sponsorship?", None),   # dated status: user's call

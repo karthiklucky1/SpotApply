@@ -2335,7 +2335,8 @@ async def upload_resume(request: Request):
 
 @app.post("/api/resume/extract-profile")
 @_rate_limit("5/minute")
-def extract_profile_from_resume(request: Request, background_tasks: BackgroundTasks) -> dict:
+def extract_profile_from_resume(request: Request, background_tasks: BackgroundTasks,
+                                defer_search: bool = False) -> dict:
     # sync on purpose: runs a 5-30s Claude call — FastAPI threadpool, not the event loop
     """Parse the user's uploaded resume and auto-fill their profile fields using Claude."""
     import re as _re
@@ -2550,11 +2551,15 @@ Return only valid JSON, no markdown, no explanation."""
         # pipeline and a hunt for the Discover button. seed_new_user ALSO kicks a
         # targeted scrape of the user's own roles when adoption leaves them thin
         # (their domain isn't in the shared pool yet) so their field fills in minutes.
-        try:
-            from app.strategy.adoption import seed_new_user
-            background_tasks.add_task(seed_new_user, uid if uid != "local" else None)
-        except Exception as _ie:
-            log.debug("instant feed not scheduled: %s", _ie)
+        # The dashboard's setup (review profile → confirm roles) passes
+        # defer_search: the search then starts when the user saves their roles
+        # (PUT /api/target-roles seeds the same way), from checked data.
+        if not defer_search:
+            try:
+                from app.strategy.adoption import seed_new_user
+                background_tasks.add_task(seed_new_user, uid if uid != "local" else None)
+            except Exception as _ie:
+                log.debug("instant feed not scheduled: %s", _ie)
 
         # Trigger background memory harvesting if GitHub/LinkedIn urls are present
         if harvest_github_url or harvest_linkedin_url:
@@ -5110,10 +5115,13 @@ _EEO_LEGACY_DEFAULTS = frozenset({
 })
 
 
-def _eeo_answer(value) -> str:
-    """A self-identification answer the USER chose, else "Decline to self-identify"."""
+def _eeo_answer(value, confirmed: bool = False) -> str:
+    """A self-identification answer the USER chose, else "Decline to self-identify".
+
+    A legacy default value counts only once the user has saved their answers
+    (``UserProfile.eeo_confirmed``) — then it is what they chose."""
     v = (value or "").strip()
-    if not v or v in _EEO_LEGACY_DEFAULTS:
+    if not v or (v in _EEO_LEGACY_DEFAULTS and not confirmed):
         return "Decline to self-identify"
     return v
 
@@ -5242,6 +5250,13 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
                 pass
 
     p = profile
+    _eeo_ok = bool(getattr(p, "eeo_confirmed", False)) if p else False
+    if p and not _eeo_ok:
+        # A value that was never a default can only have been chosen by the user.
+        _eeo_ok = any((getattr(p, f, "") or "").strip() and
+                      (getattr(p, f, "") or "").strip() not in _EEO_LEGACY_DEFAULTS and
+                      not (getattr(p, f, "") or "").lower().startswith("decline")
+                      for f in ("gender", "ethnicity", "veteran_status", "disability_status"))
     pack = {
         "app_id": application_id,
         "job_title": job.title if job else "",
@@ -5269,10 +5284,14 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "authorized_now": _authorized_now_for_pack(p),
         # Voluntary self-identification: only what the user chose; anything else
         # is sent as "decline" (never the old affirmative defaults).
-        "gender": _eeo_answer(p.gender if p else ""),
-        "ethnicity": _eeo_answer(p.ethnicity if p else ""),
-        "veteran_status": _eeo_answer(p.veteran_status if p else ""),
-        "disability_status": _eeo_answer(p.disability_status if p else ""),
+        "gender": _eeo_answer(p.gender if p else "", _eeo_ok),
+        "ethnicity": _eeo_answer(p.ethnicity if p else "", _eeo_ok),
+        "veteran_status": _eeo_answer(p.veteran_status if p else "", _eeo_ok),
+        "disability_status": _eeo_answer(p.disability_status if p else "", _eeo_ok),
+        # The user stated these in their profile → the extension fills them
+        # (owner's rule, 2026-09-30). Unconfirmed legacy defaults stay "decline",
+        # which the extension never writes on the user's behalf.
+        "eeo_confirmed": _eeo_ok,
         "cover_letter": cover_text,
         "resume_text": resume_text,
         # Screening answers are derived from these. They were absent, so the
@@ -5300,7 +5319,11 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # (tailoring/inventory.py — a skill mentioned inside a six-year job is
         # not six years of it). The only evidence "N years of <skill>?" may be
         # answered from; total tenure answers only a generic years question.
-        "skill_months": _skill_months_for_pack(uid, (p.key_skills if p else "") or ""),
+        "skill_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["dated"],
+        # Months of the JOBS each skill was used in (an upper bound). The owner's
+        # rule: a years-question gets Yes/No from the résumé — dated months
+        # first, else these; a skill the résumé does not show at all is No.
+        "skill_role_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["role"],
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
         # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
         # does not branch on it — the server already resolved the choice — but
@@ -5357,7 +5380,12 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
 
 
 def _skill_months_for_pack(uid: str | None, key_skills: str) -> dict:
-    """{skill: dated employment months} for skills the résumé dates, cached."""
+    """{skill: dated employment months} for skills the résumé dates."""
+    return _skill_evidence_for_pack(uid, key_skills)["dated"]
+
+
+def _skill_evidence_for_pack(uid: str | None, key_skills: str) -> dict:
+    """{"dated": {skill: months}, "role": {skill: months}} from the résumé, cached."""
     from app.common import ttl_cache
     skills = [x.strip() for x in (key_skills or "").split(",") if x.strip()][:60]
 
@@ -5367,13 +5395,17 @@ def _skill_months_for_pack(uid: str | None, key_skills: str) -> dict:
             from app.tailoring.inventory import build_inventory
             text = _load_resume_file(uid if uid and uid != "local" else None)
             if not text:
-                return {}
+                return {"dated": {}, "role": {}}
             inv = build_inventory(text, extra_skills=skills)
-            return {ev.display.lower(): int(ev.employment_months)
-                    for ev in inv.skills.values() if ev.employment_months > 0}
+            return {
+                "dated": {ev.display.lower(): int(ev.employment_months)
+                          for ev in inv.skills.values() if ev.employment_months > 0},
+                "role": {ev.display.lower(): int(ev.role_months)
+                         for ev in inv.skills.values() if ev.role_months > 0},
+            }
         except Exception as e:
             log.debug("skill months unavailable: %s", e)
-            return {}
+            return {"dated": {}, "role": {}}
     return ttl_cache.get_or_compute(f"skill-months:{uid}:{hash(tuple(skills))}", 600, _build)
 
 
@@ -9302,6 +9334,7 @@ _USERPROFILE_COLUMNS = [
     ("include_internships_in_discovery", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("industry", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("autofill_resume_source", "VARCHAR DEFAULT 'tailored'", "VARCHAR DEFAULT 'tailored'"),
+    ("eeo_confirmed", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     # Default '' to match the model: never silently assume the US for a user
     # who may be in Berlin (a repair-added column backfills every row).
     ("preferred_country", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9687,6 +9720,8 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
             _before_type = {f: getattr(db_profile, f, None) for f in _JOB_TYPE_PREF_FIELDS}
             for field, value in payload.items():
                 setattr(db_profile, field, value)
+            if any(k in payload for k in ("gender", "ethnicity", "veteran_status", "disability_status")):
+                db_profile.eeo_confirmed = True     # the user saved their own answers
             db_profile.updated_at = _dt.utcnow()
             session.add(db_profile)
             session.commit()

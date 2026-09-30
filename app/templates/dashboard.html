@@ -2676,7 +2676,7 @@
                     setResumeBusy('Reading your resume…');
                     welcomeStarting('reading');
                     // Auto-extract profile
-                    const extRes = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authH });
+                    const extRes = await fetch('/api/resume/extract-profile?defer_search=1', { method: 'POST', headers: authH });
                     let seededRoles = [];
                     if (extRes.ok) {
                         const data = await extRes.json();
@@ -2691,10 +2691,9 @@
                         showToast(err.detail ? `Resume saved, auto-fill failed: ${err.detail}` : 'Resume uploaded! Pick your target roles next.', err.detail ? 'error' : 'success');
                     }
                     closeOnboarding();
-                    // Open the roles modal. Server auto-seeded roles from the extraction
-                    // are already saved, so openRolesModal() will fetch them and show
-                    // them as selected chips — user just confirms or adjusts.
-                    openRolesModal();
+                    // The setup: review what we read → confirm target roles → search.
+                    welcomeStarting(null);
+                    openProfileReview({});
                 } else {
                     showToast('Upload failed — please fill manually.', 'error');
                     obSkipToManual();
@@ -5999,7 +5998,7 @@
                 btn.textContent = 'Extracting…'
                 setResumeBusy('Reading your resume…')
                 welcomeStarting('reading')
-                const extRes = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authH })
+                const extRes = await fetch('/api/resume/extract-profile?defer_search=1', { method: 'POST', headers: authH })
                 if (extRes.ok) {
                     const data = await extRes.json()
                     const name = [data.extracted?.first_name, data.extracted?.last_name].filter(Boolean).join(' ')
@@ -6019,6 +6018,145 @@
         // as. Say what moved and send them to check it, instead of a toast that
         // disappears: target roles drive which jobs reach the board.
         function _afterResumeChange(d) {
+            // A new resume opens the three-step setup: 1 review what we read
+            // (and fill what is missing), 2 confirm target roles, 3 the search
+            // starts — from checked data, not from a guess (owner, 2026-09-30).
+            welcomeStarting(null);
+            openProfileReview(d || {});
+        }
+
+        // ── Setup step 1: review the profile read from the resume ─────────────
+        const _EEO_OPTS = {
+            gender: ['Decline to self-identify', 'Female', 'Male', 'Non-binary'],
+            ethnicity: ['Decline to self-identify', 'Hispanic or Latino', 'White', 'Black or African American', 'Asian',
+                        'Native Hawaiian or Other Pacific Islander', 'American Indian or Alaska Native', 'Two or More Races'],
+            veteran_status: ['Decline to self-identify', 'I am not a protected veteran',
+                             'I identify as one or more of the classifications of protected veteran'],
+            disability_status: ['Decline to self-identify',
+                                'No, I do not have a disability, or history/record of having a disability',
+                                'Yes, I have a disability (or previously had a disability)'],
+        };
+        const _DATED_AUTH = ['OPT', 'STEM OPT', 'CPT', 'H1B', 'Student Visa'];
+        function _prEsc(x) { return String(x == null ? '' : x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function _prSteps(n) {
+            const step = (i, t) => `<div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:${i <= n ? 'var(--sage,#0077C2)' : 'var(--muted,#64748b)'}">
+                <span style="width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;
+                  background:${i < n ? 'var(--ok,#047857)' : i === n ? 'var(--sage,#0077C2)' : 'var(--surface-2,#EAF4FD)'};color:${i <= n ? '#fff' : 'inherit'}">${i < n ? '✓' : i}</span>${t}</div>`;
+            return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">${step(1, 'Review profile')}${step(2, 'Target roles')}${step(3, 'Start search')}</div>`;
+        }
+        async function openProfileReview(d) {
+            document.getElementById('profile-review')?.remove();
+            let p = {};
+            try { const r = await fetch('/api/profile', { headers: authHeaders() }); if (r.ok) p = await r.json(); } catch (_) {}
+            const inp = (key, label, val, type, ph) => `<label style="display:block;font-size:11.5px;font-weight:700;color:var(--muted,#64748b)">${label}
+                <input data-pr="${key}" type="${type || 'text'}" value="${_prEsc(val)}" placeholder="${_prEsc(ph || '')}"
+                  style="display:block;width:100%;margin-top:4px;font-size:13px;font-weight:500;padding:8px 10px;border-radius:10px;border:1px solid ${val ? 'var(--border,#DCEAF6)' : 'rgba(180,35,24,.55)'};background:var(--surface,#fff);color:var(--ink,#0C2A3E)"></label>`;
+            const sel = (key, label, opts, val) => `<label style="display:block;font-size:11.5px;font-weight:700;color:var(--muted,#64748b)">${label}
+                <select data-pr="${key}" style="display:block;width:100%;margin-top:4px;font-size:13px;padding:8px 10px;border-radius:10px;border:1px solid var(--border,#DCEAF6);background:var(--surface,#fff);color:var(--ink,#0C2A3E)">
+                ${opts.map(([v, t]) => `<option value="${_prEsc(v)}" ${String(v) === String(val) ? 'selected' : ''}>${_prEsc(t)}</option>`).join('')}</select></label>`;
+            const chk = (key, label, on) => `<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;font-weight:600;color:var(--ink,#0C2A3E)">
+                <input data-pr="${key}" type="checkbox" ${on ? 'checked' : ''}> ${label}</label>`;
+            const exp = (p.experience || []).slice(0, 4).map(e => `<li>${_prEsc(e.title || '')}${e.company ? ' — ' + _prEsc(e.company) : ''}${(e.start || e.end) ? ` <span style="color:var(--muted,#64748b)">(${_prEsc(e.start || '?')} – ${_prEsc(e.end || 'Present')})</span>` : ''}</li>`).join('');
+            const edu = (p.education || []).slice(0, 3).map(e => `<li>${_prEsc(e.degree || '')}${e.field ? ' in ' + _prEsc(e.field) : ''}${e.university ? ' — ' + _prEsc(e.university) : ''}${e.end_year ? ' (' + _prEsc(e.end_year) + ')' : ''}</li>`).join('');
+            const skills = String(p.key_skills || '').split(',').map(x => x.trim()).filter(Boolean);
+            const lookingFor = p.job_type_preference === 'full_time' && p.include_internships_in_discovery ? 'both' : (p.job_type_preference || 'full_time');
+            const auth = p.work_auth_status || '';
+            // What still needs the user: the facts forms ask for and no resume holds.
+            const missing = [];
+            if (!p.email) missing.push('email');
+            if (!p.phone) missing.push('phone');
+            if (!p.location) missing.push('city, state');
+            if (!auth && !p.work_authorization) missing.push('work authorization');
+            if (_DATED_AUTH.includes(auth) && !p.ead_end_date) missing.push('authorization end date');
+            const eeoSel = (k, t) => sel(k, t, _EEO_OPTS[k].map(v => [v, v]), p[k] || 'Decline to self-identify');
+            const wrap = document.createElement('div');
+            wrap.id = 'profile-review';
+            wrap.setAttribute('role', 'dialog');
+            wrap.setAttribute('aria-label', 'Review your profile');
+            wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto;background:rgba(15,23,42,.55)';
+            wrap.innerHTML = `<div style="width:100%;max-width:640px;background:var(--surface,#fff);color:var(--ink,#0f172a);border-radius:20px;box-shadow:0 24px 60px rgba(2,6,23,.35);padding:22px">
+              ${_prSteps(1)}
+              <div style="font-size:18px;font-weight:800">Here's what we read from your resume</div>
+              <div style="font-size:12.5px;color:var(--muted,#64748b);margin:4px 0 12px">Check it and fill anything missing. We use these details for job matching and to fill application forms for you.</div>
+              ${missing.length ? `<div data-pr-missing style="font-size:12.5px;font-weight:700;color:#B42318;background:#FEF3F2;border:1px solid rgba(180,35,24,.25);border-radius:10px;padding:8px 12px;margin-bottom:12px">Needs your input: ${missing.map(_prEsc).join(', ')}</div>` : `<div style="font-size:12.5px;font-weight:700;color:#047857;background:#ECFDF5;border-radius:10px;padding:8px 12px;margin-bottom:12px">✓ Everything important is filled in</div>`}
+              <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:6px 0">Contact</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+                ${inp('first_name', 'First name', p.first_name)}${inp('last_name', 'Last name', p.last_name)}
+                ${inp('email', 'Email employers will see', p.email, 'email')}${inp('phone', 'Phone', p.phone, 'tel', '(555) 555-5555')}
+                ${inp('location', 'City, State', p.location, 'text', 'Cincinnati, OH')}${inp('linkedin_url', 'LinkedIn', p.linkedin_url)}
+              </div>
+              <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Experience</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+                ${inp('current_title', 'Current / latest title', p.current_title)}${inp('years_experience', 'Years of experience', p.years_experience || '', 'number')}
+              </div>
+              ${exp ? `<ul style="font-size:12.5px;margin:8px 0 0 18px;list-style:disc">${exp}</ul>` : ''}
+              ${edu ? `<div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Education</div><ul style="font-size:12.5px;margin:0 0 0 18px;list-style:disc">${edu}</ul>` : ''}
+              ${skills.length ? `<div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Skills (${skills.length})</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px">${skills.slice(0, 24).map(k => `<span style="font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--surface-2,#EAF4FD)">${_prEsc(k)}</span>`).join('')}</div>` : ''}
+              <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Work authorization & preferences</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+                ${sel('work_auth_status', 'Work status', _QUICK_AUTH, auth)}
+                ${inp('ead_end_date', 'Authorization valid until (OPT/CPT/H-1B)', p.ead_end_date, 'date')}
+                ${sel('job_type_preference', 'Looking for', _QUICK_TYPES, lookingFor)}
+              </div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px">
+                ${chk('requires_sponsorship', 'I need visa sponsorship', !!p.requires_sponsorship)}
+                ${chk('open_to_relocation', 'Open to relocating', !!p.open_to_relocation)}
+                ${chk('stem_opt', 'On STEM OPT', !!p.stem_opt)}
+              </div>
+              <details style="margin-top:14px"><summary style="font-size:12.5px;font-weight:700;cursor:pointer">Voluntary self-identification (used only to fill those questions on forms)</summary>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:8px">
+                  ${eeoSel('gender', 'Gender')}${eeoSel('ethnicity', 'Race / ethnicity')}${eeoSel('veteran_status', 'Veteran status')}${eeoSel('disability_status', 'Disability status')}
+                </div></details>
+              <div data-pr-status aria-live="polite" style="font-size:12px;color:var(--muted,#64748b);margin-top:10px;min-height:16px"></div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button type="button" data-pr-later style="font-size:13px;font-weight:700;padding:10px 16px;border-radius:12px;border:1px solid rgba(100,116,139,.35);background:transparent;color:inherit;cursor:pointer">Later</button>
+                <button type="button" data-pr-next style="font-size:13px;font-weight:800;padding:10px 18px;border-radius:12px;border:0;background:linear-gradient(135deg,#0EA5E9,#0077C2);color:#fff;cursor:pointer">Next: target roles →</button>
+              </div></div>`;
+            document.body.appendChild(wrap);
+            const status = wrap.querySelector('[data-pr-status]');
+            wrap.querySelector('[data-pr-later]').onclick = () => { wrap.remove(); _startSearchNow(); };
+            wrap.querySelector('[data-pr-next]').onclick = async (ev) => {
+                const btn = ev.currentTarget;
+                btn.disabled = true; status.textContent = 'Saving…';
+                const body = {};
+                wrap.querySelectorAll('[data-pr]').forEach(el => {
+                    const k = el.dataset.pr;
+                    if (el.type === 'checkbox') body[k] = el.checked;
+                    else if (k === 'years_experience') { if (el.value !== '') body[k] = parseInt(el.value, 10) || 0; }
+                    else body[k] = el.value.trim();
+                });
+                body.include_internships_in_discovery = body.job_type_preference !== 'full_time';
+                if (body.job_type_preference === 'both') body.job_type_preference = 'full_time';
+                if (_SPONSOR_NEVER.includes(body.work_auth_status)) body.requires_sponsorship = false;
+                if (body.work_auth_status) body.work_authorization = (_QUICK_AUTH.find(([v]) => v === body.work_auth_status) || [])[1] || body.work_auth_status;
+                try {
+                    const r = await fetch('/api/profile', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(body) });
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    wrap.remove();
+                    openRolesModal({ onboarding: true });
+                } catch (e) {
+                    btn.disabled = false;
+                    status.textContent = "Couldn't save — check the fields and try again.";
+                }
+            };
+        }
+
+        // The search starts once the setup is done — or right away if the user
+        // skips it, with the roles read from the resume.
+        async function _startSearchNow() {
+            try {
+                const r = await fetch('/api/target-roles', { headers: authHeaders() });
+                const roles = r.ok ? ((await r.json()).roles || []) : [];
+                if (!roles.length) { openRolesModal({ onboarding: true }); return; }
+                await fetch('/api/target-roles', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify({ roles }) });
+                welcomeStarting('finding');
+            } catch (_) {}
+        }
+
+        // The previous one-card review (roles moved + two quick questions); the
+        // setup dialog above replaced it for uploads, kept for other callers.
+        function _resumeReviewCard(d) {
             welcomeStarting('finding');   // the first-hour boost starts in the background
             const esc = (x) => String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             const before = d.roles_before || [], after = d.roles_after || [], pinned = d.roles_pinned || [];
@@ -6581,8 +6719,23 @@
         let _rolesState = [];        // current roles being edited
         let _rolesSuggestions = [];  // suggestion pool
 
-        async function openRolesModal() {
+        let _rolesOnboarding = false;
+        async function openRolesModal(opts) {
+            _rolesOnboarding = !!(opts && opts.onboarding);
             document.getElementById('roles-modal').classList.remove('hidden');
+            const _rsave = document.getElementById('roles-save-btn');
+            if (_rsave) _rsave.textContent = _rolesOnboarding ? 'Start finding jobs →' : 'Save Roles';
+            // Setup step 2 of 3: show where the user is in the flow.
+            document.getElementById('roles-steps')?.remove();
+            if (_rolesOnboarding) {
+                const card = document.querySelector('#roles-modal > div.relative');
+                if (card) {
+                    const st = document.createElement('div');
+                    st.id = 'roles-steps';
+                    st.innerHTML = _prSteps(2);
+                    card.insertBefore(st, card.firstChild);
+                }
+            }
             const _ri = document.getElementById('role-input');
             if (_ri) _ri.value = '';
             _rolesState = [];
@@ -6603,6 +6756,9 @@
 
         function closeRolesModal() {
             document.getElementById('roles-modal').classList.add('hidden');
+            // Closing the setup's roles step without saving still starts the
+            // search with the roles we have — never leave a new user with none.
+            if (_rolesOnboarding) { _rolesOnboarding = false; setTimeout(() => _startSearchNow(), 0); }
         }
 
         // ── Resume ATS analysis (shown inside the Target Roles modal) ─────────
@@ -6700,15 +6856,20 @@
                     body: JSON.stringify({ roles: _rolesState }),
                 });
                 if (res.ok) {
-                    showToast('Target roles saved!', 'success');
+                    // Saving the roles is what starts the search (the server
+                    // adopts matching jobs and scores the first ones at once).
+                    showToast(_rolesOnboarding ? 'Searching for jobs that fit your profile…' : 'Target roles saved!', 'success');
+                    const onboarding = _rolesOnboarding;
+                    _rolesOnboarding = false;          // saved: closing must not start it twice
                     closeRolesModal();
                     loadTargetRoles();
-                    setTimeout(loadWelcomePanel, 1500);
+                    if (onboarding) welcomeStarting('finding');
+                    else setTimeout(loadWelcomePanel, 1500);
                 } else {
                     showToast('Could not save roles.', 'error');
                 }
             } catch (e) { showToast('Network error.', 'error'); }
-            btn.textContent = 'Save Roles'; btn.disabled = false;
+            btn.textContent = _rolesOnboarding ? 'Start finding jobs →' : 'Save Roles'; btn.disabled = false;
         }
 
         // ── Recruiter Memory Modal ───────────────────────────────────────────────

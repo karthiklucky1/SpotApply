@@ -691,12 +691,18 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   ATS page resumes. Hosts match exactly or by real subdomain (`ATS_SUFFIXES`,
   identical in background.js + content.js). Submit = ATTEMPT (after browser
   validation, never a login form); only the employer's success page or the user's
-  "Yes" calls `/application/{id}/submit`. Screening answers only what the profile
-  proves: skill years from `skill_months` (dated résumé evidence), degree subject
-  from `degree_fields`, ONE work-auth interpreter for every control, country from
-  `residence_country` (never defaulted). Demographic answers never come from recall/
-  learning/AI. Uploads skip other-document fields, honour `accept`, and count only
-  when the uploader acknowledged them; DO_FILL replies with the real outcome.
+  "Yes" calls `/application/{id}/submit`. Screening = the résumé/profile, Yes OR No
+  (owner's rules 2026-09-30): skill years from `skill_months` (dated) else
+  `skill_role_months` (jobs it was used in); a skill the résumé lacks = No; a field
+  the user's own titles name ("software engineering") = total years; degree subject
+  from `degree_fields`; ONE work-auth interpreter, `authorized_now` (status + its end
+  date) wins over the status text; any "without sponsorship" wording is left for the
+  user unless citizen/green card; country from `residence_country` (never defaulted).
+  Demographics are filled when the user saved them (`eeo_confirmed`) or opted in —
+  never from recall/learning/AI. Uploads skip other-document fields, honour
+  `accept`, count only when acknowledged; DO_FILL replies with the real outcome.
+  **Setup after a resume upload**: review profile (what was read + what's missing)
+  → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +
   `extension-tests/test_extension_audit.py` (CI job `extension`).
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
