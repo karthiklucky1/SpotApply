@@ -145,3 +145,37 @@ def test_original_resume_skips_the_thread(monkeypatch):
             s.exec(delete(Application).where(Application.notes == "fp-test"))
             s.exec(delete(Job).where(Job.external_id == "fp-orig"))
             s.commit()
+
+
+# ── authorized today: the status AND its end date ───────────────────────────
+# Found checking a real account (2026-09-30): "F-1 OPT" with an EAD end date
+# already passed. The pack sent only the status text, and the extension read it
+# as "authorized in the US" — a Yes on employer forms the user must answer.
+
+def _auth_profile(**kw):
+    base = dict(work_authorization="", work_auth_status="", visa_status="", ead_end_date="",
+                stem_opt=False, requires_sponsorship=False, preferred_country="United States")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_an_expired_dated_status_is_left_for_the_user():
+    p = _auth_profile(work_authorization="F-1 OPT", work_auth_status="OPT", ead_end_date="2020-06-18")
+    assert server._authorized_now_for_pack(p) is None
+
+
+def test_a_current_dated_status_is_authorized():
+    from datetime import date, timedelta
+    p = _auth_profile(work_authorization="F-1 OPT", work_auth_status="OPT",
+                      ead_end_date=(date.today() + timedelta(days=300)).isoformat())
+    assert server._authorized_now_for_pack(p) is True
+
+
+def test_an_undated_status_answers_from_the_status():
+    assert server._authorized_now_for_pack(_auth_profile(work_authorization="US Citizen")) is True
+    assert server._authorized_now_for_pack(_auth_profile()) is None
+    assert server._authorized_now_for_pack(None) is None
+
+
+def test_the_pack_carries_the_verdict():
+    assert '"authorized_now"' in inspect.getsource(server.get_fill_pack)

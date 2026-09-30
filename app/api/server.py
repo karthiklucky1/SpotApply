@@ -5146,6 +5146,25 @@ def _sponsorship_answer_for_pack(profile) -> Optional[bool]:
     return False if blob else None
 
 
+def _authorized_now_for_pack(profile) -> Optional[bool]:
+    """True/False only when the status AND its validity settle it, else None."""
+    if profile is None:
+        return None
+    blob = ((getattr(profile, "work_authorization", "") or "") + " "
+            + (getattr(profile, "work_auth_status", "") or "") + " "
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    if not blob:
+        return None
+    try:
+        from app.intelligence.work_auth import assess_profile
+        fr = assess_profile(profile)
+    except Exception:
+        return None
+    if fr.validity in ("expired", "unknown"):
+        return None                     # a date question only the user can answer
+    return bool(fr.authorized_now)
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
@@ -5243,6 +5262,11 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # Only a CERTAIN answer is sent; None makes the extension leave the
         # future-sponsorship question for the user (sponsorship_answer_for_pack).
         "requires_sponsorship": _sponsorship_answer_for_pack(p),
+        # Whether the user may be stated as authorized TODAY — the status AND its
+        # end date (work_auth.assess_profile). None = the user answers: an F-1
+        # OPT whose EAD date has passed read "authorized" from the status text
+        # alone and would have been answered Yes on employer forms.
+        "authorized_now": _authorized_now_for_pack(p),
         # Voluntary self-identification: only what the user chose; anything else
         # is sent as "decline" (never the old affirmative defaults).
         "gender": _eeo_answer(p.gender if p else ""),

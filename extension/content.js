@@ -414,10 +414,18 @@ function classifyScreeningQuestion(q, pack) {
     const skills = String(pack.key_skills || '').toLowerCase();
     if (!skills) return null;
     const terms = skills.split(/[,;|/]/).map((x) => x.trim()).filter((x) => x.length > 1);
-    const has = (seg) => terms.some((term) => {
-      const esc = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(seg);
-    });
+    const wordIn = (needle, hay) => {
+      const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(hay);
+    };
+    // The segment names a listed skill ("…with Python?"), or IS a distinctive
+    // part of one ("Kafka" for a listed "Apache Kafka", "React" for "React.js").
+    const has = (seg) => {
+      const core = seg.replace(/[^a-z0-9#+.\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+      return terms.some((term) => wordIn(term, seg) ||
+        (core.length >= 3 && !/\s/.test(core) && wordIn(core, term.replace(/\.js\b/, ' js'))) ||
+        (core.length >= 3 && !/\s/.test(core) && term.replace(/\.js$/, '') === core));
+    };
     const object = trig[trig.length - 1].replace(/[?.!]+\s*$/, '').trim();
     const isOr = /\s(or|either)\s/.test(object) && !/\sand\s/.test(object);
     const parts = object.split(/\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
@@ -438,7 +446,7 @@ function skillMonthsFor(t, pack) {
   const sm = (pack && pack.skill_months && typeof pack.skill_months === 'object') ? pack.skill_months : null;
   if (!sm) return null;
   const rest = String(t).toLowerCase()
-    .replace(/\d+/g, ' ').replace(/[+?.,:;!()'"]/g, ' ')
+    .replace(/\d+/g, ' ').replace(/[^a-z0-9#+./\s-]/g, ' ').replace(/[.?]+(\s|$)/g, ' ')
     .replace(_GENERIC_YEARS_WORDS, ' ').replace(/\s+/g, ' ').trim();
   if (!rest) return null;
   const parts = rest.split(/\s+(?:and|&)\s+|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
@@ -460,8 +468,10 @@ function skillMonthsFor(t, pack) {
 // once these are removed IS its subject.
 const _GENERIC_YEARS_WORDS = /\b(do|does|you|your|have|has|had|at|least|a|an|the|minimum|of|in|with|total|overall|professional|relevant|related|work|working|worked|industry|full[- ]?time|paid|hands[- ]?on|post[- ]?graduate|combined|experience|experienced|years?|yrs?|more|or|than|plus|over|how|many|much|role|roles|position|positions|field|this|similar|job|jobs|career)\b/g;
 function yearsQuestionIsGeneric(t) {
+  // Every non-alphanumeric goes: a required-field "*" left over from the label
+  // made "5 years of relevant work experience? *" look like a named skill.
   const rest = String(t).toLowerCase()
-    .replace(/\d+/g, ' ').replace(/[+?.,:;!()'"-]/g, ' ')
+    .replace(/\d+/g, ' ').replace(/[^a-z\s]/g, ' ')
     .replace(_GENERIC_YEARS_WORDS, ' ').replace(/\s+/g, ' ').trim();
   return rest === '';
 }
@@ -515,6 +525,13 @@ function workAuthFacts(pack) {
   const wa = [pack.work_authorization, pack.work_auth_status, pack.visa_status]
     .map((x) => String(x || '').trim()).filter(Boolean).join(' | ');
   const home = _normCountry(pack.preferred_country) || 'united states';
+  // The server's verdict on the status AND its end date wins over the status
+  // text: "F-1 OPT" with an EAD date that has passed is not "authorized" —
+  // null there means the applicant answers (older servers omit the key).
+  if (Object.prototype.hasOwnProperty.call(pack, 'authorized_now')) {
+    if (pack.authorized_now === null) return { authorized: null, country: home };
+    if (pack.authorized_now === false) return { authorized: false, country: home };
+  }
   if (!wa) return { authorized: null, country: home };
   const l = wa.toLowerCase();
   if (/not\s+(currently\s+)?authoriz|unauthoriz|^no\b|\bno work (permit|authoriz)/.test(l)) {
@@ -538,7 +555,10 @@ function interpretWorkAuthQuestion(q, pack) {
   const asksSponsor = /sponsor/.test(t);
   const asksAuth = /authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|permitted to work/.test(t);
   // "without sponsorship", "not require sponsorship", "no sponsorship needed"
-  const withoutSponsor = /without\s+(any\s+)?(visa\s+|employer\s+|company\s+)?sponsor|not\s+(now\s+or\s+in\s+the\s+future\s+)?requir\w*\s+(visa\s+|employer\s+)?sponsor|no\s+(visa\s+)?sponsor|never\s+requir\w*\s+sponsor/.test(t);
+  // "…without the need for visa sponsorship…" is the same question as
+  // "…without sponsorship?": a Lever form answered Yes for a profile that needs
+  // sponsorship because only the short wording was known.
+  const withoutSponsor = /\b(without|w\/o)\b[^.?!]{0,40}?\bsponsor|\b(not|never)\s+(?:[a-z-]+\s+){0,6}?(requir|need)\w*\s+(?:[a-z-]+\s+){0,3}?sponsor|\bno\s+(?:[a-z-]+\s+){0,3}?sponsor/.test(t);
   const sponsorKnown = typeof pack.requires_sponsorship === 'boolean';
   const requires = pack.requires_sponsorship === true;
   const facts = workAuthFacts(pack);

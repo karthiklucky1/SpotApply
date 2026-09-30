@@ -118,9 +118,22 @@ BA = dict(years_experience=7, key_skills="Python, SQL", degree="Bachelor of Arts
     ("Do you have experience with Python or Go?", True),
     ("Are you proficient in SQL, Python?", True),
     ("Do you have experience with Rust?", None),                      # absence is not evidence
+    # found filling a real profile (2026-09-30): a required-field "*" made a
+    # generic question look like a named skill, and "Apache Kafka" didn't
+    # answer "Kafka".
+    ("Do you have at least 5 years of relevant work experience? *", True),
+    ("Do you have at least 10 years of relevant work experience? *", False),
+    ("Do you have experience with SQL and Python? *", True),
 ])
 def test_screening_answers_only_what_the_profile_proves(question, want):
     assert ask(question, **BA) is want
+
+
+def test_a_listed_skill_answers_its_distinctive_part():
+    kafka = dict(BA, key_skills="Apache Kafka, Kubernetes, React.js")
+    assert ask("Do you have experience with Kafka and Kubernetes?", **kafka) is True
+    assert ask("Do you have experience with React?", **kafka) is True
+    assert ask("Do you have experience with Apache Spark?", **kafka) is None   # "apache" alone proves nothing
 
 
 def test_skill_years_come_from_dated_evidence_only():
@@ -167,6 +180,20 @@ def auth(question: str, **profile):
      "Are you authorized to work in the US without sponsorship?", False),
     # audit: inverted sponsorship wording
     ({"requires_sponsorship": False}, "Can you work without visa sponsorship?", True),
+    # found filling a real profile: the longer Lever wording was read as
+    # "do you require sponsorship?" and answered Yes for someone who needs it
+    ({"work_authorization": "US Citizen", "requires_sponsorship": True},
+     "Are you authorized to work in the US without the need for visa sponsorship now or in the future?", False),
+    ({"requires_sponsorship": True},
+     "Are you able to work for us without the need for employer sponsorship?", False),
+    ({"requires_sponsorship": False},
+     "Are you able to work for us without the need for employer sponsorship?", True),
+    ({"requires_sponsorship": True}, "Do you not require visa sponsorship?", False),
+    # an expired dated status: the server's verdict wins over the status text
+    ({"work_authorization": "F-1 OPT", "authorized_now": None},
+     "Are you legally authorized to work in the United States?", None),
+    ({"work_authorization": "F-1 OPT", "authorized_now": True},
+     "Are you legally authorized to work in the United States?", True),
     ({"requires_sponsorship": True}, "Can you work without visa sponsorship?", False),
     ({"requires_sponsorship": True}, "Will you now or in the future require sponsorship?", True),
     ({"requires_sponsorship": False}, "Will you now or in the future require visa sponsorship?", False),
