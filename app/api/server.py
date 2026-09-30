@@ -7023,10 +7023,22 @@ def _shortlist_fresh_clause():
     if posted_days > 0:
         ancient = posting_ref() >= now - _ftd(days=posted_days)
 
+    # A first-hour CATCH-UP delivery (Application.delivered_catchup: a posting
+    # up to welcome_catchup_days old, confirmed open) stays for the window from
+    # its delivery — by posting age it would vanish the morning after it
+    # reached a new user. Everything else keeps the normal rule. Same rule as
+    # shortlist_hygiene.
+    fresh_ok = freshness >= fresh_cut
+    _catch = int(getattr(settings, "welcome_catchup_days", 0) or 0)
+    if _catch > days:
+        fresh_ok = fresh_ok | ((Application.delivered_catchup == True)  # noqa: E712
+                               & (Application.created_at >= fresh_cut)
+                               & (freshness >= now - _ftd(days=_catch)))
+
     invested_days = int(getattr(settings, "tailored_max_age_days", 0) or 0)
     if invested_days <= 0:
         # Explicitly opted back into "never hide invested work".
-        keep = (Application.status != ApplicationStatus.SHORTLISTED) | (freshness >= fresh_cut)
+        keep = (Application.status != ApplicationStatus.SHORTLISTED) | fresh_ok
     else:
         invested_cut = now - _ftd(days=invested_days)
         invested = [ApplicationStatus.TAILORED,
@@ -7039,7 +7051,7 @@ def _shortlist_fresh_clause():
             # not touch it.
             (~Application.status.in_([ApplicationStatus.SHORTLISTED] + invested))
             | (Application.status.in_(invested) & (freshness >= invested_cut))
-            | (freshness >= fresh_cut)
+            | fresh_ok
         )
     if ancient is None:
         return keep
@@ -8407,6 +8419,47 @@ def _budget_diagnostic(uid: str) -> dict:
     return out
 
 
+@app.get("/api/admin/first-hour")
+def admin_first_hour(request: Request, days: int = 14) -> dict:
+    """How fast new users got their first matches: per account whose search
+    started in the last ``days``, minutes to the first and the fifth board
+    entry. Admin-only; an 8-character id prefix, no name, email or job.
+    """
+    _require_admin_user(request)
+    from datetime import datetime, timedelta
+    from app.db.models import UserProfile
+    days = max(1, min(int(days or 14), 60))
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = []
+    with get_session() as session:
+        profs = session.exec(select(UserProfile.user_id, UserProfile.feed_started_at).where(
+            UserProfile.feed_started_at.is_not(None),
+            UserProfile.feed_started_at >= since)).all()
+        for uid, started in profs:
+            if not uid:
+                continue
+            times = [r if not isinstance(r, tuple) else r[0] for r in session.exec(
+                select(Application.created_at).where(
+                    Application.user_id == uid, Application.created_at >= started,
+                    Application.apply_track != "email_import")
+                .order_by(Application.created_at).limit(5)).all()]
+            mins = lambda t: round((t - started).total_seconds() / 60, 1)
+            rows.append({"user": uid[:8], "search_started": started.isoformat() + "Z",
+                         "minutes_to_first": mins(times[0]) if times else None,
+                         "minutes_to_fifth": mins(times[4]) if len(times) >= 5 else None,
+                         "first_five_delivered": len(times)})
+    rows.sort(key=lambda r: r["search_started"], reverse=True)
+
+    def _median(vals):
+        vals = sorted(v for v in vals if v is not None)
+        return vals[len(vals) // 2] if vals else None
+    return {"days": days, "users": len(rows),
+            "median_minutes_to_first": _median(r["minutes_to_first"] for r in rows),
+            "median_minutes_to_fifth": _median(r["minutes_to_fifth"] for r in rows),
+            "never_got_a_match": sum(1 for r in rows if r["minutes_to_first"] is None),
+            "rows": rows}
+
+
 @app.get("/api/admin/budget-diagnostic")
 def admin_budget_diagnostic(request: Request, user_id: str = "") -> dict:
     """Effective plan, today's delivery and spend, and the exact allowance
@@ -9335,6 +9388,7 @@ _USERPROFILE_COLUMNS = [
     ("industry", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("autofill_resume_source", "VARCHAR DEFAULT 'tailored'", "VARCHAR DEFAULT 'tailored'"),
     ("eeo_confirmed", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("feed_started_at", "TIMESTAMP", "TIMESTAMP"),
     # Default '' to match the model: never silently assume the US for a user
     # who may be in Berlin (a repair-added column backfills every row).
     ("preferred_country", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9829,9 +9883,11 @@ def welcome_status_api(request: Request) -> dict:
             tip = welcome.seniority_tip(prof, roles)
             if out.get("boost_active"):
                 out["resume"] = welcome.resume_summary(prof, roles)
+                out["thin_supply"] = welcome.thin_supply(prof, out)
         except Exception as e:
             log.debug("welcome role tip unavailable: %s", e)
         out["role_tip"] = tip
+        out.pop("_started", None)          # internal, not for the page
         return out
 
     # 4 s only in the first ten minutes of a window, when the panel polls every

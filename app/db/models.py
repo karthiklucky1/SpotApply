@@ -239,6 +239,11 @@ class Application(SQLModel, table=True):
     # "autofill" = Greenhouse/Lever/Ashby (bot fills the form)
     # "manual"   = LinkedIn/Indeed/etc. (bot preps materials, human applies)
     apply_track: str = Field(default="autofill")
+    # Delivered in a new user's first hour from the catch-up window (a posting
+    # older than the normal scoring window, confirmed open). The board and
+    # shortlist hygiene keep these for the normal window FROM DELIVERY, since
+    # by posting age they would vanish the morning after (2026-09-30).
+    delivered_catchup: bool = False
 
     # Instrumentation fields
     resume_variant: Optional[str] = None  # e.g., "variant_a", "variant_b"
@@ -378,6 +383,9 @@ class UserProfile(SQLModel, table=True):
     # are indistinguishable from a real answer by value, so only this flag lets
     # the fill pack send them (see server._eeo_answer).
     eeo_confirmed: bool = False
+    # When SpotApply first started searching for this user (their first welcome
+    # window). Read by /api/admin/first-hour: time to first / fifth match.
+    feed_started_at: Optional[datetime] = None
     disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""

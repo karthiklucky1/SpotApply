@@ -71,7 +71,23 @@ def begin(user_id: Optional[str], reason: str, now: Optional[datetime] = None) -
     except Exception:
         pass
     log.info("Welcome boost started (%s)", reason)   # no user id in the line
+    _mark_feed_started(user_id, now)
     return True
+
+
+def _mark_feed_started(user_id: str, now: datetime) -> None:
+    """First window only: when SpotApply started searching for this user."""
+    try:
+        from sqlalchemy import update
+        from app.db.init_db import get_session
+        from app.db.models import UserProfile
+        with get_session() as s:
+            s.exec(update(UserProfile).where(
+                UserProfile.user_id == user_id,
+                UserProfile.feed_started_at.is_(None)).values(feed_started_at=now))
+            s.commit()
+    except Exception as e:
+        log.debug("feed start not recorded: %s", e)
 
 
 def started_at(user_id: Optional[str], now: Optional[datetime] = None) -> Optional[datetime]:
@@ -177,14 +193,55 @@ def first_results(user_id: Optional[str]) -> dict:
             if datetime.utcnow() - ts > _window() * 4:
                 _FIRST_DONE.pop(uid, None)
     from app.strategy.scoring_lane import score_user_now
+    # Keep going until the user has `welcome_target_matches` on the board, the
+    # queue has nothing left, or the rounds run out. Each round is the same
+    # guarded call (breaker, budget, plan allowance, compute gate); this only
+    # decides that a new user's first matches are bought NOW, not next cycle.
+    target = int(getattr(settings, "welcome_target_matches", 0) or 0)
+    rounds = max(1, int(getattr(settings, "welcome_first_rounds", 1) or 1))
+    total = {"rounds": 0, "scored": 0, "shortlisted": 0}
     try:
-        return score_user_now(user_id, n)
+        for _ in range(rounds):
+            st = score_user_now(user_id, n)
+            total["rounds"] += 1
+            total["scored"] += int(st.get("scored", 0))
+            total["shortlisted"] += int(st.get("shortlisted", 0))
+            if st.get("skipped") or not st.get("queued"):
+                break                           # nothing to score / not allowed
+            if target <= 0 or _matches_since(user_id, started) >= target:
+                break
+        return total
     finally:
         try:
             from app.common import ttl_cache
             ttl_cache.invalidate(f"welcome:{user_id}")
         except Exception:
             pass
+
+
+def scoring_window_days(user_id: Optional[str]) -> int:
+    """How far back (KNOWN age) this user's queue reaches: the normal window,
+    widened to ``welcome_catchup_days`` while their welcome window is open."""
+    base = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+    catch = int(getattr(settings, "welcome_catchup_days", 0) or 0)
+    if base > 0 and catch > base and is_boosted(user_id):
+        return catch
+    return base
+
+
+def _matches_since(user_id: str, since: datetime) -> int:
+    """Board entries delivered to this user since their window opened."""
+    from sqlalchemy import func
+    from sqlmodel import select
+    from app.db.init_db import get_session
+    from app.db.models import Application
+    try:
+        with get_session() as s:
+            return int(s.exec(select(func.count(Application.id)).where(
+                Application.user_id == user_id, Application.created_at >= since,
+                Application.apply_track != "email_import")).first() or 0)
+    except Exception:
+        return 0
 
 
 def per_cycle_cap(user_id: Optional[str], base: int) -> int:
@@ -260,7 +317,7 @@ def status(user_id: str) -> dict:
     started = started_at(user_id, now)
     since = started or (now - timedelta(hours=24))
     fresh_after = now - timedelta(days=max(1, settings.scoring_max_job_age_days))
-    out = {"boost_active": started is not None,
+    out = {"boost_active": started is not None, "_started": started,
            "minutes_left": (int((_window() - (now - started)).total_seconds() // 60)
                             if started else 0)}
     with get_session() as s:
@@ -388,6 +445,32 @@ def _preview(user_id: str, since: datetime, fresh_after: datetime) -> dict:
             or_(Job.scored_at >= since, Job.prescored_at >= since),
         )).first() or 0)
     return {"preview": rows, "passed_count": passed_count, "bar": int(bar)}
+
+
+def thin_supply(profile, st: dict) -> Optional[dict]:
+    """When the first hour has run out of postings to check and fewer than
+    ``welcome_target_matches`` reached the board, say so plainly and offer the
+    changes that would widen the search — never lower the bar instead.
+
+    Only once there is nothing left waiting: while jobs are still being
+    checked, "not enough" is not known yet."""
+    if not st.get("boost_active") or profile is None:
+        return None
+    target = int(getattr(settings, "welcome_target_matches", 0) or 0)
+    if target <= 0 or int(st.get("waiting") or 0) > 0 or int(st.get("new_matches") or 0) >= target:
+        return None
+    started = st.get("_started")
+    if started and (datetime.utcnow() - started) < timedelta(minutes=3):
+        return None                     # the first search is still running
+    from app.common.tenant_prefs import internships_only
+    tips = []
+    if internships_only(profile):
+        tips.append({"key": "both", "label": "Also show full-time new-grad roles"})
+    if not bool(getattr(profile, "open_to_relocation", False)):
+        tips.append({"key": "relocate", "label": "I'm open to relocating"})
+    tips.append({"key": "roles", "label": "Add related roles"})
+    return {"found": int(st.get("new_matches") or 0), "target": target,
+            "checked": int(st.get("checked") or 0), "tips": tips[:3]}
 
 
 def resume_summary(profile, roles: List[str]) -> Optional[dict]:

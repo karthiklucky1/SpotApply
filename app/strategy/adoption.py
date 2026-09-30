@@ -213,6 +213,25 @@ def adopt_incremental(user_id: str | None, *, interval_seconds: int = 300,
     return adopted
 
 
+def _job_type_gate(profile):
+    """title -> bool: does this posting's job type fit what the user is looking
+    for? Title only (the same signal RuleFilter reads first); a posting whose
+    type the title cannot tell passes and RuleFilter decides later."""
+    from app.common.tenant_prefs import internships_only, wants_internships
+    from app.matching.filters.rule_filter import classify_job_type
+    if profile is None:
+        return lambda title: True
+    only = internships_only(profile)
+    wants = wants_internships(profile)
+
+    def _ok(title) -> bool:
+        is_intern = classify_job_type(title or "", "") == "internship"
+        if only:
+            return is_intern
+        return wants or not is_intern
+    return _ok
+
+
 def _adopt(user_id: str | None, max_age_days: int, limit: int,
            since: datetime | None) -> tuple[int, bool]:
     """The adoption pass. Returns (new_rows, hit_cap): ``hit_cap`` is True when
@@ -256,6 +275,18 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
                      user_id or "local", roles)
         except Exception as _re:
             log.debug("adoption role fallback failed: %s", _re)
+
+    # Never copy what the scoring gate would expire at once: a new user got
+    # 1,350 dead copies (21-day adoption vs a 5-day gate) and nothing to show.
+    # The window is the user's own scoring window — 14 days while their
+    # welcome window is open (freshest first below), else the normal 5.
+    from app.strategy.welcome import scoring_window_days
+    _window = scoring_window_days(user_id)
+    if _window > 0:
+        max_age_days = min(max_age_days, _window)
+    # The job type the user wants: an internship-only user was handed 100
+    # full-time postings to prescore and reject. Same classifier as RuleFilter.
+    _type_ok = _job_type_gate(p)
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
     # The incremental step narrows the walk to what the pool gained since the
@@ -358,7 +389,7 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
             if key in seen:
                 continue
             seen.add(key)
-            if _fresh_enough(j):
+            if _fresh_enough(j) and _type_ok(j.title):
                 pool.append(j)
         pool = _drop_already_adopted(pool, user_id)
         # The quota that matters is ROLE-MATCHING new jobs — those are what
@@ -541,6 +572,27 @@ def _user_pool_count(user_id: str | None) -> int:
         ).first() or 0)
 
 
+def _usable_count(user_id: str | None) -> int:
+    """Postings in this user's pool that can still become a match: open, not
+    already rejected or expired, location not held, inside their own scoring
+    window. The onboarding search decision reads THIS — it read the raw open
+    count, saw 1,980 jobs (1,350 already expired, 830 held) and skipped the
+    search for a user who had nothing to score (2026-09-30)."""
+    from app.common.freshness import known_ref
+    from app.strategy.welcome import scoring_window_days
+    uid_arg = None if (not user_id or user_id == "local") else user_id
+    window = scoring_window_days(user_id)
+    with get_session() as session:
+        cond = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
+        q = select(func.count(Job.id)).where(
+            cond, Job.is_closed == False,  # noqa: E712
+            (Job.rerank_score.is_(None)) | (Job.rerank_score >= float(settings.shortlist_score_threshold)),
+            (Job.eligibility.is_(None)) | (Job.eligibility != "unknown"))
+        if window > 0:
+            q = q.where(known_ref() >= datetime.utcnow() - timedelta(days=window))
+        return int(session.exec(q).first() or 0)
+
+
 def seed_new_user(user_id: str | None) -> int:
     """Onboarding entry point (résumé upload + first role edit).
 
@@ -555,18 +607,23 @@ def seed_new_user(user_id: str | None) -> int:
     # The first hour: this user is served first by the scoring lane while the
     # feed fills (app/strategy/welcome.py).
     from app.strategy.welcome import begin as _begin_welcome
+    from app.strategy import welcome as _welcome_mod
     _begin_welcome(user_id, "resume or roles saved")
+    # An explicit save (roles, or a widened search) may re-run the first
+    # results even inside the same window: the user just changed what to find.
+    _welcome_mod._FIRST_DONE.pop(user_id, None)
     adopted = adopt_and_match(user_id)
 
     if not settings.onboarding_active_discovery or settings.onboarding_min_jobs <= 0:
         return adopted
     try:
-        on_role = _user_pool_count(user_id)
+        on_role = _usable_count(user_id)
     except Exception as e:
-        log.debug("onboarding: pool count failed for %s: %s", user_id or "local", e)
+        log.debug("onboarding: usable count failed for %s: %s", user_id or "local", e)
         on_role = adopted
-    if on_role >= settings.onboarding_min_jobs:
-        return adopted  # shared pool already covers this user's domain — no scrape
+    _need = max(int(settings.onboarding_min_jobs or 0), int(getattr(settings, "onboarding_min_usable", 0) or 0))
+    if on_role >= _need:
+        return adopted  # enough usable postings already — no scrape
 
     # Thin feed → the shared pool doesn't cover this user's field yet. Scrape it.
     try:
@@ -578,9 +635,8 @@ def seed_new_user(user_id: str | None) -> int:
             return adopted  # no roles → nothing to search for
         if not _user_has_resume(uid_check):
             return adopted  # no résumé → matching would only surface noise
-        log.info("Onboarding: user %s has only %d on-role jobs after adoption "
-                 "(< %d) — actively discovering their domain",
-                 user_id or "local", on_role, settings.onboarding_min_jobs)
+        log.info("Onboarding: only %d usable postings after adoption (< %d) — "
+                 "actively discovering their field", on_role, _need)
         _discover_then_match(user_id)
     except Exception as e:
         log.warning("onboarding active discovery failed for %s: %s",

@@ -77,7 +77,7 @@ def test_build_job_still_stamps_now_for_a_genuine_first_sighting():
 def test_adoption_does_not_restart_the_freshness_clock():
     from app.strategy.adoption import adopt_shared_jobs
     _clean()
-    held = 9
+    held = 3        # inside the 5-day window: adoption skips what scoring would expire
     with get_session() as s:
         s.add(UserProfile(user_id="ig_fresh", target_roles="Machine Learning Engineer",
                           preferred_country="United States"))

@@ -559,6 +559,14 @@ class Settings(BaseSettings):
     welcome_boost_minutes: int = 60           # WELCOME_BOOST_MINUTES
     welcome_boost_cap_multiplier: float = 2.0  # WELCOME_BOOST_CAP_MULTIPLIER — per-cycle slice x this while boosted
     welcome_first_scores: int = 8              # WELCOME_FIRST_SCORES — jobs scored right after adoption (0 = wait for the lane)
+    # The first hour's supply (2026-09-30): a new user whose field has few
+    # postings from the last 5 days got nothing to look at. While their welcome
+    # window is open, postings up to this many days old are in play too —
+    # freshest first, and each one's liveness is checked before it is placed.
+    welcome_catchup_days: int = 14             # WELCOME_CATCHUP_DAYS (0 = the normal window only)
+    welcome_target_matches: int = 5            # WELCOME_TARGET_MATCHES — keep scoring the first hour until this many are placed
+    welcome_first_rounds: int = 4              # WELCOME_FIRST_ROUNDS — at most this many first-results rounds of welcome_first_scores
+    onboarding_min_usable: int = 60            # ONBOARDING_MIN_USABLE — fewer usable postings than this → search their field right away
 
     # When a user's target roles change (new résumé or a manual edit), the pool
     # is re-pointed at the new roles: on-role jobs lose their old-résumé score

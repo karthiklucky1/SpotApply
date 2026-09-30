@@ -24,6 +24,9 @@ def _fake_server(monkeypatch, *, roles, has_resume, sink):
 def _base(monkeypatch, *, adopted, pool_count):
     monkeypatch.setattr(ad, "adopt_and_match", lambda uid: adopted)
     monkeypatch.setattr(ad, "_user_pool_count", lambda uid: pool_count)
+    # The decision now reads USABLE postings (open, not rejected/expired/held,
+    # inside the window) — 2026-09-30; the fixtures state the same number.
+    monkeypatch.setattr(ad, "_usable_count", lambda uid: pool_count)
     monkeypatch.setattr(ad.settings, "onboarding_active_discovery", True)
     monkeypatch.setattr(ad.settings, "onboarding_min_jobs", 25)
 

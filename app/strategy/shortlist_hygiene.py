@@ -60,9 +60,19 @@ def prune_stale_shortlist(max_age_days: Optional[int] = None) -> int:
     now = datetime.utcnow()
     known = known_ref()
     posting = posting_ref()
+    held_too_long = (known != None) & (known < now - timedelta(days=days))  # noqa: E711
+    catch = int(getattr(settings, "welcome_catchup_days", 0) or 0)
+    if catch > days:
+        # A first-hour catch-up delivery (a posting up to `catch` days old) is
+        # kept for `days` from the moment it reached the user — the same rule
+        # the board's render filter applies (server._shortlist_fresh_clause).
+        held_too_long = held_too_long & ~(
+            (Application.delivered_catchup == True)  # noqa: E712
+            & (Application.created_at >= now - timedelta(days=days))
+            & (known >= now - timedelta(days=catch)))
     stale_clauses = [
         # We have HELD it too long — the bound that carries the product promise.
-        (known != None) & (known < now - timedelta(days=days)),  # noqa: E711
+        held_too_long,
     ]
     if posted_days > 0:
         # The SOURCE calls it ancient. Deliberately far looser: it suppresses

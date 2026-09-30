@@ -287,3 +287,45 @@ def verified_dead(source, external_id: str, url: str,
     if dead:
         _bump("blocked_before_delivery")
     return dead
+
+
+def confirmed_open(source, external_id: str, url: str,
+                   seen_within_hours: float = 48.0) -> bool:
+    """POSITIVE evidence the posting is still open — required before a
+    first-hour catch-up delivery (a posting older than the normal window).
+
+    The everyday gate only refuses what is conclusively DEAD and delivers
+    everything it cannot verify; that is right for a job found this morning,
+    and wrong for one we have held ten days (owner, 2026-09-30: "make sure
+    those are not closed ones"). Open means either the shared posting was seen
+    on its own board within ``seen_within_hours`` (a complete board fetch
+    lists only live postings), or a check of the posting itself answered LIVE.
+    Anything else — unverifiable, rate-limited, blocked — is not delivered.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    from sqlmodel import select
+    from app.db.init_db import get_session
+    from app.db.models import Job
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    src = source.value if hasattr(source, "value") else str(source)
+    try:
+        with get_session() as s:
+            row = s.exec(select(Job.last_seen, Job.is_closed).where(
+                Job.user_id == SHARED_POOL_USER, Job.source == source,
+                Job.external_id == str(external_id)).limit(1)).first()
+        if row is not None:
+            last_seen, closed = row[0], row[1]
+            if closed:
+                _bump("catchup_refused_closed")
+                return False
+            if last_seen and last_seen >= _dt.utcnow() - _td(hours=seen_within_hours):
+                _bump("catchup_open_recently_listed")
+                return True
+    except Exception as e:
+        log.debug("confirmed_open lookup failed for %s: %s", src, e)
+    state, _how = verify_for_delivery(source, external_id, url)
+    ok = state == JobLivenessState.LIVE.value
+    _bump("catchup_open_checked" if ok else "catchup_refused_unconfirmed")
+    return ok

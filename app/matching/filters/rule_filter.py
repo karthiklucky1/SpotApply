@@ -102,13 +102,21 @@ _INTERNSHIP_SIGNALS = (
 )
 
 
+_INTERNSHIP_TITLE_RE = re.compile(
+    r"\b(interns?|internships?|co-?op|co op|summer analyst|industrial placement|"
+    r"working student|praktikum|werkstudent)\b")
+
+
 def classify_job_type(title: str, description: str = "") -> str:
     """Return 'internship' or 'full_time' from the title/description text.
     Title is weighted strongly; description only confirms when the title is
     ambiguous (so a full-time JD that merely mentions an internship program
     isn't misclassified)."""
     t = (title or "").lower()
-    if any(s in t for s in _INTERNSHIP_SIGNALS):
+    # Word-bounded: a bare substring made "Internal Tools Engineer" and
+    # "International Sales Manager" internships — hidden from full-time users
+    # and handed to internship-only ones (found 2026-09-30).
+    if _INTERNSHIP_TITLE_RE.search(t):
         return "internship"
     d = (description or "").lower()[:600]   # only the opening lines
     if any(s in d for s in ("intern position", "internship position", "this internship",

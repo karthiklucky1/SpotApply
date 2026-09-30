@@ -304,6 +304,8 @@ def init_db() -> None:
         # has never had a real AI review. The recheck pass re-scores exactly
         # these once credits return, and clears the flag either way.
         ("provisional", "BOOLEAN DEFAULT 0"),
+        # First-hour catch-up delivery (see Application.delivered_catchup).
+        ("delivered_catchup", "BOOLEAN DEFAULT 0"),
         # When the user opened this recommendation. NULL = never seen, which is
         # what makes an entry replaceable by a later, stronger job.
         ("viewed_at", "DATETIME"),

@@ -677,6 +677,19 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   gate as a cycle, once per window) and the panel lists REAL jobs in their REAL state (a
   "match" only once on the board). Resume questions render BELOW it; the first match no
   longer auto-reloads the page mid-flow. Guard: `test_first_results`.
+  **Catch-up supply** (2026-09-30; a student saw nothing for 10+ min — 1,350 of 1,980
+  adopted copies expired on arrival, 100 of 103 prescores on full-time roles): inside the
+  window `welcome.scoring_window_days` = `WELCOME_CATCHUP_DAYS` (14) for adoption, the
+  queue (fresh 5 d FIRST, then older) and the expiry sweep; adoption also filters the
+  wanted job type (`classify_job_type` is word-bounded — "Internal Tools" is not an
+  intern). A delivery older than 5 d needs POSITIVE open evidence
+  (`delivery_gate.confirmed_open`: shared row listed ≤48 h ago or a LIVE check) and is
+  stamped `Application.delivered_catchup`, which render + hygiene keep for 5 d from
+  delivery. `first_results` runs up to `WELCOME_FIRST_ROUNDS` to `WELCOME_TARGET_MATCHES`
+  (5); the onboarding search reads `_usable_count`, not the raw pool. When nothing is left
+  `thin_supply` offers wider settings — never a lower bar. `/api/admin/first-hour` (admin,
+  8-char ids) = minutes to 1st/5th match from `UserProfile.feed_started_at`.
+  Guard: `test_new_user_supply`.
 - **Sign-in never waits on history** (2026-09-28): `/api/stats` (every dashboard
   load) is cached per user `STATS_CACHE_SECONDS` (300), single-flighted, every
   statement bounded + an overall `STATS_TOTAL_BUDGET_SECONDS`; an unanswered

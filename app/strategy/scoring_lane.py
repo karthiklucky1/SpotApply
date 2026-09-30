@@ -338,11 +338,22 @@ def _user_queue(user_id: Optional[str], cap: int,
         # can no longer stop the walk early, so an unbounded backlog would turn
         # this 90-second query into a full sort of the user's whole unscored
         # corpus. Both hotspot incidents recorded in this file started there.
-        _known = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+        # The user's own window: 14 days while their first hour is open
+        # (welcome.scoring_window_days), else the normal 5.
+        from app.strategy.welcome import scoring_window_days
+        _known = scoring_window_days(user_id)
+        _base = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+        from app.common.freshness import known_ref
         if _known > 0:
-            from app.common.freshness import known_ref
             q = q.where(known_ref() >= datetime.utcnow() - timedelta(days=_known))
-        q = q.order_by(promise.desc(), Job.first_seen.desc()).limit(cap)
+        if _known > _base > 0:
+            # Catch-up window: the FRESH postings (normal window) come first,
+            # then the older ones — each by promise, newest first.
+            from sqlalchemy import case as _case
+            fresh_first = _case((known_ref() >= datetime.utcnow() - timedelta(days=_base), 0), else_=1)
+            q = q.order_by(fresh_first, promise.desc(), Job.first_seen.desc()).limit(cap)
+        else:
+            q = q.order_by(promise.desc(), Job.first_seen.desc()).limit(cap)
         jids = [r for r in session.exec(q).all()]
     return jids if len(deferred) <= 2000 else _drop_deferred(jids)
 
@@ -755,10 +766,25 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
 
     from app.strategy import slate as _slate
     from app.strategy.delivery_gate import CycleBudget as _CycleBudget
+    from app.strategy.delivery_gate import confirmed_open as _confirmed_open
     from app.strategy.delivery_gate import verified_dead as _verified_dead
 
     shortlisted: List[int] = []
     dead_skipped = 0
+    # Which of these are first-hour catch-up postings (known longer than the
+    # normal scoring window): only a user in their welcome window has any.
+    catchup_ids: set = set()
+    _base = int(getattr(settings, "scoring_max_job_age_days", 0) or 0)
+    if _base > 0 and scored:
+        from app.common.freshness import known_ref
+        try:
+            with get_session() as s:
+                catchup_ids = {r if not isinstance(r, tuple) else r[0] for r in s.exec(
+                    select(Job.id).where(Job.id.in_([j for j, _ in scored]),
+                                         known_ref() < datetime.utcnow() - timedelta(days=_base))
+                ).all()}
+        except Exception as e:
+            log.debug("catch-up lookup failed: %s", e)
     # Bounds the wall-clock this delivery pass may spend verifying, so the
     # lane can never overlap itself waiting on slow boards.
     _live_budget = _CycleBudget()
@@ -806,6 +832,11 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             dead_skipped += 1
             _close_dead(jid)
             continue                      # try the next candidate; do not stop
+        # A first-hour catch-up posting (older than the normal window) needs
+        # POSITIVE evidence it is still open, not just "not known dead".
+        if _pair and jid in catchup_ids and not _confirmed_open(*_pair):
+            stats["catchup_unconfirmed"] = stats.get("catchup_unconfirmed", 0) + 1
+            continue
         with get_session() as session:
             job = session.get(Job, jid)
             if not job:
@@ -822,6 +853,14 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                 if res.outcome == "below_cutoff":
                     break
                 continue
+            if jid in catchup_ids:
+                # Mark it so the board keeps it for the window from delivery.
+                app_row = session.exec(select(Application).where(
+                    Application.job_id == jid, Application.user_id == uid)).first()
+                if app_row is not None:
+                    app_row.delivered_catchup = True
+                    session.add(app_row)
+                    session.commit()
             shortlisted.append(jid)
             today_count += 1
     if dead_skipped:
@@ -1200,26 +1239,33 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
     known_cutoff = now - timedelta(days=known_days) if known_days > 0 else None
     posted_cutoff = now - timedelta(days=posted_days) if posted_days > 0 else None
 
-    passes = []
-    if known_cutoff is not None:
-        passes.append((
-            "queue_stale",
-            (known_before_expr(known_cutoff),),
-            f"Expired unscored — held {known_days}d without a score "
-            f"(too stale to be worth applying to)",
-        ))
-    if posted_cutoff is not None:
-        passes.append((
-            "ancient_posting",
-            # Bounded to rows the queue-stale pass does NOT already cover, so
-            # this walks the same index range instead of the owner's whole
-            # unscored slice.
-            (((known_on_or_after_expr(known_cutoff),)
-              if known_cutoff is not None else ())
-             + (Job.posted_at.is_not(None), Job.posted_at < posted_cutoff)),
-            f"Expired unscored — source posting date is over {posted_days}d old "
-            f"(evergreen or long-filled listing)",
-        ))
+    def _build_passes(known_cutoff, known_days):
+        passes = []
+        if known_cutoff is not None:
+            passes.append((
+                "queue_stale",
+                (known_before_expr(known_cutoff),),
+                f"Expired unscored — held {known_days}d without a score "
+                f"(too stale to be worth applying to)",
+            ))
+        if posted_cutoff is not None:
+            passes.append((
+                "ancient_posting",
+                # Bounded to rows the queue-stale pass does NOT already cover, so
+                # this walks the same index range instead of the owner's whole
+                # unscored slice.
+                (((known_on_or_after_expr(known_cutoff),)
+                  if known_cutoff is not None else ())
+                 + (Job.posted_at.is_not(None), Job.posted_at < posted_cutoff)),
+                f"Expired unscored — source posting date is over {posted_days}d old "
+                f"(evergreen or long-filled listing)",
+            ))
+        return passes
+
+    passes = _build_passes(known_cutoff, known_days)
+    # A user in their first hour keeps postings up to welcome_catchup_days —
+    # the queue reaches that far for them (welcome.scoring_window_days).
+    from app.strategy.welcome import scoring_window_days as _window_for
 
     # Owner enumeration is the one statement that is not per-owner, so it is
     # armed with the same ceiling and its failure ends the sweep for this
@@ -1264,7 +1310,10 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
             # Batched like close_stale_user_jobs: the first run after deploy can
             # match six figures of rows, and one unbounded UPDATE is the
             # Supabase statement-timeout / Disk-IO pattern we spent a day fixing.
-            for reason_key, extra, reason_text in passes:
+            _w = _window_for(uid) if known_cutoff is not None else 0
+            owner_passes = (_build_passes(now - timedelta(days=_w), _w)
+                            if _w > known_days > 0 else passes)
+            for reason_key, extra, reason_text in owner_passes:
                 for _ in range(max_batches):
                     halt = _stop_reason()
                     if halt:

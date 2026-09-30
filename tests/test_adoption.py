@@ -186,8 +186,10 @@ def test_already_adopted_jobs_do_not_consume_the_cap():
     _clean()
     with get_session() as s:
         s.add(UserProfile(user_id="u_dup", target_roles="Machine Learning Engineer"))
+        # Inside the scoring window (5 days): adoption no longer copies what
+        # the scoring gate would expire on arrival (2026-09-30).
         for n in range(5):
-            s.add(_shared_job(f"d{n}", "ML Engineer", days_old=n + 1))
+            s.add(_shared_job(f"d{n}", "ML Engineer", days_old=n * 0.8 + 0.5))
         s.commit()
 
     from app.strategy.adoption import _drop_already_adopted, adopt_shared_jobs

@@ -5431,14 +5431,39 @@
             const passedN = d.passed_count || 0;
             const foot = (!reading && pool > 0)
                 ? `<div class="wl-foot"><span>${passedN > 0 ? `${passedN.toLocaleString()} checked and kept off your board (below ${bar})` : 'The first results usually land within a minute.'}${waiting ? ` · ${waiting.toLocaleString()} still to check` : ''}</span>${_welcomeMoreBtn(found)}</div>` : '';
+            const ts = d.thin_supply;
+            const thin = ts ? `<div data-w="thin" style="margin-top:12px;padding:12px 14px;border-radius:12px;background:var(--caution-tint,#FFFBEB);border:1px solid rgba(180,83,9,.25)">
+                <div style="font-size:13px;font-weight:800;color:var(--ink,#0C2A3E)">${ts.found ? `${ts.found} strong match${ts.found === 1 ? '' : 'es'} so far` : 'No strong matches yet'} — there are few open jobs for your exact search right now</div>
+                <div style="font-size:12px;color:var(--muted,#5B7186);margin-top:3px">We checked ${Number(ts.checked || 0).toLocaleString()} open jobs and only show ${bar}+ fits. We keep searching new postings all day — or widen the search now:</div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">${(ts.tips || []).map(t => `<button onclick="widenSearch('${_wEsc(t.key)}', this)" class="wl-btn" style="background:var(--sage,#0077C2)" data-w="tip-${_wEsc(t.key)}">${_wEsc(t.label)}</button>`).join('')}</div>
+              </div>` : '';
             return `<div class="wl-card" data-w="progress">
                 <div class="wl-head"><div class="wl-title"><span class="wl-live"></span>${_wEsc(title)}</div>${meta}</div>
                 <div class="wl-sub">${_wEsc(sub)}</div>
                 <div class="wl-steps">${steps}</div>
                 ${_wResume(d.resume)}
                 ${list ? `<div class="wl-list" data-w="live">${list}</div>` : ''}
+                ${thin}
                 ${foot}
               </div>`;
+        }
+        // Thin supply: widen the search in one tap. Each change re-opens the
+        // search (the profile save and the role save both start it again).
+        async function widenSearch(key, btn) {
+            if (key === 'roles') { openRolesModal({ onboarding: true }); return; }
+            if (btn) btn.disabled = true;
+            const body = key === 'both'
+                ? { job_type_preference: 'full_time', include_internships_in_discovery: true }
+                : { open_to_relocation: true };
+            try {
+                const r = await fetch('/api/profile', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(body) });
+                if (!r.ok) throw new Error();
+                showToast('Search widened — checking more jobs now.', 'success');
+                await _startSearchNow();
+            } catch (_) {
+                if (btn) btn.disabled = false;
+                showToast("Couldn't change that — try My Profile.", 'error');
+            }
         }
         function _welcomeMoreBtn(found) {
             return (_welcomeSeenMatches != null && found > _welcomeSeenMatches)
