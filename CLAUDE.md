@@ -672,6 +672,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   account being purged). `/api/welcome/status` feeds the progress panel and the
   seniority tip (1-2 stated years vs Senior/Architect roles → junior versions;
   0 years = unparsed, no tip). Off in the suite (conftest). Guard: `test_welcome`.
+  **First results** (2026-09-30): `adopt_and_match` scores the top `WELCOME_FIRST_SCORES` (8)
+  adopted jobs at once (`scoring_lane.score_user_now` — same breaker/budget/allowance/compute
+  gate as a cycle, once per window) and the panel lists REAL jobs in their REAL state (a
+  "match" only once on the board). Resume questions render BELOW it; the first match no
+  longer auto-reloads the page mid-flow. Guard: `test_first_results`.
 - **Sign-in never waits on history** (2026-09-28): `/api/stats` (every dashboard
   load) is cached per user `STATS_CACHE_SECONDS` (300), single-flighted, every
   statement bounded + an overall `STATS_TOTAL_BUDGET_SECONDS`; an unanswered

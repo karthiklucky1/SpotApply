@@ -504,6 +504,62 @@
     .resume-spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%;
         border: 2px solid rgba(16,185,129,0.25); border-top-color: #10b981; animation: resume-spin 0.8s linear infinite; }
     @keyframes resume-spin { to { transform: rotate(360deg); } }
+    /* First-hour panel (welcome.py): real jobs being checked, live. */
+    #welcome-panel { scroll-margin-top: 72px; }
+    #welcome-panel .wl-card { background: var(--surface, #fff); border: 1px solid var(--border, #DCEAF6);
+        border-radius: 16px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(46,42,36,.06), 0 10px 28px rgba(46,42,36,.08); }
+    #welcome-panel .wl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    #welcome-panel .wl-title { font-size: 15px; font-weight: 800; color: var(--ink, #0C2A3E); display: flex; align-items: center; gap: 8px; }
+    #welcome-panel .wl-live { width: 9px; height: 9px; border-radius: 50%; background: var(--ok, #047857); position: relative; flex: none; }
+    #welcome-panel .wl-live::after { content: ""; position: absolute; inset: -4px; border-radius: 50%;
+        border: 2px solid var(--ok, #047857); opacity: .5; animation: wl-ping 1.6s ease-out infinite; }
+    @keyframes wl-ping { from { transform: scale(.6); opacity: .6; } to { transform: scale(1.6); opacity: 0; } }
+    #welcome-panel .wl-sub { font-size: 12.5px; color: var(--muted, #5B7186); margin-top: 4px; }
+    #welcome-panel .wl-meta { font-size: 12px; color: var(--muted, #5B7186); display: flex; align-items: center; gap: 8px; }
+    #welcome-panel .wl-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
+    #welcome-panel .wl-step { border: 1px solid var(--border, #DCEAF6); border-radius: 12px; padding: 10px 12px; background: var(--canvas, #F5FAFF); min-width: 0; }
+    #welcome-panel .wl-step.is-done { border-color: rgba(var(--ok-rgb, 4,120,87), .35); background: var(--ok-tint, #ECFDF5); }
+    #welcome-panel .wl-step.is-now { border-color: rgba(var(--sage-rgb, 0,119,194), .45); background: var(--sage-tint, #E0F2FE); }
+    #welcome-panel .wl-step-top { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
+        color: var(--muted, #5B7186); text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #welcome-panel .wl-num { font-size: 20px; font-weight: 800; color: var(--ink, #0C2A3E); margin-top: 2px; font-variant-numeric: tabular-nums; }
+    #welcome-panel .wl-num small { font-size: 11px; font-weight: 600; color: var(--muted, #5B7186); margin-left: 3px; }
+    #welcome-panel .wl-ic { width: 16px; height: 16px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
+    #welcome-panel .wl-ic.done { background: var(--ok, #047857); color: #fff; }
+    #welcome-panel .wl-ic.wait { border: 2px solid var(--border, #DCEAF6); }
+    #welcome-panel .wl-spin { width: 14px; height: 14px; border-radius: 50%; flex: none;
+        border: 2px solid rgba(var(--sage-rgb, 0,119,194), .25); border-top-color: var(--sage, #0077C2); animation: resume-spin .8s linear infinite; }
+    #welcome-panel .wl-resume { margin-top: 14px; font-size: 12.5px; color: var(--ink-soft, #21455C); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    #welcome-panel .wl-chip { font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+        background: var(--surface-2, #EAF4FD); border: 1px solid var(--border, #DCEAF6); color: var(--ink-soft, #21455C); }
+    #welcome-panel .wl-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #5B7186); margin-right: 2px; }
+    #welcome-panel .wl-list { margin-top: 14px; border-top: 1px solid var(--border, #DCEAF6); }
+    #welcome-panel .wl-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--border, #DCEAF6);
+        animation: wl-in .35s ease-out both; }
+    @keyframes wl-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    #welcome-panel .wl-av { width: 32px; height: 32px; border-radius: 9px; flex: none; display: flex; align-items: center; justify-content: center;
+        font-weight: 800; font-size: 13px; background: var(--surface-2, #EAF4FD); color: var(--ink-soft, #21455C); }
+    #welcome-panel .wl-job { flex: 1; min-width: 0; }
+    #welcome-panel .wl-job b { display: block; font-size: 13px; color: var(--ink, #0C2A3E); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #welcome-panel .wl-job span { display: block; font-size: 11.5px; color: var(--muted, #5B7186); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #welcome-panel .wl-pill { flex: none; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    #welcome-panel .wl-pill.checking { background: var(--sage-tint, #E0F2FE); color: var(--sage-600, #0369A1); }
+    #welcome-panel .wl-pill.match { background: var(--ok-tint, #ECFDF5); color: var(--ok, #047857); border: 1px solid rgba(var(--ok-rgb, 4,120,87), .3); }
+    #welcome-panel .wl-pill.passed { background: var(--surface-2, #EAF4FD); color: var(--muted, #5B7186); }
+    #welcome-panel .wl-row.is-passed .wl-job b { color: var(--muted, #5B7186); font-weight: 600; }
+    #welcome-panel .wl-skel { height: 10px; border-radius: 6px; background: linear-gradient(90deg, var(--surface-2, #EAF4FD) 25%, #f6fbff 50%, var(--surface-2, #EAF4FD) 75%);
+        background-size: 200% 100%; animation: wl-shimmer 1.3s linear infinite; }
+    @keyframes wl-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    #welcome-panel .wl-foot { font-size: 12px; color: var(--muted, #5B7186); margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    #welcome-panel .wl-btn { font-size: 12.5px; font-weight: 700; padding: 7px 14px; border-radius: 10px; background: var(--ok, #047857); color: #fff; border: 0; cursor: pointer; }
+    @media (max-width: 640px) {
+        #welcome-panel .wl-card { padding: 14px; }
+        #welcome-panel .wl-steps { grid-template-columns: repeat(2, 1fr); }
+        #welcome-panel .wl-pill { font-size: 11px; padding: 3px 8px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #welcome-panel .wl-row, #welcome-panel .wl-skel, #welcome-panel .wl-live::after, #welcome-panel .wl-spin { animation: none; }
+    }
     #resume-busy-pill { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: none;
         align-items: center; gap: 10px; padding: 10px 14px; border-radius: 999px;
         background: var(--canvas, #fff); border: 1px solid rgba(16,185,129,0.45);
@@ -2618,6 +2674,7 @@
                 if (res.ok) {
                     btn.innerHTML = ' Reading resume…';
                     setResumeBusy('Reading your resume…');
+                    welcomeStarting('reading');
                     // Auto-extract profile
                     const extRes = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authH });
                     let seededRoles = [];
@@ -2627,7 +2684,9 @@
                         seededRoles = data.seeded_roles || [];
                         const roleHint = seededRoles.length ? ` Suggested ${seededRoles.length} role${seededRoles.length > 1 ? 's' : ''} — confirm or edit.` : ' Pick your target roles next.';
                         showToast(`✓ Profile auto-filled${name ? ' for ' + name : ''}!${roleHint}`, 'success');
+                        welcomeStarting('finding');
                     } else {
+                        welcomeStarting(null);
                         const err = await extRes.json().catch(() => ({}));
                         showToast(err.detail ? `Resume saved, auto-fill failed: ${err.detail}` : 'Resume uploaded! Pick your target roles next.', err.detail ? 'error' : 'success');
                     }
@@ -5291,32 +5350,119 @@
             btn.disabled = false;
             showToast('Could not add the roles — try Target Roles instead.', 'error');
         }
+        // ── First-hour live panel ────────────────────────────────────────────
+        // Every row is a REAL job from the user's pool with its REAL state
+        // (welcome.py _preview); nothing says "match" before it was scored.
+        let _welcomeStarting = null;      // {stage, at} while upload/reading runs client-side
+        let _welcomeFirstToastDone = false;
+        function welcomeStarting(stage) {
+            _welcomeStarting = stage ? { stage, at: Date.now() } : null;
+            if (stage === 'reading') {   // bring the live panel into view: that is where the jobs arrive
+                const el = document.getElementById('welcome-panel');
+                if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+            }
+            _renderWelcomePanel(window._welcomeLast || {});
+            if (stage === 'finding') {
+                clearTimeout(_welcomeTimer);
+                _welcomeTimer = setTimeout(loadWelcomePanel, 1500);
+            }
+        }
+        function _wStep(state, label, num, unit) {
+            const ic = state === 'done' ? '<span class="wl-ic done">✓</span>'
+                     : state === 'now' ? '<span class="wl-spin"></span>' : '<span class="wl-ic wait"></span>';
+            const cls = state === 'done' ? 'is-done' : state === 'now' ? 'is-now' : '';
+            const n = (num == null) ? '<span class="wl-num" style="color:var(--muted-2)">—</span>'
+                : `<div class="wl-num" data-count="${num}">${Number(num).toLocaleString()}${unit ? '<small>' + _wEsc(unit) + '</small>' : ''}</div>`;
+            return `<div class="wl-step ${cls}"><div class="wl-step-top">${ic}${_wEsc(label)}</div>${n}</div>`;
+        }
+        function _wRow(r) {
+            const init = _wEsc(((r.company || r.title || '?').trim()[0] || '?').toUpperCase());
+            const sub = [r.company, r.location].filter(Boolean).map(_wEsc).join(' · ');
+            let pill;
+            if (r.state === 'match') pill = `<span class="wl-pill match">● Match${r.score != null ? ' · ' + r.score : ''}</span>`;
+            else if (r.state === 'checking') pill = '<span class="wl-pill checking"><span class="wl-spin" style="width:11px;height:11px"></span>Checking fit…</span>';
+            else if (r.state === 'filtered') pill = '<span class="wl-pill passed">Filtered out</span>';
+            else pill = `<span class="wl-pill passed">Not a close fit${r.score != null ? ' · ' + r.score : ''}</span>`;
+            const passed = (r.state === 'passed' || r.state === 'filtered') ? ' is-passed' : '';
+            return `<div class="wl-row${passed}" data-state="${_wEsc(r.state)}"><div class="wl-av">${init}</div>
+                <div class="wl-job"><b>${_wEsc(r.title)}</b><span>${sub}</span></div>${pill}</div>`;
+        }
+        function _wSkeleton(n) {
+            let h = '';
+            for (let i = 0; i < n; i++) h += `<div class="wl-row" data-state="skeleton"><div class="wl-av"></div>
+                <div class="wl-job"><div class="wl-skel" style="width:${60 - i * 10}%"></div><div class="wl-skel" style="width:${35 + i * 5}%;margin-top:7px"></div></div>
+                <span class="wl-pill checking"><span class="wl-spin" style="width:11px;height:11px"></span>Finding jobs…</span></div>`;
+            return h;
+        }
+        function _wResume(rs) {
+            if (!rs) return '';
+            const bits = [];
+            if (rs.title) bits.push(`<span class="wl-chip" style="background:var(--sage-tint);">${_wEsc(rs.title)}</span>`);
+            if (rs.years) bits.push(`<span class="wl-chip">${rs.years} yr${rs.years === 1 ? '' : 's'} experience</span>`);
+            (rs.skills || []).slice(0, 6).forEach(k => bits.push(`<span class="wl-chip">${_wEsc(k)}</span>`));
+            const more = (rs.skills_count || 0) - Math.min(6, (rs.skills || []).length);
+            if (more > 0) bits.push(`<span class="wl-chip">+${more} skills</span>`);
+            const roles = (rs.roles || []).length
+                ? `<div class="wl-resume"><span class="wl-label">Searching for</span>${rs.roles.map(r => `<span class="wl-chip">${_wEsc(r)}</span>`).join('')}</div>` : '';
+            return (bits.length ? `<div class="wl-resume" data-w="resume"><span class="wl-label">Read from your resume</span>${bits.join('')}</div>` : '') + roles;
+        }
+        function _wBoostHtml(d) {
+            const st = (_welcomeStarting && Date.now() - _welcomeStarting.at < 120000) ? _welcomeStarting.stage : null;
+            const reading = st === 'reading', starting = !!st && !d.boost_active;
+            const pool = d.pool_fresh || 0, checked = d.checked || 0, found = d.new_matches || 0;
+            const waiting = d.waiting || 0, bar = d.bar || 70;
+            const rows = d.preview || [];
+            const title = reading ? 'Reading your resume'
+                : found > 0 ? `${found} match${found === 1 ? '' : 'es'} on your board${waiting > 0 ? ' — more arriving' : ''}`
+                : pool > 0 ? 'Checking jobs against your resume' : 'Finding jobs for your roles';
+            const sub = reading ? 'Pulling out your skills, experience and the roles you fit. This takes a few seconds.'
+                : (pool > 0 && !waiting) ? `All ${pool.toLocaleString()} fresh jobs checked. New postings are checked as they appear; only ${bar}+ fits reach your board.`
+                : `Every job is read against your resume. Only ${bar}+ fits reach your board, so we skip weaker ones on purpose.`;
+            const meta = d.boost_active ? `<span class="wl-meta">Priority scoring · ${d.minutes_left || 0} min left</span>` : '';
+            const steps = [
+                _wStep(reading ? 'now' : 'done', 'Resume read', reading ? null : (d.resume ? (d.resume.skills_count || 0) : null), reading ? '' : 'skills'),
+                _wStep(reading ? 'wait' : pool > 0 ? 'done' : 'now', 'Jobs found', (reading || !pool) ? null : pool, ''),
+                _wStep(reading || !pool ? 'wait' : (found > 0 && !waiting) ? 'done' : 'now', 'Checked', (reading || !pool) ? null : checked, ''),
+                _wStep(found > 0 ? 'done' : (reading || !pool) ? 'wait' : 'now', 'Matches', (reading || !pool) ? null : found, ''),
+            ].join('');
+            let list;
+            if (rows.length && !reading) list = rows.map(_wRow).join('');
+            else if (reading || starting || !pool) list = _wSkeleton(3);
+            else list = '';
+            const passedN = d.passed_count || 0;
+            const foot = (!reading && pool > 0)
+                ? `<div class="wl-foot"><span>${passedN > 0 ? `${passedN.toLocaleString()} checked and kept off your board (below ${bar})` : 'The first results usually land within a minute.'}${waiting ? ` · ${waiting.toLocaleString()} still to check` : ''}</span>${_welcomeMoreBtn(found)}</div>` : '';
+            return `<div class="wl-card" data-w="progress">
+                <div class="wl-head"><div class="wl-title"><span class="wl-live"></span>${_wEsc(title)}</div>${meta}</div>
+                <div class="wl-sub">${_wEsc(sub)}</div>
+                <div class="wl-steps">${steps}</div>
+                ${_wResume(d.resume)}
+                ${list ? `<div class="wl-list" data-w="live">${list}</div>` : ''}
+                ${foot}
+              </div>`;
+        }
+        function _welcomeMoreBtn(found) {
+            return (_welcomeSeenMatches != null && found > _welcomeSeenMatches)
+                ? '<button onclick="location.reload()" class="wl-btn" data-w="show">Show my matches</button>' : '';
+        }
+        function _welcomeFirstMatch(d) {
+            const found = d.new_matches || 0;
+            if (_welcomeFirstToastDone || _welcomeSeenMatches == null || found <= _welcomeSeenMatches) return;
+            _welcomeFirstToastDone = true;
+            const m = (d.preview || []).find(r => r.state === 'match');
+            showToast(m ? `New match: ${_wEsc(m.title)}${m.company ? ' at ' + _wEsc(m.company) : ''}` : 'Your first matches are on the board', 'success');
+        }
         function _renderWelcomePanel(d) {
             const el = document.getElementById('welcome-panel');
             if (!el) return;
+            window._welcomeLast = d;
             const parts = [];
-            if (d.boost_active) {
-                const checked = d.checked || 0, pool = d.pool_fresh || 0, found = d.new_matches || 0;
-                const headline = found > 0
-                    ? found + ' strong match' + (found === 1 ? '' : 'es') + ' so far — more arriving'
-                    : 'Finding your first matches';
-                const line = pool > 0
-                    ? 'Checked ' + checked + ' of ' + pool + ' fresh jobs for you'
-                    : 'Pulling in fresh jobs for your roles';
-                const pct = pool > 0 ? Math.min(100, Math.round(checked / pool * 100)) : 8;
-                const more = (_welcomeSeenMatches != null && found > _welcomeSeenMatches)
-                    ? ' <button onclick="location.reload()" class="jbtn jbtn-primary text-xs px-3 py-1.5" data-w="show">Show new matches</button>' : '';
-                parts.push(`<div class="glass rounded-2xl px-5 py-4" data-w="progress" style="border:1px solid var(--border);">
-                    <div class="flex items-center justify-between gap-3 flex-wrap">
-                      <p class="text-sm font-bold text-white">${_wEsc(headline)}</p>
-                      <span class="text-[11px]" style="color:var(--muted);">${d.minutes_left || 0} min of priority scoring left${more}</span>
-                    </div>
-                    <p class="text-xs mt-1" style="color:var(--muted);">${_wEsc(line)} · only jobs that fit your resume reach the board.</p>
-                    <div class="mt-3 rounded-full overflow-hidden" style="height:6px;background:var(--surface-2);">
-                      <div style="height:6px;width:${pct}%;background:linear-gradient(90deg,var(--sage),var(--sage-600));transition:width .6s;"></div>
-                    </div>
-                  </div>`);
-                _welcomeSeenMatches = _welcomeSeenMatches == null ? found : _welcomeSeenMatches;
+            const starting = _welcomeStarting && (Date.now() - _welcomeStarting.at < 120000);
+            if (d.boost_active || starting) {
+                _welcomeFirstMatch(d);
+                parts.push(_wBoostHtml(d));
+                if (d.boost_active)
+                    _welcomeSeenMatches = _welcomeSeenMatches == null ? (d.new_matches || 0) : _welcomeSeenMatches;
             }
             const tip = d.role_tip;
             if (tip && !_welcomeTipDismissed(tip)) {
@@ -5340,12 +5486,26 @@
                 const r = await fetch('/api/welcome/status', { headers: authHeaders() });
                 if (!r.ok) return;
                 const d = await r.json();
+                if (d.degraded) {       // a slow read: keep what is on screen, try again
+                    clearTimeout(_welcomeTimer);
+                    _welcomeTimer = setTimeout(loadWelcomePanel, 6000);
+                    return;
+                }
                 _renderWelcomePanel(d);
                 clearTimeout(_welcomeTimer);
-                if (d.boost_active) _welcomeTimer = setTimeout(loadWelcomePanel, 20000);
+                // Fast while the first results land, gentle after that.
+                // 3 s only for the first ten minutes (and never in a background
+                // tab); 20 s for the rest of the hour.
+                const early = !document.hidden && (
+                    (_welcomeStarting && Date.now() - _welcomeStarting.at < 120000)
+                    || (d.boost_active && (d.minutes_left || 0) >= 50));
+                if (d.boost_active || early) _welcomeTimer = setTimeout(loadWelcomePanel, early ? 3000 : 20000);
             } catch (e) {}
         }
         document.addEventListener('DOMContentLoaded', loadWelcomePanel);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && window._welcomeLast && window._welcomeLast.boost_active) loadWelcomePanel();
+        });
 
         // ── Billing: Pro checkout (Stripe when live, manual options otherwise) ──
         async function startProCheckout(btn) {
@@ -5838,6 +5998,7 @@
             try {
                 btn.textContent = 'Extracting…'
                 setResumeBusy('Reading your resume…')
+                welcomeStarting('reading')
                 const extRes = await fetch('/api/resume/extract-profile', { method: 'POST', headers: authH })
                 if (extRes.ok) {
                     const data = await extRes.json()
@@ -5847,8 +6008,9 @@
                 } else {
                     const err = await extRes.json().catch(() => ({}))
                     showToast(err.detail ? `Auto-fill failed: ${err.detail}` : 'Resume uploaded. Fill your profile manually in My Profile.', err.detail ? 'error' : 'info')
+                    welcomeStarting(null); loadWelcomePanel()
                 }
-            } catch { /* non-fatal */ }
+            } catch { welcomeStarting(null); loadWelcomePanel() }
             clearResumeBusy()
             btn.textContent = 'Upload'; btn.disabled = false
         }
@@ -5857,7 +6019,7 @@
         // as. Say what moved and send them to check it, instead of a toast that
         // disappears: target roles drive which jobs reach the board.
         function _afterResumeChange(d) {
-            setTimeout(loadWelcomePanel, 4000);   // the first-hour boost starts in the background
+            welcomeStarting('finding');   // the first-hour boost starts in the background
             const esc = (x) => String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             const before = d.roles_before || [], after = d.roles_after || [], pinned = d.roles_pinned || [];
             const changed = after.length && after.join('|').toLowerCase() !== before.join('|').toLowerCase();
@@ -5872,11 +6034,16 @@
             } else {
                 rolesHtml = 'We could not suggest target roles from this resume — please set them.';
             }
+            // A card BELOW the live first-hour panel, not a full-screen popup: the
+            // popup covered the panel exactly while the first jobs were arriving.
+            document.getElementById('resume-review-card')?.remove();
             const wrap = document.createElement('div');
-            wrap.setAttribute('role', 'dialog');
-            wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.55);backdrop-filter:blur(3px)';
-            wrap.innerHTML = `<div style="width:100%;max-width:500px;background:var(--surface,#fff);color:var(--ink,#0f172a);border-radius:20px;box-shadow:0 24px 60px rgba(2,6,23,.35);padding:24px">
-                <div style="font-size:18px;font-weight:800;margin-bottom:6px">New resume — please review</div>
+            wrap.id = 'resume-review-card';
+            wrap.setAttribute('role', 'region');
+            wrap.setAttribute('aria-label', 'Review your new resume');
+            wrap.style.cssText = 'margin-bottom:16px';
+            wrap.innerHTML = `<div style="width:100%;background:var(--surface,#fff);color:var(--ink,#0f172a);border:1px solid var(--border,#DCEAF6);border-radius:16px;box-shadow:0 1px 3px rgba(46,42,36,.06),0 10px 28px rgba(46,42,36,.08);padding:18px 20px">
+                <div style="font-size:15px;font-weight:800;margin-bottom:6px">New resume — please review</div>
                 <div style="font-size:13px;line-height:1.55;margin-bottom:10px">${rolesHtml}</div>
                 <div style="font-size:12.5px;color:var(--muted,#64748b);line-height:1.5">We also refreshed your profile from it (title, skills, education). Check your location and relocation settings too.</div>
                 <div data-q="box" style="margin-top:14px;padding:12px 14px;border-radius:14px;background:rgba(14,165,233,.07);border:1px solid rgba(14,165,233,.25)">
@@ -5900,8 +6067,8 @@
                 if (a === 'profile' && typeof openProfileModal === 'function') openProfileModal();
             };
             wrap.querySelectorAll('[data-a]').forEach(b => b.onclick = () => done(b.dataset.a));
-            wrap.addEventListener('click', (e) => { if (e.target === wrap) done('later'); });
-            document.body.appendChild(wrap);
+            const anchor = document.getElementById('welcome-panel');
+            if (anchor) anchor.insertAdjacentElement('afterend', wrap); else document.body.appendChild(wrap);
             _wireQuickQuestions(wrap);
         }
         window._afterResumeChange = _afterResumeChange;
@@ -6536,7 +6703,7 @@
                     showToast('Target roles saved!', 'success');
                     closeRolesModal();
                     loadTargetRoles();
-                    setTimeout(loadWelcomePanel, 4000);
+                    setTimeout(loadWelcomePanel, 1500);
                 } else {
                     showToast('Could not save roles.', 'error');
                 }
@@ -8146,7 +8313,12 @@
 
             // Brand-new user: first matches land in an empty board → load them in
             // (nothing on screen to disrupt).
-            if (emptyState && rendered === 0 && server > 0 && _canAutoReload()) {
+            // Not while the first-hour panel is mid-flow (it shows those matches
+            // live and offers "Show my matches"), nor over unanswered resume
+            // questions — a reload threw both away the moment the first job landed.
+            const welcomeBusy = !!document.getElementById('resume-review-card')
+                || (typeof _welcomeStarting !== 'undefined' && _welcomeStarting && Date.now() - _welcomeStarting.at < 120000);
+            if (emptyState && rendered === 0 && server > 0 && _canAutoReload() && !welcomeBusy) {
                 window.location.reload();
                 return;
             }

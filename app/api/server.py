@@ -9679,25 +9679,39 @@ def welcome_status_api(request: Request) -> dict:
     """The first-hour panel: is the welcome boost on, how much of the user's
     fresh pool has been checked, what reached the board, and — when their
     target roles are more senior than their resume's years — which roles to
-    add. Counts for ONE user, cached 20 s (the panel polls while boosted)."""
+    add. While boosted, also the real jobs being checked and what was read
+    from the resume. ONE user's rows, bounded; cached 4 s in the first ten
+    minutes of the window, 20 s after."""
     uid = _require_user(request)
     from app.common import ttl_cache
     from app.strategy import welcome
 
     def _build() -> dict:
         user_arg = uid if uid != "local" else None
-        out = welcome.status(user_arg) if user_arg else {"boost_active": False}
+        try:
+            out = welcome.status(user_arg) if user_arg else {"boost_active": False}
+        except Exception as e:      # a timed-out count: say so, never cache it
+            log.debug("welcome status degraded: %s", e)
+            return {"boost_active": welcome.is_boosted(user_arg), "degraded": True}
         tip = None
         try:
             with get_session() as session:
                 prof = session.exec(_own_profile_query(uid)).first()
-            tip = welcome.seniority_tip(prof, _get_target_roles(uid) or [])
+            roles = _get_target_roles(uid) or []
+            tip = welcome.seniority_tip(prof, roles)
+            if out.get("boost_active"):
+                out["resume"] = welcome.resume_summary(prof, roles)
         except Exception as e:
             log.debug("welcome role tip unavailable: %s", e)
         out["role_tip"] = tip
         return out
 
-    return ttl_cache.get_or_compute(f"welcome:{uid}", 20, _build)
+    # 4 s only in the first ten minutes of a window, when the panel polls every
+    # 3 s for the first results; 20 s after that (the panel polls every 20 s).
+    return ttl_cache.get_or_compute(
+        f"welcome:{uid}",
+        lambda d: 4 if (d.get("boost_active") and (d.get("minutes_left") or 0) >= 50) else 20,
+        _build, cache_if=lambda d: not d.get("degraded"))
 
 
 class SearchPauseRequest(BaseModel):

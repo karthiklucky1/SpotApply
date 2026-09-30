@@ -834,6 +834,128 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             log.warning("scoring lane alerts failed for %s: %s", uid, e)
 
 
+def _make_ctx(uid: Optional[str], spend_gate=None,
+              drain_only: bool = False) -> Optional[_Ctx]:
+    """One user's scoring context: résumé + Reranker, cache prewarmed. None when
+    the user has no résumé to score against."""
+    from app.matching.pipeline import _load_resume
+    from app.matching.reranker import Reranker
+    uid_arg = None if (not uid or uid == "local") else uid
+    try:
+        resume = _load_resume(user_id=uid_arg)
+    except Exception as e:
+        log.debug("scoring: no resume for %s (%s) — skipping", uid, e)
+        return None
+    profile = None
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        profile = _get_or_create_profile(user_id=uid_arg)
+    except Exception:
+        pass
+    reranker = Reranker(profile=profile)
+    # Write the shared prefix once (prefill only, 0 output tokens) so the
+    # jobs that follow read it at 0.1x instead of each paying the 1.25x
+    # write. See Reranker.prewarm_cache. Purely an optimization, so it is
+    # never allowed to fail the cycle — a scorer without the method (or a
+    # provider hiccup) just means the first real call writes the cache,
+    # exactly as before.
+    try:
+        reranker.prewarm_cache(resume)
+    except Exception as e:
+        log.debug("cache prewarm unavailable for %s (%s)", uid, e)
+    # The SPEND threshold is per USER per CYCLE, not a constant: past
+    # the soft budget the adaptive policy raises it so burst money only
+    # buys finals on strong candidates (Test A). The DRAIN gate never
+    # moves — see _Ctx.
+    from app.matching.finals_budget import normal_gate
+    gate = normal_gate()
+    return _Ctx(resume, reranker,
+                settings.prescore_enabled and reranker.has_prescore_backend(),
+                gate, gate if spend_gate is None else spend_gate,
+                drain_only=drain_only)
+
+
+def score_user_now(user_id: Optional[str], n: int, timeout: float = 90.0) -> dict:
+    """The first minute after a resume upload: score this ONE user's ``n`` most
+    promising queued jobs right now instead of at the next cycle (up to 3 min
+    away), then place the ones that clear the bar.
+
+    Nothing extra is bought. The same guards as a cycle apply — provider
+    breaker, platform budget, the plan allowance (which also caps ``n``), the
+    compute policy inside the Reranker — and the same cross-lane claim, so a
+    cycle that starts meanwhile never pays for the same job twice. It only
+    moves a handful of calls the user was going to get anyway to the front.
+
+    Not skipped while a cycle runs: that cycle's work list was built before
+    these jobs were adopted, so skipping would put the first match back at
+    the next tick. Both size their slice from the same ``spent``, so a user
+    already AT the ceiling who re-uploads mid-cycle can overshoot by at most
+    ``n`` finals — the race every lane already has with the others."""
+    from app.matching.reranker import any_provider_available, llm_budget_exhausted
+    stats = {"queued": 0, "scored": 0, "drained": 0, "shortlisted": 0, "alerts": 0}
+    if n <= 0 or not user_id or user_id == "local":
+        return {**stats, "skipped": "nothing to do"}
+    if not any_provider_available() and not settings.local_score_fallback:
+        return {**stats, "skipped": "all LLM providers cooling down"}
+    if llm_budget_exhausted():
+        return {**stats, "skipped": "LLM budget reached (hourly/daily cap)"}
+    # The cycle's compute gate (_scorable_user_ids), asked for this one user.
+    # Reranker._paid_call_allowed checks again before each call; asking here
+    # saves the queue read and the résumé load for a paused account.
+    if settings.dormant_user_grace_days > 0:
+        try:
+            from app.api.server import _user_may_spend
+            from app.db.models import UserProfile
+            with get_session() as session:
+                prof = session.exec(select(UserProfile).where(
+                    UserProfile.user_id == user_id)).first()
+            if prof is not None and not _user_may_spend(prof):
+                return {**stats, "skipped": "compute policy"}
+        except Exception as e:
+            log.debug("first results: compute gate unavailable (%s)", e)
+    allow = _finals_allowance(user_id, n)
+    if allow.n <= 0:
+        return {**stats, "skipped": "no allowance"}
+    jids = _user_queue(user_id, min(n, allow.n))
+    stats["queued"] = len(jids)
+    if not jids:
+        return stats
+    ctx = _make_ctx(user_id, allow.gate)
+    if ctx is None:
+        return {**stats, "skipped": "no resume"}
+    pool = _worker_pool()
+    futures = [pool.submit(_score_job, jid, ctx) for jid in jids]
+    end = time.monotonic() + timeout
+    scored: List[Tuple[int, float]] = []
+    for fut in futures:
+        try:
+            out = fut.result(timeout=max(0.0, end - time.monotonic()))
+        except Exception:
+            continue
+        if not out:
+            continue
+        kind, jid, score, _provider = out
+        if kind == "scored":
+            stats["scored"] += 1
+            scored.append((jid, score))
+        elif kind == "drained":
+            stats["drained"] += 1
+    for fut in futures:
+        fut.cancel()
+    try:
+        from app.analytics.spend import flush_llm_spend
+        flush_llm_spend()
+    except Exception:
+        pass
+    if scored:
+        try:
+            _shortlist_user(user_id, scored, stats)
+        except Exception as e:
+            log.warning("first-results shortlist failed: %s", e)
+    log.info("First results: %s", stats)   # no user id in the line
+    return stats
+
+
 def run_scoring_lane(deadline: Optional[float] = None) -> dict:
     """One scoring cycle: drain the global unscored queue in parallel, then
     shortlist + alert. Returns cycle stats. Skips if a cycle is already running."""
@@ -1202,10 +1324,7 @@ def _expire_stale_unscored(batch: int = 2000, max_batches: int = 50,
 
 
 def _run_scoring_cycle(deadline: Optional[float]) -> dict:
-    from app.matching.pipeline import _load_resume
-    from app.matching.reranker import (
-        Reranker, any_provider_available, llm_budget_exhausted,
-    )
+    from app.matching.reranker import any_provider_available, llm_budget_exhausted
     stats = {"users": 0, "queued": 0, "scored": 0, "drained": 0,
              "shortlisted": 0, "alerts": 0, "by_claude": 0, "by_gpt": 0,
              "by_local": 0, "by_rule": 0, "drain_prescored": 0}
@@ -1449,44 +1568,10 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
         # each build a résumé load + Reranker for the same user. This runs once
         # per user per cycle, so serializing it costs nothing measurable.
         with ctx_lock:
-            if uid in ctx_cache:
-                return ctx_cache[uid]
-            uid_arg = None if (not uid or uid == "local") else uid
-            try:
-                resume = _load_resume(user_id=uid_arg)
-            except Exception as e:
-                log.debug("scoring: no resume for %s (%s) — skipping", uid, e)
-                ctx_cache[uid] = None
-                return None
-            profile = None
-            try:
-                from app.autofill.answer_pack import _get_or_create_profile
-                profile = _get_or_create_profile(user_id=uid_arg)
-            except Exception:
-                pass
-            reranker = Reranker(profile=profile)
-            # Write the shared prefix once (prefill only, 0 output tokens) so the
-            # jobs that follow read it at 0.1x instead of each paying the 1.25x
-            # write. See Reranker.prewarm_cache. Purely an optimization, so it is
-            # never allowed to fail the cycle — a scorer without the method (or a
-            # provider hiccup) just means the first real call writes the cache,
-            # exactly as before.
-            try:
-                reranker.prewarm_cache(resume)
-            except Exception as e:
-                log.debug("cache prewarm unavailable for %s (%s)", uid, e)
-            # The SPEND threshold is per USER per CYCLE, not a constant: past
-            # the soft budget the adaptive policy raises it so burst money only
-            # buys finals on strong candidates (Test A). The DRAIN gate never
-            # moves — see _Ctx.
-            from app.matching.finals_budget import normal_gate
-            gate = normal_gate()
-            ctx = _Ctx(resume, reranker,
-                       settings.prescore_enabled and reranker.has_prescore_backend(),
-                       gate, gate_by_user.get(uid, gate),
-                       drain_only=uid in drain_users)
-            ctx_cache[uid] = ctx
-            return ctx
+            if uid not in ctx_cache:
+                ctx_cache[uid] = _make_ctx(uid, gate_by_user.get(uid),
+                                           drain_only=uid in drain_users)
+            return ctx_cache[uid]
 
     def _work(item):
         uid, jid = item

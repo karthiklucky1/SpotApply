@@ -558,6 +558,7 @@ class Settings(BaseSettings):
     # decides how many finals they get; the boost only decides WHEN. 0 disables.
     welcome_boost_minutes: int = 60           # WELCOME_BOOST_MINUTES
     welcome_boost_cap_multiplier: float = 2.0  # WELCOME_BOOST_CAP_MULTIPLIER — per-cycle slice x this while boosted
+    welcome_first_scores: int = 8              # WELCOME_FIRST_SCORES — jobs scored right after adoption (0 = wait for the lane)
 
     # When a user's target roles change (new résumé or a manual edit), the pool
     # is re-pointed at the new roles: on-role jobs lose their old-résumé score

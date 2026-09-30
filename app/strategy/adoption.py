@@ -471,6 +471,13 @@ def adopt_and_match(user_id: str | None) -> int:
     and role edits. Matching waits politely on the discovery lock; adoption
     itself never needs it (pure DB copy)."""
     adopted = adopt_shared_jobs(user_id)
+    # First results within a minute (app/strategy/welcome.py): score the few
+    # most promising adopted jobs NOW, before the slower matching pass below.
+    try:
+        from app.strategy.welcome import first_results
+        first_results(user_id)
+    except Exception as e:
+        log.debug("first results skipped: %s", e)
     matched = False
     try:
         from app.common.discovery_lock import discovery_guard
