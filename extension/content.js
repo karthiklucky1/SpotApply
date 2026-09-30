@@ -7,8 +7,31 @@
 // must stay inert inside ad/analytics/social iframes: only the top frame or a
 // frame whose own host is a known ATS may run the copilot.
 const HP_IS_TOP = (() => { try { return window === window.top; } catch (_) { return false; } })();
-const HP_ATS_FRAME_RE = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|breezy\.hr|applytojob\.com|jazz\.co|personio|paylocity\.com|dayforce\.com|oraclecloud\.com|eightfold\.ai|greenhouse|ashby/i;
-const HP_FRAME_ACTIVE = HP_IS_TOP || HP_ATS_FRAME_RE.test(location.hostname);
+
+// Trusted ATS hosts: the host itself or a real subdomain — NEVER a substring.
+// /greenhouse\.io/ accepted "greenhouse.io.unrelated.example" as an ATS, and
+// with a live session that page received the applicant's details.
+// Keep in lockstep with ATS_SUFFIXES in background.js (a test compares them).
+const ATS_SUFFIXES = [
+  "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "workday.com",
+  "myworkdaysite.com", "smartrecruiters.com", "avature.net", "icims.com", "taleo.net",
+  "successfactors.com", "successfactors.eu", "sapsf.com", "brassring.com", "jobvite.com",
+  "workable.com", "bamboohr.com", "recruitee.com", "teamtailor.com", "personio.de",
+  "personio.com", "pinpointhq.com", "breezy.hr", "join.com", "rippling.com", "dover.com",
+  "paylocity.com", "ultipro.com",
+];
+// Hosts that are only ever EMBEDDED as an application iframe on a careers page.
+const ATS_FRAME_EXTRA = ["applytojob.com", "jazz.co", "jazzhr.com", "dayforcehcm.com",
+                         "dayforce.com", "eightfold.ai", "oraclecloud.com"];
+
+function hostIs(host, domain) {
+  const h = String(host || '').toLowerCase().replace(/\.$/, '');
+  return h === domain || h.endsWith('.' + domain);
+}
+function isTrustedATSHost(host) { return ATS_SUFFIXES.some((d) => hostIs(host, d)); }
+
+const HP_FRAME_ACTIVE = HP_IS_TOP || isTrustedATSHost(location.hostname) ||
+  ATS_FRAME_EXTRA.some((d) => hostIs(location.hostname, d));
 
 // Gate for the always-on document listeners below (submit tracking, dropdown
 // learning). They were registered unconditionally, so on EVERY site: submitting
@@ -96,6 +119,15 @@ try {
     }
   });
 } catch (_) {}
+
+// Protected self-identification questions, by their wording. Used at every
+// write path that is not fillEEOField itself — saved-answer recall, dropdown
+// learning, AI answers — so the opt-out cannot be bypassed by a remembered
+// answer (audit 2026-09-30: recall set Gender while autofill was OFF).
+const _DEMOGRAPHIC_RE = /\b(gender|sex|pronouns?|race|racial|ethnic\w*|hispanic|latin[oaex]|veteran|disab\w*|sexual orientation|transgender|lgbtq?\w*)\b/i;
+function isDemographicQuestion(text) {
+  return _DEMOGRAPHIC_RE.test(deaccent(String(text || '')));
+}
 
 /** Write an EEO answer only with explicit consent. Returns true if written. */
 function fillEEOField(el, value) {
@@ -312,33 +344,36 @@ function classifyScreeningQuestion(q, pack) {
   if (NEVER.test(t)) return null;
   if (/gender|race|ethnic|veteran|disab|hispanic|latino/.test(t)) return null;
 
-  // Sponsorship — "will you now or in the future require sponsorship?"
-  if (/sponsor/.test(t)) {
-    if (typeof pack.requires_sponsorship !== 'boolean') return null;
-    // "...without requiring sponsorship?" inverts the answer.
-    const inverted = /without\s+(visa\s+)?sponsor|not\s+requir\w*\s+sponsor/.test(t);
-    return inverted ? !pack.requires_sponsorship : pack.requires_sponsorship;
+  // Sponsorship / work authorization — ONE interpreter for every control type.
+  if (/sponsor|authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit/.test(t)) {
+    return interpretWorkAuthQuestion(t, pack);
   }
 
-  // Work authorization — "are you legally authorized to work in the US?"
-  if (/authoriz|eligible to work|right to work|legally able to work/.test(t)) {
-    const auth = _isAuthorized(pack);
-    return auth === null ? null : auth;
-  }
-
-  // "Do you have N+ years of …?" — answerable straight from the profile.
-  const yrs = t.match(/(\d{1,2})\s*\+?\s*(?:or more\s*)?years?/);
-  if (yrs && /experience|working|hands.?on/.test(t)) {
+  // "Do you have N+ years of …?" — total tenure answers only a GENERIC
+  // question. "5 years of Rust" asks about Rust, and total years say nothing
+  // about Rust (audit 2026-09-30: seven total years answered Yes).
+  const yrs = t.match(/(\d{1,2})\s*\+?\s*(?:or more\s*)?(?:years?|yrs)/);
+  if (yrs && /experience|working|hands.?on|worked/.test(t)) {
+    if (!yearsQuestionIsGeneric(t)) {
+      // A named skill: only the months the résumé DATES for it (skill_months,
+      // from the server's evidence inventory). Short of the bar is not a "No"
+      // we can prove either — the dates may be incomplete — so it is left.
+      const months = skillMonthsFor(t, pack);
+      if (months === null) return null;
+      return months >= Number(yrs[1]) * 12 ? true : null;
+    }
     const have = Number(pack.years_experience || 0);
     if (!have) return null;
     return have >= Number(yrs[1]);
   }
 
-  // "Do you hold a Bachelor's degree or higher?" — comparable from the profile.
-  if (/\b(bachelor|master|phd|doctorate|associate|degree)\b/.test(t)) {
+  // "Do you hold a Bachelor's degree or higher?" — the LEVEL from the profile,
+  // and the SUBJECT too when the question names one ("… in computer science"
+  // is not answered by a Bachelor of Arts).
+  if (/\b(bachelor|master|phd|doctorate|associate|degree|b\.?s\.?|m\.?s\.?)\b/.test(t) && /degree|bachelor|master|phd|doctorate|associate/.test(t)) {
     const RANK = { associate: 1, bachelor: 2, master: 3, mba: 3, phd: 4, doctor: 4 };
-    const rankOf = (s) => {
-      const l = String(s || '').toLowerCase();
+    const rankOf = (x) => {
+      const l = String(x || '').toLowerCase();
       let best = 0;
       for (const [k, v] of Object.entries(RANK)) if (l.includes(k)) best = Math.max(best, v);
       // "B.S." / "M.S." / "M.Eng" abbreviations.
@@ -346,31 +381,185 @@ function classifyScreeningQuestion(q, pack) {
       if (/\bm\.?\s?(s|a|eng|tech)\b/.test(l)) best = Math.max(best, 3);
       return best;
     };
-    const have = Math.max(
-      rankOf(pack.degree),
-      ...(Array.isArray(pack.education) ? pack.education.map((e) => rankOf(e && e.degree)) : [0]),
-    );
+    // Degree names from the history, plus fields of study the USER's profile
+    // states (degree_fields). The résumé extractor's field_of_study is not
+    // used: its prompt INFERS a field when the résumé names none.
+    const degrees = [pack.degree].concat(
+      Array.isArray(pack.education) ? pack.education.map((e) => e && e.degree) : [],
+      Array.isArray(pack.degree_fields) ? pack.degree_fields : []);
+    const have = Math.max(0, ...degrees.map(rankOf));
     const asked = rankOf(t);
     if (!have || !asked) return null;
+    if (/\bnot\b|n't\b/.test(t)) return null;                 // negated wording: leave it
+    const subject = degreeSubjectAsked(t);
+    if (subject) {
+      const held = degrees.map((d) => deaccent(String(d || '')).toLowerCase()).join(' | ');
+      const words = subject.split(/\s+/).filter((w) => w.length > 2);
+      const alternatives = subject.split(/\s+or\s+|\s*,\s*|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+      const anyAlt = alternatives.some((alt) => alt.split(/\s+/).filter((w) => w.length > 2)
+        .every((w) => held.includes(w)));
+      if (!words.length || !anyAlt) return null;              // subject unproven: leave for review
+    }
     // "or higher" / "or above" is the usual phrasing; treat a bare mention the
     // same way, since these questions are always a minimum bar.
-    return have >= asked;
+    return have >= asked ? true : null;   // below the bar: the user decides, never an auto "No"
   }
 
-  // "Do you have experience with X?" — only YES, and only when X is a listed
-  // skill. Absence from the list is not evidence of absence.
-  if (/experience (with|in|using)|experience using|proficien|familiar with|worked with|comfortable with|skilled (in|with)|knowledge of/.test(t)) {
+  // "Do you have experience with X?" — only YES, and only when EVERY skill the
+  // question joins with "and" (or ANY joined with "or") is a listed skill.
+  // "Python and Kubernetes" with only Python listed stays for the user.
+  const trig = t.match(/(experience (with|in|using)|experience using|proficien\w* (in|with)|familiar with|worked with|comfortable with|skilled (in|with)|knowledge of)\s+(.+)$/);
+  if (trig) {
+    if (/\b(not|never|no)\b|n't\b/.test(t.slice(0, trig.index))) return null;
     const skills = String(pack.key_skills || '').toLowerCase();
     if (!skills) return null;
     const terms = skills.split(/[,;|/]/).map((x) => x.trim()).filter((x) => x.length > 1);
-    // Word-boundary match so "R" or "Go" can't match inside another word, and
-    // "SQL" still matches "Are you proficient in SQL?".
-    const hit = terms.some((term) => {
+    const has = (seg) => terms.some((term) => {
       const esc = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(t);
+      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(seg);
     });
-    return hit ? true : null;
+    const object = trig[trig.length - 1].replace(/[?.!]+\s*$/, '').trim();
+    const isOr = /\s(or|either)\s/.test(object) && !/\sand\s/.test(object);
+    const parts = object.split(/\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+    if (!parts.length) return null;
+    const hits = parts.map(has);
+    if (isOr) return hits.some(Boolean) ? true : null;
+    return hits.every(Boolean) ? true : null;
   }
+  return null;
+}
+
+/**
+ * Dated months for the skill a years-question names, or null when the question
+ * names something the evidence does not cover. Every skill word left in the
+ * question must be matched: "Python and Kubernetes" needs both.
+ */
+function skillMonthsFor(t, pack) {
+  const sm = (pack && pack.skill_months && typeof pack.skill_months === 'object') ? pack.skill_months : null;
+  if (!sm) return null;
+  const rest = String(t).toLowerCase()
+    .replace(/\d+/g, ' ').replace(/[+?.,:;!()'"]/g, ' ')
+    .replace(_GENERIC_YEARS_WORDS, ' ').replace(/\s+/g, ' ').trim();
+  if (!rest) return null;
+  const parts = rest.split(/\s+(?:and|&)\s+|\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+  let least = null;
+  for (const part of parts) {
+    const hit = Object.entries(sm).find(([skill]) => {
+      const esc = String(skill).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`).test(part) &&
+        // the skill must BE the part, not one word of a longer subject
+        part.replace(new RegExp(esc), '').trim().split(/\s+/).filter((w) => w.length > 2).length === 0;
+    });
+    if (!hit) return null;
+    least = least === null ? Number(hit[1]) : Math.min(least, Number(hit[1]));
+  }
+  return least;
+}
+
+// Words that describe tenure, not a subject: what is left of a years question
+// once these are removed IS its subject.
+const _GENERIC_YEARS_WORDS = /\b(do|does|you|your|have|has|had|at|least|a|an|the|minimum|of|in|with|total|overall|professional|relevant|related|work|working|worked|industry|full[- ]?time|paid|hands[- ]?on|post[- ]?graduate|combined|experience|experienced|years?|yrs?|more|or|than|plus|over|how|many|much|role|roles|position|positions|field|this|similar|job|jobs|career)\b/g;
+function yearsQuestionIsGeneric(t) {
+  const rest = String(t).toLowerCase()
+    .replace(/\d+/g, ' ').replace(/[+?.,:;!()'"-]/g, ' ')
+    .replace(_GENERIC_YEARS_WORDS, ' ').replace(/\s+/g, ' ').trim();
+  return rest === '';
+}
+
+/** The field of study a degree question names ("computer science"), or "". */
+function degreeSubjectAsked(t) {
+  const m = String(t).toLowerCase().match(
+    /(?:degree|bachelor'?s?|master'?s?|ph\.?d\.?|doctorate|associate'?s?)\s+(?:degree\s+)?(?:in|of)\s+([a-z0-9 ,/&-]+?)(?:\s+(?:or (?:a )?(?:related|equivalent|similar|higher|above)|or equivalent|from|with|and\b)|[?.,;]|$)/);
+  if (!m) return '';
+  let subj = m[1].replace(/\b(a|an|the|any)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/^(field|discipline|subject|major|area)s?$/.test(subj)) return '';   // "any field"
+  return subj;
+}
+
+// ── Work authorization & sponsorship: ONE interpreter ────────────────────────
+// Audit 2026-09-30 found three different rule sets: "UK Citizen" answered Yes
+// to US authorization, a combined "authorized without sponsorship" radio said
+// Yes for a profile marked "Not authorized", and "Can you work without visa
+// sponsorship?" answered No for requires_sponsorship=false. Every control type
+// (radio, select, text) now asks this one function. It answers ONLY what the
+// profile states for the country the question asks about; anything else is
+// null = left for the applicant.
+const _COUNTRY_WORDS = [
+  ['united states', /\b(united states|u\.?s\.?a?\.?|usa|america|american)\b/],
+  ['canada', /\b(canada|canadian)\b/],
+  ['united kingdom', /\b(united kingdom|u\.?k\.?|britain|british|england)\b/],
+  ['india', /\b(india|indian)\b/],
+  ['australia', /\b(australia|australian)\b/],
+  ['germany', /\b(germany|german)\b/],
+  ['ireland', /\b(ireland|irish)\b/],
+  ['mexico', /\b(mexico|mexican)\b/],
+];
+function _countryIn(text) {
+  const l = ' ' + String(text || '').toLowerCase() + ' ';
+  for (const [name, re] of _COUNTRY_WORDS) if (re.test(l)) return name;
+  return '';
+}
+function _normCountry(c) {
+  const l = String(c || '').toLowerCase().trim();
+  if (!l) return '';
+  return _countryIn(l) || l;
+}
+
+/**
+ * {authorized: true|false|null, country} from the profile's own status. A US
+ * immigration status is US authorization; "<X> citizen" is authorization in X
+ * only; a bare "Citizen"/"Green Card" (the dashboard's short options) is read
+ * in the country the user searches (preferred_country, the US by default).
+ */
+function workAuthFacts(pack) {
+  const wa = [pack.work_authorization, pack.work_auth_status, pack.visa_status]
+    .map((x) => String(x || '').trim()).filter(Boolean).join(' | ');
+  const home = _normCountry(pack.preferred_country) || 'united states';
+  if (!wa) return { authorized: null, country: home };
+  const l = wa.toLowerCase();
+  if (/not\s+(currently\s+)?authoriz|unauthoriz|^no\b|\bno work (permit|authoriz)/.test(l)) {
+    return { authorized: false, country: home };
+  }
+  if (/need(s|ing)?\s+(visa\s+)?sponsor|require(s|d)?\s+(visa\s+)?sponsor/.test(l)) {
+    return { authorized: null, country: home };       // depends on the employer
+  }
+  const named = _countryIn(l.replace(/\b(h-?1b|opt|cpt|ead|tn|l-?1)\b/g, ' '));
+  if (/citizen|national|passport/.test(l) && named) return { authorized: true, country: named };
+  if (/green\s*card|permanent resident|\blpr\b|h-?1b|\bopt\b|\bcpt\b|stem opt|\bead\b|\btn\b|l-?1|h-?4|asylee|refugee/.test(l)) {
+    return { authorized: true, country: 'united states' };
+  }
+  if (/citizen|authoriz|permanent/.test(l)) return { authorized: true, country: home };
+  return { authorized: null, country: home };
+}
+
+/** true = Yes, false = No, null = leave for the applicant. */
+function interpretWorkAuthQuestion(q, pack) {
+  const t = ' ' + String(q || '').toLowerCase().replace(/\s+/g, ' ').trim() + ' ';
+  const asksSponsor = /sponsor/.test(t);
+  const asksAuth = /authoriz|eligible to work|right to work|legally (able|permitted|allowed) to work|work permit|permitted to work/.test(t);
+  // "without sponsorship", "not require sponsorship", "no sponsorship needed"
+  const withoutSponsor = /without\s+(any\s+)?(visa\s+|employer\s+|company\s+)?sponsor|not\s+(now\s+or\s+in\s+the\s+future\s+)?requir\w*\s+(visa\s+|employer\s+)?sponsor|no\s+(visa\s+)?sponsor|never\s+requir\w*\s+sponsor/.test(t);
+  const sponsorKnown = typeof pack.requires_sponsorship === 'boolean';
+  const requires = pack.requires_sponsorship === true;
+  const facts = workAuthFacts(pack);
+  const qCountry = _countryIn(t);
+  // A question about another country than the one the status covers: unknown.
+  const authorized = (qCountry && facts.country && qCountry !== facts.country)
+    ? null : facts.authorized;
+
+  if (asksAuth && withoutSponsor) {
+    // Combined: "authorized to work WITHOUT sponsorship?" — No whenever we know
+    // either half is No; Yes only when both halves are known Yes.
+    if (authorized === false) return false;
+    if (sponsorKnown && requires) return false;
+    if (authorized === true && sponsorKnown && !requires) return true;
+    return null;
+  }
+  if (asksSponsor) {
+    if (!sponsorKnown) return null;
+    return withoutSponsor ? !requires : requires;   // "can you work without sponsorship?" inverts
+  }
+  if (asksAuth) return authorized;
   return null;
 }
 
@@ -515,8 +704,10 @@ document.addEventListener('click', (e) => {
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
         console.log('[SpotApply] Learning dropdown field:', label, '->', val);
-        chromeCall(() => chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'], (data) => {
-          const pack = data.spotapply_copilot_pack || data.spotapply_fill_pack;
+        // Never learn a protected answer: saved demographic answers would be
+        // written back later without the user's consent.
+        if (isDemographicQuestion(label)) return;
+        getTabPack((pack) => {
           if (pack && packBase(pack) && pack.auth_token) {
             apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
               question: label,
@@ -524,7 +715,7 @@ document.addEventListener('click', (e) => {
               app_id: pack.app_id || null,
             });
           }
-        }));
+        });
       }
     }
   }
@@ -539,6 +730,7 @@ document.addEventListener('click', (e) => {
       console.log('[SpotApply] User clicked next/continue button — clearing overlay and scheduling check');
       removeOverlay();
       _resumeAttachedOnPage = null; // reset for next page
+      if (_resumeStatus && _resumeStatus.state !== 'error') _resumeStatus = null;
       
       // Force a check after 2 seconds to see if we transitioned to a new step
       setTimeout(() => {
@@ -548,63 +740,153 @@ document.addEventListener('click', (e) => {
       }, 2000);
     }
 
-    // A real submission: the button says "submit" — never bare "apply".
-    // "Apply"/"Apply Now" buttons OPEN the form; counting those used to mark
-    // applications submitted before a single field was touched. The page must
-    // also actually contain form fields.
-    if (/\bsubmit\b/i.test(txt) && !/\bapply\b/i.test(txt)) {
+    // A real submission button says "submit" — never bare "apply" ("Apply"
+    // OPENS the form). Pressing it is only an ATTEMPT (see noteSubmitAttempt).
+    if (/\bsubmit\b/i.test(txt) && !/\bapply\b/i.test(txt) && hpCopilotSurface()) {
       const form = btn.closest('form');
+      if (form && isLoginForm(form)) return;
+      // The click fires BEFORE the browser validates. A form that will refuse
+      // to submit (an empty required field) is not even an attempt — the old
+      // listener marked such applications Submitted and ended the session.
+      if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) {
+        console.log('[SpotApply] Submit pressed but the form is incomplete — nothing recorded');
+        return;
+      }
       const hasFields = form
         ? form.querySelectorAll('input, textarea, select').length > 1
         : document.querySelectorAll('input[type="file"], textarea').length > 0;
-      if (hasFields && hpCopilotSurface()) {
-        console.log('[SpotApply] Submit button click detected:', txt);
-        handleFormSubmitted();
-      }
+      if (hasFields) noteSubmitAttempt('click');
     }
   }
 }, { capture: true, passive: true });
 
-// Also detect form submit events. Same gate: an ungated submit listener
-// reported ANY form submission anywhere (including the ATS's own login form)
-// as "application submitted", which both lied to the pipeline and deleted the
-// pack mid-fill so the copilot could never resume.
+// The form's own submit event: fires only once browser validation passed.
+// Same gates: an ungated listener reported ANY form anywhere (an ATS login
+// form included) as an application.
 document.addEventListener('submit', (e) => {
   if (!hpCopilotSurface()) return;
-  console.log('[SpotApply] Form submit event detected');
-  handleFormSubmitted();
+  const form = e.target;
+  if (!form || isLoginForm(form)) return;
+  if (!formLooksLikeApplication(form)) return;
+  noteSubmitAttempt('submit');
 }, { capture: true, passive: true });
 
-// Dedup: a submit-button click AND the form's submit event both fire — report
-// each application's submission at most once per page.
-let _submitReportedApps = new Set();
+/** A sign-in / sign-up form, never an application. */
+function isLoginForm(form) {
+  return !!(form && form.querySelector && form.querySelector('input[type="password"]'));
+}
 
-function handleFormSubmitted() {
-  chromeCall(() => chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'], (data) => {
-    const pack = data.spotapply_copilot_pack || data.spotapply_fill_pack;
-    if (pack && pack.app_id) {
-      if (_submitReportedApps.has(pack.app_id)) {
-        console.log('[SpotApply] Submission already reported for app:', pack.app_id);
+/** Enough application-shaped fields to be the application, not a search box. */
+function formLooksLikeApplication(form) {
+  if (!form || !form.querySelectorAll) return false;
+  if (form.querySelector('input[type="file"]')) return true;
+  return form.querySelectorAll('input:not([type="hidden"]), textarea, select').length >= 3;
+}
+
+// ── Submission: an attempt is not an application ─────────────────────────────
+// Audit 2026-09-30: pressing Submit on a form with two empty required fields
+// marked the application SUBMITTED and deleted the session. Now:
+//   attempt  → remembered on this tab's session only (SUBMIT_ATTEMPTED);
+//   confirmed → the employer's own success page, or the user saying so, and
+//               only then /application/{id}/submit (FORM_SUBMITTED).
+// The session survives validation errors, a login step and a failed upload.
+const _CONFIRM_RE = /thank(s| you) for (applying|your application|submitting)|application (has been |was )?(successfully )?(submitted|received|sent)|we(?:'ve| have) received your application|you(?:'ve| have) (successfully )?applied|successfully (submitted|applied)|your application is (complete|on its way|in)/i;
+const SUBMIT_CONFIRM_WINDOW_MS = 20 * 60 * 1000;
+let _attemptWatch = null;
+let _confirmedApps = new Set();
+
+/** The employer's page says the application went through, and no form is left. */
+function detectApplicationConfirmed() {
+  let text = '';
+  try { text = String((document.body && document.body.innerText) || '').slice(0, 30000); } catch (_) {}
+  if (!_CONFIRM_RE.test(text)) return false;
+  // Boilerplate like "thank you for your interest" sits on job pages too; a
+  // page still showing an application form has not confirmed anything.
+  const openForm = queryAllDeep('input[type="file"], input[type="email"], textarea')
+    .some((el) => el.offsetParent !== null);
+  return !openForm;
+}
+
+function noteSubmitAttempt(how) {
+  // Tell the background FIRST and synchronously: a native submit navigates
+  // away immediately, and a lookup-then-send lost the attempt every time. The
+  // background records it only on a tab that has a session.
+  chromeCall(() => chrome.runtime.sendMessage({ type: 'SUBMIT_ATTEMPTED', url: location.href }, () => {
+    void chrome.runtime.lastError;
+  }));
+  const watch = (pack) => {
+    if (!pack || !pack.app_id || _confirmedApps.has(pack.app_id)) return;
+    console.log('[SpotApply] Submit attempt (' + how + ') for app', pack.app_id, '— waiting for the employer to confirm');
+    watchForConfirmation(pack, Date.now());
+  };
+  if (_copilotPack) watch(_copilotPack); else getTabPack(watch);
+}
+
+/** After an attempt: confirm from the page, else ask the user once. */
+function watchForConfirmation(pack, since) {
+  if (_attemptWatch) clearInterval(_attemptWatch);
+  let asked = false;
+  _attemptWatch = setInterval(() => {
+    if (_confirmedApps.has(pack.app_id)) { clearInterval(_attemptWatch); return; }
+    if (detectApplicationConfirmed()) {
+      clearInterval(_attemptWatch);
+      confirmSubmitted(pack, 'employer_confirmation');
+      return;
+    }
+    if (!asked && Date.now() - since > 12000) {
+      asked = true;
+      askIfSubmitted(pack);
+    }
+    if (Date.now() - since > SUBMIT_CONFIRM_WINDOW_MS) clearInterval(_attemptWatch);
+  }, 1500);
+}
+
+/** No success page we can recognise: the user decides. Never assumed. */
+let _confirmPromptOpen = false;
+function askIfSubmitted(pack) {
+  if (_confirmedApps.has(pack.app_id)) return;
+  _confirmPromptOpen = true;
+  showOverlay(
+    '📨 <b>Did the employer confirm your application?</b><br>' +
+    '<small>SpotApply marks it Submitted only when you say so or the site shows a confirmation.</small>' +
+    '<div style="margin-top:8px;display:flex;gap:6px">' +
+    '<button data-hp-confirm="yes" style="background:#10b981;color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Yes, it\'s submitted</button>' +
+    '<button data-hp-confirm="no" style="background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer">Not yet</button></div>',
+    [], false);   // stays until answered — no 30 s auto-hide
+  const root = document.getElementById('hp-copilot-overlay');
+  const scope = (root && root.shadowRoot) || document;
+  const yes = scope.querySelector('[data-hp-confirm="yes"]');
+  const no = scope.querySelector('[data-hp-confirm="no"]');
+  if (yes) yes.addEventListener('click', () => { _confirmPromptOpen = false; confirmSubmitted(pack, 'user_confirmed'); });
+  if (no) no.addEventListener('click', () => { _confirmPromptOpen = false; removeOverlay(); });
+}
+
+function confirmSubmitted(pack, how) {
+  if (!pack || !pack.app_id || _confirmedApps.has(pack.app_id)) return;
+  _confirmedApps.add(pack.app_id);
+  chromeCall(() => chrome.runtime.sendMessage(
+    { type: 'FORM_SUBMITTED', appId: pack.app_id, pack, how },
+    (res) => {
+      if (chrome.runtime.lastError || !res || !res.ok) {
+        _confirmedApps.delete(pack.app_id);   // allow a retry from this tab
+        console.warn('[SpotApply] Could not save the submitted status:',
+                     (res && res.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message));
+        showOverlay('⚠️ <b>Couldn\'t update SpotApply</b><br><small>Your application may be submitted, but the status was not saved. ' +
+                    'Mark it Submitted from your dashboard.</small>', [], true);
         return;
       }
-      _submitReportedApps.add(pack.app_id);
-      console.log('[SpotApply] Reporting form submission for app:', pack.app_id);
-      chrome.runtime.sendMessage({
-        type: 'FORM_SUBMITTED',
-        appId: pack.app_id,
-        pack: pack
-      }, (res) => {
-        if (chrome.runtime.lastError) {
-          console.warn('[SpotApply] FORM_SUBMITTED error:', chrome.runtime.lastError.message);
-        } else {
-          console.log('[SpotApply] FORM_SUBMITTED response:', res);
-        }
-      });
-      // The application is done — end the copilot session so this pack can
-      // never leak into a DIFFERENT job's form days later.
-      chromeCall(() => chrome.storage.local.remove(
-        ['spotapply_copilot_pack', 'spotapply_copilot_ts', 'spotapply_fill_pack']));
-    }
+      _copilotActive = false;
+      showOverlay('✅ <b>Marked as submitted in SpotApply</b>', [], true);
+    }));
+}
+
+// ── This tab's application session ───────────────────────────────────────────
+// The pack for THIS tab only (background.js keeps one session per tab). Every
+// read of "the current application" goes through here — never a global pack.
+function getTabPack(cb) {
+  chromeCall(() => chrome.runtime.sendMessage({ type: 'GET_TAB_SESSION' }, (res) => {
+    if (chrome.runtime.lastError) { cb(null, {}); return; }
+    cb((res && res.pack) || null, res || {});
   }));
 }
 
@@ -653,7 +935,7 @@ function fillInput(el, value) {
   // when called on DIVs/spans (e.g. Workday data-automation-id containers)
   const tag = el.tagName;
   if (tag === "BUTTON") {
-    const isWorkday = window.location.hostname.includes('workday.com') || window.location.hostname.includes('myworkdayjobs.com');
+    const isWorkday = hostIs(window.location.hostname, 'workday.com') || hostIs(window.location.hostname, 'myworkdayjobs.com');
     const isSelectBtn = el.getAttribute('data-automation-id') === 'select-button' || el.getAttribute('aria-haspopup') === 'listbox';
     if (isWorkday || isSelectBtn) {
       selectWorkdayDropdown(el, value);
@@ -734,55 +1016,48 @@ function _yesNoOptions(el) {
   return yes && no ? { yes, no } : null;
 }
 
-// True unless the profile explicitly says the user is NOT authorized. Returns
-// null when there's nothing to go on, so we leave the field for the human.
+// Kept for callers that only need "is this person authorized at all".
 function _isAuthorized(pack) {
-  const wa = String(pack.work_authorization || "").trim();
-  if (!wa) return null;
-  if (/^no\b|not\s+authoriz|unauthoriz/i.test(wa)) return false;
-  return true;
+  return workAuthFacts(pack).authorized;
 }
 
 /** Answer a sponsorship/work-authorization field. Returns true if handled. */
 function answerWorkAuthField(el, pack, label) {
   const l = String(label || "").toLowerCase();
-  if (!/sponsor|authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l)) return false;
-
-  // null/undefined = the server could not state the answer with certainty
-  // (a dated status such as OPT): leave every sponsorship question for the user.
-  const sponsorKnown = typeof pack.requires_sponsorship === 'boolean';
-  const requires = pack.requires_sponsorship === true;
-  const authorized = _isAuthorized(pack);
-  const asksAuth = /authoriz|eligible\s+to\s+work|right\s+to\s+work|legally/.test(l);
-  const asksSponsor = /sponsor/.test(l);
-  // "...authorized to work without sponsorship?" is a single combined question.
-  const combined = asksAuth && asksSponsor &&
-    /without\s+(visa\s+)?sponsor|not\s+requir\w*\s+sponsor|no\s+sponsor/.test(l);
-
-  let answer = null;
-  if (combined) answer = (authorized === null || !sponsorKnown) ? null : (authorized && !requires);
-  else if (asksSponsor) answer = sponsorKnown ? requires : null;   // "do you require sponsorship?"
-  else if (asksAuth) answer = authorized;           // "are you authorized to work?"
-
+  if (!/sponsor|authoriz|eligible\s+to\s+work|right\s+to\s+work|legally|work\s+permit|visa/.test(l)) return false;
+  if (el.dataset && el.dataset.spotapplyUserModified === 'true') return false;
+  const answer = interpretWorkAuthQuestion(l, pack);
   const yn = el.tagName === "SELECT" ? _yesNoOptions(el) : null;
-  if (asksSponsor && answer === null) return false;  // never fill a status string into it
   if (yn) {
     if (answer === null) return false;              // unknown — leave for the user
     el.value = (answer ? yn.yes : yn.no).value;
     el.dispatchEvent(new Event("change", { bubbles: true }));
+    try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
     return true;
   }
-  // Non-boolean options (e.g. a visa-status list) — match the status string.
+  // A yes/no QUESTION in a text box or a non-boolean list: answer it only when
+  // known, never with the status string.
+  const isQuestion = /\?|^\s*(are|do|will|can|have|is)\b/.test(l);
+  if (isQuestion || /sponsor/.test(l)) {
+    if (answer === null) return false;
+    if (el.tagName === "SELECT") return selectOption(el, answer ? "Yes" : "No");
+    return fillInput(el, answer ? "Yes" : "No");
+  }
+  // A status field ("Work authorization", "Visa status"): the user's own words.
   if (pack.work_authorization) {
     if (el.tagName === "SELECT") return selectOption(el, pack.work_authorization);
-    fillInput(el, pack.work_authorization);
-    return true;
+    return fillInput(el, pack.work_authorization);
   }
   return false;
 }
 
 function selectOption(el, value) {
-  if (!el || !value) return;
+  if (!el || !value) return false;
+  // A choice the user made by hand is theirs — no writer may change it back.
+  if (el.dataset && el.dataset.spotapplyUserModified === 'true') {
+    console.log('[SpotApply] Keeping your own choice in', el.name || el.id || 'a dropdown');
+    return false;
+  }
   const lower = String(value).toLowerCase().trim();
   const opts = Array.from(el.options);
   const norm = (s) => String(s).toLowerCase().trim();
@@ -1040,7 +1315,7 @@ async function fillGreenhouse(pack) {
       else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
       else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
       else if (/sponsor|visa|authoriz/i.test(lbl)) answerWorkAuthField(inp, pack, lbl);
-      else if (/country/i.test(lbl)) selectOption(inp, "United States");
+      else if (/country/i.test(lbl) && residenceCountry(pack)) selectOption(inp, residenceCountry(pack));
     }
   }
 
@@ -1091,7 +1366,9 @@ async function fillLever(pack) {
     "input[name='name']": fullNameOf(pack),
     "input[name='email']": pack.email,
     "input[name='phone']": pack.phone,
-    "input[name='org']": pack.current_title || "",
+    // "Current company" — the employer, never the job title (audit 2026-09-30:
+    // "Software Engineer" landed here). Blank when nothing is current.
+    "input[name='org']": currentEmployer(pack),
     "input[name='urls[LinkedIn]']": pack.linkedin_url || "",
     "input[name='urls[GitHub]']": pack.github_url || "",
     "input[name='urls[Portfolio]']": pack.portfolio_url || "",
@@ -1188,6 +1465,27 @@ const US_STATES = {
   'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming',
   'DC':'District of Columbia',
 };
+
+/**
+ * The employer of the role the résumé marks as CURRENT (end "Present"/blank),
+ * or "" — a finished job is not a current company.
+ */
+function currentEmployer(pack) {
+  const jobs = (pack && Array.isArray(pack.work_experience)) ? pack.work_experience : [];
+  const cur = jobs.find((j) => j && j.company &&
+    (!String(j.end || j.end_date || '').trim() || /present|current|now|today/i.test(String(j.end || j.end_date))));
+  return cur ? String(cur.company).trim() : '';
+}
+
+/**
+ * Where the applicant LIVES, as the server derived it from their own location
+ * — "" when it does not say. Not the country they want jobs in, not their
+ * citizenship, and never a default: every handler used to hardcode "United
+ * States", so a Toronto profile was filed as a US resident.
+ */
+function residenceCountry(pack) {
+  return String((pack && pack.residence_country) || '').trim();
+}
 
 function parseLocation(location) {
   if (!location) return { city: '', state: '', abbr: '' };
@@ -1652,7 +1950,9 @@ async function fillWorkday(pack) {
       // Don't fill city into address line
     }
     else if (/addressSection_city|\bcity\b/i.test(aid) && !/country/i.test(aid)) fillInput(el, loc.city);
-    else if (/addressSection_countryRegion|countryDropdown|country/i.test(aid) && el.tagName === 'SELECT') selectOption(el, 'United States');
+    else if (/addressSection_countryRegion|countryDropdown|country/i.test(aid) && el.tagName === 'SELECT') {
+      if (residenceCountry(pack)) selectOption(el, residenceCountry(pack));   // never assumed
+    }
     else if (/addressSection_stateProvince|stateProvince|\bstate\b/i.test(aid) && !/country|united/i.test(aid)) {
       if (el.tagName === 'SELECT') { selectOption(el, loc.state) || selectOption(el, loc.abbr); }
       else fillInput(el, loc.state);
@@ -1729,7 +2029,7 @@ async function fillAvature(pack) {
     else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || "decline");
     else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || "decline");
     else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || "decline");
-    else if (/country/.test(ctx)) selectOption(sel, "United States");
+    else if (/country/.test(ctx)) { if (residenceCountry(pack)) selectOption(sel, residenceCountry(pack)); }
     else if (/sponsor|visa|authoriz/.test(ctx)) answerWorkAuthField(sel, pack, ctx);
   }
 
@@ -1743,7 +2043,7 @@ async function fillAvature(pack) {
     else if (/race|ethnic/i.test(ctx)) want = pack.ethnicity || "decline";
     else if (/veteran/i.test(ctx)) want = pack.veteran_status || "decline";
     else if (/disability/i.test(ctx)) want = pack.disability_status || "decline";
-    else if (/country/.test(ctx)) want = "United States";
+    else if (/country/.test(ctx)) want = residenceCountry(pack) || null;
     if (!want) continue;
     try {
       combo.click();
@@ -1936,17 +2236,23 @@ async function fillUniversal(pack) {
       fillInput(inp, pack.cover_letter || '');
     } else if (/years?.*(of\s+)?experience|how.*(many|much).*experience|experience.*years?/i.test(signals)
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
-      fillInput(inp, String(pack.years_experience || ''));
+      // Total tenure only for a GENERIC question: "years of Rust" is not it.
+      if (yearsQuestionIsGeneric(labelOnly || inp.getAttribute('aria-label') || '')) {
+        fillInput(inp, String(pack.years_experience || ''));
+      } else {
+        matched = false;
+      }
     } else if (/current.?title|job.?title|current.?position|current.?role/i.test(signals) && !essayPrompt) {
       fillInput(inp, pack.current_title || '');
     } else if (/company|employer|organization/i.test(signals) && !essayPrompt
                && !/start.*date|end.*date|\bdate\b|\bmonth\b|\byear\b/i.test(signals)) {
-      const currentCompany = (pack.work_experience && pack.work_experience[0]) ? pack.work_experience[0].company : '';
-      fillInput(inp, currentCompany);
+      fillInput(inp, currentEmployer(pack));
     } else if (/salary|compensation|expected.?pay|desired.?pay/i.test(signals) && !essayPrompt) {
       fillInput(inp, String(pack.salary_min || ''));
     } else if (/\bcountry\b/i.test(signals) && inp.tagName === 'SELECT') {
-      selectOption(inp, 'United States');
+      // Residence country, stated by the user — never assumed (a Toronto
+      // profile was told it lives in the United States).
+      matched = !!residenceCountry(pack) && !!selectOption(inp, residenceCountry(pack));
     } else if (/gender/i.test(signals)) {
       matched = fillEEOField(inp, pack.gender || 'decline');
     } else if (/race|ethnic/i.test(signals)) {
@@ -2010,6 +2316,8 @@ function observeField(el, pack) {
     if (/first.?name|last.?name|email|phone|mobile|linkedin|github|extension|ext\b/i.test(label)) return;
     // Don't save calendar date fields (excluding years of experience etc.)
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
+    // Never remember protected self-identification answers.
+    if (isDemographicQuestion(label + ' ' + (labelText(el) || ''))) return;
 
     console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
     apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
@@ -2080,13 +2388,23 @@ async function recallFromMemory(root, pack) {
 
     // Ignore calendar date fields in cross-form memory recall
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(sig) && !/experience/i.test(sig)) continue;
+    // Protected self-identification: a remembered answer is NOT consent. Only
+    // the direct EEO path (fillEEOField) may write these, and only when the
+    // user switched it on (audit 2026-09-30: recall set Gender with it OFF).
+    const fullLabel = sig + ' ' + (labelText(el) || '');
+    if (isDemographicQuestion(fullLabel)) continue;
+    // Work authorization / sponsorship have ONE interpreter, fed by the
+    // current profile — an answer remembered from another form (or another
+    // visa status) must not override it.
+    if (/sponsor|authoriz|visa|work permit|right to work/i.test(fullLabel)) continue;
 
-    // Direct match
+    // Exact question first. A fuzzy match only when nearly all its words
+    // agree: "> 0.4" put one question's answer into a different question.
     let answer = answers[sig];
-    // Fuzzy match — keyword overlap
     if (!answer) {
       for (const [key, val] of Object.entries(answers)) {
-        if (keywordOverlap(sig, key) > 0.4) { answer = val; break; }
+        if (isDemographicQuestion(key)) continue;
+        if (keywordOverlap(sig, key) >= 0.8) { answer = val; break; }
       }
     }
 
@@ -2209,6 +2527,10 @@ async function fillEssayQuestions(root, pack) {
 
   for (const ta of textareas) {
     const q = labelText(ta);
+    // Protected self-identification and work authorization are never
+    // AI-written: the first needs consent, the second has ONE interpreter.
+    if (isDemographicQuestion(q) || /sponsor|authoriz|visa status|work permit/i.test(q)) continue;
+    if (ta.dataset.spotapplyUserModified === 'true') continue;
 
     // 1. Check pre-cached answers from fill-pack (free, no API call)
     let answer = null;
@@ -2282,6 +2604,7 @@ async function attachResume(root, pack) {
   // something. Hammering the endpoint three times a page and then failing
   // silently is exactly what made "resume never attaches" so hard to see.
   if (_resumeBlockedReason) {
+    setResumeStatus('error', '', '', _resumeBlockedReason);
     showOverlay(
       `📎 <b>Resume not attached</b><br><small style="color:#c4b5fd;font-weight:400">${_resumeBlockedReason}</small>`,
       [], true);
@@ -2354,7 +2677,22 @@ async function attachResume(root, pack) {
     return false;
   };
 
-  const available = allFileInputs.filter((fi) => !isUploaded(fi));
+  // A control that asks for a DIFFERENT document is never the résumé — not
+  // even as the page's only upload (audit 2026-09-30: the single-input
+  // fallback put the résumé into a field labelled "Cover letter").
+  const otherDocument = (fi) => {
+    const own = resumeCtx(fi);
+    if (saysResume(own)) return false;
+    let near = '';
+    let node = fi.parentElement;
+    for (let i = 0; node && i < 3 && near.length < 300; i++, node = node.parentElement) {
+      near = (node.textContent || '').slice(0, 300);
+      if (saysResume(near)) return false;
+      if (_OTHER_DOC_RE.test(near)) return true;
+    }
+    return _OTHER_DOC_RE.test(own);
+  };
+  const available = allFileInputs.filter((fi) => !isUploaded(fi) && !otherDocument(fi));
   const scored = available.map((fi) => {
     let s = 0;
     if (saysResume(resumeCtx(fi))) s += 4;
@@ -2365,8 +2703,6 @@ async function attachResume(root, pack) {
     // penalty must stay SMALLER than the resume signal, or it cancels it out
     // exactly and the required upload is skipped (which is what happened).
     if (isParserWidget(fi)) s -= 2;
-    // Clearly a different document — never the resume.
-    if (/cover.?letter|portfolio|transcript|writing sample/i.test(resumeCtx(fi))) s -= 10;
     return { fi, s };
   }).sort((a, b) => b.s - a.s);
 
@@ -2419,6 +2755,7 @@ async function attachResume(root, pack) {
       hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
     }
     console.warn("[SpotApply] resume fetch failed:", status, res.error || '');
+    setResumeStatus('error', '', '', hint);
     showOverlay(
       `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
       [], true
@@ -2428,7 +2765,28 @@ async function attachResume(root, pack) {
   }
 
   const { filename, mime, base64 } = res.data;
-  if (document.body.innerText.includes(filename)) return true; // already on the page
+  const kind = res.data.tailored === false ? "original" : "tailored";
+  // The server substituted the base résumé (tailoring limit, a withheld
+  // draft): say so instead of attaching it silently.
+  const notice = res.data.notice ? String(res.data.notice) : '';
+  if (document.body.innerText.includes(filename)) {
+    setResumeStatus('accepted', filename, kind, notice);
+    return true; // already on the page
+  }
+
+  // The form's own accepted formats: a PDF-only field must not be given a
+  // DOCX it will reject (audit 2026-09-30).
+  const refused = targets.filter((fi) => !fileMatchesAccept(fi, filename, mime));
+  if (refused.length === targets.length) {
+    const want = (targets[0].getAttribute('accept') || '').replace(/\s+/g, ' ');
+    targets.forEach((fi) => { fi.dataset.spotapplyUpload = 'wrong_format'; });
+    setResumeStatus('wrong_format', filename, kind,
+      `This form accepts only ${want || 'another format'}; your ${kind} resume is ${filename}. ` +
+      'Download it in an accepted format from SpotApply and attach it here.');
+    reportTelemetry(pack, 'resume_attach_failed', { reason: 'format_not_accepted' });
+    return false;
+  }
+  targets = targets.filter((fi) => fileMatchesAccept(fi, filename, mime));
 
   let file;
   try {
@@ -2444,6 +2802,7 @@ async function attachResume(root, pack) {
 
   let domSet = false;
   for (const fi of targets) {
+    if (fi.dataset.spotapplyUserModified === 'true') continue;   // the user's own file
     try {
       const dt = new DataTransfer();
       dt.items.add(file);
@@ -2456,6 +2815,7 @@ async function attachResume(root, pack) {
     }
   }
   if (!domSet) {
+    setResumeStatus('failed', filename, kind, '');
     showResumeHint(filename);
     reportTelemetry(pack, 'resume_attach_failed', { reason: 'dom_set_failed' });
     return false;
@@ -2479,15 +2839,44 @@ async function attachResume(root, pack) {
     // `tailored` is false both when the user chose their original resume in
     // Settings and when a tailored draft was withheld, so say which file went
     // in rather than always claiming "tailored".
-    const kind = res.data.tailored === false ? "original" : "tailored";
     console.log(`[SpotApply] Attached ${kind} resume:`, filename);
+    targets.forEach((fi) => { fi.dataset.spotapplyUpload = 'accepted'; });
+    setResumeStatus('accepted', filename, kind, notice);
     reportTelemetry(pack, 'resume_attached', { source: kind });
     return true;
   }
+  // The file is in the input, but the uploader never acknowledged it: that is
+  // NOT an attached résumé, and the field audit must not count it as one.
+  targets.forEach((fi) => { fi.dataset.spotapplyUpload = 'unconfirmed'; });
+  setResumeStatus('unconfirmed', filename, kind, '');
   console.warn("[SpotApply] Resume set but the form didn't register it — asking user to attach manually.");
   showResumeHint(filename);
   reportTelemetry(pack, 'resume_attach_failed', { reason: 'not_registered' });
   return false;
+}
+
+// Documents that are not a résumé, by their upload label.
+const _OTHER_DOC_RE = /cover.?letter|portfolio|transcript|writing.?sample|work.?sample|reference.?letter|letter of recommendation|certificat|diploma|\bid\b card|photo|headshot/i;
+
+/** Does the input's accept="…" allow this file? No accept = anything. */
+function fileMatchesAccept(fi, filename, mime) {
+  const accept = String(fi.getAttribute('accept') || '').trim();
+  if (!accept) return true;
+  const name = String(filename || '').toLowerCase();
+  const type = String(mime || '').toLowerCase();
+  return accept.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean).some((a) => {
+    if (a.startsWith('.')) return name.endsWith(a);
+    if (a.endsWith('/*')) return type.startsWith(a.slice(0, -1));
+    return type === a;
+  });
+}
+
+// The résumé's state on this page, kept until it changes so a recount of the
+// fields can never wipe an actionable message (a 422's "add your work history"
+// used to vanish on the next status refresh).
+let _resumeStatus = null;
+function setResumeStatus(state, filename, kind, message) {
+  _resumeStatus = { state, filename: filename || '', kind: kind || '', message: message || '' };
 }
 
 // Non-blocking nudge when we can't auto-attach the resume (custom uploaders).
@@ -2513,8 +2902,13 @@ let _lastWriteSkippedEmpty = false;
 let _resumeBlockedReason = null;
 let _lastFillTimestamp = 0;
 
+/**
+ * Fill this page for the application in ``fillPack``. Returns what actually
+ * happened — the popup and the DO_FILL reply show it, so an aborted fill is
+ * never reported as "Done".
+ */
 async function fillForm(fillPack) {
-  if (!HP_FRAME_ACTIVE) return; // inert in non-ATS iframes (all_frames: true)
+  if (!HP_FRAME_ACTIVE) return { ok: false, reason: 'inactive frame' }; // all_frames: true
   let pack = fillPack;
 
   // LinkedIn + Indeed: hands-off, always. Their native apply flows pre-fill
@@ -2535,7 +2929,7 @@ async function fillForm(fillPack) {
         [], true
       );
     } catch (e) {}
-    return;
+    return { ok: false, handsOff: true, reason: `${site} is filled by ${site} itself` };
   }
 
   // A fresh token means the user re-triggered "Fill" from the dashboard after a
@@ -2545,6 +2939,7 @@ async function fillForm(fillPack) {
   }
 
   // Try to fetch the latest pack from the API to pick up any profile/db changes
+  let refreshNote = '';
   if (pack && packBase(pack) && pack.auth_token && pack.app_id) {
     const res = await apiFetch(
       `${packBase(pack)}/api/fill-pack/${pack.app_id}`,
@@ -2552,6 +2947,10 @@ async function fillForm(fillPack) {
     );
     if (res.ok && res.data) {
       pack = res.data;
+    } else if (res.timedOut) {
+      // Keep going with what we have, and say so — never a silent stall.
+      refreshNote = 'SpotApply was slow to answer, so this fill uses the details you opened the job with.';
+      console.warn('[SpotApply] fill-pack refresh timed out — filling from the launch pack');
     }
   }
 
@@ -2571,18 +2970,17 @@ async function fillForm(fillPack) {
         [], true
       );
     } catch (e) {}
-    return;
+    return { ok: false, aborted: true, reason: 'No profile data reached the extension — nothing was filled.' };
   }
 
   _copilotPack = pack;
   _copilotActive = true;
   _lastUrl = location.href;
 
-  // Persist the session so copilot survives page navigations (e.g. clicking
-  // Apply sends you to a new URL / domain). Resumed by the load handler below.
-  chromeCall(() => chrome.storage.local.set({
-    spotapply_copilot_pack: pack,
-    spotapply_copilot_ts: Date.now(),
+  // Bind THIS tab to the application so it survives navigations in this tab
+  // (and only this tab). Resumed by the load handler below.
+  chromeCall(() => chrome.runtime.sendMessage({ type: 'BIND_THIS_TAB', pack }, () => {
+    void chrome.runtime.lastError;
   }));
 
   // Decide: are we on a real application FORM, or just a job description page?
@@ -2590,9 +2988,11 @@ async function fillForm(fillPack) {
   // cookie inputs but no application fields — so we must find & click Apply first.
   if (!hasApplicationForm()) {
     findAndClickApply(pack);
-    return;
+    return { ok: true, state: 'opening_form', reason: 'Looking for the application form on this page.' };
   }
-  await runCopilotStep();
+  const result = await runCopilotStep();
+  if (result && refreshNote) result.note = refreshNote;
+  return result || { ok: true, state: 'waiting' };
 }
 
 // True only if the page looks like an actual application form (not a JD page).
@@ -2664,21 +3064,38 @@ async function runCopilotStep() {
   // The resume attach and the AI essay answers finish AFTER the first overlay
   // render, so recount now that everything has landed — and keep it live while
   // the user works through the yellow fields.
-  refreshStepOverlay(pack);
+  const finalResult = refreshStepOverlay(pack);
   startStatusRefresh(pack);
 
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
+  return summarizeStep(finalResult);
+}
+
+/** The DO_FILL reply / popup message: counts, never an unconditional "Done". */
+function summarizeStep(r) {
+  if (!r) return { ok: true, state: 'filled' };
+  return {
+    ok: true,
+    state: r.needUser || r.failed ? 'needs_review' : 'ready_for_review',
+    filled: r.filled || 0,
+    needUser: r.needUser || 0,
+    failed: r.failed || 0,
+    problems: (r.problems || []).slice(0, 6),
+  };
 }
 
 // Re-audit and re-render the status widget. Cheap (one querySelectorAll pass),
 // and it never re-fills anything — it only recounts what is already there.
 function refreshStepOverlay(pack) {
-  if (!_copilotActive || _fillingInProgress) return;
+  if (!_copilotActive || _fillingInProgress) return null;
   try {
-    showStepOverlay(auditPageFields(pack, false), pack);
+    const r = auditPageFields(pack, false);
+    showStepOverlay(r, pack);
+    return r;
   } catch (e) {
     console.debug('[SpotApply] status refresh skipped:', e.message);
+    return null;
   }
 }
 
@@ -2704,15 +3121,15 @@ async function fillCurrentPage(pack) {
 
   // Step 1: Platform-specific handler (for special cases)
   try {
-    if (host.includes('greenhouse.io'))       platformFilled = await fillGreenhouse(pack);
-    else if (host.includes('lever.co'))       platformFilled = await fillLever(pack);
-    else if (host.includes('ashbyhq.com'))    platformFilled = await fillAshby(pack);
+    if (hostIs(host, 'greenhouse.io'))       platformFilled = await fillGreenhouse(pack);
+    else if (hostIs(host, 'lever.co'))       platformFilled = await fillLever(pack);
+    else if (hostIs(host, 'ashbyhq.com'))    platformFilled = await fillAshby(pack);
     // linkedin.com intentionally absent — SpotApply never automates LinkedIn (see fillForm guard)
     // indeed.com intentionally absent — same hands-off policy as LinkedIn (see fillForm guard)
-    else if (host.includes('myworkdayjobs.com') || host.includes('workday.com'))
+    else if (hostIs(host, 'myworkdayjobs.com') || hostIs(host, 'workday.com'))
                                               platformFilled = await fillWorkday(pack);
-    else if (host.includes('smartrecruiters.com')) platformFilled = await fillSmartrecruiters(pack);
-    else if (host.includes('avature.net') || isAvaturePage()) platformFilled = await fillAvature(pack);
+    else if (hostIs(host, 'smartrecruiters.com')) platformFilled = await fillSmartrecruiters(pack);
+    else if (hostIs(host, 'avature.net') || isAvaturePage()) platformFilled = await fillAvature(pack);
     else                                      platformFilled = await fillGeneric(pack);
   } catch (e) {
     console.warn('[SpotApply] platform fill error:', e.message);
@@ -2792,32 +3209,52 @@ function auditPageFields(pack, platformFilled) {
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });
 
-  let filled = 0, needUser = 0, skipped = 0;
+  let filled = 0, needUser = 0, skipped = 0, failed = 0;
   const needUserEls = [];
-  const seenChoiceGroups = new Set();
+  const problems = [];
+  const seenRadioGroups = new Set();
+  const nameOf = (el) => (labelText(el) || el.getAttribute('aria-label') || el.name || el.id || 'a field')
+    .replace(/\s+/g, ' ').trim().slice(0, 60);
+  const flag = (el, why) => {
+    needUser++; needUserEls.push(el); failed++;
+    highlightField(el, 'red');
+    problems.push(`${nameOf(el)}: ${why}`);
+  };
 
   for (const el of allInputs) {
-    // File and choice inputs used to be dropped from BOTH counts, so a form
-    // with a required resume upload and unanswered radios reported far fewer
-    // outstanding fields than it had. Count them honestly instead.
+    // File inputs: a file IN the input is not an upload. Ours count only once
+    // the uploader acknowledged them (attachResume marks the outcome); a file
+    // the user picked themselves is theirs and counts.
     if (el.type === 'file') {
+      const ours = el.dataset.spotapplyUpload;
+      if (ours === 'unconfirmed') { flag(el, 'the upload was not confirmed by the site — attach it again'); continue; }
+      if (ours === 'wrong_format') { flag(el, 'this field does not accept that file format'); continue; }
       if (el.files && el.files.length) { filled++; highlightField(el, 'green'); }
       else if (isFieldRequired(el)) {
         needUser++; needUserEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
     }
-    if (el.type === 'checkbox' || el.type === 'radio') {
-      // A radio group is ONE question: count it once, and treat it as answered
-      // if any member is checked.
-      const key = el.type + ':' + (el.name || el.id || '');
-      if (el.name && seenChoiceGroups.has(key)) { continue; }
-      if (el.name) seenChoiceGroups.add(key);
+    if (el.type === 'radio') {
+      // A radio group is ONE question: count it once, answered if any member
+      // is checked.
+      const key = el.name || el.id || '';
+      if (el.name && seenRadioGroups.has(key)) { continue; }
+      if (el.name) seenRadioGroups.add(key);
       const group = el.name
-        ? document.querySelectorAll(`input[type="${el.type}"][name="${CSS.escape(el.name)}"]`)
+        ? document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)
         : [el];
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
+        needUser++; needUserEls.push(el); highlightField(el, 'red');
+      } else { skipped++; }
+      continue;
+    }
+    if (el.type === 'checkbox') {
+      // Checkboxes are NOT a group: two individually required boxes that share
+      // a name ("I agree…", "I confirm…") both have to be ticked.
+      if (el.checked) { skipped++; continue; }
+      if (el.required || el.getAttribute('aria-required') === 'true') {
         needUser++; needUserEls.push(el); highlightField(el, 'red');
       } else { skipped++; }
       continue;
@@ -2834,6 +3271,14 @@ function auditPageFields(pack, platformFilled) {
     }
 
     if (val) {
+      // Present is not the same as valid: an email the browser rejects, a
+      // number under its minimum, or a field the site flagged as an error.
+      const invalid = (el.validity && el.validity.valid === false) ||
+                      el.getAttribute('aria-invalid') === 'true';
+      if (invalid) {
+        flag(el, (el.validationMessage || 'the site says this value is not valid').slice(0, 80));
+        continue;
+      }
       filled++;
       highlightField(el, 'green');
     } else {
@@ -2846,7 +3291,14 @@ function auditPageFields(pack, platformFilled) {
     }
   }
 
-  return { filled, needUser, needUserEls, platformFilled };
+  // The résumé's own outcome survives every recount until it changes.
+  if (_resumeStatus && ['error', 'failed'].includes(_resumeStatus.state) &&
+      !problems.some((p) => /resume/i.test(p))) {
+    failed++;
+    problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
+  }
+
+  return { filled, needUser, needUserEls, platformFilled, failed, problems };
 }
 
 function isFieldRequired(el) {
@@ -2911,8 +3363,11 @@ function clearHighlights() {
 // ── Step overlay ──────────────────────────────────────────────────────────────
 
 function showStepOverlay(result, pack) {
+  if (_confirmPromptOpen) return;   // the "did it go through?" question stays until answered
   const { filled, needUser } = result;
+  const failed = result.failed || 0;
   const stepText = detectStepText();
+  const esc = (x) => String(x || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   let statusHtml = '';
   if (filled > 0) statusHtml += `<span style="color:#10b981;font-weight:700">✅ ${filled} filled</span>`;
@@ -2930,7 +3385,27 @@ function showStepOverlay(result, pack) {
       ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
       : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled — review, then click Next.</div>`;
 
-  showOverlay(`${stepLabel}${statusHtml}${instructions}`, [], true);
+  // The résumé line: which file, and what the site did with it.
+  let resumeHtml = '';
+  const rs = _resumeStatus;
+  if (rs) {
+    const label = { accepted: '✅ Resume attached', unconfirmed: '⚠️ Resume not confirmed',
+                    wrong_format: '⚠️ Resume format not accepted', failed: '⚠️ Resume not attached',
+                    error: '⚠️ Resume not attached' }[rs.state] || '📎 Resume';
+    const file = rs.filename ? ` — ${esc(rs.filename)}${rs.kind ? ` (${esc(rs.kind)})` : ''}` : '';
+    const msg = rs.message ? `<br><span style="color:#cbd5e1">${esc(rs.message)}</span>` : '';
+    resumeHtml = `<div style="font-size:11px;margin-top:6px">${label}${file}${msg}</div>`;
+  }
+  const probs = (result.problems || []).filter((p) => !/^Resume:/.test(p) || !rs).slice(0, 4);
+  const probHtml = probs.length
+    ? `<div style="font-size:11px;color:#fca5a5;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
+  // "Ready to review" means the form looks complete to US — never that the
+  // employer accepted anything.
+  const finalInstr = (!nothingHere && needUser === 0 && failed === 0)
+    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review — check every field, then continue.</div>`
+    : instructions;
+
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}`, [], true);
 }
 
 // ── Pause overlay (login / captcha) ──────────────────────────────────────────
@@ -3215,17 +3690,14 @@ function watchForFormAppearance() {
       clearInterval(check);
       removeOverlay();
       console.log('[SpotApply] URL changed during login watch:', location.href);
-      // Re-read fresh pack from storage (timestamp was refreshed on load)
-      chromeCall(() => chrome.storage.local.get(
-        ['spotapply_fill_pack', 'spotapply_copilot_pack'],
-        (data) => {
-          const freshPack = data.spotapply_copilot_pack || data.spotapply_fill_pack || _copilotPack;
-          if (freshPack) {
-            _copilotPack = freshPack;
-            setTimeout(() => runCopilotStep(), 1500);
-          }
+      // Re-read this tab's session (the background keeps it fresh).
+      getTabPack((tabPack) => {
+        const freshPack = tabPack || _copilotPack;
+        if (freshPack) {
+          _copilotPack = freshPack;
+          setTimeout(() => runCopilotStep(), 1500);
         }
-      ));
+      });
       return;
     }
 
@@ -3398,8 +3870,13 @@ function chromeCall(fn) {
 
 chromeCall(() => chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'DO_FILL') {
+    // Every frame receives this; only a frame that can fill answers, so an
+    // inert ad iframe can never be the reply the popup shows.
+    if (!HP_FRAME_ACTIVE) return false;
     console.log('[SpotApply] DO_FILL received, starting copilot for:', msg.fillPack?.job_title);
-    fillForm(msg.fillPack).then(() => sendResponse({ ok: true }));
+    fillForm(msg.fillPack).then(
+      (r) => sendResponse(r || { ok: false, reason: 'nothing happened' }),
+      (e) => sendResponse({ ok: false, reason: String(e && e.message || e) }));
     return true;
   }
   // Popup "Copy diagnostic report" — describe what the copilot can see on THIS
@@ -3558,85 +4035,43 @@ window.addEventListener('message', (e) => {
 });
 
 // ── Auto-fill on page load ────────────────────────────────────────────────────
-chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
-  ['spotapply_fill_pack', 'spotapply_auto_fill', 'spotapply_copilot_pack', 'spotapply_copilot_ts'],
-  (data) => {
+// Only a tab SpotApply is filling (its own session in background.js) resumes.
+// Any other tab — whatever its host — gets at most the manual Fill button.
+chromeCall(() => HP_FRAME_ACTIVE && getTabPack((pack, info) => {
     const host = window.location.hostname;
-    const onDashboard = /spotapply\.ai$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
-    if (onDashboard) { console.log('[SpotApply] On dashboard — skipping auto-fill'); return; }
+    // A submit was attempted on the previous page of this tab: this page may
+    // be the employer's confirmation. (Before the dashboard check: only a tab
+    // with a session carries an attempt, and local test forms live on 127.0.0.1.)
+    if (pack && info && info.attempt && Date.now() - (info.attempt.ts || 0) < SUBMIT_CONFIRM_WINDOW_MS) {
+      setTimeout(() => {
+        if (detectApplicationConfirmed()) confirmSubmitted(pack, 'employer_confirmation');
+        else watchForConfirmation(pack, info.attempt.ts);
+      }, 1500);
+      // Just submitted: this page is the site's answer (a confirmation, or the
+      // form back with errors). Re-filling it now would bury that answer; the
+      // user can still press Fill.
+      if (Date.now() - (info.attempt.ts || 0) < 2 * 60 * 1000) return;
+    }
+    const onDashboard = /(^|\.)spotapply\.ai$/i.test(host) || host === 'localhost' || host === '127.0.0.1';
+    if (onDashboard && HP_IS_TOP) { console.log('[SpotApply] On dashboard — skipping auto-fill'); return; }
 
     // LinkedIn + Indeed: hands-off on EVERY page. Their native apply flows
     // pre-fill from the user's own account, and automating their pages
     // violates their terms — the user's account carries the ban risk. The
     // LinkedIn profile-import card (separate module) is unaffected.
-    if (host.includes('linkedin.com') || host.includes('indeed.com')) {
+    if (/(^|\.)(linkedin|indeed)\.com$/i.test(host)) {
       console.log('[SpotApply] LinkedIn/Indeed — staying hands-off (native apply pre-fills)');
       return;
     }
 
-    const SESSION_MS = 30 * 60 * 1000;
-    const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack || null;
-    const ts = data.spotapply_copilot_ts || 0;
-    const sessionAge = ts ? (Date.now() - ts) : Infinity;
-    const freshSession = pack && sessionAge < SESSION_MS;
-    const atsMatch = isKnownATS();
-    // NOTE: a pack on an ATS host is NOT enough by itself — the session must
-    // also be fresh. Otherwise a pack from last week's application would
-    // auto-fill Job A's data into whatever unrelated ATS page is opened next.
-    const hasPackOnATS = pack && atsMatch && freshSession;
+    console.log('[SpotApply] Tab session on', host, ':', pack ? _packSummary(pack) : 'none',
+                '| launched:', !!(info && info.launched), '| isKnownATS:', isKnownATS());
 
-    // ── Diagnostic dump ──
-    console.log('[SpotApply] === Storage state on', host, '===');
-    console.log('[SpotApply]   auto_fill:', data.spotapply_auto_fill);
-    console.log('[SpotApply]   fill_pack:', data.spotapply_fill_pack ? 'YES (' + (data.spotapply_fill_pack.job_title || 'no title') + ')' : 'null');
-    console.log('[SpotApply]   copilot_pack:', data.spotapply_copilot_pack ? 'YES (' + (data.spotapply_copilot_pack.job_title || 'no title') + ')' : 'null');
-    console.log('[SpotApply]   copilot_ts:', ts, ts ? '(age: ' + Math.round(sessionAge/1000) + 's)' : '(none)');
-    console.log('[SpotApply]   freshSession:', freshSession, '| isKnownATS:', atsMatch, '| hasPackOnATS:', hasPackOnATS);
-
-    // Refresh the copilot timestamp on ATS page loads so the session survives
-    // multi-page login flows (Workday SSO, OAuth) — but only while the session
-    // is still fresh. An expired session must stay expired, or the pack would
-    // effectively live forever.
-    if (pack && atsMatch && freshSession) {
-      chromeCall(() => chrome.storage.local.set({ spotapply_copilot_ts: Date.now() }));
-    } else if (pack && ts && sessionAge >= SESSION_MS && !data.spotapply_auto_fill) {
-      // A session that HAD a timestamp and expired — drop the stale pack so it
-      // can't fill a different job. (A freshly opened tab carries the one-shot
-      // auto_fill flag and possibly no timestamp yet; leave that alone.)
-      console.log('[SpotApply] Copilot session expired — clearing stale pack');
-      chromeCall(() => chrome.storage.local.remove(
-        ['spotapply_copilot_pack', 'spotapply_copilot_ts', 'spotapply_fill_pack']));
-      return;
-    }
-
-    // One-shot auto_fill flag (set by background when opening a new tab)
-    if (data.spotapply_auto_fill && pack) {
-      console.log('[SpotApply] ▶ Auto-fill flag — starting copilot');
-      chrome.storage.local.set({ spotapply_auto_fill: false });
-      setTimeout(() => fillForm(pack), 800);
-      return;
-    }
-
-    // Persistent copilot session — survives cross-domain hops and page reloads.
-    // UNATTENDED fill requires a known ATS host, matching what background.js
-    // already enforces (`freshSession && ATS_HOSTS.test(tabHost)`). Gating on
-    // freshSession alone meant that for 30 minutes after any dashboard visit,
-    // ANY page isActionablePage() accepted — and that accepts a lone
-    // input[type=email] or input[type=file], i.e. a newsletter box or a file
-    // uploader — got the user's name, phone, address and EEO answers typed in
-    // without them asking. A non-ATS page still gets the manual Fill button
-    // below, which is user-initiated.
-    if (hasPackOnATS) {
-      console.log('[SpotApply] ▶ Copilot session active, checking page…');
-
-      // On login/auth pages, skip straight to watching for form appearance.
-      // This handles Workday SSO redirects where the page isn't actionable yet
-      // but will become actionable after login completes.
+    if (pack) {
+      // Resume where the application left off (login redirects, multi-step
+      // forms, a cross-domain hop to the ATS — all inside this tab).
       setTimeout(() => {
         if (_copilotActive) return;
-
-        // If this is a login wall or auth gateway, start the copilot in
-        // login-wait mode immediately (don't waste time checking for forms)
         if (isLoginWall()) {
           console.log('[SpotApply] Login wall detected — waiting for user to log in');
           _copilotActive = true;
@@ -3645,7 +4080,6 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
           watchForFormAppearance();
           return;
         }
-
         if (isActionablePage()) {
           console.log('[SpotApply] Actionable page — resuming copilot');
           fillForm(pack);
@@ -3654,28 +4088,21 @@ chromeCall(() => HP_FRAME_ACTIVE && chrome.storage.local.get(
           setTimeout(() => {
             if (_copilotActive) return;
             if (isLoginWall()) {
-              console.log('[SpotApply] Login wall appeared — waiting for user');
               _copilotActive = true;
               _copilotPack = pack;
               showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
               watchForFormAppearance();
             } else if (isActionablePage()) {
-              console.log('[SpotApply] Page became actionable — resuming copilot');
               fillForm(pack);
             }
-            // else: not a job/application page — do nothing. We must NOT pop up
-            // the fill button on non-actionable pages (e.g. a Google/YouTube tab
-            // opened during an active session), which is exactly what used to
-            // make the button appear on unrelated sites.
           }, 3000);
         }
       }, 2000);
       return;
     }
 
-    console.log('[SpotApply] ▶ No active session — showing fill button if actionable');
-    // Show floating button on any job/form page so user can trigger manually
-    // (the button itself reads fresh data from storage on click)
+    // No application in this tab: a manual button that names the job it would
+    // use, so filling an unrelated tab is always the user's deliberate choice.
     setTimeout(() => {
       if (_copilotActive) return;
       if (isActionablePage()) injectFillButton();
@@ -3743,27 +4170,33 @@ function _renderFillButton(host) {
   fill.addEventListener('click', () => {
     fill.textContent = '⏳ Loading…';
     fill.disabled = true;
-    // Always read FRESH data from chrome.storage.local on click.
-    chromeCall(() => chrome.storage.local.get(
-      ['spotapply_fill_pack', 'spotapply_copilot_pack'],
-      (data) => {
-        wrap.remove();
-        const freshPack = data.spotapply_copilot_pack || data.spotapply_fill_pack || null;
-        if (freshPack) {
-          document.querySelectorAll('input, textarea, select').forEach(el => {
-            delete el.dataset.spotapplyUserModified;
-          });
-          console.log('[SpotApply] Fill button clicked — starting copilot with fresh pack');
-          fillForm(freshPack);
-        } else {
-          showOverlay(
-            '⚠️ No job loaded yet.<br><small style="color:#c4b5fd;font-weight:400">Go to your <b>SpotApply dashboard</b>, find the job, and click <b>Auto Fill</b>. SpotApply will open the application here and fill it automatically.</small>',
-            [], true
-          );
-        }
+    // The job last opened from SpotApply — shown on the button before this
+    // click, so the user knows which application they are filling here.
+    chromeCall(() => chrome.storage.local.get(['spotapply_fill_pack'], (data) => {
+      wrap.remove();
+      const freshPack = data.spotapply_fill_pack || null;
+      if (freshPack) {
+        document.querySelectorAll('input, textarea, select').forEach(el => {
+          delete el.dataset.spotapplyUserModified;
+        });
+        console.log('[SpotApply] Fill button clicked — filling for', freshPack.job_title);
+        fillForm(freshPack);
+      } else {
+        showOverlay(
+          '⚠️ No job loaded yet.<br><small style="color:#c4b5fd;font-weight:400">Go to your <b>SpotApply dashboard</b>, find the job, and click <b>Auto Fill</b>. SpotApply will open the application here and fill it automatically.</small>',
+          [], true
+        );
       }
-    ));
+    }));
   });
+  chromeCall(() => chrome.storage.local.get(['spotapply_fill_pack'], (d) => {
+    const p = d && d.spotapply_fill_pack;
+    if (p && p.job_title) {
+      fill.textContent = '⚡ Fill for ' + String(p.job_title).slice(0, 40) +
+        (p.company ? ' · ' + String(p.company).slice(0, 30) : '');
+      fill.title = 'Fill this form with your SpotApply details for this job';
+    }
+  }));
 
   wrap.appendChild(fill);
   wrap.appendChild(close);
@@ -3773,10 +4206,7 @@ function _renderFillButton(host) {
 // ── Page classification helpers ───────────────────────────────────────────────
 
 function isKnownATS() {
-  const h = window.location.hostname;
-  // Mirror of ATS_HOSTS in background.js — keep both in lockstep.
-  return /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|personio\.(de|com)|pinpointhq\.com|breezy\.hr|join\.com|rippling\.com|dover\.com|paylocity\.com|ultipro\.com|myworkdaysite\.com/i.test(h)
-    || isAvaturePage();
+  return isTrustedATSHost(window.location.hostname) || isAvaturePage();
 }
 
 // Everyday sites where the fill UI must NEVER appear. Prevents the "Fill with

@@ -231,5 +231,9 @@ def test_the_extension_leaves_an_unknown_sponsorship_answer_blank():
     """Structural: the MV3 extension must not turn a missing answer into "No"."""
     from pathlib import Path
     js = Path("extension/content.js").read_text(encoding="utf-8")
-    assert "sponsorKnown ? requires : null" in js
-    assert "if (asksSponsor && answer === null) return false;" in js
+    # One interpreter answers every control type; an unknown sponsorship
+    # answer is null, and null writes nothing (behaviour: test_extension_rules).
+    assert "if (!sponsorKnown) return null;" in js
+    body = js[js.index("function answerWorkAuthField"):]
+    body = body[:body.index("\n}\n")]
+    assert "if (answer === null) return false;" in body

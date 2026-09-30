@@ -26,8 +26,106 @@ function migrateLegacyStorage() {
   });
 }
 
-chrome.runtime.onInstalled.addListener(migrateLegacyStorage);
-chrome.runtime.onStartup.addListener(migrateLegacyStorage);
+// The old copilot session was ONE global pack that any recognised ATS tab
+// could resume (audit 2026-09-30: job A's email was typed into an unrelated
+// job B). Sessions are now bound to a tab (below); drop the global keys so an
+// update cannot leave a stale pack behind.
+const _RETIRED_KEYS = ["spotapply_copilot_pack", "spotapply_copilot_ts",
+                       "spotapply_auto_fill", "spotapply_pending_tab"];
+function retireGlobalSession() { chrome.storage.local.remove(_RETIRED_KEYS); }
+
+chrome.runtime.onInstalled.addListener(() => { migrateLegacyStorage(); retireGlobalSession(); });
+chrome.runtime.onStartup.addListener(() => { migrateLegacyStorage(); retireGlobalSession(); });
+
+// ── Trusted ATS hosts ────────────────────────────────────────────────────────
+// Exact host or a real subdomain — never a substring. /greenhouse\.io/ matched
+// "greenhouse.io.unrelated.example", which then received applicant data.
+// Keep in lockstep with ATS_SUFFIXES in content.js (a test compares them).
+const ATS_SUFFIXES = [
+  "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "workday.com",
+  "myworkdaysite.com", "smartrecruiters.com", "avature.net", "icims.com", "taleo.net",
+  "successfactors.com", "successfactors.eu", "sapsf.com", "brassring.com", "jobvite.com",
+  "workable.com", "bamboohr.com", "recruitee.com", "teamtailor.com", "personio.de",
+  "personio.com", "pinpointhq.com", "breezy.hr", "join.com", "rippling.com", "dover.com",
+  "paylocity.com", "ultipro.com",
+];
+function isTrustedATSHost(host) {
+  const h = String(host || "").toLowerCase().replace(/\.$/, "");
+  return ATS_SUFFIXES.some((d) => h === d || h.endsWith("." + d));
+}
+
+// ── Application sessions, one per TAB ────────────────────────────────────────
+// A session is created only by an explicit user action — "Auto-Fill & Apply"
+// on the dashboard (the tab we open) or "Fill" in the popup (the active tab) —
+// and lives in THAT tab: its redirects and the tabs it opens itself (an Apply
+// button with target=_blank). Any other tab gets nothing, whatever its host.
+const SESSION_MS = 30 * 60 * 1000;   // idle expiry; refreshed while the tab is used
+const LAUNCH_MS = 10 * 60 * 1000;    // a launched tab fills off-list hosts this long
+
+let _sessLock = Promise.resolve();
+function withSessions(fn) {
+  // Serialise read-modify-write: two tabs loading at once must not drop a write.
+  const run = _sessLock.then(async () => {
+    const s = await chrome.storage.local.get(["spotapply_sessions"]);
+    const m = s.spotapply_sessions || {};
+    const now = Date.now();
+    for (const k of Object.keys(m)) if (!m[k] || now - (m[k].ts || 0) > SESSION_MS) delete m[k];
+    const out = await fn(m, now);
+    await chrome.storage.local.set({ spotapply_sessions: m });
+    return out;
+  });
+  _sessLock = run.catch(() => {});
+  return run;
+}
+
+function bindTab(tabId, pack, launched) {
+  if (tabId == null || !pack) return Promise.resolve();
+  return withSessions((m, now) => {
+    const prev = m[tabId];
+    m[tabId] = {
+      pack, ts: now,
+      launchedTs: launched ? now : (prev && prev.pack && prev.pack.app_id === pack.app_id
+                                    ? prev.launchedTs || 0 : 0),
+    };
+  });
+}
+
+function sessionFor(tabId, touch) {
+  return withSessions((m, now) => {
+    const sess = m[tabId];
+    if (!sess) return null;
+    if (touch) sess.ts = now;
+    return sess;
+  });
+}
+
+function endTabSession(tabId) {
+  return withSessions((m) => { delete m[tabId]; });
+}
+
+function clearAllSessions() {
+  return chrome.storage.local.remove(["spotapply_sessions", "spotapply_fill_pack", ..._RETIRED_KEYS]);
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => { endTabSession(tabId); });
+// An Apply button that opens the form in a NEW tab carries the session with it.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!tab || tab.openerTabId == null) return;
+  sessionFor(tab.openerTabId, false).then((sess) => {
+    if (sess && sess.pack) bindTab(tab.id, sess.pack, !!sess.launchedTs &&
+                                   Date.now() - sess.launchedTs < LAUNCH_MS);
+  });
+});
+
+// The Supabase user a token belongs to (the JWT "sub"), or "" if unreadable.
+function tokenSubject(token) {
+  try {
+    const part = String(token || "").split(".")[1];
+    if (!part) return "";
+    const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json).sub || "";
+  } catch (_) { return ""; }
+}
 
 // ── Session auth (token refresh) ─────────────────────────────────────────────
 // The fill pack carries a short-lived Supabase access token plus (from the
@@ -60,29 +158,47 @@ function stashAuth(pack) {
     );
   }
   if (!Object.keys(auth).length) return;
+  const sub = tokenSubject(auth.access_token);
+  if (sub) auth.sub = sub;
   // Merge over any previously stored creds (e.g. keep a rotated refresh token
-  // if this pack didn't carry one).
+  // if this pack didn't carry one) — unless the dashboard is now signed in as
+  // SOMEONE ELSE: then every stored pack and credential belongs to the other
+  // account and is dropped before the new one is kept.
   chrome.storage.local.get(["spotapply_auth"], (s) => {
-    chrome.storage.local.set({ spotapply_auth: Object.assign({}, s.spotapply_auth || {}, auth) });
+    const prev = s.spotapply_auth || {};
+    if (sub && prev.sub && prev.sub !== sub) {
+      console.log("[SpotApply BG] Account changed — clearing stored applications and credentials");
+      clearAllSessions().then(() => chrome.storage.local.set({ spotapply_auth: auth }));
+      return;
+    }
+    chrome.storage.local.set({ spotapply_auth: Object.assign({}, prev, auth) });
   });
 }
 
 async function doFetch(url, method, token, body) {
   const headers = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  // Bounded: a hung request used to stall the whole fill with no message.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: method || "POST",
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
     });
     let data = null;
     try { data = await res.json(); } catch (e) {}
     return { ok: res.ok, status: res.status, data };
   } catch (err) {
-    return { ok: false, error: err.message };
+    const timedOut = err && err.name === "AbortError";
+    return { ok: false, timedOut, error: timedOut ? "SpotApply did not answer in time" : err.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
+const FETCH_TIMEOUT_MS = 25000;
 
 async function refreshAccessToken(auth) {
   // Exchange the refresh token for a new access token via Supabase's auth API.
@@ -163,36 +279,37 @@ async function handleApiFetch(payload) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // Popup sends FILL_JOB → send DO_FILL to the currently active tab
+  // Popup "Fill This Form Now" → the user chose this job for the ACTIVE tab.
+  // Binds that tab and asks it to fill; the reply is the content script's
+  // real result (aborted / outstanding items), never an unconditional ok.
   if (msg.type === "FILL_JOB") {
     console.log("[SpotApply BG] FILL_JOB received from popup");
     stashAuth(msg.payload);
-    chrome.storage.local.set({ spotapply_fill_pack: msg.payload, spotapply_auto_fill: false }, () => {
+    chrome.storage.local.set({ spotapply_fill_pack: msg.payload }, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0]) { sendResponse({ ok: false, error: "No active tab" }); return; }
-        console.log("[SpotApply BG] Sending DO_FILL to tab", tabs[0].id, tabs[0].url);
-        chrome.tabs.sendMessage(tabs[0].id, { type: "DO_FILL", fillPack: msg.payload }, (res) => {
-          sendResponse(res || { ok: true });
+        bindTab(tabs[0].id, msg.payload, false).then(() => {
+          chrome.tabs.sendMessage(tabs[0].id, { type: "DO_FILL", fillPack: msg.payload }, (res) => {
+            if (chrome.runtime.lastError || !res) {
+              sendResponse({ ok: false, error: "The form tab did not answer" });
+            } else {
+              sendResponse(res);
+            }
+          });
         });
       });
     });
     return true;
   }
 
-  // Content script (on dashboard page) sends OPEN_AND_FILL → open job tab, then fill when loaded
+  // Dashboard "Auto-Fill & Apply" → open the job in a new tab bound to it.
   if (msg.type === "OPEN_AND_FILL") {
     const pack = msg.payload;
     console.log("[SpotApply BG] OPEN_AND_FILL received for:", pack?.job_title, pack?.apply_url);
     stashAuth(pack);
-    // Store BOTH a one-shot auto_fill flag AND a persistent copilot session.
-    // The copilot session (30-min window) lets autofill survive cross-domain
-    // navigations — e.g. accenture.com → myworkdayjobs.com after clicking Apply.
-    chrome.storage.local.set({
-      spotapply_fill_pack: pack,
-      spotapply_auto_fill: true,
-      spotapply_copilot_pack: pack,
-      spotapply_copilot_ts: Date.now(),
-    }, () => {
+    // The last launched job, for the popup's explicit Fill button only. It
+    // never resumes on its own — sessions live in spotapply_sessions, per tab.
+    chrome.storage.local.set({ spotapply_fill_pack: pack }, () => {
       // Open the job NEXT TO the dashboard tab, and inside the same tab group
       // if there is one. A bare tabs.create() lands the tab at the end of the
       // strip outside the group, where it is easy to lose entirely.
@@ -203,24 +320,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         createOpts.openerTabId = opener.id;
         if (opener.windowId != null) createOpts.windowId = opener.windowId;
       }
-      // Remember WHICH tab the user launched. The one-shot auto_fill flag is
-      // consumed by the first "complete" event, so a job board that redirects
-      // (board → careers-page.com) burned it on the intermediate page and the
-      // real form was never filled — with no error, since the destination host
-      // is not on the ATS allow-list either. An explicit click is explicit
-      // intent: fill THIS tab whatever it lands on.
       chrome.tabs.create(createOpts, (tab) => {
-        if (tab && tab.id != null) {
-          chrome.storage.local.set({
-            spotapply_pending_tab: { tabId: tab.id, ts: Date.now() },
-          });
-        }
         if (chrome.runtime.lastError || !tab) {
-          const msg = chrome.runtime.lastError?.message || "tab creation failed";
-          console.warn("[SpotApply BG] Could not open apply tab:", msg);
-          sendResponse({ ok: false, error: msg });
+          const m = chrome.runtime.lastError?.message || "tab creation failed";
+          console.warn("[SpotApply BG] Could not open apply tab:", m);
+          sendResponse({ ok: false, error: m });
           return;
         }
+        // An explicit click is explicit intent: fill THIS tab wherever its
+        // redirects land (board → careers-page.com), for LAUNCH_MS.
+        bindTab(tab.id, pack, true);
         console.log("[SpotApply BG] Opened tab", tab.id, "for", pack.apply_url);
         // -1 is TAB_GROUP_ID_NONE; grouping is best-effort.
         if (opener && opener.groupId != null && opener.groupId !== -1 && chrome.tabs.group) {
@@ -241,51 +350,80 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "INIT_EXTENSION") {
     // The dashboard's init pack is CREDENTIALS ONLY — {url, auth_token,
     // refresh_token, supabase_*} — and stashAuth strips the secrets out of it.
-    // It must never become the copilot's fill pack: it has no first_name,
-    // email or app_id, so filling from it wrote "undefined undefined" into
-    // every name field and nothing anywhere else. Worse, the dashboard
-    // re-broadcasts this every 15s, so it used to overwrite the REAL pack of
-    // an application already in progress. Stash the auth, touch nothing else.
+    // It must never become a fill pack: it has no first_name, email or app_id.
     console.log("[SpotApply BG] INIT_EXTENSION received (auth only)");
     stashAuth(msg.payload);
     sendResponse({ ok: true });
     return true;
   }
 
+  // The content script's own tab session: the pack for THIS tab or null.
+  if (msg.type === "GET_TAB_SESSION") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (tabId == null) { sendResponse({ pack: null }); return true; }
+    sessionFor(tabId, true).then((sess) => {
+      const launched = !!(sess && sess.launchedTs && Date.now() - sess.launchedTs < LAUNCH_MS);
+      sendResponse({ pack: sess ? sess.pack : null, launched,
+                     attempt: sess ? sess.attempt || null : null });
+    });
+    return true;
+  }
+
+  // The user picked a job for this tab from the page's own Fill button.
+  if (msg.type === "BIND_THIS_TAB") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    bindTab(tabId, msg.pack, false).then(() => sendResponse({ ok: tabId != null }));
+    return true;
+  }
+
+  // The user pressed Submit. That is an ATTEMPT: the browser may still refuse
+  // it (a required field), it may be a login step, or the upload may fail. It
+  // is remembered on the tab session — never reported as an application.
+  if (msg.type === "SUBMIT_ATTEMPTED") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    withSessions((m, now) => {
+      if (m[tabId]) m[tabId].attempt = { ts: now, url: String(msg.url || "").slice(0, 300) };
+    }).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  // Confirmed: the employer showed a success page, or the user said so. The
+  // status is saved FIRST; the session ends and the dashboard refreshes only
+  // when the save succeeded, so a failed save can be retried from this tab.
   if (msg.type === "FORM_SUBMITTED") {
     const appId = msg.appId;
-    const pack = msg.pack;
-    console.log("[SpotApply BG] FORM_SUBMITTED received for app:", appId);
-    
-    // 1. Send submit API call to the backend
+    const pack = msg.pack || {};
+    const tabId = sender && sender.tab && sender.tab.id;
+    console.log("[SpotApply BG] FORM_SUBMITTED (confirmed) for app:", appId, "via", msg.how);
     // spotapply_url is the current key; hirepath_url is the legacy one an
     // older server still sends (installs update independently of deploys).
     const base = pack.spotapply_url || pack.hirepath_url || 'https://app.spotapply.ai';
-    const url = `${base}/application/${appId}/submit`;
     handleApiFetch({
-      url: url,
+      url: `${base}/application/${appId}/submit`,
       method: 'POST',
       token: pack.auth_token,
-      body: {}
-    }).then(result => {
-      console.log("[SpotApply BG] Submit API result:", result);
-    });
-
-    // 2. Broadcast DASHBOARD_REFRESH message to any dashboard tabs
-    chrome.tabs.query({}, (tabs) => {
-      (tabs || []).forEach(tab => {
-        if (tab.url && (tab.url.includes("app.spotapply.ai") || tab.url.includes("localhost") || tab.url.includes("127.0.0.1"))) {
-          console.log("[SpotApply BG] Sending DASHBOARD_REFRESH to tab", tab.id);
-          chrome.tabs.sendMessage(tab.id, { type: "DASHBOARD_REFRESH", appId: appId }, () => {
-            if (chrome.runtime.lastError) {
-              // ignore
+      body: {},
+    }).then((result) => {
+      console.log("[SpotApply BG] Submit API result:", result && result.status);
+      if (!result || !result.ok) {
+        sendResponse({ ok: false, error: (result && result.error) || `HTTP ${result && result.status}` });
+        return;
+      }
+      endTabSession(tabId).then(() => {
+        chrome.tabs.query({}, (tabs) => {
+          (tabs || []).forEach((tab) => {
+            let h = "";
+            try { h = new URL(tab.url || "").hostname; } catch (_) {}
+            if (h === "app.spotapply.ai" || h === "localhost" || h === "127.0.0.1") {
+              chrome.tabs.sendMessage(tab.id, { type: "DASHBOARD_REFRESH", appId }, () => {
+                void chrome.runtime.lastError;
+              });
             }
           });
-        }
+        });
+        sendResponse({ ok: true });
       });
     });
-    
-    sendResponse({ ok: true });
     return true;
   }
 
@@ -302,106 +440,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// NOTE: linkedin.com and indeed.com are deliberately NOT here — their native
+// NOTE: linkedin.com and indeed.com are deliberately hands-off — their native
 // apply flows pre-fill from the user's own account, and automating their pages
 // violates their terms (the USER'S account carries the ban risk). SpotApply
 // opens those jobs and tracks them hands-off; when a posting redirects to a
 // company ATS (greenhouse/workday/…) the copilot fills there as normal.
-// Keep in lockstep with isKnownATS() in content.js, and with the discovery
-// sources in app/discovery/ — every board we FIND jobs on is a board the
-// copilot has to recognise. The second row was missing, so on those hosts
-// isKnownATS was false: the fill only worked on the tab we opened ourselves
-// (exact host match) and the session could not resume across a multi-step
-// form or a cross-domain hop.
-const ATS_HOSTS = /greenhouse\.io|lever\.co|ashbyhq\.com|myworkdayjobs\.com|workday\.com|smartrecruiters\.com|avature\.net|icims\.com|taleo\.net|successfactors|brassring|jobvite\.com|workable\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|personio\.(de|com)|pinpointhq\.com|breezy\.hr|join\.com|rippling\.com|dover\.com|paylocity\.com|ultipro\.com|myworkdaysite\.com/i;
+function isHandsOffHost(h) {
+  h = String(h || "").toLowerCase();
+  return ["linkedin.com", "indeed.com"].some((d) => h === d || h.endsWith("." + d));
+}
 
-// When a tab finishes loading, check if we should auto-fill it
+// When a BOUND tab finishes loading, fill it. Unbound tabs are never touched.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
   if (!tab.url || tab.url.startsWith("chrome")) return;
+  let tabHost;
+  try { tabHost = new URL(tab.url).hostname; } catch (_) { return; }
+  if (isHandsOffHost(tabHost)) return;
 
-  chrome.storage.local.get(
-    ["spotapply_fill_pack", "spotapply_auto_fill", "spotapply_copilot_pack",
-     "spotapply_copilot_ts", "spotapply_pending_tab"],
-    (data) => {
-      const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack;
-      if (!pack) {
-        console.log("[SpotApply BG] Tab", tabId, "loaded but no pack in storage — skipping");
-        return;
-      }
-
-      let tabHost;
-      try { tabHost = new URL(tab.url).hostname; } catch (_) { return; }
-
-      // LinkedIn + Indeed: never DO_FILL, on any page. Their native apply
-      // flows pre-fill from the user's own account, and automating their
-      // pages violates their terms (the USER'S account takes the ban risk).
-      // This also covers the auto_fill same-host path when apply_url points
-      // at them. The LinkedIn profile-import card is separate and unaffected.
-      if (tabHost.includes("linkedin.com") || tabHost.includes("indeed.com")) {
-        console.log("[SpotApply BG] LinkedIn/Indeed page — hands-off (native apply pre-fills)");
-        return;
-      }
-
-      // Diagnostic dump
-      console.log("[SpotApply BG] === Tab loaded:", tabId, tabHost, "===");
-      console.log("[SpotApply BG]   auto_fill:", data.spotapply_auto_fill);
-      console.log("[SpotApply BG]   copilot_pack:", !!data.spotapply_copilot_pack);
-      console.log("[SpotApply BG]   copilot_ts:", data.spotapply_copilot_ts);
-      console.log("[SpotApply BG]   ATS match:", ATS_HOSTS.test(tabHost));
-
-      // Determine if this tab should receive DO_FILL:
-      // 1. One-shot flag set when we opened the tab (exact host match OR known ATS)
-      // 2. Persistent copilot session active (30-min window) on any ATS/actionable page
-      const SESSION_MS = 30 * 60 * 1000;
-      const sessionAge = data.spotapply_copilot_ts ? (Date.now() - data.spotapply_copilot_ts) : Infinity;
-      const freshSession = sessionAge < SESSION_MS;
-      // NOTE: a pack sitting on an ATS host is NOT enough — the session must
-      // be fresh, or last week's pack would fill an unrelated application.
-
-      // A tab the user explicitly launched from "Auto-Fill & Apply" is filled
-      // wherever it ends up, allow-list or not, for a bounded window.
-      const pendingTab = data.spotapply_pending_tab;
-      const PENDING_MS = 10 * 60 * 1000;
-      const userLaunched = !!(pendingTab && pendingTab.tabId === tabId &&
-                              (Date.now() - (pendingTab.ts || 0)) < PENDING_MS);
-
-      let shouldFill = userLaunched;
-      if (userLaunched) {
-        console.log("[SpotApply BG]   user-launched tab — filling regardless of host");
-      }
-      if (data.spotapply_auto_fill) {
-        try {
-          const jobHost = new URL(pack.apply_url || "").hostname;
-          // Same host OR tab is a known ATS (handles accenture → workday cross-domain)
-          if (tabHost === jobHost || ATS_HOSTS.test(tabHost)) shouldFill = true;
-        } catch (_) {
-          if (ATS_HOSTS.test(tabHost)) shouldFill = true;
+  sessionFor(tabId, true).then((sess) => {
+    if (!sess || !sess.pack) return;
+    // Just submitted from this tab: the page loading now is the employer's
+    // answer. Re-filling it would bury a confirmation or the site's errors.
+    if (sess.attempt && Date.now() - (sess.attempt.ts || 0) < 2 * 60 * 1000) return;
+    const pack = sess.pack;
+    const launched = !!(sess.launchedTs && Date.now() - sess.launchedTs < LAUNCH_MS);
+    let jobHost = "";
+    try { jobHost = new URL(pack.apply_url || "").hostname; } catch (_) {}
+    // A launched tab fills wherever its redirects land; after that, only the
+    // job's own host or a trusted ATS in the same tab.
+    const shouldFill = launched || tabHost === jobHost || isTrustedATSHost(tabHost);
+    console.log("[SpotApply BG] Bound tab", tabId, "loaded", tabHost, "— fill:", shouldFill);
+    if (!shouldFill) return;
+    setTimeout(() => {
+      chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack, auto: true }, () => {
+        if (chrome.runtime.lastError) {
+          // The content script was not there yet (mid-redirect); the next
+          // "complete" on this tab retries.
+          console.warn("[SpotApply BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
         }
-      } else if (freshSession && ATS_HOSTS.test(tabHost)) {
-        // Copilot session: resume on any ATS page while the session is fresh
-        shouldFill = true;
-      }
-
-      console.log("[SpotApply BG]   shouldFill:", shouldFill, "freshSession:", freshSession);
-
-      if (!shouldFill) return;
-
-      console.log("[SpotApply BG] ▶ Tab", tabId, "matched — sending DO_FILL in 2s");
-      if (data.spotapply_auto_fill) chrome.storage.local.set({ spotapply_auto_fill: false });
-
-      setTimeout(() => {
-        chrome.tabs.sendMessage(tabId, { type: "DO_FILL", fillPack: pack }, (res) => {
-          if (chrome.runtime.lastError) {
-            // Keep the pending marker: the content script was not there yet
-            // (mid-redirect), so the next "complete" on this tab retries.
-            console.warn("[SpotApply BG] Could not send DO_FILL:", chrome.runtime.lastError.message);
-          } else {
-            console.log("[SpotApply BG] DO_FILL sent, response:", res);
-            if (userLaunched) chrome.storage.local.remove("spotapply_pending_tab");
-          }
-        });
-      }, 2000);
-    }
-  );
+      });
+    }, 2000);
+  });
 });

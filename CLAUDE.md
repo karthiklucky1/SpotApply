@@ -685,6 +685,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   distributions count OPEN rows only. `USER_JOB_CLOSE_AGE_DAYS` is 7 (was 45 —
   one account held 68k open rows; ~30 counts over them took sign-in to 17-32 s);
   batches paced. Guard: `test_dashboard_load`.
+- **Extension: sessions are per TAB, "Submitted" needs confirmation** (audit
+  2026-09-30, extension 1.4.0): a session exists only in the tab SpotApply opened
+  (or the popup's active tab) plus the tabs it opens — never a global pack any
+  ATS page resumes. Hosts match exactly or by real subdomain (`ATS_SUFFIXES`,
+  identical in background.js + content.js). Submit = ATTEMPT (after browser
+  validation, never a login form); only the employer's success page or the user's
+  "Yes" calls `/application/{id}/submit`. Screening answers only what the profile
+  proves: skill years from `skill_months` (dated résumé evidence), degree subject
+  from `degree_fields`, ONE work-auth interpreter for every control, country from
+  `residence_country` (never defaulted). Demographic answers never come from recall/
+  learning/AI. Uploads skip other-document fields, honour `accept`, and count only
+  when the uploader acknowledged them; DO_FILL replies with the real outcome.
+  Guards: `test_extension_rules` (Node runs the real functions) +
+  `extension-tests/test_extension_audit.py` (CI job `extension`).
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

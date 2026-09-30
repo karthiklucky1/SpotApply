@@ -555,6 +555,29 @@ def detect_country(location: str) -> str:
     return city
 
 
+def stated_country(location: str) -> str:
+    """The country a location STATES, or '' — tiers 1-3 of ``detect_country``.
+
+    For facts about the applicant (where they live), a city-name guess is not
+    evidence: "Dublin" alone is Ireland to tier 4 and Ohio to half the people
+    who type it. An explicit US signal, a country name or a ", XX" US state
+    code are; anything else stays unknown and the form asks the user.
+    """
+    loc = " " + (location or "").lower().strip() + " "
+    if not loc.strip():
+        return ""
+    if any(r.search(loc) for r in _US_RES):
+        return "united states"
+    named = _match_country(loc, _NAME_RES)
+    if named:
+        return named
+    city = _match_country(loc, _CITY_RES)
+    state_codes = {c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES}
+    if state_codes and not (city and _ISO2_US_STATE_COLLISIONS.get(city) in state_codes):
+        return "united states"
+    return ""
+
+
 def detect_us_state(text: str) -> str:
     """The US state (lowercase code) a place phrase names, or ''.
 

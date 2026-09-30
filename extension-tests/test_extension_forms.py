@@ -56,6 +56,9 @@ def base_pack(apply_url: str) -> dict:
         "email": "alexandra.nguyen@example.com",
         "phone": "+1 415 555 0199",
         "location": "San Francisco, CA",
+        # What the server derives from that location (server._residence_country).
+        # Country dropdowns are filled from THIS only — never a default.
+        "residence_country": "United States",
         "linkedin_url": "https://linkedin.com/in/alexnguyen-test",
         "github_url": "https://github.com/alexnguyen-test",
         "portfolio_url": "https://alexnguyen.dev",
@@ -327,6 +330,10 @@ def main():
             "work_authorization": "F-1 OPT",
             "years_experience": 4,
             "key_skills": "Python, SQL, Git, causal inference",
+            # Dated months per skill from the résumé's evidence inventory
+            # (server._skill_months_for_pack). "3+ years of Data Science" is
+            # answered from THIS, never from total tenure.
+            "skill_months": {"data science": 48},
         })
         page, _ = drive_fill(ctx, f"{BASE}/screening.html", pack)
         checked = lambda name: page.evaluate(
@@ -349,7 +356,7 @@ def main():
         check("S4 sponsorship answered Yes (profile requires it)", checked("q_sponsor") == "yes",
               str(checked("q_sponsor")))
         check("S5 work authorization answered Yes", checked("q_auth") == "yes", str(checked("q_auth")))
-        check("S6 '3+ years' answered Yes (profile has 4)", checked("q_years") == "yes",
+        check("S6 '3+ years of Data Science' answered Yes (résumé dates 48 months of it)", checked("q_years") == "yes",
               str(checked("q_years")))
         check("S7 'experience with Python' answered Yes (listed skill)",
               checked("q_python") == "yes", str(checked("q_python")))

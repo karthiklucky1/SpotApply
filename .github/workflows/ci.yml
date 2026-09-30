@@ -147,3 +147,31 @@ jobs:
             node --check "$f"
           done
           python -c "import json,sys; json.load(open('extension/manifest.json')); print('manifest.json parses')"
+
+  extension:
+    # The real MV3 extension, loaded in Chromium against synthetic forms and a
+    # stub API (extension-tests/). These suites existed but never ran in CI, so
+    # a green build said nothing about the autofill every non-founder user
+    # depends on — including the audit's wrong-answer, cross-tab and false
+    # "Submitted" regressions (test_extension_audit.py).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Extension browser suites
+        run: |
+          set -e
+          for t in live forms payload security audit; do
+            echo "── extension-tests/test_extension_$t.py"
+            python extension-tests/test_extension_$t.py
+          done

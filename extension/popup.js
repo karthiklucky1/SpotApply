@@ -42,17 +42,31 @@ document.getElementById("btn-fill")?.addEventListener("click", () => {
     chrome.runtime.sendMessage(
       { type: "FILL_JOB", payload: data.spotapply_fill_pack },
       (res) => {
-        if (chrome.runtime.lastError || !res?.ok) {
-          showStatus("Could not reach the form tab. Make sure the job form tab is active and open.", "err");
-        } else {
-          showStatus("✅ Done! Review every field carefully, then hit Submit.", "ok");
-        }
+        // The content script's own account of what happened — an aborted fill
+        // is never shown as done, and "ready" never means the employer accepted.
+        showStatus(fillOutcomeMessage(res, chrome.runtime.lastError), res && res.ok &&
+                   res.state === "ready_for_review" ? "ok" : (res && res.ok ? "info" : "err"));
         btn.disabled = false;
         btn.textContent = "⚡ Fill This Form Now";
       }
     );
   });
 });
+
+function fillOutcomeMessage(res, lastError) {
+  if (lastError || !res) return "Could not reach the form tab. Make sure the job form tab is active and open.";
+  if (!res.ok) return "⚠️ Nothing was filled: " + (res.reason || "the fill was stopped.");
+  if (res.state === "opening_form") return "Looking for the application form on this page…";
+  const parts = [];
+  if (typeof res.filled === "number") parts.push(`${res.filled} filled`);
+  if (res.needUser) parts.push(`${res.needUser} need you`);
+  if (res.failed) parts.push(`${res.failed} with a problem`);
+  const head = res.state === "ready_for_review"
+    ? "✅ Ready for your review"
+    : "⚠️ Needs your attention";
+  const probs = (res.problems || []).slice(0, 3).join(" · ");
+  return `${head}${parts.length ? " — " + parts.join(", ") : ""}.${probs ? " " + probs : ""} Check every field before you submit.`;
+}
 
 // Dashboard links
 ["btn-dash", "btn-dash2"].forEach((id) => {
@@ -86,8 +100,8 @@ document.getElementById("btn-check")?.addEventListener("click", () => {
       btn.textContent = "🔍 Is this job real? Check it";
       return;
     }
-    chrome.storage.local.get(["spotapply_fill_pack", "spotapply_copilot_pack", "spotapply_auth"], async (data) => {
-      const pack = data.spotapply_fill_pack || data.spotapply_copilot_pack || {};
+    chrome.storage.local.get(["spotapply_fill_pack", "spotapply_auth"], async (data) => {
+      const pack = data.spotapply_fill_pack || {};
       const base = pack.spotapply_url || pack.hirepath_url || SPOTAPPLY_URL;
       const token = pack.auth_token || (data.spotapply_auth && data.spotapply_auth.access_token) || null;
       try {
@@ -174,21 +188,23 @@ document.getElementById("btn-diag")?.addEventListener("click", () => {
     const tab = tabs && tabs[0];
     if (!tab) return done("No active tab.", "err");
     chrome.storage.local.get(
-      ["spotapply_fill_pack", "spotapply_copilot_pack", "spotapply_copilot_ts", "spotapply_auto_fill"],
+      ["spotapply_fill_pack", "spotapply_sessions"],
       (store) => {
         chrome.tabs.sendMessage(tab.id, { type: "DIAGNOSTIC_REPORT" }, (page) => {
           if (chrome.runtime.lastError || !page) {
             return done("No content script on this tab — open the job form first.", "err");
           }
-          const pack = store.spotapply_fill_pack || store.spotapply_copilot_pack || null;
-          const ts = store.spotapply_copilot_ts || 0;
+          const sess = (store.spotapply_sessions || {})[tab.id] || null;
+          const pack = sess ? sess.pack : null;
+          const ts = sess ? sess.ts : 0;
           const report = {
             extensionVersion: chrome.runtime.getManifest().version,
             session: {
               hasPack: !!pack,
+              boundToThisTab: !!sess,
               job: pack ? `${pack.job_title || "?"} @ ${pack.company || "?"}` : null,
               appId: pack ? pack.app_id : null,
-              autoFillFlag: !!store.spotapply_auto_fill,
+              submitAttempted: !!(sess && sess.attempt),
               sessionAgeSec: ts ? Math.round((Date.now() - ts) / 1000) : null,
               packHasResumeFields: pack ? { app_id: !!pack.app_id, token: !!pack.auth_token } : null,
             },

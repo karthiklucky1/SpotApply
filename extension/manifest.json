@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SpotApply Autofill",
-  "version": "1.3.0",
-  "description": "Auto-fill job application forms with your SpotApply profile. Works on Greenhouse, Lever, Ashby, LinkedIn, Indeed, Workday and more.",
+  "version": "1.4.0",
+  "description": "Fills job applications on Greenhouse, Lever, Ashby, Workday and more from your SpotApply profile. You review and submit.",
   "permissions": ["activeTab", "storage", "tabs"],
   "host_permissions": [
     "*://*/*",

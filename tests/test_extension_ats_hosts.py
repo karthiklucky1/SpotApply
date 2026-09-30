@@ -16,20 +16,19 @@ CONTENT = (ROOT / "extension" / "content.js").read_text()
 DISCOVERY = ROOT / "app" / "discovery"
 
 
-def _hosts(js: str, anchor: str) -> set[str]:
-    """Pull the alternatives out of the ATS host regex following `anchor`."""
-    idx = js.index(anchor)
-    body = js[idx:idx + 1200]
-    m = re.search(r"/([^/\n]*greenhouse[^/\n]*)/i", body)
-    assert m, f"ATS host regex not found after {anchor!r}"
-    return {alt.strip() for alt in m.group(1).split("|") if alt.strip()}
+def _hosts(js: str) -> set[str]:
+    """The trusted ATS domains: the ATS_SUFFIXES array (exact host or real
+    subdomain — the old substring regex accepted greenhouse.io.unrelated.example)."""
+    m = re.search(r"^const ATS_SUFFIXES = \[(.*?)\];", js, re.M | re.S)
+    assert m, "ATS_SUFFIXES not found"
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
 
 
 def test_background_and_content_ats_lists_match():
-    bg = _hosts(BACKGROUND, "const ATS_HOSTS")
-    ct = _hosts(CONTENT, "function isKnownATS")
+    bg = _hosts(BACKGROUND)
+    ct = _hosts(CONTENT)
     assert bg == ct, (
-        "extension/background.js ATS_HOSTS and extension/content.js isKnownATS() "
+        "extension/background.js and extension/content.js ATS_SUFFIXES "
         f"disagree.\n  only in background: {sorted(bg - ct)}\n  only in content: {sorted(ct - bg)}"
     )
 
@@ -53,7 +52,7 @@ def test_every_discovery_ats_is_recognised_by_the_extension():
         "join": ["join.com"],
         "rippling": ["rippling.com"],
     }
-    hosts = _hosts(BACKGROUND, "const ATS_HOSTS")
+    hosts = _hosts(BACKGROUND)
     blob = "|".join(hosts)
     missing = []
     for stem, domains in expected.items():
@@ -63,6 +62,6 @@ def test_every_discovery_ats_is_recognised_by_the_extension():
             missing.append(f"{stem} ({', '.join(domains)})")
     assert not missing, (
         "discovery finds jobs on boards the extension does not recognise as an "
-        f"ATS: {missing}. Add them to ATS_HOSTS in extension/background.js AND "
-        "isKnownATS() in extension/content.js."
+        f"ATS: {missing}. Add them to ATS_SUFFIXES in extension/background.js AND "
+        "extension/content.js."
     )

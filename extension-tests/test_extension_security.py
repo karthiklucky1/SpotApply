@@ -120,27 +120,28 @@ def main():
         if not sw:
             print("no service worker"); sys.exit(1)
 
-        # Establish a live copilot session the way clicking "Auto-Fill & Apply"
-        # does — a pack WITH profile data in storage.
-        #
-        # Not via INIT_EXTENSION: that message carries credentials only and no
-        # longer creates a fill session (it used to, which is how a pack with
-        # no profile data ended up driving fills and writing "undefined").
+        # Establish a live application session the way clicking "Auto-Fill &
+        # Apply" does: the dashboard bridge -> OPEN_AND_FILL -> a NEW tab that
+        # the session is bound to. (Not by writing storage: sessions are per
+        # tab now, and a pack in storage alone must fill nothing.)
         trigger = ctx.new_page()
         trigger.goto(f"{BASE}/trigger.html")
         trigger.wait_for_timeout(1500)
-        sw.evaluate("""(pack) => new Promise(r => chrome.storage.local.set({
-            spotapply_copilot_pack: pack, spotapply_copilot_ts: Date.now() }, r))""", FILL_PACK)
-        trigger.wait_for_timeout(500)
+        with ctx.expect_page(timeout=15000) as opened:
+            trigger.evaluate("""(pack) => window.postMessage(
+                { type: 'SPOTAPPLY_LOAD_PACK', pack }, '*')""", FILL_PACK)
+        apply_page = opened.value
+        if os.environ.get("EXT_DEBUG"):
+            apply_page.on("console", lambda m: print("   [page]", m.text[:160]) if "SpotApply" in m.text else None)
+        apply_page.wait_for_load_state()
+        apply_page.wait_for_timeout(6000)       # bound tab -> DO_FILL after 2s
         session = sw.evaluate("""() => new Promise(r => chrome.storage.local.get(
-            ['spotapply_copilot_pack','spotapply_copilot_ts'],
-            d => r({ pack: !!d.spotapply_copilot_pack, ts: !!d.spotapply_copilot_ts })))""")
-        check("S0 live copilot session established (precondition)",
-              session["pack"] and session["ts"], json.dumps(session))
+            ['spotapply_sessions'], d => r(Object.keys(d.spotapply_sessions || {}).length)))""")
+        check("S0 launching a job binds exactly one tab (precondition)", session == 1, str(session))
 
         api_hits.clear()
 
-        # Visit an unrelated site WITH the session live.
+        # Visit an unrelated site in ANOTHER tab while that session is live.
         blog = ctx.new_page()
         blog.goto(f"{BASE}/random-site.html")
         blog.wait_for_timeout(9000)   # well past the 2s + 3s auto-resume windows
@@ -164,32 +165,39 @@ def main():
               not submits, json.dumps(submits)[:200])
 
         still_live = sw.evaluate("""() => new Promise(r => chrome.storage.local.get(
-            ['spotapply_copilot_pack'], d => r(!!d.spotapply_copilot_pack)))""")
-        check("S4 fill session survived (pack not destroyed by the stray submit)",
-              still_live)
+            ['spotapply_sessions'], d => r(Object.keys(d.spotapply_sessions || {}).length)))""")
+        check("S4 fill session survived (not destroyed by the stray submit)", still_live == 1,
+              str(still_live))
 
-        # Regression: the real ATS flow must STILL fill after all this gating.
-        apply_page = ctx.new_page()
-        apply_page.goto(f"{BASE}/apply.html")
-        apply_page.wait_for_timeout(1200)
-        sw.evaluate("""(pack) => new Promise(r => chrome.storage.local.set(
-            { spotapply_fill_pack: pack, spotapply_auto_fill: true }, r))""", FILL_PACK)
-        apply_page.reload()
-        apply_page.wait_for_timeout(9000)
+        # The launched tab itself WAS filled.
         first = apply_page.eval_on_selector("#first_name", "el => el.value")
         email = apply_page.eval_on_selector("#email", "el => el.value")
-        check("S5 REGRESSION: real apply form still autofills",
+        check("S5 REGRESSION: the launched application tab autofills",
               first == FILL_PACK["first_name"] and email == FILL_PACK["email"],
               f"first={first!r} email={email!r}")
 
-        # And submit tracking must still work where it legitimately applies.
+        # Pressing Submit is an ATTEMPT: nothing is marked Submitted until the
+        # employer confirms or the user says so — and the session stays.
         api_hits.clear()
         apply_page.evaluate(
             """() => document.getElementById('application_form').requestSubmit()""")
         apply_page.wait_for_timeout(3000)
+        early = [h for h in api_hits if "/submit" in h["path"]]
+        check("S6 a submit attempt is NOT reported as an application", not early,
+              json.dumps(early)[:160])
+        # No confirmation page appears, so the user is asked; answering Yes
+        # records it.
+        apply_page.wait_for_timeout(12000)
+        asked = apply_page.evaluate("""() => { const h = document.getElementById('hp-copilot-overlay');
+            return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-hp-confirm="yes"]')); }""")
+        check("S7 the user is asked whether the employer confirmed it", asked)
+        if asked:
+            apply_page.evaluate("""() => document.getElementById('hp-copilot-overlay')
+                .shadowRoot.querySelector('[data-hp-confirm="yes"]').click()""")
+            apply_page.wait_for_timeout(2500)
         real_submits = [h for h in api_hits if "/submit" in h["path"]]
-        check("S6 REGRESSION: real application submit IS still reported",
-              bool(real_submits), json.dumps(real_submits)[:160])
+        check("S8 the user's confirmation IS reported", bool(real_submits),
+              json.dumps(real_submits)[:160])
 
         ctx.close()
 

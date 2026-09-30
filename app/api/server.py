@@ -5161,6 +5161,10 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         from app.db.models import UserProfile
         profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
         needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
+        # "Original resume" in Settings promises that autofill never spends a
+        # tailoring generation. The résumé route honoured it; this route still
+        # started one whenever documents were missing (audit 2026-09-30).
+        resume_source = _autofill_resume_source(session, uid)
         grounding_blocked = application.status == ApplicationStatus.ERROR
         has_draft = bool(application.tailored_resume_path)
         _loaded = {"rejected": grounding_blocked, "notes": application.notes or "",
@@ -5183,7 +5187,10 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     # A grounding-blocked application is not re-tailored automatically either —
     # the same inputs would fail the same check; the user re-runs it from the
     # dashboard after fixing their profile.
-    if needs_tailoring and not grounding_blocked:
+    if needs_tailoring and not grounding_blocked and resume_source == "original":
+        log.info("fill-pack auto-tailor skipped for app %d: user chose the original resume",
+                 application_id)
+    elif needs_tailoring and not grounding_blocked:
         allowed, _detail, _usage = _check_tailor_limit(uid or "local")
         if allowed:
             try:
@@ -5256,6 +5263,20 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         "salary_max": (p.salary_max if p else 0) or 0,
         "salary_currency": (getattr(p, "salary_currency", "") if p else "") or "USD",
         "preferred_country": (getattr(p, "preferred_country", "") if p else "") or "",
+        # Where the applicant LIVES, only when their own location states it
+        # (a country name, a US signal or ", XX" state code). NOT the country
+        # they want jobs in and never a default: the extension hardcoded
+        # "United States" and filed a Toronto profile as a US resident.
+        "residence_country": _residence_country(p),
+        # Fields of study the profile itself records. The fill pack's
+        # `education` may carry an extractor-INFERRED field_of_study; screening
+        # answers about a degree subject read only these.
+        "degree_fields": _profile_degree_fields(p),
+        # Months of PAID work the résumé dates for each listed skill
+        # (tailoring/inventory.py — a skill mentioned inside a six-year job is
+        # not six years of it). The only evidence "N years of <skill>?" may be
+        # answered from; total tenure answers only a generic years question.
+        "skill_months": _skill_months_for_pack(uid, (p.key_skills if p else "") or ""),
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
         # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
         # does not branch on it — the server already resolved the choice — but
@@ -5309,6 +5330,54 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         pack["education"] = []
 
     return pack
+
+
+def _skill_months_for_pack(uid: str | None, key_skills: str) -> dict:
+    """{skill: dated employment months} for skills the résumé dates, cached."""
+    from app.common import ttl_cache
+    skills = [x.strip() for x in (key_skills or "").split(",") if x.strip()][:60]
+
+    def _build() -> dict:
+        try:
+            from app.matching.pipeline import _load_resume_file
+            from app.tailoring.inventory import build_inventory
+            text = _load_resume_file(uid if uid and uid != "local" else None)
+            if not text:
+                return {}
+            inv = build_inventory(text, extra_skills=skills)
+            return {ev.display.lower(): int(ev.employment_months)
+                    for ev in inv.skills.values() if ev.employment_months > 0}
+        except Exception as e:
+            log.debug("skill months unavailable: %s", e)
+            return {}
+    return ttl_cache.get_or_compute(f"skill-months:{uid}:{hash(tuple(skills))}", 600, _build)
+
+
+def _residence_country(profile) -> str:
+    """Title-cased country the profile's location states, or ''."""
+    if not profile:
+        return ""
+    from app.common.geo import stated_country
+    c = stated_country(getattr(profile, "location", "") or "")
+    return " ".join(w.capitalize() for w in c.split()) if c else ""
+
+
+def _profile_degree_fields(profile) -> list[str]:
+    """Fields of study as the user's own education history records them."""
+    import json as _json
+    if not profile or not getattr(profile, "education_json", None):
+        return []
+    try:
+        rows = _json.loads(profile.education_json)
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict):
+            f = str(r.get("field") or r.get("field_of_study") or r.get("major") or "").strip()
+            if f and f.lower() not in {x.lower() for x in out}:
+                out.append(f[:80])
+    return out[:6]
 
 
 def _base_resume_bytes(uid: str | None):
