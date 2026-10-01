@@ -168,6 +168,19 @@ def is_fresh_expr(known_days: int, posted_days: int,
     return out
 
 
+def found_jobs_expr(now: Optional[datetime] = None):
+    """The ONE definition of "jobs we found for you": open rows inside the All
+    Jobs window. The Pool tile, the first-hour panel's "Jobs found" and the All
+    Jobs badge all count with it — they were three numbers (all-time pool,
+    known-age-only window, both windows) and a new user saw 500 / 381 / 360 on
+    one screen (2026-10-01). The caller adds ``is_closed == False`` and the
+    owner filter."""
+    from app.config import settings
+    return is_fresh_expr(int(getattr(settings, "explorer_max_age_days", 0) or 0),
+                         int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+                         now, for_render=True)
+
+
 def is_fresh(job, known_days: int, posted_days: int,
              now: Optional[datetime] = None) -> bool:
     """Python mirror of :func:`is_fresh_expr` — same rule, for loaded rows."""

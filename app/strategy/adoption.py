@@ -433,6 +433,16 @@ def _adopt(user_id: str | None, max_age_days: int, limit: int,
     log.info("Adoption: %d shared candidates → %d new jobs for user %s%s",
              len(candidates), inserted, user_id or "local",
              " (cap hit — more may be waiting)" if hit_cap else "")
+    if inserted:
+        # The Pool tile and the All Jobs counts are cached (60 s); a new user
+        # watched "Pool 0" beside "Jobs found 15". Copies change the answer.
+        try:
+            from app.common import ttl_cache
+            u = user_id or "local"
+            for prefix in (f"pool_count:{u}", f'jobs_open:["{u}"', f'jobs_total:["{u}"'):
+                ttl_cache.invalidate(prefix)
+        except Exception:
+            pass
     return inserted, hit_cap
 
 

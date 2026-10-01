@@ -565,6 +565,7 @@ class Settings(BaseSettings):
     # freshest first, and each one's liveness is checked before it is placed.
     welcome_catchup_days: int = 14             # WELCOME_CATCHUP_DAYS (0 = the normal window only)
     welcome_target_matches: int = 5            # WELCOME_TARGET_MATCHES — keep scoring the first hour until this many are placed
+    welcome_complete_matches: int = 10         # WELCOME_COMPLETE_MATCHES — the first-hour priority ends once this many matches reached the board
     welcome_first_rounds: int = 4              # WELCOME_FIRST_ROUNDS — at most this many first-results rounds of welcome_first_scores
     onboarding_min_usable: int = 60            # ONBOARDING_MIN_USABLE — fewer usable postings than this → search their field right away
 

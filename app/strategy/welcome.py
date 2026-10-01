@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -44,6 +45,9 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 _BOOSTS: Dict[str, datetime] = {}      # user_id -> boost start (UTC)
+_GRADUATED: Dict[str, datetime] = {}   # user_id -> boost start that reached the target
+_LAST_CHECK: Dict[str, float] = {}     # user_id -> monotonic time of the last count
+_CHECK_EVERY_S = 30.0
 _LOCK = threading.Lock()
 
 
@@ -65,6 +69,8 @@ def begin(user_id: Optional[str], reason: str, now: Optional[datetime] = None) -
         for uid, ts in list(_BOOSTS.items()):
             if now - ts > _window() * 4:
                 _BOOSTS.pop(uid, None)
+                _GRADUATED.pop(uid, None)
+                _LAST_CHECK.pop(uid, None)
     try:   # the panel's cached answer predates the boost
         from app.common import ttl_cache
         ttl_cache.invalidate(f"welcome:{user_id}")
@@ -99,7 +105,49 @@ def started_at(user_id: Optional[str], now: Optional[datetime] = None) -> Option
         started = _BOOSTS.get(user_id)
     if started is None or now - started >= _window():
         return None
+    if _graduated(user_id, started):
+        return None
     return started
+
+
+def _graduated(user_id: str, started: datetime) -> bool:
+    """True once ``welcome_complete_matches`` reached the board in this window:
+    the user has what the first hour is for, so priority, the 2x slice and the
+    14-day catch-up end and they are served like everyone else (owner,
+    2026-10-01). The count runs at most every 30 s per user."""
+    target = int(getattr(settings, "welcome_complete_matches", 0) or 0)
+    if target <= 0:
+        return False
+    with _LOCK:
+        if _GRADUATED.get(user_id) == started:
+            return True
+        if time.monotonic() - _LAST_CHECK.get(user_id, 0.0) < _CHECK_EVERY_S:
+            return False
+        _LAST_CHECK[user_id] = time.monotonic()
+    if _matches_since(user_id, started) < target:
+        return False
+    with _LOCK:
+        _GRADUATED[user_id] = started
+    log.info("Welcome boost complete: %d matches on the board", target)   # no user id
+    try:
+        from app.common import ttl_cache
+        ttl_cache.invalidate(f"welcome:{user_id}")
+    except Exception:
+        pass
+    return True
+
+
+def completed_at(user_id: Optional[str], now: Optional[datetime] = None) -> Optional[datetime]:
+    """Start of a window that ended early by reaching its target, while that
+    window's hour has not run out (the panel says "you're set" until then)."""
+    if not user_id:
+        return None
+    now = now or datetime.utcnow()
+    with _LOCK:
+        g = _GRADUATED.get(user_id)
+    if g is None or now - g >= _window():
+        return None
+    return g
 
 
 def is_boosted(user_id: Optional[str], now: Optional[datetime] = None) -> bool:
@@ -315,18 +363,24 @@ def status(user_id: str) -> dict:
 
     now = datetime.utcnow()
     started = started_at(user_id, now)
-    since = started or (now - timedelta(hours=24))
+    done = None if started else completed_at(user_id, now)
+    since = started or done or (now - timedelta(hours=24))
     fresh_after = now - timedelta(days=max(1, settings.scoring_max_job_age_days))
     out = {"boost_active": started is not None, "_started": started,
+           "completed": done is not None,
            "minutes_left": (int((_window() - (now - started)).total_seconds() // 60)
                             if started else 0)}
     with get_session() as s:
         _bound_statements(s)
-        out["pool_fresh"] = int(s.exec(select(func.count(Job.id)).where(
-            Job.user_id == user_id, Job.is_closed == False,  # noqa: E712
-            or_(Job.first_seen >= fresh_after,
-                (Job.first_seen.is_(None)) & (Job.discovered_at >= fresh_after)),
-        )).first() or 0)
+        # "Jobs found" = the same count as the Pool tile and the All Jobs
+        # badge (freshness.found_jobs_expr), never a third definition.
+        from app.common.freshness import found_jobs_expr
+        _found_q = select(func.count(Job.id)).where(
+            Job.user_id == user_id, Job.is_closed == False)  # noqa: E712
+        _fw = found_jobs_expr(now)
+        if _fw is not None:
+            _found_q = _found_q.where(_fw)
+        out["pool_fresh"] = int(s.exec(_found_q).first() or 0)
         # Bounded by the fresh window like every other count here: nothing
         # older can have been checked in the last hour's work, and without it
         # the walk covered every row the user ever held (no index on

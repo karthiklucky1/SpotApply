@@ -3584,7 +3584,7 @@ def _score_kind(rerank, scored_at, prescored_at, expired_at) -> str:
 # its module docstring carries the 2026-09-16 sample that motivated them).
 # 300 s is one pulse-lane cadence: a tile cannot move faster than the lanes
 # that feed it. 60 s for the explorer counts, which follow every keystroke.
-_POOL_COUNT_TTL_SECONDS = 300
+_POOL_COUNT_TTL_SECONDS = 60   # same as the All Jobs count it must agree with
 _JOBS_COUNT_TTL_SECONDS = 60
 _FRESHNESS_STATS_TTL_SECONDS = 300
 # A degraded freshness payload is kept only briefly, so a recovered database
@@ -4451,6 +4451,12 @@ def _pipeline_live_uncached(uid) -> dict:
         pq = select(func.count(Job.id)).where(Job.is_closed == False)
         if _uid_filter:
             pq = pq.where(Job.user_id == uid)
+        # Inside the All Jobs window (freshness.found_jobs_expr), so the tile,
+        # the All Jobs badge and the first-hour panel show one number.
+        from app.common.freshness import found_jobs_expr as _found
+        _fw = _found()
+        if _fw is not None:
+            pq = pq.where(_fw)
         # None, not 0: the board leaves the tile at its last value rather than
         # telling the user their pool emptied.
         #

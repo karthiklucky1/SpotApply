@@ -689,7 +689,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (5); the onboarding search reads `_usable_count`, not the raw pool. When nothing is left
   `thin_supply` offers wider settings — never a lower bar. `/api/admin/first-hour` (admin,
   8-char ids) = minutes to 1st/5th match from `UserProfile.feed_started_at`.
-  Guard: `test_new_user_supply`.
+  Guard: `test_new_user_supply`. The window ENDS early at `WELCOME_COMPLETE_MATCHES` (10)
+  (`welcome._graduated`, counted ≤ every 30 s; panel says "You're set"). Pool tile, "Jobs
+  found" and the All Jobs badge count with ONE `freshness.found_jobs_expr`; adoption clears
+  their caches. New matches swap into the board in place (`refreshShortlistInPlace`, never
+  while `_userIsBusy`); the setup is a full page. Guard: `test_dashboard_first_screens`.
 - **Sign-in never waits on history** (2026-09-28): `/api/stats` (every dashboard
   load) is cached per user `STATS_CACHE_SECONDS` (300), single-flighted, every
   statement bounded + an overall `STATS_TOTAL_BUDGET_SECONDS`; an unanswered

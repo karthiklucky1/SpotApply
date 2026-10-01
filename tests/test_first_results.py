@@ -307,9 +307,12 @@ def test_the_resume_review_does_not_hide_the_board():
 
 
 def test_the_first_match_does_not_reload_the_page_mid_flow():
-    i = HTML.index("if (emptyState && rendered === 0 && server > 0")
-    guard = HTML[i - 600:i + 200]
-    assert "resume-review-card" in guard and "_welcomeStarting" in guard and "!welcomeBusy" in guard
+    """Since 2026-10-01 new matches are swapped into the board in place, so the
+    first-hour panel and any open question survive; never a page reload, and
+    never while the user is in a dialog or typing."""
+    body = _function("livePipelineTick")
+    assert "window.location.reload" not in body
+    assert "refreshShortlistInPlace()" in body and "!_userIsBusy()" in body
 
 
 def test_fast_polling_is_limited_to_the_first_ten_minutes_of_a_visible_tab():

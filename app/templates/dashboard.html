@@ -908,6 +908,8 @@
        when it passes BOTH the text search and the min-score threshold. */
     #shortlisted-container .jobrow.hidden-by-score { display: none !important; }
     .jobrow { transition: box-shadow .2s ease, border-color .2s ease; }
+    /* a match that just arrived without a page reload (refreshShortlistInPlace) */
+    .jobrow.jr-new { box-shadow: 0 0 0 2px rgba(var(--sage-rgb),0.55), 0 8px 30px rgba(var(--sage-rgb),0.18) !important; }
     .jobrow:hover { border-color: var(--sage) !important; box-shadow: 0 8px 30px rgba(var(--sage-rgb),0.16) !important; }
     .jr-flex { display: flex; align-items: stretch; }
     .jr-info { flex: 1; min-width: 0; padding: 16px 20px; }
@@ -1590,7 +1592,7 @@
             </style>
             <!-- Pipeline stage tabs — each opens a full-screen list -->
             <div id="pipe-tabs" class="flex gap-2 items-center">
-                <button type="button" class="pipe-tab active" onclick="switchPipeTab('pipe-shortlist', this)">Shortlisted <span class="pt-count">{{ total_shortlisted_count or shortlisted|length }}</span></button>
+                <button type="button" class="pipe-tab active" onclick="switchPipeTab('pipe-shortlist', this)">Shortlisted <span class="pt-count" id="pt-count-shortlist">{{ total_shortlisted_count or shortlisted|length }}</span></button>
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-submitted', this)">Submitted <span class="pt-count">{{ total_submitted_count }}</span></button>
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-interviewing', this)">Interviewing <span class="pt-count">{{ interviewing|length }}</span></button>
                 <button type="button" class="pipe-tab" onclick="switchPipeTab('pipe-rejected', this)">Rejected <span class="pt-count">{{ rejected|length }}</span></button>
@@ -5488,6 +5490,15 @@
                 if (d.boost_active)
                     _welcomeSeenMatches = _welcomeSeenMatches == null ? (d.new_matches || 0) : _welcomeSeenMatches;
             }
+            if (!d.boost_active && d.completed && !_welcomeDoneClosed()) {
+                const n = d.new_matches || 0;
+                parts.push(`<div class="glass rounded-2xl px-5 py-4" data-w="done" style="border:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span style="width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--ok,#047857);color:#fff;font-weight:800;">✓</span>
+                    <div style="flex:1;min-width:200px;"><p class="text-sm font-bold text-white">You're set: ${n} match${n === 1 ? '' : 'es'} on your board</p>
+                    <p class="text-xs mt-1" style="color:var(--muted);">From here new jobs are checked as soon as they are posted, and strong fits appear on your board on their own.</p></div>
+                    <button onclick="closeWelcomeDone()" class="text-xs px-3 py-2" style="color:var(--muted);" data-w="done-close">Close</button>
+                  </div>`);
+            }
             const tip = d.role_tip;
             if (tip && !_welcomeTipDismissed(tip)) {
                 window._welcomeTip = tip;
@@ -5504,6 +5515,13 @@
             }
             el.innerHTML = parts.join('');
             el.style.display = parts.length ? '' : 'none';
+        }
+        function _welcomeDoneClosed() {
+            try { return Date.now() - (+(localStorage.getItem('hp_welcome_done_closed') || 0)) < 3 * 3600 * 1000; } catch (_) { return false; }
+        }
+        function closeWelcomeDone() {
+            try { localStorage.setItem('hp_welcome_done_closed', String(Date.now())); } catch (_) {}
+            if (window._welcomeLast) _renderWelcomePanel(window._welcomeLast);
         }
         async function loadWelcomePanel() {
             try {
@@ -6069,6 +6087,18 @@
                   background:${i < n ? 'var(--ok,#047857)' : i === n ? 'var(--sage,#0077C2)' : 'var(--surface-2,#EAF4FD)'};color:${i <= n ? '#fff' : 'inherit'}">${i < n ? '✓' : i}</span>${t}</div>`;
             return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">${step(1, 'Review profile')}${step(2, 'Target roles')}${step(3, 'Start search')}</div>`;
         }
+        // The setup's own page header: logo + where the user is in the 3 steps.
+        function _setupHeader(n) {
+            return `<div style="position:sticky;top:0;z-index:2;background:var(--surface,#fff);border-bottom:1px solid var(--border,#DCEAF6)">
+              <div style="max-width:880px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+                <div style="display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;color:var(--ink,#0C2A3E)"><img src="/static/favicon.svg" width="28" height="28" alt="" style="border-radius:8px">SpotApply<span style="font-weight:600;font-size:13px;color:var(--muted,#64748b)">· Set up your job search</span></div>
+                <div style="margin-bottom:-14px">${_prSteps(n)}</div>
+              </div></div>`;
+        }
+        // While a setup page is open the dashboard underneath does not scroll.
+        function _setupPageOpen(on) {
+            document.documentElement.style.overflow = on ? 'hidden' : '';
+        }
         async function openProfileReview(d) {
             document.getElementById('profile-review')?.remove();
             let p = {};
@@ -6098,10 +6128,13 @@
             wrap.id = 'profile-review';
             wrap.setAttribute('role', 'dialog');
             wrap.setAttribute('aria-label', 'Review your profile');
-            wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto;background:rgba(15,23,42,.55)';
-            wrap.innerHTML = `<div style="width:100%;max-width:640px;background:var(--surface,#fff);color:var(--ink,#0f172a);border-radius:20px;box-shadow:0 24px 60px rgba(2,6,23,.35);padding:22px">
-              ${_prSteps(1)}
-              <div style="font-size:18px;font-weight:800">Here's what we read from your resume</div>
+            // A full page, not a box over the dashboard: the half-visible board
+            // behind it read as clutter (owner, 2026-10-01).
+            wrap.style.cssText = 'position:fixed;inset:0;z-index:10000;overflow:auto;background:var(--canvas,#F5FAFF);color:var(--ink,#0f172a)';
+            wrap.innerHTML = `${_setupHeader(1)}
+              <div style="max-width:880px;margin:0 auto;padding:24px 16px 48px">
+              <div style="background:var(--surface,#fff);border:1px solid var(--border,#DCEAF6);border-radius:20px;box-shadow:0 10px 30px rgba(12,42,62,.06);padding:clamp(18px,3vw,32px)">
+              <div style="font-size:clamp(18px,2.4vw,22px);font-weight:800">Here's what we read from your resume</div>
               <div style="font-size:12.5px;color:var(--muted,#64748b);margin:4px 0 12px">Check it and fill anything missing. We use these details for job matching and to fill application forms for you.</div>
               ${missing.length ? `<div data-pr-missing style="font-size:12.5px;font-weight:700;color:#B42318;background:#FEF3F2;border:1px solid rgba(180,35,24,.25);border-radius:10px;padding:8px 12px;margin-bottom:12px">Needs your input: ${missing.map(_prEsc).join(', ')}</div>` : `<div style="font-size:12.5px;font-weight:700;color:#047857;background:#ECFDF5;border-radius:10px;padding:8px 12px;margin-bottom:12px">✓ Everything important is filled in</div>`}
               <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:6px 0">Contact</div>
@@ -6137,10 +6170,12 @@
               <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
                 <button type="button" data-pr-later style="font-size:13px;font-weight:700;padding:10px 16px;border-radius:12px;border:1px solid rgba(100,116,139,.35);background:transparent;color:inherit;cursor:pointer">Later</button>
                 <button type="button" data-pr-next style="font-size:13px;font-weight:800;padding:10px 18px;border-radius:12px;border:0;background:linear-gradient(135deg,#0EA5E9,#0077C2);color:#fff;cursor:pointer">Next: target roles →</button>
-              </div></div>`;
+              </div></div></div>`;
             document.body.appendChild(wrap);
+            _setupPageOpen(true);
+            const _closeReview = () => { wrap.remove(); _setupPageOpen(false); };
             const status = wrap.querySelector('[data-pr-status]');
-            wrap.querySelector('[data-pr-later]').onclick = () => { wrap.remove(); _startSearchNow(); };
+            wrap.querySelector('[data-pr-later]').onclick = () => { _closeReview(); _startSearchNow(); };
             wrap.querySelector('[data-pr-next]').onclick = async (ev) => {
                 const btn = ev.currentTarget;
                 btn.disabled = true; status.textContent = 'Saving…';
@@ -6158,7 +6193,7 @@
                 try {
                     const r = await fetch('/api/profile', { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(body) });
                     if (!r.ok) throw new Error('HTTP ' + r.status);
-                    wrap.remove();
+                    _closeReview();
                     openRolesModal({ onboarding: true });
                 } catch (e) {
                     btn.disabled = false;
@@ -6752,6 +6787,11 @@
             if (_rsave) _rsave.textContent = _rolesOnboarding ? 'Start finding jobs →' : 'Save Roles';
             // Setup step 2 of 3: show where the user is in the flow.
             document.getElementById('roles-steps')?.remove();
+            // In the setup the roles step is a page too: an opaque backdrop, not
+            // the dashboard showing through. Outside the setup it stays a dialog.
+            const _rback = document.querySelector('#roles-modal > div.absolute');
+            if (_rback) _rback.style.background = _rolesOnboarding ? 'var(--canvas,#F5FAFF)' : '';
+            _setupPageOpen(_rolesOnboarding);
             if (_rolesOnboarding) {
                 const card = document.querySelector('#roles-modal > div.relative');
                 if (card) {
@@ -6781,6 +6821,7 @@
 
         function closeRolesModal() {
             document.getElementById('roles-modal').classList.add('hidden');
+            _setupPageOpen(false);
             // Closing the setup's roles step without saving still starts the
             // search with the roles we have — never leave a new user with none.
             if (_rolesOnboarding) { _rolesOnboarding = false; setTimeout(() => _startSearchNow(), 0); }
@@ -8369,13 +8410,58 @@
         if (!b) {
             b = document.createElement('button');
             b.id = 'hp-new-matches'; b.type = 'button';
-            b.onclick = () => window.location.reload();
+            b.onclick = loadNewMatchesNow;
             b.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:9px;width:100%;padding:11px;margin-bottom:6px;border:1px solid rgba(var(--sage-rgb),0.45);border-radius:14px;background:var(--sage-tint);color:var(--sage-700);font-weight:800;font-size:12.5px;cursor:pointer;transition:transform .12s;';
             b.onmouseenter = () => { b.style.transform = 'translateY(-1px)'; };
             b.onmouseleave = () => { b.style.transform = 'none'; };
             container.parentNode.insertBefore(b, container);
         }
         b.innerHTML = `<span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background:var(--sage);"></span><span class="relative inline-flex rounded-full h-2 w-2" style="background:var(--sage-600);"></span></span> ↻ ${n} new match${n === 1 ? '' : 'es'} ready — tap to load`;
+    }
+    // Load newly shortlisted jobs INTO the board without reloading the page
+    // (owner, 2026-10-01: "why can't it just refresh?"). The board is
+    // server-rendered, so the current /dashboard is fetched and only the
+    // shortlist is swapped in; each card carries its own detail template, and
+    // nothing else on the page (the first-hour panel, an open question, the
+    // scroll position) moves. New cards get a highlight ring.
+    let _boardSwapBusy = false, _lastServerShortlist = 0;
+    function _userIsBusy() {
+        const a = document.activeElement;
+        if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+        if (document.getElementById('profile-review')) return true;
+        const ov = document.getElementById('jobModalOverlay');
+        if (ov && ov.classList.contains('open')) return true;
+        return Array.from(document.querySelectorAll('[id$="-modal"]'))
+            .some(m => !m.classList.contains('hidden') && getComputedStyle(m).display !== 'none');
+    }
+    async function refreshShortlistInPlace() {
+        if (_boardSwapBusy) return false;
+        _boardSwapBusy = true;
+        try {
+            const r = await fetch('/dashboard', { headers: _hpHeaders(), credentials: 'same-origin' });
+            if (!r.ok) return false;
+            const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+            const fresh = doc.getElementById('shortlisted-container');
+            const cur = document.getElementById('shortlisted-container');
+            if (!fresh || !cur) return false;
+            const before = new Set(Array.from(cur.querySelectorAll('.jobrow')).map(e => e.dataset.appId));
+            cur.innerHTML = fresh.innerHTML;
+            cur.querySelectorAll('.jobrow').forEach(e => {
+                if (before.size && !before.has(e.dataset.appId)) e.classList.add('jr-new');
+            });
+            _initShortlistSort();
+            const sl = document.getElementById('shortlist-minscore');
+            filterShortlistByScore(sl ? sl.value : 0, false);
+            return true;
+        } catch (e) { return false; } finally { _boardSwapBusy = false; }
+    }
+    async function loadNewMatchesNow() {
+        if (await refreshShortlistInPlace()) {
+            _shortlistBaseline = _lastServerShortlist;
+            _clearNewMatchesBanner();
+        } else {
+            window.location.reload();
+        }
     }
     // ── Search state notice (app/common/compute_policy.py) ──────────────────
     // While a complimentary search is idle, dormant or paused, say so plainly
@@ -8502,11 +8588,18 @@
             // Not while the first-hour panel is mid-flow (it shows those matches
             // live and offers "Show my matches"), nor over unanswered resume
             // questions — a reload threw both away the moment the first job landed.
-            const welcomeBusy = !!document.getElementById('resume-review-card')
-                || (typeof _welcomeStarting !== 'undefined' && _welcomeStarting && Date.now() - _welcomeStarting.at < 120000);
-            if (emptyState && rendered === 0 && server > 0 && _canAutoReload() && !welcomeBusy) {
-                window.location.reload();
-                return;
+            _lastServerShortlist = server;
+            const tabCount = document.getElementById('pt-count-shortlist');
+            if (tabCount) tabCount.textContent = server;
+            // New matches go straight onto the board, in place (no reload), unless
+            // the user is in the middle of something — then the one-tap banner.
+            const firstMatches = emptyState && rendered === 0 && server > 0;
+            if ((firstMatches || server > _shortlistBaseline) && !_userIsBusy()) {
+                if (await refreshShortlistInPlace()) {
+                    _shortlistBaseline = server;
+                    _clearNewMatchesBanner();
+                    return;
+                }
             }
             const fresh = server - _shortlistBaseline;
             if (fresh > 0) _showNewMatchesBanner(fresh);
