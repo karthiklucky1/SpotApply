@@ -186,7 +186,8 @@ def main():
     with sync_playwright() as p, tempfile.TemporaryDirectory() as profile:
         ctx = p.chromium.launch_persistent_context(
             profile, headless=True,
-            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
+            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}",
+                  "--disable-features=DisableLoadExtensionCommandLineSwitch"],
             **_LAUNCH_KW)
         deadline = 0
         while not ctx.service_workers and deadline < 60:

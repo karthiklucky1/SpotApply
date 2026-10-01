@@ -114,7 +114,8 @@ def main():
             str(Path(tempfile.mkdtemp(prefix="spotapply-ext-sec-"))),
             **_LAUNCH_KW,
             headless=True,
-            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
+            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}",
+                  "--disable-features=DisableLoadExtensionCommandLineSwitch"],
         )
         sw = await_service_worker(ctx)
         if not sw:

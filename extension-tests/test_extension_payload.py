@@ -122,7 +122,8 @@ def main():
     with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         ctx = p.chromium.launch_persistent_context(
             prof, headless=True,
-            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"], **_LAUNCH_KW)
+            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}",
+                  "--disable-features=DisableLoadExtensionCommandLineSwitch"], **_LAUNCH_KW)
         for _ in range(60):
             if ctx.service_workers:
                 break

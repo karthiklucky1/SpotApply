@@ -171,6 +171,12 @@ jobs:
       - name: Extension browser suites
         run: |
           set -e
+          # Headless launches default to chrome-headless-shell, which cannot load
+          # extensions ("no service worker"). Point the suites at the FULL
+          # Chromium Playwright installed; headless=True then runs it in new
+          # headless mode, which does.
+          export SPOTAPPLY_CHROMIUM="$(python -c 'from playwright.sync_api import sync_playwright as s; p = s().start(); print(p.chromium.executable_path); p.stop()')"
+          echo "Chromium: $SPOTAPPLY_CHROMIUM"
           for t in live forms payload security audit; do
             echo "── extension-tests/test_extension_$t.py"
             python extension-tests/test_extension_$t.py

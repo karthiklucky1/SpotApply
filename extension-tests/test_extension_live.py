@@ -97,7 +97,8 @@ def main():
             str(Path(tempfile.mkdtemp(prefix="spotapply-ext-"))),
             **_LAUNCH_KW,
             headless=True,
-            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
+            args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}",
+                  "--disable-features=DisableLoadExtensionCommandLineSwitch"],
         )
 
         # T1: service worker registers
