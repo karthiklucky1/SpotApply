@@ -170,9 +170,7 @@ def _abs_month(token: str) -> Tuple[Optional[int], bool]:
     if not tok:
         return None, False
     if any(tok.startswith(p) for p in _PRESENT):
-        from datetime import datetime
-        now = datetime.utcnow()
-        return now.year * 12 + now.month, False
+        return _current_month_index(), False
     m = re.match(rf"({_MONTHS})[a-z]*\.?\s*(\d{{4}})", tok)
     if m:
         mon = _MONTH_NUMS.get(m.group(1)[:3])
@@ -181,6 +179,14 @@ def _abs_month(token: str) -> Tuple[Optional[int], bool]:
     if re.fullmatch(r"\d{4}", tok):
         return int(tok) * 12 + 6, True     # mid-year; uncertainty is reported
     return None, False
+
+
+def _current_month_index() -> int:
+    """This month as year*12 + month: what "Present" means on a resume.
+    One function so tests can pin the date instead of breaking every month."""
+    from datetime import datetime
+    now = datetime.utcnow()
+    return now.year * 12 + now.month
 
 
 def merged_months(intervals: Iterable[Tuple[int, int]]) -> int:

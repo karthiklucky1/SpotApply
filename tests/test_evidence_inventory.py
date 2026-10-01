@@ -58,6 +58,16 @@ Tools: Docker, Kubernetes, Terraform, FastAPI
 """
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _pinned_today():
+    """The expected totals count "Present" as September 2026; pin it so the
+    file does not fail each new month (it broke on 2026-10-01)."""
+    from app.tailoring import inventory
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(inventory, "_current_month_index", lambda: 2026 * 12 + 9)
+        yield
+
+
 @pytest.fixture(scope="module")
 def inv():
     return build_inventory(MASTER, extra_skills=[

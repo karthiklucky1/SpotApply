@@ -170,8 +170,11 @@ def test_the_privacy_policy_declares_the_work_authorization_data_we_store():
 
 
 def test_the_privacy_date_moved_with_the_revision():
+    """October 2026: the extension's LinkedIn import (the user's own profile,
+    on click) was declared, for the Chrome Web Store listing."""
     html = (ROOT / "app" / "templates" / "privacy.html").read_text()
-    assert "Last updated: September 2026" in html
+    assert "Last updated: October 2026" in html
+    assert "Your LinkedIn profile (only if you import it)" in html
 
 
 def test_the_terms_date_moved_only_with_a_real_revision():
