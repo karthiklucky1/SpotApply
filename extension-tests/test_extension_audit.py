@@ -170,7 +170,8 @@ def route_pages(route):
     if html is None:
         return route.fulfill(status=404, body="not found")
     return route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                         body=f"<!doctype html><html><body>{html}</body></html>")
+                         body=f"<!doctype html><html><head><meta name=\"stub-page\" content=\"1\"></head>"
+                              f"<body>{html}</body></html>")
 
 
 def sw(ctx):
@@ -192,6 +193,12 @@ def launch(ctx, pack):
         trig.evaluate("(p) => window.postMessage({ type: 'SPOTAPPLY_LOAD_PACK', pack: p }, '*')", pack)
     page = opened.value
     page.wait_for_load_state()
+    # On Chrome 153 Playwright attaches to a tab the EXTENSION created after
+    # its first request has left, so ctx.route misses it and the real site
+    # loads (CI, 2026-10-01). Reload once: same tab, same session, routed now.
+    if not page.query_selector('meta[name="stub-page"]'):
+        page.reload()
+        page.wait_for_load_state()
     page.wait_for_timeout(6500)
     trig.close()
     return page
