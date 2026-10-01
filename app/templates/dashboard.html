@@ -6080,6 +6080,20 @@
                                 'Yes, I have a disability (or previously had a disability)'],
         };
         const _DATED_AUTH = ['OPT', 'STEM OPT', 'CPT', 'H1B', 'Student Visa'];
+        // Same list as the profile form's "Country" select.
+        const _COUNTRIES = ['United States', 'Argentina', 'Australia', 'Brazil', 'Canada', 'France', 'Germany', 'India',
+            'Ireland', 'Japan', 'Mexico', 'Netherlands', 'Nigeria', 'Pakistan', 'Philippines', 'Poland', 'Portugal',
+            'Singapore', 'Spain', 'Ukraine', 'United Kingdom'];
+        const _US_STATES = /,\s*(A[LKZR]|C[AOT]|D[EC]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY])\b/;
+        // The country the location STATES (a US state code or a country name);
+        // a bare city is not enough to guess from.
+        function _countryFromLocation(loc) {
+            const t = String(loc || '');
+            if (!t) return '';
+            if (_US_STATES.test(t) || /\b(USA|U\.S\.A?\.?|United States)\b/i.test(t)) return 'United States';
+            if (/\b(UK|England|Scotland|Wales)\b/.test(t)) return 'United Kingdom';
+            return _COUNTRIES.find(c => new RegExp('\\b' + c + '\\b', 'i').test(t)) || '';
+        }
         function _prEsc(x) { return String(x == null ? '' : x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
         function _prSteps(n) {
             const step = (i, t) => `<div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:${i <= n ? 'var(--sage,#0077C2)' : 'var(--muted,#64748b)'}">
@@ -6116,11 +6130,18 @@
             const skills = String(p.key_skills || '').split(',').map(x => x.trim()).filter(Boolean);
             const lookingFor = p.job_type_preference === 'full_time' && p.include_internships_in_discovery ? 'both' : (p.job_type_preference || 'full_time');
             const auth = p.work_auth_status || '';
+            // Where they want to work: the gate shows jobs in this country only
+            // (remote roles based abroad are always left out). A blank country
+            // would fall back to the platform default, so the setup asks for it.
+            const country = p.preferred_country || _countryFromLocation(p.location);
+            const countryOpts = [['', 'Select your country…']].concat(
+                (country && !_COUNTRIES.includes(country) ? [country] : []).concat(_COUNTRIES).map(c => [c, c]));
             // What still needs the user: the facts forms ask for and no resume holds.
             const missing = [];
             if (!p.email) missing.push('email');
             if (!p.phone) missing.push('phone');
             if (!p.location) missing.push('city, state');
+            if (!country) missing.push('country');
             if (!auth && !p.work_authorization) missing.push('work authorization');
             if (_DATED_AUTH.includes(auth) && !p.ead_end_date) missing.push('authorization end date');
             const eeoSel = (k, t) => sel(k, t, _EEO_OPTS[k].map(v => [v, v]), p[k] || 'Decline to self-identify');
@@ -6143,6 +6164,12 @@
                 ${inp('email', 'Email employers will see', p.email, 'email')}${inp('phone', 'Phone', p.phone, 'tel', '(555) 555-5555')}
                 ${inp('location', 'City, State', p.location, 'text', 'Cincinnati, OH')}${inp('linkedin_url', 'LinkedIn', p.linkedin_url)}
               </div>
+              <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Where you want to work</div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end">
+                <div data-pr-country-wrap style="${country ? '' : 'outline:1px solid rgba(180,35,24,.55);border-radius:10px;'}">${sel('preferred_country', 'Country', countryOpts, country)}</div>
+                <div style="padding-bottom:8px">${chk('remote_ok', 'Include remote jobs in this country', p.remote_ok !== false)}</div>
+              </div>
+              <div style="font-size:11.5px;color:var(--muted,#64748b);margin-top:6px">We only show jobs in this country. Remote jobs based in other countries are left out.</div>
               <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted,#64748b);margin:14px 0 6px">Experience</div>
               <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
                 ${inp('current_title', 'Current / latest title', p.current_title)}${inp('years_experience', 'Years of experience', p.years_experience || '', 'number')}
@@ -6178,6 +6205,12 @@
             wrap.querySelector('[data-pr-later]').onclick = () => { _closeReview(); _startSearchNow(); };
             wrap.querySelector('[data-pr-next]').onclick = async (ev) => {
                 const btn = ev.currentTarget;
+                const cSel = wrap.querySelector('[data-pr=preferred_country]');
+                if (cSel && !cSel.value) {
+                    status.textContent = 'Choose the country you want to work in — we only show jobs there.';
+                    cSel.focus();
+                    return;
+                }
                 btn.disabled = true; status.textContent = 'Saving…';
                 const body = {};
                 wrap.querySelectorAll('[data-pr]').forEach(el => {

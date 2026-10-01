@@ -194,3 +194,43 @@ def test_copying_jobs_in_clears_the_cached_counts():
                                  None, None, None, 5)
     ttl_cache.put("jobs_open:" + key, 7, 60)
     assert ttl_cache.invalidate('jobs_open:["u-1"') == 1
+
+
+# ── 5. the setup asks where they want to work ───────────────────────────────
+# A blank country falls back to the platform default (US), so a user in India
+# would have been searched for US jobs. The setup now asks, pre-filled only
+# from what the location states.
+
+def test_the_setup_asks_for_the_country_and_requires_it():
+    body = _function("openProfileReview")
+    assert "Where you want to work" in body
+    assert "sel('preferred_country'" in body and "chk('remote_ok'" in body
+    assert "missing.push('country')" in body
+    nxt = body[body.index("data-pr-next]').onclick"):]
+    assert nxt.index("!cSel.value") < nxt.index("fetch('/api/profile'"), "no save without a country"
+    assert "Remote jobs based in other countries are left out" in body
+
+
+def test_the_country_is_read_only_from_what_the_location_states(tmp_path):
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    a = HTML.index("const _COUNTRIES")
+    b = HTML.index("// The setup's own page header")
+    cases = {"Columbus, OH": "United States", "Toronto, ON, Canada": "Canada",
+             "Bangalore, India": "India", "London, UK": "United Kingdom",
+             "Remote, USA": "United States", "Berlin, Germany": "Germany",
+             "Dublin": "", "Hyderabad, Telangana": "", "": ""}
+    js = HTML[a:b] + "\nconsole.log(JSON.stringify(%s.map(_countryFromLocation)));" % (
+        __import__("json").dumps(list(cases)))
+    f = tmp_path / "c.js"
+    f.write_text(js)
+    out = subprocess.run([node, str(f)], capture_output=True, text=True, check=True).stdout
+    assert __import__("json").loads(out) == list(cases.values())
+
+
+def test_the_profile_route_accepts_both_fields():
+    from app.api.server import ProfileUpdate
+    assert {"preferred_country", "remote_ok"} <= set(ProfileUpdate.model_fields)
