@@ -109,12 +109,37 @@ function clearAllSessions() {
 
 chrome.tabs.onRemoved.addListener((tabId) => { endTabSession(tabId); });
 // An Apply button that opens the form in a NEW tab carries the session with it.
-chrome.tabs.onCreated.addListener((tab) => {
-  if (!tab || tab.openerTabId == null) return;
-  sessionFor(tab.openerTabId, false).then((sess) => {
-    if (sess && sess.pack) bindTab(tab.id, sess.pack, !!sess.launchedTs &&
+// Chrome's openerTabId alone cannot tell that apart from the user pressing
+// Ctrl+T on the application tab: newer Chrome reports the active tab as the
+// opener of a blank new tab too (Chrome 153, 2026-10-01), and a session there
+// would fill an unrelated site's email box with their details. So a new tab
+// inherits only when (1) the user clicked a link or button on the bound page
+// in the last few seconds (content.js sends PAGE_CLICK) and (2) its first
+// address is a web page, not a blank or New Tab page.
+const CLICK_OPEN_MS = 5000;
+const _lastPageClick = new Map();     // tabId -> ts of a click on a bound page
+const _awaitingFirstUrl = new Map();  // new tabId -> opener tabId
+function isWebUrl(u) { return /^https?:/i.test(String(u || "")); }
+function inheritSession(tabId, openerId) {
+  sessionFor(openerId, false).then((sess) => {
+    if (sess && sess.pack) bindTab(tabId, sess.pack, !!sess.launchedTs &&
                                    Date.now() - sess.launchedTs < LAUNCH_MS);
   });
+}
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!tab || tab.openerTabId == null) return;
+  const clicked = _lastPageClick.get(tab.openerTabId) || 0;
+  if (Date.now() - clicked > CLICK_OPEN_MS) return;
+  const first = tab.pendingUrl || tab.url || "";
+  if (first) { if (isWebUrl(first)) inheritSession(tab.id, tab.openerTabId); return; }
+  _awaitingFirstUrl.set(tab.id, tab.openerTabId);       // decided on its first address
+  setTimeout(() => _awaitingFirstUrl.delete(tab.id), 30000);
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url || !_awaitingFirstUrl.has(tabId)) return;
+  const opener = _awaitingFirstUrl.get(tabId);
+  _awaitingFirstUrl.delete(tabId);
+  if (isWebUrl(changeInfo.url)) inheritSession(tabId, opener);
 });
 
 // The Supabase user a token belongs to (the JWT "sub"), or "" if unreadable.
@@ -358,6 +383,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // The content script's own tab session: the pack for THIS tab or null.
+  // A click on a link or button of a copilot page: a tab it opens in the next
+  // few seconds may continue the application (see onCreated).
+  if (msg.type === "PAGE_CLICK") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (tabId != null) _lastPageClick.set(tabId, Date.now());
+    return false;
+  }
+
   if (msg.type === "GET_TAB_SESSION") {
     const tabId = sender && sender.tab && sender.tab.id;
     if (tabId == null) { sendResponse({ pack: null }); return true; }

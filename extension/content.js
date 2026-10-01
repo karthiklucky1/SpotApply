@@ -776,6 +776,17 @@ document.addEventListener('click', (e) => {
   }
 }, { capture: true, passive: true });
 
+// Tell the background a link or button was clicked on an application page, so
+// a tab it opens (an Apply button with target=_blank) continues the session,
+// while a tab the user opens themselves (Ctrl+T) does not.
+document.addEventListener('click', (e) => {
+  const el = e.target && e.target.closest &&
+    e.target.closest('a, button, [role="button"], input[type="button"], input[type="submit"]');
+  if (el && hpCopilotSurface()) {
+    chromeCall(() => chrome.runtime.sendMessage({ type: 'PAGE_CLICK' }, () => void chrome.runtime.lastError));
+  }
+}, { capture: true, passive: true });
+
 // Detect step advance click immediately (Next/Continue/Save and Continue)
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('button, a, input[type="button"], input[type="submit"]');

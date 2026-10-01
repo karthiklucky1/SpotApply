@@ -701,7 +701,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - **Extension: sessions are per TAB, "Submitted" needs confirmation** (audit
   2026-09-30, extension 1.4.0, published to the Store as 1.0.0): a session exists only in the tab SpotApply opened
   (or the popup's active tab) plus the tabs it opens — never a global pack any
-  ATS page resumes. Hosts match exactly or by real subdomain (`ATS_SUFFIXES`,
+  ATS page resumes; a new tab inherits only after a click on the bound page
+  (`PAGE_CLICK`, 5 s) and a web first URL — Chrome 153 names the active tab
+  as the opener of a Ctrl+T tab. Hosts match exactly or by real subdomain (`ATS_SUFFIXES`,
   identical in background.js + content.js). Submit = ATTEMPT (after browser
   validation, never a login form); only the employer's success page or the user's
   "Yes" calls `/application/{id}/submit`. Screening = the résumé/profile, Yes OR No

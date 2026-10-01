@@ -177,6 +177,32 @@ def main():
               first == FILL_PACK["first_name"] and email == FILL_PACK["email"],
               f"first={first!r} email={email!r}")
 
+        # The Apply flow continuing in a NEW tab (a target=_blank link on the
+        # bound page) DOES carry the session: the opener rule's purpose.
+        apply_page.bring_to_front()          # a user clicks in the tab they are on
+        with ctx.expect_page(timeout=10000) as step2_info:
+            apply_page.click("#continue-tab")
+        step2 = step2_info.value
+        step2.wait_for_load_state()
+        step2.wait_for_timeout(7000)
+        s2_first = step2.eval_on_selector("#first_name", "el => el.value")
+        check("S9 a tab the application page opens is filled too",
+              s2_first == FILL_PACK["first_name"], f"first={s2_first!r}")
+        step2.close()
+
+        # A tab the USER opens from the application tab (Ctrl+T, then a site):
+        # newer Chrome reports the application tab as its opener, but no click
+        # on the page opened it, so it must get no session and no PII.
+        apply_page.bring_to_front()
+        apply_page.wait_for_timeout(6000)     # past the click-to-open window
+        own = ctx.new_page()
+        own.goto(f"{BASE}/random-site.html")
+        own.wait_for_timeout(8000)
+        own_nl = own.eval_on_selector("#nl-email", "el => el.value")
+        check("S10 a tab the user opens themselves is never filled", not own_nl,
+              f"newsletter box contains {own_nl!r}")
+        own.close()
+
         # Pressing Submit is an ATTEMPT: nothing is marked Submitted until the
         # employer confirms or the user says so — and the session stays.
         api_hits.clear()
