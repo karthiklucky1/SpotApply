@@ -164,14 +164,45 @@ PAGES = {
 }
 
 
-def route_pages(route):
-    url = route.request.url.split("?")[0]
-    html = PAGES.get(url)
-    if html is None:
-        return route.fulfill(status=404, body="not found")
-    return route.fulfill(status=200, content_type="text/html; charset=utf-8",
-                         body=f"<!doctype html><html><head><meta name=\"stub-page\" content=\"1\"></head>"
-                              f"<body>{html}</body></html>")
+# The employer hosts above are served by a local HTTPS server that Chrome is
+# pointed at with --host-resolver-rules. Playwright's ctx.route could not do it:
+# on Chrome 153 (CI) it attaches to a tab the EXTENSION opens after that tab's
+# first request has gone out, so the real boards.greenhouse.io loaded instead.
+HTTPS_PORT = PORT + 1
+_PAGE_HOSTS = sorted({u.split("/")[2] for u in PAGES})
+
+
+class EmployerPages(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        host = (self.headers.get("Host") or "").split(":")[0]
+        html = PAGES.get(f"https://{host}{self.path.split('?')[0]}")
+        body = ("not found" if html is None else
+                f"<!doctype html><html><body>{html}</body></html>").encode()
+        self.send_response(404 if html is None else 200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def start_employer_pages(tmpdir):
+    import ssl
+    import subprocess
+    key, cert = os.path.join(tmpdir, "k.pem"), os.path.join(tmpdir, "c.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+                    "-keyout", key, "-out", cert, "-subj", "/CN=spotapply-test"],
+                   check=True, capture_output=True)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(cert, key)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", HTTPS_PORT), EmployerPages)
+    srv.socket = tls.wrap_socket(srv.socket, server_side=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return ["--host-resolver-rules=" + ", ".join(
+                f"MAP {h} 127.0.0.1:{HTTPS_PORT}" for h in _PAGE_HOSTS),
+            "--ignore-certificate-errors", "--no-proxy-server"]
 
 
 def sw(ctx):
@@ -207,12 +238,6 @@ def launch(ctx, pack):
         trig.evaluate("(p) => window.postMessage({ type: 'SPOTAPPLY_LOAD_PACK', pack: p }, '*')", pack)
     page = opened.value
     page.wait_for_load_state()
-    # On Chrome 153 Playwright attaches to a tab the EXTENSION created after
-    # its first request has left, so ctx.route misses it and the real site
-    # loads (CI, 2026-10-01). Reload once: same tab, same session, routed now.
-    if not page.query_selector('meta[name="stub-page"]'):
-        page.reload()
-        page.wait_for_load_state()
     page.wait_for_timeout(6500)
     trig.close()
     return page
@@ -238,12 +263,14 @@ def open_page(ctx, url):
 def main():
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Stub)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
+    with sync_playwright() as p, tempfile.TemporaryDirectory() as prof, \
+            tempfile.TemporaryDirectory() as certs:
+        pages_args = start_employer_pages(certs)
         ctx = p.chromium.launch_persistent_context(
-            prof, headless=True,
+            prof, headless=True, ignore_https_errors=True,
             args=[f"--disable-extensions-except={EXT}", f"--load-extension={EXT}",
-                  "--disable-features=DisableLoadExtensionCommandLineSwitch"], **_LAUNCH_KW)
-        ctx.route("https://**/*", route_pages)
+                  "--disable-features=DisableLoadExtensionCommandLineSwitch", *pages_args],
+            **_LAUNCH_KW)
         for _ in range(60):
             if ctx.service_workers:
                 break
