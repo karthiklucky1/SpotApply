@@ -188,7 +188,21 @@ def launch(ctx, pack):
     STATE["pack"] = pack
     trig = ctx.new_page()
     trig.goto(f"{BASE}/trigger")
-    trig.wait_for_timeout(1200)
+    # Wait until the content script answers the dashboard bridge: on a slow CI
+    # runner a fixed 1.2 s was sometimes too early and the pack went nowhere.
+    trig.evaluate("""() => new Promise((resolve) => {
+        const end = Date.now() + 15000;
+        const onMsg = (e) => {
+            if (e.data && /_EXT_PING_OK$/.test(e.data.type || '')) {
+                window.removeEventListener('message', onMsg); clearInterval(t); resolve(true);
+            }
+        };
+        window.addEventListener('message', onMsg);
+        const t = setInterval(() => {
+            if (Date.now() > end) { clearInterval(t); resolve(false); return; }
+            window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*');
+        }, 300);
+    })""")
     with ctx.expect_page(timeout=15000) as opened:
         trig.evaluate("(p) => window.postMessage({ type: 'SPOTAPPLY_LOAD_PACK', pack: p }, '*')", pack)
     page = opened.value
