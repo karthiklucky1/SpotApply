@@ -101,6 +101,19 @@ def test_an_invented_certification_is_caught():
     assert "certification" in _kinds(fabrication_violations(MASTER, bad))
 
 
+def test_a_real_certification_does_not_absorb_the_next_line():
+    """Production 2026-10-02: the master said "AWS Certified Cloud Practitioner";
+    the tailored draft listed it with a line starting "ML …" right after, and the
+    phrase ran across the newline into "… practitioner ml" — an "invented"
+    certification that blocked two tailors. A credential never spans a line."""
+    master = MASTER + "\n## CERTIFICATIONS\n- AWS Certified Cloud Practitioner\n"
+    tailored = MASTER + "\n## CERTIFICATIONS\nAWS Certified Cloud Practitioner\nML Pipelines and Airflow\n"
+    assert fabrication_violations(master, tailored) == []
+    # …while a word added on the SAME line is still a different credential.
+    inflated = MASTER + "\n## CERTIFICATIONS\n- AWS Certified Cloud Practitioner Professional\n"
+    assert "certification" in _kinds(fabrication_violations(master, inflated))
+
+
 def test_an_invented_number_is_caught():
     bad = MASTER.replace(
         "serving 2,500 requests per minute",

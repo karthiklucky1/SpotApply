@@ -77,10 +77,13 @@ _INSTITUTION_RE = re.compile(
 # Certifications: an explicit "certified/certification" phrase, or a well-known
 # credential acronym. Both directions matter — a résumé that gains "AWS Certified
 # Solutions Architect" it never had is exactly the fabrication users get caught on.
+# Words join on SPACES only: a credential never spans a line, and ``\s`` let
+# "AWS Certified Cloud Practitioner" absorb the capitalised word starting the
+# next line ("ML …") — a fact the master "lacked", which blocked real tailors.
 _CERT_PHRASE_RE = re.compile(
-    r"\b(?:[A-Z][\w+.#-]*\s+){0,4}"
+    r"\b(?:[A-Z][\w+.#-]*[ \t]+){0,4}"
     r"(?:Certified|Certification|Certificate)"
-    r"(?:\s+[A-Z][\w+.#-]*){0,4}\b",
+    r"(?:[ \t]+[A-Z][\w+.#-]*){0,4}\b",
 )
 _CERT_ACRONYMS = frozenset({
     "pmp", "cissp", "ccna", "ccnp", "cka", "ckad", "ckm", "cfa", "cpa", "csm",
