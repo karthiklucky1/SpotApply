@@ -132,6 +132,59 @@ def test_the_same_click_welcomes_an_unpaused_returner(welcomed):
     assert welcomed == [uid]
 
 
+# ── Resume is how an idle user comes back ────────────────────────────────────
+# Page loads stopped counting as activity (2026-10-08, _PASSIVE_WRITE_PATHS),
+# so "Resume search" is now the usual way back. A RETURN gets the first-hour
+# window — opened by the route AFTER it clears the pause (the stamp runs first,
+# while the profile still reads paused, and begin() refuses a paused user).
+
+def _route_req(path: str):
+    r = _req("POST", path)
+    r.state = SimpleNamespace()
+    return r
+
+
+@pytest.fixture
+def signed_in(monkeypatch):
+    monkeypatch.setattr(type(settings), "use_supabase", property(lambda self: True))
+    import app.db.supabase_client as sc
+    monkeypatch.setattr(sc, "get_user_id_from_token", lambda tok: UID)
+
+
+def test_resume_after_a_long_pause_welcomes_them(welcomed, signed_in):
+    uid = _returner(paused=True)          # last acted 40 days ago, then paused
+    server.resume_search(_route_req("/api/search/resume"))
+    assert _paused_at(uid) is None
+    assert welcomed == [uid], "the welcome opens once the pause is cleared"
+
+
+def test_resume_by_an_idle_user_welcomes_them(welcomed, signed_in):
+    uid = _returner(paused=False)         # never paused, just away 40 days
+    d = server.resume_search(_route_req("/api/search/resume"))
+    assert welcomed == [uid]
+    assert d["state"] in ("active", "paid")
+
+
+def test_resume_minutes_after_pausing_is_not_a_return(welcomed, signed_in):
+    uid = _returner(paused=True)
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        p.last_meaningful_activity_at = datetime.utcnow() - timedelta(minutes=20)
+        s.add(p)
+        s.commit()
+    server.resume_search(_route_req("/api/search/resume"))
+    assert _paused_at(uid) is None
+    assert welcomed == []
+
+
+def test_a_returning_users_pause_click_still_opens_nothing(welcomed, signed_in):
+    """The other half: the same return signal on the PAUSE route is ignored."""
+    uid = _returner(paused=False)
+    server.pause_search(_route_req("/api/search/pause"))
+    assert welcomed == []
+    assert _paused_at(uid) is not None
+
+
 # ── a window that was already open ───────────────────────────────────────────
 
 def test_pausing_ends_an_open_boost():

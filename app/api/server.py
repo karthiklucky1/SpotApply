@@ -340,8 +340,15 @@ def _get_user_id(request: Request) -> str | None:
                     # An action can move the counts /api/stats caches.
                     from app.common import ttl_cache as _tc
                     _tc.invalidate(f"stats:{uid}")
-                _touch_last_active(uid, meaningful=(kind == "meaningful"),
-                                   welcome=_may_welcome(request))
+                came_back = _touch_last_active(uid, meaningful=(kind == "meaningful"),
+                                               welcome=_may_welcome(request))
+                if came_back:
+                    # For a route that acts on it after its own write:
+                    # Resume clears the pause first, then welcomes them.
+                    try:
+                        request.state.returning_after_idle = True
+                    except Exception:
+                        pass
             return uid
     return None
 
@@ -362,6 +369,21 @@ _MEANINGFUL_GET_PREFIXES = ("/dashboard", "/api/fill-pack/")
 _MEANINGFUL_GET_SUFFIXES = ("/download-resume", "/details",
                             "/review", "/answer-pack")
 
+#: Writes a client makes ON ITS OWN — while a page loads, on a timer — rather
+#: than because a person did something. A write is meaningful by default, so a
+#: new automatic one silently re-opens the finding-7 hole: until 2026-10-08 the
+#: dashboard's load fired POST /api/verify/identity, every page view renewed
+#: the paid-AI window, and a return past the idle window started the first-hour
+#: refresh on a page view alone. Each entry says what fires it. Swept then:
+#: every other write in dashboard.html, extension/*.js and mobile/src is a
+#: click, a submit, or opening a job (guard: tests/test_dormancy.py).
+_PASSIVE_WRITE_PATHS = frozenset({
+    # dashboard.html loadTrustProfile(), once per page session on load: copies
+    # the email/phone-confirmed flags from the sign-in token and recomputes the
+    # trust score. Bookkeeping about the account, not a person using it.
+    "/api/verify/identity",
+})
+
 
 def _activity_kind(request) -> str | None:
     """'meaningful' | 'seen' | None for one authenticated request.
@@ -371,7 +393,8 @@ def _activity_kind(request) -> str | None:
     'seen' (navigating to the dashboard) only records that the person looked:
     it updates `last_active_at`, never the compute window — a page left open
     or reloaded is not someone asking for paid work. Everything else — polls,
-    notification fetches, token refreshes, every other GET — is None.
+    notification fetches, token refreshes, every other GET, and the writes a
+    page makes on its own (`_PASSIVE_WRITE_PATHS`) — is None.
     """
     try:
         method = (request.method or "GET").upper()
@@ -379,6 +402,8 @@ def _activity_kind(request) -> str | None:
     except Exception:
         return None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
+        if path.rstrip("/") in _PASSIVE_WRITE_PATHS:
+            return None
         return "meaningful"
     if method != "GET":
         return None
@@ -417,7 +442,7 @@ def _may_welcome(request) -> bool:
     search controls themselves: the stamp runs BEFORE the route body, so on
     "Pause my search" the profile still reads as unpaused and the click that
     asked us to stop would open a boost that adopts and scores (2026-10-08).
-    Resume starts nothing here either — the lanes take it from the next tick."""
+    Resume opens it itself, AFTER clearing the pause (`resume_search`)."""
     try:
         path = request.url.path or ""
         return (request.method or "").upper() != "DELETE" and \
@@ -427,16 +452,21 @@ def _may_welcome(request) -> bool:
         return False
 
 
-def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False) -> None:
+def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False) -> bool:
+    """Stamp activity. Returns whether this meaningful request is a RETURN
+    (roles on file, away past the idle window) — whether or not it was
+    allowed to open the first-hour window here; `resume_search` uses that to
+    open it once the pause is cleared."""
     import time as _time
     mono = _time.monotonic()
     key = f"m:{uid}" if meaningful else uid
     last = _LAST_ACTIVE_STAMP.get(key)
     if last is not None and mono - last < _LAST_ACTIVE_STAMP_SECONDS:
-        return
+        return False
     _LAST_ACTIVE_STAMP[key] = mono
     if meaningful:
         _LAST_ACTIVE_STAMP[uid] = mono          # a meaningful stamp is also a "seen" one
+    returning = False
     try:
         from datetime import datetime as _now_dt
         from app.db.models import UserProfile
@@ -444,7 +474,7 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
             prof = session.exec(
                 select(UserProfile).where(UserProfile.user_id == uid)
             ).first()
-            returning = False
+            welcome_now = False
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
                 if meaningful:
@@ -452,19 +482,19 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
                     from app.strategy.welcome import returning_after_idle
                     # Only someone who already HAS roles can be welcomed back
                     # with jobs; a role-less account starts at resume upload.
-                    # A paused search is not welcomed back by a click: only
-                    # "Resume search" starts work for them again.
-                    returning = welcome and not is_paused(prof) and \
-                        bool((prof.target_roles or "").strip()) and \
+                    returning = bool((prof.target_roles or "").strip()) and \
                         returning_after_idle(prof.last_meaningful_activity_at,
                                              prof.last_active_at)
+                    # A paused search is not welcomed back by a click: only
+                    # "Resume search" starts work for them again.
+                    welcome_now = welcome and returning and not is_paused(prof)
                     prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
         if meaningful:
             from app.common.compute_policy import forget
             forget(uid)
-            if returning:
+            if welcome_now:
                 from app.strategy.welcome import welcome_back
                 welcome_back(uid)
             from app.analytics.journey import record as _journey
@@ -472,6 +502,7 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
             _journey(uid, "active_day")      # once per user per day
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
+    return returning
 
 
 def _lane_user_ids() -> list:
@@ -10054,9 +10085,19 @@ def pause_search(request: Request, body: Optional[SearchPauseRequest] = None) ->
 def resume_search(request: Request) -> dict:
     """Resume: clears a pause and counts as a meaningful action. The next lane
     tick adopts a FRESH, bounded batch (adoption's age window + per-step cap,
-    the 5-day scoring window and the day's finals budget) — never the backlog."""
+    the 5-day scoring window and the day's finals budget) — never the backlog.
+
+    Someone coming back after the idle window — from their own pause, or from
+    going idle — is a return like any other and gets the first-hour window
+    (welcome.py: same budgets, they are just served first). Since page loads
+    stopped counting as activity, this button is how most idle users come
+    back. It opens HERE, after the pause is cleared: the request stamp ran
+    before this body, while the profile could still read paused."""
     uid = _require_user(request)
     _set_search_pause(uid, False)
+    if getattr(getattr(request, "state", None), "returning_after_idle", False):
+        from app.strategy import welcome as _welcome
+        _welcome.welcome_back(uid)
     return _search_state_payload(uid)
 
 

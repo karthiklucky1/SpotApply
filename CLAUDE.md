@@ -662,7 +662,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   résumé DATES (`SkillEvidence.employment_months`; role length is `role_months`,
   an upper bound); ONE export verdict (`tailoring/export_gate.py`) for review,
   details, download and fill-pack; polling never counts as activity
-  (`_is_meaningful_request`), grace 1 day.
+  (`_is_meaningful_request`), grace 1 day — nor does a write a page fires on
+  its own (`_PASSIVE_WRITE_PATHS`: the dashboard's load-time
+  `/api/verify/identity` made every page view meaningful until 2026-10-08), so
+  "Resume search" is how idle users return and it opens the first-hour window
+  itself, after clearing the pause (guard: `test_dormancy`).
 - **Students: ONE answer for "internships?" and "sponsorship?"** (2026-09-28,
   `app/common/tenant_prefs.py`): `wants_internships` (Looking for = internship
   or both, or the old switch) and `needs_sponsorship` (the VISA STATUS decides
