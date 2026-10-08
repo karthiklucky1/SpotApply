@@ -542,9 +542,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   never the dismissal marker); one report never touches another board — it
   queues `delivery_gate.verify_reported` (forced past a young LIVE verdict,
   `LIVENESS_REPORTS_PER_USER_DAILY`, `LIVENESS_REPORT_MIN_RECHECK_MINUTES`,
-  verifiable sources only) and only REMOVED/EXPIRED runs
-  `close_dead_everywhere` (waiting copies → Removed; TAILORED+ only
-  `is_closed`). Guard: `test_report_unavailable`. Opening a job
+  verifiable sources only, checked BEFORE any cached verdict) and only
+  REMOVED/EXPIRED runs `close_dead_everywhere` (waiting copies incl. ERROR →
+  Removed; TAILORED+ only `is_closed`). A BARE workday/bamboohr/teamtailor id
+  (`job_identity.looks_unscoped`) is shared by other employers: fetch that
+  row's URL only (`check_url_now`, recorded nowhere) and close only
+  same-employer copies (`tenant_from_url`). Guard: `test_report_unavailable`. Opening a job
   (`/api/jobs/{id}/verify`) uses the SAME rules — forced gate check, no
   session across the fetch; an aggregator link closes only the opener's copy
   (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
@@ -669,8 +672,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`_is_meaningful_request`), grace 1 day — nor does a write a page fires on
   its own (`_PASSIVE_WRITE_PATHS`: the dashboard's load-time
   `/api/verify/identity` made every page view meaningful until 2026-10-08), so
-  "Resume search" is how idle users return and it opens the first-hour window
-  itself, after clearing the pause (guard: `test_dormancy`).
+  "Resume search" is how idle users return: it clears the pause, then ALWAYS
+  re-runs `seed_new_user` in the background (a role change or resume saved
+  while paused seeds nothing until then) (guards: `test_dormancy`,
+  `test_pause_stops_work`).
 - **Students: ONE answer for "internships?" and "sponsorship?"** (2026-09-28,
   `app/common/tenant_prefs.py`): `wants_internships` (Looking for = internship
   or both, or the old switch) and `needs_sponsorship` (the VISA STATUS decides

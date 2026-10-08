@@ -393,3 +393,84 @@ def test_the_removed_tab_renders_the_reason(monkeypatch):
     r = c.get("/dashboard")
     assert r.status_code == 200
     assert ">No longer available</span>" in r.text
+
+
+# ── review 2026-10-08: what a report must never close ────────────────────────
+
+def test_a_failed_tailor_card_leaves_the_board_too(monkeypatch):
+    """ERROR (a tailor our checks blocked) is a board status; leaving it there
+    after the user said the job is gone sent them to Remove, which is learned
+    as "not interested"."""
+    _fetches(monkeypatch, status=200)
+    _jid, aid = _job(_P + "20", None, status=ApplicationStatus.ERROR)
+    d = _client().post(f"/application/{aid}/unavailable").json()
+    assert d["removed"] is True and _app(aid).status == ApplicationStatus.SKIPPED
+    assert not _is_user_dismissal(_app(aid))
+
+
+def test_a_stale_verdict_on_an_aggregator_link_closes_nobody_else(monkeypatch):
+    """A cached REMOVED on an aggregator can be a HEAD that landed on a careers
+    page. The source rule comes before ANY verdict, cached or new."""
+    calls = _fetches(monkeypatch, status=404)
+    ext = _P + "21"
+    with get_session() as s:
+        s.add(JobLiveness(source="remoteok", external_id=ext,
+                          state=JobLivenessState.REMOVED.value, checked_at=datetime.utcnow()))
+        s.commit()
+    agg = dict(source=JobSource.REMOTEOK, url="https://remoteok.com/l/21")
+    _jid, other = _job(ext, _P + "other", status=ApplicationStatus.SHORTLISTED, **agg)
+    assert gate.verify_reported(JobSource.REMOTEOK, ext, agg["url"],
+                                user_id=_P + "me") == "unverifiable"
+    assert calls == [] and _app(other).status == ApplicationStatus.SHORTLISTED
+    assert gate.close_dead_everywhere(JobSource.REMOTEOK, ext,
+                                      JobLivenessState.REMOVED.value)["jobs_closed"] == 0
+
+
+GN = "https://gn.wd1.myworkdayjobs.com/en-US/GN/job/Shakopee/Fitting-Advisor_R29845"
+CS = "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/Sunnyvale/Engineer_R29845"
+
+
+def test_a_bare_workday_id_never_closes_another_employers_job(monkeypatch):
+    """Workday requisition ids are unique per employer: CrowdStrike and GN both
+    had R29845 (production, 2026-09-25). A legacy row keyed by the BARE id must
+    only ever close copies of the same employer's posting."""
+    calls = _fetches(monkeypatch, status=404)
+    ext = _P + "R29845"
+    _jid, aid = _job(ext, None, source=JobSource.WORKDAY, url=GN,
+                     status=ApplicationStatus.SHORTLISTED)
+    gn_jid, gn_aid = _job(ext, _P + "gnfan", source=JobSource.WORKDAY, url=GN,
+                          status=ApplicationStatus.SHORTLISTED)
+    cs_jid, cs_aid = _job(ext, _P + "csfan", source=JobSource.WORKDAY, url=CS,
+                          status=ApplicationStatus.SHORTLISTED)
+
+    _client().post(f"/application/{aid}/unavailable")
+
+    assert calls == [GN], "the reporter's own URL, and only it"
+    assert _app(gn_aid).status == ApplicationStatus.SKIPPED      # same employer
+    assert _app(cs_aid).status == ApplicationStatus.SHORTLISTED  # another employer
+    assert not _job_row(cs_jid).is_closed
+    with get_session() as s:
+        assert s.exec(select(JobLiveness).where(JobLiveness.external_id == ext)).first() is None, \
+            "a verdict filed under a bare id would speak for every employer using it"
+
+
+def test_another_employers_cached_verdict_is_not_trusted(monkeypatch):
+    """The shared row under a bare id may be the OTHER employer's: check this URL."""
+    ext = _P + "R30000"
+    with get_session() as s:
+        s.add(JobLiveness(source="workday", external_id=ext,
+                          state=JobLivenessState.REMOVED.value, checked_at=datetime.utcnow()))
+        s.commit()
+    calls = _fetches(monkeypatch, status=200, body="<h1>Engineer</h1> Apply")
+    _jid, gn_aid = _job(ext, _P + "gnfan", source=JobSource.WORKDAY, url=GN,
+                        status=ApplicationStatus.SHORTLISTED)
+    assert gate.verify_reported(JobSource.WORKDAY, ext, GN, user_id=_P + "me") == "not_confirmed"
+    assert calls == [GN] and _app(gn_aid).status == ApplicationStatus.SHORTLISTED
+
+
+def test_the_message_follows_what_the_report_did():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "app/templates/dashboard.html").read_text()
+    toast = _function("_unavailableToast")
+    assert "r.removed" in toast and "keeps its place" in toast
+    assert "_unavailableToast(r)" in html and "_UNAVAILABLE_TOAST" not in html

@@ -248,3 +248,22 @@ def test_the_dashboard_disables_a_card_only_when_it_left_the_board():
     grey = hook.index("card.style.pointerEvents = 'none'")
     assert hook.rindex("else if (!v.active)", 0, grey) > hook.index("!v.active && !v.removed")
     assert re.search(r"your application stays on your board", hook)
+
+
+def test_opening_a_bare_workday_job_checks_only_its_own_employer(monkeypatch):
+    """Review 2026-10-08: a bare requisition id is shared by other employers'
+    postings, so the open fetches THIS row's URL and closes only same-employer
+    copies; nothing is filed under the shared id."""
+    gn = "https://gn.wd1.myworkdayjobs.com/GN/job/x_R29845"
+    cs = "https://crowdstrike.wd5.myworkdayjobs.com/cs/job/y_R29845"
+    calls = _fetch(monkeypatch, status=404)
+    ext = _P + "R29845"
+    jid, _aid = _job(ext, None, source=JobSource.WORKDAY, url=gn,
+                     status=ApplicationStatus.SHORTLISTED)
+    _cj, cs_aid = _job(ext, _P + "csfan", source=JobSource.WORKDAY, url=cs,
+                       status=ApplicationStatus.SHORTLISTED)
+    assert _verify(jid).json()["removed"] is True
+    assert calls == [None]                      # one fetch: this row's URL
+    assert _app(cs_aid).status == ApplicationStatus.SHORTLISTED
+    with get_session() as s:
+        assert s.exec(select(JobLiveness).where(JobLiveness.external_id == ext)).first() is None

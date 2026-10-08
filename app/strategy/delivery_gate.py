@@ -270,9 +270,10 @@ def verify_for_delivery(source, external_id: str, url: str, *,
 # only a CONCLUSIVE REMOVED/EXPIRED takes it off other boards.
 
 #: Applications still waiting on the user — a dead posting leaves these boards.
-#: Anything the user has worked on (TAILORED and beyond) keeps its place: the
-#: job is marked closed (the drawer says so) and the decision stays theirs.
-_WAITING_STATUSES = ("discovered", "matched", "shortlisted")
+#: ERROR is a tailor our checks blocked: still on the board, nothing delivered,
+#: nothing left to rebuild for. Anything the user has worked on (TAILORED and
+#: beyond) keeps its place: the job is marked closed and the decision is theirs.
+_WAITING_STATUSES = ("discovered", "matched", "shortlisted", "error")
 
 
 def _close_copies(session, job_ids: list, *, closed_reason: str, note: str) -> dict:
@@ -312,14 +313,23 @@ def _close_copies(session, job_ids: list, *, closed_reason: str, note: str) -> d
 
 
 def close_dead_everywhere(source, external_id: str, state: str, *,
-                          found_by: str = "after a user report") -> dict:
+                          found_by: str = "after a user report",
+                          checked_url: str = "") -> dict:
     """Every copy of a CONCLUSIVELY dead posting stops being offered.
 
     By ``(source, external_id)`` — the posting key every copy keeps
     (JobLiveness uses the same one): the shared-pool row (adoption stops
     copying it), unscored copies (the queue stops paying for them) and copies
-    still waiting on a board (`_close_copies`). REMOVED/EXPIRED only. Counts
-    only, never ids. ``found_by`` finishes the closed_reason ("confirmed …").
+    still waiting on a board (`_close_copies`). REMOVED/EXPIRED only, and
+    only for a source whose permalink speaks for the vacancy
+    (`_VERIFIABLE_SOURCES`). Counts only, never ids. ``found_by`` finishes the
+    closed_reason ("confirmed …").
+
+    A BARE Workday/BambooHR/Teamtailor id (a row written before ids were
+    scoped, ``job_identity.looks_unscoped``) is unique only inside ONE
+    employer — CrowdStrike and GN both had ``R29845``. For those, only copies
+    whose URL names the same employer as ``checked_url`` are closed; without a
+    checked URL, none are.
     """
     from datetime import datetime
 
@@ -329,14 +339,21 @@ def close_dead_everywhere(source, external_id: str, state: str, *,
     from app.db.models import Job
     from app.discovery.liveness import is_dead
 
-    if not is_dead(state):
-        return {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
+    from app.discovery.job_identity import looks_unscoped, tenant_from_url
+
     src = source.value if hasattr(source, "value") else str(source)
     ext = str(external_id)
+    if not is_dead(state) or src not in _VERIFIABLE_SOURCES:
+        return {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
+    unscoped = looks_unscoped(src, ext)
+    tenant = tenant_from_url(src, checked_url) if unscoped else ""
+    if unscoped and not tenant:
+        return {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
     with get_session() as s:
-        rows = s.exec(select(Job.id, Job.source).where(Job.external_id == ext)).all()
+        rows = s.exec(select(Job.id, Job.source, Job.url).where(Job.external_id == ext)).all()
         ids = [r[0] for r in rows
-               if (r[1].value if hasattr(r[1], "value") else str(r[1])) == src]
+               if (r[1].value if hasattr(r[1], "value") else str(r[1])) == src
+               and (not unscoped or tenant_from_url(src, r[2]) == tenant)]
         out = _close_copies(
             s, ids, closed_reason=f"Deactivated (posting {state}, confirmed {found_by})",
             note=f"\nJob closed — the posting was {state} when re-checked on "
@@ -345,6 +362,19 @@ def close_dead_everywhere(source, external_id: str, state: str, *,
     _bump("dead_copies_closed", out["jobs_closed"])
     _bump("dead_applications_removed", out["applications_removed"])
     return out
+
+
+def check_url_now(url: str) -> str:
+    """One SSRF-guarded fetch of exactly this URL, classified and recorded
+    NOWHERE. For a bare tenant-scoped id the shared JobLiveness row (keyed by
+    that id) may describe another employer's posting, so neither its cached
+    verdict nor a new one written under that key can be trusted."""
+    from app.discovery import liveness as lv
+    _bump("checks_attempted_direct")
+    status, final_url, body, error = _fetch(url, float(settings.liveness_check_timeout_seconds))
+    state, _reason = lv.classify(status, requested_url=url, final_url=final_url,
+                                 body=body, error=error)
+    return state
 
 
 def close_own_copy(job_id: int, why: str) -> dict:
@@ -381,15 +411,20 @@ def verify_reported(source, external_id: str, url: str, *,
     ext = str(external_id)
     _bump("report_received")
     try:
+        from app.discovery.job_identity import looks_unscoped
         if not settings.liveness_gate_enabled:
             _bump("report_disabled")
             return "disabled"
-        state, _checked_at = _cached(src, ext)
+        # Before ANY verdict, cached or new: an aggregator's link does not
+        # speak for the vacancy, so nothing about it closes anyone else's copy
+        # (a cached REMOVED there can be a HEAD that landed on a careers page).
+        if src not in _VERIFIABLE_SOURCES or not url:
+            _bump("report_unverifiable")
+            _bump(f"by_source:{src}:report_unverifiable")
+            return "unverifiable"
+        unscoped = looks_unscoped(src, ext)
+        state = None if unscoped else _cached(src, ext)[0]
         if not lv.is_dead(state):
-            if src not in _VERIFIABLE_SOURCES or not url:
-                _bump("report_unverifiable")
-                _bump(f"by_source:{src}:report_unverifiable")
-                return "unverifiable"
             # A report triggers a server-side fetch, so it is rationed per
             # reporter (the posting itself is rationed inside verify_for_delivery).
             if user_id and user_id != "local":
@@ -398,12 +433,13 @@ def verify_reported(source, external_id: str, url: str, *,
                                int(settings.liveness_reports_per_user_daily or 0)):
                     _bump("report_capped")
                     return "capped"
-            state, _how = verify_for_delivery(source, ext, url, force=True)
+            state = (check_url_now(url) if unscoped
+                     else verify_for_delivery(source, ext, url, force=True)[0])
         if not lv.is_dead(state):
             _bump("report_not_confirmed")
             _bump(f"by_source:{src}:report_not_confirmed")
             return "not_confirmed"
-        close_dead_everywhere(source, ext, state)
+        close_dead_everywhere(source, ext, state, checked_url=url)
         _bump("report_confirmed_dead")
         _bump(f"by_source:{src}:report_confirmed_dead")
         return "confirmed_dead"

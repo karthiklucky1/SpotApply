@@ -340,15 +340,8 @@ def _get_user_id(request: Request) -> str | None:
                     # An action can move the counts /api/stats caches.
                     from app.common import ttl_cache as _tc
                     _tc.invalidate(f"stats:{uid}")
-                came_back = _touch_last_active(uid, meaningful=(kind == "meaningful"),
-                                               welcome=_may_welcome(request))
-                if came_back:
-                    # For a route that acts on it after its own write:
-                    # Resume clears the pause first, then welcomes them.
-                    try:
-                        request.state.returning_after_idle = True
-                    except Exception:
-                        pass
+                _touch_last_active(uid, meaningful=(kind == "meaningful"),
+                                   welcome=_may_welcome(request))
             return uid
     return None
 
@@ -442,7 +435,7 @@ def _may_welcome(request) -> bool:
     search controls themselves: the stamp runs BEFORE the route body, so on
     "Pause my search" the profile still reads as unpaused and the click that
     asked us to stop would open a boost that adopts and scores (2026-10-08).
-    Resume opens it itself, AFTER clearing the pause (`resume_search`)."""
+    Resume restarts the search itself, AFTER clearing the pause (`resume_search`)."""
     try:
         path = request.url.path or ""
         return (request.method or "").upper() != "DELETE" and \
@@ -452,21 +445,16 @@ def _may_welcome(request) -> bool:
         return False
 
 
-def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False) -> bool:
-    """Stamp activity. Returns whether this meaningful request is a RETURN
-    (roles on file, away past the idle window) — whether or not it was
-    allowed to open the first-hour window here; `resume_search` uses that to
-    open it once the pause is cleared."""
+def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False) -> None:
     import time as _time
     mono = _time.monotonic()
     key = f"m:{uid}" if meaningful else uid
     last = _LAST_ACTIVE_STAMP.get(key)
     if last is not None and mono - last < _LAST_ACTIVE_STAMP_SECONDS:
-        return False
+        return
     _LAST_ACTIVE_STAMP[key] = mono
     if meaningful:
         _LAST_ACTIVE_STAMP[uid] = mono          # a meaningful stamp is also a "seen" one
-    returning = False
     try:
         from datetime import datetime as _now_dt
         from app.db.models import UserProfile
@@ -482,12 +470,12 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
                     from app.strategy.welcome import returning_after_idle
                     # Only someone who already HAS roles can be welcomed back
                     # with jobs; a role-less account starts at resume upload.
-                    returning = bool((prof.target_roles or "").strip()) and \
-                        returning_after_idle(prof.last_meaningful_activity_at,
-                                             prof.last_active_at)
                     # A paused search is not welcomed back by a click: only
                     # "Resume search" starts work for them again.
-                    welcome_now = welcome and returning and not is_paused(prof)
+                    welcome_now = (welcome and not is_paused(prof)
+                                   and bool((prof.target_roles or "").strip())
+                                   and returning_after_idle(prof.last_meaningful_activity_at,
+                                                            prof.last_active_at))
                     prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
@@ -502,7 +490,6 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
             _journey(uid, "active_day")      # once per user per day
     except Exception as e:
         log.debug("last_active stamp failed for %s: %s", uid, e)
-    return returning
 
 
 def _lane_user_ids() -> list:
@@ -3212,11 +3199,17 @@ def verify_job(job_id: int, request: Request) -> dict:
         return _closed_answer()        # already known — nothing to fetch
     src = _enum_val(source)
     if src in _dg._VERIFIABLE_SOURCES and url:
-        state, _how = _dg.verify_for_delivery(source, external_id, url, force=True)
+        from app.discovery.job_identity import looks_unscoped
+        # A bare Workday/BambooHR/Teamtailor id is shared by other employers'
+        # postings: check THIS url, trust no verdict filed under that id.
+        if looks_unscoped(src, external_id):
+            state = _dg.check_url_now(url)
+        else:
+            state, _how = _dg.verify_for_delivery(source, external_id, url, force=True)
         if not is_dead(state):
             return {"active": True}
         _dg.close_dead_everywhere(source, external_id, state,
-                                  found_by="when a user opened it")
+                                  found_by="when a user opened it", checked_url=url)
         return _closed_answer()
     from app.discovery.verify import check_job_alive
     alive, why = check_job_alive(url)
@@ -6765,7 +6758,9 @@ def report_unavailable(application_id: int, request: Request,
         if job.is_closed and job.closed_reason == _REPORTED_CLOSED_REASON:
             return {"success": True, "application_id": application_id,
                     "status": _enum_val(status_before), "already": True}
-        if status_before in _PRE_SUBMIT_STATUSES:
+        # ERROR: a tailor our checks blocked, still on the board — the
+        # posting is gone, so there is nothing left to rebuild for.
+        if status_before in _PRE_SUBMIT_STATUSES or status_before == ApplicationStatus.ERROR:
             application.status = ApplicationStatus.SKIPPED
             application.notes = ((application.notes or "")
                                  + f"\nJob closed — reported no longer available on {now:%Y-%m-%d}.").strip()
@@ -10120,23 +10115,34 @@ def pause_search(request: Request, body: Optional[SearchPauseRequest] = None) ->
 
 
 @app.post("/api/search/resume")
-def resume_search(request: Request) -> dict:
-    """Resume: clears a pause and counts as a meaningful action. The next lane
-    tick adopts a FRESH, bounded batch (adoption's age window + per-step cap,
-    the 5-day scoring window and the day's finals budget) — never the backlog.
+def resume_search(request: Request, background_tasks: BackgroundTasks) -> dict:
+    """Resume: clears a pause and counts as a meaningful action, then RESTARTS
+    the search now — the onboarding seed (`adoption.seed_new_user`: the
+    first-hour window, adoption of the fresh window for the CURRENT roles,
+    matching, first results; a domain scrape if the feed is thin), in the
+    background, after the pause is cleared. Same budgets as any search; the
+    user is just served first.
 
-    Someone coming back after the idle window — from their own pause, or from
-    going idle — is a return like any other and gets the first-hour window
-    (welcome.py: same budgets, they are just served first). Since page loads
-    stopped counting as activity, this button is how most idle users come
-    back. It opens HERE, after the pause is cleared: the request stamp ran
-    before this body, while the profile could still read paused."""
+    Not "only when it looks like a return": while paused, a role change or a
+    new resume is saved but seeds nothing (PAUSED allows nothing), and any
+    click before Resume overwrites the activity a return is judged by. Both
+    left a user who had just fixed their roles with nothing until the next
+    global pass, up to hours later (review, 2026-10-08). Since page loads stopped
+    counting as activity, this button is also how most idle users come back."""
     uid = _require_user(request)
     _set_search_pause(uid, False)
-    if getattr(getattr(request, "state", None), "returning_after_idle", False):
-        from app.strategy import welcome as _welcome
-        _welcome.welcome_back(uid)
+    background_tasks.add_task(_restart_search, uid if uid != "local" else None)
     return _search_state_payload(uid)
+
+
+def _restart_search(user_id: Optional[str]) -> None:
+    """Resume's background half. Never raises: Resume has already succeeded,
+    and the scheduled lanes remain the backstop if this cannot run."""
+    try:
+        from app.strategy.adoption import seed_new_user
+        seed_new_user(user_id)
+    except Exception as e:
+        log.warning("resume: search restart failed (lanes will pick it up): %s", e)
 
 
 class RecruiterRegister(BaseModel):

@@ -5033,7 +5033,14 @@
             if (!r.ok) throw new Error('report failed');
             return r.json();
         }
-        const _UNAVAILABLE_TOAST = "Thanks — it's off your board. We'll re-check the posting so others don't get a closed job.";
+        // What the report did decides what we say: a submitted or interviewing
+        // application keeps its stage (postings close mid-process), and saying
+        // "off your board" about a card still on the board is a false message.
+        function _unavailableToast(r) {
+            return (r && r.removed)
+                ? "Thanks, it's off your board. We'll re-check the posting so others don't get a closed job."
+                : "Thanks. The posting is marked closed; your application keeps its place.";
+        }
         function reportUnavailable(appId, btn) {
             showCustomConfirm({
                 title: 'Job no longer available?',
@@ -5042,8 +5049,8 @@
                 onConfirm: async () => {
                     if (btn) btn.disabled = true;
                     try {
-                        await _postUnavailable(appId);
-                        showToastNextPage(_UNAVAILABLE_TOAST, 'success');
+                        const r = await _postUnavailable(appId);
+                        showToastNextPage(_unavailableToast(r), 'success');
                         window.location.reload();
                     } catch (e) {
                         if (btn) btn.disabled = false;
@@ -9095,10 +9102,10 @@
             gone.disabled = true;
             gone.textContent = 'Reporting…';
             try {
-                await _postUnavailable(appId);
+                const r = await _postUnavailable(appId);
                 _clearPendingApply();
                 box.remove();
-                showToastNextPage(_UNAVAILABLE_TOAST, 'success');
+                showToastNextPage(_unavailableToast(r), 'success');
                 window.location.reload();
             } catch (e) {
                 gone.disabled = false;

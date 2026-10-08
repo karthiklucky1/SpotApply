@@ -132,11 +132,14 @@ def test_the_same_click_welcomes_an_unpaused_returner(welcomed):
     assert welcomed == [uid]
 
 
-# ── Resume is how an idle user comes back ────────────────────────────────────
-# Page loads stopped counting as activity (2026-10-08, _PASSIVE_WRITE_PATHS),
-# so "Resume search" is now the usual way back. A RETURN gets the first-hour
-# window — opened by the route AFTER it clears the pause (the stamp runs first,
-# while the profile still reads paused, and begin() refuses a paused user).
+# ── Resume restarts the search ───────────────────────────────────────────────
+# Resume clears the pause, then runs the onboarding seed in the background
+# (adoption.seed_new_user: the first-hour window, adoption for the CURRENT
+# roles, matching, first results). Not "only when it looks like a return":
+# review 2026-10-08 reproduced two users left with nothing until the next
+# global pass — one who changed roles while paused (the seed was skipped and
+# never re-run), one who opened a job before pressing Resume (the click
+# overwrote the activity a return was judged by).
 
 def _route_req(path: str):
     r = _req("POST", path)
@@ -151,37 +154,69 @@ def signed_in(monkeypatch):
     monkeypatch.setattr(sc, "get_user_id_from_token", lambda tok: UID)
 
 
-def test_resume_after_a_long_pause_welcomes_them(welcomed, signed_in):
-    uid = _returner(paused=True)          # last acted 40 days ago, then paused
-    server.resume_search(_route_req("/api/search/resume"))
-    assert _paused_at(uid) is None
-    assert welcomed == [uid], "the welcome opens once the pause is cleared"
+def _resume(uid):
+    """POST /api/search/resume as the route runs it, then its background task."""
+    from fastapi import BackgroundTasks
+    bt = BackgroundTasks()
+    d = server.resume_search(_route_req("/api/search/resume"), bt)
+    assert _paused_at(uid) is None, "the pause is cleared before anything runs"
+    for t in bt.tasks:
+        t.func(*t.args, **t.kwargs)
+    return d
 
 
-def test_resume_by_an_idle_user_welcomes_them(welcomed, signed_in):
-    uid = _returner(paused=False)         # never paused, just away 40 days
-    d = server.resume_search(_route_req("/api/search/resume"))
-    assert welcomed == [uid]
+@pytest.fixture
+def seeded(monkeypatch):
+    """Record seeds, and whether the user was still paused when each ran."""
+    got = []
+    monkeypatch.setattr(adoption, "seed_new_user",
+                        lambda uid: got.append((uid, cp.user_paused(uid))) or 0)
+    return got
+
+
+@pytest.mark.parametrize("paused", [True, False])
+def test_resume_restarts_the_search(signed_in, seeded, paused):
+    uid = _returner(paused=paused)            # paused, or simply idle for 40 days
+    d = _resume(uid)
+    assert seeded == [(uid, False)]
     assert d["state"] in ("active", "paid")
 
 
-def test_resume_minutes_after_pausing_is_not_a_return(welcomed, signed_in):
+def test_roles_changed_while_paused_are_searched_on_resume(signed_in, monkeypatch):
+    """The skipped seed is not lost: Resume runs it, for the roles saved now."""
     uid = _returner(paused=True)
-    with get_session() as s:
-        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
-        p.last_meaningful_activity_at = datetime.utcnow() - timedelta(minutes=20)
-        s.add(p)
-        s.commit()
-    server.resume_search(_route_req("/api/search/resume"))
-    assert _paused_at(uid) is None
-    assert welcomed == []
+    adopted = []
+    monkeypatch.setattr(adoption, "adopt_and_match", lambda u: adopted.append(u) or 7)
+    monkeypatch.setattr(settings, "onboarding_active_discovery", False)
+    assert adoption.seed_new_user(uid) == 0 and adopted == [], "paused: saved, not searched"
+    _resume(uid)
+    assert adopted == [uid]
+    assert welcome.is_boosted(uid), "served first, now that they are back"
 
 
-def test_a_returning_users_pause_click_still_opens_nothing(welcomed, signed_in):
-    """The other half: the same return signal on the PAUSE route is ignored."""
+def test_a_click_before_resume_does_not_cost_the_restart(signed_in, seeded):
+    """Opening a job while paused is meaningful (and stamps activity); Resume
+    must still restart the search afterwards."""
+    uid = _returner(paused=True)
+    server._get_user_id(_req("POST", "/application/12/viewed"))
+    _resume(uid)
+    assert seeded == [(uid, False)]
+
+
+def test_a_failed_restart_never_fails_resume(signed_in, monkeypatch):
+    uid = _returner(paused=True)
+
+    def _boom(u):
+        raise RuntimeError("matching unavailable")
+    monkeypatch.setattr(adoption, "seed_new_user", _boom)
+    assert _resume(uid)["state"] in ("active", "paid")
+
+
+def test_a_returning_users_pause_click_still_opens_nothing(welcomed, signed_in, seeded):
+    """The other half: the Pause route starts nothing at all."""
     uid = _returner(paused=False)
     server.pause_search(_route_req("/api/search/pause"))
-    assert welcomed == []
+    assert welcomed == [] and seeded == []
     assert _paused_at(uid) is not None
 
 
