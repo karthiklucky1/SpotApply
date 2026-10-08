@@ -3165,41 +3165,63 @@ def submit_job(payload: JobSubmitPayload, request: Request, bg: BackgroundTasks)
 
 
 @app.post("/api/jobs/{job_id}/verify")
-async def verify_job(job_id: int, request: Request) -> dict:
+def verify_job(job_id: int, request: Request) -> dict:
+    """Is the posting a user just opened still open? (dashboard: on opening a
+    job; mobile: "Check it's still open"). Returns ``active``, and when not,
+    ``closed_reason`` and ``removed`` — whether the user's application left
+    the board (the dashboard greys a card out only then).
+
+    The SAME evidence rules as delivery and the "no longer available" report
+    (app/strategy/delivery_gate.py), where this used to run its own HEAD check
+    inside an open DB session, never shared what it learned, and moved any
+    application short of SUBMITTED to Removed — TAILORED work and INTERVIEWING
+    candidates included:
+    - an ATS permalink (`_VERIFIABLE_SOURCES`): `verify_for_delivery(force=True)`
+      — GET + body, single-flighted, at most one fetch per posting per
+      LIVENESS_REPORT_MIN_RECHECK_MINUTES however many people open it, the
+      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`);
+    - any other link (aggregator, user-submitted): a 404/410 or a redirect to a
+      careers index closes THIS user's copy only (`close_own_copy`).
+    429/403/timeouts close nothing. No session is open during the fetch.
+    """
     uid = _require_user(request)  # 401 if unauthenticated — an absent uid must
     #                              not be able to bypass the ownership check below
+    from app.discovery.liveness import is_dead
+    from app.strategy import delivery_gate as _dg
     with get_session() as session:
-        job = session.get(Job, job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-        if uid != "local" and job.user_id != uid:
-            raise HTTPException(status_code=404, detail="Job not found")
-        
-        import asyncio as _aio
-        from app.discovery.verify import check_job_alive
-        alive, reason = await _aio.to_thread(check_job_alive, job.url)
-        is_dead = not alive
+        row = session.exec(select(Job.user_id, Job.source, Job.external_id, Job.url,
+                                  Job.is_closed, Job.closed_reason)
+                           .where(Job.id == job_id)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_user_id, source, external_id, url, closed, closed_reason = row
+    if uid != "local" and job_user_id != uid:
+        raise HTTPException(status_code=404, detail="Job not found")
 
+    def _closed_answer() -> dict:
+        with get_session() as session:
+            reason = session.exec(select(Job.closed_reason).where(Job.id == job_id)).first()
+            status = session.exec(select(Application.status)
+                                  .where(Application.job_id == job_id)).first()
+        return {"active": False, "closed_reason": reason or "Closed",
+                "removed": status is not None and _enum_val(status) == ApplicationStatus.SKIPPED.value}
 
-        if is_dead:
-            job.is_closed = True
-            job.closed_reason = f"Deactivated ({reason})"
-            session.add(job)
-            session.commit()
-            
-            # Deactivate any open application for this job
-            app_model = session.exec(
-                select(Application).where(Application.job_id == job.id)
-            ).first()
-            if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
-                app_model.status = ApplicationStatus.SKIPPED
-                app_model.notes = (app_model.notes or "") + f"\nJob marked closed during click verification: {reason}"
-                session.add(app_model)
-                session.commit()
-                
-            return {"active": False, "closed_reason": job.closed_reason}
-            
+    if closed:
+        return _closed_answer()        # already known — nothing to fetch
+    src = _enum_val(source)
+    if src in _dg._VERIFIABLE_SOURCES and url:
+        state, _how = _dg.verify_for_delivery(source, external_id, url, force=True)
+        if not is_dead(state):
+            return {"active": True}
+        _dg.close_dead_everywhere(source, external_id, state,
+                                  found_by="when a user opened it")
+        return _closed_answer()
+    from app.discovery.verify import check_job_alive
+    alive, why = check_job_alive(url)
+    if alive:
         return {"active": True}
+    _dg.close_own_copy(job_id, why or "link no longer works")
+    return _closed_answer()
 
 
 @app.get("/health")

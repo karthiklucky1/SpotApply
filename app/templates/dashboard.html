@@ -7957,7 +7957,12 @@
                 }).then(async r => {
                     if (!r.ok) return;
                     const v = await r.json();
-                    if (!v.active) {
+                    // Work in progress (tailored, submitted, interviewing) keeps
+                    // its card: postings close mid-process all the time. Only a
+                    // job that left the board is greyed out and disabled.
+                    if (!v.active && !v.removed) {
+                        showToast('This posting has closed — your application stays on your board.', 'info');
+                    } else if (!v.active) {
                         showToast(`⚠ This job has been deactivated: ${v.closed_reason || 'listing removed'}`, 'error');
                         card.style.opacity = '0.45';
                         card.style.filter = 'grayscale(0.6)';

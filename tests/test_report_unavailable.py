@@ -255,7 +255,7 @@ def test_a_conclusive_recheck_takes_it_off_every_waiting_board(monkeypatch, stat
     assert not _job_row(lever_jid).is_closed
     assert _app(lever_aid).status == ApplicationStatus.SHORTLISTED
     m = gate.metrics_snapshot()
-    assert m.get("report_confirmed_dead") == 1 and m.get("report_applications_removed") == 1
+    assert m.get("report_confirmed_dead") == 1 and m.get("dead_applications_removed") == 1
 
 
 def test_a_recent_live_verdict_does_not_outvote_the_report(monkeypatch):

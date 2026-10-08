@@ -544,7 +544,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `LIVENESS_REPORTS_PER_USER_DAILY`, `LIVENESS_REPORT_MIN_RECHECK_MINUTES`,
   verifiable sources only) and only REMOVED/EXPIRED runs
   `close_dead_everywhere` (waiting copies → Removed; TAILORED+ only
-  `is_closed`). Guard: `test_report_unavailable`.
+  `is_closed`). Guard: `test_report_unavailable`. Opening a job
+  (`/api/jobs/{id}/verify`) uses the SAME rules — forced gate check, no
+  session across the fetch; an aggregator link closes only the opener's copy
+  (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
+  `test_click_verification`.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows

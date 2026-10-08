@@ -177,9 +177,10 @@ def verify_for_delivery(source, external_id: str, url: str, *,
     posting is delivered, because refusing to deliver on a failed check would
     be exactly the "a refusal means death" mistake this design forbids.
 
-    ``force`` (a user reported the posting gone, `verify_reported`): a LIVE
+    ``force`` (a person is looking at this posting right now: they reported
+    it gone, `verify_reported`, or just opened it, `server.verify_job`): a LIVE
     verdict younger than ``liveness_recheck_hours`` no longer settles it —
-    the report contradicts it — but one younger than
+    it may have closed since delivery — but one younger than
     ``liveness_report_min_recheck_minutes`` still does, so a posting many
     people report is fetched at most that often. Everything else (dead stays
     dead, verifiable sources only, single flight, the SSRF-guarded fetch) is
@@ -274,57 +275,91 @@ def verify_for_delivery(source, external_id: str, url: str, *,
 _WAITING_STATUSES = ("discovered", "matched", "shortlisted")
 
 
-def close_dead_everywhere(source, external_id: str, state: str) -> dict:
-    """Every copy of a CONCLUSIVELY dead posting stops being offered.
-
-    By ``(source, external_id)`` — the posting key every copy keeps
-    (JobLiveness uses the same one): the shared-pool row (adoption stops
-    copying it), unscored copies (the queue stops paying for them) and copies
-    still waiting on a board (their application moves to Removed with a
-    "job closed" note, which preference learning reads as a system skip, never
-    as "not interested"). REMOVED/EXPIRED only. Counts only, never ids.
-    """
+def _close_copies(session, job_ids: list, *, closed_reason: str, note: str) -> dict:
+    """Close these job rows, and take each application still WAITING on a
+    board to Removed with ``note`` (it must contain "job closed": preference
+    learning reads that as a system skip, never as "not interested"). Work the
+    user has started — TAILORED and beyond, including SUBMITTED and
+    INTERVIEWING, whose postings routinely close mid-process — keeps its
+    place; only the job is marked closed. The caller commits."""
     from datetime import datetime
 
     from sqlalchemy import update
     from sqlmodel import select
 
-    from app.db.init_db import get_session
     from app.db.models import Application, ApplicationStatus, Job
-    from app.discovery.liveness import is_dead
 
     out = {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
-    if not is_dead(state):
-        return out
-    src = source.value if hasattr(source, "value") else str(source)
-    ext = str(external_id)
     now = datetime.utcnow()
-    closed_reason = f"Deactivated (posting {state}, confirmed after a user report)"
-    note = f"\nJob closed — the posting was {state} when re-checked on {now:%Y-%m-%d}."
     waiting = {ApplicationStatus(s) for s in _WAITING_STATUSES}
     done = {ApplicationStatus.SKIPPED, ApplicationStatus.REJECTED}
+    for start in range(0, len(job_ids), 500):
+        chunk = job_ids[start:start + 500]
+        for app in session.exec(select(Application).where(Application.job_id.in_(chunk))).all():
+            if app.status in waiting:
+                app.status = ApplicationStatus.SKIPPED
+                app.notes = ((app.notes or "") + note).strip()
+                app.updated_at = now
+                session.add(app)
+                out["applications_removed"] += 1
+            elif app.status not in done:
+                out["kept_engaged"] += 1
+        res = session.execute(update(Job).where(
+            Job.id.in_(chunk), Job.is_closed == False,  # noqa: E712
+        ).values(is_closed=True, closed_reason=closed_reason))
+        out["jobs_closed"] += int(res.rowcount or 0)
+    return out
+
+
+def close_dead_everywhere(source, external_id: str, state: str, *,
+                          found_by: str = "after a user report") -> dict:
+    """Every copy of a CONCLUSIVELY dead posting stops being offered.
+
+    By ``(source, external_id)`` — the posting key every copy keeps
+    (JobLiveness uses the same one): the shared-pool row (adoption stops
+    copying it), unscored copies (the queue stops paying for them) and copies
+    still waiting on a board (`_close_copies`). REMOVED/EXPIRED only. Counts
+    only, never ids. ``found_by`` finishes the closed_reason ("confirmed …").
+    """
+    from datetime import datetime
+
+    from sqlmodel import select
+
+    from app.db.init_db import get_session
+    from app.db.models import Job
+    from app.discovery.liveness import is_dead
+
+    if not is_dead(state):
+        return {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
+    src = source.value if hasattr(source, "value") else str(source)
+    ext = str(external_id)
     with get_session() as s:
         rows = s.exec(select(Job.id, Job.source).where(Job.external_id == ext)).all()
         ids = [r[0] for r in rows
                if (r[1].value if hasattr(r[1], "value") else str(r[1])) == src]
-        for start in range(0, len(ids), 500):
-            chunk = ids[start:start + 500]
-            for app in s.exec(select(Application).where(Application.job_id.in_(chunk))).all():
-                if app.status in waiting:
-                    app.status = ApplicationStatus.SKIPPED
-                    app.notes = ((app.notes or "") + note).strip()
-                    app.updated_at = now
-                    s.add(app)
-                    out["applications_removed"] += 1
-                elif app.status not in done:
-                    out["kept_engaged"] += 1
-            res = s.execute(update(Job).where(
-                Job.id.in_(chunk), Job.is_closed == False,  # noqa: E712
-            ).values(is_closed=True, closed_reason=closed_reason))
-            out["jobs_closed"] += int(res.rowcount or 0)
+        out = _close_copies(
+            s, ids, closed_reason=f"Deactivated (posting {state}, confirmed {found_by})",
+            note=f"\nJob closed — the posting was {state} when re-checked on "
+                 f"{datetime.utcnow():%Y-%m-%d}.")
         s.commit()
-    _bump("report_copies_closed", out["jobs_closed"])
-    _bump("report_applications_removed", out["applications_removed"])
+    _bump("dead_copies_closed", out["jobs_closed"])
+    _bump("dead_applications_removed", out["applications_removed"])
+    return out
+
+
+def close_own_copy(job_id: int, why: str) -> dict:
+    """ONE user's copy, on evidence that is not conclusive enough for anyone
+    else's (an aggregator link that 404s: its url is a redirect or a search
+    page, so it does not speak for the vacancy — `_VERIFIABLE_SOURCES`)."""
+    from datetime import datetime
+
+    from app.db.init_db import get_session
+
+    with get_session() as s:
+        out = _close_copies(
+            s, [job_id], closed_reason=f"Deactivated ({why[:80]})",
+            note=f"\nJob closed — {why[:80]} when opened on {datetime.utcnow():%Y-%m-%d}.")
+        s.commit()
     return out
 
 
