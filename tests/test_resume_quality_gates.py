@@ -156,8 +156,14 @@ _MASTER = """# Alex Tenant
 
 # Twelve bullets, all the same length, all opening on an action verb — the
 # exact shape the audit measured at 24/100.
+# Machine-flat by the tells that remain: every bullet the same length, every
+# one carrying a number, bold everywhere. (Opening every bullet with an action
+# verb is no longer a tell — owner's rules, 2026-10-08 — so the fixture no
+# longer leans on it.)
+_UNIFORM_BULLET = "- Optimized the **{n}** service pipeline in **Python**, cutting cost 12% daily."
+
 _UNIFORM = _MASTER + "\n".join(
-    f"- Optimized the {n} service pipeline reliably and efficiently every day."
+    _UNIFORM_BULLET.format(n=n)
     for n in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta",
               "eta", "theta", "iota", "kappa", "lambda", "mu")
 )
@@ -198,7 +204,7 @@ _UNIFORM_MASTER = """# Alex Tenant
 ## PROFESSIONAL EXPERIENCE
 **Backend Engineer** | Acme Corp | May 2022 - Aug 2024 | Remote
 """ + "\n".join(
-    f"- Optimized the {n} service pipeline reliably and efficiently every day."
+    _UNIFORM_BULLET.format(n=n)
     for n in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
 )
 

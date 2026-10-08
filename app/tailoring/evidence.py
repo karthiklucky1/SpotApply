@@ -110,6 +110,20 @@ def _norm_fact(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().strip(".,;:|-").lower())
 
 
+_MONTH_WORD_RE = re.compile(rf"\b({_MONTHS})[a-z]*\.?", re.IGNORECASE)
+
+
+def _canon_date(s: str) -> str:
+    """One spelling per date range: "June 2022 — Mar 2024", "Jun 2022 to Mar
+    2024" and "jun 2022 - mar 2024" are the same fact. The tailored resume
+    writes ranges with a plain hyphen (no em dashes, owner 2026-10-08), so
+    comparing the raw text reported every reformatted range as an invented
+    employment date. A changed month or year still differs."""
+    s = _MONTH_WORD_RE.sub(lambda m: m.group(1).lower()[:3], s or "")
+    s = re.sub(r"\s*(?:[-–—]|\bto\b)\s*", " - ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _numbers(text: str) -> FrozenSet[str]:
     out = set()
     for m in _NUMBER_RE.finditer(text or ""):
@@ -192,7 +206,7 @@ def extract_facts(md: str) -> FactSet:
                 continue
             employers.add(seg)
 
-    dates = {_norm_fact(m.group(0)) for m in _DATE_RANGE_RE.finditer(text)}
+    dates = {_canon_date(_norm_fact(m.group(0))) for m in _DATE_RANGE_RE.finditer(text)}
     degrees = {_norm_fact(m.group(0)) for m in _DEGREE_RE.finditer(text)}
     degrees.discard("")
     institutions = {_norm_fact(m.group(0)) for m in _INSTITUTION_RE.finditer(text)
@@ -337,4 +351,26 @@ def fabrication_violations(master_md: str, tailored_md: str) -> List[Tuple[str, 
     input, it was invented, and no amount of "it reads plausible" makes it true.
     """
     master = build_evidence(master_md)
-    return extract_facts(tailored_md or "").added_against(master.facts)
+    added = extract_facts(tailored_md or "").added_against(master.facts)
+    if added and not master.facts.employers and not master.facts.titles:
+        # A master with no "**Title** | Employer | dates" lines — every PDF or
+        # DOCX upload, read back as plain text — has no structured roles to
+        # compare against, so a tailored resume that writes its roles in that
+        # shape "added" every employer and title it kept. Against such a
+        # master, an employer or title counts as present when the master's
+        # text says it. A renamed company or an upgraded title still does not.
+        hay = _presence_text(master.text)
+        added = [(kind, value) for kind, value in added
+                 if not (kind in ("employer", "job title") and _appears_in(value, hay))]
+    return added
+
+
+def _presence_text(text: str) -> str:
+    t = re.sub(r"[*_`#>]", " ", (text or "").lower())
+    t = re.sub(r"[|•·]", " ", t)
+    return re.sub(r"\s+", " ", t)
+
+
+def _appears_in(value: str, hay: str) -> bool:
+    v = re.sub(r"\s+", " ", (value or "").lower()).strip()
+    return bool(v) and re.search(rf"(?<!\w){re.escape(v)}(?!\w)", hay) is not None

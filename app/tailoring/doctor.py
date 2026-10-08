@@ -412,12 +412,10 @@ Be blunt. No fluff. Finish both sentences."""
                 break
 
         if n >= 4:
-            verb_starts = sum(
-                1 for b in bullets
-                if (b.split()[0].lower().rstrip(".,;") if b.split() else "") in ACTION_VERBS)
-            if verb_starts / n >= 0.9:
-                flags.append(f"{verb_starts}/{n} bullets open with an action verb — too uniform")
-                penalty += 8
+            # No "every bullet opens with an action verb" tell: the owner's rules
+            # (2026-10-08) ask for strong action verbs, and on the only human
+            # ground truth here (data/profiles) hand-written resumes are 92-100%
+            # verb-start — the tell fired on people, not on machines.
             metric_bullets = sum(1 for b in bullets if _METRIC_RE.search(b))
             if metric_bullets / n >= 0.9:
                 flags.append("Almost every bullet carries a number — reads manufactured")

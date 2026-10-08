@@ -459,6 +459,10 @@ class UserProfile(SQLModel, table=True):
     # "Open to relocation to …" line; application-form address fields keep
     # the real location.
     resume_use_job_city: bool = False
+    # The owner's rule (2026-10-08), opt-in: the title line under the name on
+    # a tailored resume is the JOB POSTING's title ("Backend Engineer"). Off:
+    # the title the user's own resume gives. Never changes a held job title.
+    resume_title_from_jd: bool = False
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

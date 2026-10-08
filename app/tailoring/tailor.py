@@ -55,49 +55,46 @@ def _register_llm_spend(kind: str) -> None:
 # Initialize canonical QA Resolver
 qa_resolver = QAResolver()
 
-TAILOR_SYSTEM = """You are a senior engineering-career editor. You make a candidate's REAL resume fit a specific role by EDITING it — not by rewriting it into a generic "AI resume." The output must read like the candidate wrote it after a focused editing pass, and must survive BOTH an ATS and a skeptical human reviewer who is actively screening for AI-generated applications (many now reject anything that reads machine-written).
+TAILOR_SYSTEM = """You are an expert resume writer. You fully rewrite and restructure a candidate's REAL resume for one specific job: tailored to that role, written in a natural human voice, and strictly truthful. It must pass an ATS keyword scan AND a skeptical recruiter who screens out anything that reads machine-written.
 
-FIRST PRINCIPLE — RESTRAINT (this overrides everything below):
-- Preserve the candidate's own wording, sentence rhythm, and voice. Keep bullets that already work essentially as-is. Change only what genuinely improves fit for THIS specific job.
-- Aim to touch roughly a third of the content, not all of it. A resume that is fully rewritten reads as machine-generated and gets rejected.
-- When in doubt, change less. Reordering and light edits beat wholesale rewriting.
+1. REWRITE AND RESTRUCTURE FOR THIS JOB:
+   - Rewrite the summary and every bullet for THIS role. Put the experience, projects and skills that matter most for this job first: most relevant sections, bullets and skills at the top.
+   - Use standard section headings an ATS recognises, in the order that suits this job: Summary, Skills, Experience, Projects, Education, Certifications (only the ones the master resume supports).
+   - Rewrite each bullet from bullets of the SAME role or project in the master resume; never move work from one employer or project to another.
+   - Keep every role, employer and date range. Shorten or cut bullets that do nothing for this job instead of dropping a role.
 
-1. STRUCTURE & VOICE:
-   - Output VALID markdown only. Preserve the exact section structure of the input resume.
-   - Match the candidate's existing cadence: if their bullets are terse, stay terse; if they write in fragments, keep fragments. Do not "upgrade" their voice into polished corporate prose.
+2. FACTS ARE LOCKED (copy them character for character):
+   - The candidate's name, email address, phone number and links exactly as the master resume gives them. Never use any other email address.
+   - Every employer name, job title and date of each role, and every degree, school and certification, exactly as written. The most recent employer stays named exactly as the master resume names it.
+   - Do NOT write a headline or target-title line under the name; it is set separately. Never change a job title inside Experience.
+   - Do NOT invent jobs, degrees, dates, tools, responsibilities or metrics. Every number must appear verbatim in the master resume.
 
-2. VARY STRUCTURE (anti-fingerprint — critical):
-   - Real resumes are bursty and uneven. Deliberately VARY bullet length (some one line, some two) and openings. NOT every bullet should start with an action verb, and NOT every bullet needs a metric.
-   - A uniform "[Verb] + tool + %number" on every single line is the #1 signature of AI writing. Break the pattern on purpose. Some bullets describe scope or ownership without a number — that is fine and more human.
+3. HONEST KEYWORD BRIDGING, WOVEN IN NATURALLY:
+   - Use the job description's own terms where the candidate's real experience supports them, inside real sentences and bullets, the way a person would write them.
+   - Never add a "Keywords" line or a list of buzzwords, and never force a term in where it reads awkwardly. Use each job term at most twice in the whole resume.
+   - Never claim a skill the master resume doesn't support. If the candidate lacks something, leave it out: a missing keyword costs a search hit, an invented one costs the interview.
 
-3. BOLD SPARINGLY:
-   - Bold at most 2-3 genuinely load-bearing technologies per section, where a human naturally would. Bolding every tool is an AI tell and hurts readability.
+4. STRONG VERBS AND REAL RESULTS:
+   - Start most bullets with a strong, specific action verb (past tense for past roles, present tense for the current one). Vary the verbs; never repeat one within a role.
+   - Include every real number, scale and outcome the master resume states, in the bullet it belongs to. Never invent, round or inflate a number.
 
-4. HONEST KEYWORD BRIDGING:
-   - Never claim a skill the master resume doesn't support. If the JD needs something the candidate lacks, either weave it as genuinely adjacent experience in the candidate's OWN voice, or leave it out. Do not fabricate production experience.
-   - Only add a short "currently learning / adjacent" note when it is natural and true for that person. Do NOT append a formulaic "Transitioning to / Adjacent Tools Under Study" block to every resume — that boilerplate is itself a fingerprint.
-   - Do NOT invent jobs, degrees, dates, or metrics. Every number must appear verbatim in the master resume.
+5. NATURAL HUMAN VOICE:
+   - Write like a real person who is good at their job: plain, specific and confident. Vary sentence length and rhythm; not every bullet needs a number. A uniform "[Verb] + tool + %number" on every line reads machine-written.
+   - Ban filler and buzzwords: "leveraged", "synergized", "cutting-edge", "harnessing", "orchestrated seamless integrations", "state-of-the-art", "spearheaded", "drove efficiency", "revolutionized", "demonstrated expertise in", "passionate about", "results-driven", "proven track record", "dynamic", "detail-oriented".
+   - No first-person pronouns ("I", "my", "me"). Bold at most 2 or 3 genuinely important technologies per section.
 
-5. NO AI SLOP:
-   - Ban filler and buzzwords: "leveraged", "synergized", "cutting-edge", "harnessing", "orchestrated seamless integrations", "state-of-the-art", "spearheaded", "drove efficiency", "revolutionized", "demonstrated expertise in", "passionate about", "results-driven", "proven track record".
-   - Write like a working engineer: concrete, specific, occasionally plain. Prefer the candidate's real phrasing over anything that sounds optimized.
+6. PUNCTUATION: never use the em dash, and never two hyphens as a dash. Use a comma, a period, a colon or parentheses instead. Write date ranges with a plain hyphen: "Jan 2022 - Mar 2024".
 
-6. SKILLS SECTION:
-   - Reorder to put JD-relevant skills first. Do not pad with skills the candidate doesn't have.
+7. ONE PAGE: the resume must fit on a single page, about 450 to 550 words. At most 5 bullets for the most recent role and 3 for each older one, 2 or 3 projects, a summary of 2 or 3 lines, and skills grouped into a few short lines.
 
-7. WORD CHOICE (university career-office guidance, e.g. Harvard's resume guide):
-   - When a bullet leads with a verb, make it precise and specific to what was done:
-     technical — built, designed, engineered, configured, debugged, programmed, migrated, upgraded;
-     analysis — analyzed, assessed, diagnosed, measured, investigated, validated;
-     leadership — coordinated, directed, mentored, oversaw, prioritized;
-     improvement — consolidated, standardized, simplified, restructured, tuned;
-     communication — authored, documented, presented, negotiated.
-     Rule 2 still wins: these make the bullets that DO lead with a verb precise; they do not license leading every bullet with one.
+8. WORD CHOICE (university career-office guidance, e.g. Harvard's resume guide):
+   - Pick verbs precise to what was done: technical (built, designed, engineered, configured, debugged, migrated, automated); analysis (analyzed, assessed, diagnosed, measured, validated); leadership (coordinated, directed, mentored, oversaw, prioritized); improvement (consolidated, standardized, simplified, restructured, tuned); communication (authored, documented, presented, negotiated).
    - Replace weak duty phrasing ("responsible for", "duties included", "tasked with", "worked on", "helped with", "assisted in") with what the candidate actually did.
-   - No first-person pronouns ("I", "my", "me"). Past tense for past roles, present tense for the current one — consistently.
-   - Specific beats general: name the system, scale or outcome the master resume states. Quantify only with numbers the master resume already has.
+   - Specific beats general: name the system, scale or outcome the master resume states. Rule 2 still wins: never add a fact to make a bullet sound stronger.
 
-GOAL: the same person, edited for this role — never a new person generated for it."""
+OUTPUT: valid markdown only. "# " and the candidate's name, then the contact line, then each section as "## Heading", each role as "**Job Title** | Employer | dates" (or "### " if the master resume writes it that way) followed by "- " bullets. No commentary before or after.
+
+GOAL: the same real person, presented as the strongest honest fit for this job."""
 
 COVER_SYSTEM = """You write tight cover letters (180-220 words) using a Problem→Solution→Proof structure. They must NOT sound like generic cover letters.
 
@@ -112,6 +109,7 @@ Hard rules:
 - No "I am writing to apply for…" or "I am excited to…" openers. Open on THEIR problem, not your enthusiasm.
 - Every claim must be grounded in the resume. Do NOT invent jobs, metrics, or technologies.
 - Plain prose, no markdown, no bullet points. 180-220 words.
+- Never use the em dash or two hyphens as a dash; use a comma, a period or parentheses.
 - Match the JD's vocabulary for key technologies (exact terms an ATS would scan).
 - ANTI-FINGERPRINT: vary your sentence lengths and openings. Do not produce a rigid, identical skeleton that would look the same across many applications. Write in the candidate's plain voice — a real person who happens to be a good writer, not a template. Reviewers now screen for AI-written letters; uniform, over-polished structure is the tell."""
 
@@ -183,7 +181,8 @@ class Tailor:
                       custom_highlight_block: Optional[str] = None,
                       revision_notes: Optional[str] = None,
                       user_instruction: Optional[str] = None,
-                      relocation_block: str = "") -> str:
+                      relocation_block: str = "",
+                      rules_block: str = "") -> str:
         # ── ATS exact-phrase targeting ──────────────────────────────────────
         # Find the JD phrases an ATS will scan for that are NOT already verbatim
         # in the master resume, so the tailor can incorporate them honestly.
@@ -202,12 +201,13 @@ class Tailor:
             targets = skill_phrases(ats.missing)
             if targets:
                 ats_block = (
-                    "\n\nATS PRIORITY PHRASES — these exact terms appear in the JD but are "
+                    "\n\nATS PRIORITY PHRASES: these exact terms appear in the JD but are "
                     "MISSING verbatim from the resume. Where the candidate's real experience "
-                    "supports it, incorporate the EXACT phrasing below (do not paraphrase, "
-                    "do not invent experience). If the candidate has no real experience with "
-                    "one of them, LEAVE IT OUT — a missing keyword costs a search hit, an "
-                    "invented one costs the interview:\n"
+                    "supports it, weave the EXACT phrasing below into a real summary sentence "
+                    "or experience bullet (do not paraphrase, do not invent experience, never "
+                    "a keyword list, each at most twice). If the candidate has no real "
+                    "experience with one of them, LEAVE IT OUT: a missing keyword costs a "
+                    "search hit, an invented one costs the interview:\n"
                     + "\n".join(f"  - {p}" for p in targets)
                     + f"\n(Already covered: {', '.join(skill_phrases(ats.matched)[:8])})"
                 )
@@ -322,7 +322,7 @@ class Tailor:
 Title: {job.title}
 Company: {job.company}
 {job.description[:5000]}
----{ats_block}{evidence_block}{highlights_block}{revision_block}{relocation_block}{user_block}
+---{rules_block}{ats_block}{evidence_block}{highlights_block}{revision_block}{relocation_block}{user_block}
 
 Return the tailored resume in markdown. No commentary.
 Do NOT output the "CRITICAL FRAMING INSTRUCTIONS" or "CUSTOM HIGHLIGHTS" as a separate section in the tailored resume."""
@@ -639,12 +639,14 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         # holds nothing open.
         relocation_block = ""
         job_city_location = ""        # the job's city, when the user chose to show it
+        title_from_jd = False         # UserProfile.resume_title_from_jd (owner rule, opt-in)
         try:
             from app.db.models import UserProfile
             from app.discovery.geo_verify import load_geographies
             from app.tailoring.relocation import offer_for, prompt_block
             _prof = session.exec(select(UserProfile).where(
                 UserProfile.user_id == app_user_id)).first() if app_user_id else None
+            title_from_jd = bool(getattr(_prof, "resume_title_from_jd", False) is True)
             if _prof is not None and getattr(_prof, "relocation_resume_optin", False):
                 _src = getattr(job.source, "value", job.source)
                 _key = (str(_src).lower(), str(job.external_id))
@@ -710,6 +712,14 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         "Tailoring app %d using profile=%s source=%s",
         application_id, profile_variant or "master", profile_source,
     )
+    # The owner's rules (app/tailoring/rules.py). The master is de-dashed ONCE
+    # here: the lock layer restores Education verbatim from it, and the model
+    # imitates what it reads.
+    from app.tailoring import rules as _rules
+    master, _ = _rules.scrub_em_dashes(master)
+    rules_block = _rules.prompt_block(master, job_title or "", title_from_jd=title_from_jd)
+    em_dashes_removed = 0
+    keyword_cov: dict = {}
     tailor = Tailor()
 
     # Build a lightweight Job-like object so Tailor methods still work
@@ -794,6 +804,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 revision_notes=revision_notes,
                 user_instruction=user_instruction,
                 relocation_block=relocation_block,
+                rules_block=rules_block,
             )
 
         # ── Lock layer ────────────────────────────────────────────────────────
@@ -822,6 +833,8 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                          bold_trimmed, application_id)
         except Exception as _se:
             log.warning("Style repair skipped for app %d (non-fatal): %s", application_id, _se)
+        resume_md, _n = _rules.scrub_em_dashes(resume_md)
+        em_dashes_removed += _n
 
         # ── Deterministic fabrication guard ───────────────────────────────────
         # Set difference in the ADDITION direction over employers, held titles,
@@ -944,13 +957,29 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 + "\n".join(f"- invented {kind}: {value}" for kind, value in fabrications[:10])
             )
 
+        # The posting's keywords the candidate GENUINELY has (already on their
+        # resume) belong in the draft: under 90% of them earns one rebuild.
+        # Never terms the master lacks — that would be the claim every gate
+        # above exists to stop (rules.py: no "90+ on any ATS" promise).
+        keyword_cov = _rules.keyword_coverage(master, resume_md, job_description or "")
+        coverage_short = (keyword_cov.get("kept_pct") is not None
+                          and keyword_cov["kept_pct"] < 90)
+        coverage_notes = None
+        if coverage_short and keyword_cov.get("missing_achievable"):
+            coverage_notes = (
+                "These job keywords are on the candidate's own resume but were dropped "
+                "from this draft. Work each into a relevant sentence where the experience "
+                "supports it, naturally, never as a list: "
+                + ", ".join(keyword_cov["missing_achievable"]))
+
         if break_after_checks:
             break                      # L0: nothing was generated, so nothing to rebuild
-        if not grounding_failed and not doctor_failed and not fabrications and not human_failed:
+        if (not grounding_failed and not doctor_failed and not fabrications
+                and not human_failed and not coverage_short):
             break
         if attempt < MAX_TAILOR_ATTEMPTS:
             revision_notes = "\n".join(
-                n for n in (grounding_notes, doctor_notes, fabrication_notes) if n)
+                n for n in (grounding_notes, doctor_notes, fabrication_notes, coverage_notes) if n)
             log.info("Rebuilding tailored resume for app %d (attempt %d failed review)",
                      application_id, attempt)
 
@@ -969,7 +998,12 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 first = (prof.first_name or "").strip()
                 last = (prof.last_name or "").strip()
                 profile_location = (getattr(prof, "location", "") or "").strip()
-    if not first and not last:
+    if not first and not last and (not app_user_id or is_founder(app_user_id)):
+        # The QA store identity is the FOUNDER's. Only the founder (or local
+        # dev) may fall back to it: a tenant with no name on their profile got
+        # their tailored resume named after the founder, and the extension then
+        # uploaded that filename to employers. Everyone else falls back to
+        # "Candidate" below.
         identity = qa_resolver.data.get("identity", {})
         first = identity.get("first_name", "")
         last = identity.get("last_name", "")
@@ -977,9 +1011,17 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     def _slug(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9]+", "_", s).strip("_")
 
-    name_part = "_".join(p for p in (_slug(first), _slug(last)) if p) or "Candidate"
-    resume_filename = f"{name_part}_Resume.docx"
-    cover_filename = f"{name_part}_Cover_Letter.txt"
+    # [YourName]_[CompanyName]_Resume (owner rule): the hiring company's name,
+    # ASCII-folded, legal suffixes dropped (render.document_filename).
+    try:
+        from app.tailoring.render import document_filename
+        resume_filename = document_filename(first, last, job_company or "", kind="Resume", ext="docx")
+        cover_filename = document_filename(first, last, job_company or "", kind="Cover_Letter", ext="txt")
+    except Exception as _fn:
+        log.debug("document filename helper unavailable: %s", _fn)
+        name_part = "_".join(p for p in (_slug(first), _slug(last)) if p) or "Candidate"
+        resume_filename = f"{name_part}_Resume.docx"
+        cover_filename = f"{name_part}_Cover_Letter.txt"
 
     out_dir = tailored_dir(application_id, settings.data_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -990,12 +1032,27 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # gets a résumé every time, plus the list of those skills to learn — or to
     # confirm, which adds them to the master for the next rebuild.
     resume_md = polish_contact_line(resume_md, profile_location, show_location=job_city_location)
+    # Owner rules: the email the user's own resume gives, and the title line
+    # under the name (the posting's title when they opted in, else their own).
+    resume_md, email_status = _rules.restore_email(resume_md, master)
+    own_headline = _rules.master_headline(master)
+    jd_headline = _rules.sanitize_jd_title(job_title or "") if title_from_jd else ""
+    headline = jd_headline or own_headline
+    headline_source = "job" if jd_headline else ("resume" if own_headline else "none")
+    resume_md = _rules.apply_headline(resume_md, headline)
     removed_claims: list = []
     skills_to_learn: list = []
     try:
         from app.tailoring.export_gate import strip_unconfirmed
         from app.tailoring.requirements import review as _pre_review
         _rv = _pre_review(master, resume_md, job_description or "")
+        if headline_source == "job" and any(
+                c and c.lower() in headline.lower() for c in _rv.unconfirmed_claims):
+            # "Senior Rust Engineer" for someone whose resume never shows Rust:
+            # the title would be the one unsupported claim in the document.
+            headline, headline_source = own_headline, ("resume" if own_headline else "none")
+            resume_md = _rules.apply_headline(resume_md, headline)
+            _rv = _pre_review(master, resume_md, job_description or "")
         skills_to_learn = list(_rv.missing_skills)
         if _rv.unconfirmed_claims:
             resume_md, removed_claims = strip_unconfirmed(resume_md, list(_rv.unconfirmed_claims))
@@ -1006,7 +1063,32 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         # The export gate still judges the saved draft, so a failure here can
         # only lead to a withheld document, never an unchecked one.
         log.warning("Tailor app %d: unsupported-skill cleanup skipped: %s", application_id, _se)
-    _md_to_docx(resume_md, resume_path)
+    # Last pass of the owner's no-em-dash rule (the contact line, headline and
+    # cover letter were edited after the in-loop scrub), then the files: a
+    # one-page PDF and a Word file laid out the same way, both free of
+    # generator metadata (app/tailoring/render.py). Fitting only REMOVES the
+    # least relevant bullets of older roles; every line left was checked above.
+    resume_md, _n = _rules.scrub_em_dashes(resume_md)
+    em_dashes_removed += _n
+    cover, _ = _rules.scrub_em_dashes(cover)
+    author = " ".join(p for p in (first, last) if p)
+    doc_title = f"{author} Resume".strip()
+    pdf_path = resume_path.with_suffix(".pdf")
+    fit = None
+    try:
+        from app.tailoring.render import TIERS, fit_one_page, write_docx
+        fit = fit_one_page(resume_md, jd_text=job_description or "",
+                           author=author, title=doc_title)
+        resume_md = fit.md
+        pdf_path.write_bytes(fit.pdf_bytes)
+        write_docx(resume_md, resume_path, TIERS[fit.tier_index], author=author, title=doc_title)
+        if fit.pages > 1:
+            log.warning("Tailor app %d: still %d pages after fitting", application_id, fit.pages)
+    except Exception as _rerr:
+        log.warning("Tailor app %d: one-page render failed, Word file only: %s",
+                    application_id, _rerr)
+        fit = None
+        _md_to_docx(resume_md, resume_path)
     # Keep the markdown the .docx was rendered from. Re-verifying a résumé by
     # parsing its own .docx back would check a lossy reconstruction rather than
     # the document we actually generated; the manual re-check below reads this.
@@ -1014,6 +1096,38 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         (out_dir / "resume.md").write_text(resume_md, encoding="utf-8")
     except Exception as _me:
         log.debug("tailored markdown not persisted: %s", _me)
+
+    # The owner's checklist: every rule, judged on the files on disk.
+    rules_checklist: list = []
+    try:
+        if job_city_location:
+            location_note = f"{job_city_location}, the job's city (your profile setting)"
+        elif relocation_block:
+            location_note = (f"{profile_location or 'your location'} plus an open to "
+                             f"relocation line (your profile setting)")
+        elif profile_location:
+            location_note = f"{profile_location} (from your profile)"
+        else:
+            location_note = "as on your resume"
+        _traces = [_rules.file_traces(resume_path),
+                   _rules.file_traces(pdf_path) if pdf_path.exists() else []]
+        rules_checklist = _rules.build_checklist(
+            master=master, md=resume_md, jd=job_description or "",
+            rewritten=not skipped_reason, email_status=email_status,
+            latest=_rules.latest_role(master), human_passed=not human_failed,
+            fabrications=fabrications,
+            grounding_status=("failed" if grounding_failed
+                              else "passed" if grounding_ran else "unverified"),
+            headline=headline, headline_source=headline_source,
+            location_note=location_note, filename_docx=resume_path.name,
+            filename_pdf=pdf_path.name if pdf_path.exists() else "",
+            company=job_company or "",
+            metadata_clean=(None if any(t is None for t in _traces)
+                            else not any(_traces)),
+            pages=fit.pages if fit else None, coverage=keyword_cov or {},
+            trimmed=list(fit.trimmed) if fit else [])
+    except Exception as _ce:
+        log.warning("Tailor app %d: rules checklist skipped: %s", application_id, _ce)
 
     # Quality report for the Tailoring Studio UI (score dial, rebuilt badge,
     # keyword highlighting uses ats_keywords at read time).
@@ -1069,6 +1183,18 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             # show them, and the posting's skills the résumé lacks entirely.
             "removed_claims": removed_claims,
             "skills_to_learn": skills_to_learn,
+            # The owner's rules (app/tailoring/rules.py), each checked against
+            # the files actually written.
+            "resume_pdf": pdf_path.name if pdf_path.exists() else None,
+            "page_count": fit.pages if fit else None,
+            "fit_tier": fit.tier_index if fit else None,
+            "trimmed_bullets": list(fit.trimmed) if fit else [],
+            "em_dashes_removed": em_dashes_removed,
+            "headline": headline,
+            "headline_source": headline_source,
+            "email_status": email_status,
+            "keyword_coverage": keyword_cov,
+            "rules_checklist": rules_checklist,
             "generated_at": datetime.utcnow().isoformat(),
         }), encoding="utf-8")
     except Exception as _re:
@@ -1088,7 +1214,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # on redeploy). Best-effort — never blocks the result write below.
     _persist_tailored_to_storage(
         app_user_id, application_id,
-        [resume_path, cover_path, out_dir / "report.json", out_dir / "resume.md"])
+        [resume_path, pdf_path, cover_path, out_dir / "report.json", out_dir / "resume.md"])
 
     # --- Phase 3: write results in a short session ---
     with get_session() as session:

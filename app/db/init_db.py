@@ -447,6 +447,7 @@ def init_db() -> None:
         ("open_to_relocation", "BOOLEAN DEFAULT FALSE"),
         ("relocation_resume_optin", "BOOLEAN DEFAULT FALSE"),
         ("resume_use_job_city", "BOOLEAN DEFAULT FALSE"),
+        ("resume_title_from_jd", "BOOLEAN DEFAULT FALSE"),
         ("relocation_targets", "VARCHAR DEFAULT ''"),
         ("relocation_timeline", "VARCHAR DEFAULT ''"),
         ("articulation_video_url", "VARCHAR DEFAULT ''"),

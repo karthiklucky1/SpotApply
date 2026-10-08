@@ -5761,7 +5761,8 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             if p.suffix == ".docx" else "application/octet-stream")
 
     # The filename is what the ATS displays next to the upload — always present
-    # a clean "First_Last_Resume.docx", never an internal/on-disk name.
+    # a clean "First_Last_Company_Resume.docx" (the owner's naming rule, the
+    # same helper the tailor names the file with), never an internal name.
     display_name = p.name
     try:
         import re as _re
@@ -5771,9 +5772,18 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         first = (getattr(prof, "first_name", "") or "").strip()
         last = (getattr(prof, "last_name", "") or "").strip()
         if first or last:
-            base = _re.sub(r"[^A-Za-z0-9]+", "_", f"{first} {last}").strip("_")
-            if base:
-                display_name = f"{base}_Resume{p.suffix or '.docx'}"
+            with get_session() as session:
+                company = session.exec(
+                    select(Job.company).join(Application, Application.job_id == Job.id)
+                    .where(Application.id == application_id)).first() or ""
+            try:
+                from app.tailoring.render import document_filename
+                display_name = document_filename(first, last, company, kind="Resume",
+                                                 ext=(p.suffix or ".docx").lstrip("."))
+            except ImportError:
+                base = _re.sub(r"[^A-Za-z0-9]+", "_", f"{first} {last}").strip("_")
+                if base:
+                    display_name = f"{base}_Resume{p.suffix or '.docx'}"
     except Exception:
         pass
 
@@ -9561,6 +9571,7 @@ _USERPROFILE_COLUMNS = [
     # from open_to_relocation (app/tailoring/relocation.py).
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9697,6 +9708,7 @@ def get_profile(request: Request) -> dict:
         "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
+        "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
         # Also edited by the form; missing here meant a save wiped them.
@@ -9747,6 +9759,7 @@ class ProfileUpdate(BaseModel):
     open_to_relocation: Optional[bool] = None
     relocation_resume_optin: Optional[bool] = None
     resume_use_job_city: Optional[bool] = None
+    resume_title_from_jd: Optional[bool] = None
     relocation_targets: Optional[str] = None
     relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
@@ -11807,9 +11820,11 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
 
 
 @app.get("/application/{application_id}/download-resume")
-def download_tailored_resume(application_id: int, request: Request):
-    """Serve the tailored DOCX resume file as a direct download."""
+def download_tailored_resume(application_id: int, request: Request, format: str = "docx"):
+    """Serve the tailored resume as a direct download: the Word file, or with
+    ``?format=pdf`` the one-page PDF written beside it (same name, same gates)."""
     _require_owned_application(request, application_id)
+    want_pdf = (format or "").lower() == "pdf"
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
@@ -11840,17 +11855,24 @@ def download_tailored_resume(application_id: int, request: Request):
 
     import os
     from fastapi.responses import FileResponse
+    if want_pdf:
+        # The PDF sits beside the .docx under the same name (tailor.py).
+        path = os.path.splitext(path)[0] + ".pdf"
     # Re-fetch from durable storage if the ephemeral copy was wiped on deploy.
     if not os.path.exists(path):
         _rehydrate_tailored_file(path, owner_uid)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Resume file not found on disk")
+        raise HTTPException(
+            status_code=404,
+            detail=("No PDF for this resume yet. Rebuild it to get the one-page PDF."
+                    if want_pdf else "Resume file not found on disk"))
 
     filename = os.path.basename(path)
     _record_document_downloaded("resume", application_id, owner_uid)
     return FileResponse(
         path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=("application/pdf" if want_pdf else
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         filename=filename
     )
 
