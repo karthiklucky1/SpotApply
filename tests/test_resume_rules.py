@@ -412,3 +412,18 @@ def test_characters_the_pdf_cannot_draw_ship_as_word_only(tailored, monkeypatch)
         assert "\u4e2d\u6587" in z.read("word/document.xml").decode()
     rows = {r["key"]: r for r in report["rules_checklist"]}
     assert rows["files"]["ok"] is False
+    with get_session() as s:
+        notes = s.get(Application, aid).notes or ""
+    assert "No PDF this time" in notes and "中" in notes, "the user is told why"
+
+
+def test_a_latex_tilde_keeps_the_pdf(tailored):
+    """Review 2026-10-08: "∼40%" (pdflatex's $\sim$) has an ASCII stand-in;
+    one symbol must never cost the PDF."""
+    draft = DRAFT.replace("handling 2M requests", "handling ∼2M requests")
+    assert draft != DRAFT
+    _aid, resume_path, report, md = tailored(draft=draft)
+    assert "∼2M" in md
+    assert resume_path.with_suffix(".pdf").exists() and report["resume_pdf"]
+    rows = {r["key"]: r for r in report["rules_checklist"]}
+    assert rows["files"]["ok"] is True

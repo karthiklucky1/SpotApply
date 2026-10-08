@@ -1087,15 +1087,17 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     # A PDF left by an earlier run must never stand in for this one.
     pdf_path.unlink(missing_ok=True)
     fit = None
+    pdf_withheld: list = []
     try:
         from app.tailoring.render import TIERS, fit_one_page, write_docx
         fit = fit_one_page(resume_md, jd_text=job_description or "",
                            author=author, title=doc_title)
         resume_md = fit.md
         if fit.undrawable:
-            # The bundled font has no glyph for these (e.g. a name in CJK
-            # script): a PDF would print "?" in their place. Word substitutes
-            # a font, so the .docx alone carries the resume.
+            # The bundled font has no glyph for these letters (e.g. a name in
+            # CJK script): a PDF would print "?" in their place. Word
+            # substitutes a font, so the .docx alone carries the resume.
+            pdf_withheld = list(fit.undrawable)
             log.warning("Tailor app %d: PDF skipped, %d character(s) the font cannot draw",
                         application_id, len(fit.undrawable))
         else:
@@ -1301,6 +1303,11 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 notes.append(_style_note)
             if skipped_reason:
                 notes.append(skipped_reason)
+            if pdf_withheld:
+                notes.append(
+                    "No PDF this time: your resume has characters the PDF font cannot "
+                    f"print ({' '.join(pdf_withheld[:5])}). The Word file has everything; "
+                    "save it as a PDF from Word if the application asks for one.")
             if notes:
                 app.notes = "\n\n".join(notes)
 

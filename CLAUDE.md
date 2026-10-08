@@ -592,8 +592,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   line spare for Word, then drops the least JD-relevant bullets, older role
   first on ties, never a role line, one kept per run) + a matching DOCX,
   generator metadata and template rsids scrubbed, named `First_Last_Resume` (no
-  company — owner). A glyph Carlito lacks (`FitResult.undrawable`, e.g. a CJK
-  name) ships Word only. `rules_checklist` lives in report.json, backend only
+  company — owner). A LETTER, digit or currency sign Carlito can't draw
+  (`FitResult.undrawable`, e.g. a CJK name) ships Word only + a note; symbols
+  never do (LaTeX `∼`/`⋅` get stand-ins or drop; `_NO_GLYPH`, never a `?`
+  compare). `rules_checklist` lives in report.json, backend only
   (owner). No "90+ on any ATS" promise: under 90% of the job keywords the
   master HAS earns one rebuild. Guards: `test_resume_rules`, `test_resume_render`.
 - **Contact research is ON HOLD, and "no data" is not zero**

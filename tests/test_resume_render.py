@@ -571,6 +571,8 @@ def test_pdf_and_docx_carry_the_same_paragraphs(tmp_path):
     (("Seán", "O’Brien", ""), "Sean_OBrien_Resume.docx"),
     (("Đorđe", "Þórsson", ""), "Dorde_Thorsson_Resume.docx"),
     (("Mary-Jane", "MCDONALD-SMITH", ""), "Mary_Jane_Mcdonald_Smith_Resume.docx"),
+    (("ANNA", "WEI\u00df", ""), "Anna_Weiss_Resume.docx"),
+    (("J\u00dcRGEN", "STRA\u00dfBURG", ""), "Jurgen_Strassburg_Resume.docx"),
     (("Jane", "Doe", "Inc"), "Jane_Doe_Inc_Resume.docx"),
 ])
 def test_document_filename(args, expected):
@@ -623,6 +625,21 @@ def test_bulleted_role_headers_are_never_trimmed_and_every_role_keeps_a_bullet()
     assert [len(r) for r in blocks] == [2, 2, 2, 2]
 
 
+@pytest.mark.parametrize("line", [
+    "- **Senior Engineer**, Newco, 2022 - 2024, Remote",
+    "- Data Analyst, Ohio Regional, 2019 - 2021, Columbus OH",
+    "- **Engineer** | Oldco | 2019 - 2022",
+    "- Engineer, Acme, Jan 2020 - Present",
+])
+def test_bulleted_role_header_shapes_are_recognised(line):
+    md = f"# Pat Doe\n\n## Experience\n{line}\n- Built a thing.\n- Shipped a thing.\n"
+    # the JD favours the real bullets, so a header read as a bullet would be
+    # the least relevant line of its run and the first to go
+    order = trim_candidates(md, "built shipped thing")
+    assert line[2:].replace("**", "") not in order
+    assert order == ["Shipped a thing."]
+
+
 def test_relevance_beats_age():
     md = """# Pat Doe
 
@@ -657,6 +674,28 @@ def test_undrawable_characters_are_reported_not_hidden():
     assert fit_one_page(SHORT_MD).undrawable == []
     # an emoji is decoration, not content: dropped, not reported
     assert render.undrawable_chars("Shipped \U0001f680 fast") == []
+
+
+@pytest.mark.parametrize("text,drawn", [
+    # LaTeX resumes' PDF text: $\sim$40\%, \cdot / \ast separators, \langle
+    ("cut p95 by ∼40%", "cut p95 by ~40%"),
+    ("a@b.c ⋅ (614) 555-0100", "a@b.c · (614) 555-0100"),
+    ("Python ∗ Go", "Python * Go"),
+    ("⟨API⟩", "<API>"),
+    # CJK input-method punctuation: "?" is a REAL result here, not a marker
+    ("why ship weekly？", "why ship weekly?"),
+    ("【Lead】", "[Lead]"),
+    ("₽500k budget", "RUB 500k budget"),
+    # a math sign with no stand-in is decoration: dropped, never "?"
+    ("A ⊕ B", "A  B"),
+])
+def test_symbols_never_cost_the_pdf(text, drawn):
+    """Review 2026-10-08: the PDF is withheld only for letters, digits or
+    currency the font cannot draw; a symbol gets a stand-in or is dropped."""
+    assert render._pdf_text(text) == drawn
+    assert render.undrawable_chars(text) == []
+    md = f"# Pat Doe\npat@example.invalid\n\n## Experience\n- {text}\n"
+    assert fit_one_page(md).undrawable == []
 
 
 def test_a_layout_that_fills_the_page_to_the_last_line_moves_to_a_denser_tier():
@@ -700,3 +739,18 @@ def test_word_files_do_not_share_the_templates_revision_ids(tmp_path):
     assert ra in da and ua <= da, "document.xml uses only ids settings.xml declares"
     assert ra != rb and da != db and ida != idb
     assert [p.text for p in Document(a).paragraphs] == [b.text for b in parse_md(SHORT_MD)]
+
+    # no id in ANY part is shared by the two files - styles.xml included,
+    # whose Header/Footer styles carry one settings.xml never declares
+    def every_id(path):
+        z = zipfile.ZipFile(path)
+        found = set()
+        for n in z.namelist():
+            if n.startswith("word/") and n.endswith(".xml"):
+                xml = z.read(n).decode()
+                found |= set(re.findall(r'w:rsid\w*="([0-9A-F]{8})"', xml))
+                found |= set(re.findall(r'<w:rsid(?:Root)? w:val="([0-9A-F]{8})"', xml))
+        return found
+    shared = every_id(a) & every_id(b)
+    assert shared == set(), shared
+    assert "00E618BF" not in every_id(a)

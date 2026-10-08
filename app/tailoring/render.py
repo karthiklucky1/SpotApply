@@ -282,11 +282,32 @@ _PUNCT_FALLBACK = {
     # produce them ("co\u2011founded", "5\u2032", "A\u2219B").
     "\u2010": "-", "\u2011": "-", "\u2032": "'", "\u2035": "'",
     "\u2219": "\u00b7", "\u2027": "\u00b7", "\u2236": ":",
+    # Math symbols a LaTeX resume's PDF text carries ($\sim$40\% -> "\u223c40%",
+    # \cdot and \ast separators, \langle/\rangle, long arrows).
+    "\u223c": "~", "\u2243": "~", "\u2245": "~", "\u22c5": "\u00b7", "\u2217": "*",
+    "\u2223": "|", "\u2218": "\u25e6", "\u2981": _BULLET, "\u22c4": "\u00b7",
+    "\u21d4": "<=>", "\u27e8": "<", "\u27e9": ">", "\u27f5": "<-", "\u27f6": "->",
+    "\u27f9": "=>", "\u2208": "in",
+    # Separators and bullets from templates and CJK input methods.
+    "\u25ba": _BULLET, "\u25b8": _BULLET, "\u276f": "\u203a", "\u203b": "*",
+    "\u3002": ".", "\u3001": ",", "\u301c": "~", "\u300c": '"', "\u300d": '"',
+    "\u3010": "[", "\u3011": "]", "\u300a": "\u00ab", "\u300b": "\u00bb",
+    # Currency signs Carlito lacks: the amount must keep its currency.
+    "\u20ba": "TRY ", "\u20bd": "RUB ", "\u20bf": "BTC ",
 }
-# A dash, quote or space the font lacks is still a dash, quote or space.
-_CATEGORY_FALLBACK = {"Pd": "-", "Pi": "'", "Pf": "'", "Zs": " "}
+# A dash, quote, space or bracket the font lacks is still one; other
+# punctuation and math symbols without a stand-in are decoration (dropped).
+_CATEGORY_FALLBACK = {"Pd": "-", "Pi": "'", "Pf": "'", "Zs": " ", "Ps": "(", "Pe": ")",
+                      "Pc": "_", "Po": "", "Sm": "", "Sk": "", "So": "",
+                      "Cs": "", "Co": "", "Cn": "", "Me": ""}
 # Invisible in Word, but a font that has a glyph for them would draw one.
 _INVISIBLE = {ord(c): None for c in "\u00ad\u200b\u200c\u200d\u2060\ufeff"}
+# Characters drawn as UNDRAWABLE for want of a glyph: letters, digits and
+# currency signs, i.e. resume content (a name in CJK script). Recorded here,
+# not inferred from the drawn text, because "?" is also a legitimate result
+# (U+FF1F, the fullwidth question mark, folds to it).
+_NO_GLYPH: set[str] = set()
+UNDRAWABLE = "?"
 
 
 def _safe_char(ch: str, cmap: dict[int, int]) -> str:
@@ -309,27 +330,32 @@ def _safe_char(ch: str, cmap: dict[int, int]) -> str:
         if folded:
             out = folded
     if out is None:
+        # A pictograph (emoji, dingbat), a math sign or a stray mark carries
+        # no resume content; a dash, quote, space or bracket keeps its role.
         out = _CATEGORY_FALLBACK.get(unicodedata.category(ch))
     if out is None:
-        # A pictograph (emoji, dingbat) carries no resume content; anything
-        # else (e.g. a CJK name) is a real character this font cannot draw.
-        out = "" if unicodedata.category(ch) in ("So", "Sk", "Cs", "Co", "Cn") else UNDRAWABLE
-        log.debug("resume pdf: no glyph for U+%04X, drawn as %r", ord(ch), out)
+        # A letter, digit or currency sign (e.g. a CJK name) is content this
+        # font cannot draw.
+        out = UNDRAWABLE
+        _NO_GLYPH.add(ch)
+        log.debug("resume pdf: no glyph for U+%04X", ord(ch))
     _SAFE_CACHE[ch] = out
     return out
 
 
-UNDRAWABLE = "?"
-
-
 def undrawable_chars(text: str) -> list[str]:
-    """Distinct characters of ``text`` the PDF would print as "?" - real
-    content (a name in CJK script) the bundled font cannot draw."""
+    """Distinct characters of ``text`` the PDF would print as "?": letters,
+    digits or currency signs the bundled font has no glyph or stand-in for
+    (a name in CJK script). Symbols and punctuation never count - they are
+    drawn as a stand-in or dropped."""
     cmap = _widths("")
     text = unicodedata.normalize("NFC", text or "").translate(_INVISIBLE)
     out: list[str] = []
     for c in dict.fromkeys(text):
-        if ord(c) not in cmap and _safe_char(c, cmap) == UNDRAWABLE:
+        if ord(c) in cmap:
+            continue
+        _safe_char(c, cmap)
+        if c in _NO_GLYPH:
             out.append(c)
     return out
 
@@ -733,8 +759,11 @@ _ENDS_WITH_DATE_RANGE_RE = re.compile(rf"{_DATE_RANGE}\)?\s*$", re.I)
 
 def _is_role_line(b: Block) -> bool:
     """A role header written as a bullet: "- **Engineer** | Acme | 2020 - 2024",
-    "- **Engineer, Acme**", "- Engineer, Acme, Jan 2020 - Present". Never
-    trimmed, and it starts a new role like any other non-bullet line."""
+    "- **Engineer, Acme**", "- Engineer, Acme, Jan 2020 - Present",
+    "- **Engineer**, Acme, 2020 - 2024, Remote". Never trimmed, and it starts
+    a new role like any other non-bullet line. Generous on purpose: an
+    achievement bullet read as a header only stays on the page, while a
+    header read as a bullet could be removed."""
     if b.kind != "bullet":
         return False
     body = b.raw[2:].strip()
@@ -743,8 +772,11 @@ def _is_role_line(b: Block) -> bool:
     if b.runs and all(r.bold for r in b.runs if r.text.strip()):
         return True
     text = b.text
-    return bool(_ENDS_WITH_DATE_RANGE_RE.search(text)
-                or ("|" in text and _DATE_RANGE_RE.search(text)))
+    if not _DATE_RANGE_RE.search(text):
+        return False
+    return bool(_ENDS_WITH_DATE_RANGE_RE.search(text) or "|" in text
+                or body.startswith("**")
+                or (text.count(",") >= 2 and len(text) <= 100))
 
 
 def _roles(blocks: list[Block]) -> list[list[Block]]:
@@ -1111,15 +1143,19 @@ def _fresh_revision_ids(payload: dict[str, bytes]) -> None:
     """Replace the template's revision-session ids and document id with
     random ones, consistently across every word/*.xml part.
 
-    python-docx copies its template's settings.xml verbatim, so every file it
-    writes carries the SAME ``w:rsidRoot``/``w:rsid`` list and ``w14:docId``
-    - a fingerprint shared by all of them. Word's own ids are random 24-bit
-    values, written as 8 hex digits.
+    python-docx copies its template's parts verbatim, so every file it writes
+    carries the SAME ``w:rsidRoot``/``w:rsid`` list and ``w14:docId`` - a
+    fingerprint shared by all of them. Every id in any part is remapped,
+    including ones settings.xml never declares (the template's styles.xml
+    carries one on its Header/Footer styles). Word's own ids are random
+    24-bit values, written as 8 hex digits.
     """
-    settings = payload.get("word/settings.xml")
-    if not settings:
-        return
-    old = list(dict.fromkeys(m.group(2).upper() for m in _RSID_DECL_RE.finditer(settings)))
+    parts = [n for n in payload if n.startswith("word/") and n.endswith(".xml")]
+    old = list(dict.fromkeys(
+        m.group(2).upper()
+        for name in parts
+        for rx in (_RSID_DECL_RE, _RSID_ATTR_RE)
+        for m in rx.finditer(payload[name])))
     fresh: dict[bytes, bytes] = {}
     for o in old:
         while True:
@@ -1135,7 +1171,7 @@ def _fresh_revision_ids(payload: dict[str, bytes]) -> None:
         val = ("%08X" % (int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF)).encode()
         return m.group(1) + val + m.group(3)
 
-    for name in [n for n in payload if n.startswith("word/") and n.endswith(".xml")]:
+    for name in parts:
         xml = payload[name]
         if fresh:
             xml = _RSID_ATTR_RE.sub(rsid, xml)
@@ -1243,8 +1279,10 @@ def _fold(s: str) -> str:
 
 
 def _name_part(s: str) -> str:
+    # Judged before transliteration: an all-caps "WEIß" keeps a lowercase ß
+    # (the conventional caps spelling) that would otherwise become "ss".
+    letters = [c for c in (s or "") if c.isalpha() and c != "ß"]
     plain = _ascii(s)
-    letters = [c for c in plain if c.isalpha()]
     if len(letters) >= 2 and all(c.isupper() for c in letters):
         # "PRIYA RAMANATHAN" as the resume heading writes it -> Priya;
         # capitalised per piece BEFORE the apostrophe goes: O'BRIEN -> OBrien
