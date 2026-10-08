@@ -1996,6 +1996,8 @@ def _urgency_of(job):
 
 
 templates.env.globals["urgency_of"] = _urgency_of
+# The ONE link to the extension's Chrome Web Store listing, for every page.
+templates.env.globals["chrome_web_store_url"] = settings.chrome_web_store_url
 
 
 # ── Public / marketing pages ─────────────────────────────────────────────────
@@ -9455,7 +9457,8 @@ def _require_server_autofill_allowed(uid: str | None) -> None:
     raise HTTPException(
         status_code=409,
         detail="Server-side autofill isn't enabled for your account. "
-               "Install the SpotApply browser extension to fill this form — "
+               "Add the SpotApply extension from the Chrome Web Store "
+               f"({settings.chrome_web_store_url}) to fill this form — "
                "it fills in your own browser and you stay in control of Submit.",
     )
 

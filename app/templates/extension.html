@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Install SpotApply Extension</title>
+  <title>Add SpotApply to Chrome</title>
   <link rel="icon" href="/static/icon-192.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -31,10 +31,11 @@
       <p class="text-[var(--muted)] text-sm">Auto-fill job forms in your browser — Greenhouse, Lever, Ashby, Workday and more. You review every field and click Submit yourself. On LinkedIn and Indeed, those sites fill your details from your own account, so SpotApply only tracks the application there.</p>
     </div>
 
-    <!-- Download -->
-    <a href="/api/extension/download" class="block w-full text-center py-4 rounded-2xl font-black text-white text-base mb-10" style="background:var(--sage-700);box-shadow:0 4px 20px rgba(47,180,166,0.35);">
-      ⬇️ Download Extension (.zip)
+    <!-- Install from the Chrome Web Store (settings.chrome_web_store_url) -->
+    <a href="{{ chrome_web_store_url }}" target="_blank" rel="noopener" data-w="store-cta" class="block w-full text-center py-4 rounded-2xl font-black text-white text-base" style="background:var(--sage-700);box-shadow:0 4px 20px rgba(47,180,166,0.35);">
+      Add to Chrome (free)
     </a>
+    <p class="text-center text-[var(--muted)] text-xs mt-3 mb-10">Installs from the Chrome Web Store and keeps itself up to date. Works in Chrome and other Chromium browsers (Edge, Brave, Arc).</p>
 
     <!-- Steps -->
     <div class="glass rounded-3xl p-7 mb-8">
@@ -43,37 +44,54 @@
         <div class="flex items-start gap-4">
           <div class="step-num">1</div>
           <div>
-            <p class="font-bold text-[var(--ink)] text-sm">Unzip the downloaded file</p>
-            <p class="text-[var(--muted)] text-xs mt-1">Extract <code class="text-[var(--sage-700)]">spotapply-extension.zip</code> to a folder on your computer.</p>
+            <p class="font-bold text-[var(--ink)] text-sm">Click "Add to Chrome" above</p>
+            <p class="text-[var(--muted)] text-xs mt-1">It opens SpotApply's page on the Chrome Web Store.</p>
           </div>
         </div>
         <div class="flex items-start gap-4">
           <div class="step-num">2</div>
           <div>
-            <p class="font-bold text-[var(--ink)] text-sm">Open Chrome Extensions</p>
-            <p class="text-[var(--muted)] text-xs mt-1">Go to <code class="text-[var(--sage-700)]">chrome://extensions</code> → enable <strong class="text-[var(--ink)]">Developer mode</strong> (top right toggle).</p>
+            <p class="font-bold text-[var(--ink)] text-sm">Click "Add to Chrome", then "Add extension"</p>
+            <p class="text-[var(--muted)] text-xs mt-1">Chrome asks you to confirm. That's it: no downloads or developer settings.</p>
           </div>
         </div>
         <div class="flex items-start gap-4">
           <div class="step-num">3</div>
           <div>
-            <p class="font-bold text-[var(--ink)] text-sm">Load the extension</p>
-            <p class="text-[var(--muted)] text-xs mt-1">Click <strong class="text-[var(--ink)]">Load unpacked</strong> → select the <code class="text-[var(--sage-700)]">spotapply-extension</code> folder you extracted.</p>
+            <p class="font-bold text-[var(--ink)] text-sm">Pin it to your toolbar</p>
+            <p class="text-[var(--muted)] text-xs mt-1">Click the puzzle icon next to the address bar and pin <strong class="text-[var(--ink)]">SpotApply</strong>, then open your SpotApply dashboard once so it connects.</p>
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Moving from the old .zip install -->
+    <div class="glass rounded-3xl p-6 mb-8" style="border-color:rgba(217,119,6,.35);">
+      <p class="font-bold text-[var(--ink)] text-sm">Installed the .zip version before?</p>
+      <p class="text-[var(--muted)] text-xs mt-1">Remove that copy first: open <code class="text-[var(--sage-700)]">chrome://extensions</code> and click <strong class="text-[var(--ink)]">Remove</strong> on the old SpotApply. With two copies, both would open and fill the same form. The Web Store version updates itself from now on.</p>
     </div>
 
     <!-- How to use -->
     <div class="glass rounded-3xl p-7 mb-8">
       <h2 class="font-bold text-[var(--ink)] mb-5 text-sm uppercase tracking-wider">How to use</h2>
       <div class="space-y-3 text-sm text-[var(--ink-soft)]">
-        <div class="flex items-center gap-3"><span class="text-lg">1️⃣</span> Open SpotApply dashboard and find a job card</div>
-        <div class="flex items-center gap-3"><span class="text-lg">2️⃣</span> Click <strong class="text-[var(--sage-700)]">🧩 Fill with Extension</strong> — the job form opens in a new tab</div>
-        <div class="flex items-center gap-3"><span class="text-lg">3️⃣</span> Click the SpotApply icon in your toolbar → <strong class="text-[var(--ink)]">⚡ Fill This Form Now</strong></div>
-        <div class="flex items-center gap-3"><span class="text-lg">4️⃣</span> Review every field — then click Submit yourself</div>
+        <div class="flex items-center gap-3"><span class="text-lg">1️⃣</span> Open your SpotApply dashboard and pick a job</div>
+        <div class="flex items-center gap-3"><span class="text-lg">2️⃣</span> Click <strong class="text-[var(--sage-700)]">Auto-Fill &amp; Apply</strong>. The application form opens in a new tab and fills itself</div>
+        <div class="flex items-center gap-3"><span class="text-lg">3️⃣</span> If a form isn't filled, click the SpotApply icon in your toolbar, then <strong class="text-[var(--ink)]">⚡ Fill This Form Now</strong></div>
+        <div class="flex items-center gap-3"><span class="text-lg">4️⃣</span> Review every field, then click Submit yourself</div>
       </div>
     </div>
+
+    <!-- Developer install: kept for testing an unreleased build -->
+    <details class="glass rounded-3xl p-6 mb-8">
+      <summary class="font-bold text-[var(--ink)] text-sm cursor-pointer">Developer install (unpacked)</summary>
+      <p class="text-[var(--muted)] text-xs mt-3">Only for testing a build that isn't on the Chrome Web Store yet. Remove the Web Store copy first.</p>
+      <ol class="text-[var(--muted)] text-xs mt-3 space-y-2 list-decimal list-inside">
+        <li><a href="/api/extension/download" class="text-[var(--sage-700)] font-bold">Download the .zip</a> and unzip it.</li>
+        <li>Open <code class="text-[var(--sage-700)]">chrome://extensions</code> and turn on <strong class="text-[var(--ink)]">Developer mode</strong>.</li>
+        <li>Click <strong class="text-[var(--ink)]">Load unpacked</strong> and pick the unzipped folder.</li>
+      </ol>
+    </details>
 
     <div class="text-center">
       <a href="/dashboard" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] text-sm font-bold transition">← Back to Dashboard</a>

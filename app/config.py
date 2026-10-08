@@ -153,6 +153,15 @@ class Settings(BaseSettings):
     # second real account fills with ITS OWN profile data.
     autofill_multi_user_enabled: bool = False  # AUTOFILL_MULTI_USER_ENABLED
     founder_user_id: str = ""                  # FOUNDER_USER_ID — Supabase user_id backing applicant_* defaults
+    # The extension's Chrome Web Store listing (approved 2026-10). Every
+    # install surface links HERE; the .zip from /api/extension/download is a
+    # developer fallback only. Two copies (Store + unpacked) both fill a form,
+    # so the install page tells .zip users to remove the old copy first.
+    # Edits under extension/ reach Store users only after a manifest version
+    # bump and a new Store review.
+    chrome_web_store_url: str = (
+        "https://chromewebstore.google.com/detail/acmmmmipgplcigghmcafkmjlenflbgcp"
+    )                                          # CHROME_WEB_STORE_URL
 
     # Matching
     min_match_score: float = 0.15          # lowered from 0.20 — cross-encoder floor

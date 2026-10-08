@@ -727,7 +727,7 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   one account held 68k open rows; ~30 counts over them took sign-in to 17-32 s);
   batches paced. Guard: `test_dashboard_load`.
 - **Extension: sessions are per TAB, "Submitted" needs confirmation** (audit
-  2026-09-30, extension 1.4.0, published to the Store as 1.0.0): a session exists only in the tab SpotApply opened
+  2026-09-30, extension 1.4.0, published to the Store as 1.0.0 — listing `acmmmmipgplcigghmcafkmjlenflbgcp`; `settings.chrome_web_store_url` is the ONE install link (Jinja global; the .zip is a developer fallback; an `extension/` edit reaches Store users only after a version bump + review; guard: `test_extension_store_link`): a session exists only in the tab SpotApply opened
   (or the popup's active tab) plus the tabs it opens — never a global pack any
   ATS page resumes; a new tab inherits only after a click on the bound page
   (`PAGE_CLICK`, 5 s) and a web first URL — Chrome 153 names the active tab

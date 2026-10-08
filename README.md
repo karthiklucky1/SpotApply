@@ -198,9 +198,12 @@ Configure via `.env` (see `.env.example` for the full list):
 ## Browser extension
 
 `extension/` is a Manifest-V3 Chrome extension that fills application forms in your own
-browser — you keep the session, and you control Submit. Load it unpacked via
-`chrome://extensions` → Developer Mode → "Load unpacked" → select `extension/`, or
-visit **/extension** in the app for guided install.
+browser — you keep the session, and you control Submit. Install it from the
+[Chrome Web Store](https://chromewebstore.google.com/detail/acmmmmipgplcigghmcafkmjlenflbgcp)
+(or visit **/extension** in the app). Developers testing an unreleased build: remove the
+Store copy first (two copies both fill), then `chrome://extensions` → Developer Mode →
+"Load unpacked" → select `extension/`. Changes under `extension/` reach Store users only
+after a manifest version bump and a new Store review.
 
 ---
 
