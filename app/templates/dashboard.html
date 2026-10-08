@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>SpotApply — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#0077C2"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="SpotApply"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/apple-touch-icon.png"> <link rel="icon" href="/favicon.ico" sizes="any"> <link rel="icon" type="image/svg+xml" href="/favicon.svg"> <link rel="stylesheet" href="/static/tailwind.css"> {#- defer: both libs are only called from user-triggered/post-load functions
+<html lang="en"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <script>
+    // Collapsed sidebar, restored BEFORE first paint (no open-then-close flash).
+    // Storage can throw (private window, blocked site data): then it is open.
+    try { if (localStorage.getItem('hp_sb_collapsed') === '1') document.documentElement.classList.add('sb-collapsed'); } catch (e) {}
+</script><title>SpotApply — AI Job Agent</title> <meta name="description" content="AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards."> <meta name="theme-color" content="#0077C2"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"> <meta name="apple-mobile-web-app-title" content="SpotApply"> <link rel="manifest" href="/static/manifest.json"> <link rel="apple-touch-icon" href="/apple-touch-icon.png"> <link rel="icon" href="/favicon.ico" sizes="any"> <link rel="icon" type="image/svg+xml" href="/favicon.svg"> <link rel="stylesheet" href="/static/tailwind.css"> {#- defer: both libs are only called from user-triggered/post-load functions
     (renderChart, avatar Cropper) — without it these two CDN fetches block HTML
     parsing on every page load. -#}
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css"> <script defer src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script> <script type="module"> // Auth guard — redirect to /login if no session or token expired
@@ -415,10 +419,14 @@
     .max-w-7xl { position: relative; z-index: 1; }
 
     /* ── Sidebar ────────────────────────────────────────── */
+    /* One width for everything that sits beside the sidebar (the board, the
+       job view, the glow): 190px open, an icon rail when collapsed. */
+    :root { --sb-w: 190px; }
     #app-sidebar {
         position: fixed;
         left: 0; top: 0; bottom: 0;
-        width: 190px;
+        width: var(--sb-w);
+        transition: width 0.2s ease;
         z-index: 50;
         display: flex;
         flex-direction: column;
@@ -596,9 +604,10 @@
 
     /* Push main content right when sidebar is visible */
     #main-wrapper {
-        margin-left: 190px;
+        margin-left: var(--sb-w);
         min-height: 100vh;
         position: relative;
+        transition: margin-left 0.2s ease;
     }
     /* Use more of the screen on large monitors (less wasted gutter). */
     @media (min-width: 1280px) {
@@ -667,24 +676,64 @@
         animation: pulse-glow 2.5s infinite;
     }
 
-    /* Tooltip for sidebar buttons */
-    #app-sidebar .sb-btn::after {
-        content: attr(data-tip);
-        position: absolute;
-        left: calc(100% + 12px);
-        top: 50%; transform: translateY(-50%);
-        background: rgba(15,20,40,0.95);
-        border: 1px solid rgba(255,255,255,0.08);
-        color: #e2e8f0;
-        font-size: 11px; font-weight: 600;
-        padding: 5px 10px;
-        border-radius: 8px;
-        white-space: nowrap;
-        opacity: 0; pointer-events: none;
-        transition: opacity 0.15s ease;
-        z-index: 100;
+    /* ── Collapsible sidebar (desktop) ─────────────────────────────────
+       html.sb-collapsed (set from localStorage by the <head> script, before
+       first paint, so it never flashes open) narrows the sidebar to an icon
+       rail; everything beside it follows --sb-w. Phones keep the slide-in
+       drawer exactly as it was. Labels are hidden VISUALLY, never with
+       display:none, so every button keeps its accessible name. */
+    #sb-collapse-btn {
+        margin-left: auto; width: 28px; height: 28px; flex: none;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 8px; border: 1px solid transparent; background: transparent;
+        color: #94a3b8; cursor: pointer; transition: background 0.15s, color 0.15s;
     }
-    #app-sidebar .sb-btn:hover::after { opacity: 1; }
+    #sb-collapse-btn:hover { background: rgba(148,163,184,0.14); color: #e2e8f0; }
+    #sb-collapse-btn:focus-visible { outline: 2px solid var(--sage, #0077C2); outline-offset: 2px; }
+    #sb-collapse-btn .ic { width: 16px; height: 16px; transition: transform 0.2s ease; }
+    #app-sidebar .sb-resume-btn { position: relative; }
+    #app-sidebar .sb-resume-btn .sb-icon { width: 17px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; }
+    #app-sidebar .sb-resume-btn .sb-icon .ic { width: 14px; height: 14px; }
+    /* The rail's labels: one fixed tooltip on <body> (the sidebar scrolls, so
+       a tooltip inside it would be clipped at its edge). */
+    #sb-tip {
+        position: fixed; z-index: 120; transform: translateY(-50%);
+        pointer-events: none; opacity: 0; transition: opacity 0.12s ease;
+        background: rgba(15,20,40,0.95); border: 1px solid rgba(255,255,255,0.08);
+        color: #e2e8f0; font-size: 11.5px; font-weight: 600; padding: 5px 10px;
+        border-radius: 8px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+    }
+    #sb-tip.show { opacity: 1; }
+    @media (max-width: 768px) {
+        #sb-collapse-btn, #sb-tip { display: none; }
+    }
+    @media (min-width: 769px) {
+        html.sb-collapsed { --sb-w: 64px; }
+        html.sb-collapsed #app-sidebar { padding: 20px 10px 16px; overflow-x: hidden; }
+        html.sb-collapsed #app-sidebar .sb-brand-row { flex-direction: column; gap: 10px; padding-left: 0; }
+        html.sb-collapsed #app-sidebar .sb-brand-name { display: none; }
+        html.sb-collapsed #sb-collapse-btn { margin-left: 0; }
+        html.sb-collapsed #sb-collapse-btn .ic { transform: rotate(180deg); }
+        html.sb-collapsed #app-sidebar .sb-btn { justify-content: center; padding: 0; gap: 0; }
+        html.sb-collapsed #app-sidebar .sb-resume-btn { justify-content: center; padding: 9px 0; gap: 0; }
+        html.sb-collapsed #app-sidebar .sb-resume-status { position: absolute; top: 1px; right: 4px; margin: 0; font-size: 10px; }
+        html.sb-collapsed #app-sidebar .sb-upgrade { justify-content: center; padding: 10px 0; }
+        html.sb-collapsed #app-sidebar .sb-up-chev { display: none; }
+        html.sb-collapsed #app-sidebar .sb-section-label {
+            font-size: 0; height: 1px; padding: 0; margin: 8px 10px; overflow: hidden;
+            background: rgba(148,163,184,0.28);
+        }
+        html.sb-collapsed #app-sidebar .sb-section-label.sb-push-bottom { margin-top: auto; }
+        html.sb-collapsed #app-sidebar .sb-label,
+        html.sb-collapsed #app-sidebar #sb-resume-label,
+        html.sb-collapsed #app-sidebar .sb-up-text {
+            position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+            overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #app-sidebar, #main-wrapper, #sb-collapse-btn .ic { transition: none; }
+    }
 
     /* Accent-color theme swatches — JS sets --sage / --sage-600 / --sage-tint on :root */
 
@@ -842,7 +891,7 @@
     #jobModalClose:hover, #referralClose:hover, #connClose:hover { background: var(--sage-tint); color: var(--sage-700); }
     /* ── Full-screen job detail (Jobright-style: list side panel + detail) ── */
     #jobModalOverlay { padding: 0; }
-    @media (min-width: 1024px) { #jobModalOverlay { left: 190px; } }
+    @media (min-width: 1024px) { #jobModalOverlay { left: var(--sb-w); } }
     #jobModal { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; border: none;
       flex-direction: row; }
     .jm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -1281,7 +1330,7 @@
 </style>
 </head> <body class="min-h-screen pb-16 has-sidebar">
 <!-- Lucide-style icon sprite (self-hosted, no CDN) -->
-<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"> <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol> <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol> <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol> <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol> <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol> <symbol id="i-mail" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol> <symbol id="i-kanban" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol> <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol> <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></symbol> <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></symbol> <symbol id="i-building" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/></symbol> <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol> <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol> <symbol id="i-message" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol> <symbol id="i-briefcase" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></symbol> <symbol id="i-gem" viewBox="0 0 24 24"><path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></symbol> <symbol id="i-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol> <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M14 7V5a2 2 0 0 0-4 0v2H7a2 2 0 0 0-2 2v3h2a2 2 0 0 1 0 4H5v3a2 2 0 0 0 2 2h3v-2a2 2 0 0 1 4 0v2h3a2 2 0 0 0 2-2v-3h2a2 2 0 0 0 0-4h-2V9a2 2 0 0 0-2-2h-3Z"/></symbol> <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="m16 16-1.9-1.9"/></symbol>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"> <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol> <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol> <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol> <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol> <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol> <symbol id="i-mail" viewBox="0 0 24 24"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol> <symbol id="i-kanban" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol> <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol> <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/></symbol> <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></symbol> <symbol id="i-building" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/></symbol> <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol> <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol> <symbol id="i-message" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol> <symbol id="i-briefcase" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></symbol> <symbol id="i-gem" viewBox="0 0 24 24"><path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></symbol> <symbol id="i-star" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol> <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M14 7V5a2 2 0 0 0-4 0v2H7a2 2 0 0 0-2 2v3h2a2 2 0 0 1 0 4H5v3a2 2 0 0 0 2 2h3v-2a2 2 0 0 1 4 0v2h3a2 2 0 0 0 2-2v-3h2a2 2 0 0 0 0-4h-2V9a2 2 0 0 0-2-2h-3Z"/></symbol> <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="m16 16-1.9-1.9"/></symbol> <symbol id="i-chevrons-left" viewBox="0 0 24 24"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></symbol> <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
 </svg>
 <style> .ic { width:18px; height:18px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .ic-lg { width:22px; height:22px; }
@@ -1327,7 +1376,9 @@
   .hp-band .hp-pill.hp-accent, .hp-band .hp-pill.hp-accent span { color: var(--ink) !important; font-weight:800; }
   .hp-band .btn-sync-emails { background:#FAF8F3 !important; color: var(--ink) !important; font-size:0.875rem !important;
     border:1px solid rgba(13,58,55,.08) !important; box-shadow:0 6px 16px rgba(9,38,36,.16) !important; }
-</style> <!-- Mobile menu button (hidden on desktop) --> <button id="mobile-menu-btn" onclick="toggleSidebar()" aria-label="Open menu"> <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg> </button> <!-- Overlay to close sidebar on mobile --> <div id="sidebar-overlay" onclick="toggleSidebar()"></div> <!-- ── Sidebar Navigation ─────────────────────────────────────── --> <nav id="app-sidebar"> <!-- Brand --> <div class="sb-brand-row"> <div class="sb-logo" id="sb-logo-btn" onclick="animateLogo()" title="SpotApply"> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"> <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" fill="rgba(255,255,255,0.08)"/> <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/> <circle cx="8" cy="12" r="1.5" fill="rgba(255,255,255,0.85)"/> </svg> </div> <span class="sb-brand-name">SpotApply</span> </div> <!-- Prominent resume upload — first thing every new user needs --> <button class="sb-resume-btn" onclick="openResumeUpload()" title="Upload or update your resume"> <span id="sb-resume-label">Upload / update resume</span> <span id="sb-resume-status" class="sb-resume-status" title="Resume status"></span> </button> <!-- Usage meter — loadUsage() targeted these four IDs but they never existed, so free users only discovered limits via surprise 429s --> <!-- Usage counters removed from view (founder request) — kept in the DOM,
+</style> <!-- Mobile menu button (hidden on desktop) --> <button id="mobile-menu-btn" onclick="toggleSidebar()" aria-label="Open menu" aria-controls="app-sidebar" aria-expanded="false"> <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg> </button> <!-- Overlay to close sidebar on mobile --> <div id="sidebar-overlay" onclick="toggleSidebar()"></div> <!-- ── Sidebar Navigation ─────────────────────────────────────── --> <nav id="app-sidebar" aria-label="Main"><!-- Brand --> <div class="sb-brand-row"> <div class="sb-logo" id="sb-logo-btn" onclick="animateLogo()" title="SpotApply"> <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"> <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" fill="rgba(255,255,255,0.08)"/> <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/> <circle cx="8" cy="12" r="1.5" fill="rgba(255,255,255,0.85)"/> </svg> </div> <span class="sb-brand-name">SpotApply</span> <!-- Open the sidebar, or narrow it to an icon rail (desktop). The state is restored before
+                 first paint by the <head> script; setSidebarCollapsed() keeps
+                 these attributes in step. --> <button type="button" id="sb-collapse-btn" onclick="toggleSidebarCollapsed()" aria-controls="app-sidebar" aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar"><svg class="ic" aria-hidden="true"><use href="#i-chevrons-left"/></svg></button> </div> <!-- Prominent resume upload — first thing every new user needs --> <button class="sb-resume-btn" onclick="openResumeUpload()" data-tip="Upload / update resume"> <span class="sb-icon" aria-hidden="true"><svg class="ic"><use href="#i-upload"/></svg></span> <span id="sb-resume-label">Upload / update resume</span> <span id="sb-resume-status" class="sb-resume-status" title="Resume status"></span> </button> <!-- Usage meter — loadUsage() targeted these four IDs but they never existed, so free users only discovered limits via surprise 429s --> <!-- Usage counters removed from view (founder request) — kept in the DOM,
       hidden, because loadUsage() still writes these four IDs. -->
  <div id="sb-usage" style="display:none;"> <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;"><span style="font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#64748B">Tailors</span><span id="usage-tailor-text" style="font-size:9.5px;font-weight:700;color:#475569">—</span></div> <div style="display:none"><div id="usage-tailor-bar"></div></div> <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 0;"><span style="font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#64748B">Auto-fills</span><span id="usage-autofill-text" style="font-size:9.5px;font-weight:700;color:#475569">—</span></div> <div style="display:none"><div id="usage-autofill-bar"></div></div> </div> <!-- Nav items --> <div class="sb-nav"> <div class="sb-section-label">Workspace</div> <button id="sb-nav-kanban" class="sb-btn active" onclick="sbSwitchTab('kanban')" data-tip="Pipeline"> <span class="sb-icon"><svg class="ic"><use href="#i-kanban"/></svg></span> <span class="sb-label">Pipeline</span> </button> <button id="sb-nav-explorer" class="sb-btn" onclick="sbSwitchTab('explorer')" data-tip="All Jobs"> <span class="sb-icon"><svg class="ic"><use href="#i-search"/></svg></span> <span class="sb-label">All Jobs</span> </button> <button id="sb-nav-registry" class="sb-btn" onclick="sbSwitchTab('registry')" data-tip="Job Boards"> <span class="sb-icon"><svg class="ic"><use href="#i-building"/></svg></span> <span class="sb-label">Job Boards</span> </button> <button id="sb-nav-skills" class="sb-btn" onclick="sbSwitchTab('skills')" data-tip="Skill Gap"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Skill Gap</span> </button> <button id="sb-nav-xray" class="sb-btn" onclick="sbSwitchTab('xray')" data-tip="Resume X-Ray"> <span class="sb-icon"><svg class="ic"><use href="#i-scan"/></svg></span> <span class="sb-label">Resume X-Ray</span> </button> <div class="sb-section-label">Tools</div> <button class="sb-btn" onclick="openInsightsModal()" data-tip="Insights"> <span class="sb-icon"><svg class="ic"><use href="#i-chart"/></svg></span> <span class="sb-label">Insights</span> </button> <button class="sb-btn" onclick="openRolesModal()" data-tip="Target Roles"> <span class="sb-icon"><svg class="ic"><use href="#i-target"/></svg></span> <span class="sb-label">Target Roles</span> </button> <button class="sb-btn" onclick="openAddJobModal()" data-tip="Add Job from Link"> <span class="sb-icon"><svg class="ic"><use href="#i-link"/></svg></span> <span class="sb-label">Add Job Link</span> </button> <div class="sb-section-label">Networking</div> <button class="sb-btn" onclick="openComingSoonModal('Messages', 'Direct messaging with recruiters is coming soon — you\'ll be able to reply to intros right here.')" data-tip="Messages"> <span class="sb-icon"><svg class="ic"><use href="#i-message"/></svg></span> <span class="sb-label">Messages</span> </button> <button class="sb-btn" onclick="openComingSoonModal('Recruiter Portal', 'The recruiter portal is coming soon — verified recruiters will be able to find and message you.')" data-tip="Recruiter Portal"> <span class="sb-icon"><svg class="ic"><use href="#i-briefcase"/></svg></span> <span class="sb-label">Recruiter Portal</span> </button> <div class="sb-section-label sb-push-bottom">Account</div> <button class="sb-btn" onclick="openSettings('pricing')" data-tip="Pricing"> <span class="sb-icon"><svg class="ic"><use href="#i-gem"/></svg></span> <span class="sb-label">Plans &amp; Pricing</span> </button> <button id="sb-nav-review" class="sb-btn" onclick="openReviewModal()" data-tip="Write a Review"> <span class="sb-icon"><svg class="ic"><use href="#i-star"/></svg></span> <span class="sb-label">Write a Review</span> </button> <button id="sb-nav-settings" class="sb-btn" onclick="openSettings()" data-tip="Settings"> <span class="sb-icon"><svg class="ic"><use href="#i-sliders"/></svg></span> <span class="sb-label">Settings</span> </button>
                 <!-- Upgrade card. Hidden until /api/usage says this account is
@@ -1342,7 +1393,7 @@
                     </span>
                     <span class="sb-up-chev" aria-hidden="true">&rsaquo;</span>
                 </button>
-            </div> <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)"> </nav> <!-- Main content wrapper --> <div id="main-wrapper"> <!-- Top Glow Overlay --> <div id="top-glow-overlay" style="position:fixed;top:0;left:190px;right:0;height:350px;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(99,102,241,0.1),transparent);pointer-events:none;z-index:0;"></div> <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-3"> <!-- Premium Header -->
+            </div> <input type="file" id="sb-avatar-input" accept="image/*" class="hidden" onchange="uploadAvatar(this)"> </nav> <!-- Main content wrapper --> <div id="main-wrapper"> <!-- Top Glow Overlay --> <div id="top-glow-overlay" style="position:fixed;top:0;left:var(--sb-w);right:0;height:350px;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(99,102,241,0.1),transparent);pointer-events:none;z-index:0;"></div> <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-3"> <!-- Premium Header -->
 <!-- Top bar: find, alerts, you. Sits above the band, on the page — the
              brand already lives in the sidebar, so it is not repeated here. -->
         <div id="app-topbar">
@@ -1413,7 +1464,7 @@
                                 <span class="jd-meta-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>Found on {{ job.source.value|upper }}</span> {% if job.is_closed %}<span class="jd-meta-chip" style="color:#C2410C;">⚠ May be closed</span>{% endif %}
                             </div> {% set hp = (job.hire_probability_score * 100)|int if job.hire_probability_score is not none else None %}
                             <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3.5 w-full border-b border-slate-800/60 pb-3.5"> <div class="flex flex-wrap gap-2 items-center"> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold shadow-sm" style="background: var(--surface-2); color: var(--ink); border: 1px solid var(--border);" title="Apply priority = 65% resume fit + 35% hiring intent"> <span>★ Priority:</span> <span>{% if job.blended_score is not none %}{{ job.blended_score|int }}{% else %}—{% endif %}</span> </div> <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold {% if hp is not none and hp >= 60 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% elif hp is not none and hp >= 30 %}bg-amber-500/10 text-amber-400 border border-amber-500/20{% else %}bg-slate-800/40 text-slate-400 border border-slate-700/20{% endif %}" title="How likely this team is actively filling the role right now"> <span>Hiring Intent:</span> <span>{% if hp is not none %}{{ hp }}%{% else %}N/A{% endif %}</span> </div> </div> <div class="top-actions-placeholder flex flex-wrap items-center gap-2 lg:ml-auto"> <a href="{{ (app.apply_url or job.url)|e }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[10.5px] font-bold bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white transition duration-150" title="Open original job posting"> ↗ Open Original
-                                    </a> </div> </div> {% set _urgd = urgency_of(job) if app.apply_track != 'email_import' else none %}
+                                    </a> {% if not _is_submitted_state and app.status.value != 'skipped' and app.apply_track != 'email_import' %}<button type="button" onclick="event.stopPropagation(); reportUnavailable({{ app.id }}, this)" class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[10.5px] font-bold bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 hover:text-white transition duration-150" title="The posting is gone? Tell us — it comes off your board and we re-check it for everyone else">Job closed?</button>{% endif %} </div> </div> {% set _urgd = urgency_of(job) if app.apply_track != 'email_import' else none %}
                             {% if _urgd and _urgd.label %}
                             <div class="rounded-xl px-3.5 py-2 text-[11.5px] leading-snug mt-3" style="{% if _urgd.tone == 'hot' %}background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.25);color:#be123c;{% else %}background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.30);color:#92400e;{% endif %}"> <b>{{ _urgd.label }}</b> — {{ _urgd.reason }}
                             </div> {% endif %}
@@ -1713,7 +1764,7 @@
                     </div> {% endfor %}
                 </div> </div> </div> </div>
             <div id="pipe-skipped" class="pipe-pane hidden"><!-- Removed / Cancelled archive row --> <div> <div class="glass rounded-[28px] p-5 border border-slate-700/30 flex flex-col"> <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/40"> <div class="flex items-center gap-2"> <span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> <h2 class="font-bold text-white text-sm">Removed / Cancelled</h2> </div> <span class="bg-slate-500/10 text-slate-400 text-xs font-black px-2.5 py-0.5 rounded-full border border-slate-500/20" id="skipped-count">{{ skipped|length }}</span> </div> <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pr-1" id="skipped-container"> {% for app, job in skipped %}
-                    <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}"> <div class="flex justify-between items-start gap-2"> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3> <p class="text-[10px] text-slate-500 font-semibold mt-1"> {{ job.company or 'Unknown' }} |  {{ job.location or 'Remote' }}</p> </div> <span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span> </div> </div> {% else %}
+                    <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}"> <div class="flex justify-between items-start gap-2"> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3> <p class="text-[10px] text-slate-500 font-semibold mt-1"> {{ job.company or 'Unknown' }} |  {{ job.location or 'Remote' }}</p> </div> {# job.is_closed is on the board's load_only list (app.notes is not — reading it here would fail the render); retention never closes a job that has an application, so on this card it means the posting itself is gone #}{% if job.is_closed %}<span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 border border-slate-500/20 shrink-0" style="color:#b45309;" title="The posting has closed">No longer available</span>{% else %}<span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span>{% endif %} </div> </div> {% else %}
                     <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-skipped-msg"> No removed or cancelled applications.
                     </div> {% endfor %}
                 </div> </div> </div><!-- /archive row --></div> </div><!-- /view-content-kanban --> <!-- TAB 2 removed (manual apply) --> <!-- TAB 3: Jobs Explorer View --> <div id="view-content-explorer" class="hidden flex flex-col gap-6"> <!-- Filter Bar --> <div class="glass rounded-[32px] p-5 border-slate-800 flex flex-wrap gap-4 items-end"> <div class="flex-1 min-w-[200px]"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Search Title, Company, or Location</label> <input type="text" id="filter-search" oninput="searchJobs()" placeholder="Search jobs..." class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-full px-4 py-2.5 text-white placeholder-slate-600 outline-none transition" /> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Work Style</label> <select id="filter-remote" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Styles</option> <option value="true">Fully Remote</option> <option value="false">On-site / Hybrid</option> </select> </div> <div class="w-44"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Match Status</label> <select id="filter-status" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Jobs</option> <option value="unprocessed">Unprocessed Only</option> <option value="shortlisted">Shortlisted (Fit)</option> <option value="submitted">Submitted Only</option> </select> </div> <div class="w-40"> <label class="block text-[11px] font-bold text-slate-400 uppercase mb-2">Apply Track</label> <select id="filter-track" onchange="searchJobs()" class="w-full text-xs bg-slate-950/60 border border-slate-800 focus:border-indigo-500 rounded-full px-4 py-2.5 text-white outline-none transition cursor-pointer"> <option value="">All Sources</option> <option value="autofill"> Autofill (GH/Lever/Ashby)</option> <option value="manual"> Manual (LinkedIn/Indeed)</option> </select> </div> <div class="w-48"> <div class="flex justify-between items-center mb-1"> <label class="text-[11px] font-bold text-slate-400 uppercase">Min Score: <span id="score-val" class="text-indigo-400 font-bold">0</span></label> </div> <input type="range" id="filter-score" min="0" max="100" value="0" oninput="updateScoreVal(this.value)" class="w-full h-1.5 bg-slate-800 rounded-full appearance-none cursor-pointer accent-indigo-500" /> </div> <button id="filter-fresh-btn" onclick="toggleFreshOnly()" class="text-[11px] font-black uppercase tracking-wider py-2.5 px-5 rounded-full border transition duration-200 bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white whitespace-nowrap" title="Show only jobs we found in the last 5 days (already sorted newest first). Click to cycle: 5 days → new today → all time.">🆕 Last 5 days</button> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-roles-only" checked onchange="searchJobs()" class="w-4 h-4 rounded accent-emerald-500 cursor-pointer" /> <label for="filter-roles-only" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none" title="Only show jobs whose title matches your target roles">🎯 My roles</label> </div> <div class="flex items-center gap-2 whitespace-nowrap"> <input type="checkbox" id="filter-hide-aggregators" onchange="searchJobs()" class="w-4 h-4 rounded accent-indigo-500 cursor-pointer" /> <label for="filter-hide-aggregators" class="text-[11px] font-bold text-slate-400 uppercase cursor-pointer select-none">Hide Lensa/Aggregators</label> </div> <button onclick="resetFilters()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white font-bold py-2.5 px-6 rounded-full border border-slate-700 transition duration-200"> Reset
@@ -2886,20 +2937,90 @@
             if (b) b.classList.add('hidden');
         }
 
-        // Mobile sidebar toggle
-        function toggleSidebar() {
+        // Mobile sidebar (slide-in drawer). `force` opens/closes outright:
+        // a nav tap closes the drawer from TWO places (this listener and the
+        // item's own handler), and two plain toggles re-opened it.
+        function toggleSidebar(force) {
             const sidebar = document.getElementById('app-sidebar');
             const overlay = document.getElementById('sidebar-overlay');
-            sidebar.classList.toggle('open');
-            overlay.classList.toggle('open');
+            const open = typeof force === 'boolean' ? force : !sidebar.classList.contains('open');
+            sidebar.classList.toggle('open', open);
+            overlay.classList.toggle('open', open);
+            const mb = document.getElementById('mobile-menu-btn');
+            if (mb) mb.setAttribute('aria-expanded', String(open));
         }
 
         // Close sidebar when a nav item is clicked on mobile
         document.querySelectorAll('#app-sidebar .sb-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                if (window.innerWidth <= 768) toggleSidebar();
+                if (window.innerWidth <= 768) toggleSidebar(false);
             });
         });
+
+        // Desktop sidebar: open, or collapsed to an icon rail. The class sits
+        // on <html> (the <head> script restores it before first paint); this
+        // remembers the choice per browser and keeps the toggle's state honest.
+        function _sbIsCollapsed() { return document.documentElement.classList.contains('sb-collapsed'); }
+        function _syncSidebarToggle() {
+            const btn = document.getElementById('sb-collapse-btn');
+            if (!btn) return;
+            const collapsed = _sbIsCollapsed();
+            const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+            btn.setAttribute('aria-expanded', String(!collapsed));
+            btn.setAttribute('aria-label', label);
+            btn.title = label;
+        }
+        function setSidebarCollapsed(on) {
+            document.documentElement.classList.toggle('sb-collapsed', !!on);
+            try { localStorage.setItem('hp_sb_collapsed', on ? '1' : '0'); } catch (e) {}
+            _syncSidebarToggle();
+            _hideSbTip();
+            // Charts and the tab indicator measure their containers: tell them
+            // once the width transition has finished.
+            setTimeout(() => window.dispatchEvent(new Event('resize')), 230);
+        }
+        function toggleSidebarCollapsed() { setSidebarCollapsed(!_sbIsCollapsed()); }
+
+        // Rail labels: one tooltip on <body>, shown on hover AND keyboard
+        // focus, only while collapsed (open, the labels are on screen).
+        const _sbTip = document.createElement('div');
+        _sbTip.id = 'sb-tip';
+        _sbTip.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(_sbTip);
+        function _hideSbTip() { _sbTip.classList.remove('show'); }
+        function _sbTipText(el) {
+            const t = el.getAttribute('data-tip');
+            if (t) return t;
+            const up = el.querySelector('.sb-up-title');      // the plan card
+            return up ? up.textContent.trim() : '';
+        }
+        function _showSbTip(e) {
+            if (!_sbIsCollapsed() || window.innerWidth <= 768) return;
+            const el = e.target.closest('.sb-btn, .sb-resume-btn, .sb-upgrade');
+            if (!el) return;
+            const text = _sbTipText(el);
+            if (!text) return;
+            const r = el.getBoundingClientRect();
+            _sbTip.textContent = text;
+            _sbTip.style.left = Math.round(r.right + 10) + 'px';
+            _sbTip.style.top = Math.round(r.top + r.height / 2) + 'px';
+            _sbTip.classList.add('show');
+        }
+        (function () {
+            const sb = document.getElementById('app-sidebar');
+            if (!sb) return;
+            sb.addEventListener('mouseover', _showSbTip);
+            sb.addEventListener('focusin', _showSbTip);
+            sb.addEventListener('mouseleave', _hideSbTip);
+            sb.addEventListener('focusout', _hideSbTip);
+            sb.addEventListener('scroll', _hideSbTip, { passive: true });
+            sb.addEventListener('click', _hideSbTip);
+            sb.addEventListener('mouseout', (e) => {
+                const from = e.target.closest('.sb-btn, .sb-resume-btn, .sb-upgrade');
+                if (from && !(e.relatedTarget && from.contains(e.relatedTarget))) _hideSbTip();
+            });
+        })();
+        _syncSidebarToggle();
 
         // Logo click — spin animation, then refresh the page.
         function animateLogo() {
@@ -2923,7 +3044,7 @@
             // Scroll tab nav into view so user sees the section
             const tabNav = document.getElementById('tab-nav-bar');
             if (tabNav) tabNav.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            if (window.innerWidth <= 768) toggleSidebar();
+            if (window.innerWidth <= 768) toggleSidebar(false);
         }
 
         // Sidebar avatar
@@ -4861,6 +4982,35 @@
             });
         }
 
+        // "This job is no longer available": the user went to the posting and
+        // it was gone. Unlike Remove, this is NOT "not interested" — their copy
+        // leaves the board, and we re-check the posting before taking it off
+        // anyone else's (POST /application/{id}/unavailable).
+        async function _postUnavailable(appId) {
+            const r = await fetch(`/application/${appId}/unavailable?reason=closed`, { method: 'POST', headers: authHeaders() });
+            if (!r.ok) throw new Error('report failed');
+            return r.json();
+        }
+        const _UNAVAILABLE_TOAST = "Thanks — it's off your board. We'll re-check the posting so others don't get a closed job.";
+        function reportUnavailable(appId, btn) {
+            showCustomConfirm({
+                title: 'Job no longer available?',
+                message: "We'll take it off your board and re-check the posting so other people don't get a closed job. This doesn't count as \"not interested\".",
+                okText: 'Report closed',
+                onConfirm: async () => {
+                    if (btn) btn.disabled = true;
+                    try {
+                        await _postUnavailable(appId);
+                        showToastNextPage(_UNAVAILABLE_TOAST, 'success');
+                        window.location.reload();
+                    } catch (e) {
+                        if (btn) btn.disabled = false;
+                        showToast("Couldn't report that — please try again.", 'error');
+                    }
+                }
+            });
+        }
+
         async function submitFormFromModal() {
             if (!currentAppId) return;
             const btn = document.getElementById('modal-submit-btn');
@@ -5483,8 +5633,11 @@
             if (!el) return;
             window._welcomeLast = d;
             const parts = [];
+            // A paused search runs nothing, so it never shows "Checking jobs"
+            // (the "You paused your search" notice above the board says why).
+            if (d.paused) _welcomeStarting = null;
             const starting = _welcomeStarting && (Date.now() - _welcomeStarting.at < 120000);
-            if (d.boost_active || starting) {
+            if (!d.paused && (d.boost_active || starting)) {
                 _welcomeFirstMatch(d);
                 parts.push(_wBoostHtml(d));
                 if (d.boost_active)
@@ -7613,7 +7766,9 @@
 </div>
 <script> // Names kept as openJobDrawer/closeJobDrawer so existing callers keep working.
     // The app sidebar stays visible while a job is open — clicking it closes the job.
-    document.getElementById('app-sidebar')?.addEventListener('click', () => {
+    // Except the sidebar's own open/rail toggle: making room for the job must not close it.
+    document.getElementById('app-sidebar')?.addEventListener('click', (e) => {
+        if (e.target.closest('#sb-collapse-btn')) return;
         const ov = document.getElementById('jobModalOverlay');
         if (ov && ov.classList.contains('open')) closeJobDrawer();
     });
@@ -8535,10 +8690,15 @@
                 const r = await fetch('/api/search/' + action, {
                     method: 'POST', headers: Object.assign({'Content-Type': 'application/json'}, _hpHeaders()),
                     body: JSON.stringify({}) });
-                if (r.ok) _renderSearchState(await r.json());
+                if (r.ok) { _renderSearchState(await r.json()); _afterSearchToggle(); }
             } catch (e) { /* the next load shows the state */ }
             el.disabled = false;
         };
+    }
+    // Pause ends the first-hour panel's "Checking jobs" at once (the server
+    // ends the window); Resume shows whatever is running again.
+    function _afterSearchToggle() {
+        if (typeof loadWelcomePanel === 'function') loadWelcomePanel();
     }
     let _searchState = null;
     function _renderSearchSetting(state) {
@@ -8558,7 +8718,7 @@
             const r = await fetch('/api/search/' + (running ? 'pause' : 'resume'), {
                 method: 'POST', headers: Object.assign({'Content-Type': 'application/json'}, _hpHeaders()),
                 body: JSON.stringify({}) });
-            if (r.ok) _renderSearchState(await r.json());
+            if (r.ok) { _renderSearchState(await r.json()); _afterSearchToggle(); }
         } catch (e) { /* the next load shows the state */ }
         if (btn) btn.disabled = false;
     };
@@ -8864,9 +9024,26 @@
         box.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:9999;background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:16px;padding:16px 18px;box-shadow:0 16px 50px rgba(0,0,0,.4);max-width:420px;width:calc(100% - 32px);';
         const who = company ? (' to <b>' + (company + '').replace(/</g, '&lt;') + '</b>') : '';
         box.innerHTML = `
-            <div style="font-size:13.5px;font-weight:700;margin-bottom:4px;">Did you submit your application${who}?</div> <div style="font-size:11.5px;color:var(--muted,#94a3b8);margin-bottom:12px;">We'll move it to your Submitted pipeline so you can track it.</div> <div style="display:flex;gap:8px;"> <button id="hp-sc-yes" style="flex:1;padding:9px;border:none;border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:#10b981;color:#fff;">✓ Yes, submitted</button> <button id="hp-sc-no" style="flex:1;padding:9px;border:1px solid var(--border,rgba(255,255,255,.15));border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:transparent;color:var(--muted,#94a3b8);">Not yet</button> </div>`;
+            <div style="font-size:13.5px;font-weight:700;margin-bottom:4px;">Did you submit your application${who}?</div> <div style="font-size:11.5px;color:var(--muted,#94a3b8);margin-bottom:12px;">We'll move it to your Submitted pipeline so you can track it.</div> <div style="display:flex;gap:8px;"> <button id="hp-sc-yes" style="flex:1;padding:9px;border:none;border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:#10b981;color:#fff;">✓ Yes, submitted</button> <button id="hp-sc-no" style="flex:1;padding:9px;border:1px solid var(--border,rgba(255,255,255,.15));border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:transparent;color:var(--muted,#94a3b8);">Not yet</button> </div> <button id="hp-sc-gone" style="display:block;width:100%;margin-top:8px;padding:8px;border:1px dashed rgba(217,119,6,.45);border-radius:10px;cursor:pointer;font-weight:700;font-size:12px;background:transparent;color:#b45309;">This job is no longer available</button>`;
         document.body.appendChild(box);
         document.getElementById('hp-sc-no').onclick = () => { _clearPendingApply(); box.remove(); };
+        // The posting was gone: their copy leaves the board and we re-check it
+        // for everyone else (never counted as "not interested").
+        document.getElementById('hp-sc-gone').onclick = async () => {
+            const gone = box.querySelector('#hp-sc-gone');
+            gone.disabled = true;
+            gone.textContent = 'Reporting…';
+            try {
+                await _postUnavailable(appId);
+                _clearPendingApply();
+                box.remove();
+                showToastNextPage(_UNAVAILABLE_TOAST, 'success');
+                window.location.reload();
+            } catch (e) {
+                gone.disabled = false;
+                gone.textContent = 'Try again';
+            }
+        };
         document.getElementById('hp-sc-yes').onclick = async () => {
             box.querySelector('#hp-sc-yes').textContent = 'Saving…';
             try {

@@ -55,9 +55,19 @@ def _window() -> timedelta:
     return timedelta(minutes=max(0, int(settings.welcome_boost_minutes)))
 
 
+def _paused(user_id: str) -> bool:
+    """The user paused their search: no boost, no adoption, no scoring kick
+    (app/common/compute_policy.py — PAUSED allows nothing)."""
+    from app.common.compute_policy import user_paused
+    return user_paused(user_id)
+
+
 def begin(user_id: Optional[str], reason: str, now: Optional[datetime] = None) -> bool:
-    """Open (or keep) this user's boost window. True when a new one started."""
+    """Open (or keep) this user's boost window. True when a new one started.
+    Never for a paused search: the boost is personalised work done FOR them."""
     if not user_id or user_id == "local" or settings.welcome_boost_minutes <= 0:
+        return False
+    if _paused(user_id):
         return False
     now = now or datetime.utcnow()
     with _LOCK:
@@ -79,6 +89,27 @@ def begin(user_id: Optional[str], reason: str, now: Optional[datetime] = None) -
     log.info("Welcome boost started (%s)", reason)   # no user id in the line
     _mark_feed_started(user_id, now)
     return True
+
+
+def end(user_id: Optional[str]) -> bool:
+    """Close this user's window now (they paused their search). Priority, the
+    2x slice and the 14-day catch-up all key off the window, so they stop with
+    it; the panel's cached answer is dropped. True when a window was open."""
+    if not user_id:
+        return False
+    with _LOCK:
+        was_open = _BOOSTS.pop(user_id, None) is not None
+        _GRADUATED.pop(user_id, None)
+        _LAST_CHECK.pop(user_id, None)
+        _FIRST_DONE.pop(user_id, None)
+    try:
+        from app.common import ttl_cache
+        ttl_cache.invalidate(f"welcome:{user_id}")
+    except Exception:
+        pass
+    if was_open:
+        log.info("Welcome boost ended (search paused)")   # no user id in the line
+    return was_open
 
 
 def _mark_feed_started(user_id: str, now: datetime) -> None:
@@ -177,15 +208,24 @@ def welcome_back(user_id: Optional[str]) -> bool:
 def _refresh(user_id: str) -> None:
     """Adopt the whole fresh window now, then ask the scoring lane for a cycle
     — the lane's own gates (compute policy, plan budget, breaker) decide what
-    is spent. Best-effort; the scheduled lanes remain the backstop."""
+    is spent. Best-effort; the scheduled lanes remain the backstop.
+
+    Re-asks about a pause before each step: the thread can start a moment
+    before the user's Pause lands, and the pause must stop what comes next."""
     if not _profile_exists(user_id):
         return   # deleted meanwhile: adoption would re-create the profile
+    if _paused(user_id):
+        end(user_id)
+        return
     try:
         from app.strategy.adoption import adopt_shared_jobs
         adopted = adopt_shared_jobs(user_id)
         log.info("Welcome refresh: %d fresh posting(s) adopted", adopted)
     except Exception as e:
         log.warning("welcome refresh adoption failed: %s", e)
+    if _paused(user_id):
+        end(user_id)
+        return
     kick_scoring()
 
 

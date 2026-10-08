@@ -360,6 +360,15 @@ class Settings(BaseSettings):
     # only — jobs still deliver, they are just delivered unverified, which is
     # the same fail-open direction as every other inconclusive result.
     liveness_budget_seconds_per_cycle: float = 20.0  # LIVENESS_BUDGET_SECONDS_PER_CYCLE
+    # "This job is no longer available" (POST /application/{id}/unavailable).
+    # The reporter's own copy closes at once; the posting is RE-CHECKED for
+    # everyone else, forced past a LIVE verdict younger than
+    # liveness_recheck_hours, because the report contradicts it. A report is a
+    # server-side fetch a user can trigger, so it is bounded twice: per user per
+    # day (reserved in platform_counter; 0 = unlimited), and never more often
+    # than this many minutes per posting however many people report it.
+    liveness_reports_per_user_daily: int = 20       # LIVENESS_REPORTS_PER_USER_DAILY
+    liveness_report_min_recheck_minutes: int = 30   # LIVENESS_REPORT_MIN_RECHECK_MINUTES
     liveness_user_agent: str = (
         "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
     )

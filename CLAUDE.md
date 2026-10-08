@@ -245,6 +245,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (turns raw signal tokens like `fresh_posting_4d` → "Posted 4 days ago").
 - **Dashboard** is one big `templates/dashboard.html` (HTML + inline `<script>`). Modals
   toggle via `style.display` (not the `hidden` class — inline `display` overrides it).
+  The desktop sidebar collapses to an icon rail (`html.sb-collapsed`, set in
+  `<head>` before paint from `hp_sb_collapsed`); everything beside it reads
+  `--sb-w`, never a literal 190px (guard: `test_sidebar_collapse`).
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
   **Per-user aggregates are bounded AND cached** (`app/common/ttl_cache.py`):
   `/api/freshness-stats` (was 52s — it loaded every open row of a 65k pool to
@@ -533,7 +536,15 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   first version only refused, and one dead Workday req was re-nominated and
   re-refused 17 times in 7 hours. Aggregate counters only
   (`metrics_snapshot`, drained once per scoring cycle into one log line);
-  never a job id, external id or URL in a label.
+  never a job id, external id or URL in a label. **"No longer available"**
+  (`POST /application/{id}/unavailable`, 2026-10-08): the reporter's copy
+  closes now (pre-submit → SKIPPED with a "job closed" note — a system skip,
+  never the dismissal marker); one report never touches another board — it
+  queues `delivery_gate.verify_reported` (forced past a young LIVE verdict,
+  `LIVENESS_REPORTS_PER_USER_DAILY`, `LIVENESS_REPORT_MIN_RECHECK_MINUTES`,
+  verifiable sources only) and only REMOVED/EXPIRED runs
+  `close_dead_everywhere` (waiting copies → Removed; TAILORED+ only
+  `is_closed`). Guard: `test_report_unavailable`.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows
@@ -635,7 +646,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   grandfathered). Paid AI only while active or paid, checked when queued AND
   before each provider call (`reranker._paid_call_allowed`), plus atomic daily
   per-user/platform reservations. Kill switch `COMPUTE_POLICY_ENFORCED=0`.
-  Temporary Pro now defaults ON — it grants limits, never compute. Journey
+  Temporary Pro now defaults ON — it grants limits, never compute. An explicit
+  PAUSE is cleared ONLY by Resume, and work started outside the lanes asks
+  `compute_policy.user_paused`/`is_paused` (welcome begin/refresh, onboarding
+  seed, `/api/welcome/status` → `paused`); `_may_welcome` skips `/api/search/*`
+  because the stamp runs before the route body — clicking Pause opened a boost
+  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Journey
   metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
   Dedup: same company + normalised title within 40 d is one role (`slate.py`).
   Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.

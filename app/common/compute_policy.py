@@ -24,7 +24,17 @@ STATES, from the last MEANINGFUL action (`last_meaningful_activity_at`):
 a document fetch/download, starting a fill, "Resume search". A page view is
 "seen" (it updates `last_active_at` only); polls, notification fetches and token
 refreshes are nothing at all. A user returning to the dashboard sees a pause
-notice with a Resume button; the first meaningful action resumes them.
+notice with a Resume button; the first meaningful action resumes an IDLE or
+DORMANT search. An explicit PAUSE is different: only "Resume search" clears it
+(`server._set_search_pause`) — a click elsewhere on the page is not consent to
+start spending again.
+
+Work started OUTSIDE the lanes (the first-hour welcome refresh, the onboarding
+seed, the first-hour panel) asks `user_paused` / `is_paused` — the lanes' user
+lists already skip PAUSED through `search_state`, and the 2026-10-08 report
+("I clicked Pause, why are new jobs loading?") was the welcome refresh, which
+asked nobody: clicking Pause is itself a POST, and a POST from someone idle
+past the window opened a boost that adopted and scored for them.
 
 A NULL `last_meaningful_activity_at` is NOT grandfathered as active: the old
 `last_active_at` was stamped by polling, so it proves nothing, and the audit
@@ -134,6 +144,37 @@ def search_state(profile, *, now: Optional[datetime] = None,
                                        "resume whenever you are ready")
     return SearchState(DORMANT, last, "Your search is paused to save resources — "
                                       "resume whenever you are ready")
+
+
+def is_paused(profile) -> bool:
+    """Did this user pause their own search (and is the policy enforced)?
+
+    The ONE reading for paths that start personalised work outside the lanes.
+    Follows `enforced()` like the lanes do: with the kill switch off the lanes
+    serve a paused user, so the welcome machinery must not be the one path that
+    still refuses them."""
+    if profile is None or not enforced():
+        return False
+    return _naive(getattr(profile, "search_paused_at", None)) is not None
+
+
+def user_paused(user_id: Optional[str]) -> bool:
+    """`is_paused` by user id: one indexed read of one column. A missing
+    profile or a read that fails is "not paused" — this gate only ever stops
+    work the user asked us to stop; it must not stop everyone on a hiccup."""
+    if not user_id or not enforced():
+        return False
+    try:
+        from sqlmodel import select
+        from app.db.init_db import get_session
+        from app.db.models import UserProfile
+        with get_session() as s:
+            paused_at = s.exec(select(UserProfile.search_paused_at).where(
+                UserProfile.user_id == user_id).limit(1)).first()
+        return paused_at is not None
+    except Exception as e:
+        log.debug("compute policy: pause lookup failed (%s) — treating as not paused", e)
+        return False
 
 
 # ── the provider-call check ──────────────────────────────────────────────────

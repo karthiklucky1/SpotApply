@@ -413,10 +413,16 @@ _LAST_ACTIVE_STAMP_SECONDS = 900
 def _may_welcome(request) -> bool:
     """A return may start the first-hour refresh — except on the way OUT: a
     DELETE (or anything under /api/account) must never start a background
-    adoption that could write rows for an account being purged."""
+    adoption that could write rows for an account being purged. Nor the
+    search controls themselves: the stamp runs BEFORE the route body, so on
+    "Pause my search" the profile still reads as unpaused and the click that
+    asked us to stop would open a boost that adopts and scores (2026-10-08).
+    Resume starts nothing here either — the lanes take it from the next tick."""
     try:
+        path = request.url.path or ""
         return (request.method or "").upper() != "DELETE" and \
-            not (request.url.path or "").startswith("/api/account")
+            not path.startswith("/api/account") and \
+            not path.startswith("/api/search/")
     except Exception:
         return False
 
@@ -442,10 +448,14 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
                 if meaningful:
+                    from app.common.compute_policy import is_paused
                     from app.strategy.welcome import returning_after_idle
                     # Only someone who already HAS roles can be welcomed back
                     # with jobs; a role-less account starts at resume upload.
-                    returning = welcome and bool((prof.target_roles or "").strip()) and \
+                    # A paused search is not welcomed back by a click: only
+                    # "Resume search" starts work for them again.
+                    returning = welcome and not is_paused(prof) and \
+                        bool((prof.target_roles or "").strip()) and \
                         returning_after_idle(prof.last_meaningful_activity_at,
                                              prof.last_active_at)
                     prof.last_meaningful_activity_at = prof.last_active_at
@@ -6568,6 +6578,16 @@ def extension_page(request: Request):
     return templates.TemplateResponse(request=request, name="extension.html", context={})
 
 
+#: Still before submission: the states "Submitted" may move an application out
+#: of, and the ones a "no longer available" report takes off the board.
+_PRE_SUBMIT_STATUSES = frozenset({
+    ApplicationStatus.DISCOVERED, ApplicationStatus.MATCHED,
+    ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
+    ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
+    ApplicationStatus.READY_TO_SUBMIT,
+})
+
+
 @app.post("/application/{application_id}/submit")
 def mark_as_submitted(application_id: int, request: Request) -> dict:
     from datetime import datetime
@@ -6575,19 +6595,13 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
     # Only pre-submit states may transition to SUBMITTED — a stray/duplicate
     # FORM_SUBMITTED from the extension must not resurrect a REJECTED/SKIPPED
     # row or re-stamp submitted_at on one that's already submitted.
-    _PRE_SUBMIT = {
-        ApplicationStatus.DISCOVERED, ApplicationStatus.MATCHED,
-        ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
-        ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
-        ApplicationStatus.READY_TO_SUBMIT,
-    }
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         if application.status == ApplicationStatus.SUBMITTED:
             return {"success": True, "application_id": application_id, "already": True}
-        if application.status not in _PRE_SUBMIT:
+        if application.status not in _PRE_SUBMIT_STATUSES:
             return {"success": False, "application_id": application_id,
                     "detail": f"Not marking submitted from status '{application.status.value}'."}
         application.status = ApplicationStatus.SUBMITTED
@@ -6643,6 +6657,78 @@ def skip_application(application_id: int, request: Request) -> dict:
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}
+
+
+# "This job is no longer available" (owner, 2026-10-08: "so many jobs are
+# closed"). Asked when the user comes back from the employer's page, next to
+# "Did you submit?", and offered in the job view. Fixed reason keys only — no
+# free text reaches the funnel log.
+_UNAVAILABLE_REASONS = frozenset({"closed", "not_found", "other"})
+_REPORTED_CLOSED_REASON = "Reported no longer available by the user"
+
+
+def _enum_val(v) -> str:
+    return v.value if hasattr(v, "value") else str(v)
+
+
+@app.post("/application/{application_id}/unavailable")
+def report_unavailable(application_id: int, request: Request,
+                       background_tasks: BackgroundTasks,
+                       reason: str = "closed") -> dict:
+    """The user found the posting gone. Their OWN copy closes now; an
+    application still before submission moves to Removed with a "job closed"
+    note (a system skip — never learned as "not interested", unlike /skip);
+    a submitted-or-later one keeps its stage. Nobody else's board changes on
+    one person's word: a forced, rationed re-check of the posting is queued
+    (`delivery_gate.verify_reported`) and only a CONCLUSIVE REMOVED/EXPIRED
+    closes the other copies. Idempotent: a second report changes nothing."""
+    from datetime import datetime
+    from app.db.models import FunnelEvent
+    uid = _require_owned_application(request, application_id)
+    key = (reason or "").strip().lower()
+    if key not in _UNAVAILABLE_REASONS:
+        key = "other"
+    now = datetime.utcnow()
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id) if application.job_id else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        status_before = application.status
+        if job.is_closed and job.closed_reason == _REPORTED_CLOSED_REASON:
+            return {"success": True, "application_id": application_id,
+                    "status": _enum_val(status_before), "already": True}
+        if status_before in _PRE_SUBMIT_STATUSES:
+            application.status = ApplicationStatus.SKIPPED
+            application.notes = ((application.notes or "")
+                                 + f"\nJob closed — reported no longer available on {now:%Y-%m-%d}.").strip()
+            application.updated_at = now
+            session.add(application)
+        job.is_closed = True
+        job.closed_reason = _REPORTED_CLOSED_REASON
+        session.add(job)
+        # Tied to the job, so it leaves with it on account deletion; the
+        # reason is a fixed key and the metadata names no person or URL.
+        session.add(FunnelEvent(
+            job_id=job.id, stage="user_report", passed=False,
+            reason=f"unavailable:{key}",
+            metadata_json=_json.dumps({"status_before": _enum_val(status_before)}),
+        ))
+        session.commit()
+        src, ext, url = job.source, job.external_id, job.url
+        status_after = _enum_val(application.status)
+    verification = "queued"
+    try:
+        from app.strategy.delivery_gate import verify_reported
+        background_tasks.add_task(verify_reported, src, ext, url, user_id=uid)
+    except Exception as e:                    # the report itself already stands
+        log.debug("unavailable report: re-check not queued: %s", e)
+        verification = "not_queued"
+    return {"success": True, "application_id": application_id,
+            "status": status_after, "removed": status_after == ApplicationStatus.SKIPPED.value,
+            "verification": verification}
 
 
 
@@ -9869,13 +9955,32 @@ def welcome_status_api(request: Request) -> dict:
     target roles are more senior than their resume's years — which roles to
     add. While boosted, also the real jobs being checked and what was read
     from the resume. ONE user's rows, bounded; cached 4 s in the first ten
-    minutes of the window, 20 s after."""
+    minutes of the window, 20 s after.
+
+    A PAUSED search answers ``paused`` and no boost: nothing runs for them, so
+    the panel must never say "Checking jobs" or "Priority scoring" — whatever
+    a window (or another replica's) still holds."""
     uid = _require_user(request)
     from app.common import ttl_cache
+    from app.common.compute_policy import is_paused
     from app.strategy import welcome
 
     def _build() -> dict:
         user_arg = uid if uid != "local" else None
+        prof = None
+        try:
+            with get_session() as session:
+                prof = session.exec(_own_profile_query(uid)).first()
+        except Exception as e:
+            log.debug("welcome status: profile unavailable: %s", e)
+        if is_paused(prof):
+            tip = None
+            try:
+                tip = welcome.seniority_tip(prof, _get_target_roles(uid) or [])
+            except Exception as e:
+                log.debug("welcome role tip unavailable: %s", e)
+            return {"boost_active": False, "completed": False, "paused": True,
+                    "role_tip": tip}
         try:
             out = welcome.status(user_arg) if user_arg else {"boost_active": False}
         except Exception as e:      # a timed-out count: say so, never cache it
@@ -9883,8 +9988,6 @@ def welcome_status_api(request: Request) -> dict:
             return {"boost_active": welcome.is_boosted(user_arg), "degraded": True}
         tip = None
         try:
-            with get_session() as session:
-                prof = session.exec(_own_profile_query(uid)).first()
             roles = _get_target_roles(uid) or []
             tip = welcome.seniority_tip(prof, roles)
             if out.get("boost_active"):
@@ -9928,6 +10031,14 @@ def _set_search_pause(uid: str, paused: bool, reason: str = "") -> None:
         session.add(prof)
         session.commit()
     forget(uid)
+    # The first-hour window is work done FOR the user: a pause ends it (and
+    # with it priority, the 2x slice and the 14-day catch-up). Either way the
+    # panel's cached answer predates this click.
+    from app.common import ttl_cache as _tc
+    from app.strategy import welcome as _welcome
+    if paused:
+        _welcome.end(uid)
+    _tc.invalidate(f"welcome:{uid}")
 
 
 @app.post("/api/search/pause")

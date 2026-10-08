@@ -613,7 +613,15 @@ def seed_new_user(user_id: str | None) -> int:
     (mechanical, finance, nursing…) adopts almost nothing. When the instant feed
     leaves them under ``onboarding_min_jobs`` on-role jobs, actively scrape THEIR
     roles right away — the same path as the manual Discover button — instead of
-    making them wait for the next 6h global pass. Returns the adopted count."""
+    making them wait for the next 6h global pass. Returns the adopted count.
+
+    A PAUSED search stays paused: saving roles or a new resume is not "Resume
+    search", and adoption, re-shortlisting and a discovery scrape are all work
+    done for them (compute_policy: PAUSED allows nothing). Resume picks it up."""
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id):
+        log.info("onboarding: search is paused — not seeding until Resume")
+        return 0
     # The first hour: this user is served first by the scoring lane while the
     # feed fills (app/strategy/welcome.py).
     from app.strategy.welcome import begin as _begin_welcome

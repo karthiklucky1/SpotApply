@@ -160,13 +160,30 @@ def _fetch(url: str, timeout: float) -> Tuple[Optional[int], str, str, Optional[
         return None, "", "", type(e).__name__
 
 
-def verify_for_delivery(source, external_id: str, url: str) -> Tuple[str, str]:
+def _checked_within(state: Optional[str], checked_at, minutes: int) -> bool:
+    """A conclusive verdict recorded in the last ``minutes``."""
+    from datetime import datetime, timedelta
+    if not checked_at or not state or state == JobLivenessState.UNKNOWN.value:
+        return False
+    return checked_at >= datetime.utcnow() - timedelta(minutes=max(0, int(minutes)))
+
+
+def verify_for_delivery(source, external_id: str, url: str, *,
+                        force: bool = False) -> Tuple[str, str]:
     """Establish liveness for a posting about to be delivered.
 
     Returns (state, how) where `how` is one of: cached_dead, cached_fresh,
     unverifiable, checked, deduped, disabled. Never raises — an unverifiable
     posting is delivered, because refusing to deliver on a failed check would
     be exactly the "a refusal means death" mistake this design forbids.
+
+    ``force`` (a user reported the posting gone, `verify_reported`): a LIVE
+    verdict younger than ``liveness_recheck_hours`` no longer settles it —
+    the report contradicts it — but one younger than
+    ``liveness_report_min_recheck_minutes`` still does, so a posting many
+    people report is fetched at most that often. Everything else (dead stays
+    dead, verifiable sources only, single flight, the SSRF-guarded fetch) is
+    the same path.
     """
     from app.discovery import liveness as lv
 
@@ -185,8 +202,13 @@ def verify_for_delivery(source, external_id: str, url: str) -> Tuple[str, str]:
         return state, "cached_dead"
 
     # Conclusive evidence young enough to trust.
-    if not lv.needs_check(state, checked_at,
-                          max_age_hours=settings.liveness_recheck_hours):
+    if force:
+        fresh = _checked_within(state, checked_at,
+                                settings.liveness_report_min_recheck_minutes)
+    else:
+        fresh = not lv.needs_check(state, checked_at,
+                                   max_age_hours=settings.liveness_recheck_hours)
+    if fresh:
         _bump("avoided_check_fresh_evidence")
         return state or JobLivenessState.UNKNOWN.value, "cached_fresh"
 
@@ -235,6 +257,125 @@ def verify_for_delivery(source, external_id: str, url: str) -> Tuple[str, str]:
         with _inflight_lock:
             _inflight.pop(key, None)
         event.set()
+
+
+# ── "This job is no longer available" ────────────────────────────────────────
+# Owner, 2026-10-08: "so many jobs are closed". A conclusive verdict only ever
+# stopped NEW deliveries (slate.place, the scoring lane): a posting that died
+# after it reached people's boards stayed there until it aged out, because the
+# per-posting check runs once, before delivery. A user who went to the posting
+# and found it gone is the best signal we get after that — but one person's
+# word never closes it for anyone else. It asks THIS module to look again, and
+# only a CONCLUSIVE REMOVED/EXPIRED takes it off other boards.
+
+#: Applications still waiting on the user — a dead posting leaves these boards.
+#: Anything the user has worked on (TAILORED and beyond) keeps its place: the
+#: job is marked closed (the drawer says so) and the decision stays theirs.
+_WAITING_STATUSES = ("discovered", "matched", "shortlisted")
+
+
+def close_dead_everywhere(source, external_id: str, state: str) -> dict:
+    """Every copy of a CONCLUSIVELY dead posting stops being offered.
+
+    By ``(source, external_id)`` — the posting key every copy keeps
+    (JobLiveness uses the same one): the shared-pool row (adoption stops
+    copying it), unscored copies (the queue stops paying for them) and copies
+    still waiting on a board (their application moves to Removed with a
+    "job closed" note, which preference learning reads as a system skip, never
+    as "not interested"). REMOVED/EXPIRED only. Counts only, never ids.
+    """
+    from datetime import datetime
+
+    from sqlalchemy import update
+    from sqlmodel import select
+
+    from app.db.init_db import get_session
+    from app.db.models import Application, ApplicationStatus, Job
+    from app.discovery.liveness import is_dead
+
+    out = {"jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0}
+    if not is_dead(state):
+        return out
+    src = source.value if hasattr(source, "value") else str(source)
+    ext = str(external_id)
+    now = datetime.utcnow()
+    closed_reason = f"Deactivated (posting {state}, confirmed after a user report)"
+    note = f"\nJob closed — the posting was {state} when re-checked on {now:%Y-%m-%d}."
+    waiting = {ApplicationStatus(s) for s in _WAITING_STATUSES}
+    done = {ApplicationStatus.SKIPPED, ApplicationStatus.REJECTED}
+    with get_session() as s:
+        rows = s.exec(select(Job.id, Job.source).where(Job.external_id == ext)).all()
+        ids = [r[0] for r in rows
+               if (r[1].value if hasattr(r[1], "value") else str(r[1])) == src]
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            for app in s.exec(select(Application).where(Application.job_id.in_(chunk))).all():
+                if app.status in waiting:
+                    app.status = ApplicationStatus.SKIPPED
+                    app.notes = ((app.notes or "") + note).strip()
+                    app.updated_at = now
+                    s.add(app)
+                    out["applications_removed"] += 1
+                elif app.status not in done:
+                    out["kept_engaged"] += 1
+            res = s.execute(update(Job).where(
+                Job.id.in_(chunk), Job.is_closed == False,  # noqa: E712
+            ).values(is_closed=True, closed_reason=closed_reason))
+            out["jobs_closed"] += int(res.rowcount or 0)
+        s.commit()
+    _bump("report_copies_closed", out["jobs_closed"])
+    _bump("report_applications_removed", out["applications_removed"])
+    return out
+
+
+def verify_reported(source, external_id: str, url: str, *,
+                    user_id: Optional[str] = None) -> str:
+    """A user reported this posting gone: look again, and act only on proof.
+
+    Runs as a background task after the report route has already closed the
+    reporter's own copy. Returns an aggregate-safe outcome: ``disabled``,
+    ``unverifiable`` (no permalink we can trust — an aggregator), ``capped``
+    (the reporter's daily allowance is spent), ``not_confirmed`` (LIVE, or an
+    inconclusive 403/429/timeout — never treated as gone) or
+    ``confirmed_dead`` (every other copy closed by `close_dead_everywhere`).
+    Never raises.
+    """
+    from app.discovery import liveness as lv
+
+    src = source.value if hasattr(source, "value") else str(source)
+    ext = str(external_id)
+    _bump("report_received")
+    try:
+        if not settings.liveness_gate_enabled:
+            _bump("report_disabled")
+            return "disabled"
+        state, _checked_at = _cached(src, ext)
+        if not lv.is_dead(state):
+            if src not in _VERIFIABLE_SOURCES or not url:
+                _bump("report_unverifiable")
+                _bump(f"by_source:{src}:report_unverifiable")
+                return "unverifiable"
+            # A report triggers a server-side fetch, so it is rationed per
+            # reporter (the posting itself is rationed inside verify_for_delivery).
+            if user_id and user_id != "local":
+                from app.common.daily_counter import reserve
+                if not reserve(f"liveness_report:user:{user_id}",
+                               int(settings.liveness_reports_per_user_daily or 0)):
+                    _bump("report_capped")
+                    return "capped"
+            state, _how = verify_for_delivery(source, ext, url, force=True)
+        if not lv.is_dead(state):
+            _bump("report_not_confirmed")
+            _bump(f"by_source:{src}:report_not_confirmed")
+            return "not_confirmed"
+        close_dead_everywhere(source, ext, state)
+        _bump("report_confirmed_dead")
+        _bump(f"by_source:{src}:report_confirmed_dead")
+        return "confirmed_dead"
+    except Exception as e:      # a background re-check must never surface
+        log.warning("Report re-check failed for %s: %s", src, e)
+        _bump("report_errored")
+        return "error"
 
 
 class CycleBudget:

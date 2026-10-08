@@ -33,8 +33,14 @@ log = logging.getLogger(__name__)
 USER_DISMISS_MARKER = "user_dismissed"
 
 # System paths that also set SKIPPED — never count these as user opinion.
+# A posting that turned out to be gone says nothing about whether the user
+# liked it: "job closed" covers the "no longer available" report and a dead
+# re-check; "click verification" is the drawer's own check (its note reads
+# "Job marked closed during click verification", which matched no hint, so
+# every posting it found dead was being learned as a dismissal).
 _SYSTEM_SKIP_HINTS = ("expired after", "job closed", "removed from company",
-                      "slot reopened", "dead at shortlist", "deactivated")
+                      "slot reopened", "dead at shortlist", "deactivated",
+                      "click verification")
 
 _ENGAGED_STATUSES = {
     ApplicationStatus.TAILORED, ApplicationStatus.AUTOFILLED,
