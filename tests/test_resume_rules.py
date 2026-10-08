@@ -331,7 +331,6 @@ def tailored(tmp_path, monkeypatch):
 
 
 def test_a_tailored_resume_follows_every_rule(tailored):
-    pytest.importorskip("app.tailoring.render")   # WIP: the PDF renderer lands next commit
     aid, resume_path, report, md = tailored()
     assert rules.count_em_dashes(md) == 0
     assert rules.header_email(md) == "jane.doe@gmail.com"
