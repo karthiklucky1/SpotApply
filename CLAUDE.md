@@ -582,6 +582,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   not a hiring probability. Year-only dates are admitted as approximate, and only
   dates feeding a total can make a total approximate. Guards:
   `evidence_inventory`, `requirement_review`.
+- **The owner's resume rules** (2026-10-08, `tailoring/rules.py` + `render.py`):
+  every tailor is a FULL rewrite (L0 skip off) under `TAILOR_SYSTEM`; then
+  deterministic steps: em dashes scrubbed (date facts canonicalized in
+  evidence.py), the master's email restored, the title line = the posting's
+  title only with `UserProfile.resume_title_from_jd` (never a held title, a
+  number, or an unevidenced skill), location unchanged. Output: a ONE-page PDF
+  (fpdf2 pinned 2.8.x + bundled Carlito; `fit_one_page` tightens tiers with a
+  line spare for Word, then drops the least JD-relevant bullets, older role
+  first on ties, never a role line, one kept per run) + a matching DOCX,
+  generator metadata and template rsids scrubbed, named `First_Last_Resume` (no
+  company — owner). A glyph Carlito lacks (`FitResult.undrawable`, e.g. a CJK
+  name) ships Word only. `rules_checklist` lives in report.json, backend only
+  (owner). No "90+ on any ATS" promise: under 90% of the job keywords the
+  master HAS earns one rebuild. Guards: `test_resume_rules`, `test_resume_render`.
 - **Contact research is ON HOLD, and "no data" is not zero**
   (`intelligence/contact_research.py`, docs/RECRUITER_RESEARCH_READINESS.md):
   THREE features wear the word recruiter — `/recruiter` is an INBOUND portal

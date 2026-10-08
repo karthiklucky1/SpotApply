@@ -4,9 +4,9 @@ A friend's recipe that earned interview calls: fully rewritten for the job, a
 natural voice, keywords woven in (never listed), strong verbs and real numbers,
 nothing invented, no em dashes, the email and latest company exactly as on the
 resume, the title under the name from the job posting when the user opts in,
-a one-page PDF plus a Word file named YourName_Company_Resume with no AI or
-tool traces in it, and every rule confirmed back to the user after the file is
-made. What the model is asked lives in tailor.TAILOR_SYSTEM; what can be made
+a one-page PDF plus a Word file named FullName_Resume (owner: no company in
+the name) with no AI or tool traces in it, and every rule checked after the
+file is made (report.json, backend only: the owner chose not to show it). What the model is asked lives in tailor.TAILOR_SYSTEM; what can be made
 true without trusting it lives in app/tailoring/rules.py and is pinned here.
 
 Not pinned, on purpose: "always 90+ ATS score on any tool". Third-party ATS
@@ -336,7 +336,7 @@ def test_a_tailored_resume_follows_every_rule(tailored):
     assert rules.header_email(md) == "jane.doe@gmail.com"
     assert md.splitlines()[1] == "Backend Engineer", "the posting's title, opted in"
     assert "**Software Engineer** | Acme Corp" in md, "held titles and the company untouched"
-    assert resume_path.name == "Jane_Doe_Globex_Resume.docx"
+    assert resume_path.name == "Jane_Doe_Resume.docx", "FullName_Resume, no company"
     pdf = resume_path.with_suffix(".pdf")
     assert pdf.exists() and report["resume_pdf"] == pdf.name
     assert report["page_count"] == 1
@@ -373,7 +373,7 @@ def test_a_tenant_without_a_name_never_gets_the_founders(tailored, monkeypatch):
                         {"identity": {"first_name": "Founder", "last_name": "Person"}})
     _aid, resume_path, _r, _md = tailored(first="", last="")
     assert "Founder" not in resume_path.name
-    assert resume_path.name.startswith("Candidate_")
+    assert resume_path.name == "Candidate_Resume.docx"
 
 
 # ── the profile option and the dashboard ─────────────────────────────────────
@@ -384,10 +384,31 @@ def test_the_option_is_off_unless_chosen_and_round_trips():
     assert ProfileUpdate(resume_title_from_jd="true").resume_title_from_jd is True
 
 
-def test_the_dashboard_offers_the_pdf_and_shows_the_checklist():
+def test_the_dashboard_offers_the_pdf_and_keeps_the_checklist_backend_only():
     from pathlib import Path
     html = (Path(__file__).resolve().parent.parent / "app/templates/dashboard.html").read_text()
     assert 'name="resume_title_from_jd"' in html
     assert 'id="ts-download-pdf"' in html and 'id="modal-download-pdf-btn"' in html
     assert "download-resume?format=pdf" in html
-    assert "_tsRulesChecklist(q.rules_checklist" in html
+    assert "rules_checklist" not in html, "the owner keeps the checklist off the page"
+
+
+def test_characters_the_pdf_cannot_draw_ship_as_word_only(tailored, monkeypatch):
+    """A PDF would print "?" for them; Word substitutes a font. The PDF the
+    previous run of the SAME application left never stands in."""
+    from app.tailoring import tailor as tailor_mod
+    aid, resume_path, _report, _md = tailored()
+    assert resume_path.with_suffix(".pdf").exists()
+    draft = DRAFT.replace("- Maintained Django apps",
+                          "- Maintained Django apps for the \u4e2d\u6587 market")
+    monkeypatch.setattr(tailor_mod.Tailor, "tailor_resume", lambda self, *a, **k: draft,
+                        raising=False)
+    again, _ = tailor_mod.tailor_for_application(aid)
+    assert again == resume_path
+    report = json.loads((resume_path.parent / "report.json").read_text())
+    assert "\u4e2d\u6587" in (resume_path.parent / "resume.md").read_text()
+    assert not resume_path.with_suffix(".pdf").exists() and report["resume_pdf"] is None
+    with zipfile.ZipFile(resume_path) as z:
+        assert "\u4e2d\u6587" in z.read("word/document.xml").decode()
+    rows = {r["key"]: r for r in report["rules_checklist"]}
+    assert rows["files"]["ok"] is False

@@ -597,16 +597,26 @@ def _persist_tailored_to_storage(uid: str | None, application_id: int, files: li
     try:
         from app.db.supabase_client import service_client
         sb = service_client()
+        gone: list[str] = []
         for fp in files:
             p = Path(fp)
-            if not p.exists():
-                continue
             key = f"{uid}/tailored/app_{application_id}/{p.name}"
+            if not p.exists():
+                # This run did not produce it (a PDF the font could not
+                # draw): the copy an earlier run uploaded must not be
+                # re-hydrated in its place.
+                gone.append(key)
+                continue
             try:
                 sb.storage.from_("resume").upload(
                     key, p.read_bytes(), {"upsert": "true"})
             except Exception as _ue:
                 log.debug("tailored upload failed for %s: %s", key, _ue)
+        if gone:
+            try:
+                sb.storage.from_("resume").remove(gone)
+            except Exception as _de:
+                log.debug("stale tailored copy not removed: %s", _de)
     except Exception as e:
         log.debug("tailored storage persist skipped: %s", e)
 
@@ -1011,12 +1021,12 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     def _slug(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9]+", "_", s).strip("_")
 
-    # [YourName]_[CompanyName]_Resume (owner rule): the hiring company's name,
-    # ASCII-folded, legal suffixes dropped (render.document_filename).
+    # FullName_Resume (owner, 2026-10-08: no company in the name), ASCII-folded
+    # (render.document_filename).
     try:
         from app.tailoring.render import document_filename
-        resume_filename = document_filename(first, last, job_company or "", kind="Resume", ext="docx")
-        cover_filename = document_filename(first, last, job_company or "", kind="Cover_Letter", ext="txt")
+        resume_filename = document_filename(first, last, "", kind="Resume", ext="docx")
+        cover_filename = document_filename(first, last, "", kind="Cover_Letter", ext="txt")
     except Exception as _fn:
         log.debug("document filename helper unavailable: %s", _fn)
         name_part = "_".join(p for p in (_slug(first), _slug(last)) if p) or "Candidate"
@@ -1074,13 +1084,22 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     author = " ".join(p for p in (first, last) if p)
     doc_title = f"{author} Resume".strip()
     pdf_path = resume_path.with_suffix(".pdf")
+    # A PDF left by an earlier run must never stand in for this one.
+    pdf_path.unlink(missing_ok=True)
     fit = None
     try:
         from app.tailoring.render import TIERS, fit_one_page, write_docx
         fit = fit_one_page(resume_md, jd_text=job_description or "",
                            author=author, title=doc_title)
         resume_md = fit.md
-        pdf_path.write_bytes(fit.pdf_bytes)
+        if fit.undrawable:
+            # The bundled font has no glyph for these (e.g. a name in CJK
+            # script): a PDF would print "?" in their place. Word substitutes
+            # a font, so the .docx alone carries the resume.
+            log.warning("Tailor app %d: PDF skipped, %d character(s) the font cannot draw",
+                        application_id, len(fit.undrawable))
+        else:
+            pdf_path.write_bytes(fit.pdf_bytes)
         write_docx(resume_md, resume_path, TIERS[fit.tier_index], author=author, title=doc_title)
         if fit.pages > 1:
             log.warning("Tailor app %d: still %d pages after fitting", application_id, fit.pages)
@@ -1121,7 +1140,6 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             headline=headline, headline_source=headline_source,
             location_note=location_note, filename_docx=resume_path.name,
             filename_pdf=pdf_path.name if pdf_path.exists() else "",
-            company=job_company or "",
             metadata_clean=(None if any(t is None for t in _traces)
                             else not any(_traces)),
             pages=fit.pages if fit else None, coverage=keyword_cov or {},

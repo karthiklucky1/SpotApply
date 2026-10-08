@@ -3,9 +3,9 @@
 A friend's recipe that earned interview calls, adopted for every tailored
 resume. The model is told all of it (tailor.TAILOR_SYSTEM); what can be made
 TRUE without trusting the model is done here, after generation and before the
-files are written, and every rule is then checked and reported back to the
-user (``build_checklist`` → report.json ``rules_checklist`` → the Tailoring
-Studio):
+files are written, and every rule is then checked on the written files
+(``build_checklist`` → report.json ``rules_checklist``; backend only — the
+owner chose not to show it on the page):
 
     rewrite + restructure for the job     TAILOR_SYSTEM; the L0 "ship the master"
                                           skip is off (TAILOR_SKIP_COVERAGE_PCT=0)
@@ -18,7 +18,7 @@ Studio):
     no em dashes                          scrub_em_dashes
     role title from the JD (opt-in)       apply_headline (UserProfile.resume_title_from_jd)
     location                              unchanged: polish_contact_line + profile
-    one page, PDF + Word, clean files     app/tailoring/render.py
+    one page, PDF + Word, clean files     app/tailoring/render.py (FullName_Resume)
 
 What this module will NOT do: promise "90+ on any ATS". Third-party ATS scores
 are proprietary, and on a job whose skills the resume does not show, the only
@@ -393,7 +393,7 @@ def build_checklist(*, master: str, md: str, jd: str, rewritten: bool,
                     human_passed: Optional[bool], fabrications: list,
                     grounding_status: str, headline: str, headline_source: str,
                     location_note: str, filename_docx: str, filename_pdf: str,
-                    company: str, metadata_clean: Optional[bool],
+                    metadata_clean: Optional[bool],
                     pages: Optional[int], coverage: Dict,
                     trimmed: List[str]) -> List[Dict]:
     """Every rule, checked against the files actually written. ``ok`` is
@@ -451,9 +451,8 @@ def build_checklist(*, master: str, md: str, jd: str, rewritten: bool,
     rows.append(_row("files", "PDF and Word files ready", bool(filename_pdf and filename_docx),
                      ", ".join(f for f in (filename_pdf, filename_docx) if f)))
     stem = filename_docx.rsplit(".", 1)[0] if filename_docx else ""
-    named_ok = bool(re.fullmatch(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_Resume", stem)) and (
-        not (company or "").strip() or len(stem.split("_")) >= 3)
-    rows.append(_row("filename", "File named YourName_Company_Resume", named_ok, stem))
+    named_ok = bool(re.fullmatch(r"[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_Resume", stem))
+    rows.append(_row("filename", "File named FullName_Resume", named_ok, stem))
     rows.append(_row("metadata", "No AI or tool traces in the files", metadata_clean,
                      "" if metadata_clean is not None else "could not be checked"))
     return rows

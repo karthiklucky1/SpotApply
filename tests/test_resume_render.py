@@ -2,10 +2,11 @@
 
 Owner's rules (app/tailoring/render.py): every tailored resume ships as a
 one-page PDF and a .docx laid out from the same markdown at the same sizes,
-named First_Last_Company_Resume, and neither file's metadata names the
-software that made it. When the content does not fit, the layout tightens
-(never below 9.5pt / 0.5in) and only then whole bullets are REMOVED - oldest
-role first, least relevant to the job first - never rewritten.
+named First_Last_Resume, and neither file's metadata names the software
+that made it. When the content does not fit, the layout tightens (never below
+9.5pt / 0.5in, always one line to spare for Word) and only then whole bullets
+are REMOVED - least relevant to the job first, then the older role - never
+rewritten.
 
 All fixtures are synthetic or the committed sample profiles; nothing here
 touches the database or the network.
@@ -236,9 +237,8 @@ def _only_bullets_removed(before: str, after: str, trimmed: list[str]) -> None:
 def test_sample_profiles_fit_on_one_page(path):
     assert PROFILES, "data/profiles/*.md are committed samples"
     md = path.read_text(encoding="utf-8")
-    assert render.layout_pages(md, 0) == 2, "at today's Word look these run to two pages"
     res = fit_one_page(md, jd_text="Backend engineer, Python, Kafka, Kubernetes",
-                       author="Karthik Amruthaluri", title="Resume")
+                       author="Alex Rivera", title="Resume")
     assert res.pages == 1 == page_count(res.pdf_bytes)
     assert res.tier is TIERS[res.tier_index]
     _only_bullets_removed(md, res.md, res.trimmed)
@@ -304,7 +304,7 @@ def test_a_long_resume_is_trimmed_to_one_page_without_losing_structure():
     md = _long_resume()
     assert render.layout_pages(md, len(TIERS) - 1) == 2, "even T3 must overflow for this case"
     jd = "Backend engineer: Python, Kafka, Kubernetes, FastAPI, PostgreSQL, distributed systems"
-    res = fit_one_page(md, jd_text=jd, author="Karthik Amruthaluri", title="Resume")
+    res = fit_one_page(md, jd_text=jd, author="Alex Rivera", title="Resume")
 
     assert res.pages == 1 == page_count(res.pdf_bytes)
     assert res.tier_index == len(TIERS) - 1
@@ -321,10 +321,8 @@ def test_a_long_resume_is_trimmed_to_one_page_without_losing_structure():
     assert all(len(r) >= 1 for r in after), "every role keeps at least one bullet"
     # removal is exactly the published order, a prefix of it
     assert res.trimmed == trim_candidates(md, jd)[: len(res.trimmed)]
-    # the oldest role (last in the document) is trimmed first, down to one
-    # bullet, then the role before it
-    assert res.trimmed[0] in before[-1]
-    assert len(after[-1]) == 1 and res.trimmed[1] in before[-2]
+    # what goes first shares nothing with the job description
+    assert not (render._terms(res.trimmed[0]) & render._terms(jd))
     # nothing invented: the PDF says what the trimmed markdown says
     text = _norm(_pdf_text(res.pdf_bytes))
     for gone in res.trimmed:
@@ -357,14 +355,14 @@ pat@example.invalid | Columbus, OH
 """
 
 
-def test_trim_order_is_oldest_role_then_least_relevant_then_longest():
+def test_trim_order_is_least_relevant_then_oldest_role_then_longest():
     jd = "Python Kafka Kubernetes engineer"
     assert trim_candidates(TRIM_MD, jd) == [
-        # Oldco is the last role in the document = the oldest: its two
-        # zero-match bullets go first, the longer one first ...
+        # every zero-match bullet before any matching one; among those,
+        # Oldco (last in the document = the oldest) first, longer first ...
         "Planned holiday parties for the office and coordinated the catering.",
         "Fixed printers.",
-        # ... its JD-matching bullet stays (one per role); then Newco.
+        # ... then Newco's. Each role keeps its JD-matching bullet.
         "Organized the offsite.",
     ]
     # relevance decides before length: with a JD that names printers, the
@@ -527,7 +525,7 @@ def test_pdf_text_is_real_extractable_text():
     md = PROFILES[0].read_text(encoding="utf-8")
     res = fit_one_page(md)
     text = _pdf_text(res.pdf_bytes)
-    assert "KARTHIK AMRUTHALURI" in text
+    assert render.resume_name(md) and render.resume_name(md) in text
     norm = _norm(text)
     for b in parse_md(res.md):
         if b.kind == "bullet":
@@ -565,8 +563,14 @@ def test_pdf_and_docx_carry_the_same_paragraphs(tmp_path):
     (("Jane", "Doe", "Booking Holdings B.V."), "Jane_Doe_Booking_Holdings_Resume.docx"),
     (("Jane", "Doe", "J.P. Morgan Chase & Co."), "Jane_Doe_JP_Morgan_Chase_Resume.docx"),
     (("Seán", "O'Brien", "Procter & Gamble"), "Sean_OBrien_Procter_Gamble_Resume.docx"),
-    (("KARTHIK", "AMRUTHALURI", "The Home Depot"),
-     "Karthik_Amruthaluri_The_Home_Depot_Resume.docx"),
+    (("PRIYA", "RAMANATHAN", "The Home Depot"),
+     "Priya_Ramanathan_The_Home_Depot_Resume.docx"),
+    (("Łukasz", "Weiß", ""), "Lukasz_Weiss_Resume.docx"),
+    (("Søren", "Ærø", ""), "Soren_AEro_Resume.docx"),
+    (("SEÁN", "O'BRIEN", ""), "Sean_OBrien_Resume.docx"),
+    (("Seán", "O’Brien", ""), "Sean_OBrien_Resume.docx"),
+    (("Đorđe", "Þórsson", ""), "Dorde_Thorsson_Resume.docx"),
+    (("Mary-Jane", "MCDONALD-SMITH", ""), "Mary_Jane_Mcdonald_Smith_Resume.docx"),
     (("Jane", "Doe", "Inc"), "Jane_Doe_Inc_Resume.docx"),
 ])
 def test_document_filename(args, expected):
@@ -582,3 +586,117 @@ def test_document_filename_kinds_extensions_and_caps():
     company = long_name[len("Jane_Doe_"):-len("_Resume.docx")]
     assert len(company) <= 40 and not company.endswith("_") and company.startswith("International")
     assert re.fullmatch(r"[A-Za-z0-9_]+\.docx", document_filename("李", "雷", "腾讯 / Tencent!"))
+
+
+# ── Review 2026-10-08: role shapes, glyphs, Word margin, ids ────────────────
+
+BULLET_ROLES_MD = """# Pat Doe
+pat@example.invalid | Columbus, OH
+
+## Professional Experience
+- **Senior Engineer** | Newco | 2023 - Present
+- Built Kafka pipelines in Python.
+- Organized the offsite.
+- **Engineer** | Oldco | 2019 - 2022
+- Wrote Python services on Kubernetes.
+- Planned holiday parties for the office.
+Analyst, Midco, Jun 2017 - May 2019
+- Fixed printers.
+- Ran the weekly status meeting.
+
+## Career History
+### Intern | Firstco | 2016
+- Answered phones.
+- Filed reports.
+"""
+
+
+def test_bulleted_role_headers_are_never_trimmed_and_every_role_keeps_a_bullet():
+    order = trim_candidates(BULLET_ROLES_MD, "Python Kafka Kubernetes")
+    assert not any(o.startswith(("Senior Engineer", "Engineer |")) for o in order)
+    # the plain "Analyst, Midco, ..." line starts a role of its own: Midco's
+    # bullets are not pooled with Oldco's, so one of them always stays
+    assert sum(o in ("Fixed printers.", "Ran the weekly status meeting.") for o in order) == 1
+    # "Career History" is a section fitting may trim
+    assert sum(o in ("Answered phones.", "Filed reports.") for o in order) == 1
+    blocks = render._roles(parse_md(BULLET_ROLES_MD))
+    assert [len(r) for r in blocks] == [2, 2, 2, 2]
+
+
+def test_relevance_beats_age():
+    md = """# Pat Doe
+
+## Experience
+### Engineer | Newco | 2023 - Present
+- Planned the team offsite in the mountains.
+- Shipped a Python feature.
+### Engineer | Oldco | 2019 - 2022
+- Wrote Kafka consumers in Python.
+- Built Kubernetes operators in Go.
+"""
+    order = trim_candidates(md, "Python Kafka Kubernetes Go")
+    # the newer role's off-topic bullet goes before the older role's on-topic one
+    assert order[0] == "Planned the team offsite in the mountains."
+    assert order.index("Planned the team offsite in the mountains.") \
+        < order.index("Built Kubernetes operators in Go.")
+
+
+@pytest.mark.parametrize("ch,drawn", [
+    ("‐", "-"), ("‑", "-"), ("′", "'"), ("∙", "·"),
+    ("‧", "·"), ("∶", ":"),
+])
+def test_punctuation_the_font_lacks_is_drawn_as_its_ascii_kin(ch, drawn):
+    assert render._pdf_text(f"co{ch}founded") == f"co{drawn}founded"
+    assert render.undrawable_chars(f"co{ch}founded") == []
+
+
+def test_undrawable_characters_are_reported_not_hidden():
+    md = "# 李雷\nlei@example.invalid\n\n## Experience\n- Built a cache.\n"
+    res = fit_one_page(md)
+    assert res.undrawable == ["李", "雷"]
+    assert fit_one_page(SHORT_MD).undrawable == []
+    # an emoji is decoration, not content: dropped, not reported
+    assert render.undrawable_chars("Shipped \U0001f680 fast") == []
+
+
+def test_a_layout_that_fills_the_page_to_the_last_line_moves_to_a_denser_tier():
+    """Word wraps with its own engine: a PDF with less than a line to spare
+    can be a two-page .docx, so fitting demands one body line of slack."""
+    t0 = TIERS[0]
+    base = SHORT_MD.replace("## Skills", "{bullets}\n## Skills")
+    for n in range(1, 80):
+        md = base.format(bullets="\n".join(f"- Item {i}." for i in range(n)))
+        if render.layout_pages(md, 0) > 1:
+            pytest.fail("never found a layout with less than one line to spare")
+        laid = [render._lay(b, t0) for b in parse_md(md)]
+        if len(render._paginate(laid, t0, render.word_reserve_pt(t0))) > 1:
+            break
+    res = fit_one_page(md)
+    assert res.tier_index >= 1 and res.trimmed == [] and res.pages == 1
+
+
+def test_fonttools_does_not_flood_the_log():
+    import logging
+    assert logging.getLogger("fontTools").getEffectiveLevel() >= logging.WARNING
+
+
+def test_word_files_do_not_share_the_templates_revision_ids(tmp_path):
+    a = write_docx(SHORT_MD, tmp_path / "a.docx", 0)
+    b = write_docx(SHORT_MD, tmp_path / "b.docx", 0)
+
+    def ids(path):
+        z = zipfile.ZipFile(path)
+        settings = z.read("word/settings.xml").decode()
+        doc = z.read("word/document.xml").decode()
+        root = re.search(r'<w:rsidRoot w:val="([0-9A-F]{8})"', settings).group(1)
+        declared = set(re.findall(r'<w:rsid w:val="([0-9A-F]{8})"', settings))
+        used = set(re.findall(r'w:rsid\w*="([0-9A-F]{8})"', doc))
+        doc_id = re.search(r'w14:docId w14:val="([0-9A-F]{8})"', settings).group(1)
+        return root, declared, used, doc_id
+
+    ra, da, ua, ida = ids(a)
+    rb, db, ub, idb = ids(b)
+    assert "00B47730" not in da | db and ida != "24062061" != idb
+    assert ra in da and ua <= da, "document.xml uses only ids settings.xml declares"
+    assert ra != rb and da != db and ida != idb
+    assert [p.text for p in Document(a).paragraphs] == [b.text for b in parse_md(SHORT_MD)]

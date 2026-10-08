@@ -5754,8 +5754,8 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             if p.suffix == ".docx" else "application/octet-stream")
 
     # The filename is what the ATS displays next to the upload — always present
-    # a clean "First_Last_Company_Resume.docx" (the owner's naming rule, the
-    # same helper the tailor names the file with), never an internal name.
+    # a clean "First_Last_Resume.docx" (the owner's naming rule, the same
+    # helper the tailor names the file with), never an internal name.
     display_name = p.name
     try:
         import re as _re
@@ -5765,13 +5765,9 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         first = (getattr(prof, "first_name", "") or "").strip()
         last = (getattr(prof, "last_name", "") or "").strip()
         if first or last:
-            with get_session() as session:
-                company = session.exec(
-                    select(Job.company).join(Application, Application.job_id == Job.id)
-                    .where(Application.id == application_id)).first() or ""
             try:
                 from app.tailoring.render import document_filename
-                display_name = document_filename(first, last, company, kind="Resume",
+                display_name = document_filename(first, last, "", kind="Resume",
                                                  ext=(p.suffix or ".docx").lstrip("."))
             except ImportError:
                 base = _re.sub(r"[^A-Za-z0-9]+", "_", f"{first} {last}").strip("_")
