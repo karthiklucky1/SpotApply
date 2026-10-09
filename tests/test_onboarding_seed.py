@@ -17,7 +17,7 @@ def _fake_server(monkeypatch, *, roles, has_resume, sink):
     m = types.ModuleType("app.api.server")
     m._get_target_roles = lambda uid: roles
     m._user_has_resume = lambda uid: has_resume
-    m._discover_then_match = lambda uid: sink.append(uid)
+    m._discover_then_match = lambda uid, **_k: sink.append(uid)
     monkeypatch.setitem(sys.modules, "app.api.server", m)
 
 

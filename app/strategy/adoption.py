@@ -679,7 +679,10 @@ def seed_new_user(user_id: str | None) -> int:
             return adopted  # paused while the feed filled: no scrape into their pool
         log.info("Onboarding: only %d usable postings after adoption (< %d) — "
                  "actively discovering their field", on_role, _need)
-        _discover_then_match(user_id)
+        # automatic: the scrape waits on the discovery lock (minutes, behind a
+        # global pass) and runs two waves, so it asks about a Pause again after
+        # the wait and between the waves. A manual Discover click does not.
+        _discover_then_match(user_id, automatic=True)
     except Exception as e:
         log.warning("onboarding active discovery failed for %s: %s",
                     user_id or "local", e)

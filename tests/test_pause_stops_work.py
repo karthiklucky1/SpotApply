@@ -26,8 +26,8 @@ from app.common import ttl_cache
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import (
-    Application, CompanyRegistry, FunnelEvent, Job, JobSource, UserNotification,
-    UserProfile,
+    Application, CompanyRegistry, DiscoveryRun, FunnelEvent, Job, JobSource,
+    UserNotification, UserProfile,
 )
 from app.strategy import adoption, welcome
 
@@ -47,6 +47,7 @@ def _wipe():
             s.exec(delete(Application).where(Application.job_id.in_(mine)))
             s.exec(delete(Job).where(Job.id.in_(mine)))
         s.exec(delete(UserNotification).where(UserNotification.user_id.like(f"{_P}%")))
+        s.exec(delete(DiscoveryRun).where(DiscoveryRun.user_id.like(f"{_P}%")))
         s.exec(delete(CompanyRegistry).where(CompanyRegistry.slug.like(f"{_P}%")))
         s.exec(delete(UserProfile).where(UserProfile.user_id.like(f"{_P}%")))
         s.commit()
@@ -567,9 +568,80 @@ def test_a_pause_during_the_seed_stops_the_thin_feed_scrape(monkeypatch):
     monkeypatch.setattr(settings, "onboarding_active_discovery", True)
     monkeypatch.setattr(server, "_get_target_roles", lambda u: ["Software Engineer"])
     monkeypatch.setattr(server, "_user_has_resume", lambda u: True)
-    monkeypatch.setattr(server, "_discover_then_match", lambda u: scraped.append(u))
+    monkeypatch.setattr(server, "_discover_then_match", lambda u, **_k: scraped.append(u))
     adoption.seed_new_user(uid)
     assert scraped == []
+
+
+# The scrape itself waits on the blocking discovery lock (the global pass, hot
+# lane and matching lane all hold it, for minutes) and runs two waves. The check
+# above runs before that wait; these pin the ones after it.
+
+@pytest.fixture
+def scrape(monkeypatch):
+    """A thin-feed seed whose scrape and matching are recorded, not run."""
+    calls = []
+    monkeypatch.setattr(adoption, "adopt_and_match", lambda u: 0)
+    monkeypatch.setattr(adoption, "_usable_count", lambda u: 0)
+    monkeypatch.setattr(settings, "onboarding_active_discovery", True)
+    monkeypatch.setattr(server, "_user_has_resume", lambda u: True)
+    monkeypatch.setattr(server, "run_discovery",
+                        lambda u, run_id=None, keywords=None, phase=None: calls.append(("discover", phase)))
+    monkeypatch.setattr(server, "run_matching", lambda u: calls.append(("match", u)) or [])
+    monkeypatch.setattr(fresh_alerts, "dispatch_fresh_alerts", lambda u, ids: 0)
+    return calls
+
+
+def _runs(uid):
+    with get_session() as s:
+        return [(r.status, r.error) for r in s.exec(
+            select(DiscoveryRun).where(DiscoveryRun.user_id == uid)).all()]
+
+
+def test_a_pause_during_the_scrapes_lock_wait_stops_it(monkeypatch, scrape):
+    """Reviewer repro: Pause lands while the seed's scrape waits for the lock."""
+    from contextlib import contextmanager
+    uid = _returner()
+
+    @contextmanager
+    def _lock_held_by_a_global_pass(blocking=True, label=""):
+        server._set_search_pause(uid, True)      # the user pauses during the wait
+        yield True
+    monkeypatch.setattr("app.common.discovery_lock.discovery_guard", _lock_held_by_a_global_pass)
+    adoption.seed_new_user(uid)
+    assert scrape == [], "scraped into a paused user's pool after the lock wait"
+    assert _runs(uid) == [] and _notifications(uid) == []
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_a_pause_between_the_waves_stops_the_deep_scrape(monkeypatch, scrape, automatic):
+    """Wave 1 ran; the user paused while it matched. The seed's run stops there,
+    closed with no "Job Discovery Completed" in the bell. A manual Discover
+    click is the user asking, so it is unchanged."""
+    uid = _returner()
+
+    def _match_then_user_pauses(u):
+        scrape.append(("match", u))
+        if len(scrape) == 2:
+            server._set_search_pause(uid, True)
+        return []
+    monkeypatch.setattr(server, "run_matching", _match_then_user_pauses)
+    server._discover_then_match(uid, automatic=automatic)
+    if automatic:
+        assert scrape == [("discover", "fast"), ("match", uid)]
+        assert _runs(uid) == [("cancelled", "Search paused")]
+        assert _notifications(uid) == []
+    else:
+        assert [c[1] for c in scrape if c[0] == "discover"] == ["fast", "boards"]
+        assert [r[0] for r in _runs(uid)] == ["done"]
+        assert _notifications(uid) == ["discovery_completed"]
+
+
+def test_an_unpaused_seed_still_scrapes_both_waves(scrape):
+    uid = _returner()
+    adoption.seed_new_user(uid)
+    assert [c[1] for c in scrape if c[0] == "discover"] == ["fast", "boards"]
+    assert [r[0] for r in _runs(uid)] == ["done"]
 
 
 # ── notifications ────────────────────────────────────────────────────────────
@@ -655,6 +727,102 @@ def test_the_high_match_notice_asks_about_a_pause():
     i = src.index('type="high_match"')
     guard = src[src.rindex("if score >= 75", 0, i):i]
     assert "paused_now(user_id)" in guard
+
+
+# ── board placement: ONE gate, in the one writer of a SHORTLISTED row ─────────
+# Only the scoring lane asked again before placing. run_matching's Phase 3 (the
+# matching lane, the global pass, the hot lane) and the pulse fast path placed
+# every score their pass had already bought, after the Pause.
+
+# SQLite reuses a deleted job's id, and other files leave placement events
+# behind for theirs: count only events written after OUR job was created.
+_EVENTS_BEFORE: dict = {}
+
+
+def _scored_job(uid, ext: str, score=None) -> int:
+    now = datetime.utcnow()
+    with get_session() as s:
+        mark = s.exec(select(FunnelEvent.id).order_by(FunnelEvent.id.desc())).first() or 0
+        j = Job(user_id=uid, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                company=f"Co-{ext}", title=f"Backend Engineer {ext}", location="Remote",
+                remote=True, url=f"https://boards.greenhouse.io/co/jobs/{ext}",
+                description="Build backend services in Python.", rerank_score=score,
+                blended_score=score, first_seen=now, discovered_at=now, posted_at=now)
+        s.add(j)
+        s.commit()
+        s.refresh(j)
+        _EVENTS_BEFORE[j.id] = mark
+        return j.id
+
+
+def _placements(jid):
+    with get_session() as s:
+        return list(s.exec(select(FunnelEvent.reason).where(
+            FunnelEvent.job_id == jid, FunnelEvent.stage == "placement",
+            FunnelEvent.id > _EVENTS_BEFORE.get(jid, 0)).order_by(FunnelEvent.id)).all())
+
+
+def _apps(uid):
+    with get_session() as s:
+        return list(s.exec(select(Application.job_id).where(Application.user_id == uid)).all())
+
+
+@pytest.mark.parametrize("paused", [True, False])
+def test_the_slate_places_nothing_for_a_paused_user(paused):
+    from app.strategy import slate
+    uid = _returner(paused=paused)
+    jid = _scored_job(uid, "slate-1", 90.0)
+    with get_session() as s:
+        res = slate.place(s, s.get(Job, jid), 90.0, user_id=uid)
+        s.commit()
+    if paused:
+        assert (res.created, res.outcome) == (False, slate.OUTCOME_PAUSED)
+        assert _apps(uid) == [] and _placements(jid) == ["paused"], \
+            "refused, and the one placement event says why"
+    else:
+        assert res.created and _apps(uid) == [jid]
+
+
+def test_resume_re_offers_what_the_pause_held_back():
+    """The scores stay on the jobs; Resume's matching pass places them."""
+    from app.matching import pipeline as mp
+    uid = _returner(paused=True)
+    jids = [_scored_job(uid, f"held-{i}", 90.0 - i) for i in range(3)]
+    assert mp._reshortlist_scored_jobs(uid, 0) == ([], 0)
+    assert [r for j in jids for r in _placements(j)] == ["paused"], \
+        "one refusal, then the backstop stops instead of refusing the whole list"
+    server._set_search_pause(uid, False)
+    ids, n = mp._reshortlist_scored_jobs(uid, 0)
+    assert sorted(ids) == sorted(jids) and n == 3
+
+
+def test_the_pulse_fast_path_places_nothing_after_a_pause(monkeypatch):
+    uid = _returner()
+    with get_session() as s:       # active: the fast path pays only for an active search
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        p.last_meaningful_activity_at = datetime.utcnow()
+        s.add(p)
+        s.commit()
+    jid = _scored_job(uid, "fast-1")
+
+    class _UserPausesWhileWeScore:
+        def __init__(self, profile=None, feedback=""):
+            pass
+
+        def has_prescore_backend(self):
+            return False
+
+        def score(self, resume, job):
+            server._set_search_pause(uid, True)
+            return 90.0, "Strong fit", [], {}
+    monkeypatch.setattr("app.matching.reranker.Reranker", _UserPausesWhileWeScore)
+    monkeypatch.setattr("app.matching.pipeline._load_resume", lambda user_id=None: "resume")
+    monkeypatch.setattr("app.matching.filters.score_ghost", lambda job, session: SimpleNamespace(
+        is_ghost=False, ghost_score=0.0, flags_json=None, flags=[]))
+    assert pulse_lane._fast_path_user(uid, score_budget=5) == (1, 0, 0)
+    with get_session() as s:
+        assert s.get(Job, jid).rerank_score == 90.0, "the score already bought is kept"
+    assert _apps(uid) == [] and _placements(jid) == ["paused"]
 
 
 # ── the one reading the lanes use ────────────────────────────────────────────

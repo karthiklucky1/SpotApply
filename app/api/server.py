@@ -7298,12 +7298,20 @@ def application_funnel(request: Request) -> dict:
     }
 
 
-def _discover_then_match(user_id) -> None:
+def _discover_then_match(user_id, *, automatic: bool = False) -> None:
     """Discover → rank, tracking staged status (discovering → ranking → done)
     in a DiscoveryRun row so the UI can show live progress + a final summary.
     Serialized with the fresh/hot lanes so only one heavy pass holds the model
-    + job pool in memory at a time (prevents the OOM crash). Both the 6h
-    scheduler and the manual Discover button route through here."""
+    + job pool in memory at a time (prevents the OOM crash). The manual
+    Discover button and the onboarding seed's thin-feed scrape route through
+    here.
+
+    ``automatic=True`` is the seed (adoption.seed_new_user): work done FOR the
+    user, which a Pause stops (compute_policy). The lock wait below can be
+    minutes (the global pass, hot lane and matching lane all hold it), so the
+    pause is asked again once the lock is ours and between the waves, and a
+    run stopped by it files no "Job Discovery Completed" notice. The manual
+    button passes nothing: that click is the user asking."""
     from app.common.discovery_lock import discovery_guard
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     with discovery_guard(label="full discovery") as ran:
@@ -7314,7 +7322,42 @@ def _discover_then_match(user_id) -> None:
             finish_discovery_run(rid, "error",
                                  error="Another discovery run is in progress — please wait for it to finish.")
             return
-        _discover_then_match_locked(user_id)
+        if automatic and _auto_discovery_paused(user_id):
+            return          # paused during the lock wait: no run row, no scrape
+        _discover_then_match_locked(user_id, automatic=automatic)
+
+
+def _auto_discovery_paused(user_id) -> bool:
+    """Has the user paused since the seed decided to scrape for them? One
+    indexed read (compute_policy.user_paused), fresh, not the lanes' cached set:
+    this runs a handful of times per scrape, not once per job."""
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id):
+        log.info("Thin-feed discovery stopped: the search is paused")   # no user id in the line
+        return True
+    return False
+
+
+def _close_paused_run(run_id) -> None:
+    """End an automatic run the user paused, WITHOUT the bell notice that
+    finish_discovery_run files: it was work done for them, and they asked us
+    to stop. Status "cancelled" is the one the dashboard poller already drops."""
+    if not run_id:
+        return
+    from datetime import datetime
+
+    from app.db.models import DiscoveryRun
+    try:
+        with get_session() as session:
+            row = session.get(DiscoveryRun, run_id)
+            if row is not None:
+                row.status = "cancelled"
+                row.error = "Search paused"
+                row.finished_at = datetime.utcnow()
+                session.add(row)
+                session.commit()
+    except Exception as e:
+        log.warning("Could not close a paused discovery run: %s", e)
 
 
 def _internship_keywords(roles: list[str], prof) -> list[str]:
@@ -7345,9 +7388,24 @@ def _internship_keywords(roles: list[str], prof) -> list[str]:
     return out
 
 
-def _discover_then_match_locked(user_id) -> None:
+def _discover_then_match_locked(user_id, *, automatic: bool = False) -> None:
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
+
+    def _paused_stop() -> bool:
+        """Automatic runs only (see `_discover_then_match`): a Pause between
+        two steps ends the run there, closed with no notice."""
+        if automatic and _auto_discovery_paused(user_id):
+            _close_paused_run(run_id)
+            return True
+        return False
+
+    def _finish(status: str, **kw) -> None:
+        # Asked once more at the end: a Pause during the last wave still means
+        # no "Job Discovery Completed" (or "Failed") in the bell.
+        if not _paused_stop():
+            finish_discovery_run(run_id, status, **kw)
+
     # Tailor the keyword search to the user's saved Target Roles when set.
     roles = _get_target_roles(user_id) or None
     # Load the profile once for keyword augmentation (cap-exempt + internships +
@@ -7383,6 +7441,8 @@ def _discover_then_match_locked(user_id) -> None:
     first_ids: list[int] = []
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="fast")
+        if _paused_stop():
+            return
         first_ids = run_matching(user_id) or []
         try:
             from app.db.models import DiscoveryRun
@@ -7397,13 +7457,17 @@ def _discover_then_match_locked(user_id) -> None:
             log.debug("first_results status write failed: %s", _fe)
     except Exception as e:
         log.exception("Fast discovery wave failed: %s", e)
-        finish_discovery_run(run_id, "error", error=str(e))
+        _finish("error", error=str(e))
+        return
+    if _paused_stop():          # between the waves: no deep scrape into their pool
         return
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="boards")
+        if _paused_stop():
+            return
         shortlisted = run_matching(user_id) or []
         total = len(set(first_ids) | set(shortlisted))
-        finish_discovery_run(run_id, "done", total_shortlisted=total)
+        _finish("done", total_shortlisted=total)
         try:
             from app.strategy.fresh_alerts import dispatch_fresh_alerts
             dispatch_fresh_alerts(user_id, list(set(first_ids) | set(shortlisted)))
@@ -7413,10 +7477,10 @@ def _discover_then_match_locked(user_id) -> None:
         log.exception("Deep discovery wave failed: %s", e)
         # First-wave results are already live — surface them rather than erroring out.
         if first_ids:
-            finish_discovery_run(run_id, "done", total_shortlisted=len(first_ids),
-                                 error=f"Company-board scan failed: {e}")
+            _finish("done", total_shortlisted=len(first_ids),
+                    error=f"Company-board scan failed: {e}")
         else:
-            finish_discovery_run(run_id, "error", error=str(e))
+            _finish("error", error=str(e))
 
 
 @app.post("/run/discovery")

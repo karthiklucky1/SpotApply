@@ -463,6 +463,11 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                              "cutoff (%.0f) — stopping.", job.title,
                              job.rerank_score, res.cutoff or 0.0)
                     break
+                if res.outcome == _slate.OUTCOME_PAUSED:
+                    # Paused since this pass began: the slate refuses every one
+                    # of them, so stop instead of recording up to 500 refusals.
+                    # Resume's pass re-offers the same list.
+                    break
                 continue
             shortlisted.append(job.id)
             today_count += 1

@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location | duplicate
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | ineligible | unverified_location | duplicate
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -85,6 +85,12 @@ class Placement:
 
     def __bool__(self) -> bool:            # `if place(...)` reads naturally
         return self.created
+
+
+#: `place()` refused because the owner paused their own search. The score stays
+#: on the job and Resume's matching pass re-offers it (the re-shortlist backstop,
+#: pipeline._reshortlist_scored_jobs), so nothing bought before the Pause is lost.
+OUTCOME_PAUSED = "paused"
 
 
 def _day_start() -> datetime:
@@ -183,6 +189,18 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     if session.exec(select(Application.id).where(Application.job_id == job.id)
                     .limit(1)).first() is not None:
         return _record(session, job, score, user_id, Placement(False, "exists"))
+
+    # ── A paused search places nothing ──────────────────────────────────────
+    # Every lane serves a user list read at the start of its pass, minutes
+    # before it writes: the matching lane's Phase 3, the global pass, the hot
+    # lane and the pulse fast path all reached here with scores bought before
+    # a Pause, and only the scoring lane asked again. ONE gate, in the one
+    # writer of a SHORTLISTED row, so no lane can miss it. Same shared reading
+    # the lanes' per-user steps use (compute_policy.paused_now: Pause drops
+    # its cache in this process). Nothing about the job changes here.
+    from app.common.compute_policy import paused_now
+    if paused_now(uid_arg):
+        return _record(session, job, score, user_id, Placement(False, OUTCOME_PAUSED))
 
     # ── Dead postings never reach a board ───────────────────────────────────
     # Cached read only: this runs with `session` open and the codebase never
