@@ -553,9 +553,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
   `test_click_verification`. A Greenhouse posting redirected to its board's
   index (`?error=true`) is REMOVED; one the page can't speak for (employer-site
-  `gh_jid`, token = the ONE registry slug naming its company; any WRONG_PAGE)
-  asks the ATS API: 200 LIVE, 404 REMOVED only if the board answers 200
-  (`delivery_gate._check`, guard: `test_closed_posting_detection`).
+  `gh_jid`, stored or redirected to from a hosted URL; token = the ONE registry
+  slug naming its company; any WRONG_PAGE) asks the ATS API: 200 LIVE, 404
+  REMOVED only if the board answers 200 (`delivery_gate._check`, guard:
+  `test_closed_posting_detection`). **Not a sweep:** the check guards NEW
+  deliveries (a refusal closes only the copy being placed); a copy already on
+  a board is re-checked only when someone opens or reports it.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows

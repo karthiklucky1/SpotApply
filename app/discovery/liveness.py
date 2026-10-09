@@ -147,6 +147,8 @@ def greenhouse_board_redirect(requested_url: str, final_url: str) -> bool:
     posting id is gone from it; and it is the same board's root or carries
     Greenhouse's ``error=true`` flag. A redirect to the employer's own careers
     page (``?gh_jid=<id>`` keeps the id) or anywhere else is not this case.
+    That employer page reads LIVE to `classify`, which sees only the page;
+    `delivery_gate._check` asks Greenhouse's API before accepting it.
     """
     from urllib.parse import parse_qs, urlparse
 

@@ -13,9 +13,10 @@ went the same way: the employer page cannot speak for the vacancy at all.
 Pinned here:
 - a hosted Greenhouse posting that redirects to its own board index is REMOVED
   (classify, the delivery gate, /api/jobs/{id}/verify and the HEAD check);
-- a posting the page cannot speak for (``gh_jid`` on the employer's site, or a
-  redirect the page check could not place) is asked of the ATS's own API:
-  200 is LIVE, 404 is REMOVED only when the board itself answers 200;
+- a posting the page cannot speak for (``gh_jid`` on the employer's site,
+  stored or reached by a redirect from a hosted URL, or a redirect the page
+  check could not place) is asked of the ATS's own API: 200 is LIVE, 404 is
+  REMOVED only when the board itself answers 200;
 - 429 / 403 / a timeout / an unknown board token close nothing;
 - no DB session is open during any request, and metrics carry no identifiers;
 - the Removed tab counts every removed job, not the 20 the pane renders.
@@ -32,12 +33,11 @@ from contextlib import contextmanager
 import pytest
 from sqlmodel import delete, select
 
-from app.common import daily_counter
 from app.db import init_db
 from app.db.init_db import get_session
 from app.db.models import (
     Application, ApplicationStatus, CompanyRegistry, FunnelEvent, Job, JobLiveness,
-    JobLivenessState, JobSource,
+    JobLivenessState, JobSource, PlatformCounter, UserProfile,
 )
 from app.discovery import liveness as lv
 from app.matching.preference_learning import _is_user_dismissal
@@ -54,6 +54,19 @@ BOARD_BODY = ("<html><title>Jobs at Hasbro</title><h1>Current openings at Hasbro
               "<a href='/hasbro/jobs/1'>Senior Engineer</a></html>")
 
 
+def _user_tables():
+    """Every table with a text ``user_id`` column, children first: loading
+    /dashboard as a test user writes that user's UserProfile, and whatever a
+    page or route starts writing per user later is covered the same way."""
+    from sqlalchemy import String
+    from sqlmodel import SQLModel
+
+    def _text(col) -> bool:     # sqlmodel's AutoString decorates a VARCHAR
+        return isinstance(getattr(col.type, "impl", col.type), String)
+    return [t for t in reversed(SQLModel.metadata.sorted_tables)
+            if "user_id" in t.c and _text(t.c.user_id)]
+
+
 def _wipe():
     with get_session() as s:
         jids = list(s.exec(select(Job.id).where(
@@ -66,8 +79,14 @@ def _wipe():
             JobLiveness.external_id.like(f"{_N}%") | JobLiveness.external_id.like(f"{_P}%")))
         # "_" is LIKE's one-character wildcard: this also takes "cpdtest_two".
         s.exec(delete(CompanyRegistry).where(CompanyRegistry.slug.like("cpdtest_%")))
+        # Rows our test users own outright (UserProfile from /dashboard, ...).
+        # "cpdtest-" has no LIKE wildcard in it, so nobody else's rows match.
+        for table in _user_tables():
+            s.execute(table.delete().where(table.c.user_id.like(f"{_P}%")))
+        # The report allowance, whatever day it was reserved on.
+        s.exec(delete(PlatformCounter).where(
+            PlatformCounter.name.like(f"liveness_report:user:{_P}%")))
         s.commit()
-    daily_counter.reset(f"liveness_report:user:{_P}me")
 
 
 @pytest.fixture(autouse=True)
@@ -180,8 +199,9 @@ def test_a_redirect_to_the_greenhouse_board_index_is_removed(requested, final):
 
 
 @pytest.mark.parametrize("requested,final,expected", [
-    # Greenhouse hands a live posting to the employer's careers page, id kept.
-    (HASBRO, "https://careers.hasbro.com/job?gh_jid=4250645009", LIVE),
+    # (A redirect to the employer's own `gh_jid` page is NOT here: the page
+    # alone cannot say the posting is open. See
+    # test_a_hosted_posting_sent_to_the_employers_page_is_asked_of_greenhouse.)
     # A different posting on the same board is not the board index.
     (HASBRO, "https://job-boards.greenhouse.io/hasbro/jobs/4250699999", WRONG),
     # Somebody else's error flag is not Greenhouse's.
@@ -373,6 +393,61 @@ def test_a_redirect_the_page_could_not_place_is_settled_by_the_api(monkeypatch):
     assert state == LIVE
 
 
+HASBRO_ON_SITE = "https://careers.hasbro.com/job?gh_jid=4250645009"
+HASBRO_API = "https://boards-api.greenhouse.io/v1/boards/hasbro/jobs/4250645009"
+HASBRO_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/hasbro"
+
+
+@pytest.mark.parametrize("api,board,expected,reason", [
+    # Closed: the employer's shell answered 200, Greenhouse says 404, and the
+    # board itself answers, so the 404 is about this posting.
+    ((404, None, "", None), (200, None, "", None), REMOVED, "ats_api_404"),
+    ((410, None, "", None), (200, None, "", None), JobLivenessState.EXPIRED.value,
+     "ats_api_410"),
+    # Open: Greenhouse still publishes it.
+    ((200, None, "{}", None), None, LIVE, "ats_api_200"),
+    # No answer: the page's verdict stands, exactly as before.
+    ((404, None, "", None), (404, None, "", None), LIVE, "http_200"),   # token moved
+    ((429, None, "", None), None, LIVE, "http_200"),
+    ((403, None, "", None), None, LIVE, "http_200"),
+    ((None, None, "", "ReadTimeout"), None, LIVE, "http_200"),
+])
+def test_a_hosted_posting_sent_to_the_employers_page_is_asked_of_greenhouse(
+        monkeypatch, sessions, api, board, expected, reason):
+    """Reviewer's edge case: a hosted Greenhouse URL that redirects to the
+    employer's own ``gh_jid`` page keeps the id, so the page reads LIVE. That
+    page is the same employer shell `_ats_target` refuses to trust when it is
+    the stored URL, so it must not settle LIVE here either."""
+    page_says, _ = lv.classify(200, requested_url=HASBRO, final_url=HASBRO_ON_SITE,
+                               body="<h1>Applied AI Engineer</h1> Apply now")
+    assert page_says == LIVE, "the page alone reads it open; the gate must not stop there"
+
+    routes = {HASBRO: (200, HASBRO_ON_SITE, "<h1>Applied AI Engineer</h1> Apply now", None),
+              HASBRO_API: api}
+    if board is not None:
+        routes[HASBRO_BOARD_API] = board
+    calls = _web(monkeypatch, routes, sessions)
+    ext = _N + "13"
+
+    state, how = gate.verify_for_delivery(JobSource.GREENHOUSE, ext, HASBRO)
+
+    assert (state, how) == (expected, "checked")
+    assert [u for u, _ in calls][:2] == [HASBRO, HASBRO_API], "page first, then the ATS"
+    assert len(calls) <= gate._MAX_REQUESTS_PER_CHECK
+    assert all(n == 0 for _u, n in calls), "a DB session was open during a request"
+    row = _liveness(ext)
+    assert (row.state, row.reason) == (expected, reason)
+
+
+def test_a_hop_between_greenhouse_hosts_still_costs_one_request(monkeypatch):
+    """boards.greenhouse.io → job-boards.greenhouse.io ends on the posting page
+    itself, which does speak (a closed one goes to the board index): no API."""
+    legacy = "https://boards.greenhouse.io/hasbro/jobs/4250645009"
+    calls = _web(monkeypatch, {legacy: (200, HASBRO, "<h1>Applied AI Engineer</h1>", None)})
+    assert gate.verify_for_delivery(JobSource.GREENHOUSE, _N + "14", legacy)[0] == LIVE
+    assert [u for u, _ in calls] == [legacy]
+
+
 def test_a_page_that_speaks_for_itself_costs_one_request(monkeypatch):
     """The API is consulted only where the page cannot answer, so the common
     case stays one request per check."""
@@ -432,3 +507,28 @@ def test_reporting_a_job_closed_moves_the_removed_count(monkeypatch):
     assert int(_TAB.search(after).group(1)) == 22
     assert re.search(r'id="skipped-count">22<', after), "the pane says the same number"
     assert after.count('id="skipped-card-') == 20, "the pane still renders the latest 20"
+
+
+def test_the_cleanup_takes_what_the_dashboard_wrote(monkeypatch):
+    """Reviewer: loading /dashboard as a ``cpdtest-`` user wrote its
+    UserProfile, and `_wipe()` left that row in the shared test DB for every
+    file that ran after this one."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import func
+    from app.api import server
+    me = _P + "me"
+    monkeypatch.setattr(server, "_get_user_id", lambda request: me)
+    assert TestClient(server.app).get("/dashboard").status_code == 200
+    with get_session() as s:
+        assert s.exec(select(UserProfile.user_id).where(UserProfile.user_id == me)).first(), \
+            "premise: the dashboard writes the viewer's profile"
+
+    _wipe()
+
+    with get_session() as s:
+        assert s.exec(select(UserProfile.user_id).where(
+            UserProfile.user_id.like(f"{_P}%"))).first() is None
+        for table in _user_tables():
+            left = s.execute(select(func.count()).select_from(table).where(
+                table.c.user_id.like(f"{_P}%"))).scalar()
+            assert left == 0, f"{table.name} still holds a {_P} row"

@@ -13,6 +13,17 @@ Greenhouse posting redirected to its own board's index, the ATS's own posting
 API answering 404 while the board itself answers (`_ask_ats`), or absence from
 a board fetch we know was COMPLETE.
 
+What it is NOT: a sweep. A posting is checked before a NEW delivery (the
+scoring lane via `verified_dead`, `confirmed_open` for catch-up), and a
+refusal there closes only the copy being placed. A copy already on a board is
+re-checked only when someone opens it (`/api/jobs/{id}/verify`) or reports it
+(`verify_reported`); only those two close the other copies
+(`close_dead_everywhere`). Nothing revisits delivered copies on a timer (a
+complete board fetch closes only the pool it ran for, which in the scheduled
+global pass is the shared row: `pipeline.mark_ghost_jobs`), so a dead posting
+nobody opens or reports stays on the boards it already reached until it ages
+out.
+
 Three properties the placement path depends on:
 
 * **Late.** The check runs immediately before `slate.place()`, so we only spend
@@ -169,7 +180,9 @@ def _fetch(url: str, timeout: float) -> Tuple[Optional[int], str, str, Optional[
 #   * a Greenhouse posting shown on the EMPLOYER's site (`…?gh_jid=<id>`, about
 #     a quarter of open Greenhouse rows): that page is the employer's shell and
 #     answers 200, or redirects to their careers home, whether or not the job
-#     is open (Riot Games: filed WRONG_PAGE, delivered as open);
+#     is open (Riot Games: filed WRONG_PAGE, delivered as open). A hosted
+#     posting URL that REDIRECTS there lands on the same shell: the id is kept,
+#     so the page reads LIVE, and that 200 is the employer's, not the ATS's;
 #   * any redirect the page check could not place (WRONG_PAGE).
 # Greenhouse and Lever publish one JSON document per OPEN posting. 200 there is
 # LIVE. 404 is REMOVED only once the BOARD itself answers 200: a wrong or
@@ -182,6 +195,11 @@ _LEVER_POSTING = re.compile(
 _BOARD_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 
 
+#: The domain each ATS serves its own posting pages from. A page check that
+#: ENDS outside it was answered by someone else (`_left_the_ats`).
+_ATS_DOMAINS = {"greenhouse": "greenhouse.io", "lever": "lever.co"}
+
+
 class _AtsTarget:
     __slots__ = ("kind", "posting_url", "board_url", "page_speaks")
 
@@ -190,7 +208,8 @@ class _AtsTarget:
         self.posting_url = posting_url
         self.board_url = board_url
         # The job URL is the ATS's own posting page, so the page check comes
-        # first and the API only settles what it could not (WRONG_PAGE).
+        # first and the API only settles what it could not: a WRONG_PAGE, or a
+        # LIVE read from a page outside the ATS (`_left_the_ats`).
         self.page_speaks = page_speaks
 
 
@@ -288,6 +307,31 @@ def _same_host(a: str, b: str) -> bool:
         return False
 
 
+def _left_the_ats(target: _AtsTarget, requested_url: str, final_url: str) -> bool:
+    """The page check of an ATS posting URL ended on a host the ATS does not
+    serve: Greenhouse handing a hosted posting to the employer's own
+    ``?gh_jid=`` page, whose 200 says nothing about the vacancy.
+
+    A hop between the ATS's own hosts (``boards.greenhouse.io`` to
+    ``job-boards.greenhouse.io``) still ends on the posting page, which does
+    speak (a closed one goes to the board index), so it is not this case and
+    costs no extra request. No final URL, or none that parses, is not this
+    case either: nothing says the page went anywhere."""
+    from urllib.parse import urlparse
+
+    if not final_url or final_url == requested_url:
+        return False
+    try:
+        host = (urlparse(final_url).hostname or "").lower()
+        asked = (urlparse(requested_url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host or host == asked:
+        return False
+    domain = _ATS_DOMAINS.get(target.kind, "")
+    return not domain or not (host == domain or host.endswith("." + domain))
+
+
 def _ask_ats(target: _AtsTarget) -> Tuple[Optional[str], str, Optional[int]]:
     """(state, reason, http_status) from the ATS's own API. ``state`` is None
     when the answer is not conclusive — the caller then trusts the page."""
@@ -322,7 +366,11 @@ def _check(url: str, external_id: str = "") -> Tuple[str, str, Optional[int]]:
 
     The page first when it IS the posting (one request in the common case),
     the ATS's API only for what the page cannot answer: first for a posting
-    shown on the employer's site, after a WRONG_PAGE otherwise."""
+    shown on the employer's site; after the page otherwise, when it read
+    WRONG_PAGE, or read LIVE from a page outside the ATS (a hosted posting
+    redirected to the employer's ``gh_jid`` page, `_left_the_ats`). The API's
+    rules are `_ask_ats`'s: 200 LIVE, 404/410 dead only when the board answers
+    200, anything else leaves the page's verdict standing."""
     from app.discovery import liveness as lv
 
     target = _ats_target(url, external_id)
@@ -336,10 +384,15 @@ def _check(url: str, external_id: str = "") -> Tuple[str, str, Optional[int]]:
         url, float(settings.liveness_check_timeout_seconds))
     state, reason = lv.classify(
         status, requested_url=url, final_url=final_url, body=body, error=error)
-    if state == JobLivenessState.WRONG_PAGE.value and target is not None and not asked:
-        a_state, a_reason, a_status = _ask_ats(target)
-        if a_state:
-            return a_state, a_reason, a_status
+    if target is not None and not asked:
+        offsite = (state == JobLivenessState.LIVE.value
+                   and _left_the_ats(target, url, final_url))
+        if offsite:
+            _bump("ats_api_after_offsite_page")
+        if offsite or state == JobLivenessState.WRONG_PAGE.value:
+            a_state, a_reason, a_status = _ask_ats(target)
+            if a_state:
+                return a_state, a_reason, a_status
     return state, reason, status
 
 
