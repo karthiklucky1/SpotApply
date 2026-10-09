@@ -5,7 +5,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, desc
 from sqlmodel import Field, SQLModel
 
 
@@ -88,6 +88,11 @@ class Job(SQLModel, table=True):
         Index("ix_job_user_company_title", "user_id", "company", "title"),
         # Adoption/retention/analytics filter the shared pool by recency.
         Index("ix_job_user_discovered", "user_id", "discovered_at"),
+        # The index-friendly window COUNTS (freshness.is_fresh_expr(...,
+        # index_friendly=True): Pool / All Jobs badge, the Ghost badge, the
+        # /api/jobs totals) and the shared pool's "new in 24h". Same DDL as
+        # production's (user_id, first_seen DESC); see init_db._PERF_INDEXES.
+        Index("ix_job_user_firstseen", "user_id", desc("first_seen")),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.

@@ -28,6 +28,19 @@ CRITICAL_JOB_INDEXES = {
     "ix_job_user_company_title",
     # adoption / retention / analytics recency filters
     "ix_job_user_discovered",
+    # the index-friendly window counts (freshness.is_fresh_expr(index_friendly=
+    # True): Pool / All Jobs / Ghost badge, /api/jobs totals) and the shared
+    # pool's "new in 24h". Existed only in production, created by hand
+    # (2026-10-09), so a restore lost the 11 s -> 9 ms fix.
+    "ix_job_user_firstseen",
+}
+
+# Production's indexdef for indexes created outside this repo first
+# (pg_indexes, read-only, 2026-10-09). ensure_performance_indexes() skips by
+# NAME, so a different column list here would never be applied to production
+# and every other database would quietly differ from it.
+PRODUCTION_DDL = {
+    "ix_job_user_firstseen": "(user_id, first_seen DESC)",
 }
 
 
@@ -69,6 +82,61 @@ def test_critical_indexes_also_declared_on_the_model():
         f"{sorted(missing)} in _PERF_INDEXES but not declared on the Job model "
         f"— a freshly created database would lack them."
     )
+
+
+def _norm(cols: str) -> str:
+    return " ".join(cols.replace("(", " ( ").replace(")", " ) ")
+                    .replace(",", " , ").split()).lower()
+
+
+def test_model_and_startup_declarations_build_the_same_index():
+    """An index declared in BOTH places must have ONE column list: the model's
+    is what a fresh database gets, _PERF_INDEXES what every other one gets."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    perf = {name: cols for name, table, cols in _PERF_INDEXES if table == "job"}
+    checked = 0
+    for ix in Job.__table__.indexes:  # type: ignore[attr-defined]
+        if ix.name not in perf:
+            continue
+        ddl = str(CreateIndex(ix).compile(dialect=postgresql.dialect()))
+        model_cols = ddl[ddl.index("("):]
+        assert _norm(model_cols) == _norm(perf[ix.name]), (
+            f"{ix.name}: models.py builds {model_cols} but _PERF_INDEXES "
+            f"builds {perf[ix.name]}")
+        checked += 1
+    assert checked >= len(CRITICAL_JOB_INDEXES)
+
+
+def test_declarations_match_the_index_production_already_has():
+    perf = {name: cols for name, _table, cols in _PERF_INDEXES}
+    for name, prod_cols in PRODUCTION_DDL.items():
+        assert name in perf, f"{name} is not declared in _PERF_INDEXES"
+        assert _norm(perf[name]) == _norm(prod_cols), (
+            f"{name}: declared {perf[name]}, production has {prod_cols}")
+
+
+def test_the_window_counts_are_served_by_a_declared_index(tmp_path):
+    """The index-friendly spelling of the known-age bound is only fast if an
+    index leads (user_id, first_seen). On a database built from these
+    declarations alone, the planner must use ix_job_user_firstseen for the
+    shared pool's "new in 24h" count."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import create_engine, func, text
+    from sqlmodel import SQLModel, select
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'ix.db'}")
+    SQLModel.metadata.create_all(eng, tables=[Job.__table__])  # type: ignore[attr-defined]
+    cutoff = datetime(2026, 10, 1) - timedelta(days=1)
+    stmt = select(func.count()).select_from(Job).where(
+        Job.user_id == "__shared__", Job.first_seen > cutoff)
+    sql = str(stmt.compile(eng, compile_kwargs={"literal_binds": True}))
+    with eng.connect() as conn:
+        plan = " | ".join(str(r[-1]) for r in conn.execute(
+            text("EXPLAIN QUERY PLAN " + sql)).all())
+    assert "ix_job_user_firstseen" in plan, plan
 
 
 def test_perf_index_declarations_are_well_formed():

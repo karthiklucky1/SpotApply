@@ -16,6 +16,12 @@ owner's real account), one test group per finding. Synthetic rows only.
 7. "? Profile" and Pool "…" until three API calls returned.
 8. Pool read 473 / 3.8k (two writers, two definitions); Ghost Jobs 73,171 then
    3; "You're set: 13 matches on your board" beside a Shortlisted tab of 20.
+
+Review of those fixes (same day): a token rotated while the dashboard tab was
+hidden never reached the extension (pings stop when hidden); pending "Did you
+submit?" prompts were asked of whichever account was signed in and survived
+logout. The index the window counts rely on is pinned in
+test_index_declarations.py.
 """
 from __future__ import annotations
 
@@ -70,17 +76,37 @@ global.localStorage = {
 };
 """
 
+# A Supabase access token's shape (only the payload's `sub` is read).
+_TOKENS = """
+const _jwt = (sub) => 'h.' + Buffer.from(JSON.stringify(
+    {sub, role: 'authenticated', user_metadata: {full_name: 'Zoë'}})).toString('base64url') + '.s';
+"""
+
+
+def _braced(marker: str) -> str:
+    """From `marker` to the brace closing the first `{` at or after it."""
+    start = HTML.index(marker)
+    assert HTML.count(marker) == 1, marker
+    depth, i = 0, HTML.index("{", start)
+    for j in range(i, len(HTML)):
+        depth += {"{": 1, "}": -1}.get(HTML[j], 0)
+        if depth == 0:
+            return HTML[start:j + 1]
+    raise AssertionError(marker)
+
 
 # ── 1. "Did you submit?" waits for the user ─────────────────────────────────
 
 @needs_node
 def test_the_submit_prompt_is_asked_on_return_and_kept_until_answered():
     funcs = "\n".join(_function(n) for n in (
-        "_pendingApplies", "trackPendingApply", "_markPendingLeft",
-        "maybeAskSubmit", "_clearPendingApply"))
+        "_pendingOwner", "_pendingKeys", "_pendingApplies", "trackPendingApply",
+        "_markPendingLeft", "maybeAskSubmit", "_clearPendingApply"))
     decls = "\n".join(_decl(n) for n in (
         "_PENDING_KEY", "_PENDING_TTL_MS", "_PENDING_MAX", "_PENDING_MIN_AWAY_MS", "_askTimer"))
-    out = _node(_FAKE_STORAGE + """
+    out = _node(_FAKE_STORAGE + _TOKENS + """
+const HAS_AUTH = true;
+localStorage.setItem('sb_token', _jwt('user-a'));
 let now = 1000000;
 Date.now = () => now;
 const timers = [];
@@ -142,6 +168,101 @@ def test_nothing_schedules_or_removes_the_prompt_on_a_timer():
     assert "addEventListener('blur', _markPendingLeft)" in HTML
 
 
+_PENDING_FUNCS = ("_pendingOwner", "_pendingKeys", "_pendingApplies", "trackPendingApply",
+                  "_markPendingLeft", "maybeAskSubmit", "_clearPendingApply",
+                  "_clearAllPendingApplies")
+_PENDING_DECLS = ("_PENDING_KEY", "_PENDING_TTL_MS", "_PENDING_MAX",
+                  "_PENDING_MIN_AWAY_MS", "_askTimer")
+
+
+def _pending_env(has_auth: bool) -> str:
+    return (_FAKE_STORAGE + _TOKENS + f"const HAS_AUTH = {str(has_auth).lower()};\n" + """
+let now = 1000000;
+Date.now = () => now;
+global.setTimeout = () => 0;
+global.clearTimeout = () => {};
+global.window = {};
+global.document = { hidden: false, getElementById: () => null };
+const shown = [];
+function showSubmitConfirm(appId, company) { shown.push(appId + ':' + company); }
+""" + "\n".join(_decl(n) for n in _PENDING_DECLS) + "\n"
+            + "\n".join(_function(n) for n in _PENDING_FUNCS) + "\n")
+
+
+@needs_node
+def test_a_pending_prompt_is_asked_only_of_the_account_that_armed_it():
+    """Review 2026-10-09: on a shared browser account B was asked on EVERY
+    load about account A's application, and B's answers posted A's id."""
+    out = _node(_pending_env(True) + """
+const out = {};
+localStorage.setItem('sb_token', _jwt('user-a'));
+trackPendingApply(11, 'Acme'); _markPendingLeft(); now += 60000;
+localStorage.setItem('sb_token', _jwt('user-b'));        // B signs in, same browser
+maybeAskSubmit(true);
+out.bShown = shown.slice();
+out.bPending = _pendingApplies().map(p => p.appId);
+out.aEntryKept = !!localStorage.getItem('hp_pending_apply:11');
+trackPendingApply(22, 'Beta'); _markPendingLeft(); now += 60000;
+maybeAskSubmit(true);
+out.bOwn = shown.slice();
+localStorage.setItem('sb_token', _jwt('user-a'));        // A is back
+out.aPending = _pendingApplies().map(p => p.appId);
+localStorage.removeItem('sb_token');                     // no session: nobody to ask
+out.unknownPending = _pendingApplies().length;
+trackPendingApply(33, 'Gamma');
+out.armedForNobody = localStorage.getItem('hp_pending_apply:33');
+// An entry that names no account (stored before entries carried one).
+localStorage.setItem('hp_pending_apply:44', JSON.stringify(
+    {appId: '44', company: 'Old', ts: now, expires: now + 1e9, left: true}));
+localStorage.setItem('sb_token', _jwt('user-a'));
+out.unnamed = _pendingApplies().map(p => p.appId);
+out.storedUid = JSON.parse(localStorage.getItem('hp_pending_apply:11')).uid;
+console.log(JSON.stringify(out));
+""")
+    assert out["bShown"] == [] and out["bPending"] == []
+    assert out["aEntryKept"], "another account's prompt is ignored, not destroyed"
+    assert out["bOwn"] == ["22:Beta"]
+    assert out["aPending"] == ["11"]
+    assert out["unknownPending"] == 0 and out["armedForNobody"] is None
+    assert out["unnamed"] == ["11"]
+    assert out["storedUid"] == "user-a"
+
+
+@needs_node
+def test_without_auth_the_single_local_user_is_asked():
+    out = _node(_pending_env(False) + """
+trackPendingApply(7, 'Local Co'); _markPendingLeft(); now += 60000;
+maybeAskSubmit(true);
+console.log(JSON.stringify({shown}));
+""")
+    assert out["shown"] == ["7:Local Co"]
+
+
+@needs_node
+def test_logout_clears_every_pending_prompt():
+    funcs = "\n".join(_function(n) for n in (
+        "_pendingKeys", "_clearAllPendingApplies", "handleLogout"))
+    out = _node(_FAKE_STORAGE + """
+global.window = { location: { href: '/dashboard' } };
+global.document = { cookie: '' };
+""" + _decl("_PENDING_KEY") + "\n" + funcs + """
+['hp_pending_apply:11', 'hp_pending_apply:22', 'hp_pending_apply']
+    .forEach(k => localStorage.setItem(k, '{}'));
+localStorage.setItem('sb_token', 'x');
+localStorage.setItem('hp_sb_collapsed', '1');           // a device preference stays
+handleLogout().then(() => console.log(JSON.stringify(
+    {keys: Array.from(store.keys()).sort(), href: window.location.href})));
+""")
+    assert out["keys"] == ["hp_sb_collapsed"]
+    assert out["href"] == "/login"
+
+
+def test_account_deletion_sign_out_clears_pending_prompts():
+    body = _function("submitDeleteAccount")
+    assert "_clearAllPendingApplies()" in body
+    assert body.index("_clearAllPendingApplies()") < body.index("window.location.href = '/'")
+
+
 # ── 2. the extension credentials: once per page load ────────────────────────
 
 @needs_node
@@ -174,9 +295,106 @@ def test_init_has_no_schedule_and_follows_the_extensions_reply():
     assert "[0, 500, 1500, 3000, 6000]" not in HTML
     i = HTML.index("let _initPackSent")
     tail = HTML[i:i + 2500]
-    assert re.search(r"_EXT_PING_OK\$/\.test\(.*\) _broadcastInitPack\(\);", tail)
+    assert re.search(r"_EXT_PING_OK\$/\.test\(.*\)\) \{ _extListening = true; "
+                     r"_broadcastInitPack\(\); \}", tail)
     # Hidden tabs do not ping (their throttled timers fire in bursts).
     assert "if (!document.hidden) ping();" in HTML
+    # A token change is pushed by the code that stored it, never by a timer.
+    for fn in ("_onStoredTokenChanged", "_tellExtension", "_broadcastInitPack"):
+        assert not re.search(r"setInterval\(\s*(window\.)?" + fn, HTML), fn
+
+
+def _init_pack_env(ext_installed: bool) -> str:
+    """The real ping loop, credentials block and token writers, against a fake
+    page whose content script (if installed) answers every ping in both
+    dialects, as content.js does."""
+    init = HTML[HTML.index("    let _initPackSent = null;"):]
+    init = init[:init.index("</script>")]
+    ping = HTML[HTML.index("  const ping = () => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }"):
+                HTML.index("  setTimeout(ping, 800);") + len("  setTimeout(ping, 800);")]
+    return (_FAKE_STORAGE + f"const extInstalled = {str(ext_installed).lower()};\n" + """
+[['sb_token', 'AT1'], ['sb_refresh', 'RT1'], ['sb_url', 'https://x.supabase.co'],
+ ['sb_anon', 'anon']].forEach(([k, v]) => localStorage.setItem(k, v));
+const listeners = {};
+const on = (t, f) => (listeners[t] = listeners[t] || []).push(f);
+const fire = (t, ev) => (listeners[t] || []).forEach(f => f(ev));
+const intervals = [];
+const posted = [];
+global.setInterval = (f) => intervals.push(f);
+global.setTimeout = (f) => f();
+global.document = { hidden: false, cookie: '', addEventListener: on };
+global.window = {
+  location: { origin: 'https://app.spotapply.ai', href: '/dashboard' },
+  addEventListener: on,
+  postMessage: (m) => {
+    posted.push(m);
+    if (m.type === 'SPOTAPPLY_EXT_PING') {
+      if (extInstalled) ['SPOTAPPLY_EXT_PING_OK', 'HIREPATH_EXT_PING_OK']
+          .forEach(t => window.postMessage({ type: t }));
+      return;
+    }
+    fire('message', { source: window, data: m });
+  },
+};
+let current = { access_token: 'AT1', refresh_token: 'RT1' };
+const sb = { auth: { getSession: async () => ({ data: { session: current } }) } };
+const _setTokenCookie = () => {};
+const _clearTokenCookie = () => {};
+""" + _braced("const _tellExtension = () => {") + ";\n"
+        + _braced("const _refreshStoredToken = async () => {") + ";\n"
+        + "const _onAuth = " + _braced("(_event, s) => {") + ";\n"
+        + init + "\n" + ping + "\n" + """
+const inits = () => posted.filter(m => m.type === 'SPOTAPPLY_INIT_EXTENSION');
+""")
+
+
+@needs_node
+def test_a_token_stored_while_hidden_reaches_the_extension_once():
+    """Review 2026-10-09: pings stop while the tab is hidden, and the pack
+    went out only from a ping reply, so a token the dashboard rotated during
+    an autofill on the employer's tab never reached the extension: it kept
+    the rotated-away refresh token and its next refresh failed."""
+    out = _node(_init_pack_env(True) + """
+(async () => {
+  const out = { afterLoad: inits().length };
+  document.hidden = true; fire('visibilitychange');      // the employer's tab is in front
+  current = { access_token: 'AT2', refresh_token: 'RT2' };
+  await _refreshStoredToken();                           // the 4-minute refresh rotates it
+  for (let i = 0; i < 180; i++) {                        // an hour hidden: no change, no post
+    intervals.forEach(f => f());
+    await _refreshStoredToken();
+  }
+  out.whileHidden = inits().length - out.afterLoad;
+  out.sentRefresh = inits().slice(-1)[0].pack.refresh_token;
+  _onAuth('TOKEN_REFRESHED', { access_token: 'AT2', refresh_token: 'RT2' });
+  out.sameTokensAgain = inits().length - out.afterLoad;
+  _onAuth('TOKEN_REFRESHED', { access_token: 'AT3', refresh_token: 'RT3' });
+  out.authEvent = inits().length - out.afterLoad;
+  out.authRefresh = inits().slice(-1)[0].pack.refresh_token;
+  document.hidden = false; fire('visibilitychange');     // back: the ping reply finds no change
+  out.onReturn = inits().length - out.afterLoad;
+  console.log(JSON.stringify(out));
+})();
+""")
+    assert out["afterLoad"] == 1
+    assert out["whileHidden"] == 1, "exactly one more INIT for one rotation"
+    assert out["sentRefresh"] == "RT2"
+    assert out["sameTokensAgain"] == 1, "deduplicated by content"
+    assert out["authEvent"] == 2 and out["authRefresh"] == "RT3"
+    assert out["onReturn"] == 2
+
+
+@needs_node
+def test_no_pack_is_posted_before_the_extension_answers():
+    out = _node(_init_pack_env(False) + """
+(async () => {
+  current = { access_token: 'AT2', refresh_token: 'RT2' };
+  await _refreshStoredToken();
+  _onAuth('TOKEN_REFRESHED', { access_token: 'AT3', refresh_token: 'RT3' });
+  console.log(JSON.stringify({ inits: inits().length }));
+})();
+""")
+    assert out["inits"] == 0
 
 
 # ── 3. the toolbar wraps instead of cutting controls off ────────────────────

@@ -18,6 +18,12 @@
             document.cookie = 'sb_token=' + t + '; path=/; max-age=3600; SameSite=Lax' + secure;
         };
         const _clearTokenCookie = () => { document.cookie = 'sb_token=; path=/; max-age=0; SameSite=Lax'; };
+        // A newly stored token reaches the extension now, even from a hidden
+        // tab (the credentials block below: posts only once the extension has
+        // answered, and only when the pack really changed).
+        const _tellExtension = () => {
+            try { if (typeof window._onStoredTokenChanged === 'function') window._onStoredTokenChanged(); } catch (e) {}
+        };
         if (SUPABASE_URL) {
             try {
                 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -31,11 +37,13 @@
                     if (session.refresh_token) localStorage.setItem('sb_refresh', session.refresh_token)
                     localStorage.setItem('sb_url', SUPABASE_URL)
                     localStorage.setItem('sb_anon', SUPABASE_ANON_KEY)
+                    _tellExtension()
                     sb.auth.onAuthStateChange((_event, s) => {
                         if (s) {
                             localStorage.setItem('sb_token', s.access_token)
                             _setTokenCookie(s.access_token)
                             if (s.refresh_token) localStorage.setItem('sb_refresh', s.refresh_token)
+                            _tellExtension()
                         }
                         else { localStorage.removeItem('sb_token'); localStorage.removeItem('sb_refresh'); _clearTokenCookie(); window.location.href = '/login'; }
                     })
@@ -54,6 +62,7 @@
                                 localStorage.setItem('sb_token', data.session.access_token);
                                 _setTokenCookie(data.session.access_token);
                                 if (data.session.refresh_token) localStorage.setItem('sb_refresh', data.session.refresh_token);
+                                _tellExtension();
                                 return data.session.access_token;
                             }
                         } catch (e) { /* offline/transient — a later tick retries */ }
@@ -5163,6 +5172,8 @@
                 const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
                 await sb.auth.signOut()
             } catch(e) {}
+            // "Did you submit?" prompts belong to this session's account.
+            if (typeof _clearAllPendingApplies === 'function') _clearAllPendingApplies()
             localStorage.removeItem('sb_token')
             document.cookie = 'sb_token=; path=/; max-age=0; SameSite=Lax'
             window.location.href = '/login'
@@ -5229,6 +5240,8 @@
                     const sbc = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}');
                     await sbc.auth.signOut({ scope: 'local' });
                 } catch (_) {}
+                // The deleted account's "Did you submit?" prompts go with it.
+                if (typeof _clearAllPendingApplies === 'function') _clearAllPendingApplies();
                 setTimeout(() => {
                     localStorage.removeItem('sb_token');
                     localStorage.removeItem('sb_refresh');
@@ -9147,34 +9160,70 @@
     // One entry per application under hp_pending_apply:<id>, each with an
     // expiry, so a second posting does not overwrite the first. Every
     // storage access is guarded: a private window can throw.
+    //
+    // Each entry names the account that armed it (`uid`, the token's sub)
+    // and only that account is ever asked: on a shared browser, account B
+    // was asked on every load about account A's application, and its
+    // answers posted A's application id. Logout and account deletion clear
+    // every entry (_clearAllPendingApplies).
     const _PENDING_KEY = 'hp_pending_apply:';
     const _PENDING_TTL_MS = 3 * 24 * 3600 * 1000;   // a prompt older than 3 days is moot
     const _PENDING_MAX = 5;                         // newest first; older ones dropped
-    function _pendingApplies() {
-        const out = [];
+    // Who is signed in: the access token's `sub`. Without auth (local
+    // SQLite mode) there is one user. null = unknown: nothing is shown or armed.
+    function _pendingOwner() {
+        let t = null;
+        try { t = localStorage.getItem('sb_token'); } catch (e) { t = null; }
+        if (!t) return (typeof HAS_AUTH !== 'undefined' && !HAS_AUTH) ? 'local' : null;
         try {
-            const keys = [];      // collected first: removing while indexing skips keys
+            const b64 = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            const claims = JSON.parse(atob(b64 + '==='.slice((b64.length + 3) % 4)));
+            return (claims && claims.sub) ? String(claims.sub) : null;
+        } catch (e) { return null; }
+    }
+    function _pendingKeys() {
+        const keys = [];          // collected first: removing while indexing skips keys
+        try {
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
                 if (k && k.indexOf(_PENDING_KEY) === 0) keys.push(k);
             }
-            keys.forEach(k => {
+        } catch (e) {}
+        return keys;
+    }
+    function _pendingApplies() {
+        const out = [];
+        const me = _pendingOwner();
+        try {
+            _pendingKeys().forEach(k => {
                 let p = null;
                 try { p = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { p = null; }
                 if (!p || !p.appId || Date.now() > (p.expires || 0)) localStorage.removeItem(k);
-                else out.push(p);
+                // Another account's prompt (or one from before entries named
+                // their account) is never shown here; it expires on its own.
+                else if (me && p.uid === me) out.push(p);
             });
             // The single-slot key from before this change: drop it.
             localStorage.removeItem('hp_pending_apply');
         } catch (e) {}
         return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
     }
+    // Signing out (or deleting the account): no prompt outlives the session.
+    function _clearAllPendingApplies() {
+        try {
+            _pendingKeys().forEach(k => localStorage.removeItem(k));
+            localStorage.removeItem('hp_pending_apply');
+        } catch (e) {}
+    }
+    window._clearAllPendingApplies = _clearAllPendingApplies;
     function trackPendingApply(appId, company) {
         if (!appId) return;
+        const me = _pendingOwner();
+        if (!me) return;          // nobody to ask: never arm a prompt for "anyone"
         try {
             const now = Date.now();
             localStorage.setItem(_PENDING_KEY + appId, JSON.stringify({
-                appId: String(appId), company: company || '', ts: now,
+                appId: String(appId), uid: me, company: company || '', ts: now,
                 expires: now + _PENDING_TTL_MS, left: false,
             }));
             _pendingApplies().slice(_PENDING_MAX)
@@ -9331,7 +9380,16 @@
     // 15 s forever; a throttled background tab then delivered them in bursts,
     // and the content script logged "Received INIT_EXTENSION" 152 times in
     // ~15 minutes on the owner's machine (2026-10-09).
+    //
+    // A token stored while this tab is HIDDEN (the 4-minute refresh, or
+    // Supabase's own) must not wait for the user to come back: hidden tabs do
+    // not ping, and during an autofill on the employer's tab the extension
+    // would hold a rotated-away refresh token and fail its next refresh. So
+    // every token store calls _onStoredTokenChanged, which posts once the
+    // extension has answered on this page, deduplicated by content: no
+    // schedule of its own, and a refresh that changed nothing posts nothing.
     let _initPackSent = null;
+    let _extListening = false;   // the extension has answered a ping on this page
     function _initPack() {
         try {
             const tok = localStorage.getItem('sb_token');
@@ -9354,9 +9412,13 @@
         window.postMessage({ type: 'SPOTAPPLY_INIT_EXTENSION', pack }, '*');
         return true;
     }
+    function _onStoredTokenChanged() {
+        if (_extListening) _broadcastInitPack();
+    }
+    window._onStoredTokenChanged = _onStoredTokenChanged;
     window.addEventListener('message', (e) => {
         if (e.source !== window) return;
-        if (/^(SPOTAPPLY|HIREPATH)_EXT_PING_OK$/.test((e.data && e.data.type) || '')) _broadcastInitPack();
+        if (/^(SPOTAPPLY|HIREPATH)_EXT_PING_OK$/.test((e.data && e.data.type) || '')) { _extListening = true; _broadcastInitPack(); }
     });
 </script>
 <script>

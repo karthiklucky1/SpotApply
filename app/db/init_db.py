@@ -593,6 +593,17 @@ _PERF_INDEXES = [
     ("ix_job_user_company_title", "job", "(user_id, company, title)"),
     # Adoption / retention / analytics filter the pool by recency.
     ("ix_job_user_discovered", "job", "(user_id, discovered_at)"),
+    # The window COUNTS spell the known-age bound index-friendly
+    # (freshness.is_fresh_expr(index_friendly=True): first_seen >= c OR
+    # (first_seen IS NULL AND discovered_at >= c)) so this index serves them
+    # as a range: Pool / All Jobs badge, the Ghost badge, the /api/jobs
+    # totals, and the shared pool's "new in 24h" (index-only). Measured on
+    # production 2026-10-09: the Ghost badge count 11.1 s -> 9 ms, the Pool
+    # count 1.1 s -> 22 ms. It had been created there by hand only, so any
+    # restore or new environment fell back to the slow plan. The DDL is
+    # production's exactly; ensure_performance_indexes() skips by name, so
+    # the live index is never rebuilt or duplicated.
+    ("ix_job_user_firstseen", "job", "(user_id, first_seen DESC)"),
     ("ix_app_user_id", "application", "(user_id)"),
     ("ix_app_job_id", "application", "(job_id)"),
     # "How many jobs has SpotApply put on this user's board today?"
