@@ -1191,7 +1191,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             metadata_clean=(None if any(t is None for t in _traces)
                             else not any(_traces)),
             pages=fit.pages if fit else None, coverage=keyword_cov or {},
-            trimmed=list(fit.trimmed) if fit else [])
+            trimmed=list(fit.trimmed) if fit else [], company=job_company or "")
     except Exception as _ce:
         log.warning("Tailor app %d: rules checklist skipped: %s", application_id, _ce)
 

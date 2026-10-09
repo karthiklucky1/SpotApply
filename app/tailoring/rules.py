@@ -351,13 +351,17 @@ def keyword_coverage(master: str, md: str, jd: str, company: str = "") -> Dict:
     }
 
 
-def keyword_stuffing(md: str, jd: str) -> List[str]:
+def keyword_stuffing(md: str, jd: str, company: str = "") -> List[str]:
     """Lines outside Skills that are just a run of job keywords, and keywords
-    repeated past the point a person would. Returns readable problems."""
+    repeated past the point a person would. Returns readable problems.
+
+    ``company`` is the hiring company: its name is not a job keyword, so a
+    cover-line naming the employer is never "stuffing"."""
     problems: List[str] = []
     try:
         from app.tailoring.ats_keywords import extract_jd_phrases
-        phrases = [p.lower() for p in extract_jd_phrases(jd or "", top_n=24) if p]
+        phrases = [p.lower() for p in extract_jd_phrases(jd or "", top_n=24, company=company)
+                   if p]
     except Exception:
         return problems
     if not phrases:
@@ -395,7 +399,7 @@ def build_checklist(*, master: str, md: str, jd: str, rewritten: bool,
                     location_note: str, filename_docx: str, filename_pdf: str,
                     metadata_clean: Optional[bool],
                     pages: Optional[int], coverage: Dict,
-                    trimmed: List[str]) -> List[Dict]:
+                    trimmed: List[str], company: str = "") -> List[Dict]:
     """Every rule, checked against the files actually written. ``ok`` is
     True / False, or None for "could not check" — never a guess."""
     rows: List[Dict] = []
@@ -411,7 +415,7 @@ def build_checklist(*, master: str, md: str, jd: str, rewritten: bool,
                          employer_kept(md, latest["org"]), latest["org"]))
     rows.append(_row("tone", "Natural, human tone", human_passed,
                      "" if human_passed is not False else "vary a couple of bullets in your own words"))
-    stuffing = keyword_stuffing(md, jd)
+    stuffing = keyword_stuffing(md, jd, company=company)
     rows.append(_row("keywords_woven", "Job keywords woven into sentences, no keyword lists",
                      not stuffing, "; ".join(stuffing)))
     try:

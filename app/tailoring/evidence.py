@@ -421,11 +421,16 @@ def _is_summary_title(title: str) -> bool:
 
 
 def _is_prose(line: str) -> bool:
-    """A sentence of description, not a contact line, headline or list."""
+    """A sentence of description, not a contact line, headline or list. A
+    pipe-separated tagline is prose when it is not just short titles or skills
+    ("Integrations Engineer | Translating API documentation into tested
+    connectors" asserts work; "Backend Engineer | Python | AWS" does not)."""
     s = (line or "").strip()
     if len(s.split()) < 8 or _CONTACT_HINT_RE.search(s):
         return False
-    return s.count("|") < 2 and bool(re.search(r"\b[a-z]{3,}\b", s))
+    if "|" in s and _is_title_or_skill_list(_pipe_segments(_MD_NOISE_RE.sub("", s))):
+        return False
+    return bool(re.search(r"\b[a-z]{3,}\b", s))
 
 
 def _summary_line_indexes(md: str) -> Tuple[List[int], Optional[int]]:
@@ -473,22 +478,77 @@ def _is_summary_claim(sentence: str) -> bool:
     # the master resume never says it, so checking it would delete it.
     if re.match(r"^open to relocation to\b", plain, re.IGNORECASE):
         return False
-    # A pipe- or comma-run list of skills is checked by the skill review
-    # (requirements.review), not read as a sentence.
-    return not (plain.count("|") >= 2
-                or re.match(r"^[^.:]{1,40}:\s*\S+(?:\s*,\s*\S+){2,}\s*$", plain))
+    # A comma-run list of skills ("Core skills: Python, AWS, Docker") is checked
+    # by the skill review (requirements.review), not read as a sentence.
+    return not re.match(r"^[^.:]{1,40}:\s*\S+(?:\s*,\s*\S+){2,}\s*$", plain)
+
+
+def _pipe_segments(text: str) -> List[str]:
+    return [s.strip() for s in (text or "").split("|") if s.strip()]
+
+
+# A segment that opens on a verb or holds a clause asserts something done:
+# "Translating API documentation into tested connectors", "Led a 6-person team".
+_LEAD_VERB_RE = re.compile(r"^[A-Za-z]+(?:ing|ed)$|^(?:led|built|ran|grew|won|made|wrote|"
+                           r"drove|shipped|cut|saved|owned|own|owns|lead|leads|build|"
+                           r"builds|ship|ships|deliver|delivers|turn|turns)$", re.IGNORECASE)
+# Fields that end in -ing are nouns at the head of a title ("Engineering
+# Manager", "Machine Learning", "Nursing Leadership").
+_ING_NOUNS = frozenset({
+    "engineering", "marketing", "accounting", "nursing", "learning", "computing",
+    "testing", "manufacturing", "consulting", "banking", "publishing", "programming",
+    "networking", "recruiting", "training", "planning", "processing", "sourcing",
+    "modeling", "modelling", "billing", "coding", "lending", "underwriting",
+    "auditing", "merchandising", "purchasing", "advertising", "teaching", "tutoring",
+    "counseling", "counselling", "staffing", "trading", "pricing", "licensing",
+})
+_CLAUSE_WORD_RE = re.compile(r"\b(?:who|that|which)\b", re.IGNORECASE)
+
+
+def _is_title_or_skill_list(segments: List[str]) -> bool:
+    """True when every pipe segment is a short noun phrase (a title, a skill,
+    a domain: four words or fewer, no verb, no clause). Only then is the line a
+    headline the skill review covers rather than a claim to verify."""
+    for seg in segments:
+        words = re.findall(r"[A-Za-z0-9][\w'+#./-]*", seg)
+        if len(words) > 4:
+            return False
+        if not words:
+            continue
+        first = words[0].lower()
+        if (_LEAD_VERB_RE.match(first) and first not in _ING_NOUNS) or _CLAUSE_WORD_RE.search(seg):
+            return False
+    return True
+
+
+def _claim_parts(sentence: str) -> List[str]:
+    """The claim-bearing parts of one summary sentence, markdown removed.
+
+    A pipe-separated line made only of titles and skills claims nothing the
+    skill review does not already check. Any other pipe line is a run of
+    claims: each segment of four or more words is verified on its own, so
+    "Integrations Engineer | Translating API documentation into tested
+    connectors | Shipping systems customers configure without support
+    escalation" no longer passes unread as a "skills list"."""
+    plain = _MD_NOISE_RE.sub("", sentence or "").strip()
+    if "|" not in plain:
+        return [plain] if _is_summary_claim(plain) else []
+    segments = _pipe_segments(plain)
+    if _is_title_or_skill_list(segments):
+        return []
+    return [s for s in segments if _is_summary_claim(s)]
 
 
 def summary_sentences(md: str) -> List[str]:
-    """The claim-bearing sentences of a resume's summary, markdown removed."""
+    """The claim-bearing sentences of a resume's summary, markdown removed. A
+    pipe-separated tagline contributes each claim-bearing segment."""
     lines = (md or "").splitlines()
     idx, _ = _summary_line_indexes(md)
     out: List[str] = []
     for i in idx:
         _, sentences = _split_summary_line(lines[i])
         for sentence in sentences:
-            if _is_summary_claim(sentence):
-                out.append(_MD_NOISE_RE.sub("", sentence).strip())
+            out.extend(_claim_parts(sentence))
     return out
 
 
@@ -510,12 +570,26 @@ def remove_summary_sentences(md: str, sentences, master_md: str = "") -> Tuple[s
     for i in idx:
         lead, parts = _split_summary_line(lines[i])
         kept = []
+        changed = False
         for part in parts:
             if normalize_text(part) in targets:
                 removed.append(_MD_NOISE_RE.sub("", part).strip())
-            else:
-                kept.append(part)
-        if len(kept) != len(parts):
+                changed = True
+                continue
+            if "|" in part:
+                # A pipe tagline: drop only the unbacked segments, keep the rest
+                # ("Integrations Engineer | Python" survives its invented clause).
+                segs = [s.strip() for s in part.split("|")]
+                left = [s for s in segs if s and normalize_text(s) not in targets]
+                gone = [s for s in segs if s and normalize_text(s) in targets]
+                if gone:
+                    removed.extend(_MD_NOISE_RE.sub("", s).strip() for s in gone)
+                    changed = True
+                    if left:
+                        kept.append(" | ".join(left))
+                    continue
+            kept.append(part)
+        if changed:
             replaced[i] = (lead + " ".join(kept)) if kept else None
     if not removed:
         return md, []

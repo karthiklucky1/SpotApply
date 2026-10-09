@@ -248,7 +248,10 @@ def check_job_url(url: str, resume_text: Optional[str] = None) -> dict:
     if resume_text and text and info.get("live"):
         try:
             from app.tailoring.ats_keywords import analyze
-            report = analyze(text, resume_text)
+            # The employer (board slug or JSON-LD name) is never a keyword the
+            # resume lacks; ats_keywords reads a slug like "scaleai" against
+            # the posting's own "Scale AI".
+            report = analyze(text, resume_text, company=info.get("company") or "")
             fit = {
                 "score_pct": round(report.coverage_pct * 100),
                 "matched": report.matched[:15],

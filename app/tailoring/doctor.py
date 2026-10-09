@@ -522,12 +522,16 @@ def drop_false_future_claims(verdict: Optional[str], today=None) -> Optional[str
 
 
 # A list marker at the start of a piece: "1.", "2)", "(1)", "-", "*", "•".
-_ENUM_LEAD_RE = re.compile(r"^\s*(?:\(?\d{1,2}[.)]|[-*•·])\s+")
+_ENUM_LEAD_RE = re.compile(r"^\s*(?:\(?\d{1,2}[.)](?:\s+|(?=[A-Z*]))|[-*•·]\s+)")
 # A bare verdict word used as a lead-in: "Yes —", "No -", "Yes:", "No.". "Yes, it
 # would pass" is a sentence and stays; a dash or colon after the word is the
-# leftover of the old "yes/borderline/no + one reason" template.
-_YES_NO_LEAD_RE = re.compile(r"^(?:yes|no)\s*(?:[—―–]|-{1,2}|:|\.)\s*(?=\S)", re.IGNORECASE)
-_BORDERLINE_LEAD_RE = re.compile(r"^(borderline)\s*(?:[—―–]|-{1,2}|\.)\s*(?=\S)", re.IGNORECASE)
+# leftover of the old "yes/borderline/no + one reason" template. A hyphen counts
+# only as a spaced dash ("No - it lacks"), or doubled ("No--"): "No-code tools
+# are absent" is a word, and cutting it read "Code tools are absent".
+_LEAD_PUNCT = r"(?:\s*[—―–]|\s+-{1,2}(?=\s)|\s*--|\s*:|\s*\.(?=\s))"
+_YES_NO_LEAD_RE = re.compile(rf"^(?:yes|no){_LEAD_PUNCT}\s*(?=\S)", re.IGNORECASE)
+_BORDERLINE_LEAD_RE = re.compile(
+    r"^(borderline)(?:\s*[—―–]|\s+-{1,2}(?=\s)|\s*--|\s*\.(?=\s))\s*(?=\S)", re.IGNORECASE)
 
 
 def tidy_verdict(verdict: Optional[str]) -> Optional[str]:
