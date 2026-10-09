@@ -559,11 +559,13 @@ def _present_in(phrase: str, text: str) -> bool:
 
 
 def review(master_md: str, tailored_md: str, jd_text: str, *,
-           suggested_projects: Sequence[str] = ()) -> PreDownloadReview:
+           suggested_projects: Sequence[str] = (), company: str = "") -> PreDownloadReview:
     """The short review a user reads before downloading the document.
 
     Built from the MASTER résumé (what is true) and the POSTING (what is asked),
-    then checked against the TAILORED draft (what we wrote).
+    then checked against the TAILORED draft (what we wrote). ``company`` is the
+    hiring company: its own name is never a skill the resume lacks (nor a
+    "claim" to strip from a draft or a cover letter that mentions it).
     """
     from app.tailoring.ats_keywords import extract_jd_phrases, skill_phrases
     from app.tailoring.inventory import build_inventory
@@ -571,7 +573,8 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
     reqs = parse_requirements(jd_text)
     jd_skills: List[str] = []
     try:
-        jd_skills = [p for p in skill_phrases(extract_jd_phrases(jd_text, top_n=24))
+        jd_skills = [p for p in skill_phrases(extract_jd_phrases(jd_text, top_n=24,
+                                                                 company=company))
                      if _plausible_skill(p)]
     except Exception:          # phrase extraction is a nicety, not a gate
         jd_skills = []

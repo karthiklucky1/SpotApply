@@ -59,9 +59,11 @@ TAILOR_SYSTEM = """You are an expert resume writer. You fully rewrite and restru
 
 1. REWRITE AND RESTRUCTURE FOR THIS JOB:
    - Rewrite the summary and every bullet for THIS role. Put the experience, projects and skills that matter most for this job first: most relevant sections, bullets and skills at the top.
+   - A rewrite changes the framing, not just a word: open each bullet with the part of that work this job cares about, name it in the posting's terms where the master supports them, and cut the parts this job does not need. Swapping one verb, or copying a master bullet with a word or two changed, is not a rewrite. The facts stay exactly the master's.
    - Use standard section headings an ATS recognises, in the order that suits this job: Summary, Skills, Experience, Projects, Education, Certifications (only the ones the master resume supports).
    - Rewrite each bullet from bullets of the SAME role or project in the master resume; never move work from one employer or project to another.
    - Keep every role, employer and date range. Shorten or cut bullets that do nothing for this job instead of dropping a role.
+   - THE SUMMARY may only restate experience the master resume shows: the roles held, the work done, the tools used and the results stated. Every activity, duty and outcome in it must be one the master resume describes. Never write the job's own duties into the summary as if the candidate did them (for example "translating API documentation into tested connectors" or "shipping systems customers configure without support escalation" when no role shows that work). Every summary sentence is fact-checked against the master resume, and one it cannot back is deleted.
 
 2. FACTS ARE LOCKED (copy them character for character):
    - The candidate's name, email address, phone number and links exactly as the master resume gives them. Never use any other email address.
@@ -73,6 +75,7 @@ TAILOR_SYSTEM = """You are an expert resume writer. You fully rewrite and restru
    - Use the job description's own terms where the candidate's real experience supports them, inside real sentences and bullets, the way a person would write them.
    - Never add a "Keywords" line or a list of buzzwords, and never force a term in where it reads awkwardly. Use each job term at most twice in the whole resume.
    - Never claim a skill the master resume doesn't support. If the candidate lacks something, leave it out: a missing keyword costs a search hit, an invented one costs the interview.
+   - Bridging means using the posting's word for work the master resume already shows. It never asserts an activity, duty, domain or outcome the master resume does not show, in the summary or anywhere else.
 
 4. STRONG VERBS AND REAL RESULTS:
    - Start most bullets with a strong, specific action verb (past tense for past roles, present tense for the current one). Vary the verbs; never repeat one within a role.
@@ -80,6 +83,7 @@ TAILOR_SYSTEM = """You are an expert resume writer. You fully rewrite and restru
 
 5. NATURAL HUMAN VOICE:
    - Write like a real person who is good at their job: plain, specific and confident. Vary sentence length and rhythm; not every bullet needs a number. A uniform "[Verb] + tool + %number" on every line reads machine-written.
+   - Vary bullet LENGTH on purpose: within each role mix short bullets (about 8 to 12 words) with longer ones (about 20 to 30 words). Bullets that are all about the same length are a machine-writing tell.
    - Ban filler and buzzwords: "leveraged", "synergized", "cutting-edge", "harnessing", "orchestrated seamless integrations", "state-of-the-art", "spearheaded", "drove efficiency", "revolutionized", "demonstrated expertise in", "passionate about", "results-driven", "proven track record", "dynamic", "detail-oriented".
    - No first-person pronouns ("I", "my", "me"). Bold at most 2 or 3 genuinely important technologies per section.
 
@@ -190,7 +194,8 @@ class Tailor:
         try:
             from app.tailoring.ats_keywords import analyze as ats_analyze
             from app.tailoring.ats_keywords import skill_phrases
-            ats = ats_analyze(job.description or "", master_resume_md)
+            ats = ats_analyze(job.description or "", master_resume_md,
+                              company=getattr(job, "company", "") or "")
             # Only phrases naming something a person can HAVE. The ranked list is
             # a frequency count over the JD, so it also carries title and
             # marketing fragments ("design and own", "ai platform company",
@@ -229,7 +234,8 @@ class Tailor:
             from app.tailoring.requirements import parse_requirements
 
             reqs = parse_requirements(job.description or "")
-            jd_terms = extract_jd_phrases(job.description or "", top_n=24)
+            jd_terms = extract_jd_phrases(job.description or "", top_n=24,
+                                          company=getattr(job, "company", "") or "")
             inv = build_inventory(master_resume_md,
                                   extra_skills=[r.skill for r in reqs if r.skill] + jd_terms)
             ranked = inv.ranked_skills(jd_terms + [r.skill for r in reqs if r.skill])
@@ -755,7 +761,8 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     master_coverage = None
     try:
         from app.tailoring.ats_keywords import analyze as _ats_analyze
-        master_coverage = _ats_analyze(job_description or "", master).coverage_pct
+        master_coverage = _ats_analyze(job_description or "", master,
+                                       company=job_company or "").coverage_pct
         _skip_bar = float(getattr(settings, "tailor_skip_coverage_pct", 0.0) or 0.0)
         if _skip_bar and master_coverage >= _skip_bar:
             skipped_reason = (
@@ -789,6 +796,7 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     human_failed = False       # anti-fingerprint gate — retries, never blocks
     locked_fields = []         # immutable sections restored verbatim from master
     fabrications = []          # deterministic fact additions (employer/date/…)
+    summary_removed: list = [] # summary sentences grounding could not back (removed)
     bold_trimmed = 0           # inline emphasis removed after generation
     grounding_tier = None      # L0 / L1 / L2 / L3
     grounding_calls = 0        # batched verifier requests actually issued
@@ -871,10 +879,11 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         # Three states, not two: passed / failed / never ran. Collapsing the third
         # into "passed" is how an unchecked résumé came to be reported as verified.
         grounding_ran = False
+        summary_removed = []       # summary sentences grounding could not back, taken out
         doctor_failed = False
         doctor_notes = None
 
-        # 1. Grounding check — no hallucinated bullets
+        # 1. Grounding check — no hallucinated bullets (and no unbacked summary)
         try:
             from app.tailoring.grounding import GroundingChecker
             checker = GroundingChecker()
@@ -891,13 +900,41 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             grounding_cache_hits = int(getattr(g_result, "cache_hits", 0) or 0)
             grounding_spans_changed = int(getattr(g_result, "spans_changed", 0) or 0)
             grounding_spans_verified = int(getattr(g_result, "spans_verified", 0) or 0)
-            if grounding_ran and not g_result.passed:
+            # A summary sentence the master cannot back comes OUT (the rest of
+            # the summary is verified, and losing a sentence of synthesis costs
+            # the reader nothing true). A fabricated bullet still fails the
+            # draft below. If the removal itself cannot run, the flag stands
+            # and the draft fails like a bullet would: never ship the claim.
+            flagged_summary = list(getattr(g_result, "flagged_summary", None) or [])
+            summary_handled = False
+            if grounding_ran and flagged_summary:
+                try:
+                    from app.tailoring.evidence import remove_summary_sentences
+                    resume_md, summary_removed = remove_summary_sentences(
+                        resume_md, [fs["bullet"] for fs in flagged_summary], master)
+                    summary_handled = len(summary_removed) >= len(flagged_summary)
+                    log.warning("Grounding: removed %d unsupported summary sentence(s) "
+                                "for app %d", len(summary_removed), application_id)
+                    if summary_removed:
+                        # The fact guard ran on the draft BEFORE the removal; a
+                        # number that only the removed sentence asserted is gone.
+                        from app.tailoring.evidence import fabrication_violations
+                        fabrications = fabrication_violations(master, resume_md)
+                except Exception as _sre:
+                    log.warning("Grounding: summary cleanup failed for app %d: %s",
+                                application_id, _sre)
+            flagged_list = list(getattr(g_result, "flagged_bullets", None) or [])
+            if not summary_handled:
+                flagged_list += flagged_summary
+            g_failed = (not g_result.passed) and (
+                bool(g_result.flagged_bullets) or not summary_handled)
+            if grounding_ran and g_failed:
                 grounding_failed = True
                 grounding_notes = "Grounding check failed. Flagged bullets:\n" + "\n".join(
-                    [f"- {fb['bullet']}" for fb in g_result.flagged_bullets]
+                    [f"- {fb['bullet']}" for fb in flagged_list]
                 )
                 log.warning("Grounding FAILED for app %d: %d bullets flagged",
-                            application_id, len(g_result.flagged_bullets))
+                            application_id, len(flagged_list))
             else:
                 log.info("Grounding PASSED for app %d (%s, %d/%d spans changed, "
                          "%d verified, %d cache hits, %d LLM calls)",
@@ -971,7 +1008,8 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
         # resume) belong in the draft: under 90% of them earns one rebuild.
         # Never terms the master lacks — that would be the claim every gate
         # above exists to stop (rules.py: no "90+ on any ATS" promise).
-        keyword_cov = _rules.keyword_coverage(master, resume_md, job_description or "")
+        keyword_cov = _rules.keyword_coverage(master, resume_md, job_description or "",
+                                              company=job_company or "")
         coverage_short = (keyword_cov.get("kept_pct") is not None
                           and keyword_cov["kept_pct"] < 90)
         coverage_notes = None
@@ -988,8 +1026,16 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 and not human_failed and not coverage_short):
             break
         if attempt < MAX_TAILOR_ATTEMPTS:
+            summary_notes = None
+            if summary_removed:
+                summary_notes = (
+                    "These summary sentences were removed because the master resume does "
+                    "not show that work. Do not write them again; the summary may only "
+                    "restate experience the master resume shows:\n"
+                    + "\n".join(f"- {s}" for s in summary_removed[:5]))
             revision_notes = "\n".join(
-                n for n in (grounding_notes, doctor_notes, fabrication_notes, coverage_notes) if n)
+                n for n in (grounding_notes, doctor_notes, fabrication_notes, coverage_notes,
+                            summary_notes) if n)
             log.info("Rebuilding tailored resume for app %d (attempt %d failed review)",
                      application_id, attempt)
 
@@ -1055,14 +1101,14 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     try:
         from app.tailoring.export_gate import strip_unconfirmed
         from app.tailoring.requirements import review as _pre_review
-        _rv = _pre_review(master, resume_md, job_description or "")
+        _rv = _pre_review(master, resume_md, job_description or "", company=job_company or "")
         if headline_source == "job" and any(
                 c and c.lower() in headline.lower() for c in _rv.unconfirmed_claims):
             # "Senior Rust Engineer" for someone whose resume never shows Rust:
             # the title would be the one unsupported claim in the document.
             headline, headline_source = own_headline, ("resume" if own_headline else "none")
             resume_md = _rules.apply_headline(resume_md, headline)
-            _rv = _pre_review(master, resume_md, job_description or "")
+            _rv = _pre_review(master, resume_md, job_description or "", company=job_company or "")
         skills_to_learn = list(_rv.missing_skills)
         if _rv.unconfirmed_claims:
             resume_md, removed_claims = strip_unconfirmed(resume_md, list(_rv.unconfirmed_claims))
@@ -1189,6 +1235,9 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             "grounding_cache_hits": grounding_cache_hits,
             "grounding_spans_changed": grounding_spans_changed,
             "grounding_spans_verified": grounding_spans_verified,
+            # Summary sentences grounding could not trace to the master resume,
+            # taken out of the delivered draft (never shipped as a claim).
+            "summary_claims_removed": summary_removed[:5],
             "bold_spans_trimmed": bold_trimmed,
             # L0: the master already covered this posting, so nothing was rewritten.
             "tailoring_skipped": bool(skipped_reason),
@@ -1368,7 +1417,8 @@ def reverify_application(application_id: int) -> dict:
         calls = int(getattr(result, "llm_calls", 0) or 0)
         if not getattr(result, "unverified", False):
             grounding_status = "passed" if result.passed else "failed"
-            flagged = [fb["bullet"] for fb in result.flagged_bullets]
+            flagged = [fb["bullet"] for fb in (list(result.flagged_bullets)
+                                               + list(getattr(result, "flagged_summary", None) or []))]
     except Exception as e:
         log.error("Manual re-verification could not run for app %d: %s", application_id, e)
 

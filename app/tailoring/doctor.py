@@ -325,9 +325,9 @@ JOB DESCRIPTION (first 1500 chars):
 TAILORED RESUME (complete document):
 {tailored_md}
 
-Write exactly 2 sentences:
-1. Would this resume pass an ATS keyword screen and a quick human review for this role? (yes/borderline/no + one reason)
-2. The single biggest risk that could get it rejected.
+Write exactly 2 plain sentences, with no numbering, no list markers and no dashes:
+First, whether this resume would pass an ATS keyword screen and a quick human review for this role, as one full sentence that says likely, borderline or unlikely and gives one reason.
+Second, the single biggest risk that could get it rejected.
 
 Be blunt. No fluff. Finish both sentences."""
 
@@ -340,7 +340,7 @@ Be blunt. No fluff. Finish both sentences."""
                 **sampling(settings.doctor_model,
                            float(getattr(settings, "verifier_temperature", 0.0))),
             )
-            return drop_false_future_claims(resp.content[0].text.strip())
+            return clean_verdict(resp.content[0].text.strip())
         except Exception as e:
             log.warning("Doctor LLM verdict failed: %s", e)
             return None
@@ -519,3 +519,50 @@ def drop_false_future_claims(verdict: Optional[str], today=None) -> Optional[str
     # model running out of tokens right after the number.
     out = re.sub(r"\s+\d+\.\s*$", "", out).strip()
     return out or None
+
+
+# A list marker at the start of a piece: "1.", "2)", "(1)", "-", "*", "•".
+_ENUM_LEAD_RE = re.compile(r"^\s*(?:\(?\d{1,2}[.)]|[-*•·])\s+")
+# A bare verdict word used as a lead-in: "Yes —", "No -", "Yes:", "No.". "Yes, it
+# would pass" is a sentence and stays; a dash or colon after the word is the
+# leftover of the old "yes/borderline/no + one reason" template.
+_YES_NO_LEAD_RE = re.compile(r"^(?:yes|no)\s*(?:[—―–]|-{1,2}|:|\.)\s*(?=\S)", re.IGNORECASE)
+_BORDERLINE_LEAD_RE = re.compile(r"^(borderline)\s*(?:[—―–]|-{1,2}|\.)\s*(?=\S)", re.IGNORECASE)
+
+
+def tidy_verdict(verdict: Optional[str]) -> Optional[str]:
+    """Plain prose for the Tailoring Studio's "Recruiter's read".
+
+    The prompt used to ask for "1. ... (yes/borderline/no + one reason)" and the
+    page showed exactly that back: "1. Yes — strong match ...". Each sentence
+    loses a leading list number and a bare "Yes —"/"No —" lead-in, and no em
+    dash survives (the owner's rule, scrubbed the same way as the resume).
+    Rewords nothing else.
+    """
+    if not verdict:
+        return verdict
+    text = re.sub(r"\s+", " ", verdict).strip()
+    pieces = re.split(r"(?<=[.!?])\s+(?=\(?\d{1,2}[.)]\s|[-*•·]\s)", text)
+    kept = []
+    for piece in pieces:
+        p = _ENUM_LEAD_RE.sub("", piece.strip(), count=1)
+        p = _YES_NO_LEAD_RE.sub("", p, count=1)
+        p = _BORDERLINE_LEAD_RE.sub(lambda m: m.group(1) + ": ", p, count=1)
+        p = p.strip()
+        if not p:
+            continue
+        kept.append(p[0].upper() + p[1:])
+    out = " ".join(kept).strip()
+    try:
+        from app.tailoring.rules import scrub_em_dashes
+        out, _ = scrub_em_dashes(out)
+    except Exception:
+        out = re.sub(r"\s*[—―]\s*", ", ", out)
+    return out or None
+
+
+def clean_verdict(verdict: Optional[str], today=None) -> Optional[str]:
+    """Both post-checks, in order: drop a false "future-dated" accusation, then
+    tidy what is left into plain prose. Used when the verdict is written AND
+    when an older report is read, so drafts made before this still read clean."""
+    return tidy_verdict(drop_false_future_claims(verdict, today=today))

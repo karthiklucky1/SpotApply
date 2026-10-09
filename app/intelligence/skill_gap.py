@@ -194,7 +194,8 @@ def compute_skill_gap(user_id: Optional[str], top_n_jobs: int = 30) -> dict:
         if not jd.strip():
             continue
         try:
-            phrases = extract_jd_phrases(jd, top_n=_PHRASES_PER_JOB)
+            phrases = extract_jd_phrases(jd, top_n=_PHRASES_PER_JOB,
+                                         company=getattr(job, "company", "") or "")
         except Exception:
             continue
         seen_this_job = set()

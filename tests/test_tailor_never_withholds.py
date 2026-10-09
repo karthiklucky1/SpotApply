@@ -117,7 +117,14 @@ def test_a_trailing_skill_phrase_is_trimmed_not_the_whole_sentence():
 
 
 def test_old_reports_are_cleaned_when_read():
-    assert "quality[\"verdict\"] = drop_false_future_claims(quality[\"verdict\"])" in SERVER
+    # clean_verdict = drop_false_future_claims + the list-number / "Yes —" tidy.
+    assert "quality[\"verdict\"] = clean_verdict(quality[\"verdict\"])" in SERVER
+    from datetime import date
+
+    from app.tailoring.doctor import clean_verdict
+    out = clean_verdict("1. Yes — solid match. 2. The June 2026 dates are in the future, "
+                        "making them look fabricated.", today=date(2026, 9, 26))
+    assert out == "Solid match."
 
 
 def test_user_facing_text_says_resume_not_the_accented_form():

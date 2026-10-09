@@ -57,7 +57,89 @@ _STOP = {
     "team", "role", "work", "working", "help", "build", "building",
     "etc.", "plus", "nice", "preferred", "required", "requirements",
     "responsibilities", "qualifications", "skills", "knowledge",
+    # Plain English function words. The ranker counted single words by
+    # frequency, so "where" and "them" reached the Tailoring Studio as "Not
+    # covered" keywords and as "I've used Where" buttons (live test,
+    # 2026-10-09). None of these is a technology, so none can start or end a
+    # phrase, and none is ever a keyword on its own. (Words that double as a
+    # technology, such as "go", "rest", "next", "express" or "swift", are left
+    # out on purpose.)
+    "where", "when", "which", "while", "whom", "whose", "why", "how",
+    "them", "these", "those", "there", "here", "then", "theirs", "ours",
+    "yours", "us", "he", "she", "his", "her", "him", "me", "my", "mine",
+    "do", "does", "did", "done", "doing", "was", "were", "being", "had",
+    "having", "if", "else", "so", "too", "very", "just", "only", "both",
+    "either", "neither", "every", "few", "many", "much", "most", "other",
+    "others", "another", "some", "same", "up", "down", "out", "over",
+    "under", "again", "further", "once", "above", "below", "between",
+    "through", "during", "before", "after", "without", "upon", "against",
+    "among", "around", "toward", "towards", "whether", "because", "since",
+    "until", "unless", "although", "though", "yet", "nor", "no", "could",
+    "shall", "might", "get", "gets", "got", "always", "often", "never",
+    "ever", "really", "already", "still", "even", "everyone", "anyone",
+    "something", "thing", "things", "way", "ways", "lot", "lots", "today",
+    "currently", "ensure", "ensuring", "whatever", "wherever", "whenever",
+    "whoever", "you'll", "we'll", "they're", "you're", "it's", "am", "best",
+    # Third-person verbs: a phrase that starts or ends on one is a clause
+    # fragment ("customer team works"), not a skill.
+    "works", "helps", "uses", "makes", "takes", "gives", "provides",
+    "requires", "offers", "seeks", "means", "keeps", "lets", "becomes",
+    "matters", "need", "needs", "want", "wants", "love", "loves", "care", "cares",
+    # Adjectives a posting uses about itself, never about a skill.
+    "dedicated", "committed", "fully", "eligible", "various", "numerous",
 }
+# Small words that DO sit inside real skill phrases ("infrastructure as code",
+# "proof of concept", "research and development"). Any other stop word inside a
+# phrase marks a sentence fragment ("works where cybersecurity").
+_INNER_OK = frozenset({"of", "as", "a", "an", "and", "the", "for", "to", "in", "on",
+                       "with", "by", "at", "or"})
+
+# The company talking about itself and the job: never a keyword, alone or as a
+# whole phrase ("company culture", "team members").
+_SELF_TALK = frozenset({
+    "company", "companies", "culture", "team", "teams", "mission", "missions",
+    "values", "vision", "opportunity", "opportunities", "position", "positions",
+    "candidate", "candidates", "applicant", "applicants", "people", "person",
+    "benefits", "salary", "equity", "bonus", "compensation", "world", "future",
+    "impact", "everything", "anything", "someone", "day", "days", "employer",
+    "employees", "employee", "equal", "accommodation", "accommodations",
+    "interview", "process", "growth", "career", "careers", "job", "jobs",
+    "role", "roles", "member", "members", "ideal", "passion", "passionate",
+    "exciting", "awesome", "amazing", "headquarters", "hq",
+    # Compensation, perks and equal-opportunity boilerplate, which every
+    # posting repeats and no resume should be "missing".
+    "diversity", "inclusion", "inclusive", "belong", "community", "communities",
+    "workplace", "workforce", "perspectives", "commitment", "respect",
+    "respected", "valued", "rewarded", "perks", "insurance", "dental",
+    "vacation", "parental", "leave", "policy", "family", "travel", "annually",
+    "range", "stock", "options", "package", "legally", "protected", "national",
+    "origin", "identity", "expression", "genetic", "marital", "sex", "age",
+    "color", "contributions", "potential", "unique", "welcome", "qualified",
+    "individuals", "duties", "duty", "listing", "notice", "materials",
+    "information", "competitive", "dynamic", "innovative", "innovation",
+    "creativity", "results", "ownership", "collaboration", "collaborative",
+})
+# Words that are never a keyword ON THEIR OWN even when the posting repeats
+# them. "customer" reached the "Not covered" list for a support engineering
+# role; nobody is "missing" customer. Inside a phrase they still count
+# ("customer support", "product design", "customer success"), because the
+# phrase names real work.
+_FLUFF = _SELF_TALK | frozenset({
+    "customer", "customers", "client", "clients", "user", "users", "end",
+    "solution", "solutions", "platform", "platforms", "product", "products",
+    "service", "services", "tool", "tools", "technology", "technologies",
+    "system", "systems", "application", "applications", "project", "projects",
+    "environment", "environments", "software", "office", "location", "locations",
+    "remote", "hybrid",
+    "onsite", "status", "gender", "race", "veteran", "veterans", "disability",
+    "religion", "orientation", "partners", "stakeholders",
+    "problem", "problems", "issues", "needs", "level", "quality", "fast",
+    "paced", "fast-paced", "industry", "market", "markets", "organization",
+    "organizations", "global", "time", "times", "including",
+    # A posting's own structure and hedging (requirements._NOT_A_SKILL agrees).
+    "minimum", "maximum", "proficiency", "familiarity", "understanding",
+    "expertise", "background", "comfort", "ability", "abilities",
+})
 
 # Curated multi-word and single tech terms that should always be captured when
 # present in the JD — these are the terms a recruiter actually types into the
@@ -130,14 +212,122 @@ def _strip_html(text: str) -> str:
     return _html.unescape(text)
 
 
-def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
+# Legal-form and generic words in a company's name, so "Horizon3Ai" is known by
+# "horizon3" and "Acme Labs Inc" by "acme".
+_COMPANY_SUFFIXES = frozenset({
+    "inc", "llc", "ltd", "corp", "corporation", "co", "company", "group",
+    "holdings", "labs", "lab", "technologies", "technology", "tech", "ai",
+    "io", "hq", "the", "plc", "gmbh", "limited", "incorporated", "international",
+    "global", "usa", "us", "and",
+})
+
+
+def _company_terms(company: str) -> frozenset:
+    """The forms a posting names its own company by, lower-case.
+
+    "Horizon3Ai" → {"horizon3ai", "horizon3"}; "Acme Labs, Inc." → {"acmelabsinc",
+    "acme"}. The employer's own name is not a keyword a candidate can lack: it
+    reached the Tailoring Studio as "Not covered: horizon3" and as an "I've used
+    HORIZON3" button (live test, 2026-10-09).
+    """
+    raw = (company or "").strip()
+    if not raw:
+        return frozenset()
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)     # Horizon3Ai → Horizon3 Ai
+    words = re.findall(r"[a-z0-9]+", spaced.lower())
+    terms = {"".join(words)}
+    core = [w for w in words if w not in _COMPANY_SUFFIXES]
+    if core:
+        # "horizon3" for Horizon3Ai. Never a lone word of a longer name: the
+        # "data" of "Data Robot" is not the company.
+        terms.add("".join(core))
+        terms.add(" ".join(core))
+    return frozenset(t for t in terms if len(t) >= 3)
+
+
+def _names_company(phrase: str, terms: frozenset) -> bool:
+    """True when ``phrase`` is the company's name or built on it."""
+    if not terms:
+        return False
+    p = (phrase or "").lower().strip()
+    if p in _TECH_PHRASE_SET:
+        # A curated technology stays a keyword even at the company that makes
+        # it: a MongoDB posting still wants MongoDB.
+        return False
+    compact = re.sub(r"[^a-z0-9]+", "", p)
+    if compact in terms or p in terms:
+        return True
+    return any(tok in terms for tok in re.findall(r"[a-z0-9]+", p) if len(tok) >= 4)
+
+
+def _company_pattern(company: str):
+    """A regex for the company's name as a posting writes it ("Horizon3.ai",
+    "Horizon3 AI", "horizon3"), or None. Used to cut the name out of the text
+    before phrases are counted, so it neither ranks nor glues phrases together
+    across it ("ai culture values" from "Horizon3.ai culture values")."""
+    raw = (company or "").strip()
+    if not raw:
+        return None
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    words = re.findall(r"[a-z0-9]+", spaced.lower())
+    core = [w for w in words if w not in _COMPANY_SUFFIXES]
+    if not core or len(core[0]) < 3:
+        return None
+    head = r"[\s.\-]*".join(re.escape(w) for w in core)
+    tail = "".join(rf"(?:[\s.,\-]*{re.escape(w)})?" for w in words[words.index(core[-1]) + 1:])
+    return re.compile(rf"(?<![a-z0-9]){head}{tail}(?![a-z0-9])")
+
+
+def _is_noise_phrase(phrase: str) -> bool:
+    """A phrase that names nothing a person can have: a single generic word, a
+    sentence fragment (a stop word inside it), or a phrase made only of
+    function words and generic talk ("customer team")."""
+    tokens = phrase.split()
+    if len(tokens) == 1:
+        t = tokens[0]
+        return (t in _STOP or t in _FLUFF or t in _UNIGRAM_VERBS or t in _TITLE_TOKENS
+                or t == "success")
+    if any(t in _STOP and t not in _INNER_OK for t in tokens[1:-1]):
+        return True
+    # "remote cybersecurity company", "mission of enabling", "salary range":
+    # the company describing itself or the offer, not a skill.
+    if tokens[0] in _SELF_TALK or tokens[-1] in _SELF_TALK:
+        return True
+    return all(t in _STOP or t in _FLUFF for t in tokens)
+
+
+def _named_tokens(text: str) -> frozenset:
+    """Lower-cased words the posting writes like a NAME somewhere: capitalised
+    away from the start of a sentence ("Splunk", "Jira", "ServiceNow"), or
+    carrying a digit or symbol ("s3", "c#"). A word the posting uses once and
+    writes in lower case ("counts", "alone") is prose, not a tool."""
+    out = set()
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9+#/\-]*", text or ""):
+        word = m.group(0)
+        if re.search(r"[0-9+#]", word):
+            out.add(word.lower())
+            continue
+        if not re.search(r"[A-Z]", word):
+            continue
+        before = (text or "")[:m.start()].rstrip(" \t\"'“(")
+        if before and before[-1] not in ".!?:;\n•-*–—":
+            out.add(word.lower())
+    return frozenset(out)
+
+
+def extract_jd_phrases(jd_text: str, top_n: int = 18, company: str = "") -> List[str]:
     """Extract the top N high-signal exact phrases from a job description.
 
     Combines:
       - curated tech phrases present in the JD (always included, ranked first)
       - frequent 2-3 word n-grams not starting/ending on stop words
       - frequent meaningful single tokens
+
+    Never returns an English function word, a generic word on its own
+    ("customer", "culture") or, when ``company`` is given, the hiring company's
+    own name: only real skills, tools and domains.
     """
+    company_terms = _company_terms(company)
     norm = _normalize(_strip_html(jd_text))
 
     # 1. Curated tech phrases that actually appear in this JD
@@ -152,7 +342,11 @@ def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
     # Segment on sentence/clause punctuation first so n-grams never span a
     # boundary (e.g. "engineer. build large"). Tech tokens like node.js and
     # ci/cd survive because they have no period-followed-by-space.
-    segments = re.split(r"[.;:!?,\n\r\t()\[\]]+|\s[-–]\s", norm)
+    # The company's own name is cut out first (curated terms above already read
+    # the full text, so a MongoDB posting still finds "mongodb").
+    company_re = _company_pattern(company)
+    phrase_text = company_re.sub(" . ", norm) if company_re else norm
+    segments = re.split(r"[.;:!?,\n\r\t()\[\]]+|\s[-–]\s", phrase_text)
     ngram_freq: Dict[str, int] = {}
 
     def _count_segment(tokens: List[str], seq_len: int) -> None:
@@ -163,6 +357,8 @@ def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
             if any(len(t) < 2 for t in gram):
                 continue
             phrase = " ".join(gram)
+            if _is_noise_phrase(phrase):
+                continue
             ngram_freq[phrase] = ngram_freq.get(phrase, 0) + 1
 
     for seg in segments:
@@ -170,7 +366,7 @@ def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
         _count_segment(seg_tokens, 3)
         _count_segment(seg_tokens, 2)
         for t in seg_tokens:
-            if t in _STOP or len(t) < 3:
+            if len(t) < 3 or _is_noise_phrase(t):
                 continue
             ngram_freq[t] = ngram_freq.get(t, 0) + 1
 
@@ -181,18 +377,51 @@ def extract_jd_phrases(jd_text: str, top_n: int = 18) -> List[str]:
         # multi-word phrases get a length multiplier; repetition matters most
         return freq * (1.0 + 0.6 * (word_count - 1))
 
-    ranked = sorted(ngram_freq.items(), key=_score, reverse=True)
+    # What the posting REPEATS ranks first. A run of words written once is
+    # usually a sentence ("organizations to proactively", "find and fix"), and
+    # the length multiplier let it outscore a word the posting uses twice; on
+    # a long posting that pushed real terms out of the top N. Once-seen phrases
+    # still rank (longest first) when nothing repeated is left, which a short
+    # posting needs: "Amazon Web Services" written once must stay one phrase.
+    ranked = sorted(ngram_freq.items(),
+                    key=lambda item: (item[1] >= 2, _score(item)), reverse=True)
 
     # 3. Merge: curated tech hits first, then top-ranked n-grams
     result: List[str] = list(tech_hits)
-    for phrase, _ in ranked:
+    named = _named_tokens(_strip_html(jd_text))
+
+    def _within(longer: str, shorter: str) -> bool:
+        return longer != shorter and f" {shorter} " in f" {longer} "
+
+    for phrase, freq in ranked:
         if len(result) >= top_n:
             break
         if phrase in result:
             continue
+        if _is_noise_phrase(phrase) or _names_company(phrase, company_terms):
+            continue
         # skip n-grams already covered by a curated phrase
         if any(phrase in t or t in phrase for t in tech_hits):
             continue
+        if freq < 2 and (not any(tok in named for tok in phrase.split())
+                         or re.search(r" (?:and|or) ", phrase)):
+            # Written once and in lower case ("counts", "customers rely",
+            # "images run"): prose, not a keyword. Written once as "A and B":
+            # a list of two things, not one. "Amazon Web Services" or "Jira"
+            # written once still counts; a curated term always does.
+            continue
+        picked = result[len(tech_hits):]
+        if any(_within(k, phrase) for k in picked):
+            continue                   # a higher-ranked phrase already says it
+        inside = [k for k in picked if _within(phrase, k)]
+        if inside:
+            # A REPEATED longer phrase is the more specific keyword ("security
+            # tools" over "security"); a once-seen one is a sentence fragment
+            # and never pushes out a term the posting repeats ("customer
+            # configures integrations" must not displace "integrations").
+            if freq < 2:
+                continue
+            result = [r for r in result if r not in inside]
         result.append(phrase)
 
     return _dedupe_contained(result)[:top_n]
@@ -249,6 +478,9 @@ _TITLE_TOKENS = frozenset({
     "lead", "senior", "junior", "staff", "principal", "director", "head",
     "specialist", "consultant", "contractor", "founding",
 })
+# Single words that are a JD's verbs and marketing nouns, never a keyword on
+# their own. "design" stays: for a designer it is the field itself.
+_UNIGRAM_VERBS = _NON_SKILL_TOKENS - {"design", "designing"}
 
 
 def is_skill_like(phrase: str) -> bool:
@@ -282,9 +514,13 @@ def skill_phrases(phrases: List[str]) -> List[str]:
     return [p for p in phrases if is_skill_like(p)]
 
 
-def analyze(jd_text: str, resume_text: str, top_n: int = 18) -> ATSKeywordReport:
-    """Full report: top JD phrases, which are matched verbatim, which are missing."""
-    phrases = extract_jd_phrases(jd_text, top_n=top_n)
+def analyze(jd_text: str, resume_text: str, top_n: int = 18,
+            company: str = "") -> ATSKeywordReport:
+    """Full report: top JD phrases, which are matched verbatim, which are missing.
+
+    Pass the hiring ``company`` whenever it is known, so its own name is never
+    reported as a keyword the resume lacks."""
+    phrases = extract_jd_phrases(jd_text, top_n=top_n, company=company)
     norm_resume = _normalize(resume_text)
 
     matched: List[str] = []

@@ -324,7 +324,7 @@ def employer_kept(md: str, org: str) -> bool:
 
 # ── keywords ─────────────────────────────────────────────────────────────────
 
-def keyword_coverage(master: str, md: str, jd: str) -> Dict:
+def keyword_coverage(master: str, md: str, jd: str, company: str = "") -> Dict:
     """How many of the posting's keywords the candidate GENUINELY has (already
     on their resume) made it into this draft, and the overall match.
 
@@ -334,8 +334,8 @@ def keyword_coverage(master: str, md: str, jd: str) -> Dict:
     honestly supports, so it is reported, never forced."""
     try:
         from app.tailoring.ats_keywords import analyze
-        m = analyze(jd or "", master or "")
-        t = analyze(jd or "", md or "")
+        m = analyze(jd or "", master or "", company=company)
+        t = analyze(jd or "", md or "", company=company)
     except Exception:
         return {"achievable": 0, "kept": 0, "kept_pct": None, "overall_pct": None,
                 "missing_achievable": [], "total": 0}

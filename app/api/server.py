@@ -4787,7 +4787,8 @@ def application_details(application_id: int, request: Request) -> dict:
     _verdict = _export_verdict(application_id, loaded={
         "rejected": application.status == ApplicationStatus.ERROR,
         "notes": application.notes or "", "path": application.tailored_resume_path,
-        "uid": application.user_id, "jd": (job.description or "") if job else ""})
+        "uid": application.user_id, "jd": (job.description or "") if job else "",
+        "company": (job.company or "") if job else ""})
     if _verdict.blocked:
         _reason = (_verdict.reason or "").strip() or \
             "This draft did not pass the grounding check."
@@ -4835,11 +4836,12 @@ def application_details(application_id: int, request: Request) -> dict:
             if report_path.exists():
                 quality = _json.loads(report_path.read_text(encoding="utf-8"))
                 # Reports written before the verdict post-check still carry a
-                # false "future-dated" sentence or a dangling "2." — clean at
-                # read time too, so old drafts stop saying it.
+                # false "future-dated" sentence, a dangling "2." or a
+                # "1. Yes —" lead-in: clean at read time too, so old drafts
+                # stop saying it.
                 if isinstance(quality, dict) and quality.get("verdict"):
-                    from app.tailoring.doctor import drop_false_future_claims
-                    quality["verdict"] = drop_false_future_claims(quality["verdict"])
+                    from app.tailoring.doctor import clean_verdict
+                    quality["verdict"] = clean_verdict(quality["verdict"])
         except Exception:
             quality = None
 
@@ -4852,7 +4854,7 @@ def application_details(application_id: int, request: Request) -> dict:
     if resume_text and not _verdict.blocked and (job.description or "").strip():
         try:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
-            report = _ats_analyze(job.description, resume_text)
+            report = _ats_analyze(job.description, resume_text, company=job.company or "")
             ats = {
                 "matched": report.matched,
                 "missing": report.missing,
@@ -4947,7 +4949,7 @@ def application_match(application_id: int, request: Request) -> dict:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
             resume_text = _load_resume(user_id=_get_user_id(request))
             if resume_text:
-                rep = _ats_analyze(job.description, resume_text)
+                rep = _ats_analyze(job.description, resume_text, company=job.company or "")
                 skills = {
                     "matched": rep.matched,
                     "missing": rep.missing,
@@ -5416,7 +5418,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         has_draft = bool(application.tailored_resume_path)
         _loaded = {"rejected": grounding_blocked, "notes": application.notes or "",
                    "path": application.tailored_resume_path, "uid": application.user_id,
-                   "jd": (job.description or "") if job else ""}
+                   "jd": (job.description or "") if job else "",
+                   "company": (job.company or "") if job else ""}
     # Draft text only leaves through the ONE export verdict (review, download,
     # details and attach read the same one). Re-tailoring is still gated on the
     # grounding status alone — an unconfirmed claim is fixed by the user.
@@ -11996,6 +11999,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                 "path": application.tailored_resume_path,
                 "uid": application.user_id,
                 "jd": (job.description or "") if job else None,
+                "company": (job.company or "") if job else None,
             }
     rejected, notes, path, uid = (loaded.get("rejected"), loaded.get("notes") or "",
                                   loaded.get("path"), loaded.get("uid"))
@@ -12017,11 +12021,16 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
 
     def _compute():
         jd = loaded.get("jd")
-        if jd is None:
+        # The hiring company feeds the same review the tailor ran, so every
+        # door judges the draft with the same inputs.
+        company = loaded.get("company")
+        if jd is None or company is None:
             with get_session() as session:
                 app_row = session.get(Application, application_id)
                 job = session.get(Job, app_row.job_id) if app_row else None
-                jd = (job.description or "") if job else ""
+                if jd is None:
+                    jd = (job.description or "") if job else ""
+                company = (job.company or "") if job else ""
         tailored = ""
         try:
             from app.autofill.answer_pack import _load_resume_text_from_path
@@ -12038,7 +12047,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                           application_id, exc)
         try:
             return evaluate(grounding_rejected=False, grounding_reason="",
-                            master=master, tailored=tailored, jd=jd)
+                            master=master, tailored=tailored, jd=jd, company=company)
         except Exception as exc:
             # The check itself failing is not evidence the draft is clean — but
             # it is not evidence of a fabrication either, and grounding already
@@ -12137,7 +12146,7 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         tailored_path = application.tailored_resume_path
         _loaded = {"rejected": application.status == ApplicationStatus.ERROR,
                    "notes": application.notes or "", "path": tailored_path,
-                   "uid": uid, "jd": jd}
+                   "uid": uid, "jd": jd, "company": job_company or ""}
 
     from app.matching.pipeline import _load_resume
     master = _load_resume(user_id=uid) or ""
@@ -12161,7 +12170,8 @@ def application_pre_download_review(application_id: int, request: Request) -> di
 
     from app.tailoring.requirements import review as build_review
     try:
-        rep = getattr(verdict, "review", None) or build_review(master, tailored, jd)
+        rep = getattr(verdict, "review", None) or build_review(
+            master, tailored, jd, company=job_company or "")
     except Exception as exc:
         log.exception("pre-download review failed for application %s", application_id)
         raise HTTPException(status_code=500,
