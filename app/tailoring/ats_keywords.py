@@ -213,8 +213,11 @@ _TECH_PHRASES: List[str] = [
     "model inference", "inference", "transformers", "pytorch", "tensorflow",
     "scikit-learn", "hugging face", "langchain", "llamaindex", "openai", "claude",
     "semantic search", "recommendation systems", "mlops", "model deployment",
-    # Payments ("pay" alone is the offer, see _SELF_TALK)
-    "apple pay", "google pay", "samsung pay", "amazon pay", "shop pay",
+    # Payments ("pay" alone is the offer, see _SELF_TALK). Not "shop pay" or
+    # "amazon pay": a curated term is read case-blind on the whole posting, and
+    # "guaranteed shop pay" (an auto technician's training hours) or "Amazon
+    # pay rates start at $21" (a delivery driver) is the offer, not a wallet.
+    "apple pay", "google pay", "samsung pay",
     # Backend / infra
     "rest api", "restful api", "restful apis", "rest apis", "graphql", "grpc",
     "microservices", "fastapi", "flask", "django", "node.js", "express",
@@ -479,7 +482,9 @@ def _named_tokens(text: str) -> frozenset:
     out = set()
     for line in (text or "").splitlines():
         heading = not re.search(r"[a-z]", line)
-        titled = _is_section_heading(_BULLET_RE.sub("", line))
+        # A bullet is an item, never the list's heading: "- Basic Math Skills"
+        # is a skill whose capitals still count.
+        titled = not _BULLET_RE.match(line) and _is_section_heading(line)
         for m in re.finditer(r"[A-Za-z][A-Za-z0-9+#/\-]*", line):
             word = m.group(0)
             low = word.lower()
@@ -564,18 +569,28 @@ _OFFER_WORDS = frozenset({"benefits", "benefit", "perks", "perk", "compensation"
                           "salary", "offer", "rewards", "pay"})
 # Offer headings the word test cannot read, because they name no offer word or
 # hold a word no generic list has: the candidate gets or receives, the employer
-# provides, or the heading names the workplace. Read on the lower-cased
-# heading; "What you'll get to do" is the job, not the offer.
+# provides ("What we provide", "Here's what we offer", "In return, we offer"),
+# or "Life at Acme". Read on the lower-cased heading. Each names the PACKAGE:
+# "What you'll get to do" is the job, "Services We Provide" and "Subjects We
+# Offer" list the work itself, and "Life at" takes a name of one or two words.
 _OFFER_HEADING_RE = re.compile(
-    r"(?:\byou(?:'ll| will)? (?:get|receive)(?: from us)?|\bwe (?:provide|offer)"
-    r"|\bin it for you)$|^life at\b")
-# "Total Rewards" names the package only when written as a heading: "Total
-# rewards" in an HR posting's list is a field, and the items after it are
-# skills ("Workday HCM", "HRIS reporting").
-_TOTAL_REWARDS_RE = re.compile(r"\b(?:Total Rewards|TOTAL REWARDS)\b")
+    r"(?:\byou(?:'ll| will)? (?:get|receive)(?: from us)?|\bin it for you)$"
+    r"|^(?:in return |(?:here's |here is )?what (?:else )?)?we (?:can )?(?:provide|offer)(?: you)?$"
+    r"|^life at [a-z']+(?: [a-z']+)?$")
+# "Total Rewards" names the package only as the whole heading, in Title Case
+# or capitals ("Total Rewards", "Our Total Rewards", "Total Rewards
+# Package"). An HR posting writes the field the same way: "About the Total
+# Rewards Team", a "Total Rewards Analyst" title line, a "Total Rewards
+# Administration" skill, or "Total rewards" in sentence case. Those are the
+# job, and the lines after them are its skills.
+_TOTAL_REWARDS_RE = re.compile(
+    r"(?:(?:Our|Your|OUR|YOUR) )?(?:Total Rewards|TOTAL REWARDS)(?: (?:Package|PACKAGE))?")
+# Words that end an offer section: the next heading about the job ("The
+# Opportunity" after "Life at Acme" is the role).
 _SECTION_WORDS_RE = re.compile(
     r"\b(?:requirements?|qualifications?|responsibilities|skills|duties|role|you|your|"
-    r"about|preferred|nice|bring|experience|position|job|overview|description)\b",
+    r"about|preferred|nice|bring|experience|position|job|overview|description|"
+    r"opportunity)\b",
     re.IGNORECASE)
 # The nouns a section heading ends on: "Key Skills", "Essential Functions",
 # "Physical Demands", "Core Competencies", "Must Haves", "Our Tech Stack".
@@ -606,13 +621,19 @@ def _is_section_heading(body: str) -> bool:
 
 
 def _is_offer_heading(body: str, words: List[str]) -> bool:
-    if ((words[0] == "why" or _OFFER_WORDS & set(words))
+    plain = re.sub(r"[^a-z' ]+", " ", body.lower().replace("’", "'"))
+    plain = re.sub(r"\s+", " ", plain).strip()
+    offer = set(words) & _OFFER_WORDS
+    if words[0] not in ("what", "we") and re.search(r"\bwe (?:can )?offer\b", plain):
+        # The verb: "Products We Offer" and "Services We Offer" list the work.
+        # "What we offer" is the package; a noun ("Benefits We Offer") still is.
+        offer.discard("offer")
+    if ((words[0] == "why" or offer)
             and all(w in _GENERIC or w == _CO_MARK for w in words)):
         return True
-    if _TOTAL_REWARDS_RE.search(body):
+    if _TOTAL_REWARDS_RE.fullmatch(body.rstrip(" :")):
         return True
-    plain = re.sub(r"[^a-z' ]+", " ", body.lower().replace("’", "'"))
-    return bool(_OFFER_HEADING_RE.search(re.sub(r"\s+", " ", plain).strip()))
+    return bool(_OFFER_HEADING_RE.search(plain))
 
 
 def _without_offer(text: str) -> str:
@@ -644,9 +665,10 @@ def _list_items(text: str) -> frozenset:
     four words or fewer, split on "and"/"or"/commas, with leading and trailing
     stop words dropped ("Experience with dbt" -> "dbt"). Read it from
     _without_offer(): a benefits list is the offer, not the job. The heading
-    that introduces a list is not one of its items: a section heading ("Key
-    Skills", "Essential Functions"), or a plain line whose next line is a
-    bullet ("Tools We Use" above "- Jira")."""
+    that introduces a list is not one of its items: an unbulleted section
+    heading ("Key Skills", "Essential Functions"), or a plain line whose next
+    line is a bullet ("Tools We Use" above "- Jira"). A bulleted line is
+    always an item ("- Basic Math Skills")."""
     lines = (text or "").splitlines()
     bodies = [_BULLET_RE.sub("", ln).strip() for ln in lines]
     bulleted = [bool(_BULLET_RE.match(ln)) for ln in lines]
@@ -675,7 +697,8 @@ def _list_items(text: str) -> frozenset:
             continue                       # a line break inside a sentence
         if words[0] in _LINE_OPENERS:
             continue
-        if _is_section_heading(body) or (not bullet and opens_list[i] and not _names_tool(words)):
+        # A bullet is an item, never the list's heading ("- Basic Math Skills").
+        if not bullet and (_is_section_heading(body) or (opens_list[i] and not _names_tool(words))):
             continue                       # the list's heading, not an item
         for part in re.split(r",|;|\s(?:and|or|&)\s|\s/\s", body.lower()):
             toks = _TOKEN_RE.findall(part)
@@ -688,12 +711,26 @@ def _list_items(text: str) -> frozenset:
     return frozenset(out)
 
 
+# Perk vocabulary. A benefits list sits under headings no rule can enumerate
+# ("Why You'll Love Working Here", "What's On Offer", "Life @ Acme"), so a
+# phrase holding one of these words gets no exemption from the seen-once rule,
+# as a list item or by its capitals ("Gym Membership", "Unlimited PTO"): it
+# counts only when the posting repeats it. ("401(k)" never forms a phrase: its
+# "k" is a one-letter token.)
+_PERK_RE = re.compile(
+    r"\b(?:gym|memberships?|lunch(?:es)?|commuter|stipends?|pto|parental leave|wellness|"
+    r"tuition reimbursement|discounts?|snacks?)\b")
+
+
 def _counts_seen_once(phrase: str, named: frozenset, listed: frozenset,
                       known: frozenset) -> bool:
     """Whether a phrase the posting writes only once is still a keyword: a list
     item, a known skill (pandas, dbt, Excel), or a phrase with a word written
     like a name ("Amazon Web Services", "Jira", "SQL"). A once-seen "A and B"
-    is two things, not one."""
+    is two things, not one, and a once-seen perk ("gym membership") is the
+    offer."""
+    if _PERK_RE.search(phrase):
+        return False
     if phrase in listed or phrase.replace("-", " ") in known:
         return True
     if re.search(r" (?:and|or) ", phrase):
