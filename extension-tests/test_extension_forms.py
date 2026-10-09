@@ -406,7 +406,9 @@ def main():
         # every shape the question takes; nothing saved = left for the user.
         print("\nHow did you hear (select · option list · radios + specify · combobox · text)")
         hh_from = len(REQUESTS)          # the requests these fills make (the log is shared)
-        pack = dict(base_pack(f"{BASE}/howheard.html"), how_heard_answer="Company website")
+        # The form is Acme's: "How did you first learn about Acme?" names the company.
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme",
+                    how_heard_answer="Company website")
         page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
         v = lambda sel: page.eval_on_selector(sel, "el => el.value")
         on = lambda sel: page.evaluate(
@@ -432,7 +434,7 @@ def main():
               str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
         page.close()
 
-        pack = dict(base_pack(f"{BASE}/howheard.html"), how_heard_answer="")
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme", how_heard_answer="")
         page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
         v = lambda sel: page.eval_on_selector(sel, "el => el.value")
         flag = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapply || ''")
@@ -451,6 +453,42 @@ def main():
               and flag("#hh-text") == "needs-fill",
               json.dumps({s: flag(s) for s in ("#hh-select", "#hh-list", "#hh-text")}))
         check("HH11 identity still filled", v("#hh-first") == pack["first_name"], v("#hh-first"))
+        page.close()
+
+        # ── HT: the saved answer reaches only THIS question and its Other box ─
+        # Review 2026-10-09: "How did you learn Python?" got the saved answer,
+        # the question after an "Other" pick got it as "please specify", and a
+        # listbox button's pick was POSTed to save-answer.
+        print("\nHow did you hear: only this question, only its Other box, nothing learned")
+        ht_from = len(REQUESTS)
+        pack = dict(base_pack(f"{BASE}/howheard_tied.html"), company="Acme",
+                    how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard_tied.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HT1 only 'Other' fits: 'Other' is picked", v("#ht-sel") == "other", v("#ht-sel"))
+        check("HT2 ...and 'Please describe why you want to work at Acme' after it stays blank",
+              v("#ht-why") == "", v("#ht-why"))
+        check("HT3 radios: 'Other' is picked", radio("ht_src") == "other", str(radio("ht_src")))
+        check("HT4 ...and 'Please explain any gaps in your employment history' stays blank",
+              v("#ht-gaps") == "", v("#ht-gaps"))
+        learned = {s: v(s) for s in ("#ht-learn", "#ht-code", "#ht-program", "#ht-find")}
+        check("HT5 'How did you learn Python / to code', 'Where did you learn to program', "
+              "'How did you find your current role' stay blank",
+              set(learned.values()) == {""}, json.dumps(learned))
+        check("HT6 a box that appears only once 'Other' is picked gets the saved answer",
+              v("#ht-sel2") == "other" and v("#ht-where") == "Company website",
+              f"{v('#ht-sel2')} / {v('#ht-where')}")
+        check("HT7 an unlabelled box in the question's own container gets it",
+              v("#ht-sel3") == "other" and v("#ht-more") == "Company website",
+              f"{v('#ht-sel3')} / {v('#ht-more')}")
+        btn = page.eval_on_selector("#ht-btn", "el => el.textContent.trim()")
+        check("HT8 a listbox button gets the option that is the saved answer",
+              btn == "Company Website", btn)
+        saves = [p for m, p in REQUESTS[ht_from:] if m == "POST" and "save-answer" in p]
+        check("HT9 nothing is learned (no save-answer: not the listbox pick, not a box we wrote)",
+              not saves, str(saves))
         page.close()
 
         # ── API surface actually exercised ──────────────────────────────────

@@ -41,11 +41,13 @@ FUNCTIONS = [
     "looksLikeModelOnlyReply", "parseLocation", "pickLocationSuggestion",
     "isHowHeardQuestion", "howHeardAnswer", "_hhTokens", "_hhHas", "_hhIsOther",
     "_hhIsPlaceholder", "pickHowHeardOption", "_selectHasChoice",
+    "_companyCore", "isHowHeardFillQuestion", "_saysSpecifyOther",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "_OTHER_DOC_RE", "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
           "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
-          "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS"]
+          "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS", "_HH_ASKED", "_HOW_HEARD_FILL_RE",
+          "_SPECIFY_RE"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -588,6 +590,105 @@ def test_a_select_already_answered_is_never_changed(options, selected, want):
 def test_how_heard_questions_read_the_same_in_the_extension_and_the_server(label):
     from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
     assert run_js([["isHowHeardQuestion", label]])[0] is bool(PY_RE.search(label))
+
+
+@pytest.mark.parametrize("label,company,want", [
+    # how the applicant came to THIS job, role, position, posting, us or the company
+    ("How did you hear about this opportunity?", "", True),
+    ("How did you hear about the role?", "", True),
+    ("Where did you hear about this position? Tell us a little more.", "", True),
+    ("How did you hear about us? (LinkedIn, company website, etc.)", "", True),
+    ("Where did you see this job posted?", "", True),
+    ("How did you find out about us? *", "", True),
+    ("How did you find out about this position?", "", True),
+    ("How did you find this job?", "", True),
+    ("Where did you learn about the opening?", "", True),
+    ("How did you first learn about our company?", "", True),
+    ("How did you first learn about Acme?", "Acme", True),
+    ("How did you first learn about Acme?", "Acme, Inc.", True),
+    ("How did you find The Home Depot?", "The Home Depot", True),
+    # a referral / lead / application source field
+    ("Referral source", "", True), ("Lead source", "", True), ("Application source", "", True),
+    # the rest of the refusal list is the applicant's to answer (review 2026-10-09)
+    ("How did you learn Python?", "Acme", False),
+    ("How did you learn to code?", "Acme", False),
+    ("Where did you learn to program?", "Acme", False),
+    ("How did you find your current role?", "Acme", False),
+    ("How did you find your most recent role?", "Acme", False),
+    ("How did you learn about Python?", "Acme", False),
+    ("How did you find the interview process?", "Acme", False),
+    # another company's name is not this one
+    ("How did you first learn about Acme?", "HarnessCo", False),
+    ("How did you first learn about Acme?", "", False),
+    # never wider than the refusal list
+    ("Why are you interested in this role?", "Acme", False),
+    ("LinkedIn profile", "Acme", False),
+])
+def test_the_saved_answer_fills_only_how_they_came_to_this_job(label, company, want):
+    got, refused = run_js([["isHowHeardFillQuestion", label, company],
+                           ["isHowHeardQuestion", label]])
+    assert got is want
+    # Every question the saved answer fills is one no model or memory answers.
+    if got:
+        assert refused is True
+
+
+@pytest.mark.parametrize("label", [
+    "How did you learn Python?", "How did you learn to code?",
+    "Where did you learn to program?", "How did you find your current role?",
+])
+def test_the_refusal_list_still_holds_what_the_saved_answer_does_not_fill(label):
+    """Left blank, and still never written by a model or from memory."""
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    assert run_js([["isHowHeardQuestion", label]])[0] is True
+    assert PY_RE.search(label)
+
+
+@pytest.mark.parametrize("text,want", [
+    # its own words name the Other choice, or only ask to specify
+    ("If other, please specify", True), ("If Other, please specify *", True),
+    ("Other (please specify)", True), ("Other - please specify:", True),
+    ("Please specify other", True), ("Specify other source", True), ("Other source", True),
+    ("Please specify", True), ("Please specify:", True), ("Specify *", True), ("Other", True),
+    ("If you selected Other, where?", True),
+    # the next question on the page
+    ("Please describe why you want to work at Acme", False),
+    ("Please explain any gaps in your employment history", False),
+    ("Please list your certifications", False),
+    ("Please tell us about yourself", False),
+    ("Other comments", False), ("Other information you'd like to share", False),
+    ("Other languages spoken (please specify)", False),
+    ("Please specify your pronouns", False),
+    ("Tell us more", False), ("", False),
+])
+def test_a_specify_box_names_the_other_choice(text, want):
+    assert run_js([["_saysSpecifyOther", text]])[0] is want
+
+
+def test_the_other_box_is_tied_to_the_choice_and_never_learned():
+    """The box after an "Other" pick takes the saved answer only when its own
+    words name Other, it sits in the question's container, or the pick revealed
+    it; and nothing the extension wrote is ever POSTed to save-answer."""
+    find = _function(CONTENT, "_howHeardSpecifyField")
+    assert "_isSpecifyField(c)" in find and "shownBefore.has(c)" in find
+    assert "_inQuestionContainer(c, own)" in find
+    for fn in ("answerHowHeardField", "fillHowHeardDropdown", "answerHowHeardChoices"):
+        body = _function(CONTENT, fn)
+        # The fields on screen are taken BEFORE the pick, to see what it revealed.
+        assert body.index("_shownFields()") < body.index("fillHowHeardSpecify("), fn
+    assert "isHowHeardFillQuestion(" in _function(CONTENT, "fillUniversal")
+    assert "isHowHeardFillQuestion(" in _function(CONTENT, "howHeardChoiceGroups")
+    # Learning never takes the extension's own write, nor a how-heard box.
+    for fn in ("observeField", "observeAnswer"):
+        body = _function(CONTENT, fn)
+        assert "_holdsOurWrite(" in body and "spotapplyHowHeard" in body, fn
+    assert "spotapplyHowHeard = 'true'" in _function(CONTENT, "fillHowHeardSpecify")
+    # The dropdown click learner steps aside for how-heard, like demographics,
+    # before anything is logged or POSTed.
+    start = CONTENT.index("// Learn custom dropdown selections")
+    learner = CONTENT[start:CONTENT.index("}, { capture: true, passive: true });", start)]
+    assert learner.index("isHowHeardQuestion(label)") < learner.index("Learning dropdown field")
+    assert learner.index("isHowHeardQuestion(label)") < learner.index("apiFetch(")
 
 
 def test_how_heard_pattern_agrees_with_the_server():

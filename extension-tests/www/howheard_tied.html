@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>How did you hear: Other and its box</title></head>
+<body>
+  <h1>Apply</h1>
+  <!-- Review 2026-10-09: the saved "how did you hear" answer goes ONLY into a
+       question about how the applicant came to THIS job, and into a box tied
+       to its "Other" choice. Never into the next question on the page, never
+       into "How did you learn Python?", and nothing here is learned. -->
+  <form id="ht-form" onsubmit="return false">
+    <label for="ht-first">First name *</label>
+    <input id="ht-first" name="first_name" required>
+
+    <!-- 1. Only "Other" fits, and the next question is another question. -->
+    <label for="ht-sel">How did you hear about this job?</label>
+    <select id="ht-sel" name="q_hear">
+      <option value="">Select...</option>
+      <option value="li">LinkedIn</option>
+      <option value="indeed">Indeed</option>
+      <option value="other">Other</option>
+    </select>
+    <label for="ht-why">Please describe why you want to work at Acme</label>
+    <textarea id="ht-why" name="why_acme" rows="3"></textarea>
+
+    <!-- 2. The same with radios and an input. -->
+    <fieldset id="ht-radio-set">
+      <legend>Where did you hear about us?</legend>
+      <label><input type="radio" name="ht_src" value="li"> LinkedIn</label>
+      <label><input type="radio" name="ht_src" value="other"> Other</label>
+    </fieldset>
+    <label for="ht-gaps">Please explain any gaps in your employment history</label>
+    <input id="ht-gaps" name="gaps">
+
+    <!-- 3. Not how-did-you-hear questions: the applicant answers them. -->
+    <label for="ht-learn">How did you learn Python?</label>
+    <input id="ht-learn" name="learn_python">
+    <label for="ht-code">How did you learn to code?</label>
+    <input id="ht-code" name="learn_code">
+    <label for="ht-program">Where did you learn to program?</label>
+    <textarea id="ht-program" name="learn_program" rows="2"></textarea>
+    <label for="ht-find">How did you find your current role?</label>
+    <input id="ht-find" name="find_role">
+
+    <!-- 4. A box that appears only once "Other" is picked. Its label names
+         neither "other" nor "specify". -->
+    <label for="ht-sel2">How did you find out about this position?</label>
+    <select id="ht-sel2" name="q_found">
+      <option value="">Select...</option>
+      <option value="li">LinkedIn</option>
+      <option value="indeed">Indeed</option>
+      <option value="other">Other</option>
+    </select>
+    <div id="ht-where-wrap" style="display:none">
+      <label for="ht-where">Tell us where</label>
+      <input id="ht-where" name="q_found_detail">
+    </div>
+
+    <!-- 5. An unlabelled box in the question's own container. A textarea, so
+         the AI path has already been asked about it (and is watching it) by
+         the time the how-heard answer writes it: that write is not learned. -->
+    <div class="field" id="ht-own">
+      <label for="ht-sel3">How did you hear about the role?</label>
+      <select id="ht-sel3" name="q_role">
+        <option value="">Select...</option>
+        <option value="li">LinkedIn</option>
+        <option value="other">Other</option>
+      </select>
+      <textarea id="ht-more" placeholder="Your answer" rows="2"></textarea>
+    </div>
+
+    <!-- 6. A dropdown BUTTON (aria-haspopup=listbox) with role=option items:
+         the pick is the extension's, and is never learned. -->
+    <div class="field">
+      <label id="ht-btn-lbl">How did you hear about us?</label>
+      <button type="button" id="ht-btn" aria-haspopup="listbox" aria-expanded="false"
+              aria-labelledby="ht-btn-lbl" aria-controls="ht-btn-list">Select One</button>
+      <ul id="ht-btn-list" role="listbox" style="display:none"></ul>
+    </div>
+
+    <button type="submit">Submit application</button>
+  </form>
+  <script>
+    document.getElementById('ht-sel2').addEventListener('change', function (e) {
+      document.getElementById('ht-where-wrap').style.display = e.target.value === 'other' ? '' : 'none';
+    });
+    var btn = document.getElementById('ht-btn'), list = document.getElementById('ht-btn-list');
+    ['LinkedIn', 'Company Website', 'Indeed', 'Other'].forEach(function (c) {
+      var li = document.createElement('li');
+      li.setAttribute('role', 'option');
+      li.textContent = c;
+      li.addEventListener('click', function () {
+        btn.textContent = c; list.style.display = 'none'; btn.setAttribute('aria-expanded', 'false');
+      });
+      list.appendChild(li);
+    });
+    btn.addEventListener('click', function () {
+      var open = list.style.display === 'none';
+      list.style.display = open ? '' : 'none';
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  </script>
+</body></html>

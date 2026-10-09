@@ -1130,6 +1130,47 @@ function isHowHeardQuestion(text) {
   return _HEAR_ABOUT_RE.test(String(text || '').replace(/\s+/g, ' '));
 }
 
+// _HEAR_ABOUT_RE is the REFUSAL list: no model and no memory answers anything
+// in it. The saved answer FILLS less (review 2026-10-09): only a question about
+// how the applicant came to THIS job, role, position, posting, us or the
+// company, or a referral / lead / application source field. "How did you learn
+// Python?" and "How did you find your current role?" are in the refusal list
+// and stay the applicant's to answer.
+// The asking words, as _HEAR_ABOUT_RE has them.
+const _HH_ASKED = '(?:how did you (?:first )?(?:learn|find out|find)|where did you (?:find|see|learn))';
+const _HOW_HEARD_FILL_RE = new RegExp(
+  'how did you (?:first )?hear|where did you hear|hear about (?:us|this)|' +
+  '(?:referral|lead|candidate|application) source|source of (?:referral|application)|' +
+  _HH_ASKED + ' (?:about |of )?(?:us\\b|(?:this|the|our|that) (?:open |job )?' +
+  '(?:jobs?|roles?|positions?|opportunit(?:y|ies)|openings?|postings?|vacanc(?:y|ies)|company|organi[sz]ation)\\b)',
+  'i');
+
+/** A company's name without its legal suffix: "Acme, Inc." -> "acme". */
+function _companyCore(company) {
+  let s = deaccent(String(company || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s.replace(/[\s,]+(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh)\.?$/, '').trim();
+  }
+  s = s.replace(/^the /, '');
+  return s.length >= 2 ? s : '';
+}
+
+/**
+ * Does the saved how-did-you-hear answer answer this question? Never wider
+ * than the refusal list. `company` is the job's (pack.company): "How did you
+ * first learn about Acme?" asks about this job only on Acme's form.
+ */
+function isHowHeardFillQuestion(text, company) {
+  const t = deaccent(String(text || '')).replace(/\s+/g, ' ');
+  if (!isHowHeardQuestion(t)) return false;
+  if (_HOW_HEARD_FILL_RE.test(t)) return true;
+  const name = _companyCore(company);
+  if (!name) return false;
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(_HH_ASKED + ' (?:about |of )?(?:the )?' + esc + '(?![a-z0-9])', 'i').test(t);
+}
+
 /** The user's saved answer as one line, or "" (= the applicant answers it). */
 function howHeardAnswer(pack) {
   return String((pack && pack.how_heard_answer) || '').replace(/\s+/g, ' ').trim();
@@ -1210,40 +1251,81 @@ function pickHowHeardOption(texts, saved) {
   return other.length ? pick(other[0]) : null;
 }
 
-const _SPECIFY_RE = /specify|if other|if you (?:selected|chose|answered) other|^\s*other\b|other source|please (?:explain|describe|list|tell us)/i;
+// A box for the "Other" choice says so: "If other, please specify", "Other
+// (please specify)", "Specify other", "Other source", or only "Please
+// specify" / "Other". A box asking to explain, describe or list something is
+// the next question (review 2026-10-09: "Please describe why you want to work
+// at Acme" got the saved answer, and memory learned it).
+const _SPECIFY_RE = /\bif other\b|\bif you (?:selected|chose|picked|answered) \W?other\b|\bother\b[^a-z0-9]*(?:please )?specify\b|\bspecify (?:the |your )?other\b|\bother source\b|^\W*(?:please )?specify\W*$|^\W*other\W*$/i;
 
-/** A free-text box that asks to specify an "Other" choice. */
+function _saysSpecifyOther(text) {
+  return _SPECIFY_RE.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+/** A free-text box whose own words name the "Other" choice. */
 function _isSpecifyField(c) {
   if (!isTextEntry(c)) return false;
   return [labelText(c), c.getAttribute('placeholder'), c.getAttribute('aria-label')]
-    .some((t) => t && _SPECIFY_RE.test(String(t)));
+    .some((t) => _saysSpecifyOther(t));
+}
+
+const _OTHER_BOX_SEL = 'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])' +
+  ':not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"]), textarea, select';
+
+/** The fields on screen now. Taken before a pick, to see what the pick revealed. */
+function _shownFields() {
+  return new Set(queryAllDeep(_OTHER_BOX_SEL).filter(isUserVisible));
 }
 
 /**
- * The "please specify" box for a choice: the next field after it on the page,
- * only when that field asks to specify and the user can see it. Any other
- * next field belongs to another question.
+ * Does `box` sit in the question's own container? The smallest element
+ * holding the question's controls (`own`) and the box holds no other field,
+ * and the box has no label of its own (a label makes it another question).
  */
-function _howHeardSpecifyField(anchor) {
-  const fields = queryAllDeep('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])' +
-    ':not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"]), textarea, select');
-  for (const c of fields) {
+function _inQuestionContainer(box, own) {
+  if ((box.labels && box.labels.length) || box.getAttribute('aria-labelledby') ||
+      box.getAttribute('aria-label')) return false;
+  let node = own[0] && own[0].parentElement;
+  while (node && !(node.contains(box) && own.every((o) => node.contains(o)))) node = node.parentElement;
+  if (!node || node === document.body || node === document.documentElement) return false;
+  return Array.from(node.querySelectorAll('input:not([type="hidden"]), select, textarea'))
+    .every((f) => f === box || own.includes(f));
+}
+
+/**
+ * The "please specify" box for an Other pick: the next field after the
+ * question, and only when it is tied to that choice. Its own words name
+ * Other / specify, it sits in the question's own container, or the pick
+ * revealed it (`shownBefore`: the fields on screen before the pick). Any
+ * other next field belongs to another question.
+ */
+function _howHeardSpecifyField(anchor, own, shownBefore) {
+  for (const c of queryAllDeep(_OTHER_BOX_SEL)) {
     if (c === anchor) continue;
     let following = false;
     try {
       following = !!(anchor.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) && !anchor.contains(c);
     } catch (_) {}
     if (!following) continue;
-    return (_isSpecifyField(c) && canFillField(c)) ? c : null;
+    if (!isTextEntry(c) || !canFillField(c)) return null;
+    const tied = _isSpecifyField(c) || !!(shownBefore && !shownBefore.has(c)) ||
+      _inQuestionContainer(c, own);
+    return tied ? c : null;
   }
   return null;
 }
 
-async function fillHowHeardSpecify(anchor, text) {
+/**
+ * Write the saved answer into the Other choice's box. `own` = the question's
+ * controls, `shownBefore` = _shownFields() taken before the pick.
+ */
+async function fillHowHeardSpecify(anchor, text, own, shownBefore) {
   if (!anchor || !text) return false;
   await delay(400);                       // an "If other" box often appears only now
-  const box = _howHeardSpecifyField(anchor);
+  const box = _howHeardSpecifyField(anchor, own || [anchor], shownBefore);
   if (!box || String(box.value || '').trim() || box.dataset.spotapplyUserModified === 'true') return false;
+  // Part of the how-heard answer: never learned, whatever is typed in it later.
+  try { box.dataset.spotapplyHowHeard = 'true'; } catch (_) {}
   return fillInput(box, text);
 }
 
@@ -1271,12 +1353,13 @@ async function answerHowHeardField(el, pack) {
     const opts = Array.from(el.options || []);
     const pick = pickHowHeardOption(opts.map((o) => o.text), saved);
     if (!pick) { _lastWriteSkippedEmpty = true; return false; }
+    const shown = pick.specify ? _shownFields() : null;
     el.value = opts[pick.index].value;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
     console.log('[SpotApply] How you heard about the job, from your profile:', opts[pick.index].text);
-    if (pick.specify) await fillHowHeardSpecify(el, pick.specify);
+    if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
     return true;
   }
   if (el.tagName === 'BUTTON' || isAutocompleteInput(el)) return fillHowHeardDropdown(el, saved);
@@ -1333,11 +1416,12 @@ async function fillHowHeardDropdown(el, saved) {
     return false;
   }
   const chosen = caption(opts[pick.index]);
+  const shown = pick.specify ? _shownFields() : null;
   press(opts[pick.index]);
   await delay(300);
   try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
   console.log('[SpotApply] How you heard about the job, from your profile:', chosen.slice(0, 60));
-  if (pick.specify) await fillHowHeardSpecify(el, pick.specify);
+  if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
   return true;
 }
 
@@ -1382,11 +1466,12 @@ function _choiceQuestion(box) {
 }
 
 /**
- * Every rendered group of choices whose question is how-did-you-hear: radio
+ * Every rendered group of choices whose question the saved how-did-you-hear
+ * answer answers (isHowHeardFillQuestion; `company` = pack.company): radio
  * groups, and option lists drawn as buttons or ARIA radios/options (Ashby).
  * [{box, options, kind, question, label}]
  */
-function howHeardChoiceGroups(root) {
+function howHeardChoiceGroups(root, company) {
   const groups = new Map();
   const add = (box, o, kind) => {
     if (!groups.has(box)) groups.set(box, { box, options: [], kind });
@@ -1415,7 +1500,7 @@ function howHeardChoiceGroups(root) {
   for (const g of groups.values()) {
     if (g.options.length < 2 || !g.box.getClientRects().length) continue;
     const q = _choiceQuestion(g.box);
-    if (!isHowHeardQuestion(q.text)) continue;
+    if (!isHowHeardFillQuestion(q.text, company)) continue;
     out.push(Object.assign(g, { question: q.text, label: q.label }));
   }
   return out;
@@ -1426,7 +1511,7 @@ async function answerHowHeardChoices(pack) {
   const saved = howHeardAnswer(pack);
   if (!saved) return 0;                         // nothing saved: the applicant answers
   let answered = 0;
-  for (const g of howHeardChoiceGroups(document)) {
+  for (const g of howHeardChoiceGroups(document, pack.company)) {
     if (g.options.some(_choiceOn)) continue;      // answered already, by anyone
     if (g.box.dataset.spotapplyUserModified === 'true' ||
         g.options.some((o) => o.dataset && o.dataset.spotapplyUserModified === 'true')) continue;
@@ -1434,6 +1519,7 @@ async function answerHowHeardChoices(pack) {
     if (!pick) continue;
     const target = g.options[pick.index];
     if (target.disabled || isAntiBotField(target)) continue;
+    const shown = pick.specify ? _shownFields() : null;
     try {
       target.click();                             // a click: the page's own handler records it
       if (g.kind === 'radio' && !target.checked) {
@@ -1447,7 +1533,7 @@ async function answerHowHeardChoices(pack) {
     try { g.box.dataset.spotapplyFilled = 'true'; target.dataset.spotapplyFilled = 'true'; } catch (_) {}
     answered++;
     console.log('[SpotApply] How you heard about the job, from your profile:', _choiceText(target).slice(0, 60));
-    if (pick.specify) await fillHowHeardSpecify(g.options[g.options.length - 1], pick.specify);
+    if (pick.specify) await fillHowHeardSpecify(g.options[g.options.length - 1], pick.specify, g.options, shown);
   }
   return answered;
 }
@@ -1522,10 +1608,13 @@ document.addEventListener('click', (e) => {
       const val = opt.textContent?.trim();
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
-        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         // Never learn a protected answer: saved demographic answers would be
-        // written back later without the user's consent.
+        // written back later without the user's consent. Nor how they heard
+        // about one job: only the profile's saved answer is ever used (the
+        // extension's own pick on a listbox button was POSTed here).
         if (isDemographicQuestion(label)) return;
+        if (isHowHeardQuestion(label)) return;
+        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         getTabPack((pack) => {
           if (pack && packBase(pack) && pack.auth_token) {
             apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
@@ -3025,9 +3114,13 @@ async function fillUniversal(pack) {
 
     // ── How did you hear about us: the saved profile answer, or the user ──
     // First, so no other rule writes into it ("How did you hear? (LinkedIn,
-    // company website…)" matched the LinkedIn and website rules).
+    // company website…)" matched the LinkedIn and website rules). The saved
+    // answer only for how they came to THIS job; the rest of the refusal list
+    // ("How did you learn Python?") is left for the applicant.
     if (isHowHeardQuestion(labelOnly) || isHowHeardQuestion(signals)) {
-      matched = await answerHowHeardField(inp, pack);
+      matched = (isHowHeardFillQuestion(labelOnly, pack.company) ||
+                 isHowHeardFillQuestion(signals, pack.company))
+        ? await answerHowHeardField(inp, pack) : false;
 
     // ── Name ──
     } else if (/first.?name|legal.?first|given.?name|forename|\bfname\b/i.test(signals)) {
@@ -3166,15 +3259,30 @@ async function fillUniversal(pack) {
 // observeField() saves the answer on blur, keyed by the field's label.
 // On the NEXT form, recallFromMemory() retrieves past answers and auto-fills.
 
+/**
+ * The field holds what SpotApply wrote (fillInput records it), not the
+ * user's words. fillInput fires blur and change itself, so a box filled after
+ * a learner started watching it taught memory our own write (review 2026-10-09).
+ */
+function _holdsOurWrite(el) {
+  const w = el && el.dataset ? el.dataset.spotapplyLastWrite : undefined;
+  return w !== undefined && String(el.value || '').trim() === String(w).trim();
+}
+
 function observeField(el, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
   if (isAntiBotField(el)) return;               // never learn a captcha / honeypot
   if (el.dataset.spotapplyObserved) return; // already watching
   el.dataset.spotapplyObserved = 'true';
 
+  let saved = false;
   const save = () => {
+    if (saved) return;
     const val = el.value?.trim();
     if (!val) return;
+    // Our own write is not the user's answer, and an Other box we filled for
+    // how they heard is part of that answer: never learned.
+    if (_holdsOurWrite(el) || el.dataset.spotapplyHowHeard === 'true') return;
     const label = getFieldSignature(el);
     if (!label || label.length < 3) return;
 
@@ -3188,6 +3296,7 @@ function observeField(el, pack) {
     if (isHowHeardQuestion(label + ' ' + (labelText(el) || ''))) return;
 
     console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
+    saved = true;
     apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
       question: label,
       answer: val,
@@ -3197,8 +3306,10 @@ function observeField(el, pack) {
     highlightField(el, 'green');
   };
 
-  el.addEventListener('blur', save, { once: true });
-  el.addEventListener('change', save, { once: true });
+  // Not { once: true }: our own write's synthetic blur/change must not use up
+  // the listener the user's answer needs.
+  el.addEventListener('blur', save);
+  el.addEventListener('change', save);
 }
 
 // Build a stable signature for a field from all its signals
@@ -3476,6 +3587,9 @@ function observeAnswer(ta, pack) {
   ta.addEventListener('blur', function handler() {
     const newVal = ta.value.trim();
     if (!newVal || newVal === origValue.trim()) return;
+    // A later write of ours (an Other box for how they heard) is not the
+    // user's answer, and that box is never learned at all.
+    if (_holdsOurWrite(ta) || ta.dataset.spotapplyHowHeard === 'true') return;
     const q = labelText(ta);
     if (!q) return;
     ta.removeEventListener('blur', handler);
@@ -4234,7 +4348,7 @@ function auditPageFields(pack, platformFilled) {
 
   // A how-did-you-hear option list drawn as buttons or ARIA options (Ashby)
   // is a question too; radio groups are already counted above.
-  for (const g of howHeardChoiceGroups(document)) {
+  for (const g of howHeardChoiceGroups(document, pack && pack.company)) {
     if (g.kind === 'radio') continue;
     if (g.options.some(_choiceOn)) { filled++; highlightField(g.box, 'green'); continue; }
     needUser++; needUserEls.push(g.box);
