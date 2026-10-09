@@ -552,6 +552,56 @@ def summary_sentences(md: str) -> List[str]:
     return out
 
 
+_EMPHASIS_RE = re.compile(r"(?<!\*)\*\*(?!\*)|(?<!\*)\*(?!\*)")
+
+
+def _rejoin_kept(pieces: List[Tuple[int, str, bool]]) -> str:
+    """The summary line rebuilt from the pieces that stay: segments of one
+    sentence pipe-joined, sentences space-joined.
+
+    Emphasis that ran into a removed piece is closed (or reopened) inside the
+    text that stays: "**Integrations Engineer | Translating API documentation
+    into tested connectors**" loses its second segment and keeps
+    "**Integrations Engineer**", never a lone "**" the renderer prints as
+    text. Markers that were never paired are left as they were."""
+    flat, spans = "", []
+    for k, (sent, text, _) in enumerate(pieces):
+        if k:
+            flat += "|" if pieces[k - 1][0] == sent else " "
+        spans.append((len(flat), len(flat) + len(text)))
+        flat += text
+
+    def piece_at(pos: int) -> int:
+        return next(k for k, (a, b) in enumerate(spans) if a <= pos < b)
+
+    pre, post = [""] * len(pieces), [""] * len(pieces)
+    for mark in ("**", "*"):
+        opened: List[int] = []
+        for m in _EMPHASIS_RE.finditer(flat):
+            if m.group(0) != mark:
+                continue
+            s, e = m.span()
+            if s and not flat[s - 1].isspace() and opened:
+                a, b = piece_at(opened.pop()), piece_at(s)
+                if pieces[a][2] or pieces[b][2]:
+                    kept = [k for k in range(a, b + 1) if not pieces[k][2] and pieces[k][1].strip()]
+                    if kept and pieces[a][2]:
+                        pre[kept[0]] = mark + pre[kept[0]]
+                    if kept and pieces[b][2]:
+                        post[kept[-1]] += mark
+            elif e < len(flat) and not flat[e].isspace():
+                opened.append(s)
+    out, last = "", None
+    for k, (sent, text, gone) in enumerate(pieces):
+        if gone or not text.strip():
+            continue
+        if out:
+            out += " | " if sent == last else " "
+        out += pre[k] + text.strip() + post[k]
+        last = sent
+    return out
+
+
 def remove_summary_sentences(md: str, sentences, master_md: str = "") -> Tuple[str, List[str]]:
     """Take the given sentences out of the summary; never adds a word of its own.
 
@@ -569,28 +619,26 @@ def remove_summary_sentences(md: str, sentences, master_md: str = "") -> Tuple[s
     replaced: Dict[int, Optional[str]] = {}
     for i in idx:
         lead, parts = _split_summary_line(lines[i])
-        kept = []
-        changed = False
-        for part in parts:
+        # (sentence number, text, removed): a sentence, or one segment of a
+        # pipe tagline, where only the unbacked segments go ("Integrations
+        # Engineer | Python" survives its invented clause).
+        pieces: List[Tuple[int, str, bool]] = []
+        for n, part in enumerate(parts):
             if normalize_text(part) in targets:
                 removed.append(_MD_NOISE_RE.sub("", part).strip())
-                changed = True
+                pieces.append((n, part, True))
                 continue
-            if "|" in part:
-                # A pipe tagline: drop only the unbacked segments, keep the rest
-                # ("Integrations Engineer | Python" survives its invented clause).
-                segs = [s.strip() for s in part.split("|")]
-                left = [s for s in segs if s and normalize_text(s) not in targets]
-                gone = [s for s in segs if s and normalize_text(s) in targets]
-                if gone:
-                    removed.extend(_MD_NOISE_RE.sub("", s).strip() for s in gone)
-                    changed = True
-                    if left:
-                        kept.append(" | ".join(left))
-                    continue
-            kept.append(part)
-        if changed:
-            replaced[i] = (lead + " ".join(kept)) if kept else None
+            segs = part.split("|")
+            flags = [len(segs) > 1 and bool(s.strip()) and normalize_text(s) in targets
+                     for s in segs]
+            if not any(flags):
+                pieces.append((n, part, False))
+                continue
+            removed.extend(_MD_NOISE_RE.sub("", s).strip() for s, f in zip(segs, flags) if f)
+            pieces.extend((n, s, f) for s, f in zip(segs, flags))
+        if any(gone for _, _, gone in pieces):
+            text = _rejoin_kept(pieces)
+            replaced[i] = (lead + text) if text else None
     if not removed:
         return md, []
     out: List[str] = []

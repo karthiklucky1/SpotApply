@@ -91,6 +91,9 @@ _STOP = {
     "however", "additionally", "ideally", "finally", "overall", "typically",
     "specifically", "instead", "therefore", "furthermore", "moreover",
     "preferably", "and/or", "he/she", "s/he", "his/her", "him/her",
+    # A request and a section's qualifier, never a skill: "PLEASE NOTE:" read
+    # as the acronym "please", "Additional Information" as a keyword.
+    "please", "additional",
 }
 # Small words that DO sit inside real skill phrases ("infrastructure as code",
 # "proof of concept", "research and development"). Any other stop word inside a
@@ -114,16 +117,21 @@ _SELF_TALK = frozenset({
     "age", "origin", "potential", "unique", "welcome", "qualified",
     "individuals", "duties", "notice", "creativity", "innovative", "careers",
     "jobs", "roles", "members", "employees", "equal", "day", "days", "world",
+    # "base pay", "pay range", "view the pay transparency provision". A wallet
+    # that is a skill ("Apple Pay") is a curated term (_TECH_PHRASES), read
+    # before this list applies.
     "pay",
 })
 # Words a posting also uses about itself ("our culture", "competitive
 # benefits", "growth opportunities") that NAME A FIELD inside a phrase: cell
 # culture, gene expression, employee relations, benefits administration, public
 # policy, dental hygiene, process improvement, family medicine, people
-# operations, identity management, growth marketing, health equity. Never a
-# keyword on their own; a phrase on one is dropped only when every other word
-# in it is generic too ("inclusive culture", "dental insurance").
+# operations, identity management, growth marketing, health equity, patient
+# education. Never a keyword on their own; a phrase on one is dropped only when
+# every other word in it is generic too ("inclusive culture", "dental
+# insurance").
 _FIELD_TALK = frozenset({
+    "education",
     "culture", "teams", "mission", "missions", "vision", "candidate",
     "candidates", "applicant", "applicants", "people", "person", "benefits",
     "equity", "compensation", "impact", "employee", "accommodation",
@@ -162,6 +170,8 @@ _FLUFF = _SELF_TALK | _FIELD_TALK | frozenset({
     "employment", "type", "department", "full-time", "part-time", "permanent",
     "temporary", "contract", "seasonal", "description", "summary", "overview",
     "reasonable", "check", "checks", "hiring", "transparency",
+    # "NOTE:" lead-ins; "progress note" and "SOAP note" still count.
+    "note", "notes",
 })
 # Too broad to be a keyword alone, yet a real word inside one ("health
 # equity", "health policy", "medical assistant").
@@ -184,6 +194,7 @@ _CLAUSE_VERBS = frozenset({
     "conduct", "conducts", "conducting", "configure", "configuring", "perform",
     "join", "apply", "embrace", "fostering", "promote", "promoting", "encourage",
     "encourages", "strive", "thrive", "believe", "enjoy", "receive", "offer",
+    "integrate", "integrates", "integrating",
 })
 _GENERIC = frozenset(_STOP) | _FLUFF | _CLAUSE_VERBS
 
@@ -202,6 +213,8 @@ _TECH_PHRASES: List[str] = [
     "model inference", "inference", "transformers", "pytorch", "tensorflow",
     "scikit-learn", "hugging face", "langchain", "llamaindex", "openai", "claude",
     "semantic search", "recommendation systems", "mlops", "model deployment",
+    # Payments ("pay" alone is the offer, see _SELF_TALK)
+    "apple pay", "google pay", "samsung pay", "amazon pay", "shop pay",
     # Backend / infra
     "rest api", "restful api", "restful apis", "rest apis", "graphql", "grpc",
     "microservices", "fastapi", "flask", "django", "node.js", "express",
@@ -339,7 +352,9 @@ def _company_forms(company: str, text: str = "") -> Tuple[List[str], List[str], 
     Horizon3Ai). A one-word core that is an ordinary word stands for the
     company only when the posting never writes it in lower case and it is not
     a known skill: "scale" in "at scale" is not Scale AI, "open" in "open
-    source" is not OpenAI, and "git" is a tool even at GitLab.
+    source" is not OpenAI, and "git" is a tool even at GitLab. Only prose
+    counts: "accommodations@notion.so" and "acme.com" are the company's own
+    address, not the word used in lower case.
     """
     words = _split_name((company or "").strip())
     if len(words) == 1 and text:
@@ -350,8 +365,8 @@ def _company_forms(company: str, text: str = "") -> Tuple[List[str], List[str], 
     alone = (core == words or len(core) > 1 or bool(re.search(r"\d", core[0]))
              or not text
              or (not _is_known_skill(core[0])
-                 and not re.search(rf"(?<![A-Za-z0-9]){re.escape(core[0])}(?![A-Za-z0-9])",
-                                   text)))
+                 and not re.search(rf"(?<![A-Za-z0-9@/.]){re.escape(core[0])}"
+                                   rf"(?![A-Za-z0-9@])(?!\.[A-Za-z])", text)))
     return words, core, alone
 
 
@@ -458,10 +473,13 @@ def _named_tokens(text: str) -> frozenset:
     ("s3", "c#"), an internal capital ("PowerPoint", "qPCR"), a short slashed
     term ("A/B", "CI/CD") or an acronym ("SQL", "ACLS") on a line that is not
     itself all capitals (a heading). A word the posting uses once and writes in
-    lower case ("counts", "alone") is prose, not a tool."""
+    lower case ("counts", "alone") is prose, not a tool. On a section heading
+    ("Essential Functions", "Core Competencies") the capitals are the
+    heading's style, so only the shapes count there."""
     out = set()
     for line in (text or "").splitlines():
         heading = not re.search(r"[a-z]", line)
+        titled = _is_section_heading(_BULLET_RE.sub("", line))
         for m in re.finditer(r"[A-Za-z][A-Za-z0-9+#/\-]*", line):
             word = m.group(0)
             low = word.lower()
@@ -472,7 +490,7 @@ def _named_tokens(text: str) -> frozenset:
                     or (word.isupper() and 2 <= len(word) <= 6 and not heading)):
                 out.add(low)
                 continue
-            if not re.search(r"[A-Z]", word):
+            if titled or not re.search(r"[A-Z]", word):
                 continue
             before = line[:m.start()].rstrip(" \t\"'“(")
             if before and before[-1] not in _SENTENCE_END:
@@ -486,16 +504,19 @@ def _named_tokens(text: str) -> frozenset:
 # adds the technical ones it knows (pandas, numpy, dbt, pytest ...).
 _KNOWN_TOOLS = frozenset({
     "pandas", "numpy", "scipy", "matplotlib", "seaborn", "jupyter", "pytest", "dbt",
-    "git", "bash", "npm", "yarn", "webpack", "kubectl", "helm", "nginx", "ansible",
-    "excel", "tableau", "looker", "workday", "netsuite", "quickbooks", "hubspot",
-    "salesforce", "apex", "jira", "confluence", "figma", "photoshop", "autocad",
+    "git", "npm", "webpack", "kubectl", "nginx", "ansible",
+    "tableau", "looker", "netsuite", "quickbooks", "hubspot",
+    "salesforce", "jira", "figma", "photoshop", "autocad",
     "solidworks", "matlab", "stata", "spss", "zendesk", "servicenow", "splunk",
 })
-# Skill-graph names that are also everyday English ("express interest", "react
-# to", "swift action"): written once in lower case they are prose.
+# Tool names that are also everyday English ("express interest", "react to",
+# "swift action", "excel in a busy cafe", "throughout the workday", "at the
+# confluence of two rivers"): written once in lower case they are prose. They
+# count once only as a list item or written like a name ("Excel", "Workday").
 _AMBIGUOUS_SKILLS = frozenset({
     "express", "swift", "node", "react", "go", "lambda", "spark", "rust", "flutter",
     "angular", "vue", "tailwind", "py", "js", "ts", "tf", "cv", "ml", "dl",
+    "excel", "workday", "confluence", "helm", "bash", "yarn", "apex",
 })
 _KNOWN_CACHE: Dict[int, frozenset] = {}
 
@@ -541,17 +562,65 @@ _LINE_OPENERS = frozenset({
 })
 _OFFER_WORDS = frozenset({"benefits", "benefit", "perks", "perk", "compensation",
                           "salary", "offer", "rewards", "pay"})
+# Offer headings the word test cannot read, because they name no offer word or
+# hold a word no generic list has: the candidate gets or receives, the employer
+# provides, or the heading names the workplace. Read on the lower-cased
+# heading; "What you'll get to do" is the job, not the offer.
+_OFFER_HEADING_RE = re.compile(
+    r"(?:\byou(?:'ll| will)? (?:get|receive)(?: from us)?|\bwe (?:provide|offer)"
+    r"|\bin it for you)$|^life at\b")
+# "Total Rewards" names the package only when written as a heading: "Total
+# rewards" in an HR posting's list is a field, and the items after it are
+# skills ("Workday HCM", "HRIS reporting").
+_TOTAL_REWARDS_RE = re.compile(r"\b(?:Total Rewards|TOTAL REWARDS)\b")
 _SECTION_WORDS_RE = re.compile(
     r"\b(?:requirements?|qualifications?|responsibilities|skills|duties|role|you|your|"
     r"about|preferred|nice|bring|experience|position|job|overview|description)\b",
     re.IGNORECASE)
+# The nouns a section heading ends on: "Key Skills", "Essential Functions",
+# "Physical Demands", "Core Competencies", "Must Haves", "Our Tech Stack".
+_HEADING_NOUNS = frozenset({
+    "skills", "requirements", "qualifications", "responsibilities", "duties",
+    "functions", "competencies", "demands", "certifications", "haves", "stack",
+})
+
+
+def _names_tool(words: List[str]) -> bool:
+    """True when the words hold a known tool, the everyday-English ones
+    included ("Excel skills", "React skills")."""
+    tools = _known_skills() | _AMBIGUOUS_SKILLS
+    return any(" ".join(words[i:j]) in tools
+               for i in range(len(words)) for j in range(i + 1, min(i + 3, len(words)) + 1))
+
+
+def _is_section_heading(body: str) -> bool:
+    """A short line that names a section of the posting: five words or fewer,
+    ending on a section noun, with no tool before it. Scrapers store a
+    description with get_text("\\n"), so "Key Skills" sits right above "SQL"
+    and "Tableau" and reads like one more item, and its Title Case reads like
+    a name; edge stripping then left "key", "technical" or "soft" behind as a
+    keyword. "Excel skills" names a tool and stays an item."""
+    words = [w.lower() for w in _TOKEN_RE.findall(body or "")]
+    return (bool(words) and len(words) <= 5 and words[-1] in _HEADING_NOUNS
+            and not _names_tool(words[:-1]))
+
+
+def _is_offer_heading(body: str, words: List[str]) -> bool:
+    if ((words[0] == "why" or _OFFER_WORDS & set(words))
+            and all(w in _GENERIC or w == _CO_MARK for w in words)):
+        return True
+    if _TOTAL_REWARDS_RE.search(body):
+        return True
+    plain = re.sub(r"[^a-z' ]+", " ", body.lower().replace("’", "'"))
+    return bool(_OFFER_HEADING_RE.search(re.sub(r"\s+", " ", plain).strip()))
 
 
 def _without_offer(text: str) -> str:
     """The posting minus its offer: the lines under a "Benefits", "Perks of
-    Acme", "Compensation and Values" or "Why join us" heading, up to the next
-    heading about the job ("Requirements", "What you'll do", "About the
-    role"). "Unlimited PTO", "401(k) matching" and "Medical, dental and
+    Acme", "Compensation and Values", "Why join us", "What you'll get",
+    "Total Rewards" or "Life at Acme" heading, up to the next heading about
+    the job ("Requirements", "What you'll do", "About the role"). "Unlimited
+    PTO", "401(k) matching", "Gym membership" and "Medical, dental and
     vision" describe the employer, never a skill the resume lacks."""
     out: List[str] = []
     in_offer = False
@@ -559,8 +628,7 @@ def _without_offer(text: str) -> str:
         body = _BULLET_RE.sub("", line).strip()
         words = [w.lower() for w in _TOKEN_RE.findall(body)]
         if words and not _BULLET_RE.match(line) and len(body.split()) <= 5:
-            if ((words[0] == "why" or _OFFER_WORDS & set(words))
-                    and all(w in _GENERIC or w == _CO_MARK for w in words)):
+            if _is_offer_heading(body, words):
                 in_offer = True
                 out.append("")
                 continue
@@ -575,9 +643,21 @@ def _list_items(text: str) -> frozenset:
     adjacent short lines (how an HTML list reads once tags are stripped), of
     four words or fewer, split on "and"/"or"/commas, with leading and trailing
     stop words dropped ("Experience with dbt" -> "dbt"). Read it from
-    _without_offer(): a benefits list is the offer, not the job."""
+    _without_offer(): a benefits list is the offer, not the job. The heading
+    that introduces a list is not one of its items: a section heading ("Key
+    Skills", "Essential Functions"), or a plain line whose next line is a
+    bullet ("Tools We Use" above "- Jira")."""
     lines = (text or "").splitlines()
     bodies = [_BULLET_RE.sub("", ln).strip() for ln in lines]
+    bulleted = [bool(_BULLET_RE.match(ln)) for ln in lines]
+    # Whether the next non-blank line is a bullet (stripped HTML leaves blank
+    # lines between a heading and its <li> items).
+    opens_list = [False] * len(lines)
+    nxt = False
+    for j in range(len(lines) - 1, -1, -1):
+        opens_list[j] = nxt
+        if bodies[j]:
+            nxt = bulleted[j]
 
     def short(j: int) -> bool:
         return 0 <= j < len(lines) and bool(bodies[j]) and len(bodies[j].split()) <= 4
@@ -585,7 +665,7 @@ def _list_items(text: str) -> frozenset:
     out = set()
     for i, line in enumerate(lines):
         body = bodies[i]
-        bullet = bool(_BULLET_RE.match(line))
+        bullet = bulleted[i]
         words = [w.lower() for w in _TOKEN_RE.findall(body)]
         if not body or ":" in body or len(body.split()) > 4 or not words:
             continue
@@ -595,6 +675,8 @@ def _list_items(text: str) -> frozenset:
             continue                       # a line break inside a sentence
         if words[0] in _LINE_OPENERS:
             continue
+        if _is_section_heading(body) or (not bullet and opens_list[i] and not _names_tool(words)):
+            continue                       # the list's heading, not an item
         for part in re.split(r",|;|\s(?:and|or|&)\s|\s/\s", body.lower()):
             toks = _TOKEN_RE.findall(part)
             while toks and toks[0] in _STOP:
