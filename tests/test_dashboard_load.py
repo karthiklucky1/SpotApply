@@ -154,11 +154,38 @@ def test_the_score_bands_count_open_jobs_only(pool, monkeypatch):
     d = server.api_stats(request=None)
     assert d["degraded"] is False
     assert d["total_jobs"] == 4
-    assert d["closed_jobs"] == 2
+    # Both closed rows are a day old: inside the Ghost tab's window. There is
+    # no all-history closed count (it was the statement that starved the rest).
+    assert d["closed_jobs_recent"] == 2 and "closed_jobs" not in d
     assert d["scores"]["band_85_100"] == 1, "two closed 90s are history, not the pool"
     assert d["scores"]["band_60_84"] == 1 and d["scores"]["band_40_59"] == 1
     assert d["scores"]["unranked"] == 1 == d["funnel"]["pending_scoring"]
     assert sum(d["sources"].values()) == 4
+
+
+def test_a_slow_closed_count_never_costs_the_insights_numbers(pool, monkeypatch):
+    """2026-10-09, the owner's account (73k closed rows): the closed counts ran
+    second and hit the statement timeout, which skipped every count after them
+    — Insights said "No jobs yet" and drew an empty chart for 473 jobs. The
+    closed (history) count now runs LAST: when it times out, only it is
+    missing."""
+    _as(monkeypatch, _U)
+    real = server._BoundedReads
+
+    class _ClosedTimesOut(real):
+        def get(self, default, fn):
+            for cell in (fn.__closure__ or ()):
+                stmt = cell.cell_contents
+                if hasattr(stmt, "compile") and "job.is_closed = true" in str(stmt):
+                    self.degraded = True              # the closed count timed out
+                    return default
+            return super().get(default, fn)
+    monkeypatch.setattr(server, "_BoundedReads", _ClosedTimesOut)
+    d = server.api_stats(request=None)
+    assert d["closed_jobs_recent"] is None and d["degraded"] is True
+    assert d["total_jobs"] == 4
+    assert d["scores"]["band_85_100"] == 1 and d["scores"]["band_40_59"] == 1
+    assert sum(d["sources"].values()) == 4, "the source breakdown must still arrive"
 
 
 # ── retention: untouched copies close after a week ───────────────────────────

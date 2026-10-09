@@ -362,7 +362,7 @@ def test_the_return_prompt_offers_no_longer_available():
 
 
 def test_the_job_view_can_report_it_too():
-    """The prompt closes itself after 25 s; the job view keeps the option."""
+    """The return prompt is one place to report it; the job view keeps the option."""
     assert "reportUnavailable({{ app.id }}, this)" in HTML
     body = _function("reportUnavailable")
     assert "_postUnavailable(appId)" in body and "not interested" in body

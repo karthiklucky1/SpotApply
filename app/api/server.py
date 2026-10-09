@@ -3437,30 +3437,37 @@ def _compute_stats(uid) -> dict:
                 q = q.where(Job.is_closed == False)  # noqa: E712
             return q
 
-        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed. This is
-        # the Pool stat card and `funnel.total_pool`, and the onboarding banner
-        # reads `total_jobs == 0` as "this user has nothing yet". The tab badges
-        # are a different question and get their own windowed counts.
+        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed:
+        # `funnel.total_pool`, and the onboarding banner reads
+        # `total_jobs == 0` as "this user has nothing yet". NOT the Pool tile:
+        # that is "jobs found" (freshness.found_jobs_expr, /api/pipeline/live),
+        # and writing this number into it made the tile jump 473 / 3.8k.
         total_jobs = _n(_mine(select(func.count(Job.id))))
-        closed_jobs = _n(_mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                               open_only=False))
 
         # Closed jobs INSIDE the explorer's window — fills the Ghost Jobs tab
         # badge at page load; built from the setting the tab's query defaults
-        # to, or the badge changes value the moment the tab opens.
+        # to, or the badge changes value the moment the tab opens. Built here,
+        # COUNTED LAST (below): a slow closed-history count must never cost
+        # the open-pool numbers the Insights panel shows.
+        #
+        # There is no all-history closed count any more (2026-10-09). Nothing
+        # displayed it, yet it was the second statement of every load: 73k
+        # closed rows on one account took ~5 s, and the windowed count after
+        # it (coalesce form, 11 s) hit the statement timeout — which marked
+        # the read degraded and skipped EVERY count below, so Insights said
+        # "No jobs yet" to a user with 473 jobs and the Ghost badge fell back
+        # to 73,171 before reading 3 once the tab opened.
         from app.common.freshness import is_fresh_expr as _fresh_expr
         _explorer_age = int(getattr(settings, "explorer_max_age_days", 0) or 0)
         _recent_filter = _fresh_expr(
             _explorer_age,
             int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
-            for_render=True,
+            for_render=True, index_friendly=True,
         ) if _explorer_age > 0 else None
+        _closed_q = _mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
+                          open_only=False)
         if _recent_filter is not None:
-            closed_jobs_recent = _n(_mine(
-                select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                open_only=False).where(_recent_filter))
-        else:
-            closed_jobs_recent = closed_jobs
+            _closed_q = _closed_q.where(_recent_filter)
 
         # Everything below describes the CURRENT (open) pool. It counted every
         # row the account ever held — closed history included — which is what
@@ -3544,6 +3551,8 @@ def _compute_stats(uid) -> dict:
             total_validated_jobs = _n(select(func.coalesce(func.sum(CompanyRegistry.job_count), 0)))
         except Exception as re_:
             log.warning("stats: registry counts unavailable: %s", re_)
+        # Last: the one count that reads CLOSED (history) rows.
+        closed_jobs_recent = _n(_closed_q)
         degraded = reads.degraded
 
     def _minus(a, b):
@@ -3551,7 +3560,6 @@ def _compute_stats(uid) -> dict:
 
     return {
         "total_jobs": total_jobs,
-        "closed_jobs": closed_jobs,
         "closed_jobs_recent": closed_jobs_recent,
         "total_companies": total_companies,
         "funnel": {
@@ -3817,7 +3825,7 @@ def api_jobs(
             int(getattr(settings, "explorer_max_age_days", 0) or 0)
             if max_age_days is None else int(max_age_days)
         )
-        _age_filter = None
+        _age_filter = _age_count_filter = None
         if _effective_age > 0:
             from app.common.freshness import is_fresh_expr as _fresh_expr
             _age_filter = _fresh_expr(
@@ -3827,6 +3835,15 @@ def api_jobs(
             )
             if _age_filter is not None:
                 query = query.where(_age_filter)
+            # The SAME window for the two COUNTs, spelled so the first_seen
+            # index serves it (freshness.is_fresh_expr, index_friendly): the
+            # Ghost tab's count took 11 s on a 73k-closed-row account. The
+            # page query keeps the form its ordered index scan needs.
+            _age_count_filter = _fresh_expr(
+                _effective_age,
+                int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+                for_render=True, index_friendly=True,
+            )
 
         # Get total count (for pagination)
         count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
@@ -3862,8 +3879,8 @@ def api_jobs(
             )
         if _roles_cond is not None:
             count_query = count_query.where(_roles_cond)
-        if _age_filter is not None:
-            count_query = count_query.where(_age_filter)
+        if _age_count_filter is not None:
+            count_query = count_query.where(_age_count_filter)
         # Built here, EXECUTED after the page query below — see the note there.
 
         # Open-pool size INSIDE the caller's age window — the "All Jobs" tab
@@ -3883,8 +3900,8 @@ def api_jobs(
         open_q = select(func.count(Job.id)).where(Job.is_closed == False)  # noqa: E712
         if _uid_filter:
             open_q = open_q.where(Job.user_id == uid)
-        if _age_filter is not None:
-            open_q = open_q.where(_age_filter)
+        if _age_count_filter is not None:
+            open_q = open_q.where(_age_count_filter)
 
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
@@ -4035,6 +4052,12 @@ def api_jobs(
             "jobs": jobs_list,
             "total": total,
             "total_open": total_open,
+            # True when total_open was counted over the All Jobs window
+            # (freshness.found_jobs_expr) — the number the Pool tile and the
+            # All Jobs badge show. A "New today" or all-time view is a
+            # different number and must not overwrite them.
+            "found_window": _effective_age == int(
+                getattr(settings, "explorer_max_age_days", 0) or 0),
             "page": page,
             "pages": pages,
             "limit": limit,
@@ -4299,6 +4322,7 @@ def dashboard(request: Request, all_submitted: bool = False):
     # Legal work-authorization framing for this user (drives the visa-fit panel
     # and the sponsorship-aware ranking boost below).
     visa_framing = None
+    _prof = None
     try:
         from app.intelligence.work_auth import assess_profile
         from app.autofill.answer_pack import _get_or_create_profile
@@ -4306,6 +4330,8 @@ def dashboard(request: Request, all_submitted: bool = False):
         visa_framing = assess_profile(_prof)
     except Exception as _e:
         log.debug("visa framing unavailable: %s", _e)
+    first_paint = _dashboard_first_paint(uid if ssr_authed else None,
+                                         _prof if ssr_authed else None)
 
     # For users who need sponsorship, float no-lottery (cap-exempt) and known
     # sponsors to the top — those are the jobs that can actually hire them.
@@ -4455,8 +4481,64 @@ def dashboard(request: Request, all_submitted: bool = False):
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
+            "first_paint": first_paint,
         }
      )
+
+
+def _dashboard_first_paint(uid, prof) -> dict:
+    """What the header and the search notice can say at FIRST PAINT, from
+    what this request already holds — the profile row the page loaded anyway
+    and counts some other request already cached. Never a new query: the page
+    must not wait on a count to draw its header.
+
+    Before this the header read "? Profile", "Pool …" and "Checking boards…"
+    until three API calls came back (8 s on the owner's account), and a
+    PAUSED search showed "Checking boards…" and no notice for 15-18 s, until
+    /api/search/state answered."""
+    out = {"first_name": "", "initial": "", "pool": None, "search": None}
+    if prof is not None:
+        first = (getattr(prof, "first_name", "") or "").strip()
+        last = (getattr(prof, "last_name", "") or "").strip()
+        out["first_name"] = first
+        out["initial"] = (first[:1] or last[:1]).upper()
+        # The paused notice is the one state the server can state outright: an
+        # explicit pause is cleared only by Resume, so nothing about this
+        # page load can change it. (Idle/dormant depend on the activity stamp
+        # this very request writes, so those wait for /api/search/state.)
+        if getattr(prof, "search_paused_at", None) is not None:
+            try:
+                out["search"] = _search_state_payload(uid or "local", prof=prof)
+            except Exception as e:
+                log.debug("first paint: search state unavailable: %s", e)
+    if uid:
+        # The Pool tile's own cache (/api/pipeline/live, found_jobs_expr) —
+        # read, never computed here.
+        try:
+            from app.common import ttl_cache as _tc
+            pool = _tc.get(f"pool_count:{uid or 'local'}")
+            if isinstance(pool, int):
+                out["pool"] = pool
+                out["pool_text"] = _fmt_k(pool)        # the tile, as _fmtK writes it
+                out["pool_full"] = f"{pool:,}"        # the All Jobs badge
+        except Exception:
+            out["pool"] = None
+    return out
+
+
+def _fmt_k(n: int) -> str:
+    """dashboard.html's ``_fmtK``: 950 · 3.8k · 12k · 120k · 1.2M."""
+    import math
+
+    def _trim1(x: float) -> str:
+        r = math.floor(abs(x) * 10 + 0.5) / 10 * (1 if x >= 0 else -1)
+        return str(int(r)) if r == int(r) else f"{r:.1f}"
+    a = abs(n)
+    if a < 1000:
+        return str(n)
+    if a < 1_000_000:
+        return (_trim1(n / 1e3) if a < 100_000 else str(int(math.floor(n / 1e3 + 0.5)))) + "k"
+    return (_trim1(n / 1e6) if a < 100_000_000 else str(int(math.floor(n / 1e6 + 0.5)))) + "M"
 
 
 _PIPELINE_LIVE_TTL_SECONDS = 10
@@ -10078,12 +10160,14 @@ def _own_profile_query(uid: str):
     return select(UserProfile).where(UserProfile.user_id.is_(None))
 
 
-def _search_state_payload(uid: str) -> dict:
+def _search_state_payload(uid: str, prof=None) -> dict:
+    """``prof``: the caller's own profile row when it is already loaded (the
+    dashboard's first paint), so the answer costs no second read."""
     from app.common.compute_policy import (PAID_AI, QUEUE, dormant_after, idle_after,
                                            search_state)
-    from app.db.models import UserProfile
-    with get_session() as session:
-        prof = session.exec(_own_profile_query(uid)).first()
+    if prof is None:
+        with get_session() as session:
+            prof = session.exec(_own_profile_query(uid)).first()
     st = search_state(prof, paid=_user_paid_search_is_live)
     return {
         "state": st.state,

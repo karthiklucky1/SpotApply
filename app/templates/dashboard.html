@@ -1345,6 +1345,13 @@
      which is what the stage tabs below already do. */
   .tab-row #tab-nav-bar { background: var(--surface) !important;
                           border: 1px solid var(--border) !important; box-shadow: none !important; }
+  /* Desktop: the view tabs WRAP rather than scroll. With the sidebar open at
+     960-1040 px "Boards" sat past the edge of a scroll strip (2026-10-09).
+     23px = a pill on one row, a rounded panel on two; the indicator follows
+     its tab's row (_moveTabIndicator). */
+  @media (min-width: 769px) {
+    .tab-row #tab-nav-bar { flex-wrap: wrap; overflow-x: visible; row-gap: 4px; border-radius: 23px; }
+  }
   /* The ACTIVE tab rides the accent indicator, so its label is white at rest
      AND on hover. It used to inherit that from .hp-band .text-white; once the
      tabs moved out of the band it fell back to near-black the moment you
@@ -1406,30 +1413,30 @@
                     <kbd class="hdr-kbd" aria-hidden="true">⌘K</kbd>
                 </div>
             <div class="hdr-right">
-                <div class="flex items-center gap-2"> <button id="header-notif-btn" onclick="openNotifications()" title="Notifications" class="hp-pill flex items-center gap-2 px-3 sm:px-5 rounded-full text-sm font-bold transition-all duration-200 relative" style="height: 44px;"> <svg class="ic"><use href="#i-bell"/></svg> <span class="hidden sm:inline">Notifications</span> <span id="header-notif-badge" class="notif-badge hidden absolute -top-1 -right-1 text-[9px] font-black rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center border shadow-sm" style="background: var(--sage, #10b981); color: #fff !important; border-color: var(--canvas, #070b14); z-index: 10;"></span> </button> <button id="header-profile-btn" data-tour="profile" onclick="openProfileModal()" title="My Profile" class="hp-pill flex items-center gap-1.5 sm:gap-2.5 pl-1.5 pr-2 sm:pl-2 sm:pr-5 rounded-full transition-all duration-200" style="height: 44px;"> <span id="header-avatar-ring" style="width:34px;height:34px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(255,255,255,0.15);flex-shrink:0;"> <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:15px;font-weight:800;color:var(--sage-700);background:linear-gradient(135deg,rgba(var(--sage-rgb),0.22),rgba(var(--sage-rgb),0.10));letter-spacing:-0.5px;">?</span> </span> <span class="hidden sm:inline text-sm font-bold text-slate-200" id="header-profile-label">Profile</span> <!-- Trust check badge positioned inline next to the profile name --> <span id="header-trust-badge" class="hidden text-[10px] font-black rounded-full w-[17px] h-[17px] flex items-center justify-center transition-all duration-300 ml-1 shadow-sm" style="background: var(--sage, #6C4BF5); color: #ffffff; flex-shrink: 0; line-height: 1;" title="Verified Profile">✓</span> </button></div>
+                <div class="flex items-center gap-2"> <button id="header-notif-btn" onclick="openNotifications()" title="Notifications" class="hp-pill flex items-center gap-2 px-3 sm:px-5 rounded-full text-sm font-bold transition-all duration-200 relative" style="height: 44px;"> <svg class="ic"><use href="#i-bell"/></svg> <span class="hidden sm:inline">Notifications</span> <span id="header-notif-badge" class="notif-badge hidden absolute -top-1 -right-1 text-[9px] font-black rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center border shadow-sm" style="background: var(--sage, #10b981); color: #fff !important; border-color: var(--canvas, #070b14); z-index: 10;"></span> </button> <button id="header-profile-btn" data-tour="profile" onclick="openProfileModal()" title="My Profile" class="hp-pill flex items-center gap-1.5 sm:gap-2.5 pl-1.5 pr-2 sm:pl-2 sm:pr-5 rounded-full transition-all duration-200" style="height: 44px;"> <span id="header-avatar-ring" style="width:34px;height:34px;border-radius:50%;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1.5px solid rgba(255,255,255,0.15);flex-shrink:0;"> <img id="header-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none;" /> <span id="header-avatar-ph" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:15px;font-weight:800;color:var(--sage-700);background:linear-gradient(135deg,rgba(var(--sage-rgb),0.22),rgba(var(--sage-rgb),0.10));letter-spacing:-0.5px;">{{ first_paint.initial or '?' }}</span> </span> <span class="hidden sm:inline text-sm font-bold text-slate-200" id="header-profile-label">{{ first_paint.first_name or 'Profile' }}</span> <!-- Trust check badge positioned inline next to the profile name --> <span id="header-trust-badge" class="hidden text-[10px] font-black rounded-full w-[17px] h-[17px] flex items-center justify-center transition-all duration-300 ml-1 shadow-sm" style="background: var(--sage, #6C4BF5); color: #ffffff; flex-shrink: 0; line-height: 1;" title="Verified Profile">✓</span> </button></div>
             </div>
         </div>
 
         <header class="mb-4 hp-band">
             <div class="hp-band-row">
                 <div>
-                    <div class="hp-greet">Welcome back<span id="hp-greet-name"></span></div>
+                    <div class="hp-greet">Welcome back<span id="hp-greet-name">{% if first_paint.first_name %}, {{ first_paint.first_name }}{% endif %}</span></div>
                     <h1 class="hp-title">Dashboard Overview</h1>
                     <div class="hp-status">
                         <span class="relative flex h-1.5 w-1.5">
                             <span class="relative inline-flex rounded-full h-1.5 w-1.5 truth-dot" style="background:currentColor;"></span>
                         </span>
-                        <span id="measured-status" title="Measured from our own board polling — not a status light">Checking boards…</span>
+                        <span id="measured-status" title="Measured from our own board polling — not a status light">{% if first_paint.search %}Search paused{% else %}Board monitoring active{% endif %}</span>
                     </div>
                 </div>
-                <div class="flex items-center gap-3 flex-wrap"> <!-- Pool Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-indigo-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#4F46E5"><use href="#i-chart"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-indigo-300 uppercase tracking-widest leading-none">Pool</span> <span id="stat-pool" class="text-base font-black text-white tracking-tight mt-1 leading-none">…</span> </div> </div> <!-- Shortlisted Card — hidden: it duplicated the stage-tab count right below (IDs kept for the stats loader) --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-emerald-500/5 to-teal-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#059669"><use href="#i-check-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-emerald-300 uppercase tracking-widest leading-none">Shortlisted</span> <span id="stat-shortlist" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_shortlisted_count or shortlisted|length }}</span> </div> </div> <!-- Rejected Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-rose-500/5 to-red-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#DC2626"><use href="#i-x-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-rose-300 uppercase tracking-widest leading-none">Rejected</span> <span id="stat-rejected" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ rejected|length }}</span> </div> </div> <!-- Submitted Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-cyan-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#0E7490"><use href="#i-send"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-cyan-300 uppercase tracking-widest leading-none">Submitted</span> <span id="stat-submitted" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_submitted_count }}</span> </div> </div> <!-- Discover button --> <button id="discover-hero-banner" onclick="startDiscovery()" class="hidden hp-pill hp-accent ml-1 text-sm font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap transition-all duration-300 hover:scale-[1.02]" style="height: 42px;"> <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Discover Jobs
+                <div class="flex items-center gap-3 flex-wrap"> <!-- Pool Card --> <div class="group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-indigo-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#4F46E5"><use href="#i-chart"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-indigo-300 uppercase tracking-widest leading-none">Pool</span> <span id="stat-pool" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ first_paint.pool_text or '…' }}</span> </div> </div> <!-- Shortlisted Card — hidden: it duplicated the stage-tab count right below (IDs kept for the stats loader) --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-emerald-500/5 to-teal-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#059669"><use href="#i-check-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-emerald-300 uppercase tracking-widest leading-none">Shortlisted</span> <span id="stat-shortlist" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_shortlisted_count or shortlisted|length }}</span> </div> </div> <!-- Rejected Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-rose-500/5 to-red-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#DC2626"><use href="#i-x-circle"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-rose-300 uppercase tracking-widest leading-none">Rejected</span> <span id="stat-rejected" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ rejected|length }}</span> </div> </div> <!-- Submitted Card — hidden: duplicated the stage tabs --> <div class="hidden group relative flex items-center gap-3 px-4 py-2 bg-slate-900/50 hover:bg-slate-800/70 border border-slate-800/80 hover:border-slate-700/80 rounded-xl transition-all duration-300 shadow-sm cursor-default" style="backdrop-filter: blur(12px); min-height: 42px;"> <div class="absolute inset-0 -z-10 bg-gradient-to-r from-cyan-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-xl"></div> <svg class="ic ic-lg" style="color:#0E7490"><use href="#i-send"/></svg> <div class="flex flex-col"> <span class="text-[9px] font-black text-cyan-300 uppercase tracking-widest leading-none">Submitted</span> <span id="stat-submitted" class="text-base font-black text-white tracking-tight mt-1 leading-none">{{ total_submitted_count }}</span> </div> </div> <!-- Discover button --> <button id="discover-hero-banner" onclick="startDiscovery()" class="hidden hp-pill hp-accent ml-1 text-sm font-black py-2.5 px-5 rounded-xl flex items-center gap-2 whitespace-nowrap transition-all duration-300 hover:scale-[1.02]" style="height: 42px;"> <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Discover Jobs
             </button>   <button class="btn-sync-emails" onclick="openEmailSyncInfo()" title="Sync job emails from Gmail/Outlook"> <svg class="ic"><use href="#i-mail"/></svg> Email Sync
             </button>   </div> 
             </div>
         </header>
 
         <div class="tab-row"><div id="tab-nav-bar" class="relative inline-flex p-1.5 bg-slate-900/60 border border-slate-800/80 rounded-full mb-0 gap-1 glass shadow-inner max-w-full overflow-x-auto"> <!-- Sliding active indicator — moves via JS transform (layoutId pattern) --> <span id="tab-indicator"></span> <button id="view-tab-kanban" onclick="switchViewTab('kanban')" class="relative z-10 text-white text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-kanban"/></svg> Pipeline
-            </button> <button id="view-tab-explorer" onclick="switchViewTab('explorer')" title="Every job we found in the last 5 days. Older postings stay in your database — use the date filter inside the tab to reach them." class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-search"/></svg> All Jobs (<span id="explorer-total-count">...</span>)
+            </button> <button id="view-tab-explorer" onclick="switchViewTab('explorer')" title="Every job we found in the last 5 days. Older postings stay in your database — use the date filter inside the tab to reach them." class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-search"/></svg> All Jobs (<span id="explorer-total-count">{{ first_paint.pool_full or '...' }}</span>)
             </button> <button id="view-tab-ghost" onclick="switchViewTab('ghost')" title="Postings from the last 5 days that were taken down, 404'd, or redirected to a generic careers page." class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-ghost"/></svg> Ghost Jobs (<span id="ghost-total-count">...</span>)
             </button> <button id="view-tab-skills" onclick="switchViewTab('skills')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-target"/></svg> Skill Gap
             </button> <button id="view-tab-xray" onclick="switchViewTab('xray')" class="relative z-10 text-slate-400 hover:text-slate-200 text-xs md:text-sm font-bold px-5 py-2.5 rounded-full flex items-center gap-2 transition-colors duration-200 shrink-0"> <svg class="ic"><use href="#i-scan"/></svg> Resume X-Ray
@@ -1624,15 +1631,23 @@
             </div>
             {% endmacro %}
 
-            {#- One row, always: stage chips on the left, shortlist controls on
-                the right. flex-wrap made the controls drop onto a second line
-                at common widths, so the header read as two ragged rows. The row
-                scrolls horizontally on narrow screens instead of wrapping. -#}
+            {#- Stage chips on the left, shortlist controls on the right, ONE row
+                when it fits (wide screens). When it does not, the controls wrap
+                onto their own right-aligned row on desktop: the no-wrap scroll
+                row hid "Best match", the Fit slider and the search box behind
+                the sidebar at 960-1230 px with the sidebar open (2026-10-09).
+                Phones keep the swipeable single row. -#}
             <style>
               #pipe-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
               #pipe-tabs::-webkit-scrollbar { display: none; }
               #pipe-tabs > * { flex-shrink: 0; }
               #shortlist-controls { flex-shrink: 0; }
+              @media (min-width: 769px) {
+                #pipe-tabs { flex-wrap: wrap; overflow-x: visible; row-gap: 8px; }
+                #shortlist-controls, #submitted-controls, #interviewing-controls {
+                  flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; max-width: 100%;
+                }
+              }
               /* Min-fit is a rarely-touched control — keep it compact so it
                  doesn't compete with the stage chips. */
               #minfit-wrap { padding: 3px 8px; gap: 6px; }
@@ -1723,6 +1738,11 @@
                     Showing <span id="shortlist-visible-count">0</span> of <span id="shortlist-total-count">0</span> shortlisted — the rest score below your min-fit filter.
                     <button type="button" onclick="filterShortlistByScore(0)" class="font-black underline decoration-dotted underline-offset-2 transition" style="color:var(--ink,#E2E8F0);">Show all</button>
                 </div>
+                {#- A paused search says so at FIRST PAINT (server._dashboard_first_paint);
+                    _renderSearchState() takes this element over and wires Resume. -#}
+                {% if first_paint.search %}
+                <div id="hp-search-state" role="status" data-ssr="1" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;margin-bottom:8px;border-radius:14px;font-size:12.5px;border:1px solid rgba(217,119,6,.45);background:rgba(217,119,6,.08);color:var(--ink,#e2e8f0);font-weight:700;"><span>{{ first_paint.search.message }}</span><button type="button" data-search-action="resume" style="border:1px solid rgba(217,119,6,.6);border-radius:999px;padding:5px 12px;background:transparent;color:inherit;font-weight:800;cursor:pointer;">Resume search</button></div>
+                {% endif %}
                 <div class="pr-1" id="shortlisted-container"> {% for app, job in shortlisted %}
                     {{ jobrow(app, job, visa_framing) }}
                     {% else %}
@@ -1858,7 +1878,7 @@
        <button type="button" id="ts-open-docs" class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl">📄 View Documents</button>
        <a id="ts-download-pdf" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Resume (PDF, 1 page)</a>
        <a id="ts-download" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Word (.docx)</a>
-       <button type="button" onclick="closeTailorStudio()" class="jbtn jbtn-primary text-[11px] py-2.5 px-5 rounded-xl flex-1">Looks good</button>
+       <button type="button" id="ts-done-btn" onclick="closeTailorStudio()" disabled aria-disabled="true" title="Your resume is still being generated" class="jbtn jbtn-primary text-[11px] py-2.5 px-5 rounded-xl flex-1" style="opacity:.5;cursor:not-allowed;">Looks good</button>
      </div>
    </div>
  </div>
@@ -2143,7 +2163,7 @@
 
         async function loadStats() {
             try {
-                const res = await fetch('/api/stats');
+                const res = await fetch('/api/stats', { headers: authHeaders() });
                 if (!res.ok) {
                     // Never leave the tiles stuck on '...' — show an explicit dash.
                     ['reg-stat-total','reg-stat-active','reg-stat-jobs','explorer-total-count'].forEach(id => {
@@ -2153,30 +2173,33 @@
                     return;
                 }
                 const stats = await res.json();
-                
-                // Update metrics
-                document.getElementById('stat-pool').textContent = _fmtK(stats.total_jobs);
-                document.getElementById('stat-shortlist').textContent = stats.funnel.shortlisted;
+                // A degraded answer (a count ran out of its database budget)
+                // carries null for what it could not count. null is "unknown",
+                // never 0: it must not read as "No jobs yet" or an empty chart.
+                const _known = (v) => v != null;
+
+                // NOT the Pool tile: total_jobs is the all-time open pool, the
+                // tile is "jobs found" (_setFoundJobs, from /api/pipeline/live).
                 // Ghost tab badge — filled at load (previously stayed "..." until
-                // the Ghost tab was first clicked).
-                // closed_jobs_recent, not closed_jobs: the tab pages through
-                // the windowed list, so the unwindowed total would change the
-                // moment the user opened it.
-                const _ghostN = (stats.closed_jobs_recent != null)
-                    ? stats.closed_jobs_recent : stats.closed_jobs;
-                if (_ghostN != null) {
+                // the Ghost tab was first clicked). Only the windowed count: the
+                // tab pages through the windowed list, and the all-history total
+                // it used to fall back to read 73,171 against a list of 3.
+                if (_known(stats.closed_jobs_recent)) {
                     const gEl = document.getElementById('ghost-total-count');
-                    if (gEl) gEl.textContent = _ghostN.toLocaleString();
+                    if (gEl) gEl.textContent = stats.closed_jobs_recent.toLocaleString();
                 }
 
                 // Reveal the fit-score analytics only once there's matching data
                 const _analytics = document.getElementById('analytics-section');
-                if (_analytics) _analytics.style.display = (stats.total_jobs > 0) ? '' : 'none';
-                
+                if (_analytics && _known(stats.total_jobs)) _analytics.style.display = (stats.total_jobs > 0) ? '' : 'none';
+
                 // Registry Stats
-                document.getElementById('reg-stat-total').textContent = _fmtK(stats.registry.total_boards);
-                document.getElementById('reg-stat-active').textContent = _fmtK(stats.registry.active_boards);
-                document.getElementById('reg-stat-jobs').textContent = _fmtK(stats.registry.total_validated_jobs);
+                const _reg = stats.registry || {};
+                [['reg-stat-total', _reg.total_boards], ['reg-stat-active', _reg.active_boards],
+                 ['reg-stat-jobs', _reg.total_validated_jobs]].forEach(([id, v]) => {
+                    const el = document.getElementById(id);
+                    if (el && _known(v)) el.textContent = _fmtK(v);
+                });
 
                 // Freshness stats (measured, not claimed)
                 try {
@@ -2273,12 +2296,15 @@
                     }
                 } catch (e) { /* freshness stats are decorative — never block */ }
                 
-                // Distribution Numbers
-                document.getElementById('band-strong').textContent = stats.scores.band_85_100;
-                document.getElementById('band-good').textContent = stats.scores.band_60_84;
-                document.getElementById('band-weak').textContent = stats.scores.band_40_59;
-                document.getElementById('band-wrong').textContent = stats.scores.band_0_39;
-                
+                // Distribution Numbers. A band the server could not count
+                // shows a dash and the chart is left alone, not drawn empty.
+                const _sc = stats.scores || {};
+                const _bandsKnown = ['band_85_100', 'band_60_84', 'band_40_59', 'band_0_39'].every(k => _known(_sc[k]));
+                [['band-strong', _sc.band_85_100], ['band-good', _sc.band_60_84],
+                 ['band-weak', _sc.band_40_59], ['band-wrong', _sc.band_0_39]].forEach(([id, v]) => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = _known(v) ? v : '—';
+                });
 
                 // Source breakdown bar — show ALL sources with jobs, sorted by count,
                 // in a horizontally scrollable row.
@@ -2289,7 +2315,12 @@
                         .filter(([, c]) => c > 0)
                         .sort((a, b) => b[1] - a[1]);
                     if (!entries.length) {
-                        bar.innerHTML = '<span class="text-[11px] text-slate-500 italic">No jobs yet — run Discover.</span>';
+                        // Empty because the count did not finish is not "no jobs".
+                        bar.innerHTML = stats.degraded
+                            ? '<span class="text-[11px] text-slate-500 italic">Could not count your jobs just now. Try again in a minute.</span>'
+                            : (stats.total_jobs > 0
+                                ? '<span class="text-[11px] text-slate-500 italic">No source breakdown yet.</span>'
+                                : '<span class="text-[11px] text-slate-500 italic">No jobs yet — run Discover.</span>');
                     }
                     entries.forEach(([src, count]) => {
                         const cfg = SOURCE_CONFIG[src] || { label: src.charAt(0).toUpperCase() + src.slice(1), track: 'manual' };
@@ -2315,7 +2346,9 @@
                         const ATS_DIRECT = new Set(['greenhouse', 'lever', 'ashby', 'workday', 'smartrecruiters']);
                         const entries = Object.entries(stats.sources).sort((a, b) => b[1] - a[1]);
                         if (!entries.length) {
-                            tbody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-[10px] text-slate-500">No jobs yet — run Re-Scrape.</td></tr>';
+                            tbody.innerHTML = stats.degraded
+                                ? '<tr><td colspan="4" class="py-4 text-center text-[10px] text-slate-500">Could not count your jobs just now. Try again in a minute.</td></tr>'
+                                : '<tr><td colspan="4" class="py-4 text-center text-[10px] text-slate-500">No jobs yet — run Re-Scrape.</td></tr>';
                         } else {
                             tbody.innerHTML = entries.map(([src, count]) => {
                                 const cfg = SOURCE_CONFIG[src] || { label: src.charAt(0).toUpperCase() + src.slice(1) };
@@ -2329,8 +2362,8 @@
                     }
                 }
 
-                // Render Chart.js
-                renderChart(stats.scores);
+                // Render the fit-score bars — only from a complete distribution.
+                if (_bandsKnown) renderChart(_sc);
                 
             } catch (e) {
                 console.error("Failed to load stats API: ", e);
@@ -3144,12 +3177,13 @@
         async function loadSidebarAvatar() {
             try {
                 await tokenReady();
-                // Load avatar image
-                const res = await fetch('/api/profile/avatar', { headers: authHeaders() });
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.url) setSidebarAvatar(data.url);
-                }
+                // The photo and the name are independent: the name (already
+                // server-rendered at first paint) must never wait behind the
+                // avatar's signed-URL round trip, which it used to.
+                fetch('/api/profile/avatar', { headers: authHeaders() })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(data => { if (data && data.url) setSidebarAvatar(data.url); })
+                    .catch(() => {});
                 // Load name initial for avatar placeholder + header label
                 const pres = await fetch('/api/profile', { headers: authHeaders() });
                 if (pres.ok) {
@@ -3166,6 +3200,8 @@
                     // Update header profile label to show first name
                     const lbl = document.getElementById('header-profile-label');
                     if (lbl) lbl.textContent = displayName;
+                    const greet = document.getElementById('hp-greet-name');
+                    if (greet) greet.textContent = first ? ', ' + first : '';
                 }
             } catch {}
         }
@@ -3176,8 +3212,23 @@
             const indicator = document.getElementById('tab-indicator');
             if (!bar || !btn || !indicator) return;
             indicator.style.width = `${btn.offsetWidth}px`;
+            // Row-aware: the bar wraps on narrower desktops, so the indicator
+            // takes its tab's top and height too, not only its x.
+            indicator.style.top = `${btn.offsetTop}px`;
+            indicator.style.height = `${btn.offsetHeight}px`;
+            indicator.style.bottom = 'auto';
             indicator.style.transform = `translateX(${btn.offsetLeft}px)`;
         }
+        // A resize (or the sidebar opening/closing, which dispatches one) can
+        // re-flow the tabs: keep the indicator on the active one.
+        let _tabIndicatorRaf = 0;
+        window.addEventListener('resize', () => {
+            cancelAnimationFrame(_tabIndicatorRaf);
+            _tabIndicatorRaf = requestAnimationFrame(() => {
+                const active = document.querySelector('#tab-nav-bar [id^="view-tab-"].text-white');
+                if (active) _moveTabIndicator(active.id.replace('view-tab-', ''));
+            });
+        });
 
         function _initAnimations() {
             // Stagger kanban cards independently inside each container to prevent
@@ -3371,11 +3422,12 @@
                 const countKnown = data.pages != null;
                 const fullPage = (data.jobs || []).length >= (data.limit || 25);
                 explorerTotalPages = countKnown ? data.pages : (fullPage ? data.page + 1 : data.page);
-                // Tab badge = the open pool INSIDE the current age window
-                // (matches the Pool card, which uses the same window); the
-                // filtered total (default "My roles" filter) lives in the pager.
-                const openTotal = (data.total_open != null ? data.total_open : data.total);
-                document.getElementById('explorer-total-count').textContent = openTotal != null ? openTotal.toLocaleString() : 'many';
+                // Tab badge = "jobs found": the open pool inside the All Jobs
+                // window, the Pool tile's number (_setFoundJobs). Only an answer
+                // counted over THAT window may write it: "New today" and "All
+                // time" are other numbers (the pager shows them), and writing
+                // them here made the badge and the tile disagree.
+                if (data.found_window && data.total_open != null) _setFoundJobs(data.total_open);
                 document.getElementById('explorer-page-info').textContent = countKnown
                     ? `Page ${data.page} of ${data.pages} (${data.total.toLocaleString()} matching)`
                     : `Page ${data.page} (many matching)`;
@@ -3962,6 +4014,18 @@
             _tsStop();
             document.getElementById('tailor-studio').style.display = 'none';
         }
+        // "Looks good" approves a finished draft, so it is off while one is
+        // being written (it was clickable mid-generation). Only a rendered
+        // result turns it on; × and the backdrop still close the Studio.
+        function _tsSetDone(ready) {
+            const b = document.getElementById('ts-done-btn');
+            if (!b) return;
+            b.disabled = !ready;
+            b.setAttribute('aria-disabled', String(!ready));
+            b.title = ready ? '' : 'Your resume is still being generated';
+            b.style.opacity = ready ? '' : '.5';
+            b.style.cursor = ready ? '' : 'not-allowed';
+        }
         function _tsHeaders() {
             const t = localStorage.getItem('sb_token');
             return t ? { 'Authorization': `Bearer ${t}` } : {};
@@ -3979,6 +4043,7 @@
             document.getElementById('ts-legend').style.display = 'none';
             document.getElementById('ts-stages').style.display = 'flex';
             document.getElementById('ts-open-docs').onclick = () => { closeTailorStudio(); openModal(appId); };
+            _tsSetDone(false);
             tsSwitchTab('resume', true);
             let i = 0;
             document.getElementById('ts-stage-text').textContent = _TS_STAGES[0];
@@ -4084,6 +4149,7 @@
             _tsData = d;
             if (_tsStageTimer) { clearInterval(_tsStageTimer); _tsStageTimer = null; }
             document.getElementById('ts-stages').style.display = 'none';
+            _tsSetDone(true);
             const q = d.quality || {};
             const scoreEl = document.getElementById('ts-score');
             if (typeof q.doctor_score === 'number') {
@@ -4250,6 +4316,7 @@
         async function tsRebuild() {
             document.getElementById('ts-rebuild').classList.add('hidden');
             document.getElementById('ts-stages').style.display = 'flex';
+            _tsSetDone(false);
             document.getElementById('ts-stage-text').textContent = 'Rebuilding with the reviewer\'s feedback…';
             const d = await _tsFetchDetails().catch(() => null);
             _tsBaseline = (d && d.quality && d.quality.generated_at) || _tsBaseline;
@@ -4616,10 +4683,9 @@
                     btn.innerHTML = orig; btn.disabled = false; return;
                 }
                 const pack = await res.json();
-                if (appId) {
-                    trackPendingApply(appId, pack.company);
-                    setTimeout(maybeAskSubmit, 15000);
-                }
+                // Armed only: asked when the user comes BACK to this tab
+                // (maybeAskSubmit on visibilitychange/focus), never on a timer.
+                if (appId) trackPendingApply(appId, pack.company);
                 loadUsage();   // refresh the sidebar Auto-fills counter right away
                 // Attach refresh credentials so the extension's background worker
                 // can renew the access token mid-autofill (kept out of page scripts).
@@ -4953,6 +5019,8 @@
                     setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
                     return;
                 }
+                // Already answered here: no "did you submit?" for it on return.
+                if (typeof _clearPendingApply === 'function') _clearPendingApply(appId);
                 showToastNextPage('Application marked as submitted successfully!', 'success');
                 window.location.reload();
             } catch (e) {
@@ -5470,8 +5538,14 @@
         async function loadMeasuredStatus() {
             const el = document.getElementById('measured-status');
             if (!el) return;
+            // Paused (server-rendered "Search paused", or _syncMeasuredStatus):
+            // board telemetry is not news about THIS user's search.
+            const paused = () => typeof _searchNotRunning === 'function'
+                && typeof _searchState !== 'undefined' && _searchNotRunning(_searchState);
+            if (paused()) return;
             try {
                 const r = await fetch('/api/freshness-stats', { headers: authHeaders() });
+                if (paused()) return;
                 if (r.ok) {
                     const f = await r.json();
                     const pulse = f.pulse || {};
@@ -5595,7 +5669,7 @@
             const waiting = d.waiting || 0, bar = d.bar || 70;
             const rows = d.preview || [];
             const title = reading ? 'Reading your resume'
-                : found > 0 ? `${found} match${found === 1 ? '' : 'es'} on your board${waiting > 0 ? ' — more arriving' : ''}`
+                : found > 0 ? `${found} new match${found === 1 ? '' : 'es'} found${waiting > 0 ? ', more arriving' : ''}`
                 : pool > 0 ? 'Checking jobs against your resume' : 'Finding jobs for your roles';
             const sub = reading ? 'Pulling out your skills, experience and the roles you fit. This takes a few seconds.'
                 : (pool > 0 && !waiting) ? `All ${pool.toLocaleString()} fresh jobs checked. New postings are checked as they appear; only ${bar}+ fits reach your board.`
@@ -5675,10 +5749,14 @@
                     _welcomeSeenMatches = _welcomeSeenMatches == null ? (d.new_matches || 0) : _welcomeSeenMatches;
             }
             if (!d.boost_active && d.completed && !_welcomeDoneClosed()) {
+                // new_matches counts what THIS search session added (welcome.status:
+                // applications created since the window opened), not the board:
+                // "13 matches on your board" beside a Shortlisted tab of 20 read
+                // as a wrong number. Say what it counts.
                 const n = d.new_matches || 0;
                 parts.push(`<div class="glass rounded-2xl px-5 py-4" data-w="done" style="border:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                     <span style="width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--ok,#047857);color:#fff;font-weight:800;">✓</span>
-                    <div style="flex:1;min-width:200px;"><p class="text-sm font-bold text-white">You're set: ${n} match${n === 1 ? '' : 'es'} on your board</p>
+                    <div style="flex:1;min-width:200px;"><p class="text-sm font-bold text-white">You're set: ${n} new match${n === 1 ? '' : 'es'} found this session</p>
                     <p class="text-xs mt-1" style="color:var(--muted);">From here new jobs are checked as soon as they are posted, and strong fits appear on your board on their own.</p></div>
                     <button onclick="closeWelcomeDone()" class="text-xs px-3 py-2" style="color:var(--muted);" data-w="done-close">Close</button>
                   </div>`);
@@ -7690,10 +7768,14 @@
       setTimeout(() => location.reload(), 1500);
     }
   });
-  // Ping the extension every 20s; content.js replies HIREPATH_EXT_PING_OK if alive
-  setInterval(() => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*'), 20000);
+  // Ping the extension every 20s while the tab is visible (a hidden tab's
+  // throttled timers fire in bursts); content.js replies *_EXT_PING_OK if
+  // alive, and the first reply is what sends the credentials pack.
+  const ping = () => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*');
+  setInterval(() => { if (!document.hidden) ping(); }, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ping(); });
   // Ping once shortly after load so an installed extension hides the banner fast.
-  setTimeout(() => window.postMessage({ type: 'SPOTAPPLY_EXT_PING' }, '*'), 800);
+  setTimeout(ping, 800);
 })();
 </script> <!-- ── Guided product tour ─────────────────────────────────────────────── -->
 <style> #tour-dim { position:fixed; inset:0; z-index:99998; pointer-events:none; opacity:0; transition:opacity .25s ease; }
@@ -8606,6 +8688,19 @@
         return t ? { 'Authorization': 'Bearer ' + t } : {};
     }
 
+    // "Jobs found" (freshness.found_jobs_expr): the Pool tile and the All Jobs
+    // badge are the SAME number, so they have ONE writer. /api/stats'
+    // total_jobs is the all-time open pool (3.8k against 473 found, on the
+    // owner's account) and must never land in either. null = the count timed
+    // out server-side: keep the last value rather than report an empty pool.
+    function _setFoundJobs(n) {
+        if (n == null) return;
+        const pool = document.getElementById('stat-pool');
+        if (pool) pool.textContent = _fmtK(n);
+        const badge = document.getElementById('explorer-total-count');
+        if (badge) badge.textContent = Number(n).toLocaleString();
+    }
+
     // Live stat pills — called during ranking so numbers climb without a reload.
     async function refreshStatsLive() {
         try {
@@ -8613,9 +8708,7 @@
             if (!r.ok) return;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            // null = the count timed out server-side (degraded read). Leave the
-            // tile at its last value rather than reporting an empty pool.
-            set('stat-pool', d.counts.pool == null ? null : _fmtK(d.counts.pool));
+            _setFoundJobs(d.counts.pool);
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
@@ -8715,6 +8808,7 @@
         const running = state.state === 'active' || state.state === 'paid';
         _searchState = state;
         _renderSearchSetting(state);
+        _syncMeasuredStatus(state);
         // Running is the normal case and needs no banner: Pause lives in
         // Settings → Automatic job search. The banner is only for a search that
         // is NOT running, where the Resume button is the point.
@@ -8746,7 +8840,23 @@
     function _afterSearchToggle() {
         if (typeof loadWelcomePanel === 'function') loadWelcomePanel();
     }
-    let _searchState = null;
+    // The header line under "Dashboard Overview" never says boards are being
+    // checked for someone whose search is not running: it says "Search paused"
+    // (server-rendered too), and goes back to the measured line on Resume.
+    function _searchNotRunning(state) {
+        // compute_policy's three stopped states; anything unknown is not "paused".
+        return !!state && ['paused', 'idle', 'dormant'].indexOf(state.state) !== -1;
+    }
+    function _syncMeasuredStatus(state) {
+        const el = document.getElementById('measured-status');
+        if (!el) return;
+        if (_searchNotRunning(state)) { el.textContent = 'Search paused'; return; }
+        if (el.textContent === 'Search paused' && typeof loadMeasuredStatus === 'function') {
+            el.textContent = 'Board monitoring active';
+            loadMeasuredStatus();
+        }
+    }
+    let _searchState = {{ (first_paint.search or none)|tojson }};
     function _renderSearchSetting(state) {
         const el = document.getElementById('settings-search-state');
         if (!el || !state) return;
@@ -8774,6 +8884,9 @@
             if (r.ok) _renderSearchState(await r.json());
         } catch (e) { /* non-critical */ }
     }
+    // A paused search arrived server-rendered: wire its Resume button now
+    // (the notice is already on screen); the fetch below confirms the state.
+    if (_searchState) _renderSearchState(_searchState);
     setTimeout(loadSearchState, 1500);
 
     // Loop guard: never auto-reload more than once per 30s (protects against any
@@ -8804,9 +8917,7 @@
             _liveNextAt = 0;
             const d = await r.json();
             const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.textContent = v; };
-            // null = the count timed out server-side (degraded read). Leave the
-            // tile at its last value rather than reporting an empty pool.
-            set('stat-pool', d.counts.pool == null ? null : _fmtK(d.counts.pool));
+            _setFoundJobs(d.counts.pool);
             set('stat-shortlist', d.counts.shortlisted);
             set('stat-submitted', d.counts.submitted);
             set('stat-rejected', d.counts.rejected);
@@ -8855,7 +8966,9 @@
     // Polling is not activity: the server never counts it toward keeping a
     // search running (server._is_meaningful_request).
     setInterval(livePipelineTick, 20000);
-    setTimeout(livePipelineTick, 3000);
+    // Early: the Pool tile and the All Jobs badge read this answer (a cached
+    // count server-side), and "…" for three seconds read as a broken tile.
+    setTimeout(livePipelineTick, 400);
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) { _liveNextAt = 0; livePipelineTick(); }
     });
@@ -9012,12 +9125,59 @@
     }
 
     // ── A4: "Did you submit?" confirmation loop ─────────────────────────────
+    // ARMED when the user leaves for a posting (a tracked posting link, or
+    // Auto-Fill & Apply), SHOWN when they come back to this tab, and kept
+    // until they answer or dismiss it. It used to be scheduled 15 s after
+    // Auto-Fill whether or not anyone was looking, removed itself after 25 s
+    // and was marked "asked" when scheduled — so the user, still on the
+    // employer's form, came back to nothing (2026-10-09).
+    //
+    // One entry per application under hp_pending_apply:<id>, each with an
+    // expiry, so a second posting does not overwrite the first. Every
+    // storage access is guarded: a private window can throw.
+    const _PENDING_KEY = 'hp_pending_apply:';
+    const _PENDING_TTL_MS = 3 * 24 * 3600 * 1000;   // a prompt older than 3 days is moot
+    const _PENDING_MAX = 5;                         // newest first; older ones dropped
+    function _pendingApplies() {
+        const out = [];
+        try {
+            const keys = [];      // collected first: removing while indexing skips keys
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.indexOf(_PENDING_KEY) === 0) keys.push(k);
+            }
+            keys.forEach(k => {
+                let p = null;
+                try { p = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { p = null; }
+                if (!p || !p.appId || Date.now() > (p.expires || 0)) localStorage.removeItem(k);
+                else out.push(p);
+            });
+            // The single-slot key from before this change: drop it.
+            localStorage.removeItem('hp_pending_apply');
+        } catch (e) {}
+        return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    }
     function trackPendingApply(appId, company) {
         if (!appId) return;
         try {
-            localStorage.setItem('hp_pending_apply', JSON.stringify({
-                appId: appId, company: company || '', ts: Date.now(), asked: false,
+            const now = Date.now();
+            localStorage.setItem(_PENDING_KEY + appId, JSON.stringify({
+                appId: String(appId), company: company || '', ts: now,
+                expires: now + _PENDING_TTL_MS, left: false,
             }));
+            _pendingApplies().slice(_PENDING_MAX)
+                .forEach(p => localStorage.removeItem(_PENDING_KEY + p.appId));
+        } catch (e) {}
+    }
+    // The user really went somewhere: the tab was hidden or lost focus AFTER
+    // the prompt was armed. Only then is "did you submit?" a fair question.
+    function _markPendingLeft() {
+        try {
+            _pendingApplies().forEach(p => {
+                if (p.left) return;
+                p.left = true;
+                localStorage.setItem(_PENDING_KEY + p.appId, JSON.stringify(p));
+            });
         } catch (e) {}
     }
 
@@ -9049,34 +9209,56 @@
         if (appId) trackPendingApply(appId, company);
     });
 
-    function maybeAskSubmit() {
-        let p;
-        try { p = JSON.parse(localStorage.getItem('hp_pending_apply') || 'null'); } catch (e) { p = null; }
-        if (!p || p.asked) return;
-        const elapsed = Date.now() - p.ts;
-        if (elapsed < 8000) {
-            // Schedule a re-check when the 8 seconds are up to handle quick tab switches
-            const remaining = 8000 - elapsed;
-            setTimeout(maybeAskSubmit, remaining + 100);
+    // Ask only while this tab is in front of the user, about a posting they
+    // actually left for (or, on a fresh page load, any one still pending:
+    // loading the dashboard again IS coming back).
+    const _PENDING_MIN_AWAY_MS = 5000;   // a glance at a posting is not an application
+    let _askTimer = null;
+    function maybeAskSubmit(onLoad) {
+        if (document.hidden) return;
+        if (document.getElementById('hp-submit-confirm')) return;
+        const p = _pendingApplies().find(x => x.left || onLoad === true);
+        if (!p) return;
+        const wait = (p.ts || 0) + _PENDING_MIN_AWAY_MS - Date.now();
+        if (wait > 0) {                  // back within seconds: ask once they have been away
+            clearTimeout(_askTimer);
+            _askTimer = setTimeout(() => maybeAskSubmit(onLoad), wait + 50);
             return;
         }
-        p.asked = true;
-        try { localStorage.setItem('hp_pending_apply', JSON.stringify(p)); } catch (e) {}
         showSubmitConfirm(p.appId, p.company);
     }
 
-    function _clearPendingApply() { try { localStorage.removeItem('hp_pending_apply'); } catch (e) {} }
+    // Answered or dismissed: that application's prompt is done. Nothing else
+    // ever clears it (it simply expires).
+    function _clearPendingApply(appId) {
+        try { localStorage.removeItem(_PENDING_KEY + appId); } catch (e) {}
+    }
 
     function showSubmitConfirm(appId, company) {
         if (document.getElementById('hp-submit-confirm')) return;
         const box = document.createElement('div');
         box.id = 'hp-submit-confirm';
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-label', 'Did you submit your application?');
         box.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:9999;background:var(--surface,#11162a);color:var(--ink,#fff);border:1px solid var(--border,rgba(255,255,255,.12));border-radius:16px;padding:16px 18px;box-shadow:0 16px 50px rgba(0,0,0,.4);max-width:420px;width:calc(100% - 32px);';
         const who = company ? (' to <b>' + (company + '').replace(/</g, '&lt;') + '</b>') : '';
         box.innerHTML = `
             <div style="font-size:13.5px;font-weight:700;margin-bottom:4px;">Did you submit your application${who}?</div> <div style="font-size:11.5px;color:var(--muted,#94a3b8);margin-bottom:12px;">We'll move it to your Submitted pipeline so you can track it.</div> <div style="display:flex;gap:8px;"> <button id="hp-sc-yes" style="flex:1;padding:9px;border:none;border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:#10b981;color:#fff;">✓ Yes, submitted</button> <button id="hp-sc-no" style="flex:1;padding:9px;border:1px solid var(--border,rgba(255,255,255,.15));border-radius:10px;cursor:pointer;font-weight:700;font-size:12.5px;background:transparent;color:var(--muted,#94a3b8);">Not yet</button> </div> <button id="hp-sc-gone" style="display:block;width:100%;margin-top:8px;padding:8px;border:1px dashed rgba(217,119,6,.45);border-radius:10px;cursor:pointer;font-weight:700;font-size:12px;background:transparent;color:#b45309;">This job is no longer available</button>`;
+        // A plain close: the user saw it and chose not to answer. Same as
+        // answering for this application (it is not asked again).
+        const close = document.createElement('button');
+        close.id = 'hp-sc-close';
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.title = 'Dismiss';
+        close.textContent = '×';
+        close.style.cssText = 'position:absolute;top:6px;right:10px;border:0;background:transparent;color:var(--muted,#94a3b8);font-size:18px;line-height:1;cursor:pointer;padding:2px 4px;';
+        box.appendChild(close);
         document.body.appendChild(box);
-        document.getElementById('hp-sc-no').onclick = () => { _clearPendingApply(); box.remove(); };
+        // Every way out clears THIS application's prompt, and only it.
+        const done = () => { _clearPendingApply(appId); box.remove(); };
+        close.onclick = done;
+        document.getElementById('hp-sc-no').onclick = done;
         // The posting was gone: their copy leaves the board and we re-check it
         // for everyone else (never counted as "not interested").
         document.getElementById('hp-sc-gone').onclick = async () => {
@@ -9085,8 +9267,7 @@
             gone.textContent = 'Reporting…';
             try {
                 const r = await _postUnavailable(appId);
-                _clearPendingApply();
-                box.remove();
+                done();
                 showToastNextPage(_unavailableToast(r), 'success');
                 window.location.reload();
             } catch (e) {
@@ -9095,53 +9276,75 @@
             }
         };
         document.getElementById('hp-sc-yes').onclick = async () => {
-            box.querySelector('#hp-sc-yes').textContent = 'Saving…';
+            const yes = box.querySelector('#hp-sc-yes');
+            yes.disabled = true;
+            yes.textContent = 'Saving…';
             try {
-                await fetch('/application/' + appId + '/submit', { method: 'POST', headers: _hpHeaders() });
-                _clearPendingApply();
-                box.remove();
+                const r = await fetch('/application/' + appId + '/submit', { method: 'POST', headers: _hpHeaders() });
+                if (!r.ok) throw new Error('submit ' + r.status);   // not saved: keep asking
+                done();
                 if (typeof showToastNextPage === 'function') showToastNextPage('✓ Moved to Submitted', 'success');
                 window.location.reload();
             } catch (e) {
-                box.querySelector('#hp-sc-yes').textContent = 'Try again';
+                yes.disabled = false;
+                yes.textContent = 'Try again';
             }
         };
-        // Auto-dismiss after 25s if ignored (keeps it from lingering forever).
-        setTimeout(() => { if (document.getElementById('hp-submit-confirm')) box.remove(); }, 25000);
+        // No timer removes it: it stays until answered or dismissed, so a
+        // user who comes back late still finds it.
     }
 
-    window.addEventListener('focus', maybeAskSubmit);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) maybeAskSubmit(); });
+    // Leaving: the tab is hidden (a new tab or window opened) or loses focus.
+    window.addEventListener('blur', _markPendingLeft);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) _markPendingLeft();
+        else maybeAskSubmit();
+    });
+    // Coming back: the tab is shown or focused again.
+    window.addEventListener('focus', () => maybeAskSubmit());
 
     document.addEventListener('DOMContentLoaded', () => {
         loadResumeStatus();
-        // If they opened a posting then came back before load finished, ask now.
-        setTimeout(maybeAskSubmit, 1200);
+        // A page load is a return too: ask about anything still pending.
+        setTimeout(() => maybeAskSubmit(true), 1200);
+    });
 
-        // Broadcast local server credentials to the extension so it connects/syncs
-        // automatically. The content script attaches at document_idle, which can be
-        // AFTER a single on-load broadcast — so we re-broadcast on a short schedule
-        // (and keep refreshing the token) until/while the extension is present.
-        function _broadcastInitPack() {
-            try {
-                const tok = localStorage.getItem('sb_token');
-                if (!tok) return;  // not logged in yet — nothing to connect
-                const initPack = {
-                    hirepath_url: window.location.origin,
-                    auth_token: tok,
-                    refresh_token: localStorage.getItem('sb_refresh'),
-                    supabase_url: localStorage.getItem('sb_url'),
-                    supabase_anon_key: localStorage.getItem('sb_anon'),
-                };
-                window.postMessage({ type: 'SPOTAPPLY_INIT_EXTENSION', pack: initPack }, '*');
-            } catch (e) {
-                console.error('[SpotApply] Failed to broadcast extension init pack:', e);
-            }
-        }
-        // Fire several times early to beat the content-script attach race, then
-        // keep it fresh on an interval so a later extension reload still connects.
-        [0, 500, 1500, 3000, 6000].forEach(ms => setTimeout(_broadcastInitPack, ms));
-        setInterval(_broadcastInitPack, 15000);
+    // ── Extension credentials: ONCE per page load, again only on a change ──
+    // The content script attaches at document_idle, which can be after any
+    // fixed on-load broadcast, so the pack goes out when the extension PROVES
+    // it is listening: its first reply to the liveness ping (keepExtAlive
+    // pings at 0.8 s, then every 20 s). Every later ping reply compares the
+    // pack with the one already sent and posts only when it changed (a token
+    // refresh). This used to post at 0, 0.5, 1.5, 3 and 6 s and then every
+    // 15 s forever; a throttled background tab then delivered them in bursts,
+    // and the content script logged "Received INIT_EXTENSION" 152 times in
+    // ~15 minutes on the owner's machine (2026-10-09).
+    let _initPackSent = null;
+    function _initPack() {
+        try {
+            const tok = localStorage.getItem('sb_token');
+            if (!tok) return null;  // not logged in yet — nothing to connect
+            return {
+                hirepath_url: window.location.origin,
+                auth_token: tok,
+                refresh_token: localStorage.getItem('sb_refresh'),
+                supabase_url: localStorage.getItem('sb_url'),
+                supabase_anon_key: localStorage.getItem('sb_anon'),
+            };
+        } catch (e) { return null; }
+    }
+    function _broadcastInitPack() {
+        const pack = _initPack();
+        if (!pack) return false;
+        const key = JSON.stringify(pack);
+        if (key === _initPackSent) return false;      // already sent this exact pack
+        _initPackSent = key;
+        window.postMessage({ type: 'SPOTAPPLY_INIT_EXTENSION', pack }, '*');
+        return true;
+    }
+    window.addEventListener('message', (e) => {
+        if (e.source !== window) return;
+        if (/^(SPOTAPPLY|HIREPATH)_EXT_PING_OK$/.test((e.data && e.data.type) || '')) _broadcastInitPack();
     });
 </script>
 <script>
