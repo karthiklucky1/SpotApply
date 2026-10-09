@@ -134,11 +134,26 @@ def test_a_clearance_or_citizenship_role_is_never_lifted_as_silent(case):
     assert out[3]["work_auth"] == factor, "the model's blocker stands, in its own words"
 
 
-@pytest.mark.parametrize("case", sorted(_RESTRICTED))
-def test_the_posting_text_alone_stops_the_lift(case):
+#: Review round 3: requirements the first guard missed. The "United States"
+#: spelling, and negations that describe the APPLICANT ("who are not U.S.
+#: citizens") rather than lift the requirement ("is not required").
+_STATED_IN_THE_POSTING = [
+    "Must be a United States citizen.",
+    "Only United States citizens may apply.",
+    "Applicants who are not U.S. citizens will not be considered.",
+    "We cannot hire anyone who is not a U.S. citizen.",
+    "Candidates who do not hold U.S. citizenship are not eligible for this role.",
+    "Non-citizens are not eligible.",
+    "Active Secret required.",
+    "U.S. citizenship is not required, but you must hold an active clearance.",
+]
+
+
+@pytest.mark.parametrize("description", [_RESTRICTED[c][0] for c in sorted(_RESTRICTED)]
+                         + [_SILENT_POSTING + " " + t for t in _STATED_IN_THE_POSTING])
+def test_the_posting_text_alone_stops_the_lift(description):
     """A note that names nothing is not enough when the POSTING states it."""
     from app.intelligence.work_auth import reconcile_work_auth_factor as fix
-    description, _note = _RESTRICTED[case]
     out = fix({"score": 5, "note": "posting silent on sponsorship"}, _opt(), False, description)
     assert out["score"] == 5 and "model_note" not in out
 
@@ -153,14 +168,36 @@ def test_a_note_naming_a_clearance_or_government_restriction_is_kept(note):
     assert fix({"score": 5, "note": note}, _opt(), False, _SILENT_POSTING)["score"] == 5
 
 
+#: E-Verify and EEO lines a silent posting routinely carries (review round 3:
+#: each made rule (c) read the posting as a citizenship requirement).
+_E_VERIFY = "We participate in E-Verify, a program of U.S. Citizenship and Immigration Services."
+_EEO_US = "We hire without regard to race, national origin, or U.S. citizenship status."
+
+
 @pytest.mark.parametrize("text", [
     "We do not discriminate on the basis of race, national origin or citizenship status.",
+    _E_VERIFY, _EEO_US,
+    "E-Verify is run by United States Citizenship and Immigration Services (USCIS).",
+    "Employment decisions never depend on United States citizen status.",
     "U.S. citizenship is not required.", "You do not need to be a U.S. citizen to apply.",
     "This role does not require a security clearance.",
+    "No security clearance needed.", "Clearance not required.",
+    "You are not required to be a United States citizen.",
+    "U.S. citizenship isn't a requirement for this role.",
     "We sponsor visas and green cards for the right candidate."])
 def test_boilerplate_and_negations_are_not_a_restriction(text):
     from app.intelligence.work_auth import posting_restriction
     assert posting_restriction(_SILENT_POSTING + " " + text) is None
+
+
+def test_a_silent_posting_with_e_verify_boilerplate_is_still_silent():
+    """The live MC1 case: E-Verify is what STEM OPT asks of an employer, not a
+    citizenship requirement."""
+    from app.intelligence.work_auth import reconcile_work_auth_factor as fix
+    factor = {"score": 10, "note": "F-1 OPT; posting silent on sponsorship but US role"}
+    for extra in (_E_VERIFY, _EEO_US, _E_VERIFY + " " + _EEO_US):
+        out = fix(dict(factor), _opt(), False, _SILENT_POSTING + " " + extra)
+        assert out["score"] == 85 and out["model_score"] == 10, extra
 
 
 def test_a_correction_keeps_the_models_own_verdict():
@@ -511,6 +548,96 @@ def test_a_role_change_rescore_is_not_a_zero_either(clean, two_slot_slate):
     p = _place(_slate_job("rrc", 65.0), 65.0)
     assert not p.created and p.outcome == "below_cutoff", p
     assert _status_of(a) == _status_of(b) == ApplicationStatus.SHORTLISTED
+
+
+# ── 3c. ...nor under the per-company cap ─────────────────────────────────────
+# Review 2026-10-09 (round 3): place() runs the company cap even while the
+# slate has room, and pipeline._displace_weaker_shortlisted read the cleared
+# score as 0 too, so after an upload a 65 at the same company evicted a
+# pending 92 ("65 vs 0") and the 92 came back re-scored to "exists".
+
+@pytest.fixture
+def three_per_company(monkeypatch):
+    import app.common.plan_limits as pl
+    from app.config import settings
+    monkeypatch.setattr(pl, "shortlist_daily_limit", lambda uid: 35)    # the slate has room
+    monkeypatch.setattr(settings, "company_cap", 3)
+    monkeypatch.setattr(settings, "company_cap_displace_enabled", True)
+    monkeypatch.setattr(settings, "company_cap_displace_margin", 5)
+    monkeypatch.setattr(settings, "realign_rescore_days", 2)
+    monkeypatch.setattr(settings, "realign_max_rescore", 500)
+
+
+def _cap_job(ext, score):
+    """Same company, own title / city / text: the duplicate rule never fires."""
+    with get_session() as s:
+        j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                company="mc_BigCo", title=f"Backend Engineer {ext}",
+                location=f"City{ext}, TX", url=f"https://x/{ext}", description=f"d{ext}",
+                rerank_score=score, rerank_reasoning="old resume", rerank_breakdown="{}",
+                scored_at=datetime.utcnow(), first_seen=datetime.utcnow())
+        s.add(j)
+        s.commit()
+        s.refresh(j)
+        return j.id
+
+
+def _fill_the_company_cap():
+    held = [_cap_job(ext, sc) for ext, sc in (("cca", 92.0), ("ccb", 90.0), ("ccc", 88.0))]
+    for jid, sc in zip(held, (92.0, 90.0, 88.0)):
+        assert _place(jid, sc).created
+    assert _place(_cap_job("ccd", 65.0), 65.0).outcome == "company_cap"
+    return held
+
+
+def _assert_the_pending_holders_stay(held):
+    p = _place(_cap_job("cce", 65.0), 65.0)
+    assert not p.created and p.outcome == "company_cap", p
+    strong = _cap_job("ccf", 99.0)
+    assert _place(strong, 99.0).outcome == "company_cap", "nothing real to measure it against"
+    assert {_status_of(j) for j in held} == {ApplicationStatus.SHORTLISTED}
+    with get_session() as s:
+        notes = s.exec(select(Application.notes).where(Application.job_id.in_(held))).all()
+    assert not any("Displaced" in (n or "") for n in notes)
+    return strong
+
+
+def test_a_new_resume_does_not_open_the_company_cap(clean, three_per_company):
+    from app.strategy.realign import rescore_board_for_new_resume
+    held = _fill_the_company_cap()
+    assert rescore_board_for_new_resume(UID)["rescore"] == 3
+    strong = _assert_the_pending_holders_stay(held)
+    # The verdicts land: real scores are compared again, and the strong job the
+    # re-shortlist backstop offers again displaces the weakest holder.
+    for jid, sc in zip(held, (91.0, 90.0, 70.0)):
+        _verdict_lands(jid, sc)
+    assert _place(strong, 99.0).outcome == "placed"
+    assert _status_of(held[2]) == ApplicationStatus.SKIPPED
+    assert _status_of(held[0]) == _status_of(held[1]) == ApplicationStatus.SHORTLISTED
+
+
+def test_a_role_change_does_not_open_the_company_cap(clean, three_per_company):
+    from app.strategy.realign import realign_pool_to_roles
+    held = _fill_the_company_cap()
+    stats = realign_pool_to_roles(UID, ["Backend Engineer", "Platform Engineer"],
+                                  old_roles=["Data Engineer"])
+    assert stats["rescore"] == 3
+    _assert_the_pending_holders_stay(held)
+
+
+def test_only_a_holder_with_a_verdict_is_displaced(clean, three_per_company):
+    """Mixed: two holders await their re-score, one keeps a real 70."""
+    held = _fill_the_company_cap()
+    with get_session() as s:
+        for jid, sc in zip(held, (None, None, 70.0)):
+            j = s.get(Job, jid)
+            j.rerank_score = sc
+            s.add(j)
+        s.commit()
+    assert _place(_cap_job("ccg", 72.0), 72.0).outcome == "company_cap"
+    assert _place(_cap_job("cch", 80.0), 80.0).outcome == "placed"
+    assert _status_of(held[2]) == ApplicationStatus.SKIPPED
+    assert _status_of(held[0]) == _status_of(held[1]) == ApplicationStatus.SHORTLISTED
 
 
 def test_only_a_changed_file_counts_as_a_new_resume(clean):

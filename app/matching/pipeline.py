@@ -60,10 +60,20 @@ def _displace_weaker_shortlisted(session, job: Job, score: float, active) -> boo
     margin. Only ever displaces untouched shortlist entries — anything the user
     or agent has acted on (TAILORED and beyond) keeps its slot. Returns True
     when a slot was freed. The displaced job keeps its (SKIPPED) application
-    row, so the re-shortlist backstop can never bounce it straight back."""
+    row, so the re-shortlist backstop can never bounce it straight back.
+
+    A holder whose score was cleared for a re-judge (a new resume, a role
+    change: ``slate._awaiting_rescore``, the slate's one definition) is not a
+    candidate: unknown is not weak. It read as 0, so after an upload any
+    same-company job over the bar evicted a pending 92 ("65 vs 0"), and the 92
+    came back re-scored to a SKIPPED application. With only pending holders
+    nothing is freed; the refused job keeps its score and the re-shortlist
+    backstop offers it again once the verdicts are back."""
     from app.config import settings as _cap_settings
+    from app.strategy.slate import _awaiting_rescore
     margin = max(0, _cap_settings.company_cap_displace_margin)
-    candidates = [a for a in active if a.status == ApplicationStatus.SHORTLISTED]
+    candidates = [a for a in active if a.status == ApplicationStatus.SHORTLISTED
+                  and not _awaiting_rescore(session, a)]
     if not candidates:
         return False
 

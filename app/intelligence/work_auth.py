@@ -440,26 +440,40 @@ _RESTRICTION_RE = re.compile(
 #: U.S. citizens", "U.S. Citizenship is required", "Active TS/SCI clearance",
 #: "obtain and maintain a Secret clearance"), so a posting that says one is not
 #: silent, whatever the note says. Broad on purpose: a false hit only means a
-#: low score the model gave is left as the model gave it. EEO boilerplate
-#: ("without regard to ... citizenship status") names no requirement and does
-#: not match.
+#: low score the model gave is left as the model gave it. EEO and E-Verify
+#: boilerplate names no requirement and does not match: "without regard to
+#: ... (U.S.) citizenship status", "a program of U.S. Citizenship and
+#: Immigration Services" (USCIS runs E-Verify, which STEM OPT asks of an
+#: employer; reading it as a requirement kept a silent posting at 10).
+_US = r"(?:u\.?\s?s\.?|united\s+states)"
 _POSTING_RESTRICTION_RE = re.compile(
-    r"\bu\.?\s?s\.?\s+citizens?(?:hip)?\b|\bcitizens?\s+only\b"
-    r"|\bmust\s+be\s+(?:an?\s+)?(?:u\.?\s?s\.?\s+)?citizens?\b"
+    rf"\b{_US}\s+citizens?(?:hip)?\b(?!\s+(?:(?:and|&)\s+immigration|status)\b)"
+    r"|\bcitizens?\s+only\b|\bnon-?citizens?\b"
+    rf"|\bmust\s+be\s+(?:an?\s+)?(?:{_US}\s+)?citizens?\b"
     r"|\bcitizenship\s+(?:is\s+)?(?:required|requirement|mandatory)\b|\brequires?\s+citizenship\b"
     r"|\bclearance\b|\bts\s*/\s*sci\b|\btop\s+secret\b|\bpolygraph\b|\bpublic\s+trust\b"
-    r"|\bu\.?\s?s\.?\s+persons?\b|\bitar\b|\bexport[-\s]+control"
+    r"|\b(?:active|interim)\s+secret\b|\bsecret\s+(?:is\s+)?required\b"
+    rf"|\b{_US}\s+persons?\b|\bitar\b|\bexport[-\s]+control"
     r"|\bgreen\s*card\s+holders?\b|\bpermanent\s+residents?\s+only\b"
     r"|\bmust\s+be\s+an?\s+(?:lawful\s+)?permanent\s+resident\b",
     re.IGNORECASE)
 
-#: "Citizenship is not required", "no clearance needed", "you do not need to be
-#: a U.S. citizen": the sentence says the restriction does NOT apply. Bridged
-#: by WORDS only, so "No relocation. U.S. citizenship required" is no negation.
+#: The sentence lifts the requirement itself: the negation GOVERNS the term.
+#: "U.S. citizenship is not required", "clearance not needed", "you do not
+#: need to be a U.S. citizen", "does not require a security clearance", "no
+#: clearance needed". A negation describing the APPLICANT is the requirement
+#: stated, not lifted: "applicants who are not U.S. citizens will not be
+#: considered", "anyone who is not a U.S. citizen", "non-citizens are not
+#: eligible". (The first version took any "not ... citizen" as a lift.)
+_NEG_TERM = (rf"(?:(?:{_US}\s+)?citizen\w*|(?:security\s+)?clearance|{_US}\s+persons?)")
+_NEG_QUALIFIER = r"(?:(?:an?|any)\s+)?(?:(?:prior|active|existing|current)\s+)?"
 _RESTRICTION_NEGATED_RE = re.compile(
-    r"\b(?:not|no|nor|never)\s+(?:\w+\s+){0,4}?"
-    r"(?:(?:u\.?\s?s\.?\s+)?(?:\w+\s+)?(?:citizen|clearance)|u\.?\s?s\.?\s+persons?\b)"
-    r"|(?:citizen\w*|clearance)\s+(?:is\s+|are\s+)?not\s+(?:required|needed|necessary)",
+    rf"\b{_NEG_TERM}\s+(?:(?:is|are)\s+(?:not|never)\s+|(?:isn|aren)['’]t\s+|not\s+)"
+    r"(?:required|needed|necessary|mandatory|a\s+requirement)\b"
+    r"|(?:\b(?:do|does|did|will|would)\s+not\s+|\b(?:don|doesn|didn|wouldn|won)['’]t\s+)"
+    rf"(?:need|require)\s+(?:to\s+(?:be|hold|have|obtain|possess)\s+)?{_NEG_QUALIFIER}{_NEG_TERM}"
+    rf"|\b(?:is|are)\s+not\s+required\s+to\s+(?:be|hold|have|obtain|possess)\s+{_NEG_QUALIFIER}{_NEG_TERM}"
+    rf"|\bno\s+{_NEG_QUALIFIER}{_NEG_TERM}\s+(?:is\s+)?(?:required|needed|necessary|requirement)\b",
     re.IGNORECASE)
 #: Sentence ends, but not the dots of an abbreviation: "U.S. citizens" is one
 #: sentence (a `.` after a one-letter word never ends one).
