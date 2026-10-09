@@ -3187,7 +3187,11 @@ def verify_job(job_id: int, request: Request) -> dict:
     - an ATS permalink (`_VERIFIABLE_SOURCES`): `verify_for_delivery(force=True)`
       — GET + body, single-flighted, at most one fetch per posting per
       LIVENESS_REPORT_MIN_RECHECK_MINUTES however many people open it, the
-      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`);
+      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`).
+      A Greenhouse redirect to the board's own index is REMOVED, and a posting
+      the page cannot speak for (an employer-site `gh_jid` page, a redirect it
+      could not place) is asked of the ATS's own API (`delivery_gate._check`;
+      live test 2026-10-09: closed Hasbro and Accela postings read "open");
     - any other link (aggregator, user-submitted): a 404/410 or a redirect to a
       careers index closes THIS user's copy only (`close_own_copy`).
     429/403/timeouts close nothing. No session is open during the fetch.
@@ -4217,6 +4221,8 @@ def dashboard(request: Request, all_submitted: bool = False):
     manual_queue = []
     total_submitted_count = 0
     total_shortlisted_count = 0
+    total_rejected_count = 0
+    total_skipped_count = 0
     board_degraded = False
 
     if not (settings.use_supabase and not uid):
@@ -4334,6 +4340,25 @@ def dashboard(request: Request, all_submitted: bool = False):
             if _uid_filter:
                 q_skip = q_skip.where(Application.user_id == uid)
             skipped = reads.get([], lambda: list(session.exec(q_skip).all()))
+
+            # The Rejected and Removed tabs count the stage, not the page: both
+            # lists stop at 20, and `skipped|length` held the Removed tab at 20
+            # for an account with 2,700 removed jobs, so reporting a job closed
+            # took it off the board and moved no number (live test 2026-10-09).
+            # Same filter as the lists; a count that did not finish falls back
+            # to what rendered, never 0.
+            def _stage_count(status):
+                q = select(func.count(Application.id)).join(Job).where(
+                    Application.status == status
+                ).where(
+                    Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+                )
+                return q.where(Application.user_id == uid) if _uid_filter else q
+
+            total_rejected_count = reads.get(len(rejected), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.REJECTED)).first() or 0))
+            total_skipped_count = reads.get(len(skipped), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.SKIPPED)).first() or 0))
             board_degraded = reads.degraded
 
     from datetime import datetime as _dt
@@ -4490,6 +4515,8 @@ def dashboard(request: Request, all_submitted: bool = False):
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
+            "total_rejected_count": total_rejected_count,
+            "total_skipped_count": total_skipped_count,
             "shortlist_strong_threshold": settings.shortlist_strong_threshold,
             # The bar the AI score is judged against. The board used to
             # hard-code 35 in its status copy, which stopped being the bar

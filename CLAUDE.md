@@ -551,7 +551,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`/api/jobs/{id}/verify`) uses the SAME rules — forced gate check, no
   session across the fetch; an aggregator link closes only the opener's copy
   (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
-  `test_click_verification`.
+  `test_click_verification`. A Greenhouse posting redirected to its board's
+  index (`?error=true`) is REMOVED; one the page can't speak for (employer-site
+  `gh_jid`, token = the ONE registry slug naming its company; any WRONG_PAGE)
+  asks the ATS API: 200 LIVE, 404 REMOVED only if the board answers 200
+  (`delivery_gate._check`, guard: `test_closed_posting_detection`).
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows

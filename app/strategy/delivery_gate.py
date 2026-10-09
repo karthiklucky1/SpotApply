@@ -8,8 +8,10 @@ shaped by one rule from `app/discovery/liveness.py`:
 
 So a 429, a 403, a timeout or a parser failure can never block delivery. Only
 REMOVED and EXPIRED can, and only ever from conclusive evidence: a 404 on the
-exact posting permalink, a 410, explicit removal wording in the page, or
-absence from a board fetch we know was COMPLETE.
+exact posting permalink, a 410, explicit removal wording in the page, a
+Greenhouse posting redirected to its own board's index, the ATS's own posting
+API answering 404 while the board itself answers (`_ask_ats`), or absence from
+a board fetch we know was COMPLETE.
 
 Three properties the placement path depends on:
 
@@ -27,6 +29,7 @@ Three properties the placement path depends on:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import Counter
@@ -160,6 +163,186 @@ def _fetch(url: str, timeout: float) -> Tuple[Optional[int], str, str, Optional[
         return None, "", "", type(e).__name__
 
 
+# ── the posting's own ATS, asked directly ────────────────────────────────────
+# A page fetch speaks for a posting only when the page IS the posting. Two
+# shapes where it is not (live test, 2026-10-09):
+#   * a Greenhouse posting shown on the EMPLOYER's site (`…?gh_jid=<id>`, about
+#     a quarter of open Greenhouse rows): that page is the employer's shell and
+#     answers 200, or redirects to their careers home, whether or not the job
+#     is open (Riot Games: filed WRONG_PAGE, delivered as open);
+#   * any redirect the page check could not place (WRONG_PAGE).
+# Greenhouse and Lever publish one JSON document per OPEN posting. 200 there is
+# LIVE. 404 is REMOVED only once the BOARD itself answers 200: a wrong or
+# renamed board token 404s every posting on it, and that says nothing about
+# this one. Anything else (429, 403, 5xx, a timeout) is no answer, and the page
+# check decides exactly as before.
+_GH_JID = re.compile(r"[?&#]gh_jid=(\d+)", re.I)
+_LEVER_POSTING = re.compile(
+    r"^https?://jobs\.(eu\.)?lever\.co/([^/?#]+)/([0-9a-f]{8}-[0-9a-f-]{27})", re.I)
+_BOARD_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
+
+
+class _AtsTarget:
+    __slots__ = ("kind", "posting_url", "board_url", "page_speaks")
+
+    def __init__(self, kind: str, posting_url: str, board_url: str, page_speaks: bool):
+        self.kind = kind                    # "greenhouse" | "lever" (metric label)
+        self.posting_url = posting_url
+        self.board_url = board_url
+        # The job URL is the ATS's own posting page, so the page check comes
+        # first and the API only settles what it could not (WRONG_PAGE).
+        self.page_speaks = page_speaks
+
+
+def _greenhouse_target(token: str, job_id: str, *, page_speaks: bool) -> Optional[_AtsTarget]:
+    if not _BOARD_TOKEN.fullmatch(token or "") or not (job_id or "").isdigit():
+        return None
+    base = f"https://boards-api.greenhouse.io/v1/boards/{token}"
+    return _AtsTarget("greenhouse", f"{base}/jobs/{job_id}", base, page_speaks)
+
+
+def _greenhouse_token_for(external_id: str) -> str:
+    """The board token of a Greenhouse posting whose URL carries none (the
+    employer-site ``gh_jid`` shape).
+
+    The board scraper names a posting's company after its board token
+    (`greenhouse.board_company_name`), so the token is the ONE registered
+    Greenhouse slug that produces this posting's company name. No row, no
+    match or two matches is "" — the posting is then checked by its page, as
+    before. Reads only, and the session is closed before any request."""
+    from sqlmodel import select
+
+    from app.db.init_db import get_session
+    from app.db.models import CompanyRegistry, Job, JobSource
+    from app.discovery.greenhouse import board_company_name
+
+    try:
+        with get_session() as s:
+            company = s.exec(select(Job.company).where(
+                Job.external_id == str(external_id),
+                Job.source == JobSource.GREENHOUSE).limit(1)).first()
+            if not company:
+                return ""
+            base = company.strip().lower()
+            candidates = sorted({base.replace(" ", sep) for sep in ("", "-", "_")})
+            slugs = s.exec(select(CompanyRegistry.slug).where(
+                CompanyRegistry.ats == JobSource.GREENHOUSE,
+                CompanyRegistry.slug.in_(candidates))).all()
+    except Exception as e:      # no token is "ask the page", never a failure
+        log.debug("greenhouse token lookup failed: %s", e)
+        return ""
+    hits = {sl for sl in slugs if board_company_name(sl) == company}
+    return hits.pop() if len(hits) == 1 else ""
+
+
+def _ats_target(url: str, external_id: str = "") -> Optional[_AtsTarget]:
+    """Where the posting's own ATS answers for it, or None.
+
+    ``external_id`` enables the employer-site ``gh_jid`` shape (its board
+    token is looked up, see `_greenhouse_token_for`); without it only URLs
+    that name their board are mapped. EU Greenhouse boards are left to the
+    page check: their API host is not one we have verified."""
+    from urllib.parse import parse_qs, urlparse
+
+    from app.discovery.liveness import GREENHOUSE_POSTING
+
+    url = (url or "").strip()
+    if not url:
+        return None
+    m = GREENHOUSE_POSTING.match(url)
+    if m:
+        if ".eu.greenhouse.io" in m.group(0).lower():
+            return None
+        return _greenhouse_target(m.group(1), m.group(2), page_speaks=True)
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    host = (p.hostname or "").lower()
+    if host in ("boards.greenhouse.io", "job-boards.greenhouse.io") \
+            and (p.path or "").rstrip("/").lower().endswith("/embed/job_app"):
+        q = parse_qs(p.query or "")
+        token, job_id = (q.get("for") or [""])[0], (q.get("token") or [""])[0]
+        return _greenhouse_target(token, job_id, page_speaks=False)
+    m = _GH_JID.search(url)
+    if m:
+        # The id in the URL must be the posting we are asked about, or the
+        # answer would be about some other posting.
+        if not external_id or m.group(1) != str(external_id):
+            return None
+        token = _greenhouse_token_for(str(external_id))
+        return _greenhouse_target(token, m.group(1), page_speaks=False) if token else None
+    m = _LEVER_POSTING.match(url)
+    if m and _BOARD_TOKEN.fullmatch(m.group(2)):
+        api = f"https://api.{'eu.' if m.group(1) else ''}lever.co/v0/postings"
+        return _AtsTarget("lever", f"{api}/{m.group(2)}/{m.group(3)}",
+                          f"{api}/{m.group(2)}?limit=1&mode=json", page_speaks=True)
+    return None
+
+
+def _same_host(a: str, b: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        return bool(a) and (urlparse(a).hostname or "") == (urlparse(b).hostname or "")
+    except ValueError:
+        return False
+
+
+def _ask_ats(target: _AtsTarget) -> Tuple[Optional[str], str, Optional[int]]:
+    """(state, reason, http_status) from the ATS's own API. ``state`` is None
+    when the answer is not conclusive — the caller then trusts the page."""
+    timeout = float(settings.liveness_check_timeout_seconds)
+    _bump("ats_api_checks")
+    status, final_url, _body, error = _fetch(target.posting_url, timeout)
+    if error is None and status == 200 and _same_host(final_url, target.posting_url):
+        _bump(f"ats_api:{target.kind}:{JobLivenessState.LIVE.value}")
+        return JobLivenessState.LIVE.value, "ats_api_200", status
+    if error is None and status in (404, 410):
+        b_status, b_final, _b, b_err = _fetch(target.board_url, timeout)
+        if b_err is None and b_status == 200 and _same_host(b_final, target.board_url):
+            state = (JobLivenessState.EXPIRED if status == 410
+                     else JobLivenessState.REMOVED).value
+            _bump(f"ats_api:{target.kind}:{state}")
+            return state, f"ats_api_{status}", status
+        # The board did not answer either: a token that is wrong or moved.
+        _bump(f"ats_api:{target.kind}:board_unconfirmed")
+        return None, "ats_api_board_unconfirmed", status
+    _bump(f"ats_api:{target.kind}:inconclusive")
+    return None, f"ats_api_{status or 'error'}", status
+
+
+#: The page, the ATS's posting document and its board: the most one check asks.
+_MAX_REQUESTS_PER_CHECK = 3
+
+
+def _check(url: str, external_id: str = "") -> Tuple[str, str, Optional[int]]:
+    """One posting's liveness from the evidence that can speak for it:
+    (state, reason, http_status). Network only — `_ats_target` closes its
+    read session before the first request, and nothing is recorded here.
+
+    The page first when it IS the posting (one request in the common case),
+    the ATS's API only for what the page cannot answer: first for a posting
+    shown on the employer's site, after a WRONG_PAGE otherwise."""
+    from app.discovery import liveness as lv
+
+    target = _ats_target(url, external_id)
+    asked = False
+    if target is not None and not target.page_speaks:
+        asked = True
+        state, reason, status = _ask_ats(target)
+        if state:
+            return state, reason, status
+    status, final_url, body, error = _fetch(
+        url, float(settings.liveness_check_timeout_seconds))
+    state, reason = lv.classify(
+        status, requested_url=url, final_url=final_url, body=body, error=error)
+    if state == JobLivenessState.WRONG_PAGE.value and target is not None and not asked:
+        a_state, a_reason, a_status = _ask_ats(target)
+        if a_state:
+            return a_state, a_reason, a_status
+    return state, reason, status
+
+
 def _checked_within(state: Optional[str], checked_at, minutes: int) -> bool:
     """A conclusive verdict recorded in the last ``minutes``."""
     from datetime import datetime, timedelta
@@ -229,21 +412,20 @@ def verify_for_delivery(source, external_id: str, url: str, *,
             _inflight[key] = event
 
     if not leader:
-        # Someone else is already asking. Wait briefly, then read their answer.
+        # Someone else is already asking. Wait for their answer: a check is at
+        # most `_MAX_REQUESTS_PER_CHECK` bounded requests (`_check`).
         _bump("checks_deduplicated")
-        event.wait(timeout=max(1.0, settings.liveness_check_timeout_seconds + 1.0))
+        event.wait(timeout=max(1.0, _MAX_REQUESTS_PER_CHECK
+                               * settings.liveness_check_timeout_seconds + 1.0))
         state, _ = _cached(src, ext)
         return state or JobLivenessState.UNKNOWN.value, "deduped"
 
     try:
         started = time.monotonic()
         _bump("checks_attempted")
-        status, final_url, body, error = _fetch(
-            url, float(settings.liveness_check_timeout_seconds))
+        new_state, reason, status = _check(url, ext)
         elapsed_ms = (time.monotonic() - started) * 1000.0
         _record_latency(elapsed_ms)
-        new_state, reason = lv.classify(
-            status, requested_url=url, final_url=final_url, body=body, error=error)
         lv.record(src, ext, new_state, reason=reason,
                   http_status=status, checked_url=url)
         _bump(f"state:{new_state}")
@@ -369,11 +551,8 @@ def check_url_now(url: str) -> str:
     NOWHERE. For a bare tenant-scoped id the shared JobLiveness row (keyed by
     that id) may describe another employer's posting, so neither its cached
     verdict nor a new one written under that key can be trusted."""
-    from app.discovery import liveness as lv
     _bump("checks_attempted_direct")
-    status, final_url, body, error = _fetch(url, float(settings.liveness_check_timeout_seconds))
-    state, _reason = lv.classify(status, requested_url=url, final_url=final_url,
-                                 body=body, error=error)
+    state, _reason, _status = _check(url)
     return state
 
 

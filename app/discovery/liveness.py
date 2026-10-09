@@ -57,6 +57,11 @@ _INDEX_BODY = re.compile(
     r"(all open (?:roles|positions|jobs)|browse (?:all )?(?:jobs|openings)|"
     r"\b\d+\s+open (?:roles|positions|jobs)\b)", re.I)
 
+#: A posting on Greenhouse's own hosted board: ``/{board token}/jobs/{id}``.
+#: (EU boards included; the token is case-insensitive on Greenhouse's side.)
+GREENHOUSE_POSTING = re.compile(
+    r"^https?://(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io/([^/?#]+)/jobs/(\d+)", re.I)
+
 #: Only these mean the vacancy is gone.
 DEAD_STATES = (JobLivenessState.REMOVED.value, JobLivenessState.EXPIRED.value)
 #: These mean "ask again", and must never close a job.
@@ -107,6 +112,17 @@ def classify(status: Optional[int], *, requested_url: str = "",
         if pattern.search(head):
             return S.REMOVED.value, "body_no_longer_active"
 
+    # Greenhouse answers a closed posting by redirecting to the board's own
+    # index (`/hasbro?error=true`, "The job you are looking for is no longer
+    # open."), and that message is drawn in the browser, so the body we read
+    # never says it. Live test 2026-10-09: Hasbro and Accela, both closed, were
+    # filed WRONG_PAGE ("redirected_to_index") and the board said "still open".
+    # This is not the generic careers-index case below: the redirect stays on
+    # Greenhouse, lands on the SAME board and drops the id, which is what the
+    # ATS does for exactly one reason.
+    if greenhouse_board_redirect(requested_url, final_url):
+        return S.REMOVED.value, "greenhouse_redirect_to_board"
+
     # Redirected away from the posting to a listing page. Compare identifiers
     # rather than whole URLs: many boards legitimately canonicalise a slug.
     if final_url and requested_url and final_url != requested_url:
@@ -121,6 +137,36 @@ def classify(status: Optional[int], *, requested_url: str = "",
         return S.WRONG_PAGE.value, "index_body"
 
     return S.LIVE.value, "http_200"
+
+
+def greenhouse_board_redirect(requested_url: str, final_url: str) -> bool:
+    """A Greenhouse posting URL that ended on its own board's index.
+
+    True only when ALL of: the request was a hosted Greenhouse posting
+    (`GREENHOUSE_POSTING`); the final URL is still on greenhouse.io; the
+    posting id is gone from it; and it is the same board's root or carries
+    Greenhouse's ``error=true`` flag. A redirect to the employer's own careers
+    page (``?gh_jid=<id>`` keeps the id) or anywhere else is not this case.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    m = GREENHOUSE_POSTING.match(requested_url or "")
+    if not m or not final_url:
+        return False
+    token, job_id = m.group(1).lower(), m.group(2)
+    try:
+        p = urlparse(final_url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    if host != "greenhouse.io" and not host.endswith(".greenhouse.io"):
+        return False
+    if job_id in final_url:
+        return False
+    path = (p.path or "").rstrip("/").lower()
+    errored = any(v.strip().lower() == "true"
+                  for v in parse_qs(p.query or "").get("error", []))
+    return errored or path in (f"/{token}", f"/{token}/jobs")
 
 
 def _identifier(url: str) -> str:

@@ -45,6 +45,11 @@ def check_job_alive(url: str, timeout: float = 4.0) -> tuple[bool, str]:
             if r.status_code in (404, 410):
                 return False, f"Link returned HTTP {r.status_code}"
             if r.status_code == 200:
+                # Greenhouse closes a posting by redirecting to its board's
+                # index, which is not under "/careers" (live test 2026-10-09).
+                from app.discovery.liveness import greenhouse_board_redirect
+                if greenhouse_board_redirect(url, str(r.url)):
+                    return False, "Redirected to the job board, the posting is closed"
                 final_path = urlparse(str(r.url)).path
                 orig_path = urlparse(url).path
                 if "/careers" in final_path and "/careers" not in orig_path:

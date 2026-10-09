@@ -101,6 +101,14 @@ def _geo_of(j: dict, location: str) -> GeoEvidence | None:
                        work_mode=work_mode, work_mode_field=mode_field)
 
 
+def board_company_name(slug: str) -> str:
+    """The company name a board's postings carry: its token, words split on
+    "-"/"_", title case. The liveness gate reverses this to find the board of
+    a posting shown on the employer's own site (`delivery_gate`), so the two
+    must stay one function."""
+    return (slug or "").replace("-", " ").replace("_", " ").title()
+
+
 class GreenhouseScraper:
     name = "greenhouse"
 
@@ -173,7 +181,7 @@ class GreenhouseScraper:
                 RawJob(
                     source="greenhouse",
                     external_id=str(j["id"]),
-                    company=self.board_slug.replace("-", " ").replace("_", " ").title(),
+                    company=board_company_name(self.board_slug),
                     title=j.get("title", ""),
                     location=location,
                     remote=remote,
