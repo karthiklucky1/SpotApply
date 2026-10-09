@@ -90,6 +90,7 @@ def _no_llm(*a, **k):
     "Please leave this field empty.", "If you are human, leave this field blank",
     "Don't fill this out if you're human", "Do not fill in this field",
     "\n  Leave this\n  field blank *\n",
+    "If you're a human please leave this empty", "If you are a human, do not fill this in",
 ])
 def test_anti_bot_fields_are_recognised(label):
     assert fg.is_anti_bot_field(label)
@@ -107,6 +108,11 @@ def test_anti_bot_fields_are_recognised(label):
     "Preferred first name - leave empty if same as legal name",
     "If you have no referral code, leave this field blank.",
     "Do not fill in if you were not referred",
+    # "human" opens a real question here, not the honeypot's address
+    # (review 2026-10-09: refused, so never filled, learned or answered).
+    "If you are a Human Resources professional, which HRIS platforms have you used?",
+    "If you are human-centered, describe your design process",
+    "If you're a human resources generalist, describe your onboarding work.",
 ])
 def test_a_real_field_that_says_leave_blank_is_not_a_honeypot(label):
     assert not fg.is_anti_bot_field(label)

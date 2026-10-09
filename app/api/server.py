@@ -5688,6 +5688,10 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # first, else these; a skill the résumé does not show at all is No.
         "skill_role_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["role"],
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
+        # The user's saved answer to "How did you hear about this opportunity?":
+        # the ONLY source the extension answers that question from ("" = left
+        # for the user). Never a remembered answer and never a model's.
+        "how_heard_answer": (getattr(p, "how_heard_answer", "") if p else "") or "",
         # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
         # does not branch on it — the server already resolved the choice — but
         # it makes the setting visible in the popup's diagnostics instead of
@@ -10006,6 +10010,7 @@ _USERPROFILE_COLUMNS = [
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("how_heard_answer", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -10143,6 +10148,7 @@ def get_profile(request: Request) -> dict:
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
+        "how_heard_answer": getattr(profile, "how_heard_answer", "") or "",
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
         # Also edited by the form; missing here meant a save wiped them.
@@ -10151,6 +10157,10 @@ def get_profile(request: Request) -> dict:
         "opt_unemployment_days_used": int(getattr(profile, "opt_unemployment_days_used", 0) or 0),
         "stem_opt": bool(getattr(profile, "stem_opt", False)),
     }
+
+
+# The profile's "How did you hear about us?" answer (the input's maxlength too).
+HOW_HEARD_MAX_LEN = 100
 
 
 class ProfileUpdate(BaseModel):
@@ -10194,6 +10204,8 @@ class ProfileUpdate(BaseModel):
     relocation_resume_optin: Optional[bool] = None
     resume_use_job_city: Optional[bool] = None
     resume_title_from_jd: Optional[bool] = None
+    # Typed into employer forms as written: one line, trimmed, bounded.
+    how_heard_answer: Optional[str] = None
     relocation_targets: Optional[str] = None
     relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
@@ -10215,6 +10227,16 @@ class ProfileUpdate(BaseModel):
         v = str(v).strip().lower()
         if v not in ("tailored", "original"):
             raise ValueError("autofill_resume_source must be 'tailored' or 'original'")
+        return v
+
+    @field_validator("how_heard_answer")
+    @classmethod
+    def _one_line_how_heard(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = " ".join(str(v).split())          # one line: no tabs or line breaks
+        if len(v) > HOW_HEARD_MAX_LEN:
+            raise ValueError(f"'How did you hear about us?' is limited to {HOW_HEARD_MAX_LEN} characters")
         return v
 
 

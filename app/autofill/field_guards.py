@@ -46,11 +46,14 @@ from typing import Optional
 # profile (leave blank if none)", "Leave blank if you were not referred") is a
 # field the applicant fills, so it must stay fillable and learnable (review
 # 2026-10-09: the looser pattern stopped LinkedIn/GitHub fields the 1.0.0
-# build filled). Labels are whitespace-collapsed before matching.
+# build filled). Labels are whitespace-collapsed before matching. "Human"
+# counts only as the whole address, followed by punctuation, the end, or
+# "leave"/"don't": "If you are a Human Resources professional, which HRIS
+# platforms have you used?" is a real question (review 2026-10-09).
 _ANTI_BOT_RE = re.compile(
     r"(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha"
     r"|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot"
-    r"|if you(?:'re|’re| are) (?:a )?human\b"
+    r"|if you(?:'re|’re| are) (?:a )?human(?:\s*[,.;:!?)]|\s*$|\s+(?:please |then )?(?:leave|do ?n[o'’]t)\b)"
     r"|^\W*(?:please )?(?:leave this (?:field |input |box )?(?:blank|empty)"
     r"|do ?n[o'’]t (?:fill|change) (?:in )?this(?: field)?(?: in| out)?)\W*$)",
     re.I,

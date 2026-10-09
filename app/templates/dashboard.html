@@ -7735,6 +7735,22 @@
                           </select>
                           <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Only the line under your name changes. The job titles you actually held stay exactly as on your resume, and a posting title that names a skill your resume doesn't show is never used.</p>
                         </div>
+                        <!-- The answer to "How did you hear about this opportunity?" on
+                             application forms (UserProfile.how_heard_answer). The extension
+                             answers that question ONLY from this; empty = the user does. -->
+                        <div>
+                          <label for="how-heard-answer" class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">How did you hear about us? <span class="text-slate-600">(application forms)</span></label>
+                          <input id="how-heard-answer" name="how_heard_answer" list="how-heard-options" maxlength="100" autocomplete="off" placeholder="e.g. Company website" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" />
+                          <datalist id="how-heard-options">
+                            <option value="Company website"></option>
+                            <option value="Job board"></option>
+                            <option value="LinkedIn"></option>
+                            <option value="Indeed"></option>
+                            <option value="Referral"></option>
+                            <option value="Other"></option>
+                          </datalist>
+                          <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Used only when a form asks how you heard about the job. Leave it empty to answer that question yourself each time.</p>
+                        </div>
                         <!-- Shown only when "Open to relocation" is ticked. -->
                         <div id="reloc-options" style="display:none;border:1px solid rgba(var(--sage-rgb),.3);border-radius:14px;padding:12px 14px;background:var(--sage-tint)">
                           <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Job location on your tailored resume</label>

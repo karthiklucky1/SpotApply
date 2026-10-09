@@ -773,6 +773,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   from `degree_fields`; ONE work-auth interpreter, `authorized_now` (status + its end
   date) wins over the status text; any "without sponsorship" wording is left for the
   user unless citizen/green card; country from `residence_country` (never defaulted).
+  "How did you hear?" = `UserProfile.how_heard_answer` ONLY (select/radio/option
+  list/combobox/text, else "Other" + specify; never memory or AI; empty = the
+  user's; guard: `test_how_heard_answer`).
   Demographics are filled when the user saved them (`eeo_confirmed`) or opted in —
   never from recall/learning/AI. Uploads skip other-document fields, honour
   `accept`, count only when acknowledged; DO_FILL replies with the real outcome.

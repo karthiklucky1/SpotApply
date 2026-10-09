@@ -474,6 +474,11 @@ class UserProfile(SQLModel, table=True):
     # a tailored resume is the JOB POSTING's title ("Backend Engineer"). Off:
     # the title the user's own resume gives. Never changes a held job title.
     resume_title_from_jd: bool = False
+    # The user's own answer to "How did you hear about this opportunity?" on
+    # application forms (owner, 2026-10-09). The extension answers that
+    # question ONLY from this, never from memory or a model; "" = the user
+    # answers it on each form.
+    how_heard_answer: str = ""
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

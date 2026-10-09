@@ -401,6 +401,58 @@ def main():
         check("LB4 identity still filled", v("#lb-fn") == pack["first_name"], v("#lb-fn"))
         page.close()
 
+        # ── HH: "How did you hear about this opportunity?" ──────────────────
+        # Owner, 2026-10-09: answered ONLY from the profile's saved answer, in
+        # every shape the question takes; nothing saved = left for the user.
+        print("\nHow did you hear (select · option list · radios + specify · combobox · text)")
+        hh_from = len(REQUESTS)          # the requests these fills make (the log is shared)
+        pack = dict(base_pack(f"{BASE}/howheard.html"), how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        on = lambda sel: page.evaluate(
+            "(s) => { const b = document.querySelector(s + ' button._active_x1'); return b ? b.textContent : ''; }", sel)
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HH1 select: the option containing the saved answer",
+              v("#hh-select") == "site", v("#hh-select"))
+        check("HH2 Ashby-style option list: a synonym ('Careers page')",
+              on("#hh-list") == "Careers page", on("#hh-list"))
+        check("HH3 radios with no match: 'Other'", radio("seen_where") == "other", str(radio("seen_where")))
+        check("HH4 ...and the saved answer in its 'please specify' box",
+              v("#hh-specify") == "Company website", v("#hh-specify"))
+        check("HH5 combobox: the listed synonym is picked ('Company site')",
+              v("#hh-combo") == "Company site", v("#hh-combo"))
+        check("HH6 free text gets the saved answer", v("#hh-text") == "Company website", v("#hh-text"))
+        check("HH7 a label naming LinkedIn gets the saved answer, never the LinkedIn URL",
+              v("#hh-text2") == "Company website", v("#hh-text2"))
+        check("HH7b a textarea gets the saved answer", v("#hh-ta") == "Company website", v("#hh-ta"))
+        check("HH8 the AI is never asked, nothing is learned from it",
+              not [p for m, p in REQUESTS[hh_from:]
+                   if m == "POST" and ("answer-question" in p or "save-answer" in p)],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        page.close()
+
+        pack = dict(base_pack(f"{BASE}/howheard.html"), how_heard_answer="")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        flag = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapply || ''")
+        blank = {"select": v("#hh-select"), "list": on("#hh-list"), "radio": radio("seen_where"),
+                 "combo": v("#hh-combo"), "text": v("#hh-text"), "text2": v("#hh-text2"),
+                 "ta": v("#hh-ta")}
+        check("HH9 nothing saved: every how-did-you-hear question is left for the user",
+              blank == {"select": "", "list": "", "radio": None, "combo": "", "text": "",
+                        "text2": "", "ta": ""},
+              json.dumps(blank))
+        check("HH9b ...and the AI is still never asked",
+              not [p for m, p in REQUESTS[hh_from:] if m == "POST" and "answer-question" in p],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        check("HH10 ...and each is counted as needing the user (required ones red)",
+              flag("#hh-select") == "needs-fill-required" and flag("#hh-list") == "needs-fill"
+              and flag("#hh-text") == "needs-fill",
+              json.dumps({s: flag(s) for s in ("#hh-select", "#hh-list", "#hh-text")}))
+        check("HH11 identity still filled", v("#hh-first") == pack["first_name"], v("#hh-first"))
+        page.close()
+
         # ── API surface actually exercised ──────────────────────────────────
         print("\nBackend calls made by the extension during these fills")
         paths = sorted({p for _, p in REQUESTS if p.startswith("/api") or "resume" in p})

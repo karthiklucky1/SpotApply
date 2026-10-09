@@ -41,7 +41,13 @@ _STANDARD_FIELDS = [
     ("Degree", "degree"),
     ("University", "university"),
     ("Graduation Year", "graduation_year"),
+    ("How did you hear about us?", "how_heard_answer"),
 ]
+
+# Answered from the profile ONLY: a remembered answer never stands in for an
+# empty one. How the applicant heard about the job is their own statement in
+# Settings (owner, 2026-10-09), so "" means they answer it on the form.
+_PROFILE_ONLY_FIELDS = {"how_heard_answer"}
 
 # Essay questions that appear on most ATS forms.
 _ESSAY_QUESTIONS = [
@@ -148,6 +154,7 @@ def _profile_to_dict(profile: UserProfile) -> dict:
         "degree": profile.degree,
         "university": profile.university,
         "graduation_year": str(profile.graduation_year) if profile.graduation_year else "",
+        "how_heard_answer": (getattr(profile, "how_heard_answer", "") or "").strip(),
     }
 
 
@@ -644,7 +651,7 @@ def generate_answer_pack(application_id: int, user_id: str | None = None) -> dic
     standard_fields = []
     for label, key in _STANDARD_FIELDS:
         value = profile_dict.get(key, "")
-        if not value:
+        if not value and key not in _PROFILE_ONLY_FIELDS:
             value = _lookup_memory(label, user_id=user_id) or ""
         standard_fields.append({"label": label, "value": str(value)})
 

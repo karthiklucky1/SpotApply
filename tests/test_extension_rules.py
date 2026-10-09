@@ -39,10 +39,13 @@ FUNCTIONS = [
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
     "isAntiBotField", "looksLikeFieldIdentifier", "looksLikeMetaReply",
     "looksLikeModelOnlyReply", "parseLocation", "pickLocationSuggestion",
+    "isHowHeardQuestion", "howHeardAnswer", "_hhTokens", "_hhHas", "_hhIsOther",
+    "_hhIsPlaceholder", "pickHowHeardOption", "_selectHasChoice",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "_OTHER_DOC_RE", "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
-          "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES"]
+          "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
+          "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -353,6 +356,13 @@ _EL_JS = """(spec) => isAntiBotField({
     (_fake_el({"name": "referrer", "placeholder": "Leave blank if you were not referred"}), False),
     (_fake_el({"name": "preferred"}, label="Preferred first name - leave empty if same as legal name"), False),
     (_fake_el({"name": "ref"}, label="If you have no referral code, leave this field blank."), False),
+    # Review 2026-10-09: "human" is the honeypot's address only as the whole
+    # address, never as the start of a real question.
+    (_fake_el({"name": "hris"}, label="If you are a Human Resources professional, "
+                                      "which HRIS platforms have you used?"), False),
+    (_fake_el({"name": "design"}, label="If you are human-centered, describe your design process"), False),
+    (_fake_el({"name": "extra"}, label="If you're a human please leave this empty"), True),
+    (_fake_el({"name": "extra", "placeholder": "If you are a human, do not fill this in"}), True),
 ])
 def test_anti_bot_fields_are_never_fill_targets(spec, want):
     assert run_js([[_EL_JS, spec]])[0] is want
@@ -478,7 +488,134 @@ def _opts(*texts):
     (_opts("London, England, United Kingdom", "London, Ontario, Canada"),
      {"location": "London, UK"}, "London, England, United Kingdom"),
     (_opts("London, Ontario, Canada"), {"location": "London, UK"}, None),
+    # review 2026-10-09: the exact-city test reads the CITY slot only. "New
+    # York" is also the state, so any component made every place in New York
+    # state an exact hit and the largest US job location came back empty.
+    (_opts("New York, New York, United States", "New York Mills, New York, United States",
+           "New York Mills, Minnesota, United States", "West New York, New Jersey, United States"),
+     {"location": "New York, NY"}, "New York, New York, United States"),
+    (_opts("New York, NY, USA", "Manhattan, New York, NY, USA"),
+     {"location": "New York, NY"}, "New York, NY, USA"),
+    (_opts("Quebec City, Quebec, Canada", "Quebec, Quebec, Canada"),
+     {"location": "Quebec, QC"}, "Quebec, Quebec, Canada"),
+    # a US state is never read as a country ("New Mexico" is not Mexico)
+    (_opts("Santa Fe, New Mexico, United States"),
+     {"location": "Santa Fe", "residence_country": "United States"}, "Santa Fe, New Mexico, United States"),
+    (_opts("Las Cruces, New Mexico, United States"),
+     {"location": "Las Cruces", "residence_country": "US"}, "Las Cruces, New Mexico, United States"),
+    (_opts("Santa Fe, New Mexico, United States", "Santa Fe, Santa Fe Province, Argentina"),
+     {"location": "Santa Fe", "residence_country": "United States"}, "Santa Fe, New Mexico, United States"),
+    # ...while a real other country still stops the pick
+    (_opts("Monterrey, Nuevo Leon, Mexico"),
+     {"location": "Monterrey", "residence_country": "United States"}, None),
 ])
 def test_location_suggestion_is_the_profiles_place(options, pack, want):
     js = "(o, p) => { const r = pickLocationSuggestion(o, p); return r ? r.textContent : null; }"
     assert run_js([[js, options, pack]])[0] == want
+
+
+# ── "How did you hear about this opportunity?" (owner, 2026-10-09) ───────────
+# Answered ONLY from the answer the user saved in their profile. An int below
+# is the index of the option picked (nothing to specify); a dict carries the
+# "please specify" text; None leaves the question for the applicant.
+
+_CHOICES = ["Select...", "LinkedIn", "Company Website / Careers Page", "Indeed", "Other"]
+
+
+@pytest.mark.parametrize("options,saved,want", [
+    # the option that IS the saved answer, whatever its case
+    (["Select...", "LinkedIn", "Company website", "Indeed", "Other"], "company WEBSITE", 2),
+    (_CHOICES, "LinkedIn", 1),
+    # containing it, or contained in it (whole words)
+    (_CHOICES, "Company website", 2),
+    (["Online job board", "Employee referral", "Other"], "Job board", 0),
+    (["Online job board", "Employee referral", "Other"], "Referral", 1),
+    (["LinkedIn", "Indeed", "Glassdoor"], "I saw it on LinkedIn", 0),
+    # a synonym: the same source in other words
+    (["LinkedIn", "Careers page", "Employee referral", "Other"], "Company website", 1),
+    (["Job site (Indeed, Glassdoor)", "LinkedIn", "Other"], "Job board", 0),
+    (["Referred by an employee", "LinkedIn"], "Referral", 0),
+    # nothing fits: "Other", with the saved text for its "please specify" box
+    (["LinkedIn", "Indeed", "Other (please specify)"], "Podcast",
+     {"index": 2, "specify": "Podcast"}),
+    (["LinkedIn", "Other"], "Other: a podcast", {"index": 1, "specify": "a podcast"}),
+    (["LinkedIn", "Other"], "Other", 1),
+    # nothing fits and there is no "Other": the applicant answers
+    (["LinkedIn", "Indeed"], "Podcast", None),
+    # never a broader or narrower source: "Job board" is not "Indeed"
+    (["Indeed", "Glassdoor", "LinkedIn"], "Job board", None),
+    (["Indeed", "Glassdoor", "LinkedIn", "Other"], "Job board", {"index": 3, "specify": "Job board"}),
+    # two candidates at one step: the applicant picks
+    (["LinkedIn job post", "LinkedIn recruiter message", "Other"], "LinkedIn", None),
+    # whole words: "Other" is not inside "Another", "In" is not "Indeed"
+    (["Another job site", "LinkedIn"], "Other", None),
+    (["Indeed", "LinkedIn"], "In", None),
+    # a placeholder is never a choice
+    (["Select an option", "-", "LinkedIn"], "Select an option", None),
+    # nothing saved: the applicant answers it
+    (_CHOICES, "", None),
+    (_CHOICES, "   ", None),
+])
+def test_how_heard_picks_only_what_the_saved_answer_says(options, saved, want):
+    got = run_js([["pickHowHeardOption", options, saved]])[0]
+    if isinstance(want, int):
+        want = {"index": want, "specify": ""}
+    assert got == want
+
+
+def _opt(value, text, preselected=False):
+    return {"value": value, "text": text, "defaultSelected": preselected}
+
+
+@pytest.mark.parametrize("options,selected,want", [
+    ([_opt("", "Select..."), _opt("li", "LinkedIn")], 0, False),          # the placeholder
+    ([_opt("li", "LinkedIn"), _opt("site", "Company website")], 0, False),  # shown, never chosen
+    ([_opt("li", "LinkedIn", True), _opt("site", "Company website")], 0, True),   # the page chose it
+    ([_opt("", "Select..."), _opt("li", "LinkedIn")], 1, True),
+])
+def test_a_select_already_answered_is_never_changed(options, selected, want):
+    """Only an unanswered how-did-you-hear select is filled; a select showing
+    its first option only because nothing is selected is unanswered."""
+    js = "(opts, i) => _selectHasChoice({ options: opts, selectedIndex: i })"
+    assert run_js([[js, options, selected]])[0] is want
+
+
+@pytest.mark.parametrize("label", [
+    "How did you hear about this opportunity?", "How did you first learn about Acme?",
+    "Where did you see this job posted?", "Referral source", "How did you find out about us? *",
+    "Why are you interested in this role?", "Source code repository URL", "LinkedIn profile",
+])
+def test_how_heard_questions_read_the_same_in_the_extension_and_the_server(label):
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    assert run_js([["isHowHeardQuestion", label]])[0] is bool(PY_RE.search(label))
+
+
+def test_how_heard_pattern_agrees_with_the_server():
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    js_body = _const(CONTENT, "_HEAR_ABOUT_RE").split("= /", 1)[1].rsplit("/i;", 1)[0]
+    assert js_body == PY_RE.pattern, "keep content.js _HEAR_ABOUT_RE identical to field_guards.py"
+
+
+def test_the_saved_answer_is_the_only_source():
+    """The pack's profile answer, one line; nothing else stands in for it."""
+    assert run_js([["howHeardAnswer", {"how_heard_answer": "  Company \n website "}],
+                   ["howHeardAnswer", {}],
+                   ["howHeardAnswer", {"ai_answers": {"how did you hear about us?": "LinkedIn"}}]]) \
+        == ["Company website", "", ""]
+    # Every path that could write one from elsewhere steps aside for it: the
+    # AI essay path, memory recall and learning, and the platform fillers
+    # whose LinkedIn / website rules matched "How did you hear? (LinkedIn,
+    # company website...)". fillUniversal asks the saved answer first.
+    for fn in ("fillEssayQuestions", "recallFromMemory", "observeField", "fillGreenhouse",
+               "fillAshby", "fillGeneric", "fillAvature"):
+        assert "isHowHeardQuestion(" in _function(CONTENT, fn), fn
+    uni = _function(CONTENT, "fillUniversal")
+    assert uni.index("answerHowHeardField(inp, pack)") < uni.index("pack.first_name")
+    assert "answerHowHeardChoices(pack)" in _function(CONTENT, "fillCurrentPage")
+    for fn in ("answerHowHeardField", "answerHowHeardChoices"):
+        body = _function(CONTENT, fn)
+        assert "howHeardAnswer(pack)" in body and "answer-question" not in body, fn
+    # Nothing saved = left for the applicant, before any write.
+    assert "if (!saved) return 0;" in _function(CONTENT, "answerHowHeardChoices")
+    assert "if (!saved) { _lastWriteSkippedEmpty = true; return false; }" in \
+        _function(CONTENT, "answerHowHeardField")
