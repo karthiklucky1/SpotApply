@@ -18,6 +18,9 @@ Two rules, applied at every door that reads or writes AnswerMemory
 * a model reply that talks ABOUT the question instead of answering it ("I'd be
   happy to help, but…", "the question appears incomplete") is not an answer:
   it is never returned, never cached, and a cached one is never served.
+  The full test (``looks_like_meta_reply``) runs on MODEL output only; text the
+  applicant typed is refused only in the forms a model alone writes
+  (``is_model_only_reply``), because their own answer stays theirs.
 
 Some questions are facts only the applicant holds — how they heard about the
 role, work authorization, protected self-identification. A model can only
@@ -35,10 +38,21 @@ from typing import Optional
 # Captcha / challenge / honeypot field names and labels. Word-ish boundaries are
 # loose on purpose: these appear as "g-recaptcha-response", "h-captcha-response",
 # "cf-turnstile-response", "frc-captcha-solution", "website_honeypot".
+#
+# Honeypot WORDING counts only in the forms a honeypot uses: the whole text is
+# the instruction ("Leave this field blank", "Please leave this field empty.",
+# "Do not fill this in"), or it addresses humans ("If you are human, leave this
+# field blank"). A real question that says when to leave it blank ("LinkedIn
+# profile (leave blank if none)", "Leave blank if you were not referred") is a
+# field the applicant fills, so it must stay fillable and learnable (review
+# 2026-10-09: the looser pattern stopped LinkedIn/GitHub fields the 1.0.0
+# build filled). Labels are whitespace-collapsed before matching.
 _ANTI_BOT_RE = re.compile(
     r"(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha"
     r"|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot"
-    r"|leave (?:this )?(?:field )?(?:blank|empty)|do ?n[o']t (?:fill|change) (?:this|in))",
+    r"|if you(?:'re|’re| are) (?:a )?human\b"
+    r"|^\W*(?:please )?(?:leave this (?:field |input |box )?(?:blank|empty)"
+    r"|do ?n[o'’]t (?:fill|change) (?:in )?this(?: field)?(?: in| out)?)\W*$)",
     re.I,
 )
 
@@ -62,15 +76,20 @@ _DEMOGRAPHIC_RE = re.compile(
     re.I,
 )
 
-# A reply ABOUT the question rather than an answer to it. Anchored phrases at
-# the start (a real answer never opens with "I'd be happy to help"), plus a few
-# unmistakable meta statements anywhere in the text.
+# A MODEL reply ABOUT the question rather than an answer to it
+# (``looks_like_meta_reply``). Anchored phrases at the start (a real answer
+# never opens with "I'd be happy to help"), plus a few unmistakable meta
+# statements anywhere in the text. "I'm unable"/"I'm sorry" count only when
+# they are about answering or about the question: "I am unable to start before
+# January" is an answer.
 _META_START_RE = re.compile(
     r"^\s*[\"']?(?:"
     r"i'?d be (?:happy|glad) to help"
-    r"|i(?:'m| am) (?:sorry|unable|not able)"
-    r"|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help|complete)"
-    r"|as an ai\b"
+    r"|i(?:'m| am) (?:sorry,? (?:but )?i (?:cannot|can't|can not|am unable to|am not able to)"
+    r"|unable to|not able to) (?:answer|write|respond|provide|help|complete|assist)\b"
+    r"|i(?:'m| am) (?:sorry|unable|not able)\b[^.?!]{0,60}\b(?:the|this|your) (?:essay )?(?:question|prompt)\b"
+    r"|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help(?! but)|complete)"
+    r"|as an ai(?: (?:language )?model| assistant)?\s*,"
     r"|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)"
     r"|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)"
     r"|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))"
@@ -81,12 +100,32 @@ _META_START_RE = re.compile(
 )
 _META_ANY_RE = re.compile(
     r"(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)"
-    r"|technical (?:parameter|field|identifier)"
-    r"|(?:is|isn't|is not|doesn't look like|does not look like) (?:a|an) (?:real |actual )?"
-    r"(?:essay |application )?question"
+    r"|(?:looks|seems|appears) (?:like|to be) (?:a|an) (?:technical|form|html|internal|system) "
+    r"(?:parameter|field|identifier|name|token|value)"
+    r"|(?:this|that|it|\"[^\"]{1,80}\") (?:is|isn't|is not|doesn't look like|does not look like"
+    r"|doesn't appear to be|does not appear to be) (?:a|an) (?:real |actual |complete |valid )?"
+    r"(?:essay |application )?question\b"
     r"|form field (?:name|identifier)"
     r"|provide the (?:actual|full|complete) (?:essay )?question"
-    r"|as an ai (?:language )?model",
+    r"|as an ai language model|as an ai (?:model|assistant),",
+    re.I,
+)
+
+# The forms ONLY a model writes, anchored at the start. Text a PERSON typed
+# (``/api/save-answer``, ``/api/recall-answers``, every AnswerMemory read) is
+# judged by these alone: an applicant's own answer may say "I am unable to
+# start before January" or "is a question of mission alignment", and it stays
+# theirs (review 2026-10-09). A cached reply about the question in these forms
+# (the reCAPTCHA reply was one) still never comes back.
+_MODEL_ONLY_RE = re.compile(
+    r"^\s*[\"']?(?:"
+    r"i'?d be (?:happy|glad) to help(?: you)?(?:\s*[,!.:;]| with (?:this|that|the|your) "
+    r"(?:essay |application )?(?:question|prompt))"
+    r"|as an ai(?: (?:language )?model| assistant)?\s*,"
+    r"|(?:i notice (?:that )?|it (?:looks|seems|appears) (?:like|that) )?(?:the|this|your) "
+    r"(?:essay )?(?:question|prompt) (?:appears|seems|is) (?:to be )?"
+    r"(?:incomplete|unclear|missing|empty|cut off)"
+    r")",
     re.I,
 )
 
@@ -96,7 +135,7 @@ SKIP_SENTINEL = "SKIP"
 
 def is_anti_bot_field(label: str | None) -> bool:
     """A captcha / challenge / honeypot field, by its name or label."""
-    return bool(label) and bool(_ANTI_BOT_RE.search(str(label)))
+    return bool(label) and bool(_ANTI_BOT_RE.search(" ".join(str(label).split())))
 
 
 def is_field_identifier(label: str | None) -> bool:
@@ -130,10 +169,22 @@ def user_only_reason(question: str | None) -> Optional[str]:
 
 
 def looks_like_meta_reply(answer: str | None) -> bool:
-    """A reply that discusses the question instead of answering it."""
+    """A MODEL reply that discusses the question instead of answering it.
+
+    For model output only (a fresh generation). Text a person typed is judged
+    by ``is_model_only_reply``, which never refuses a plausible answer."""
     a = (answer or "").strip()
     if not a:
         return False
     if a.strip(" .\"'").upper() == SKIP_SENTINEL:
         return True
     return bool(_META_START_RE.search(a) or _META_ANY_RE.search(a))
+
+
+def is_model_only_reply(answer: str | None) -> bool:
+    """A reply in a form only a model writes ("I'd be happy to help, but…",
+    "As an AI,…", "The question appears incomplete"). Safe on text a person
+    typed: it is what /api/save-answer, /api/recall-answers and every
+    AnswerMemory read refuse."""
+    a = (answer or "").strip()
+    return bool(a) and bool(_MODEL_ONLY_RE.search(a))

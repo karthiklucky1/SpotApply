@@ -775,10 +775,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `accept`, count only when acknowledged; DO_FILL replies with the real outcome.
   Captcha/honeypot/hidden fields are never filled, AI-asked or learned
   (`canFillField` ↔ `autofill/field_guards.py`, refused BEFORE the AnswerMemory
-  cache; a reply ABOUT the question is never returned/cached/recalled), Ashby
-  Yes/No buttons + location autocompletes go through the same rules, and the
-  resume route serves the one-page PDF unless `?accept=` rules it out (live
-  test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
+  cache; honeypot WORDING only when the whole label is the instruction, so
+  "LinkedIn (leave blank if none)" stays fillable). A MODEL reply about the
+  question is never returned/cached; text the USER typed is refused only in
+  model-only forms (`is_model_only_reply`). Ashby Yes/No buttons + location
+  autocompletes go through the same rules (region compared per comma
+  component, never a substring: "on" is in "London"). The resume route serves
+  the one-page PDF unless `?accept=` rules it out; 1.0.1+ ALWAYS sends it (`*`
+  if the field names none), so no parameter = the 1.0.0 Store build, which gets
+  the PDF and attaches nothing on a Word-only field (accepted tradeoff, logged)
+  (live test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
   **Setup after a resume upload**: review profile (what was read + what's missing)
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +

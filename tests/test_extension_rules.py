@@ -37,12 +37,12 @@ FUNCTIONS = [
     "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "subjectMatchesTitles", "_countryIn",
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
-    "isAntiBotField", "looksLikeFieldIdentifier", "looksLikeMetaReply", "parseLocation",
-    "pickLocationSuggestion",
+    "isAntiBotField", "looksLikeFieldIdentifier", "looksLikeMetaReply",
+    "looksLikeModelOnlyReply", "parseLocation", "pickLocationSuggestion",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
           "_OTHER_DOC_RE", "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
-          "_META_ANY_RE", "US_STATES"]
+          "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -267,9 +267,23 @@ def test_the_forms_accepted_formats_are_respected():
     cases = [(".pdf", "resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
              (".pdf,.docx", "resume.docx", "", True),
              ("application/pdf", "resume.pdf", "application/pdf", True),
-             ("", "resume.docx", "", True)]
+             ("", "resume.docx", "", True),
+             # read as the server's _accept_allows reads them
+             ("*/*", "resume.pdf", "application/pdf", True),
+             ("*", "resume.pdf", "application/pdf", True)]
     out = run_js([[js, a, n, m] for a, n, m, _ in cases])
     assert out == [c[-1] for c in cases]
+    from app.api.server import _accept_allows
+    assert [_accept_allows(a, "." + n.rsplit(".", 1)[1], m) for a, n, m, _ in cases] == out
+
+
+def test_the_resume_request_always_says_what_the_field_takes():
+    """Review 2026-10-09: 1.0.1+ always sends ?accept= ("*" when the field
+    names nothing), so a request without it is the 1.0.0 Store build."""
+    body = _function(CONTENT, "attachResume")
+    assert "|| '*'" in body
+    assert "/resume?accept=${encodeURIComponent(_accept)}" in body
+    assert "(_accept ?" not in body, "the accept parameter must never be optional again"
 
 
 def test_the_current_company_is_the_current_employer():
@@ -325,9 +339,20 @@ _EL_JS = """(spec) => isAntiBotField({
     (_fake_el({"name": "cf-turnstile-response"}), True),
     (_fake_el({"name": "website", "class": "honeypot-field"}), True),
     (_fake_el({"name": "comments_extra"}, label="Leave this field blank"), True),
+    (_fake_el({"name": "comments_extra"}, label="\n  Leave this\n  field blank *\n"), True),
+    (_fake_el({"name": "hp_email", "id": "hp2", "placeholder": "Please leave this field empty."}), True),
+    (_fake_el({"name": "extra"}, label="If you are human, leave this field blank"), True),
     (_fake_el({"name": "token"}, in_widget=True), True),            # inside .g-recaptcha
     (_fake_el({"name": "why_acme", "id": "why"}, label="Why Acme?"), False),
     (_fake_el({"name": "_systemfield_name"}, label="Name"), False),
+    # Review 2026-10-09: a REAL field that says when to leave it blank is the
+    # applicant's to fill (the 1.0.0 build filled these; the looser pattern
+    # stopped them).
+    (_fake_el({"name": "linkedin"}, label="LinkedIn Profile (leave blank if none)"), False),
+    (_fake_el({"name": "github"}, label="GitHub URL - leave empty if you don't have one"), False),
+    (_fake_el({"name": "referrer", "placeholder": "Leave blank if you were not referred"}), False),
+    (_fake_el({"name": "preferred"}, label="Preferred first name - leave empty if same as legal name"), False),
+    (_fake_el({"name": "ref"}, label="If you have no referral code, leave this field blank."), False),
 ])
 def test_anti_bot_fields_are_never_fill_targets(spec, want):
     assert run_js([[_EL_JS, spec]])[0] is want
@@ -339,6 +364,9 @@ def test_every_ai_and_memory_path_skips_anti_bot_and_hidden_fields():
     assert "canFillField(ta)" in _function(CONTENT, "fillEssayQuestions")
     assert "looksLikeFieldIdentifier(q)" in _function(CONTENT, "fillEssayQuestions")
     assert "looksLikeMetaReply(answer)" in _function(CONTENT, "fillEssayQuestions")
+    # A remembered answer may be the user's own words: only the model-only
+    # forms drop it (review 2026-10-09).
+    assert "looksLikeModelOnlyReply(answer)" in _function(CONTENT, "fillEssayQuestions")
     assert "canFillField(el)" in _function(CONTENT, "recallFromMemory")
     for fn in ("observeField", "observeAnswer", "fillInput"):
         assert "isAntiBotField(" in _function(CONTENT, fn), fn
@@ -363,7 +391,20 @@ _REAL = [
     "I notice patterns in messy data quickly, which is why integration work suits me.",
     "I can't wait to build connectors that security teams rely on every day.",
     "Over three years I built ETL pipelines and REST integrations in Python.",
+    # review 2026-10-09: plausible answers the first patterns refused
+    "I am unable to start before January 2027 because of my notice period.",
+    "I'm not able to relocate, but I am happy to work remotely from Ohio.",
+    "For me, choosing a team is a question of mission alignment.",
+    "I tuned every technical parameter of our Kafka pipeline.",
+    "As an AI engineer, I built retrieval systems for support teams.",
 ]
+# Only a model writes these; text a user typed is refused for these alone.
+_MODEL_ONLY = [_META[0], "As an AI language model, I cannot know that.",
+               "The question appears to be incomplete.",
+               "It seems like the question is missing. Please provide the actual question."]
+# Meta for a model, but a person might type them: never refused as user text.
+_USER_MAY_TYPE = ["SKIP", "This doesn't look like an essay question; it is a form field name.",
+                  "I'm sorry, but I can't answer that without more context."]
 
 
 def test_meta_replies_read_the_same_in_the_extension_and_the_server():
@@ -372,6 +413,14 @@ def test_meta_replies_read_the_same_in_the_extension_and_the_server():
     out = run_js([["looksLikeMetaReply", t] for t in _META + _REAL])
     assert out == [True] * len(_META) + [False] * len(_REAL)
     assert [looks_like_meta_reply(t) for t in _META + _REAL] == out
+
+
+def test_model_only_replies_read_the_same_in_the_extension_and_the_server():
+    from app.autofill.field_guards import is_model_only_reply
+    texts = _MODEL_ONLY + _USER_MAY_TYPE + _REAL
+    out = run_js([["looksLikeModelOnlyReply", t] for t in texts])
+    assert out == [True] * len(_MODEL_ONLY) + [False] * (len(_USER_MAY_TYPE) + len(_REAL))
+    assert [is_model_only_reply(t) for t in texts] == out
 
 
 def test_anti_bot_patterns_agree_with_the_server():
@@ -397,6 +446,38 @@ def _opts(*texts):
     (_opts("Toronto, Ontario, Canada"), {"location": "Toronto"}, "Toronto, Ontario, Canada"),
     # a city name inside another word is not the city
     (_opts("Pittsburgh, Pennsylvania"), {"location": "Burgh, PA"}, None),
+    # review 2026-10-09: the region is a whole comma component, never a
+    # substring ("on" is inside "London" and "Toronto"; "Virginia" is inside
+    # "West Virginia"), and a short code never matches lowercase text
+    (_opts("London, England, United Kingdom", "London, Ontario, Canada", "London, Kentucky, United States"),
+     {"location": "London, ON"}, "London, Ontario, Canada"),
+    (_opts("London, England, United Kingdom", "London, Kentucky, United States"),
+     {"location": "London, ON"}, None),
+    (_opts("London, England, United Kingdom"), {"location": "London, ON"}, None),    # another country
+    (_opts("London, England, United Kingdom", "London, ON, Canada"),
+     {"location": "London, ON"}, "London, ON, Canada"),
+    (_opts("Toronto, Ohio, United States", "Toronto, Ontario, Canada"),
+     {"location": "Toronto, ON"}, "Toronto, Ontario, Canada"),
+    (_opts("Toronto, Ohio, United States"), {"location": "Toronto, ON"}, None),      # another state
+    (_opts("Bluefield, West Virginia, United States", "Bluefield, Virginia, United States"),
+     {"location": "Bluefield, VA"}, "Bluefield, Virginia, United States"),
+    (_opts("Bluefield, West Virginia, United States"), {"location": "Bluefield, VA"}, None),
+    (_opts("Kansas City, Arkansas, United States", "Kansas City, Kansas, United States"),
+     {"location": "Kansas City, Kansas"}, "Kansas City, Kansas, United States"),
+    (_opts("Portland, Maine, United States", "Portland, Oregon, United States"),
+     {"location": "Portland, OR"}, "Portland, Oregon, United States"),
+    (_opts("Vancouver, Washington, United States", "Vancouver, British Columbia, Canada"),
+     {"location": "Vancouver, BC"}, "Vancouver, British Columbia, Canada"),
+    # "Columbus" is not "Columbus Grove"
+    (_opts("Columbus Grove, Ohio, United States", "Columbus, Ohio, United States"),
+     {"location": "Columbus, OH"}, "Columbus, Ohio, United States"),
+    # a ZIP beside the code is still the code
+    (_opts("Cincinnati, IA 52538", "Cincinnati, OH 45202"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, OH 45202"),
+    # a country in the region slot is the country
+    (_opts("London, England, United Kingdom", "London, Ontario, Canada"),
+     {"location": "London, UK"}, "London, England, United Kingdom"),
+    (_opts("London, Ontario, Canada"), {"location": "London, UK"}, None),
 ])
 def test_location_suggestion_is_the_profiles_place(options, pack, want):
     js = "(o, p) => { const r = pickLocationSuggestion(o, p); return r ? r.textContent : null; }"

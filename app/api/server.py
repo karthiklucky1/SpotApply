@@ -5896,10 +5896,19 @@ def get_tailored_resume(application_id: int, request: Request, accept: str = "")
 
     Which FILE of the tailored résumé: the one-page PDF the tailor writes beside
     the Word file (owner, 2026-10-09: the PDF is the delivered resume), unless
-    the upload field's ``accept`` (sent by extension 1.0.1+ as ``?accept=``)
-    rules PDF out, or no PDF exists — then the .docx. Older extensions send no
-    ``accept`` and get the PDF; they already attach whatever filename/mime the
-    response names.
+    the upload field's ``accept`` rules PDF out, or no PDF exists — then the
+    .docx. Extension 1.0.1+ ALWAYS sends ``?accept=`` (the field's own value,
+    or ``*`` when it names none), so a request WITHOUT the parameter is the
+    1.0.0 Store build.
+
+    Known tradeoff for that old build, accepted by design: it cannot say what
+    the field takes, so it gets the PDF too. On the rare upload field whose
+    ``accept`` excludes PDF (e.g. ``.doc,.docx``) its own ``fileMatchesAccept``
+    then refuses the file and attaches nothing ("format not accepted", the
+    user attaches by hand), where before it attached the .docx. Serving the
+    .docx to every parameterless caller instead would undo the PDF for the
+    common case (fields that take PDF) on the build most users still run.
+    The miss ends when the Store update (1.0.1+) reaches them.
     """
     import base64
     from pathlib import Path as _P
@@ -6085,6 +6094,12 @@ def get_tailored_resume(application_id: int, request: Request, accept: str = "")
                 serve = pdf
         except OSError:
             serve = p
+        if serve is not p and "accept" not in request.query_params:
+            # The 1.0.0 Store build (no ?accept=): it gets the PDF even on a
+            # field that takes only Word (see the docstring). Logged so the
+            # remaining share of old builds is measurable.
+            log.info("resume: PDF served to an extension build that sends no accept= "
+                     "(pre-1.0.1) for app %d", application_id)
     data = serve.read_bytes()
     mime = {".pdf": "application/pdf", ".docx": _DOCX_MIME}.get(
         serve.suffix.lower(), "application/octet-stream")
@@ -6859,11 +6874,14 @@ def save_answer(request: Request, body: SaveAnswerBody) -> dict:
     answer = body.answer.strip()
     if not question or not answer:
         raise HTTPException(status_code=400, detail="question and answer required")
-    # A captcha field's value is a token, not an answer, and a reply ABOUT the
-    # question is not one either: neither is remembered (it would be served
-    # back into the next form). 200, so older extensions log nothing alarming.
+    # A captcha field's value is a token, not an answer, and a model's reply
+    # ABOUT the question is not one either: neither is remembered (it would be
+    # served back into the next form). The applicant TYPED this, so only the
+    # forms a model alone writes ("I'd be happy to help, but…") are refused:
+    # "I am unable to start before January" is their answer and stays theirs.
+    # 200, so older extensions log nothing alarming.
     from app.autofill import field_guards as _fg
-    if _fg.is_anti_bot_field(question) or _fg.looks_like_meta_reply(answer):
+    if _fg.is_anti_bot_field(question) or _fg.is_model_only_reply(answer):
         return {"ok": False, "skipped": "not_an_answer"}
     norm = question.lower().strip()
     user_id_arg = uid if uid != "local" else None
@@ -6920,7 +6938,9 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
             q = q.where(AnswerMemory.user_id == user_id_arg)
         for mem in session.exec(q).all():
             orig = norm_to_orig.get(mem.label_normalized)
-            if orig and mem.answer and not _fg.looks_like_meta_reply(mem.answer):
+            # These are answers the user typed: only a model's own form
+            # ("I'd be happy to help, but…") is withheld, never a real answer.
+            if orig and mem.answer and not _fg.is_model_only_reply(mem.answer):
                 answers[orig] = mem.answer
     return {"answers": answers}
 

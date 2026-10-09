@@ -87,10 +87,30 @@ def _no_llm(*a, **k):
 @pytest.mark.parametrize("label", [
     "g-recaptcha-response", "h-captcha-response", "cf-turnstile-response",
     "frc-captcha-solution", "website_honeypot", "Leave this field blank",
+    "Please leave this field empty.", "If you are human, leave this field blank",
+    "Don't fill this out if you're human", "Do not fill in this field",
+    "\n  Leave this\n  field blank *\n",
 ])
 def test_anti_bot_fields_are_recognised(label):
     assert fg.is_anti_bot_field(label)
     assert fg.not_a_question_reason(label) == "anti_bot_field"
+
+
+@pytest.mark.parametrize("label", [
+    # Review 2026-10-09: real, visible questions that say when to leave them
+    # blank. The first pattern called them honeypots, so the extension stopped
+    # filling LinkedIn/GitHub fields the 1.0.0 build filled and the server
+    # refused to remember what the user typed there.
+    "LinkedIn profile (leave blank if none)",
+    "GitHub URL - leave empty if you don't have one",
+    "Leave blank if you were not referred",
+    "Preferred first name - leave empty if same as legal name",
+    "If you have no referral code, leave this field blank.",
+    "Do not fill in if you were not referred",
+])
+def test_a_real_field_that_says_leave_blank_is_not_a_honeypot(label):
+    assert not fg.is_anti_bot_field(label)
+    assert fg.not_a_question_reason(label) is None
 
 
 @pytest.mark.parametrize("label,want", [
@@ -120,9 +140,31 @@ def test_replies_about_the_question_are_not_answers(reply):
     "It seems natural to me to start with the customer's workflow.",
     "Over three years I built ETL pipelines and REST integrations in Python.",
     "",
+    # review 2026-10-09: answers the first patterns read as replies about the question
+    "I am unable to start before January 2027 because of my notice period.",
+    "I'm not able to relocate, but I am happy to work remotely from Ohio.",
+    "For me, choosing a team is a question of mission alignment.",
+    "I tuned every technical parameter of our Kafka pipeline.",
+    "As an AI engineer, I built retrieval systems for support teams.",
+    "I can't help but admire how quickly the team ships.",
 ])
 def test_real_answers_pass(answer):
     assert not fg.looks_like_meta_reply(answer)
+    assert not fg.is_model_only_reply(answer)
+
+
+@pytest.mark.parametrize("reply,model_only", [
+    (LIVE_REPLY, True),
+    ("As an AI language model, I cannot know where you heard about us.", True),
+    ("The question appears to be incomplete.", True),
+    # meta from a model, but a person may type these: never refused as THEIR text
+    ("SKIP", False),
+    ("I'm sorry, but I can't answer that without more context.", False),
+    ("This doesn't look like an essay question; it is a form field name.", False),
+])
+def test_user_text_is_refused_only_in_forms_a_model_alone_writes(reply, model_only):
+    assert fg.looks_like_meta_reply(reply)
+    assert fg.is_model_only_reply(reply) is model_only
 
 
 @pytest.mark.parametrize("q,why", [
@@ -248,6 +290,40 @@ def test_save_answer_route_never_learns_a_captcha_or_a_meta_reply(client):
             AnswerMemory.label_normalized.in_(["fguard-recaptcha-response", "fguard essay"]))).all()
 
 
+# ── what the USER typed stays theirs (review 2026-10-09) ─────────────────────
+
+_TYPED = {
+    "fguard notice period": "I am unable to start before January 2027 because of my notice period.",
+    "fguard relocation": "I'm not able to relocate, but I am happy to work remotely from Ohio.",
+    "fguard what matters": "For me, choosing a team is a question of mission alignment.",
+    "fguard proudest work": "I tuned every technical parameter of our Kafka pipeline.",
+    "fguard leave blank if none, linkedin": "https://linkedin.com/in/jane-doe",
+}
+
+
+def test_what_the_user_typed_is_saved_recalled_and_served(client, monkeypatch):
+    """The meta-reply test is for MODEL output. A person's own answer that
+    happens to read like one is remembered, recalled, and served from the
+    cache instead of being regenerated over."""
+    for q, a in _TYPED.items():
+        r = client.post("/api/save-answer", json={"question": q, "answer": a})
+        assert r.json() == {"ok": True}, (q, r.json())
+    r = client.post("/api/recall-answers", json={"labels": list(_TYPED)})
+    assert r.json()["answers"] == _TYPED
+
+    import app.autofill.answer_pack as ap
+    monkeypatch.setattr(ap, "_llm_essay_answer", _no_llm)
+    monkeypatch.setattr(ap, "_get_or_create_profile", lambda user_id=None: _Prof)
+    monkeypatch.setattr(ap.settings, "anthropic_api_key", "test-key")
+    aid = _mk_app()
+    # No "?" and no company name: the essay cache key IS the saved label, so a
+    # user answer read as a miss would be regenerated and overwritten.
+    q = "fguard notice period"
+    assert ap._normalize_question(q, company="FGuardCo") == q
+    assert ap.answer_question_with_source(q, aid) == (_TYPED[q], "cache")
+    assert ap._lookup_memory("fguard relocation") == _TYPED["fguard relocation"]
+
+
 # ── the resume the extension attaches ────────────────────────────────────────
 
 def _resume_app(tmp_path, with_pdf=True):
@@ -290,6 +366,27 @@ def test_the_one_page_pdf_is_attached_where_the_field_takes_it(client, resume_ro
     else:
         assert d["mime"].endswith("wordprocessingml.document")
         assert base64.b64decode(d["base64"]).startswith(b"PK")
+
+
+def test_old_and_new_builds_are_told_apart(client, resume_route, tmp_path, caplog):
+    """1.0.1+ always sends ?accept= ("*" when the field names nothing) and
+    gets the PDF; a request with no parameter is the 1.0.0 Store build. It
+    gets the PDF too (the documented tradeoff: on a Word-only field it then
+    attaches nothing), and that is logged so the old share is measurable."""
+    import logging
+    aid = _resume_app(tmp_path)
+    with caplog.at_level(logging.INFO, logger="app.api.server"):
+        d = client.get(f"/api/fill-pack/{aid}/resume", params={"accept": "*"}).json()
+    assert d["filename"] == "Jane_Doe_Resume.pdf" and d["mime"] == "application/pdf"
+    assert not [r for r in caplog.records if "no accept=" in r.getMessage()]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="app.api.server"):
+        d = client.get(f"/api/fill-pack/{aid}/resume").json()
+    assert d["filename"] == "Jane_Doe_Resume.pdf"
+    assert [r for r in caplog.records if "no accept=" in r.getMessage()]
+    from app.api import server
+    doc = server.get_tailored_resume.__doc__
+    assert "1.0.0 Store build" in doc and ".doc,.docx" in doc
 
 
 def test_no_pdf_means_the_word_file(client, resume_route, tmp_path):

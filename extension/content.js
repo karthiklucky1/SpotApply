@@ -76,22 +76,28 @@ function queryAllDeep(selector, root = document) {
 // the "question", the AI's reply ("I'd be happy to help, but…") came back and
 // was typed into it. A captcha / anti-bot field, a honeypot, and a text field
 // the user cannot see are never filled, never asked about, never learned from.
-// Keep the pattern in step with app/autofill/field_guards.py.
-const _ANTI_BOT_RE = /(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot|leave (?:this )?(?:field )?(?:blank|empty)|do ?n[o']t (?:fill|change) (?:this|in))/i;
+// Honeypot WORDING counts only when the whole text is the instruction ("Leave
+// this field blank") or it addresses humans ("If you are human, ..."): a real
+// field that says "leave blank if none" is the applicant's to fill.
+// Keep the pattern IDENTICAL to app/autofill/field_guards.py.
+const _ANTI_BOT_RE = /(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot|if you(?:'re|’re| are) (?:a )?human\b|^\W*(?:please )?(?:leave this (?:field |input |box )?(?:blank|empty)|do ?n[o'’]t (?:fill|change) (?:in )?this(?: field)?(?: in| out)?)\W*$)/i;
 // Captcha WIDGETS (never a page or form wrapper, whose class may mention captcha).
 const _CAPTCHA_WIDGET_SEL = '.g-recaptcha, .grecaptcha-badge, .h-captcha, .cf-turnstile, .frc-captcha';
 
 function isAntiBotField(el) {
   if (!el || !el.getAttribute) return false;
+  // Each text on its own (a honeypot sentence must be the WHOLE text), with
+  // its whitespace collapsed the way field_guards.is_anti_bot_field does.
+  const test = (t) => !!t && _ANTI_BOT_RE.test(String(t).replace(/\s+/g, ' ').trim());
   const own = [el.getAttribute('name'), el.id, el.getAttribute('class'),
                el.getAttribute('aria-label'), el.getAttribute('placeholder'),
-               el.getAttribute('title')].filter(Boolean).join(' ');
-  if (_ANTI_BOT_RE.test(own)) return true;
+               el.getAttribute('title')];
+  if (own.some(test)) return true;
   try { if (el.closest && el.closest(_CAPTCHA_WIDGET_SEL)) return true; } catch (_) {}
   // A honeypot announces itself to people: "Leave this field blank".
   try {
     const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) || '';
-    if (lbl && _ANTI_BOT_RE.test(lbl)) return true;
+    if (test(lbl)) return true;
   } catch (_) {}
   return false;
 }
@@ -134,15 +140,25 @@ function looksLikeFieldIdentifier(text) {
   return !!s && !/\s/.test(s) && /^[A-Za-z0-9_.:\[\]-]+$/.test(s) && /[_\-\d\[\]:.]/.test(s);
 }
 
-// A model reply ABOUT the question instead of an answer to it. Never typed into
-// a form (the server refuses these too; this covers an older server).
-const _META_START_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help|i(?:'m| am) (?:sorry|unable|not able)|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help|complete)|as an ai\b|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))|could you (?:please )?(?:provide|clarify|share)|please (?:provide|clarify|share) (?:the|more|a|an))/i;
-const _META_ANY_RE = /(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)|technical (?:parameter|field|identifier)|(?:is|isn't|is not|doesn't look like|does not look like) (?:a|an) (?:real |actual )?(?:essay |application )?question|form field (?:name|identifier)|provide the (?:actual|full|complete) (?:essay )?question|as an ai (?:language )?model/i;
+// A MODEL reply ABOUT the question instead of an answer to it. Never typed into
+// a form (the server refuses these too; this covers an older server). The full
+// test is for what a model just wrote; a remembered answer may be the user's
+// own words ("I am unable to start before January"), so it is judged only by
+// the forms a model alone writes (looksLikeModelOnlyReply). Same patterns as
+// app/autofill/field_guards.py.
+const _META_START_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help|i(?:'m| am) (?:sorry,? (?:but )?i (?:cannot|can't|can not|am unable to|am not able to)|unable to|not able to) (?:answer|write|respond|provide|help|complete|assist)\b|i(?:'m| am) (?:sorry|unable|not able)\b[^.?!]{0,60}\b(?:the|this|your) (?:essay )?(?:question|prompt)\b|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help(?! but)|complete)|as an ai(?: (?:language )?model| assistant)?\s*,|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))|could you (?:please )?(?:provide|clarify|share)|please (?:provide|clarify|share) (?:the|more|a|an))/i;
+const _META_ANY_RE = /(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)|(?:looks|seems|appears) (?:like|to be) (?:a|an) (?:technical|form|html|internal|system) (?:parameter|field|identifier|name|token|value)|(?:this|that|it|"[^"]{1,80}") (?:is|isn't|is not|doesn't look like|does not look like|doesn't appear to be|does not appear to be) (?:a|an) (?:real |actual |complete |valid )?(?:essay |application )?question\b|form field (?:name|identifier)|provide the (?:actual|full|complete) (?:essay )?question|as an ai language model|as an ai (?:model|assistant),/i;
+const _META_MODEL_ONLY_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help(?: you)?(?:\s*[,!.:;]| with (?:this|that|the|your) (?:essay |application )?(?:question|prompt))|as an ai(?: (?:language )?model| assistant)?\s*,|(?:i notice (?:that )?|it (?:looks|seems|appears) (?:like|that) )?(?:the|this|your) (?:essay )?(?:question|prompt) (?:appears|seems|is) (?:to be )?(?:incomplete|unclear|missing|empty|cut off))/i;
 function looksLikeMetaReply(answer) {
   const a = String(answer || '').trim();
   if (!a) return false;
   if (a.replace(/^[\s."']+|[\s."']+$/g, '').toUpperCase() === 'SKIP') return true;
   return _META_START_RE.test(a) || _META_ANY_RE.test(a);
+}
+/** A reply in a form only a model writes: safe to apply to the user's own words. */
+function looksLikeModelOnlyReply(answer) {
+  const a = String(answer || '').trim();
+  return !!a && _META_MODEL_ONLY_RE.test(a);
 }
 
 // Backend base URL for a fill pack. The server deploys independently of
@@ -986,7 +1002,15 @@ function _suggestionsFor(el) {
     !(o.getRootNode && o.getRootNode().host && o.getRootNode().host.id === 'hp-copilot-overlay'));
 }
 
-/** The suggestion that IS the profile's place, or null when it is not certain. */
+/**
+ * The suggestion that IS the profile's place, or null when it is not certain.
+ *
+ * The region is compared COMPONENT BY COMPONENT ("London, Ontario, Canada" is
+ * London | Ontario | Canada), never as a substring: "on" is inside "London"
+ * and "Toronto", and "Virginia" inside "West Virginia" (review 2026-10-09: a
+ * substring test committed London, England for "London, ON"). A 2-letter code
+ * matches only as its own, case-sensitive component.
+ */
 function pickLocationSuggestion(options, pack) {
   const loc = parseLocation(pack && pack.location);
   const norm = (s) => deaccent(String(s || '')).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -994,18 +1018,48 @@ function pickLocationSuggestion(options, pack) {
   const city = norm(loc.city);
   if (!city) return null;
   const cityRe = new RegExp('(^|[^a-z])' + esc(city) + '([^a-z]|$)');
-  const state = norm(loc.state);
-  const abbrRe = loc.abbr && /^[A-Z]{2}$/.test(loc.abbr) ? new RegExp('(^|[^A-Za-z])' + loc.abbr + '([^A-Za-z]|$)') : null;
-  const country = norm(residenceCountry(pack));
-  const hits = (options || []).filter((o) => cityRe.test(norm(o.textContent)));
+  // A suggestion's comma components, ZIP codes dropped ("OH 45202" is OH).
+  const parts = (o) => String((o && o.textContent) || '').split(',')
+    .map((p) => p.replace(/\b\d{5}(?:-\d{4})?\b/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  let hits = (options || []).filter((o) => cityRe.test(norm(o.textContent)));
+  // "Columbus" is not "Columbus Grove": a suggestion naming the city exactly wins.
+  const exact = hits.filter((o) => parts(o).some((p) => norm(p) === city));
+  if (exact.length) hits = exact;
   if (!hits.length) return null;
-  if (state) {
-    const inState = hits.filter((o) => norm(o.textContent).includes(state) || (abbrRe && abbrRe.test(o.textContent || '')));
-    if (inState.length) return inState[0];
-    return hits.length === 1 ? hits[0] : null;      // no suggestion names the state: only an unambiguous one
+
+  // The profile's region as a code and a name ("OH" / "ohio", either written);
+  // a country in that slot ("London, UK") is the country, not a region.
+  const regions = Object.assign({}, US_STATES, CA_PROVINCES);
+  const isRegionCode = (k) => !!k && Object.prototype.hasOwnProperty.call(regions, k);
+  const regionNames = new Set(Object.keys(regions).map((k) => norm(regions[k])));
+  let code = isRegionCode(loc.abbr) ? loc.abbr : '';
+  let regionName = code ? norm(regions[code]) : norm(loc.state);
+  if (!code && regionNames.has(regionName)) {
+    code = Object.keys(regions).find((k) => norm(regions[k]) === regionName) || '';
   }
-  if (hits.length === 1) return hits[0];
-  const inCountry = country ? hits.filter((o) => norm(o.textContent).includes(country)) : [];
+  const slotCountry = code ? '' : _countryIn(loc.state);
+  if (slotCountry) regionName = '';
+  const country = _normCountry(residenceCountry(pack)) || slotCountry ||
+    (US_STATES[code] ? 'united states' : (CA_PROVINCES[code] ? 'canada' : ''));
+  // A suggestion that names a country we know, other than the profile's.
+  const otherCountry = (o) => {
+    const theirs = parts(o).slice(1).map(_countryIn).find(Boolean) || '';
+    return !!(theirs && country && theirs !== country);
+  };
+
+  if (code || regionName) {
+    const isRegion = (p) => (code && p === code) || (!!regionName && norm(p) === regionName);
+    const inRegion = hits.filter((o) => parts(o).slice(1).some(isRegion));
+    if (inRegion.length) return inRegion.length === 1 ? inRegion[0] : null;   // still two: the user picks
+    // No suggestion names the profile's region. A lone one is the place only
+    // when it names no OTHER state or province and no other country.
+    if (hits.length !== 1) return null;
+    if (parts(hits[0]).slice(1).some((p) => isRegionCode(p) || regionNames.has(norm(p)))) return null;
+    return otherCountry(hits[0]) ? null : hits[0];
+  }
+  if (hits.length === 1) return otherCountry(hits[0]) ? null : hits[0];
+  const inCountry = country
+    ? hits.filter((o) => parts(o).slice(1).some((p) => _normCountry(p) === country)) : [];
   return inCountry.length === 1 ? inCountry[0] : null;   // two Springfields: the user picks
 }
 
@@ -1906,6 +1960,14 @@ const US_STATES = {
   'SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont',
   'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming',
   'DC':'District of Columbia',
+};
+// Canadian provinces/territories, read only by pickLocationSuggestion so a
+// "London, ON" profile can recognise "London, Ontario, Canada".
+const CA_PROVINCES = {
+  'AB':'Alberta','BC':'British Columbia','MB':'Manitoba','NB':'New Brunswick',
+  'NL':'Newfoundland and Labrador','NS':'Nova Scotia','NT':'Northwest Territories',
+  'NU':'Nunavut','ON':'Ontario','PE':'Prince Edward Island','QC':'Quebec',
+  'SK':'Saskatchewan','YT':'Yukon',
 };
 
 /**
@@ -3004,6 +3066,7 @@ async function fillEssayQuestions(root, pack) {
     }
 
     // 2. If not cached, call /api/answer-question on-demand (~$0.002, cached after)
+    let generated = false;
     if (!answer && packBase(pack) && pack.auth_token && pack.app_id) {
       const res = await apiFetch(
         `${packBase(pack)}/api/answer-question`,
@@ -3013,6 +3076,8 @@ async function fillEssayQuestions(root, pack) {
       );
       if (res.ok && res.data) {
         answer = res.data.answer || null;
+        // A server too old to name its source may have just generated it.
+        generated = !res.data.source || res.data.source === 'generated';
         if (answer) console.log(`[SpotApply] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
         else if (res.data.refused) console.log(`[SpotApply] Left for you (${res.data.refused}):`, q.slice(0, 60));
       } else {
@@ -3021,7 +3086,9 @@ async function fillEssayQuestions(root, pack) {
     }
 
     // A reply about the question ("I'd be happy to help, but…") is not an answer.
-    if (answer && looksLikeMetaReply(answer)) {
+    // What a model just wrote gets the full test; a remembered answer may be the
+    // user's own words, so only the forms a model alone writes are dropped.
+    if (answer && (generated ? looksLikeMetaReply(answer) : looksLikeModelOnlyReply(answer))) {
       console.warn('[SpotApply] Discarded a reply that is not an answer for:', q.slice(0, 60));
       answer = null;
     }
@@ -3198,10 +3265,11 @@ async function attachResume(root, pack) {
 
   // Tell the server what the field takes: it answers with the one-page PDF
   // (the owner's delivered resume) unless the field rules PDF out, then Word.
-  const _accept = String(targets[0].getAttribute('accept') || '').trim();
+  // ALWAYS sent ("*" when the field names nothing), so the server can tell
+  // this build from the 1.0.0 Store build, which sends no accept at all.
+  const _accept = String(targets[0].getAttribute('accept') || '').trim() || '*';
   const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume` +
-      (_accept ? `?accept=${encodeURIComponent(_accept)}` : ''),
+    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume?accept=${encodeURIComponent(_accept)}`,
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
@@ -3337,6 +3405,7 @@ function fileMatchesAccept(fi, filename, mime) {
   const name = String(filename || '').toLowerCase();
   const type = String(mime || '').toLowerCase();
   return accept.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean).some((a) => {
+    if (a === '*' || a === '*/*') return true;          // the server's _accept_allows reads these the same
     if (a.startsWith('.')) return name.endsWith(a);
     if (a.endsWith('/*')) return type.startsWith(a.slice(0, -1));
     return type === a;

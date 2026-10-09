@@ -560,7 +560,12 @@ def ashby_live_test(ctx):
     check("11x ...the reply counts the unanswered sponsorship Yes/No and how-did-you-hear",
           reply2.get("needUser", 0) >= 2, json.dumps(reply2)[:200])
     # The server now answers with the PDF; a build that sends no ?accept=
-    # (the Store's 1.0.0) must attach it unchanged.
+    # (the Store's 1.0.0) must attach it unchanged. Known tradeoff (documented
+    # on get_tailored_resume): that old build cannot say what the field takes,
+    # so on a field whose accept EXCLUDES PDF (e.g. ".doc,.docx") it refuses
+    # the PDF and attaches nothing, where it used to attach the .docx. This
+    # check covers only a field that takes PDF (".pdf,.doc,.docx"). 1.0.1+
+    # always sends ?accept= ("*" when the field names none).
     check("11y the server's PDF is attached as-is (filename and upload chip)",
           v2["resume"].endswith(".pdf") and v2["chip"].endswith(".pdf"), json.dumps(v2)[-120:])
     p2.close()

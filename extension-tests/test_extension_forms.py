@@ -385,6 +385,22 @@ def main():
               page.eval_on_selector("#rp-first", "el => el.value"))
         page.close()
 
+        # ── LB: "leave blank if none" is a question, not a honeypot ─────────
+        # Review 2026-10-09: the honeypot pattern matched these labels, so the
+        # build stopped filling LinkedIn/GitHub fields 1.0.0 filled.
+        print("\nReal fields that say when to leave them blank")
+        pack = base_pack(f"{BASE}/leaveblank.html")
+        page, _ = drive_fill(ctx, f"{BASE}/leaveblank.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("LB1 'LinkedIn profile (leave blank if none)' is filled",
+              v("#lb-li") == pack["linkedin_url"], v("#lb-li"))
+        check("LB2 'GitHub URL - leave empty if you don't have one' is filled",
+              v("#lb-gh") == pack["github_url"], v("#lb-gh"))
+        check("LB3 the off-page 'Leave this field blank' honeypot stays empty",
+              v("#lb-hp") == "", v("#lb-hp"))
+        check("LB4 identity still filled", v("#lb-fn") == pack["first_name"], v("#lb-fn"))
+        page.close()
+
         # ── API surface actually exercised ──────────────────────────────────
         print("\nBackend calls made by the extension during these fills")
         paths = sorted({p for _, p in REQUESTS if p.startswith("/api") or "resume" in p})
@@ -392,6 +408,11 @@ def main():
             print("   ", p_)
         check("A1 résumé endpoint called", any("resume" in p for _, p in REQUESTS))
         check("A2 no unexpected API host", True, f"{len(REQUESTS)} requests, all to the stub")
+        # 1.0.1+ always names what the field takes ("*" when it names nothing),
+        # so the server can tell it from the 1.0.0 Store build (no parameter).
+        resume_gets = [p for m, p in REQUESTS if m == "GET" and p.split("?")[0].endswith("/resume")]
+        check("A8 every resume request carries ?accept=",
+              bool(resume_gets) and all("accept=" in p for p in resume_gets), str(resume_gets[:4]))
 
         ctx.close()
 

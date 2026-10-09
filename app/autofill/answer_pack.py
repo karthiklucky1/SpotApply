@@ -406,9 +406,11 @@ def answer_question_with_source(question: str, application_id: int,
 def _lookup_memory(label: str, user_id: str | None = None) -> Optional[str]:
     """A remembered answer for ``label``, never one that is unusable.
 
-    A row cached under an anti-bot key, or holding a reply about the question
-    instead of an answer, reads as a miss — every reader goes through here, so
-    such a row is never served again even though it is still stored."""
+    A row cached under an anti-bot key, or holding a model's reply about the
+    question in a form only a model writes, reads as a miss: every reader goes
+    through here, so such a row is never served again even though it is still
+    stored. Rows may be answers the USER typed (``/api/save-answer``), so the
+    narrow model-only test applies, never the full meta-reply one."""
     norm = label.lower().strip()
     if field_guards.is_anti_bot_field(norm):
         return None
@@ -418,7 +420,7 @@ def _lookup_memory(label: str, user_id: str | None = None) -> Optional[str]:
             q = q.where(AnswerMemory.user_id == user_id)
         mem = session.exec(q).first()
         answer = mem.answer if mem else None
-    if answer and field_guards.looks_like_meta_reply(answer):
+    if answer and field_guards.is_model_only_reply(answer):
         return None
     return answer
 
@@ -654,6 +656,8 @@ def generate_answer_pack(application_id: int, user_id: str | None = None) -> dic
         answer = _lookup_memory(question, user_id=user_id)
         if not answer:
             answer = _llm_essay_answer(question, job, profile, resume_text)
+            if answer and field_guards.looks_like_meta_reply(answer):
+                answer = ""          # a model's reply about the question is no answer
         if answer:
             essay_answers.append({"question": question, "answer": answer})
 
