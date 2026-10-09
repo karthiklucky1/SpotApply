@@ -435,61 +435,75 @@ _RESTRICTION_RE = re.compile(
     r"|without\s+(?:visa\s+)?sponsorship|not\s+(?:offer|provide)|does\s+not\s+sponsor",
     re.IGNORECASE)
 
-#: A citizenship, clearance or U.S.-person requirement in the POSTING's own
-#: text. `find_refusal` is about sponsorship and misses all of these ("must be
+#: Whether the POSTING's own text touches citizenship, clearance or U.S.-person
+#: status. `find_refusal` is about sponsorship and misses all of these ("must be
 #: U.S. citizens", "U.S. Citizenship is required", "Active TS/SCI clearance",
-#: "obtain and maintain a Secret clearance"), so a posting that says one is not
-#: silent, whatever the note says. Broad on purpose: a false hit only means a
-#: low score the model gave is left as the model gave it. EEO and E-Verify
-#: boilerplate names no requirement and does not match: "without regard to
-#: ... (U.S.) citizenship status", "a program of U.S. Citizenship and
-#: Immigration Services" (USCIS runs E-Verify, which STEM OPT asks of an
-#: employer; reading it as a requirement kept a silent posting at 10).
+#: "obtain and maintain a Secret clearance"), so a posting that names one is
+#: not silent, whatever the note says.
+#:
+#: Deliberately CONSERVATIVE (review round 4): ANY mention counts, negated or
+#: not. Three rounds of reading negation ("is not required", "no clearance
+#: needed", "need not be") each failed one way or the other: a clearance
+#: negation cancelled a citizenship requirement in the same sentence ("Only
+#: United States citizens may apply, no clearance needed" was lifted to 85),
+#: and a "status" exception dropped "U.S. citizenship status is required". So
+#: "No U.S. citizenship or clearance required" also blocks the lift. That is
+#: the safe direction: a hit only leaves the score the model gave, while a miss
+#: lifts a citizens-only role to 85 for a student who cannot take it.
+#:
+#: The only text removed first is boilerplate that names no requirement:
+#: `_USCIS_RE` (E-Verify, which STEM OPT asks of an employer, is "a program of
+#: U.S. Citizenship and Immigration Services"; reading it as a requirement kept
+#: a silent posting at 10) and, inside an EEO clause, `_EEO_CITIZENSHIP_RE`.
 _US = r"(?:u\.?\s?s\.?|united\s+states)"
 _POSTING_RESTRICTION_RE = re.compile(
-    rf"\b{_US}\s+citizens?(?:hip)?\b(?!\s+(?:(?:and|&)\s+immigration|status)\b)"
-    r"|\bcitizens?\s+only\b|\bnon-?citizens?\b"
-    rf"|\bmust\s+be\s+(?:an?\s+)?(?:{_US}\s+)?citizens?\b"
-    r"|\bcitizenship\s+(?:is\s+)?(?:required|requirement|mandatory)\b|\brequires?\s+citizenship\b"
-    r"|\bclearance\b|\bts\s*/\s*sci\b|\btop\s+secret\b|\bpolygraph\b|\bpublic\s+trust\b"
+    r"\b(?:non-?)?citizen\w*"
+    r"|\bclearances?\b|\bts\s*/\s*sci\b|\btop\s+secret\b|\bpolygraph\b|\bpublic\s+trust\b"
     r"|\b(?:active|interim)\s+secret\b|\bsecret\s+(?:is\s+)?required\b"
     rf"|\b{_US}\s+persons?\b|\bitar\b|\bexport[-\s]+control"
-    r"|\bgreen\s*card\s+holders?\b|\bpermanent\s+residents?\s+only\b"
-    r"|\bmust\s+be\s+an?\s+(?:lawful\s+)?permanent\s+resident\b",
+    r"|\bgreen\s*cards?\b|\bpermanent\s+residen\w*",
     re.IGNORECASE)
 
-#: The sentence lifts the requirement itself: the negation GOVERNS the term.
-#: "U.S. citizenship is not required", "clearance not needed", "you do not
-#: need to be a U.S. citizen", "does not require a security clearance", "no
-#: clearance needed". A negation describing the APPLICANT is the requirement
-#: stated, not lifted: "applicants who are not U.S. citizens will not be
-#: considered", "anyone who is not a U.S. citizen", "non-citizens are not
-#: eligible". (The first version took any "not ... citizen" as a lift.)
-_NEG_TERM = (rf"(?:(?:{_US}\s+)?citizen\w*|(?:security\s+)?clearance|{_US}\s+persons?)")
-_NEG_QUALIFIER = r"(?:(?:an?|any)\s+)?(?:(?:prior|active|existing|current)\s+)?"
-_RESTRICTION_NEGATED_RE = re.compile(
-    rf"\b{_NEG_TERM}\s+(?:(?:is|are)\s+(?:not|never)\s+|(?:isn|aren)['’]t\s+|not\s+)"
-    r"(?:required|needed|necessary|mandatory|a\s+requirement)\b"
-    r"|(?:\b(?:do|does|did|will|would)\s+not\s+|\b(?:don|doesn|didn|wouldn|won)['’]t\s+)"
-    rf"(?:need|require)\s+(?:to\s+(?:be|hold|have|obtain|possess)\s+)?{_NEG_QUALIFIER}{_NEG_TERM}"
-    rf"|\b(?:is|are)\s+not\s+required\s+to\s+(?:be|hold|have|obtain|possess)\s+{_NEG_QUALIFIER}{_NEG_TERM}"
-    rf"|\bno\s+{_NEG_QUALIFIER}{_NEG_TERM}\s+(?:is\s+)?(?:required|needed|necessary|requirement)\b",
+#: The agency that runs E-Verify, a name and not a requirement.
+_USCIS_RE = re.compile(
+    rf"\b(?:{_US}\s+)?citizenship\s+(?:and|&)\s+immigration\s+services?\b", re.IGNORECASE)
+#: An EEO / anti-discrimination clause: "without regard to ... citizenship
+#: status", "we do not discriminate on the basis of ... citizenship".
+_EEO_MARKER_RE = re.compile(
+    r"\bregardless\s+of\b|\bwithout\s+regard\s+to\b|\bon\s+the\s+basis\s+of\b|\bbased\s+on\b"
+    r"|discriminat|\bequal\s+opportunity\b|\bprotected\b",
     re.IGNORECASE)
+#: ...unless the same sentence states a requirement. "based on" and
+#: "protected" also occur in real ones ("U.S. citizenship is required based on
+#: the contract", "U.S. citizenship required to access protected data"), and
+#: removing the term there would lift exactly the role this guard exists for.
+_REQUIREMENT_WORD_RE = re.compile(r"\brequir|\bmust\b|\bmandatory\b|\bonly\b|\beligib",
+                                  re.IGNORECASE)
+_EEO_CITIZENSHIP_RE = re.compile(rf"\b(?:{_US}\s+)?citizenship(?:\s+status)?\b", re.IGNORECASE)
 #: Sentence ends, but not the dots of an abbreviation: "U.S. citizens" is one
 #: sentence (a `.` after a one-letter word never ends one).
 _SENTENCE_SPLIT_RE = re.compile(r"(?<!\b[A-Za-z])[.!?](?=\s|$)|[;\n\r•·|]+")
 
 
+def _without_boilerplate(sentence: str) -> str:
+    """``sentence`` minus the USCIS name and, in an EEO clause that states no
+    requirement, its "(U.S.) citizenship (status)"."""
+    sentence = _USCIS_RE.sub(" ", sentence)
+    if _EEO_MARKER_RE.search(sentence) and not _REQUIREMENT_WORD_RE.search(sentence):
+        sentence = _EEO_CITIZENSHIP_RE.sub(" ", sentence)
+    return sentence
+
+
 def posting_restriction(text: str) -> Optional[str]:
-    """The sentence of ``text`` stating a citizenship / clearance / U.S.-person
-    requirement, or None. A negated sentence ("U.S. citizenship is not
-    required") does not count unless it also says "must"."""
+    """The first sentence of ``text`` that mentions citizenship, a clearance or
+    U.S.-person status once EEO / E-Verify boilerplate is removed, or None.
+
+    No negation exception: "No U.S. citizenship or clearance required" counts
+    too (see `_POSTING_RESTRICTION_RE`). The caller only uses this to decide
+    that a posting is NOT silent, so a hit keeps the model's own score."""
     for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
-        if not _POSTING_RESTRICTION_RE.search(sentence):
-            continue
-        if _RESTRICTION_NEGATED_RE.search(sentence) and not re.search(r"\bmust\b", sentence, re.I):
-            continue
-        return " ".join(sentence.split())[:200]
+        if _POSTING_RESTRICTION_RE.search(_without_boilerplate(sentence)):
+            return " ".join(sentence.split())[:200]
     return None
 
 #: Same number card_match uses for "needs sponsorship; posting silent — assumed
@@ -529,9 +543,10 @@ def reconcile_work_auth_factor(factor, profile,
         most 85 (silent posting) or 10 (refusing posting);
       * the posting refuses and it is high    -> at most 10;
       * it says the posting is silent, names no restriction, and the posting
-        TEXT was read and neither refuses sponsorship nor states a citizenship
-        / clearance / U.S.-person requirement, and it is a blocker-low -> 85,
-        as the rubric requires.
+        TEXT was read and neither refuses sponsorship nor mentions
+        citizenship, a clearance or U.S.-person status at all (negated or
+        not, `posting_restriction`), and it is a blocker-low -> 85, as the
+        rubric requires.
 
     A changed entry carries the model's own score and note beside the
     correction (``model_score`` / ``model_note``); the judgement always starts
@@ -553,8 +568,8 @@ def reconcile_work_auth_factor(factor, profile,
     except Exception:
         return factor
     note = str(original.get("note") or "")
-    # A posting that states a citizenship or clearance requirement is not
-    # silent, whatever the note says.
+    # A posting that mentions citizenship or a clearance (even to waive it) is
+    # not silent, whatever the note says.
     restricted = posting_restriction(posting_text) is not None if posting_text else False
 
     def _corrected(new_score, new_note):

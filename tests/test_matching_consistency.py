@@ -137,6 +137,10 @@ def test_a_clearance_or_citizenship_role_is_never_lifted_as_silent(case):
 #: Review round 3: requirements the first guard missed. The "United States"
 #: spelling, and negations that describe the APPLICANT ("who are not U.S.
 #: citizens") rather than lift the requirement ("is not required").
+#: Review round 4: requirements worded with "status" (the round-3 exception
+#: for the EEO phrase dropped them), a clearance negation beside a citizenship
+#: requirement (a negated clause cancelled the whole sentence), and EEO-like
+#: words ("based on", "protected") inside a real requirement.
 _STATED_IN_THE_POSTING = [
     "Must be a United States citizen.",
     "Only United States citizens may apply.",
@@ -146,6 +150,19 @@ _STATED_IN_THE_POSTING = [
     "Non-citizens are not eligible.",
     "Active Secret required.",
     "U.S. citizenship is not required, but you must hold an active clearance.",
+    "U.S. citizenship status is required.",
+    "Requires U.S. citizenship status.",
+    "Must have U.S. citizen status due to contract requirements.",
+    "US Citizen status required.",
+    "Only United States citizens may apply, no clearance needed.",
+    "U.S. Citizens only, clearance not required.",
+    "U.S. citizenship is required, but no security clearance is needed.",
+    "Requires U.S. citizenship (no clearance required).",
+    "Active Secret clearance not required at start, U.S. citizenship required.",
+    "U.S. citizenship is required based on federal contract requirements.",
+    "U.S. citizenship required to access protected program data.",
+    "Green card holders only.",
+    "Must be a lawful permanent resident.",
 ]
 
 
@@ -169,23 +186,26 @@ def test_a_note_naming_a_clearance_or_government_restriction_is_kept(note):
 
 
 #: E-Verify and EEO lines a silent posting routinely carries (review round 3:
-#: each made rule (c) read the posting as a citizenship requirement).
+#: each made rule (c) read the posting as a citizenship requirement). These are
+#: the ONLY text removed before the conservative "any mention" rule.
 _E_VERIFY = "We participate in E-Verify, a program of U.S. Citizenship and Immigration Services."
 _EEO_US = "We hire without regard to race, national origin, or U.S. citizenship status."
+_EEO_FULL = ("All qualified applicants will receive consideration for employment without "
+             "regard to race, color, religion, sex, national origin, disability, protected "
+             "veteran status, citizenship status, or any other characteristic protected by law.")
 
 
 @pytest.mark.parametrize("text", [
     "We do not discriminate on the basis of race, national origin or citizenship status.",
-    _E_VERIFY, _EEO_US,
+    _E_VERIFY, _EEO_US, _EEO_FULL,
     "E-Verify is run by United States Citizenship and Immigration Services (USCIS).",
-    "Employment decisions never depend on United States citizen status.",
-    "U.S. citizenship is not required.", "You do not need to be a U.S. citizen to apply.",
-    "This role does not require a security clearance.",
-    "No security clearance needed.", "Clearance not required.",
-    "You are not required to be a United States citizen.",
-    "U.S. citizenship isn't a requirement for this role.",
-    "We sponsor visas and green cards for the right candidate."])
-def test_boilerplate_and_negations_are_not_a_restriction(text):
+    "E-Verify is a program of Citizenship and Immigration Services.",
+    "We use E-Verify (U.S. Citizenship & Immigration Services).",
+    "Acme is an equal opportunity employer and hires regardless of citizenship.",
+    "Decisions are based on merit, not on citizenship status or national origin.",
+    "No employee is treated differently because of a protected trait such as citizenship.",
+    "We sponsor visas for the right candidate."])
+def test_boilerplate_is_not_a_restriction(text):
     from app.intelligence.work_auth import posting_restriction
     assert posting_restriction(_SILENT_POSTING + " " + text) is None
 
@@ -195,9 +215,56 @@ def test_a_silent_posting_with_e_verify_boilerplate_is_still_silent():
     citizenship requirement."""
     from app.intelligence.work_auth import reconcile_work_auth_factor as fix
     factor = {"score": 10, "note": "F-1 OPT; posting silent on sponsorship but US role"}
-    for extra in (_E_VERIFY, _EEO_US, _E_VERIFY + " " + _EEO_US):
+    for extra in (_E_VERIFY, _EEO_US, _EEO_FULL, _E_VERIFY + " " + _EEO_US):
         out = fix(dict(factor), _opt(), False, _SILENT_POSTING + " " + extra)
         assert out["score"] == 85 and out["model_score"] == 10, extra
+
+
+#: Review round 4: negated or waived mentions. Every attempt to read negation
+#: ("is not required", "no ... needed", "need not be") failed in one direction
+#: or the other, so the rule is deliberately conservative: ANY mention of
+#: citizenship, a clearance, U.S.-person status, a green card or permanent
+#: residence means the posting is not silent. The cost is that these keep the
+#: model's own (low) score instead of the 85 lift; the alternative was lifting
+#: citizens-only roles to 85 for a student who cannot take them.
+_NEGATED_MENTIONS = [
+    "No U.S. citizenship or clearance required.",
+    "No clearance or U.S. citizenship needed.",
+    "Neither U.S. citizenship nor a security clearance is required.",
+    "There is no requirement for U.S. citizenship.",
+    "You need not be a U.S. citizen.",
+    "You're not required to hold a clearance.",
+    "Applicants not required to be U.S. citizens.",
+    "We welcome non-citizens and sponsor visas.",
+    "U.S. citizenship is not required.", "You do not need to be a U.S. citizen to apply.",
+    "This role does not require a security clearance.",
+    "No security clearance needed.", "Clearance not required.",
+    "You are not required to be a United States citizen.",
+    "U.S. citizenship isn't a requirement for this role.",
+    "We sponsor visas and green cards for the right candidate.",
+    "Employment decisions never depend on United States citizen status.",
+]
+
+
+@pytest.mark.parametrize("text", _NEGATED_MENTIONS)
+def test_a_negated_mention_also_stops_the_lift(text):
+    from app.intelligence.work_auth import posting_restriction
+    from app.intelligence.work_auth import reconcile_work_auth_factor as fix
+    assert posting_restriction(_SILENT_POSTING + " " + text) is not None
+    factor = {"score": 10, "note": "F-1 OPT; posting silent on sponsorship but US role"}
+    out = fix(dict(factor), _opt(), False, _SILENT_POSTING + " " + _E_VERIFY + " " + text)
+    assert out == factor, "the model's own verdict stands; nothing is lifted"
+
+
+def test_only_the_eeo_clause_loses_its_citizenship_mention():
+    """The EEO exception is per sentence: a requirement beside EEO text is
+    still read, and an EEO sentence that also states a requirement is kept."""
+    from app.intelligence.work_auth import posting_restriction
+    assert posting_restriction(_EEO_FULL + " U.S. citizenship status is required.") \
+        == "U.S. citizenship status is required"
+    assert posting_restriction(
+        "We do not discriminate based on citizenship, but U.S. citizenship is required "
+        "for this contract.") is not None
 
 
 def test_a_correction_keeps_the_models_own_verdict():
