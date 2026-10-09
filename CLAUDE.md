@@ -765,6 +765,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   Demographics are filled when the user saved them (`eeo_confirmed`) or opted in —
   never from recall/learning/AI. Uploads skip other-document fields, honour
   `accept`, count only when acknowledged; DO_FILL replies with the real outcome.
+  Captcha/honeypot/hidden fields are never filled, AI-asked or learned
+  (`canFillField` ↔ `autofill/field_guards.py`, refused BEFORE the AnswerMemory
+  cache; a reply ABOUT the question is never returned/cached/recalled), Ashby
+  Yes/No buttons + location autocompletes go through the same rules, and the
+  resume route serves the one-page PDF unless `?accept=` rules it out (live
+  test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
   **Setup after a resume upload**: review profile (what was read + what's missing)
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +

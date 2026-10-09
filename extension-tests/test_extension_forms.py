@@ -111,7 +111,7 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         REQUESTS.append(("GET", self.path))
-        if self.path.endswith("/resume"):
+        if self.path.split("?")[0].endswith("/resume"):
             import base64
             return self._json({
                 "filename": "Alexandra_Nguyen_Resume.docx",

@@ -5237,6 +5237,34 @@ def _authorized_now_for_pack(profile) -> Optional[bool]:
     return bool(fr.authorized_now)
 
 
+def _work_auth_note_for_pack(profile) -> str:
+    """Why the extension leaves "are you authorized to work?" for the user, in
+    one line it can show beside that question — "" when it can answer it.
+
+    Live test 2026-10-09: an F-1 OPT profile with no EAD end date left the
+    question blank with no explanation, which read as a fill failure."""
+    if profile is None or _authorized_now_for_pack(profile) is not None:
+        return ""
+    blob = ((getattr(profile, "work_authorization", "") or "") + " "
+            + (getattr(profile, "work_auth_status", "") or "") + " "
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    if not blob:
+        return ("Add your work authorization in your SpotApply profile so this "
+                "question can be answered for you.")
+    try:
+        from app.intelligence.work_auth import assess_profile
+        validity = assess_profile(profile).validity
+    except Exception:
+        return ""
+    if validity == "unknown":
+        return ("Add your work authorization end date in your SpotApply profile so "
+                "this question can be answered for you.")
+    if validity == "expired":
+        return ("The work authorization end date in your profile has passed, so "
+                "this question is left for you.")
+    return ""
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
@@ -5346,6 +5374,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # OPT whose EAD date has passed read "authorized" from the status text
         # alone and would have been answered Yes on employer forms.
         "authorized_now": _authorized_now_for_pack(p),
+        # Shown beside an authorization question left blank because of that.
+        "work_auth_note": _work_auth_note_for_pack(p),
         # Voluntary self-identification: only what the user chose; anything else
         # is sent as "decline" (never the old affirmative defaults).
         "gender": _eeo_answer(p.gender if p else "", _eeo_ok),
@@ -5570,15 +5600,47 @@ def _autofill_resume_source(session, uid: str | None) -> str:
     return pref if pref in ("tailored", "original") else "tailored"
 
 
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _accept_allows(accept: str, ext: str, mime: str) -> bool:
+    """Does an upload field's ``accept="…"`` allow this file? No accept = anything.
+
+    The same reading as the extension's ``fileMatchesAccept`` (content.js)."""
+    tokens = [t.strip().lower() for t in (accept or "").split(",") if t.strip()]
+    if not tokens:
+        return True
+    ext, mime = ext.lower(), mime.lower()
+    for t in tokens:
+        if t.startswith("."):
+            if t == ext:
+                return True
+        elif t in ("*", "*/*"):
+            return True
+        elif t.endswith("/*"):
+            if mime.startswith(t[:-1]):
+                return True
+        elif t == mime:
+            return True
+    return False
+
+
 @app.get("/api/fill-pack/{application_id}/resume")
 @_rate_limit("15/minute")
-def get_tailored_resume(application_id: int, request: Request) -> dict:
-    """Return the résumé .docx as base64 so the extension can attach it to a
-    form's file input.
+def get_tailored_resume(application_id: int, request: Request, accept: str = "") -> dict:
+    """Return the résumé as base64 so the extension can attach it to a form's
+    file input.
 
     Which résumé depends on the user's ``autofill_resume_source`` preference:
     "tailored" (the default — the per-job rewrite, auto-tailoring first if none
     exists yet) or "original" (their uploaded master résumé, untouched).
+
+    Which FILE of the tailored résumé: the one-page PDF the tailor writes beside
+    the Word file (owner, 2026-10-09: the PDF is the delivered resume), unless
+    the upload field's ``accept`` (sent by extension 1.0.1+ as ``?accept=``)
+    rules PDF out, or no PDF exists — then the .docx. Older extensions send no
+    ``accept`` and get the PDF; they already attach whatever filename/mime the
+    response names.
     """
     import base64
     from pathlib import Path as _P
@@ -5591,6 +5653,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         path = application.tailored_resume_path
         app_status = application.status
         app_notes = application.notes
+        owner_uid = application.user_id
         resume_source = _autofill_resume_source(session, uid)
 
     if resume_source == "original":
@@ -5749,14 +5812,29 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
     if not p.exists():
         raise HTTPException(status_code=404, detail="Resume file not found")
 
-    data = p.read_bytes()
-    mime = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            if p.suffix == ".docx" else "application/octet-stream")
+    # The one-page PDF when the field takes one. It is rendered in the same run
+    # as the .docx from the same checked text (tailor.py), so the export verdict
+    # above covers it; a run that could not draw it deletes both the local and
+    # the stored copy, so an older PDF never stands in for this draft.
+    serve = p
+    if p.suffix.lower() == ".docx" and _accept_allows(accept, ".pdf", "application/pdf"):
+        pdf = p.with_suffix(".pdf")
+        if not pdf.exists():
+            _rehydrate_tailored_file(str(pdf), owner_uid)
+        try:
+            if pdf.exists() and pdf.stat().st_size > 0:
+                serve = pdf
+        except OSError:
+            serve = p
+    data = serve.read_bytes()
+    mime = {".pdf": "application/pdf", ".docx": _DOCX_MIME}.get(
+        serve.suffix.lower(), "application/octet-stream")
 
     # The filename is what the ATS displays next to the upload — always present
-    # a clean "First_Last_Resume.docx" (the owner's naming rule, the same
+    # a clean "First_Last_Resume.pdf" (the owner's naming rule, the same
     # helper the tailor names the file with), never an internal name.
-    display_name = p.name
+    display_name = serve.name
+    p = serve
     try:
         import re as _re
         uid = _get_user_id(request)
@@ -6517,6 +6595,12 @@ def save_answer(request: Request, body: SaveAnswerBody) -> dict:
     answer = body.answer.strip()
     if not question or not answer:
         raise HTTPException(status_code=400, detail="question and answer required")
+    # A captcha field's value is a token, not an answer, and a reply ABOUT the
+    # question is not one either: neither is remembered (it would be served
+    # back into the next form). 200, so older extensions log nothing alarming.
+    from app.autofill import field_guards as _fg
+    if _fg.is_anti_bot_field(question) or _fg.looks_like_meta_reply(answer):
+        return {"ok": False, "skipped": "not_an_answer"}
     norm = question.lower().strip()
     user_id_arg = uid if uid != "local" else None
     with get_session() as session:
@@ -6551,10 +6635,14 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
     Lets the extension pre-fill fields on a NEW application using answers the
     user typed by hand on PREVIOUS applications. Pure cache lookup — free.
     """
+    from app.autofill import field_guards as _fg
     from app.db.models import AnswerMemory
     uid = _require_user(request)
     user_id_arg = uid if uid != "local" else None
-    labels = [l.strip() for l in (body.labels or []) if l and l.strip()]
+    # An anti-bot field (a captcha's hidden textarea) is never filled from
+    # memory, whatever an older build cached under its name.
+    labels = [l.strip() for l in (body.labels or [])
+              if l and l.strip() and not _fg.is_anti_bot_field(l)]
     if not labels:
         return {"answers": {}}
     # Map normalized label -> original label so we can return by the caller's key
@@ -6568,7 +6656,7 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
             q = q.where(AnswerMemory.user_id == user_id_arg)
         for mem in session.exec(q).all():
             orig = norm_to_orig.get(mem.label_normalized)
-            if orig and mem.answer:
+            if orig and mem.answer and not _fg.looks_like_meta_reply(mem.answer):
                 answers[orig] = mem.answer
     return {"answers": answers}
 
@@ -6591,10 +6679,17 @@ def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     if not question:
         raise HTTPException(status_code=400, detail="question required")
     _require_owned_application(request, body.app_id)
-    from app.autofill.answer_pack import answer_question
+    from app.autofill.answer_pack import answer_question_with_source
     user_id_arg = uid if uid != "local" else None
-    answer = answer_question(question, body.app_id, user_id=user_id_arg)
-    return {"answer": answer, "cached": bool(answer)}
+    # Refusals (a captcha field, a field NAME, a fact only the applicant holds,
+    # a model reply about the question) come back as "" — the extension then
+    # leaves the field for the user. Checked before the cache, so a reply an
+    # older build cached for such a key is never served again.
+    answer, source = answer_question_with_source(question, body.app_id, user_id=user_id_arg)
+    out = {"answer": answer, "cached": source == "cache", "source": source.split(":", 1)[0]}
+    if source.startswith("refused:"):
+        out["refused"] = source.split(":", 1)[1]
+    return out
 
 
 @app.get("/api/extension/download")

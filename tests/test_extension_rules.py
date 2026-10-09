@@ -37,9 +37,12 @@ FUNCTIONS = [
     "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "subjectMatchesTitles", "_countryIn",
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
+    "isAntiBotField", "looksLikeFieldIdentifier", "looksLikeMetaReply", "parseLocation",
+    "pickLocationSuggestion",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
-          "_OTHER_DOC_RE"]
+          "_OTHER_DOC_RE", "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
+          "_META_ANY_RE", "US_STATES"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -298,3 +301,103 @@ def test_every_write_path_respects_the_demographic_opt_out():
     the direct EEO writer was the only path that checked (audit 2026-09-30)."""
     for fn in ("recallFromMemory", "observeField", "fillEssayQuestions"):
         assert "isDemographicQuestion(" in _function(CONTENT, fn), fn
+
+
+# ── live test 2026-10-09: fields nobody fills, replies nobody types ──────────
+
+def _fake_el(attrs=None, label="", in_widget=False):
+    """Just enough of an element for isAntiBotField."""
+    return {"attrs": attrs or {}, "label": label, "in_widget": in_widget}
+
+
+_EL_JS = """(spec) => isAntiBotField({
+    getAttribute: (k) => (k in spec.attrs ? spec.attrs[k] : null),
+    id: spec.attrs.id || '',
+    closest: () => (spec.in_widget ? {} : null),
+    labels: spec.label ? [{ textContent: spec.label }] : [],
+})"""
+
+
+@pytest.mark.parametrize("spec,want", [
+    (_fake_el({"name": "g-recaptcha-response", "id": "g-recaptcha-response",
+               "class": "g-recaptcha-response"}), True),          # the live-test field
+    (_fake_el({"name": "h-captcha-response"}), True),
+    (_fake_el({"name": "cf-turnstile-response"}), True),
+    (_fake_el({"name": "website", "class": "honeypot-field"}), True),
+    (_fake_el({"name": "comments_extra"}, label="Leave this field blank"), True),
+    (_fake_el({"name": "token"}, in_widget=True), True),            # inside .g-recaptcha
+    (_fake_el({"name": "why_acme", "id": "why"}, label="Why Acme?"), False),
+    (_fake_el({"name": "_systemfield_name"}, label="Name"), False),
+])
+def test_anti_bot_fields_are_never_fill_targets(spec, want):
+    assert run_js([[_EL_JS, spec]])[0] is want
+
+
+def test_every_ai_and_memory_path_skips_anti_bot_and_hidden_fields():
+    """The essay path asked the AI about a hidden captcha textarea; recall and
+    learning must not touch one either, and fillInput refuses it outright."""
+    assert "canFillField(ta)" in _function(CONTENT, "fillEssayQuestions")
+    assert "looksLikeFieldIdentifier(q)" in _function(CONTENT, "fillEssayQuestions")
+    assert "looksLikeMetaReply(answer)" in _function(CONTENT, "fillEssayQuestions")
+    assert "canFillField(el)" in _function(CONTENT, "recallFromMemory")
+    for fn in ("observeField", "observeAnswer", "fillInput"):
+        assert "isAntiBotField(" in _function(CONTENT, fn), fn
+
+
+@pytest.mark.parametrize("text,want", [
+    ("g-recaptcha-response", True), ("question_68444493", True), ("_systemfield_name", True),
+    ("why are you interested in this role?", False), ("comments", False), ("", False),
+])
+def test_a_field_name_is_not_a_question(text, want):
+    assert run_js([["looksLikeFieldIdentifier", text]])[0] is want
+
+
+_META = [
+    "I'd be happy to help, but I notice the essay question appears incomplete or unclear. "
+    "\"g-recaptcha-response\" looks like a technical parameter.",
+    "It seems like the question is missing. Please provide the actual question.",
+    "SKIP",
+    "This doesn't look like an essay question; it is a form field name.",
+]
+_REAL = [
+    "I notice patterns in messy data quickly, which is why integration work suits me.",
+    "I can't wait to build connectors that security teams rely on every day.",
+    "Over three years I built ETL pipelines and REST integrations in Python.",
+]
+
+
+def test_meta_replies_read_the_same_in_the_extension_and_the_server():
+    """The extension's copy of the pattern must agree with app/autofill/field_guards."""
+    from app.autofill.field_guards import looks_like_meta_reply
+    out = run_js([["looksLikeMetaReply", t] for t in _META + _REAL])
+    assert out == [True] * len(_META) + [False] * len(_REAL)
+    assert [looks_like_meta_reply(t) for t in _META + _REAL] == out
+
+
+def test_anti_bot_patterns_agree_with_the_server():
+    from app.autofill.field_guards import _ANTI_BOT_RE as PY_RE
+    js_body = _const(CONTENT, "_ANTI_BOT_RE").split("= /", 1)[1].rsplit("/i;", 1)[0]
+    assert js_body == PY_RE.pattern, "keep content.js _ANTI_BOT_RE identical to field_guards.py"
+
+
+def _opts(*texts):
+    return [{"textContent": t} for t in texts]
+
+
+@pytest.mark.parametrize("options,pack,want", [
+    # the profile's state decides between two Cincinnatis
+    (_opts("Cincinnati, Iowa, United States", "Cincinnati, Ohio, United States"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, Ohio, United States"),
+    (_opts("Cincinnati, IA, USA", "Cincinnati, OH, USA"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, OH, USA"),
+    # no suggestion for the city: nothing is picked
+    (_opts("Columbus, Ohio, United States"), {"location": "Cincinnati, OH"}, None),
+    # two Springfields and no state: the user picks
+    (_opts("Springfield, Illinois", "Springfield, Missouri"), {"location": "Springfield"}, None),
+    (_opts("Toronto, Ontario, Canada"), {"location": "Toronto"}, "Toronto, Ontario, Canada"),
+    # a city name inside another word is not the city
+    (_opts("Pittsburgh, Pennsylvania"), {"location": "Burgh, PA"}, None),
+])
+def test_location_suggestion_is_the_profiles_place(options, pack, want):
+    js = "(o, p) => { const r = pickLocationSuggestion(o, p); return r ? r.textContent : null; }"
+    assert run_js([[js, options, pack]])[0] == want

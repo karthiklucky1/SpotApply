@@ -70,6 +70,81 @@ function queryAllDeep(selector, root = document) {
   return out;
 }
 
+// ── Fields nobody may fill ───────────────────────────────────────────────────
+// Live test 2026-10-09 (Ashby): the page's HIDDEN reCAPTCHA textarea
+// (name="g-recaptcha-response", display:none) has no label, so its NAME became
+// the "question", the AI's reply ("I'd be happy to help, but…") came back and
+// was typed into it. A captcha / anti-bot field, a honeypot, and a text field
+// the user cannot see are never filled, never asked about, never learned from.
+// Keep the pattern in step with app/autofill/field_guards.py.
+const _ANTI_BOT_RE = /(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot|leave (?:this )?(?:field )?(?:blank|empty)|do ?n[o']t (?:fill|change) (?:this|in))/i;
+// Captcha WIDGETS (never a page or form wrapper, whose class may mention captcha).
+const _CAPTCHA_WIDGET_SEL = '.g-recaptcha, .grecaptcha-badge, .h-captcha, .cf-turnstile, .frc-captcha';
+
+function isAntiBotField(el) {
+  if (!el || !el.getAttribute) return false;
+  const own = [el.getAttribute('name'), el.id, el.getAttribute('class'),
+               el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+               el.getAttribute('title')].filter(Boolean).join(' ');
+  if (_ANTI_BOT_RE.test(own)) return true;
+  try { if (el.closest && el.closest(_CAPTCHA_WIDGET_SEL)) return true; } catch (_) {}
+  // A honeypot announces itself to people: "Leave this field blank".
+  try {
+    const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) || '';
+    if (lbl && _ANTI_BOT_RE.test(lbl)) return true;
+  } catch (_) {}
+  return false;
+}
+
+/** A field a person could actually see and type into right now. */
+function isUserVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+  let style = null;
+  try { style = win.getComputedStyle(el); } catch (_) { return true; }
+  if (!style) return true;
+  if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  if (el.offsetParent === null && style.position !== 'fixed') return false;   // a display:none ancestor
+  const r = el.getBoundingClientRect();
+  if (r.width < 2 && r.height < 2) return false;                // 0x0 / 1px honeypots
+  const sx = win.scrollX || 0, sy = win.scrollY || 0;
+  if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;    // pushed off the page (left:-9999px)
+  return true;
+}
+
+/** A free-text entry: the kind of field a hidden one must never be written into. */
+function isTextEntry(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  const t = (el.getAttribute('type') || 'text').toLowerCase();
+  return ['text', 'email', 'tel', 'url', 'number', 'search', ''].includes(t);
+}
+
+/** May the copilot write into this field at all? */
+function canFillField(el) {
+  if (!el || isAntiBotField(el)) return false;
+  if (isTextEntry(el) && !isUserVisible(el)) return false;
+  return true;
+}
+
+/** A form field's NAME used as its label ("g-recaptcha-response", "question_123"). */
+function looksLikeFieldIdentifier(text) {
+  const s = String(text || '').trim();
+  return !!s && !/\s/.test(s) && /^[A-Za-z0-9_.:\[\]-]+$/.test(s) && /[_\-\d\[\]:.]/.test(s);
+}
+
+// A model reply ABOUT the question instead of an answer to it. Never typed into
+// a form (the server refuses these too; this covers an older server).
+const _META_START_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help|i(?:'m| am) (?:sorry|unable|not able)|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help|complete)|as an ai\b|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))|could you (?:please )?(?:provide|clarify|share)|please (?:provide|clarify|share) (?:the|more|a|an))/i;
+const _META_ANY_RE = /(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)|technical (?:parameter|field|identifier)|(?:is|isn't|is not|doesn't look like|does not look like) (?:a|an) (?:real |actual )?(?:essay |application )?question|form field (?:name|identifier)|provide the (?:actual|full|complete) (?:essay )?question|as an ai (?:language )?model/i;
+function looksLikeMetaReply(answer) {
+  const a = String(answer || '').trim();
+  if (!a) return false;
+  if (a.replace(/^[\s."']+|[\s."']+$/g, '').toUpperCase() === 'SKIP') return true;
+  return _META_START_RE.test(a) || _META_ANY_RE.test(a);
+}
+
 // Backend base URL for a fill pack. The server deploys independently of
 // installed extensions, so accept both the current key and the legacy
 // hirepath_url one — an old server must keep working with a new install and
@@ -197,7 +272,7 @@ function toE164(raw, defaultCc = '1') {
  */
 function fillPhoneField(el, raw) {
   const want = String(raw || '').trim();
-  if (!want) return false;
+  if (!want || isAntiBotField(el)) return false;
   const wantDigits = want.replace(/\D/g, '').slice(-10);   // national significant digits
   if (!wantDigits) return false;
 
@@ -688,6 +763,297 @@ function answerScreeningRadios(pack) {
   return answered;
 }
 
+// ── Yes/No BUTTON pairs (Ashby) ──────────────────────────────────────────────
+// Ashby renders a boolean question as two <button type="button">s, "Yes" and
+// "No", under the question's label: no radio, no select. Nothing matched them,
+// so on the live test (2026-10-09) both required work-authorization questions
+// stayed blank AND were missing from the "need you" count. The answer comes
+// from the same interpreter as every other control (classifyScreeningQuestion
+// -> interpretWorkAuthQuestion); anything it cannot prove stays for the user.
+function _btnText(b) {
+  return String((b && (b.textContent || (b.getAttribute && b.getAttribute('aria-label')))) || '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** Every rendered Yes/No button pair: {box, yes, no, question, label, entry}. */
+function yesNoButtonGroups(root) {
+  const groups = [];
+  const seen = new Set();
+  for (const yes of queryAllDeep('button', root || document)) {
+    if (!/^yes$/i.test(_btnText(yes))) continue;
+    const host = yes.getRootNode && yes.getRootNode().host;
+    if (host && host.id === 'hp-copilot-overlay') continue;          // our own UI
+    const box = yes.parentElement;
+    if (!box || seen.has(box)) continue;
+    const buttons = Array.from(box.children).filter((c) => c.tagName === 'BUTTON');
+    if (buttons.length !== 2) continue;
+    const no = buttons.find((b) => /^no$/i.test(_btnText(b)));
+    if (!no) continue;
+    // Never press anything that would submit the form.
+    if ([yes, no].some((b) => String(b.type || '').toLowerCase() === 'submit' && b.form)) continue;
+    seen.add(box);
+    const q = yesNoQuestion(box);
+    groups.push({ box, yes, no, question: q.text, label: q.label, entry: q.entry });
+  }
+  return groups;
+}
+
+/** The question a Yes/No pair answers: its field's label, else the field's text. */
+function yesNoQuestion(box) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const by = box.getAttribute && box.getAttribute('aria-labelledby');
+  if (by) {
+    const n = document.getElementById(by.split(/\s+/)[0]);
+    if (n && clean(n.textContent)) return { text: clean(n.textContent), label: n, entry: box.parentElement };
+  }
+  let node = box.parentElement;
+  for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+    // Stop before a container that holds ANOTHER question: its label is not ours.
+    const otherPair = Array.from(node.querySelectorAll('button'))
+      .some((b) => !box.contains(b) && /^(yes|no)$/i.test(_btnText(b)));
+    const otherField = node.querySelector('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), textarea, select');
+    if (otherPair || otherField) break;
+    const label = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i], [role="heading"]'))
+      .find((l) => !box.contains(l) && !l.contains(box) && clean(l.textContent));
+    if (label) return { text: clean(label.textContent), label, entry: node };
+    const text = clean(String(node.textContent || '').replace(box.textContent || '', ' '));
+    if (text.length >= 5) return { text, label: null, entry: node };
+  }
+  return { text: '', label: null, entry: box.parentElement };
+}
+
+function _btnOn(b) {
+  if (!b || !b.getAttribute) return false;
+  for (const a of ['aria-pressed', 'aria-checked', 'aria-selected']) {
+    if (b.getAttribute(a) === 'true') return true;
+  }
+  if (/^(on|checked|active|selected|true)$/i.test(b.getAttribute('data-state') || '')) return true;
+  return /(^|[\s_-])(active|selected|checked|pressed|chosen)([\s_-]|$)/i.test(String(b.getAttribute('class') || ''));
+}
+
+/** 'yes' | 'no' | null — what the pair holds now, by the page's own state first. */
+function yesNoChoice(g) {
+  const y = _btnOn(g.yes), n = _btnOn(g.no);
+  if (y && !n) return 'yes';
+  if (n && !y) return 'no';
+  return (g.box.dataset && (g.box.dataset.spotapplyUserChoice || g.box.dataset.spotapplyChoice)) || null;
+}
+
+function yesNoRequired(g) {
+  if (g.box.getAttribute && g.box.getAttribute('aria-required') === 'true') return true;
+  if (g.label && labelMarksRequired(g.label)) return true;
+  try {
+    if (g.entry && g.entry.querySelector('input[required], input[aria-required="true"]')) return true;
+  } catch (_) {}
+  return /\*/.test(g.question || '');
+}
+
+/** Click Yes/No where the profile proves the answer. Returns how many. */
+function answerYesNoButtons(pack) {
+  let answered = 0;
+  for (const g of yesNoButtonGroups(document)) {
+    if (!g.box.getClientRects().length) continue;                 // not rendered
+    if (yesNoChoice(g)) continue;                                   // already answered, by anyone
+    if (g.box.dataset.spotapplyUserModified === 'true') continue;
+    const q = g.question;
+    if (!q || isDemographicQuestion(q)) continue;
+    const want = classifyScreeningQuestion(q, pack);
+    if (want === null) continue;                                    // not proven: the applicant answers
+    const target = want ? g.yes : g.no;
+    if (target.disabled) continue;
+    try {
+      target.click();      // a click, not a class flip: the app's own handler records it
+      g.box.dataset.spotapplyChoice = want ? 'yes' : 'no';
+      g.box.dataset.spotapplyFilled = 'true';
+      answered++;
+      console.log('[SpotApply] Yes/No answered:', want ? 'Yes' : 'No', '-', q.slice(0, 70));
+    } catch (e) {
+      console.debug('[SpotApply] yes/no click failed:', e.message);
+    }
+  }
+  if (answered) console.log(`[SpotApply] Answered ${answered} Yes/No question(s) from your profile`);
+  return answered;
+}
+
+// A Yes/No the USER pressed is theirs: never re-answered, always counted.
+document.addEventListener('click', (e) => {
+  if (!e.isTrusted || !hpCopilotSurface()) return;
+  const b = e.target && e.target.closest && e.target.closest('button');
+  const t = _btnText(b);
+  if (!b || !/^(yes|no)$/i.test(t) || !b.parentElement) return;
+  b.parentElement.dataset.spotapplyUserModified = 'true';
+  b.parentElement.dataset.spotapplyUserChoice = t.toLowerCase();
+}, { capture: true, passive: true });
+
+// ── "Required", however the form marks it ────────────────────────────────────
+// Ashby draws the asterisk with CSS (label::after { content: "*" }) and tags
+// the label with a `_required_…` class, so the text says "Location" while the
+// page shows "Location*". Reading only the text left required fields yellow
+// (optional) and out of the required count.
+function labelMarksRequired(lbl) {
+  if (!lbl) return false;
+  const t = String(lbl.textContent || '');
+  if (t.includes('*') || /\(required\)|\brequired\b/i.test(t)) return true;
+  const cls = String((lbl.getAttribute && lbl.getAttribute('class')) || '');
+  if (/(^|[\s_-])required([\s_-]|$)/i.test(cls)) return true;
+  try {
+    if (lbl.querySelector && lbl.querySelector('abbr[title*="required" i], [aria-label="required" i]')) return true;
+  } catch (_) {}
+  try {
+    const win = (lbl.ownerDocument && lbl.ownerDocument.defaultView) || window;
+    for (const pseudo of ['::after', '::before']) {
+      if (String(win.getComputedStyle(lbl, pseudo).content || '').includes('*')) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** The label elements that name a field (for a radio: its GROUP's question). */
+function fieldLabelElements(el) {
+  const out = [];
+  try { if (el.labels) out.push(...Array.from(el.labels)); } catch (_) {}
+  try {
+    const doc = (el.getRootNode && el.getRootNode()) || document;
+    if (el.id && doc.querySelector) {
+      const l = doc.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (l) out.push(l);
+    }
+  } catch (_) {}
+  const by = el.getAttribute && el.getAttribute('aria-labelledby');
+  if (by) by.split(/\s+/).forEach((id) => { const n = id && document.getElementById(id); if (n) out.push(n); });
+  if (el.type === 'radio' || el.type === 'checkbox') {
+    const fs = el.closest && el.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) out.push(lg);
+    // The field's own question label: not an option caption (those wrap or
+    // point at a radio/checkbox).
+    let node = el.parentElement;
+    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+      // Never climb into a container that holds another question's inputs.
+      const foreign = Array.from(node.querySelectorAll('input, textarea, select'))
+        .some((o) => o !== el && !((o.type === 'radio' || o.type === 'checkbox') && o.name && o.name === el.name)
+                     && o.type !== 'hidden');
+      if (foreign) break;
+      const q = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i]')).find((l) =>
+        !l.contains(el) && !l.querySelector('input[type="radio"], input[type="checkbox"]') &&
+        !(l.htmlFor && (() => { try { const t = document.getElementById(l.htmlFor); return t && /radio|checkbox/.test(t.type); } catch (_) { return false; } })()));
+      if (q) { out.push(q); break; }
+    }
+  }
+  return out;
+}
+
+// ── Location autocomplete (Ashby and friends) ────────────────────────────────
+// A location "combobox" commits only a SUGGESTION the user picks. Typing
+// "Cincinnati, OH" into it left an uncommitted string the form discarded on
+// blur, so the required Location stayed empty (live test, 2026-10-09). Type the
+// city, wait for the suggestions, pick the one that matches the profile.
+function isAutocompleteInput(el) {
+  if (!el || el.tagName !== 'INPUT') return false;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  const ac = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+  const pop = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+  if (role === 'combobox' || ac === 'list' || ac === 'both' || pop === 'listbox') return true;
+  // Unannotated search-as-you-type boxes still say so: aria-expanded, or a
+  // "Start typing..." placeholder with the browser's own autofill turned off.
+  if (el.hasAttribute('aria-expanded')) return true;
+  return /start typing|type to search|search for a (?:city|location)/i.test(el.getAttribute('placeholder') || '') &&
+    /^(off|new-password|nope)$/i.test(el.getAttribute('autocomplete') || 'off');
+}
+
+/** Write text the way typing does, WITHOUT a blur (blur closes the suggestions). */
+function _typeNoBlur(el, value) {
+  try {
+    const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    const d = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
+    if (d && d.set) d.set.call(el, value); else el.value = value;
+  } catch (_) { try { el.value = value; } catch (__) {} }
+  try {
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+  } catch (_) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function _suggestionsFor(el) {
+  const ids = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .filter(Boolean).join(' ').split(/\s+/).filter(Boolean);
+  const lists = ids.map((id) => document.getElementById(id)).filter(Boolean);
+  const opts = lists.length
+    ? lists.flatMap((l) => Array.from(l.querySelectorAll('[role="option"]')))
+    : queryAllDeep('[role="option"]');
+  return opts.filter((o) => o.getClientRects().length &&
+    !(o.getRootNode && o.getRootNode().host && o.getRootNode().host.id === 'hp-copilot-overlay'));
+}
+
+/** The suggestion that IS the profile's place, or null when it is not certain. */
+function pickLocationSuggestion(options, pack) {
+  const loc = parseLocation(pack && pack.location);
+  const norm = (s) => deaccent(String(s || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const city = norm(loc.city);
+  if (!city) return null;
+  const cityRe = new RegExp('(^|[^a-z])' + esc(city) + '([^a-z]|$)');
+  const state = norm(loc.state);
+  const abbrRe = loc.abbr && /^[A-Z]{2}$/.test(loc.abbr) ? new RegExp('(^|[^A-Za-z])' + loc.abbr + '([^A-Za-z]|$)') : null;
+  const country = norm(residenceCountry(pack));
+  const hits = (options || []).filter((o) => cityRe.test(norm(o.textContent)));
+  if (!hits.length) return null;
+  if (state) {
+    const inState = hits.filter((o) => norm(o.textContent).includes(state) || (abbrRe && abbrRe.test(o.textContent || '')));
+    if (inState.length) return inState[0];
+    return hits.length === 1 ? hits[0] : null;      // no suggestion names the state: only an unambiguous one
+  }
+  if (hits.length === 1) return hits[0];
+  const inCountry = country ? hits.filter((o) => norm(o.textContent).includes(country)) : [];
+  return inCountry.length === 1 ? inCountry[0] : null;   // two Springfields: the user picks
+}
+
+/** Type the profile's city into a location autocomplete and pick its suggestion. */
+async function fillLocationCombobox(el, pack) {
+  _lastWriteSkippedEmpty = false;
+  if (!el || !canFillField(el) || el.dataset.spotapplyUserModified === 'true') return false;
+  const loc = parseLocation(pack && pack.location);
+  if (!loc.city) { _lastWriteSkippedEmpty = true; return false; }
+  try { el.focus(); } catch (_) {}
+  _typeNoBlur(el, loc.city);
+  let pick = null;
+  let lastCount = -1;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    await delay(300);
+    const opts = _suggestionsFor(el);
+    // Wait for the list to settle (a debounced search fills it in steps).
+    if (opts.length && opts.length === lastCount) { pick = pickLocationSuggestion(opts, pack); break; }
+    lastCount = opts.length;
+  }
+  if (!pick) {
+    // Never leave typed-but-uncommitted text behind: the form discards it, and
+    // it looks filled to the user.
+    _typeNoBlur(el, '');
+    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    console.log('[SpotApply] Location suggestions did not include your city, left for you');
+    return false;
+  }
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    try {
+      const Ctor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      pick.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+  }
+  try { pick.click(); } catch (_) {}
+  await delay(300);
+  const ok = deaccent(String(el.value || '')).toLowerCase().includes(deaccent(loc.city).toLowerCase());
+  if (ok) {
+    try {
+      el.dataset.spotapplyFilled = 'true';
+      el.dataset.spotapplyLastWrite = String(el.value || '');
+    } catch (_) {}
+    console.log('[SpotApply] Location picked from suggestions:', String(el.value || '').slice(0, 60));
+  }
+  return ok;
+}
+
 // Some ATS templates write "Résumé" with a DECOMPOSED accent (e + U+0301),
 // which a precomposed /résumé/ literal never matches. Strip diacritics before
 // matching so both spellings — and "RESUME", "Resume/CV", "Curriculum Vitae" —
@@ -987,6 +1353,12 @@ function fillInput(el, value) {
   // <input type="file"> (it throws "accepts a filename"), and the resume is
   // handled separately by attachResume.
   if (el.tagName === 'INPUT' && el.type === 'file') return false;
+
+  // A captcha / anti-bot / honeypot field is never written, by any path.
+  if (isAntiBotField(el)) {
+    console.log('[SpotApply] Not touching an anti-bot field:', el.name || el.id || el.tagName);
+    return false;
+  }
 
   // Respect manual user edits — do not overwrite
   if (el.dataset.spotapplyUserModified === 'true') {
@@ -1351,6 +1723,7 @@ async function fillGreenhouse(pack) {
     "input:not([type='hidden']):not([type='file']):not([type='submit']):not([type='checkbox']):not([type='radio']), textarea, select"
   );
   for (const inp of allInputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
     if (!lbl) continue;
 
@@ -1366,7 +1739,8 @@ async function fillGreenhouse(pack) {
       fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
+    // An autocomplete is left to fillUniversal, which picks a suggestion.
+    else if (/city|location|where.*based|where.*live/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -1484,8 +1858,10 @@ async function fillAshby(pack) {
     waited += 300;
   }
 
-  const inputs = document.querySelectorAll("input:not([type='file']), textarea");
+  const inputs = document.querySelectorAll("input:not([type='file']):not([type='hidden']), textarea");
   for (const inp of inputs) {
+    // The reCAPTCHA textarea Ashby embeds is hidden and named, not labelled.
+    if (!canFillField(inp)) continue;
     const lbl = labelText(inp);
     // "(name)?" is optional, so /first.*(name)?/ reduced to /first/ — it typed
     // the user's surname into "What was your last compensation?" and their
@@ -2157,13 +2533,14 @@ async function fillSmartrecruiters(pack) {
 async function fillGeneric(pack) {
   const inputs = document.querySelectorAll("input:not([type='hidden']):not([type='submit']):not([type='button']), textarea, select");
   for (const inp of inputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|tel/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
+    else if (/city|location/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -2197,6 +2574,7 @@ async function fillUniversal(pack) {
 
   for (const inp of inputs) {
     if (!inp.offsetParent) continue; // skip invisible
+    if (!canFillField(inp)) continue; // captcha / honeypot / off-page
     
     // For buttons, treat as empty if text is placeholder
     if (inp.tagName === 'BUTTON') {
@@ -2275,10 +2653,13 @@ async function fillUniversal(pack) {
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
     } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, loc.city);
+      // An autocomplete commits only a picked suggestion (Ashby's Location).
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, loc.city);
     // Location/where-based fields get the full location
     } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, pack.location || '');
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, pack.location || '');
 
     // ── State (parsed from location) ──
     } else if (/\bstate\b|\bprovince\b|\bregion\b/i.test(signals) && !/country|united/i.test(signals)) {
@@ -2371,6 +2752,7 @@ async function fillUniversal(pack) {
 
 function observeField(el, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(el)) return;               // never learn a captcha / honeypot
   if (el.dataset.spotapplyObserved) return; // already watching
   el.dataset.spotapplyObserved = 'true';
 
@@ -2419,6 +2801,10 @@ async function recallFromMemory(root, pack) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   )).filter(el => {
     if (!el.offsetParent) return false;
+    if (!canFillField(el)) return false;
+    // An autocomplete box commits only a picked suggestion; typed text from
+    // memory would sit there uncommitted (and be cleared on blur).
+    if (isAutocompleteInput(el)) return false;
     if (el.tagName === 'BUTTON') {
       const txt = el.textContent ? el.textContent.trim() : '';
       return !txt || /select\b|choose\b|^-$|select\s+option/i.test(txt);
@@ -2587,7 +2973,11 @@ function apiFetch(url, method, token, body) {
 async function fillEssayQuestions(root, pack) {
   const textareas = Array.from(root.querySelectorAll("textarea")).filter(ta => {
     if (ta.value && ta.value.trim()) return false; // already filled
+    // Never a hidden, captcha or honeypot textarea: Ashby's reCAPTCHA response
+    // field was asked about by its name and got an AI reply typed into it.
+    if (!canFillField(ta)) return false;
     const q = labelText(ta);
+    if (looksLikeFieldIdentifier(q)) return false; // its name, not a question
     return q && q.length >= 8; // skip tiny/unlabeled textareas
   });
 
@@ -2597,7 +2987,9 @@ async function fillEssayQuestions(root, pack) {
     const q = labelText(ta);
     // Protected self-identification and work authorization are never
     // AI-written: the first needs consent, the second has ONE interpreter.
+    // How the applicant heard about the role is a fact only they hold.
     if (isDemographicQuestion(q) || /sponsor|authoriz|visa status|work permit/i.test(q)) continue;
+    if (/how did you (?:first )?(?:hear|learn|find)|hear about (?:us|this)|where did you (?:hear|find|see)/i.test(q)) continue;
     if (ta.dataset.spotapplyUserModified === 'true') continue;
 
     // 1. Check pre-cached answers from fill-pack (free, no API call)
@@ -2622,11 +3014,17 @@ async function fillEssayQuestions(root, pack) {
       if (res.ok && res.data) {
         answer = res.data.answer || null;
         if (answer) console.log(`[SpotApply] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
+        else if (res.data.refused) console.log(`[SpotApply] Left for you (${res.data.refused}):`, q.slice(0, 60));
       } else {
         console.warn("[SpotApply] answer-question failed:", res.error || res.status);
       }
     }
 
+    // A reply about the question ("I'd be happy to help, but…") is not an answer.
+    if (answer && looksLikeMetaReply(answer)) {
+      console.warn('[SpotApply] Discarded a reply that is not an answer for:', q.slice(0, 60));
+      answer = null;
+    }
     if (answer) fillInput(ta, answer);
 
     // 3. Always observe — if user edits, save their answer to memory
@@ -2646,6 +3044,7 @@ function keywordOverlap(a, b) {
 
 function observeAnswer(ta, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(ta)) return;               // a captcha token is not an answer
   const origValue = ta.value;
   ta.addEventListener('blur', function handler() {
     const newVal = ta.value.trim();
@@ -2660,8 +3059,9 @@ function observeAnswer(ta, pack) {
 }
 
 // ── Resume file attachment ──────────────────────────────────────────────────────
-// Fetches the tailored resume .docx (base64) via the background worker and sets
-// it on any empty file inputs using a synthetic DataTransfer.
+// Fetches the tailored resume (base64: the one-page PDF, or the .docx when the
+// field does not take PDF) via the background worker and sets it on the resume
+// file input using a synthetic DataTransfer.
 // Returns true when the resume is handled (attached now, or already present),
 // false when we tried and couldn't — so the caller retries on a later pass
 // instead of wrongly marking it "done".
@@ -2796,8 +3196,12 @@ async function attachResume(root, pack) {
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);
 
+  // Tell the server what the field takes: it answers with the one-page PDF
+  // (the owner's delivered resume) unless the field rules PDF out, then Word.
+  const _accept = String(targets[0].getAttribute('accept') || '').trim();
   const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume`,
+    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume` +
+      (_accept ? `?accept=${encodeURIComponent(_accept)}` : ''),
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
@@ -3068,10 +3472,12 @@ function hasApplicationForm() {
   // Shadow-DOM aware throughout — a form rendered inside a shadow root is
   // still an application form, and querySelectorAll cannot see it.
   if (queryAllDeep("input[type='email'], input[type='file']").length) return true;
+  // A captcha's hidden response textarea sits on job DESCRIPTION pages too; it
+  // is not an application field.
   const named = queryAllDeep(
     "input[name*='first' i], input[name*='last' i], input[name*='name' i]," +
     "input[id*='first' i], input[id*='last' i], textarea"
-  );
+  ).filter((el) => !isAntiBotField(el));
   if (named.length >= 2) return true;
   // Fallback: many visible text inputs usually means a form
   const visibleText = queryAllDeep("input[type='text'], input:not([type])")
@@ -3228,6 +3634,12 @@ async function fillCurrentPage(pack) {
   } catch (e) {
     console.warn('[SpotApply] screening radio error:', e.message);
   }
+  // Same rules for Yes/No BUTTON pairs (Ashby has no radios for these).
+  try {
+    answerYesNoButtons(pack);
+  } catch (e) {
+    console.warn('[SpotApply] yes/no button error:', e.message);
+  }
 
   // Step 4: Fill essay questions via AI
   await fillEssayQuestions(document, pack);
@@ -3273,13 +3685,27 @@ function auditPageFields(pack, platformFilled) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
     'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   ).filter((el) => {
+    // A captcha response box or a honeypot is not a question for anyone.
+    if (isAntiBotField(el)) return false;
     const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });
+  // Yes/No BUTTON pairs (Ashby) are questions too: missing from this tally,
+  // two required ones were blank while the widget counted three. Any input
+  // inside one of their fields belongs to the pair, not to a second question.
+  const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
+  const inYesNoField = (el) => ynGroups.some((g) => (g.entry || g.box).contains(el));
 
   let filled = 0, needUser = 0, skipped = 0, failed = 0;
   const needUserEls = [];
   const problems = [];
+  // Why a question was left for the user, when we know (shown in the widget).
+  const notes = [];
+  const noteWorkAuth = (question) => {
+    const msg = pack && pack.work_auth_note;
+    if (msg && /authoriz|eligible to work|right to work|legally/i.test(question || '') &&
+        !/sponsor/i.test(question || '') && !notes.includes(msg)) notes.push(msg);
+  };
   const seenRadioGroups = new Set();
   const nameOf = (el) => (labelText(el) || el.getAttribute('aria-label') || el.name || el.id || 'a field')
     .replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -3290,6 +3716,7 @@ function auditPageFields(pack, platformFilled) {
   };
 
   for (const el of allInputs) {
+    if ((el.type === 'radio' || el.type === 'checkbox') && inYesNoField(el)) continue;
     // File inputs: a file IN the input is not an upload. Ours count only once
     // the uploader acknowledged them (attachResume marks the outcome); a file
     // the user picked themselves is theirs and counts.
@@ -3315,6 +3742,7 @@ function auditPageFields(pack, platformFilled) {
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
         needUser++; needUserEls.push(el); highlightField(el, 'red');
+        noteWorkAuth(radioGroupQuestion(el));
       } else { skipped++; }
       continue;
     }
@@ -3354,9 +3782,18 @@ function auditPageFields(pack, platformFilled) {
       needUserEls.push(el);
       const isReq = isFieldRequired(el);
       highlightField(el, isReq ? 'red' : 'yellow');
+      if (isReq) noteWorkAuth(labelText(el));
       // Observe unfilled fields for cross-form learning
       observeField(el, pack);
     }
+  }
+
+  for (const g of ynGroups) {
+    if (yesNoChoice(g)) { filled++; highlightField(g.box, 'green'); continue; }
+    if (yesNoRequired(g)) {
+      needUser++; needUserEls.push(g.box); highlightField(g.box, 'red');
+      noteWorkAuth(g.question);
+    } else { skipped++; }
   }
 
   // The résumé's own outcome survives every recount until it changes.
@@ -3366,7 +3803,7 @@ function auditPageFields(pack, platformFilled) {
     problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
   }
 
-  return { filled, needUser, needUserEls, platformFilled, failed, problems };
+  return { filled, needUser, needUserEls, platformFilled, failed, problems, notes };
 }
 
 function isFieldRequired(el) {
@@ -3392,7 +3829,14 @@ function isFieldRequired(el) {
       }
     }
   } catch (e) {}
-  
+
+  // A label marked required by class or a CSS "*" (Ashby), and a required
+  // group around a radio.
+  try {
+    if (fieldLabelElements(el).some(labelMarksRequired)) return true;
+    if (el.closest && el.closest('[role="radiogroup"][aria-required="true"], [role="group"][aria-required="true"]')) return true;
+  } catch (e) {}
+
   return false;
 }
 
@@ -3408,14 +3852,14 @@ function highlightField(el, color) {
     el.style.borderColor = 'rgba(239,68,68,0.9)';
     el.dataset.spotapply = 'needs-fill-required';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   } else {
     el.style.boxShadow = '0 0 0 2px rgba(245,158,11,0.6)';
     el.style.borderColor = 'rgba(245,158,11,0.8)';
     el.dataset.spotapply = 'needs-fill';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   }
 }
@@ -3447,11 +3891,15 @@ function showStepOverlay(result, pack) {
 
   // "No fields found" + "All fields filled!" used to render together, which
   // read as a contradiction in one toast. Three distinct states now.
+  // "…then click Next" only where there IS a Next: on a single-page form
+  // (Ashby, 2026-10-09) the next step is the user's own review and Submit.
+  const multiStep = hasNextStepButton();
+  const nextStep = multiStep ? 'then click Next' : 'then review the whole form and submit it yourself';
   const instructions = nothingHere
-    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here — I'll pick up on the application form.</div>`
+    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here. I'll pick up on the application form.</div>`
     : needUser > 0
-      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
-      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled — review, then click Next.</div>`;
+      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">highlighted fields</span> above, ${nextStep}.</div>`
+      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled. Review them, ${nextStep}.</div>`;
 
   // The résumé line: which file, and what the site did with it.
   let resumeHtml = '';
@@ -3467,13 +3915,30 @@ function showStepOverlay(result, pack) {
   const probs = (result.problems || []).filter((p) => !/^Resume:/.test(p) || !rs).slice(0, 4);
   const probHtml = probs.length
     ? `<div style="font-size:11px;color:#fca5a5;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
+  const notes = (result.notes || []).slice(0, 2);
+  const noteHtml = notes.length
+    ? `<div style="font-size:11px;color:#c4b5fd;margin-top:6px">${notes.map(esc).join('<br>')}</div>` : '';
   // "Ready to review" means the form looks complete to US — never that the
   // employer accepted anything.
   const finalInstr = (!nothingHere && needUser === 0 && failed === 0)
-    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review — check every field, then continue.</div>`
+    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
-  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}`, [], true);
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
+}
+
+/** Does this page lead to another step (Next / Continue), or is it the whole form? */
+function hasNextStepButton() {
+  const NEXT = /^(next|continue|save (?:and|&) continue|save (?:and|&) next|next step|proceed)\b/i;
+  return queryAllDeep('button, input[type="submit"], input[type="button"], a[role="button"], [role="button"]')
+    .some((b) => {
+      const host = b.getRootNode && b.getRootNode().host;
+      if (host && host.id === 'hp-copilot-overlay') return false;
+      if (!b.getClientRects || !b.getClientRects().length) return false;
+      const t = String(b.textContent || b.value || (b.getAttribute && b.getAttribute('aria-label')) || '')
+        .replace(/\s+/g, ' ').trim();
+      return NEXT.test(t) || (b.getAttribute && /^(next|continue)/i.test(b.getAttribute('data-automation-id') || '') );
+    });
 }
 
 // ── Pause overlay (login / captcha) ──────────────────────────────────────────
@@ -3615,14 +4080,40 @@ function detectStepText() {
 // ── Login / CAPTCHA detection ─────────────────────────────────────────────────
 
 function isLoginWall() {
-  const body = document.body.innerText.toLowerCase();
-  const hasLoginForm = !!document.querySelector('input[type="password"]');
-  const hasLoginText = /sign in|log in|login|create an? account|register to apply/.test(body);
-  const noRealForm = !document.querySelector('input[type="text"], input[type="email"], textarea');
-  // Workday OAuth gateway pages (wday/authgwy) are login walls even without
-  // a visible password field — they redirect to SSO then back.
-  const isAuthGateway = /authgwy|auth-gateway|saml|sso/i.test(window.location.pathname);
-  return hasLoginForm || (hasLoginText && noRealForm) || isAuthGateway;
+  const shown = (el) => !!el && el.offsetParent !== null;
+  // 1. A VISIBLE password field is a sign-in form (a hidden one in a header
+  //    dropdown is not).
+  if (queryAllDeep('input[type="password"]').some(shown)) return true;
+  // 2. Workday OAuth gateway pages (wday/authgwy) are login walls even without
+  //    a visible password field — they redirect to SSO then back. By path
+  //    SEGMENT: the bare substring /sso/ matched ".../assistant-profeSSOr".
+  if (/(^|[\/_.-])(authgwy|auth-gateway|saml2?|sso)([\/_.?-]|$)/i.test(window.location.pathname)) return true;
+  // 3. An application form, or a job page's own Apply button, is not a wall.
+  if (queryAllDeep('input[type="text"], input[type="email"], input:not([type]), textarea')
+        .some((el) => shown(el) && !isAntiBotField(el))) return false;
+  if (pageHasApplyControl()) return false;
+  // 4. Sign-in wording on the page's CONTROLS and headings, as whole words —
+  //    never the job description. The whole body text was searched, so the
+  //    Horizon3 posting's "deSIGN INtegration schemas" read as "sign in" and the
+  //    Ashby job page was reported as a login wall (live test, 2026-10-09).
+  return queryAllDeep('button, a, [role="button"], h1, h2, h3, legend, label')
+    .filter(shown)
+    .some((el) => {
+      const t = String(el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      return t.length <= 60 &&
+        /\b(sign[ -]?in|log[ -]?in|create an? account|register to apply)\b/i.test(t);
+    });
+}
+
+/** A visible Apply control: the page is a job posting, not a sign-in wall. */
+function pageHasApplyControl() {
+  return queryAllDeep("a, button, [role='button'], input[type='button'], input[type='submit']")
+    .some((el) => {
+      if (el.offsetParent === null) return false;
+      const t = String(el.textContent || el.value || el.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ').trim();
+      return t.length <= 60 && /\bapply\b/i.test(t) && !/\bwith (linkedin|indeed)\b/i.test(t);
+    });
 }
 
 function isCaptcha() {

@@ -16,6 +16,7 @@ from typing import Optional
 
 from sqlmodel import select
 
+from app.autofill import field_guards
 from app.config import settings
 from app.db.init_db import get_session
 from app.db.models import AnswerMemory, Application, Job, UserProfile
@@ -59,6 +60,9 @@ Rules:
 - Specific to the candidate's actual background — never fabricate experience.
 - Warm but professional tone.
 - No filler phrases like "I am passionate about" or "I am excited to".
+- If the text is not a question an applicant would answer (a form field name, a
+  code, a placeholder, an incomplete fragment), reply with exactly SKIP and
+  nothing else. Never write about the question itself.
 Return only the answer text, nothing else."""
 
 
@@ -230,6 +234,16 @@ def _normalize_question(question: str, company: str | None = None) -> str:
 
 def _save_memory(label_normalized: str, label_original: str, answer: str, user_id: str | None = None) -> None:
     from datetime import datetime as _dt
+    # Never cache a non-question or a reply about the question: a cached row is
+    # served forever after (the reCAPTCHA reply of 2026-10-09 was).
+    # (Anti-bot keys only: internal keys such as "__resume_extracted_…" are
+    # identifiers by design.)
+    if (field_guards.is_anti_bot_field(label_original)
+            or field_guards.is_anti_bot_field(label_normalized)
+            or field_guards.looks_like_meta_reply(answer)):
+        log.warning("answer memory: refused to cache an unusable answer (key=%r)",
+                    (label_normalized or "")[:60])
+        return
     with get_session() as session:
         existing = session.exec(
             select(AnswerMemory).where(
@@ -293,7 +307,15 @@ def _profile_fact_answer(question: str, profile) -> str | None:
 
 
 def answer_question(question: str, application_id: int, user_id: str | None = None) -> str:
-    """Return an answer for a single essay question.
+    """Return an answer for a single essay question ("" = leave it for the user)."""
+    return answer_question_with_source(question, application_id, user_id=user_id)[0]
+
+
+def answer_question_with_source(question: str, application_id: int,
+                                user_id: str | None = None) -> tuple[str, str]:
+    """``(answer, source)`` for a single essay question.
+
+    ``source`` is "profile", "cache", "generated", "none" or "refused:<why>".
 
     Cost strategy (hybrid):
     0. Identity/fact questions answer straight from the profile → free, exact.
@@ -303,7 +325,15 @@ def answer_question(question: str, application_id: int, user_id: str | None = No
 
     This means the user pays ~$0.002 the FIRST time a question type appears,
     then $0 forever after, regardless of how many companies use the same question.
+
+    Before any of that: an anti-bot field (a captcha's hidden textarea) is not a
+    question, and is refused BEFORE the cache, so a reply cached for one under
+    an older build is never served again (field_guards).
     """
+    if field_guards.is_anti_bot_field(question):
+        log.warning("answer_question: refused an anti-bot field (%r)", (question or "")[:40])
+        return "", "refused:anti_bot_field"
+
     # ── 0. Profile facts first — "what is your first name" must never reach
     # the LLM. Runs before the cache too, so a wrong previously-cached LLM
     # answer for an identity question self-heals.
@@ -311,9 +341,18 @@ def answer_question(question: str, application_id: int, user_id: str | None = No
         _fact_profile = _get_or_create_profile(user_id=user_id)
         fact = _profile_fact_answer(question, _fact_profile)
         if fact is not None:
-            return fact
+            return fact, "profile"
     except Exception:
         pass
+
+    # A form field's NAME ("question_68444493") and the facts only the
+    # applicant holds (how they heard about the role, work authorization,
+    # self-identification) are never written by a model.
+    _why = (field_guards.not_a_question_reason(question)
+            or field_guards.user_only_reason(question))
+    if _why:
+        log.info("answer_question: left for the applicant (%s)", _why)
+        return "", f"refused:{_why}"
 
     # ── Snapshot everything inside the session (avoid DetachedInstanceError) ──
     class _JobSnap:
@@ -322,10 +361,10 @@ def answer_question(question: str, application_id: int, user_id: str | None = No
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
-            return ""
+            return "", "none"
         job = session.get(Job, application.job_id)
         if not job:
-            return ""
+            return "", "none"
         company = job.company
         resume_path = application.tailored_resume_path
         job_snap = _JobSnap()
@@ -339,33 +378,49 @@ def answer_question(question: str, application_id: int, user_id: str | None = No
     cached = _lookup_memory(norm_key, user_id=user_id)
     if cached:
         # Inject actual company name back into templated answer
-        return cached.replace("{company}", company or "")
+        return cached.replace("{company}", company or ""), "cache"
 
     # ── 2. Call AI ──
     if not settings.anthropic_api_key:
-        return ""
+        return "", "none"
 
     profile = _get_or_create_profile(user_id=user_id)
     resume_text = _load_resume_text_from_path(resume_path)
     answer = _llm_essay_answer(question, job_snap, profile, resume_text)
     if not answer:
-        return ""
+        return "", "none"
+    if field_guards.looks_like_meta_reply(answer):
+        # "I'd be happy to help, but the question appears incomplete…" is not
+        # an answer: never typed into a form, never cached.
+        log.warning("answer_question: model replied about the question, not to it "
+                    "(key=%r) — left for the applicant", norm_key[:60])
+        return "", "refused:meta_reply"
 
     # ── 3. Save with company replaced by {company} placeholder ──
     template = answer.replace(company, "{company}") if company else answer
     _save_memory(norm_key, question, template, user_id=user_id)
     log.info("answer_question: generated + cached for key=%r user=%s (~$0.002 cost)", norm_key, user_id)
-    return answer
+    return answer, "generated"
 
 
 def _lookup_memory(label: str, user_id: str | None = None) -> Optional[str]:
+    """A remembered answer for ``label``, never one that is unusable.
+
+    A row cached under an anti-bot key, or holding a reply about the question
+    instead of an answer, reads as a miss — every reader goes through here, so
+    such a row is never served again even though it is still stored."""
     norm = label.lower().strip()
+    if field_guards.is_anti_bot_field(norm):
+        return None
     with get_session() as session:
         q = select(AnswerMemory).where(AnswerMemory.label_normalized == norm)
         if user_id:
             q = q.where(AnswerMemory.user_id == user_id)
         mem = session.exec(q).first()
-        return mem.answer if mem else None
+        answer = mem.answer if mem else None
+    if answer and field_guards.looks_like_meta_reply(answer):
+        return None
+    return answer
 
 
 def get_essay_answers(application_id: int, user_id: str | None = None) -> dict:
