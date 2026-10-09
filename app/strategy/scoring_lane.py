@@ -748,6 +748,15 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     """Serial, cap-safe: shortlist a user's freshly-scored fits + fire alerts."""
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
 
+    # The user list was read when the cycle started. A user who paused since
+    # keeps the scores already paid for (they stay on the jobs, and Resume's
+    # matching pass re-offers them through the re-shortlist backstop), but
+    # nothing new reaches their board or their bell while they are paused.
+    from app.common.compute_policy import paused_now
+    if paused_now(uid):
+        stats["paused_skipped"] = stats.get("paused_skipped", 0) + 1
+        return
+
     # THE definition of "delivered today", shared with the finals budget: what
     # this loop refuses to exceed has to be the same number the budget stops at.
     from app.matching.finals_budget import delivered_today

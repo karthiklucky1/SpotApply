@@ -166,8 +166,23 @@ def adopt_shared_jobs(user_id: str | None, max_age_days: int = ADOPT_MAX_AGE_DAY
     slug), the country gate, and direct-ATS upgrades behave exactly as if the
     jobs had been scraped for this user. Returns the number of NEW rows.
     ``since`` narrows the shared page to postings first seen at or after it
-    (the incremental step below); None walks the whole ``max_age_days`` window."""
+    (the incremental step below); None walks the whole ``max_age_days`` window.
+
+    Copies nothing for a user who paused their search: every scheduled caller
+    (global pass, fresh lane, welcome refresh, onboarding seed) is work done
+    FOR them, and Resume re-runs the full-window seed, so nothing is lost."""
+    if _paused(user_id):
+        return 0
     return _adopt(user_id, max_age_days, limit, since)[0]
+
+
+def _paused(user_id: str | None) -> bool:
+    """One indexed read: did this user pause their own search?"""
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id):
+        log.info("Adoption: search is paused, nothing copied")   # no user id in the line
+        return True
+    return False
 
 
 # ── Incremental adoption: the 5-minute step between the 6-hour passes ────────
@@ -197,7 +212,10 @@ ADOPT_INCREMENTAL_LIMIT = 200
 def adopt_incremental(user_id: str | None, *, interval_seconds: int = 300,
                       limit: int = ADOPT_INCREMENTAL_LIMIT) -> int:
     """One bounded adoption step for ``user_id``: shared postings first seen
-    since the last COMPLETE step (with overlap). Returns new rows adopted."""
+    since the last COMPLETE step (with overlap). Returns new rows adopted.
+    A paused user gets nothing, and their watermark stays where it was."""
+    if _paused(user_id):
+        return 0
     key = user_id or "local"
     started = datetime.utcnow()
     mark = _ADOPT_WATERMARK.get(key)
@@ -524,6 +542,10 @@ def adopt_and_match(user_id: str | None) -> int:
         from app.common.discovery_lock import discovery_guard
         from app.matching.pipeline import run_matching
         with discovery_guard(label="instant feed") as ran:
+            # The lock wait can be minutes (a global pass holds it): a Pause
+            # that landed meanwhile stops the matching pass it was waiting for.
+            if ran and _paused(user_id):
+                return adopted
             if ran:
                 run_matching(user_id)
                 matched = True
@@ -653,6 +675,8 @@ def seed_new_user(user_id: str | None) -> int:
             return adopted  # no roles → nothing to search for
         if not _user_has_resume(uid_check):
             return adopted  # no résumé → matching would only surface noise
+        if _paused(user_id):
+            return adopted  # paused while the feed filled: no scrape into their pool
         log.info("Onboarding: only %d usable postings after adoption (< %d) — "
                  "actively discovering their field", on_role, _need)
         _discover_then_match(user_id)

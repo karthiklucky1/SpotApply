@@ -607,6 +607,14 @@ def _notify_if_newly_dormant(profile) -> bool:
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
         return False
+    # Never for a search the user paused THEMSELVES: they just pressed the
+    # button and the board already says so. This notice is the idle/dormant
+    # one ("while you're away", "or open any job"), and both halves are false
+    # for an explicit pause, which only Resume clears. Live test 2026-10-09:
+    # the bell went 7 -> 8, 45 s after the Pause click.
+    from app.common.compute_policy import is_paused
+    if is_paused(profile):
+        return False
     la = getattr(profile, "last_meaningful_activity_at", None)
     notified = getattr(profile, "dormancy_notified_at", None)
     if notified is not None and (la is None or notified >= la):
@@ -1360,8 +1368,14 @@ def _run_matching_lane(uids) -> None:
         deadline = _t.monotonic() + max(60.0, settings.matching_lane_interval_minutes * 60 * 0.8)
         log.info("Matching lane: scoring %d user(s)", len(uids))
         total = 0
+        from app.common.compute_policy import paused_now
         for uid in uids:
             _uid = uid if uid != "local" else None
+            # `uids` was read before this tick waited for the lock and served
+            # the users ahead: a pause since then stops adoption, matching and
+            # alerts for this user (compute_policy.paused_user_ids).
+            if paused_now(_uid):
+                continue
             _t0 = _t.monotonic()
             user_short = 0
             passes = 0
@@ -1423,12 +1437,17 @@ def _adopt_match_alert(user_ids) -> None:
     """Per-user tail of a global scrape: adopt matching shared-pool jobs
     (cheap DB copy), score them, dispatch fresh alerts. Caller holds the
     discovery lock (matching loads the model + job pool)."""
+    from app.common.compute_policy import paused_now
     from app.strategy.adoption import adopt_shared_jobs
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
     import time as _t
     log.info("adopt/match: starting for %d user(s)", len(user_ids))
     for uid in user_ids:
         _uid = uid if uid != "local" else None
+        # The list predates the scrape (minutes, sometimes far longer) and the
+        # wait for the lock: a user who paused since gets nothing from it.
+        if paused_now(_uid):
+            continue
         _t0 = _t.monotonic()
         try:
             adopt_shared_jobs(_uid)
@@ -6196,8 +6215,13 @@ def _compute_freshness_stats(user_id_arg: str | None) -> dict:
         # whose first_seen is re-stamped at adoption), 18,921 (same by
         # discovered_at) — shown side by side as if comparable. The shared
         # pool counts each posting once, across every lane, no duplication.
+        # count(*), not count(id): ix_job_user_firstseen holds both predicate
+        # columns, so Postgres answers from the index alone. count(id) made it
+        # visit ~21k heap rows (prod 2026-10-09: 4.9-11 s against this route's
+        # 5 s budget vs ~1.1 s index-only), so the number came back None and
+        # the header fell back to the user's OWN pool under this label.
         shared_new_24h = reads.get(None, lambda: _scalar(session.exec(
-            select(func.count(Job.id)).where(
+            select(func.count()).select_from(Job).where(
                 Job.user_id == SHARED_POOL_USER, Job.first_seen > day_ago)).one()))
 
         # 6. Global (shared-pool) runs count too — they feed this user via

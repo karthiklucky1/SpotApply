@@ -2236,7 +2236,7 @@
                         // lanes; the per-user pool number is a different (smaller,
                         // adoption-bounded) quantity and gets labelled as such.
                         const newEl = document.getElementById('reg-stat-new24');
-                        if (newEl) newEl.textContent = _fmtK(f.shared_pool_new_24h ?? f.jobs_discovered_24h ?? 0);
+                        if (newEl) newEl.textContent = f.shared_pool_new_24h == null ? '—' : _fmtK(f.shared_pool_new_24h);
                         const newSub = document.getElementById('reg-stat-new24-sub');
                         if (newSub) newSub.textContent =
                             `All sources · ${_fmtK(f.your_pool_new_24h ?? f.jobs_discovered_24h ?? 0)} adopted into your pool`;
@@ -5557,7 +5557,10 @@
                     }
                     // The canonical pipeline number (shared pool, all lanes, no
                     // per-user copies) — same source as the Registry panel card.
-                    const fresh = f.shared_pool_new_24h ?? f.jobs_discovered_24h;
+                    // NO fallback to jobs_discovered_24h: that is THIS user's
+                    // pool, and it showed under this platform-wide label every
+                    // time the shared count missed the dashboard budget.
+                    const fresh = f.shared_pool_new_24h;
                     if (sweep || fresh != null) {
                         el.textContent = (sweep ? 'Last board sweep ' + sweep : 'Boards monitored') +
                                          (fresh != null ? ' · ' + _fmtK(fresh) + ' new postings (24h)' : '');

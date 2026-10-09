@@ -674,7 +674,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `compute_policy.user_paused`/`is_paused` (welcome begin/refresh, onboarding
   seed, `/api/welcome/status` → `paused`); `_may_welcome` skips `/api/search/*`
   because the stamp runs before the route body — clicking Pause opened a boost
-  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Journey
+  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Inside
+  a lane every per-user write re-asks `compute_policy.paused_now` (one cached
+  read for all users): a tick's user list is minutes old, and a pulse tick
+  routed 2 jobs into a pool 14 s after Pause (2026-10-09). Adoption and
+  `dispatch_fresh_alerts` refuse a paused user themselves. Journey
   metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
   Dedup: same company + normalised title within 40 d is one role (`slate.py`).
   Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.

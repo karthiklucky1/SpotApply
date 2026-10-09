@@ -111,8 +111,16 @@ def _verify_greenhouse_first_published(job: Job) -> Optional[datetime]:
 
 
 def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]) -> int:
-    """Alert on shortlisted jobs posted within the last day. Returns alerts sent."""
+    """Alert on shortlisted jobs posted within the last day. Returns alerts sent.
+
+    Never for a user who paused their search: every lane, the pulse fast path
+    and the welcome machinery send through here, so this is the one place a
+    "new match" push can be refused (one indexed read, only when there is
+    something to send)."""
     if not shortlisted_job_ids:
+        return 0
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id if user_id and user_id != "local" else None):
         return 0
     uid = user_id if user_id and user_id != "local" else None
     notif_user = user_id or "local"

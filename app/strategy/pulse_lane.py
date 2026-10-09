@@ -861,6 +861,7 @@ def run_pulse_tick() -> dict:
 
 
 def _run_pulse_tick_locked(deadline: float) -> dict:
+    from app.common.compute_policy import paused_user_ids
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert, scraper_for
     from app.strategy.hot_lane import (
         _active_users, _mark_polled, _retire_unsupported, _title_matches,
@@ -1103,7 +1104,13 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 log.debug("pulse shared upsert failed %s: %s", board.slug, e)
             timings["upsert_shared"].append(time.monotonic() - _t)
             _t = time.monotonic()
+            # `users` was read when the tick STARTED, a minute or two ago: a
+            # user who paused since must get nothing more from this tick
+            # (2026-10-09: two postings landed 14 s after the Pause click).
+            paused = paused_user_ids()
             for u in users:
+                if u["user_id"] in paused:
+                    continue
                 relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
                 if not relevant:
                     continue
@@ -1216,6 +1223,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     for uid in users_touched:
         if budget <= 0 or time.monotonic() >= deadline:
             break
+        if uid in paused_user_ids():
+            continue                  # paused after routing: no scoring, no alert
         try:
             scored, short, alerts = _fast_path_user(uid, budget, deadline)
             budget -= scored

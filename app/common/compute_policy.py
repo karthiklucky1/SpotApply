@@ -34,7 +34,9 @@ seed, the first-hour panel) asks `user_paused` / `is_paused` — the lanes' user
 lists already skip PAUSED through `search_state`, and the 2026-10-08 report
 ("I clicked Pause, why are new jobs loading?") was the welcome refresh, which
 asked nobody: clicking Pause is itself a POST, and a POST from someone idle
-past the window opened a boost that adopted and scored for them.
+past the window opened a boost that adopted and scored for them. Inside a
+lane, every per-user step re-asks `paused_now` before it writes (a tick's user
+list is minutes old by then: 2026-10-09, see `paused_user_ids`).
 
 A NULL `last_meaningful_activity_at` is NOT grandfathered as active: the old
 `last_active_at` was stamped by polling, so it proves nothing, and the audit
@@ -177,6 +179,57 @@ def user_paused(user_id: Optional[str]) -> bool:
         return False
 
 
+# ── the lanes' mid-tick re-check ─────────────────────────────────────────────
+# The lane user lists skip PAUSED, but each list is built ONCE, at the start of
+# a tick, and a tick runs for minutes: a pulse tick ~100 s, a global discovery
+# pass far longer before its adopt step. Live test 2026-10-09: Pause landed at
+# 14:33:14, mid pulse tick (users read at 14:31:55), and at 14:33:28 that tick
+# routed two Workday postings into the paused user's pool through its per-user
+# door. Every per-user step of a lane therefore asks this set again, right
+# before it writes. ONE read answers it for everyone (a few dozen profile rows),
+# cached for `_PAUSED_TTL_S`; `forget()` (called by Pause and Resume) drops it
+# so this process sees a pause at once and another replica's within the TTL.
+
+_PAUSED_TTL_S = 10.0
+_paused_ids: list = [None, frozenset()]          # [monotonic stamp or None, ids]
+
+
+def paused_user_ids(*, now: Optional[float] = None) -> frozenset:
+    """The user ids whose owners paused their own search, read fresh at most
+    every `_PAUSED_TTL_S`. Empty with the kill switch off (the lanes serve a
+    paused user then). A failed read keeps the last answer: this gate only ever
+    stops work a user asked us to stop, so a hiccup must not stop everyone, and
+    must not forget a pause we already saw either."""
+    if not enforced():
+        return frozenset()
+    now = time.monotonic() if now is None else now
+    with _lock:
+        stamp, ids = _paused_ids
+        if stamp is not None and now - stamp < _PAUSED_TTL_S:
+            return ids
+    try:
+        from sqlmodel import select
+        from app.db.init_db import get_session
+        from app.db.models import UserProfile
+        with get_session() as s:
+            rows = s.exec(select(UserProfile.user_id).where(
+                UserProfile.search_paused_at.is_not(None))).all()
+        ids = frozenset(r for r in rows if r)
+    except Exception as e:
+        log.debug("compute policy: paused-set read failed (%s) — keeping the last one", e)
+        with _lock:
+            return _paused_ids[1]
+    with _lock:
+        _paused_ids[0], _paused_ids[1] = now, ids
+    return ids
+
+
+def paused_now(user_id: Optional[str]) -> bool:
+    """Has this user paused their search, per `paused_user_ids`? For the lanes'
+    per-user steps; one shared read, not one per user."""
+    return bool(user_id) and user_id in paused_user_ids()
+
+
 # ── the provider-call check ──────────────────────────────────────────────────
 
 _CACHE_S = 60.0
@@ -221,15 +274,18 @@ def paid_ai_allowed(user_id: Optional[str], *, now: Optional[float] = None) -> b
 
 
 def forget(user_id: Optional[str]) -> None:
-    """Drop the cached answer — called when the user acts, pauses or resumes."""
+    """Drop the cached answer — called when the user acts, pauses or resumes.
+    Also drops the paused set, so this process's lanes see a pause at once."""
     with _lock:
         _cache.pop(user_id or "", None)
+        _paused_ids[0] = None
 
 
 def reset_state() -> None:
     """Tests only."""
     with _lock:
         _cache.clear()
+        _paused_ids[0], _paused_ids[1] = None, frozenset()
 
 
 # ── atomic per-attempt reservation ──────────────────────────────────────────

@@ -1048,7 +1048,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
                             today_count += 1
 
                             # Create notification for high-fit matched jobs
-                            if score >= 75:
+                            # (never into the bell of a user who paused their
+                            # search since this pass began).
+                            from app.common.compute_policy import paused_now
+                            if score >= 75 and not paused_now(user_id):
                                 try:
                                     from app.db.models import UserNotification
                                     notif = UserNotification(
