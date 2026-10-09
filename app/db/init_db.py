@@ -471,8 +471,28 @@ def init_db() -> None:
         ("last_meaningful_activity_at", "DATETIME"),
         ("search_paused_at", "DATETIME"),
         ("pause_reason", "VARCHAR DEFAULT ''"),
+        ("resume_uploaded_at", "DATETIME"),
+        ("resume_sha256", "VARCHAR"),
     ]:
         add_column_if_missing("userprofile", col, col_type)
+
+    # Backfill resume_uploaded_at from the stored master's own timestamp (the
+    # upload is an upsert of <uid>/resume.<ext> in the "resume" bucket), so a
+    # fit report scored against an earlier resume can say so for accounts
+    # that uploaded before this column existed. NULL rows only, so it is a
+    # no-op once filled; Supabase only; best effort with a short ceiling.
+    if settings.use_supabase:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("SET LOCAL statement_timeout = 15000"))
+                conn.execute(text(
+                    "UPDATE userprofile p SET resume_uploaded_at = s.ts "
+                    "FROM (SELECT split_part(o.name, '/', 1) AS uid, max(o.updated_at) AS ts "
+                    "      FROM storage.objects o WHERE o.bucket_id = 'resume' "
+                    "      AND o.name ~ '^[^/]+/resume\\.(pdf|docx|md|txt)$' GROUP BY 1) s "
+                    "WHERE p.user_id = s.uid AND p.resume_uploaded_at IS NULL"))
+        except Exception as e:
+            print(f"resume_uploaded_at backfill skipped: {e}")
 
     # Backfill: activity tracking starts NOW — grandfather every existing
     # profile as active-at-deploy, so the dormancy gate (dormant_user_grace_days)

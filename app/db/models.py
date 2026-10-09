@@ -386,6 +386,12 @@ class UserProfile(SQLModel, table=True):
     # When SpotApply first started searching for this user (their first welcome
     # window). Read by /api/admin/first-hour: time to first / fifth match.
     feed_started_at: Optional[datetime] = None
+    # The master resume now on file: when it was uploaded, and a hash of the
+    # file. A fit report scored before this time is labelled as scored against
+    # the PREVIOUS resume, and a changed hash re-judges what is on the board
+    # (strategy/realign.rescore_board_for_new_resume). NULL = not known.
+    resume_uploaded_at: Optional[datetime] = None
+    resume_sha256: Optional[str] = None
     disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""

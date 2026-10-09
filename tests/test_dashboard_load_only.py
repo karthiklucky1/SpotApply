@@ -119,13 +119,15 @@ def test_the_board_never_reads_the_posting_text():
     for col in ("job.description",            # the whole point
                 "job.corporate_insights",
                 "job.rerank_reasoning", "job.rerank_breakdown",
-                "job.hire_probability_signals", "job.content_hash",
+                "job.hire_probability_signals",
                 "job.similarity_score", "job.prescore", "job.cross_source_slug",
                 "application.rejection_analysis", "application.notes"):
         assert col not in sql, f"{col} is selected but never rendered"
 
+    # content_hash (64 chars) is read by the board's one-role-one-card collapse
+    # (slate.same_role: one role posted once per city has identical text).
     for col in ("job.salary_text", "job.sponsorship_json", "job.blended_score",
-                "job.last_seen", "application.apply_track"):
+                "job.last_seen", "application.apply_track", "job.content_hash"):
         assert col in sql, f"{col} IS rendered and must stay loaded"
 
 

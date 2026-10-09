@@ -206,6 +206,33 @@ class CanonicalHostMiddleware(BaseHTTPMiddleware):
             return RedirectResponse(url, status_code=301)
         return await call_next(request)
 
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _public_base_url(request) -> str:
+    """Scheme + host for every ABSOLUTE link we hand out, no trailing slash.
+
+    Behind Railway's TLS-terminating proxy ``request.base_url`` reports
+    ``http://`` (uvicorn trusts forwarded headers only from 127.0.0.1), so the
+    referral link and the public profile link went out as http:// (live test
+    2026-10-09). ``PUBLIC_BASE_URL`` wins when set; otherwise the request's own
+    host, upgraded to https:// when X-Forwarded-Proto says so or whenever the
+    host is not a local one. Local dev keeps http://127.0.0.1:8000.
+    """
+    configured = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    base = str(request.base_url).rstrip("/")
+    if not base.startswith("http://"):
+        return base
+    fwd = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    from urllib.parse import urlparse as _up
+    host = (_up(base).hostname or "").lower()
+    if fwd == "https" or host not in _LOCAL_HOSTS:
+        return "https://" + base[len("http://"):]
+    return base
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # CORS Configuration
@@ -1583,6 +1610,11 @@ def _cleantext_filter(value):
 templates.env.filters["fromjson"] = _fromjson_filter
 templates.env.filters["cleantext"] = _cleantext_filter
 
+# A card's location: "" for blank and placeholder values ("na", "n/a", "none",
+# "null", "-", "tbd"), so no card reads "na · On-site" (app/common/geo.py).
+from app.common.geo import clean_location as _card_location  # noqa: E402
+templates.env.filters["cardloc"] = _card_location
+
 
 def _humanize_signal_filter(value):
     """Turn raw hire-probability signal tokens into short, human-readable
@@ -2308,8 +2340,30 @@ def _clean_seeded_role(raw: str) -> str:
 _MAX_LINKEDIN_PDF_BYTES = 10 * 1024 * 1024
 
 
+def _stamp_resume_upload(uid: str, sha: str) -> bool:
+    """Record the master resume now on file. True when it CHANGED (a new hash,
+    or the first one we have recorded). One short session; creates the profile
+    row only when there is none yet, as the profile extraction would."""
+    from app.db.models import UserProfile
+    from datetime import datetime as _dt
+    uid_arg = uid if (uid and uid != "local") else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == uid_arg) if uid_arg
+            else UserProfile.user_id.is_(None))).first()
+        if prof is None:
+            prof = UserProfile(user_id=uid_arg)
+        elif (prof.resume_sha256 or "") == sha:
+            return False                       # the same file again
+        prof.resume_sha256 = sha
+        prof.resume_uploaded_at = _dt.utcnow()
+        session.add(prof)
+        session.commit()
+    return True
+
+
 @app.post("/api/resume/upload")
-async def upload_resume(request: Request):
+async def upload_resume(request: Request, background_tasks: BackgroundTasks):
     """Upload resume file. Stores in Supabase Storage (production) or local disk (dev)."""
     uid = _require_user(request)
     form = await request.form()
@@ -2376,6 +2430,19 @@ async def upload_resume(request: Request):
         invalidate_resume_cache(uid)
     except Exception:
         pass
+    # Record WHICH resume is on file. When the file actually changed, the fit
+    # reports on the board were written against the old one (live test: a
+    # report citing experience the current resume no longer has), so the
+    # recent shortlisted jobs are re-judged, bounded like a role realign.
+    try:
+        import hashlib as _hashlib
+        _sha = _hashlib.sha256(content).hexdigest()
+        if await anyio.to_thread.run_sync(_stamp_resume_upload, uid, _sha):
+            from app.strategy.realign import rescore_board_for_new_resume
+            background_tasks.add_task(rescore_board_for_new_resume,
+                                      uid if uid != "local" else None)
+    except Exception as _stamp_err:
+        log.warning("resume upload stamp skipped for %s: %s", uid, _stamp_err)
     # A résumé plus target roles is a scorable profile — record the
     # onboarding-complete moment (once) so new-user latency is measurable.
     await anyio.to_thread.run_sync(_record_profile_completed_once, uid)
@@ -3372,7 +3439,7 @@ def shortlist(request: Request):
             "id": j.id,
             "company": j.company,
             "title": j.title,
-            "location": j.location,
+            "location": _card_location(j.location),
             "url": j.url,
             "similarity": j.similarity_score,
             "rerank": j.rerank_score,
@@ -4026,7 +4093,7 @@ def api_jobs(
                 "source": jsource.value if jsource else "manual",
                 "company": jcompany,
                 "title": jtitle,
-                "location": jlocation,
+                "location": _card_location(jlocation),
                 "remote": jremote,
                 "url": jurl,
                 "posted": _posted.isoformat() if _posted else None,
@@ -4133,6 +4200,9 @@ def _dashboard_load_options():
             Job.salary_text, Job.sponsorship_json, Job.is_cap_exempt,
             Job.rerank_score, Job.blended_score, Job.hire_probability_score,
             Job.ghost_score, Job.ghost_flags, Job.is_closed,
+            # 64 chars: what tells one role posted per city from two roles
+            # (slate.same_role), read by the board's same-role collapse.
+            Job.content_hash,
         ),
     )
 
@@ -4494,6 +4564,38 @@ def dashboard(request: Request, all_submitted: bool = False):
     # the true uncapped total (computed above); the template shows a "top N shown"
     # note when the render/per-company cap leaves rendered < total, so the number
     # and the cards never silently disagree.
+    #
+    # Before that cap: one role, one card. The slate refuses a second copy of a role at
+    # placement (slate.same_role), but rows placed before that rule, or by two
+    # lanes inside the same second, are already on the board: a plain
+    # SHORTLISTED copy of a role that is already shown is not rendered. A copy
+    # the user opened work on (tailored, filled) always renders.
+    def _collapse_same_role(items):
+        from app.strategy.slate import role_key, same_role
+        shown: dict = {}
+        # Invested rows claim the role first, then best-first sort order.
+        order = sorted(range(len(items)),
+                       key=lambda i: (items[i][0].status == ApplicationStatus.SHORTLISTED, i))
+        drop = set()
+        for i in order:
+            app_model, job_model = items[i]
+            key = role_key(job_model.company, job_model.title)
+            if key is None:
+                continue
+            if app_model.status == ApplicationStatus.SHORTLISTED and any(
+                    same_role(job_model.source, job_model.location, job_model.remote,
+                              job_model.content_hash, o.source, o.location, o.remote,
+                              o.content_hash)
+                    for o in shown.get(key, ())):
+                drop.add(i)
+                continue
+            shown.setdefault(key, []).append(job_model)
+        return [it for i, it in enumerate(items) if i not in drop]
+
+    try:
+        shortlisted = _collapse_same_role(shortlisted)
+    except Exception as _dup_err:          # never lose the board over a tidy-up
+        log.debug("same-role collapse skipped: %s", _dup_err)
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
@@ -4696,7 +4798,7 @@ def _pipeline_live_uncached(uid) -> dict:
                     "app_id": app_id,
                     "title": j_title,
                     "company": j_company,
-                    "location": j_location,
+                    "location": _card_location(j_location),
                     "remote": bool(j_remote),
                     "score": round(j_rerank) if j_rerank is not None else None,
                     "track": apply_track,
@@ -4896,12 +4998,19 @@ def application_match(application_id: int, request: Request) -> dict:
     """Why this job matched: overall score, plain-English reason, and the
     per-factor breakdown (skills / experience / location / work_auth)."""
     import json as _json
-    _require_owned_application(request, application_id)
+    from app.db.models import UserProfile
+    uid = _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+        # The owner's profile: the report's notes are held to it below. One
+        # indexed read; no profile is created as a side effect.
+        _uid_arg = uid if (uid and uid != "local") else None
+        report_profile = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == _uid_arg) if _uid_arg
+            else UserProfile.user_id.is_(None))).first()
     breakdown = {}
     if job and job.rerank_breakdown:
         try:
@@ -4910,6 +5019,31 @@ def application_match(application_id: int, request: Request) -> dict:
             breakdown = {}
 
     reason = (job.rerank_reasoning if job else "") or ""
+    # Stored verdicts predate today's rules: hold their notes to the profile
+    # the same way a fresh verdict is (reranker.reconcile_with_profile) — the
+    # visa status decides "needs sponsorship", and "candidate shows 0 years"
+    # is a years figure the resume never states (live test 2026-10-09).
+    try:
+        from app.matching.reranker import reconcile_with_profile as _reconcile
+        _head, _sep, _tail = reason.partition("\nConcerns:")
+        _concerns = [c.strip() for c in _tail.split(";") if c.strip()] if _sep else []
+        _, _head, _concerns, breakdown = _reconcile(
+            (0.0, _head, _concerns, breakdown if isinstance(breakdown, dict) else {}),
+            report_profile, (job.description if job else "") or "")
+        reason = _head + (("\nConcerns: " + "; ".join(_concerns)) if _concerns else "")
+    except Exception as _re_err:
+        log.debug("match report reconcile skipped for app %d: %s", application_id, _re_err)
+
+    # Scored against a resume the user has since replaced? The reasoning may
+    # cite experience that is no longer on it (live test: "trained 120M
+    # transformer" on a July score, after an August upload). Known only when
+    # BOTH times are known: the verdict's own clock, or, for rows from before
+    # that column, the delivery (a job is scored before it is placed).
+    resume_at = getattr(report_profile, "resume_uploaded_at", None)
+    verdict_at = (getattr(job, "scored_at", None) if job else None) or \
+        getattr(application, "created_at", None)
+    from_previous_resume = bool(job and job.rerank_score is not None and resume_at
+                                and verdict_at and verdict_at < resume_at)
     # Reconcile work-auth with Sponsorship Reality: if the employer is a verified
     # H-1B sponsor (strong public filing record), a "needs sponsorship" penalty
     # contradicts the data — lift the work_auth factor and drop the concern so the
@@ -5004,11 +5138,15 @@ def application_match(application_id: int, request: Request) -> dict:
         "id": application_id,
         "company": job.company if job else "",
         "title": job.title if job else "",
-        "location": job.location if job else "",
+        "location": _card_location(job.location) if job else "",
         "remote": bool(job.remote) if job else False,
         "score": score,
         "reason": reason,
         "breakdown": breakdown,
+        # True when this verdict was written before the resume now on file
+        # was uploaded; the drawer says so above the reasoning.
+        "from_previous_resume": from_previous_resume,
+        "resume_uploaded_at": resume_at.isoformat() if (from_previous_resume and resume_at) else None,
         "skills": skills,
         "signals": signals,
         "hire_probability": hp,
@@ -5568,21 +5706,11 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         pack["ai_answers"] = {}
 
     # Base URL + auth token so the extension can call back (save answers,
-    # fetch the tailored résumé, report submission).
-    # request.base_url keeps local dev on 127.0.0.1:8000, but behind the
-    # TLS-terminating proxy it reports http:// — and an http:// base makes every
-    # extension call either blocked as mixed content or redirected, and a
-    # cross-scheme redirect drops the Authorization header, so authed calls 401.
-    # Trust X-Forwarded-Proto, and never hand out http:// for a remote host.
-    _base = str(request.base_url).rstrip("/")
-    _fwd_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-    if _fwd_proto == "https" and _base.startswith("http://"):
-        _base = "https://" + _base[len("http://"):]
-    elif _base.startswith("http://"):
-        from urllib.parse import urlparse as _up
-        _host = _up(_base).hostname or ""
-        if _host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            _base = "https://" + _base[len("http://"):]
+    # fetch the tailored résumé, report submission). An http:// base makes
+    # every extension call either blocked as mixed content or redirected, and
+    # a cross-scheme redirect drops the Authorization header, so authed calls
+    # 401 — hence the ONE helper every absolute link uses.
+    _base = _public_base_url(request)
     pack["spotapply_url"] = _base
     # Legacy alias: extensions installed before the rename read hirepath_url.
     # Installs update independently of deploys, so keep sending both.
@@ -7687,7 +7815,7 @@ def get_referral(request: Request) -> dict:
     from app.db.models import UserReferralReward
     with get_session() as session:
         reward = session.exec(select(UserReferralReward).where(UserReferralReward.user_id == uid)).first()
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     return {
         "code": code,
         "link": f"{base}/login?ref={code}" if code else "",
@@ -9143,7 +9271,7 @@ def billing_portal(request: Request) -> dict:
     from app.billing import create_portal_session, stripe_enabled
     if not stripe_enabled():
         raise HTTPException(status_code=503, detail="Card billing isn't live yet.")
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_portal_session(uid, base)
     except LookupError:
@@ -9186,7 +9314,7 @@ def billing_checkout(request: Request) -> dict:
         email = _get_user_email(request)
     except Exception:
         pass
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_checkout_session(uid, email, base)
     except AlreadySubscribed:
@@ -10854,7 +10982,7 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
                 evidence = _json.loads(profile.trust_evidence)
             except (ValueError, TypeError):
                 evidence = {}
-        base = str(request.base_url).rstrip("/")
+        base = _public_base_url(request)
         # Momentum — first vs latest snapshot, so candidates see growth.
         from app.db.models import TrustHistory
         hist = session.exec(

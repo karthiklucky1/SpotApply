@@ -358,34 +358,66 @@ def _norm_key(text: str) -> str:
     return _re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
 
+#: sha256 of an empty description: two postings with NO text are not the same
+#: text, so this hash never makes two rows one role.
+_EMPTY_TEXT_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def role_key(company, title) -> Optional[tuple]:
+    """(company, title) normalised, or None when either is blank (blank
+    companies are never grouped: aggregator rows often have none)."""
+    c, t = (company or "").strip().lower(), _norm_key(title)
+    return (c, t) if (c and t) else None
+
+
+def same_role(source_a, location_a, remote_a, hash_a,
+              source_b, location_b, remote_b, hash_b) -> bool:
+    """Two postings with the same company and normalised title: ONE role?
+
+    Another door (an aggregator and the ATS) -> yes. Within ONE source the same
+    title can be two real requisitions (another team, another city), so it
+    takes evidence that it is not:
+      * the same location (a repost);
+      * the same posting TEXT (``content_hash`` = sha256 of the description):
+        one role posted once per city (live test 2026-10-09: Miratech's "Full
+        Stack Java Engineer" as two SmartRecruiters rows, New York and Miami,
+        identical text, both on the board at 72 and 78);
+      * both remote: the city on a remote posting is not where the work is,
+        so it cannot tell two requisitions apart for the person applying.
+    """
+    sa, sb = getattr(source_a, "value", source_a), getattr(source_b, "value", source_b)
+    if sa != sb:
+        return True
+    if _norm_key(location_a) == _norm_key(location_b):
+        return True
+    if hash_a and hash_a == hash_b and hash_a != _EMPTY_TEXT_HASH:
+        return True
+    return bool(remote_a) and bool(remote_b)
+
+
 def _duplicate_on_record(session, job: Job, uid_arg: Optional[str]):
     """(Application, its job's source) for the user's active application to
-    the SAME role (same company, same title after normalisation), else
-    (None, None). Bounded: one indexed read of the
-    user's recent active applications at this company."""
+    the SAME role (same company, same title after normalisation, `same_role`),
+    else (None, None). Bounded: one indexed read of the user's recent active
+    applications at this company."""
     from datetime import timedelta
     from sqlalchemy import func
-    company = (job.company or "").strip()
-    title_key = _norm_key(job.title)
-    if not company or not title_key:
+    key = role_key(job.company, job.title)
+    if key is None:
         return None, None
-    loc_key = _norm_key(job.location)
-    q = (select(Application, Job.title, Job.source, Job.location)
+    company = (job.company or "").strip()
+    q = (select(Application, Job.title, Job.source, Job.location, Job.remote, Job.content_hash)
          .join(Job, Job.id == Application.job_id)
          .where(Application.status.in_(_ACTIVE_STATUSES),
                 Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
                 func.lower(Job.company) == company.lower(),
                 Application.job_id != job.id))
     q = q.where(Application.user_id == uid_arg) if uid_arg else q.where(Application.user_id.is_(None))
-    for app_row, title, source, location in session.exec(q.limit(50)).all():
-        if _norm_key(title) != title_key:
+    for app_row, title, source, location, remote, chash in session.exec(q.limit(50)).all():
+        if _norm_key(title) != key[1]:
             continue
-        # The same role arriving through ANOTHER door (an aggregator and the
-        # ATS) is a duplicate. Within ONE source, the same title is often two
-        # real requisitions (another team, another city), so only an identical
-        # location makes it a repost.
-        if getattr(source, "value", source) != getattr(job.source, "value", job.source) \
-                or _norm_key(location) == loc_key:
+        if same_role(source, location, remote, chash,
+                     job.source, job.location, job.remote, job.content_hash):
             return app_row, source
     return None, None
 

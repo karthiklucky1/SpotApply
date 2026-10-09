@@ -471,7 +471,9 @@ regardless of the posting's language:
   "reason": "<max 20 words>",
   "concerns": [<0-3 items, each max 8 words, naming a specific requirement or
                gap from THIS posting vs THIS candidate, e.g. "requires Go;
-               resume shows none"; empty list if none>],
+               resume shows none"; empty list if none. A missing skill or
+               domain is "resume shows none", never "0 years": the
+               candidate's years are their total experience only>],
   "breakdown": {
     "skills":     {"score": <0-100>, "note": "<max 8 words>"},
     "experience": {"score": <0-100>, "note": "<max 8 words>"},
@@ -541,7 +543,19 @@ def _profile_system_prompt(profile) -> str:
   * JD asks for less experience than the candidate, or is silent on years: score experience normally (not a penalty)."""
 
     if needs_sponsor:
-        auth_rule = (f"- WORK AUTHORIZATION: candidate is '{work_auth}' and WILL need visa sponsorship. "
+        # An F-1 OPT/CPT student is authorized NOW and needs sponsorship LATER.
+        # Saying only "WILL need sponsorship" left the model to reconcile that
+        # with "F-1 OPT" itself, and it wrote "F-1 OPT, no sponsorship needed"
+        # into the fit report (live test 2026-10-09). State both halves.
+        _now = ""
+        try:
+            from app.intelligence.work_auth import assess_profile as _assess
+            if _assess(profile).authorized_now:
+                _now = "is authorized to work now but "
+        except Exception:
+            pass
+        auth_rule = (f"- WORK AUTHORIZATION: candidate is '{work_auth}' and {_now}WILL need visa sponsorship. "
+                     f"Never write that the candidate needs no sponsorship. "
                      f"Set work_auth low (0-15) ONLY if the posting explicitly says 'no sponsorship', "
                      f"'US citizens/permanent residents only', or requires an active security clearance. "
                      f"If the posting is silent on sponsorship, assume it is possible and score work_auth high.")
@@ -827,7 +841,9 @@ def _location_lines(job: Job) -> str:
     itself: 7 of 15 audited wrong-country cards had reasoning that never
     mentioned location at all. Saying "not stated" makes the absence a fact
     the model has to reason about instead of one it can skip."""
-    loc = (getattr(job, "location", "") or "").strip()
+    # A placeholder ("na", "n/a", "tbd") is no location either.
+    from app.common.geo import clean_location
+    loc = clean_location(getattr(job, "location", "") or "")
     lines = (f"Location: {loc if loc else 'not stated in the posting'}\n"
              f"Remote: {'yes' if getattr(job, 'remote', False) else 'no'}")
     # What the shared geography check established for this user, when it has
@@ -871,6 +887,58 @@ def _clean_breakdown(raw, overall: float) -> dict:
             s, note = overall, ""
         out[f] = {"score": round(s), "note": note[:160]}
     return out
+
+
+# "candidate shows 0 years explicitly" (live test 2026-10-09, Horizon3) sat next
+# to "3 years backend engineering" in the same report: the model meant zero
+# years of ONE skill (integrations) and wrote it as a years figure for the
+# candidate. A years count for a single skill is not something the resume
+# states, so the claim is rewritten to what IS true: the resume shows none.
+_ZERO_YEARS_RE = re.compile(
+    r"\b(?:the\s+)?(?:candidate|resume|cv|profile)\s+(?:shows|has|lists|demonstrates|indicates)"
+    r"\s+(?:only\s+)?(?:0|zero)\s+(?:years?|yrs?)"
+    r"(?:\s+of\s+(?P<what>[^;,.()]{1,60}?))?(?=\s*(?:explicitly|experience|$|[;,.()]))"
+    r"(?:\s+experience)?",
+    re.IGNORECASE)
+
+
+def tidy_years_claims(text: str) -> str:
+    """Rewrite "candidate shows 0 years [of X]" as "resume shows no X" /
+    "resume shows none". Leaves every other sentence alone."""
+    if not text or ("0" not in text and "zero" not in text.lower()):
+        return text or ""
+
+    def _sub(m: "re.Match") -> str:
+        what = (m.group("what") or "").strip()
+        return f"resume shows no {what}" if what else "resume shows none"
+    return _ZERO_YEARS_RE.sub(_sub, text)
+
+
+def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
+                           description: str = "") -> Tuple[float, str, List[str], dict]:
+    """Hold a parsed verdict to facts we already hold, before it is stored:
+    the work_auth factor to the user's visa status (work_auth.py) and years
+    figures to what the resume can show. The overall score is never changed.
+    Never raises."""
+    score, reason, concerns, breakdown = result
+    try:
+        reason = tidy_years_claims(reason)
+        concerns = [tidy_years_claims(c) for c in (concerns or [])]
+        if isinstance(breakdown, dict):
+            breakdown = {k: (dict(v, note=tidy_years_claims(str(v["note"])))
+                             if isinstance(v, dict) and v.get("note") else v)
+                         for k, v in breakdown.items()}
+            if profile is not None and isinstance(breakdown.get("work_auth"), dict):
+                from app.common.sponsorship_text import find_refusal
+                from app.intelligence.work_auth import reconcile_work_auth_factor
+                # No posting text = not known, which is never "silent".
+                refuses = (find_refusal(description) is not None) if (description or "").strip() \
+                    else None
+                breakdown["work_auth"] = reconcile_work_auth_factor(
+                    breakdown["work_auth"], profile, posting_refuses=refuses)
+    except Exception as e:                       # a tidy-up never costs a paid verdict
+        log.debug("verdict reconcile skipped: %s", e)
+    return score, reason, concerns, breakdown
 
 
 def _parse_response(text: str) -> Tuple[float, str, List[str], dict]:
@@ -1388,6 +1456,10 @@ class Reranker:
                     _note_provider_ok(backend_name)
                     _register_final_call(self._user_id)
                     result = self._calibrate(backend_name, _parse_response(call.text))
+                    # The notes the report shows must agree with the profile
+                    # (visa status) before they are stored; score unchanged.
+                    result = reconcile_with_profile(result, self._profile,
+                                                    getattr(job, "description", "") or "")
                     # The verdict feeds the adaptive budget's marginal-yield
                     # test. Recorded AFTER the parse (a score is needed) but the
                     # spend above is recorded BEFORE it — an unparseable

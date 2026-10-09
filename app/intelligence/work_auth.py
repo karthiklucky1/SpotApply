@@ -13,7 +13,9 @@ answering it. That protects the user from offer rescission / falsification.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -392,6 +394,101 @@ def classify_question(label: str) -> str:
     if any(h in lab for h in _AUTH_NOW_HINTS):
         return "auth_now"
     return "other"
+
+
+# ── The scorer's work-auth factor, held to the profile (2026-10-09) ──────────
+# The fit report's "Work auth" tile is the LLM's own note, stored when the job
+# was scored. Live test: an F-1 OPT user whose profile says they will need H-1B
+# sponsorship read "Work auth 100% · F-1 OPT, no sponsorship needed" (scored
+# 2026-08-07, before the visa status decided sponsorship), and a fresh score
+# read "Work auth 10% · F-1 OPT; posting silent on sponsorship" while the
+# rubric says a silent posting scores HIGH. Both are the model disagreeing
+# with facts we hold, so both are corrected deterministically: when a job is
+# scored (reranker) and again when the report is read (stored rows).
+
+#: The note claims the candidate needs no sponsorship. Candidate-side wording
+#: only: "no sponsorship offered" is the POSTING refusing, not this claim.
+_NO_SPONSOR_CLAIM_RE = re.compile(
+    r"\bno\s+(?:visa\s+)?sponsorship\s+(?:is\s+)?(?:needed|required|necessary)\b"
+    r"|\bno\s+need\s+(?:for|of)\s+(?:visa\s+)?sponsorship\b"
+    r"|(?:\bnot|n't|\bnever)\s+(?:need|require)(?:s|d)?\s+(?:any\s+|a\s+)?(?:visa\s+)?sponsor"
+    r"|\bsponsorship\s+(?:is\s+)?not\s+(?:needed|required|necessary)\b"
+    r"|\bfully\s+authori[sz]ed\b",
+    re.IGNORECASE)
+
+#: The note itself says the posting does not address sponsorship.
+_POSTING_SILENT_RE = re.compile(
+    r"\bsilent\b|\bdoes(?:\s+not|n't)\s+mention\b|\bno\s+mention\b"
+    r"|\bnot\s+(?:mentioned|stated|addressed)\b",
+    re.IGNORECASE)
+
+#: Any restriction a low score could legitimately rest on. A note naming one
+#: is never lifted, whatever else it says.
+_RESTRICTION_RE = re.compile(
+    r"citizen|clearance|green\s*card|permanent\s+resident|\bus\s+persons?\b|itar"
+    r"|refus|unable|will\s+not|won't|cannot|can't|no\s+(?:visa\s+)?sponsorship"
+    r"|without\s+(?:visa\s+)?sponsorship|not\s+(?:offer|provide)|does\s+not\s+sponsor",
+    re.IGNORECASE)
+
+#: Same number card_match uses for "needs sponsorship; posting silent — assumed
+#: possible": a good fit, not a perfect one.
+SILENT_POSTING_WORK_AUTH = 85.0
+REFUSING_POSTING_WORK_AUTH = 10.0
+
+
+def _needs_text(framing: WorkAuthFraming) -> str:
+    """What the profile says, in the tile's few words."""
+    if framing.authorized_now:
+        return f"{framing.basis}: authorized now, will need sponsorship later"
+    return "Will need visa sponsorship"
+
+
+def reconcile_work_auth_factor(factor, profile,
+                               posting_refuses: Optional[bool] = None):
+    """The work_auth breakdown entry, made to agree with the user's profile.
+
+    ``factor`` is ``{"score": 0-100, "note": str}``; ``posting_refuses`` is
+    whether the posting explicitly refuses sponsorship (None = not known).
+    Only a user who needs sponsorship (now or later, `assess_profile`) is
+    touched, and only where the stored entry contradicts a fact we hold:
+
+      * it says no sponsorship is needed      -> the profile's truth, and at
+        most 85 (silent posting) or 10 (refusing posting);
+      * the posting refuses and it is high    -> at most 10;
+      * it says the posting is silent, names no restriction, the posting does
+        not refuse, and it is a blocker-low   -> 85, as the rubric requires.
+
+    Never raises; anything it cannot read is returned unchanged.
+    """
+    if not isinstance(factor, dict) or profile is None:
+        return factor
+    try:
+        framing = assess_profile(profile)
+        if not framing.needs_future_sponsorship:
+            return factor
+        score = float(factor.get("score"))
+    except Exception:
+        return factor
+    note = str(factor.get("note") or "")
+    out = dict(factor)
+    if _NO_SPONSOR_CLAIM_RE.search(note):
+        if posting_refuses:
+            out["score"] = round(min(score, REFUSING_POSTING_WORK_AUTH))
+            out["note"] = f"{_needs_text(framing)}; posting refuses sponsorship"
+        else:
+            out["score"] = round(min(score, SILENT_POSTING_WORK_AUTH))
+            out["note"] = _needs_text(framing) + (
+                "; posting silent on it" if posting_refuses is False else "")
+        return out
+    if posting_refuses and score > 15:
+        out["score"] = round(REFUSING_POSTING_WORK_AUTH)
+        out["note"] = f"{_needs_text(framing)}; posting refuses sponsorship"
+        return out
+    if (posting_refuses is False and score <= 15
+            and _POSTING_SILENT_RE.search(note) and not _RESTRICTION_RE.search(note)):
+        out["score"] = round(SILENT_POSTING_WORK_AUTH)
+        out["note"] = f"{_needs_text(framing)}; posting silent on it"
+    return out
 
 
 def answer_for(label: str, framing: WorkAuthFraming) -> tuple[str, bool]:

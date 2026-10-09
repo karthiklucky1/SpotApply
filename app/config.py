@@ -867,5 +867,13 @@ class Settings(BaseSettings):
     canonical_host: str = "spotapply.ai"
     canonical_redirect_hosts: str = "www.spotapply.ai"
 
+    # The scheme+host every ABSOLUTE link the app hands out starts with
+    # (referral link, public profile link, Stripe return URLs, the
+    # extension's callback base). "" = derive it from the request, honouring
+    # X-Forwarded-Proto and never using http:// for a non-local host: behind
+    # Railway's TLS proxy request.base_url says http://, and the referral and
+    # profile links went out as http:// (live test 2026-10-09).
+    public_base_url: str = ""                 # PUBLIC_BASE_URL, e.g. https://app.spotapply.ai
+
 settings = Settings()
 
