@@ -935,7 +935,8 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
                 refuses = (find_refusal(description) is not None) if (description or "").strip() \
                     else None
                 breakdown["work_auth"] = reconcile_work_auth_factor(
-                    breakdown["work_auth"], profile, posting_refuses=refuses)
+                    breakdown["work_auth"], profile, posting_refuses=refuses,
+                    posting_text=description or "")
     except Exception as e:                       # a tidy-up never costs a paid verdict
         log.debug("verdict reconcile skipped: %s", e)
     return score, reason, concerns, breakdown

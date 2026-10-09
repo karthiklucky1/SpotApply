@@ -423,12 +423,60 @@ _POSTING_SILENT_RE = re.compile(
     re.IGNORECASE)
 
 #: Any restriction a low score could legitimately rest on. A note naming one
-#: is never lifted, whatever else it says.
+#: is never lifted, whatever else it says. Clearance and government work are
+#: restrictions too: "sponsorship not mentioned; TS/SCI with poly needed" and
+#: "silent on visas; federal contract role" were lifted to 85 "posting silent
+#: on it" (review 2026-10-09: 381 finals in 30 days would have been).
 _RESTRICTION_RE = re.compile(
-    r"citizen|clearance|green\s*card|permanent\s+resident|\bus\s+persons?\b|itar"
+    r"citizen|clearance|green\s*card|permanent\s+resident|\bu\.?\s?s\.?\s+persons?\b|itar"
+    r"|ts\s*/\s*sci|top\s+secret|\bsecret\b|polygraph|\bpoly\b|public\s+trust"
+    r"|federal|government|\bgov(?:t|'t)?\b|defen[cs]e|\bdod\b|export[-\s]+control"
     r"|refus|unable|will\s+not|won't|cannot|can't|no\s+(?:visa\s+)?sponsorship"
     r"|without\s+(?:visa\s+)?sponsorship|not\s+(?:offer|provide)|does\s+not\s+sponsor",
     re.IGNORECASE)
+
+#: A citizenship, clearance or U.S.-person requirement in the POSTING's own
+#: text. `find_refusal` is about sponsorship and misses all of these ("must be
+#: U.S. citizens", "U.S. Citizenship is required", "Active TS/SCI clearance",
+#: "obtain and maintain a Secret clearance"), so a posting that says one is not
+#: silent, whatever the note says. Broad on purpose: a false hit only means a
+#: low score the model gave is left as the model gave it. EEO boilerplate
+#: ("without regard to ... citizenship status") names no requirement and does
+#: not match.
+_POSTING_RESTRICTION_RE = re.compile(
+    r"\bu\.?\s?s\.?\s+citizens?(?:hip)?\b|\bcitizens?\s+only\b"
+    r"|\bmust\s+be\s+(?:an?\s+)?(?:u\.?\s?s\.?\s+)?citizens?\b"
+    r"|\bcitizenship\s+(?:is\s+)?(?:required|requirement|mandatory)\b|\brequires?\s+citizenship\b"
+    r"|\bclearance\b|\bts\s*/\s*sci\b|\btop\s+secret\b|\bpolygraph\b|\bpublic\s+trust\b"
+    r"|\bu\.?\s?s\.?\s+persons?\b|\bitar\b|\bexport[-\s]+control"
+    r"|\bgreen\s*card\s+holders?\b|\bpermanent\s+residents?\s+only\b"
+    r"|\bmust\s+be\s+an?\s+(?:lawful\s+)?permanent\s+resident\b",
+    re.IGNORECASE)
+
+#: "Citizenship is not required", "no clearance needed", "you do not need to be
+#: a U.S. citizen": the sentence says the restriction does NOT apply. Bridged
+#: by WORDS only, so "No relocation. U.S. citizenship required" is no negation.
+_RESTRICTION_NEGATED_RE = re.compile(
+    r"\b(?:not|no|nor|never)\s+(?:\w+\s+){0,4}?"
+    r"(?:(?:u\.?\s?s\.?\s+)?(?:\w+\s+)?(?:citizen|clearance)|u\.?\s?s\.?\s+persons?\b)"
+    r"|(?:citizen\w*|clearance)\s+(?:is\s+|are\s+)?not\s+(?:required|needed|necessary)",
+    re.IGNORECASE)
+#: Sentence ends, but not the dots of an abbreviation: "U.S. citizens" is one
+#: sentence (a `.` after a one-letter word never ends one).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<!\b[A-Za-z])[.!?](?=\s|$)|[;\n\r•·|]+")
+
+
+def posting_restriction(text: str) -> Optional[str]:
+    """The sentence of ``text`` stating a citizenship / clearance / U.S.-person
+    requirement, or None. A negated sentence ("U.S. citizenship is not
+    required") does not count unless it also says "must"."""
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        if not _POSTING_RESTRICTION_RE.search(sentence):
+            continue
+        if _RESTRICTION_NEGATED_RE.search(sentence) and not re.search(r"\bmust\b", sentence, re.I):
+            continue
+        return " ".join(sentence.split())[:200]
+    return None
 
 #: Same number card_match uses for "needs sponsorship; posting silent — assumed
 #: possible": a good fit, not a perfect one.
@@ -443,52 +491,79 @@ def _needs_text(framing: WorkAuthFraming) -> str:
     return "Will need visa sponsorship"
 
 
+#: Where a corrected entry keeps the scorer's OWN verdict. The correction runs
+#: at parse time, before the row is stored, so without these the model's note
+#: was gone for good; with them every later read re-derives from the model's
+#: words under the CURRENT rules (a rule fixed later also fixes rows stored
+#: under the old one), and the function is idempotent.
+MODEL_SCORE_KEY = "model_score"
+MODEL_NOTE_KEY = "model_note"
+
+
 def reconcile_work_auth_factor(factor, profile,
-                               posting_refuses: Optional[bool] = None):
+                               posting_refuses: Optional[bool] = None,
+                               posting_text: Optional[str] = None):
     """The work_auth breakdown entry, made to agree with the user's profile.
 
     ``factor`` is ``{"score": 0-100, "note": str}``; ``posting_refuses`` is
-    whether the posting explicitly refuses sponsorship (None = not known).
+    whether the posting explicitly refuses sponsorship (None = not known);
+    ``posting_text`` is the posting's description (None = not supplied).
     Only a user who needs sponsorship (now or later, `assess_profile`) is
     touched, and only where the stored entry contradicts a fact we hold:
 
       * it says no sponsorship is needed      -> the profile's truth, and at
         most 85 (silent posting) or 10 (refusing posting);
       * the posting refuses and it is high    -> at most 10;
-      * it says the posting is silent, names no restriction, the posting does
-        not refuse, and it is a blocker-low   -> 85, as the rubric requires.
+      * it says the posting is silent, names no restriction, and the posting
+        TEXT was read and neither refuses sponsorship nor states a citizenship
+        / clearance / U.S.-person requirement, and it is a blocker-low -> 85,
+        as the rubric requires.
 
-    Never raises; anything it cannot read is returned unchanged.
+    A changed entry carries the model's own score and note beside the
+    correction (``model_score`` / ``model_note``); the judgement always starts
+    from those. Never raises; anything it cannot read is returned unchanged.
     """
     if not isinstance(factor, dict) or profile is None:
         return factor
+    has_model = MODEL_SCORE_KEY in factor or MODEL_NOTE_KEY in factor
+    # The model's verdict: the stored one, or the one an earlier pass kept.
+    original = {k: v for k, v in factor.items() if k not in (MODEL_SCORE_KEY, MODEL_NOTE_KEY)}
+    if has_model:
+        original["score"] = factor.get(MODEL_SCORE_KEY, factor.get("score"))
+        original["note"] = factor.get(MODEL_NOTE_KEY, factor.get("note"))
     try:
         framing = assess_profile(profile)
         if not framing.needs_future_sponsorship:
-            return factor
-        score = float(factor.get("score"))
+            return original if has_model else factor
+        score = float(original.get("score"))
     except Exception:
         return factor
-    note = str(factor.get("note") or "")
-    out = dict(factor)
+    note = str(original.get("note") or "")
+    # A posting that states a citizenship or clearance requirement is not
+    # silent, whatever the note says.
+    restricted = posting_restriction(posting_text) is not None if posting_text else False
+
+    def _corrected(new_score, new_note):
+        out = dict(original)
+        out["score"], out["note"] = new_score, new_note
+        out[MODEL_SCORE_KEY], out[MODEL_NOTE_KEY] = original.get("score"), original.get("note")
+        return out
+
     if _NO_SPONSOR_CLAIM_RE.search(note):
         if posting_refuses:
-            out["score"] = round(min(score, REFUSING_POSTING_WORK_AUTH))
-            out["note"] = f"{_needs_text(framing)}; posting refuses sponsorship"
-        else:
-            out["score"] = round(min(score, SILENT_POSTING_WORK_AUTH))
-            out["note"] = _needs_text(framing) + (
-                "; posting silent on it" if posting_refuses is False else "")
-        return out
+            return _corrected(round(min(score, REFUSING_POSTING_WORK_AUTH)),
+                              f"{_needs_text(framing)}; posting refuses sponsorship")
+        return _corrected(round(min(score, SILENT_POSTING_WORK_AUTH)), _needs_text(framing) + (
+            "; posting silent on it" if (posting_refuses is False and not restricted) else ""))
     if posting_refuses and score > 15:
-        out["score"] = round(REFUSING_POSTING_WORK_AUTH)
-        out["note"] = f"{_needs_text(framing)}; posting refuses sponsorship"
-        return out
-    if (posting_refuses is False and score <= 15
+        return _corrected(round(REFUSING_POSTING_WORK_AUTH),
+                          f"{_needs_text(framing)}; posting refuses sponsorship")
+    if (posting_refuses is False and (posting_text or "").strip() and not restricted
+            and score <= 15
             and _POSTING_SILENT_RE.search(note) and not _RESTRICTION_RE.search(note)):
-        out["score"] = round(SILENT_POSTING_WORK_AUTH)
-        out["note"] = f"{_needs_text(framing)}; posting silent on it"
-    return out
+        return _corrected(round(SILENT_POSTING_WORK_AUTH),
+                          f"{_needs_text(framing)}; posting silent on it")
+    return original if has_model else factor
 
 
 def answer_for(label: str, framing: WorkAuthFraming) -> tuple[str, bool]:

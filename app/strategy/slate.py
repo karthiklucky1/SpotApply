@@ -126,14 +126,43 @@ def todays_entries(session, user_id: Optional[str]) -> list[Application]:
                     and SLATE_REPLACED_MARKER in (a.notes or ""))]
 
 
+#: The slate's value of an entry whose verdict is being RE-JUDGED: its job's
+#: ``rerank_score`` was cleared to send it back through the scorer (a new resume,
+#: ``realign.rescore_board_for_new_resume``; a role change,
+#: ``realign.realign_pool_to_roles``) and the new score has not landed. It used
+#: to read as 0, so from the upload until the re-score every challenger beat
+#: the "weakest" entry by the margin and replaced it, and the job came back at
+#: 92 to find its application SKIPPED ("exists", never re-delivered). Unknown is
+#: not weak: above every real 0-100 verdict, so a pending entry is never the
+#: weakest and never the overflow floor (``place()`` reads both through
+#: ``_score_of``). With EVERY comparable entry pending the floor is this value
+#: and nothing overflows; the refused job keeps its score and the re-shortlist
+#: backstop offers it again once the verdicts are back. Finite on purpose: it
+#: can land in a placement event's ``cutoff`` and must stay valid JSON.
+AWAITING_RESCORE_VALUE = 1000.0
+
+
+def _awaiting_rescore(session, app: Application) -> bool:
+    """On the board, but its score was cleared for a re-judge not yet done."""
+    job = session.get(Job, app.job_id)
+    return job is not None and job.rerank_score is None
+
+
 def _score_of(session, app: Application) -> float:
     job = session.get(Job, app.job_id)
-    return float(job.rerank_score) if (job and job.rerank_score is not None) else 0.0
+    if job is None:                       # orphaned entry: nothing to protect
+        return 0.0
+    if job.rerank_score is None:
+        return AWAITING_RESCORE_VALUE
+    return float(job.rerank_score)
 
 
 def _replaceable(session, entries: list[Application]) -> list[Application]:
+    """SHORTLISTED, never opened, and holding a real verdict. An entry awaiting
+    its re-score is not evictable: we do not know yet that it is weaker."""
     return [a for a in entries
-            if a.status == ApplicationStatus.SHORTLISTED and a.viewed_at is None]
+            if a.status == ApplicationStatus.SHORTLISTED and a.viewed_at is None
+            and not _awaiting_rescore(session, a)]
 
 
 def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
@@ -141,6 +170,14 @@ def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
 
     The weakest REPLACEABLE entry when there is one; otherwise the weakest
     entry of any kind, which is what an overflow candidate is measured against.
+
+    None, too, while any of today's entries awaits its re-score. This value is
+    the Tier-1 spend gate (finals_budget.challenger_gate), and the pending
+    entries' own re-judgments pass through that same gate: a cutoff taken from
+    the entries still scored would price the board's re-score out for the rest
+    of the day. Falling back to the shortlist bar is what the gate did before
+    (a pending entry read as 0); what changed is that ``place()`` no longer
+    lets a challenger evict a pending entry or measure overflow against it.
     """
     from app.common.plan_limits import shortlist_daily_limit
     from app.db.init_db import get_session
@@ -148,6 +185,8 @@ def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
     def _compute(s):
         entries = todays_entries(s, user_id)
         if len(entries) < shortlist_daily_limit(user_id):
+            return None
+        if any(_awaiting_rescore(s, a) for a in entries):
             return None
         pool = _replaceable(s, entries) or entries
         if not pool:

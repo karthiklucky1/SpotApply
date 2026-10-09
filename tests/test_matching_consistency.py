@@ -90,18 +90,119 @@ def test_a_refusing_posting_caps_the_factor_for_a_student():
     assert fix({"score": 90, "note": "sponsorship possible"}, _opt(), True)["score"] <= 15
 
 
+_SILENT_POSTING = "Build backend services in Python and Go. 3+ years of API work."
+
+
 def test_a_silent_posting_is_not_a_blocker_for_a_student():
     """The rubric says silent = high; the model wrote 10 next to 'silent'."""
     from app.intelligence.work_auth import reconcile_work_auth_factor as fix
     out = fix({"score": 10, "note": "F-1 OPT; posting silent on sponsorship but US role"},
-              _opt(), False)
+              _opt(), False, _SILENT_POSTING)
     assert out["score"] >= 75
     # ...unless the note names a real restriction, or the posting refuses.
     assert fix({"score": 10, "note": "silent on visas; requires US citizenship"},
-               _opt(), False)["score"] == 10
-    assert fix({"score": 10, "note": "posting silent on sponsorship"}, _opt(), True)["score"] == 10
+               _opt(), False, _SILENT_POSTING)["score"] == 10
+    assert fix({"score": 10, "note": "posting silent on sponsorship"}, _opt(), True,
+               _SILENT_POSTING)["score"] == 10
     # Unknown posting text is never taken as "silent".
     assert fix({"score": 10, "note": "posting silent on sponsorship"}, _opt(), None)["score"] == 10
+    assert fix({"score": 10, "note": "posting silent on sponsorship"}, _opt(), False)["score"] == 10
+
+
+# Review 2026-10-09: four postings `find_refusal` reads as silent, each with a
+# note the old rule lifted from a blocker to 85 "posting silent on it".
+_RESTRICTED = {
+    "tssci": ("Build backend services in Java. Requirements: Active TS/SCI clearance with "
+              "full-scope polygraph. 3+ years Java.",
+              "F-1 OPT; sponsorship not mentioned; TS/SCI with poly needed"),
+    "usc": ("Build backend services. Applicants must be U.S. citizens due to federal "
+            "contract requirements.",
+            "Posting silent on visas; federal contract role"),
+    "secret": ("Must be able to obtain and maintain a Secret clearance. Python, AWS.",
+               "Silent on sponsorship; Secret eligibility required"),
+    "dod": ("U.S. Citizenship is required for this position.",
+            "F-1 OPT; posting does not mention sponsorship, U.S. person role"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_RESTRICTED))
+def test_a_clearance_or_citizenship_role_is_never_lifted_as_silent(case):
+    from app.matching.reranker import reconcile_with_profile
+    description, note = _RESTRICTED[case]
+    factor = {"score": 5, "note": note}
+    out = reconcile_with_profile((60.0, "x", [], {"work_auth": dict(factor)}), _opt(), description)
+    assert out[3]["work_auth"] == factor, "the model's blocker stands, in its own words"
+
+
+@pytest.mark.parametrize("case", sorted(_RESTRICTED))
+def test_the_posting_text_alone_stops_the_lift(case):
+    """A note that names nothing is not enough when the POSTING states it."""
+    from app.intelligence.work_auth import reconcile_work_auth_factor as fix
+    description, _note = _RESTRICTED[case]
+    out = fix({"score": 5, "note": "posting silent on sponsorship"}, _opt(), False, description)
+    assert out["score"] == 5 and "model_note" not in out
+
+
+@pytest.mark.parametrize("note", [
+    "posting silent on sponsorship; TS/SCI role", "silent; Secret level access",
+    "not mentioned; polygraph", "silent on visas; U.S. persons only (ITAR)",
+    "silent; federal agency", "silent; government contractor", "silent; defense program",
+    "silent; export control applies"])
+def test_a_note_naming_a_clearance_or_government_restriction_is_kept(note):
+    from app.intelligence.work_auth import reconcile_work_auth_factor as fix
+    assert fix({"score": 5, "note": note}, _opt(), False, _SILENT_POSTING)["score"] == 5
+
+
+@pytest.mark.parametrize("text", [
+    "We do not discriminate on the basis of race, national origin or citizenship status.",
+    "U.S. citizenship is not required.", "You do not need to be a U.S. citizen to apply.",
+    "This role does not require a security clearance.",
+    "We sponsor visas and green cards for the right candidate."])
+def test_boilerplate_and_negations_are_not_a_restriction(text):
+    from app.intelligence.work_auth import posting_restriction
+    assert posting_restriction(_SILENT_POSTING + " " + text) is None
+
+
+def test_a_correction_keeps_the_models_own_verdict():
+    """The fix runs before the row is stored: what the model said must survive
+    it, and a later read re-derives from the model's words, not the fix."""
+    from app.intelligence.work_auth import reconcile_work_auth_factor as fix
+    model = {"score": 10, "note": "F-1 OPT; posting silent on sponsorship"}
+    out = fix(dict(model), _opt(), False, _SILENT_POSTING)
+    assert out["score"] == 85 and "posting silent on it" in out["note"]
+    assert out["model_score"] == 10 and out["model_note"] == model["note"]
+    stored = json.loads(json.dumps(out))
+    assert fix(stored, _opt(), False, _SILENT_POSTING) == out, "idempotent on read"
+    # The same stored row read against a posting now known to need a clearance
+    # (or a stricter rule): the model's own verdict comes back, not the lift.
+    back = fix(stored, _opt(), False, "Active TS/SCI clearance required.")
+    assert back == model
+    # A profile that no longer needs sponsorship gets the scorer's own words too.
+    assert fix(stored, _citizen(), False, _SILENT_POSTING) == model
+    # The "no sponsorship needed" correction keeps the original as well.
+    out = fix({"score": 100, "note": "F-1 OPT, no sponsorship needed"}, _opt(), False,
+              _SILENT_POSTING)
+    assert out["model_note"] == "F-1 OPT, no sponsorship needed" and out["model_score"] == 100
+
+
+def test_a_stored_verdict_keeps_the_models_note_through_the_report(clean, monkeypatch):
+    """Parse time stores both; the report shows the correction."""
+    from app.api import server
+    from app.matching.reranker import reconcile_with_profile
+    monkeypatch.setattr(server, "_get_user_id", lambda request: UID)
+    with get_session() as s:
+        s.add(UserProfile(user_id=UID, work_authorization="F-1 OPT", work_auth_status="OPT",
+                          requires_sponsorship=True))
+        s.commit()
+    _s, _r, _c, bd = reconcile_with_profile(
+        (70.0, "Fine.", [], {"work_auth": {"score": 10, "note": "posting silent on sponsorship"}}),
+        _opt(), "Build backend services in Python.")
+    assert bd["work_auth"]["model_score"] == 10
+    aid = _seed_scored("keep", reasoning="Fine.", breakdown=bd, scored_at=datetime.utcnow(),
+                       app_created=datetime.utcnow())
+    d = _client().get(f"/application/{aid}/match").json()
+    assert d["breakdown"]["work_auth"]["score"] == 85
+    assert "posting silent on it" in d["breakdown"]["work_auth"]["note"]
 
 
 def test_a_citizen_keeps_the_scorers_own_words():
@@ -295,6 +396,121 @@ def test_the_rescore_is_capped(clean, monkeypatch):
         _board_job(f"cap{i}", age_days=0)
     stats = rescore_board_for_new_resume(UID)
     assert stats["rescore"] == 2 and stats["capped"] == 2
+
+
+# ── 3b. A job waiting for its re-score is not a 0 on the slate ───────────────
+# Review 2026-10-09: the re-score clears rerank_score on today's board, the
+# slate read NULL as 0, and from the upload until the re-score landed any
+# qualifying job "beat" a 92 by the margin and replaced it; the 92 came back
+# re-scored to find its application SKIPPED, and was never delivered again.
+
+@pytest.fixture
+def two_slot_slate(monkeypatch):
+    import app.common.plan_limits as pl
+    from app.config import settings
+    monkeypatch.setattr(pl, "shortlist_daily_limit", lambda uid: 2)
+    monkeypatch.setattr(settings, "realign_rescore_days", 2)
+    monkeypatch.setattr(settings, "realign_max_rescore", 500)
+
+
+def _slate_job(ext, score, *, age_days=0.0, title="Backend Engineer"):
+    with get_session() as s:
+        seen = datetime.utcnow() - timedelta(days=age_days)
+        j = Job(user_id=UID, source=JobSource.GREENHOUSE, external_id=_P + ext,
+                company=f"Slate{ext}", title=f"{title} {ext}", location="Austin, TX",
+                url=f"https://x/{ext}", description=f"d{ext}", rerank_score=score,
+                rerank_reasoning="scored against the old resume", rerank_breakdown="{}",
+                scored_at=seen, first_seen=seen)
+        s.add(j)
+        s.commit()
+        s.refresh(j)
+        return j.id
+
+
+def _status_of(jid):
+    with get_session() as s:
+        return s.exec(select(Application.status).where(Application.job_id == jid)).first()
+
+
+def _verdict_lands(jid, score):
+    with get_session() as s:
+        j = s.get(Job, jid)
+        j.rerank_score = score
+        s.add(j)
+        s.commit()
+
+
+def _strict_json(text):
+    def _no_constants(name):
+        raise ValueError(f"not JSON: {name}")
+    return json.loads(text, parse_constant=_no_constants)
+
+
+def test_a_new_resume_does_not_open_the_board_to_weaker_jobs(clean, two_slot_slate):
+    from app.config import settings
+    from app.matching.finals_budget import challenger_gate
+    from app.strategy import slate
+    from app.strategy.realign import rescore_board_for_new_resume
+    a, b = _slate_job("rsa", 92.0), _slate_job("rsb", 90.0)
+    assert _place(a, 92.0).created and _place(b, 90.0).created
+    assert _place(_slate_job("rsc", 65.0), 65.0).outcome == "below_cutoff"
+    # The resume upload clears both scores; a challenger arrives first.
+    assert rescore_board_for_new_resume(UID)["rescore"] == 2
+    weak = _slate_job("rsd", 65.0)
+    p = _place(weak, 65.0)
+    assert not p.created and p.outcome == "below_cutoff", p
+    assert p.displaced_id is None
+    strong = _slate_job("rse", 95.0)
+    assert not _place(strong, 95.0).created, "nothing real to measure it against yet"
+    assert _status_of(a) == _status_of(b) == ApplicationStatus.SHORTLISTED
+    # The Tier-1 gate stays at the bar (as it was) so the re-score itself is
+    # never priced out; it is not a 0 cutoff, it is no cutoff.
+    assert slate.cutoff(UID) is None
+    assert challenger_gate(UID) == int(settings.shortlist_score_threshold)
+    # Every placement event this wrote is strict JSON (the floor is finite).
+    with get_session() as s:
+        for meta in s.exec(select(FunnelEvent.metadata_json).where(
+                FunnelEvent.job_id.in_([weak, strong]), FunnelEvent.stage == "placement")).all():
+            _strict_json(meta)
+    # The new verdicts land: real scores are compared again, and the strong
+    # job the re-shortlist backstop offers again takes the weakest slot.
+    _verdict_lands(a, 91.0)
+    _verdict_lands(b, 70.0)
+    assert slate.cutoff(UID) == 70.0
+    p = _place(strong, 95.0)
+    assert p.outcome == "replaced" and p.cutoff == 70.0
+    assert _status_of(b) == ApplicationStatus.SKIPPED
+    assert _status_of(a) == ApplicationStatus.SHORTLISTED
+    assert _place(weak, 65.0).outcome == "below_cutoff"
+
+
+def test_a_pending_entry_is_never_the_one_replaced(clean, two_slot_slate):
+    """Mixed slate: only the entry holding a real verdict is measured."""
+    from app.strategy import slate
+    from app.strategy.realign import rescore_board_for_new_resume
+    fresh = _slate_job("mxa", 92.0)                  # re-judged (first seen today)
+    older = _slate_job("mxb", 70.0, age_days=4)      # outside the window: keeps its 70
+    assert _place(fresh, 92.0).created and _place(older, 70.0).created
+    assert rescore_board_for_new_resume(UID)["rescore"] == 1
+    assert slate.cutoff(UID) is None, "a re-score in flight keeps the gate at the bar"
+    assert _place(_slate_job("mxc", 72.0), 72.0).outcome == "below_cutoff"
+    p = _place(_slate_job("mxd", 80.0), 80.0)
+    assert p.outcome == "replaced" and p.cutoff == 70.0
+    assert _status_of(older) == ApplicationStatus.SKIPPED
+    assert _status_of(fresh) == ApplicationStatus.SHORTLISTED
+
+
+def test_a_role_change_rescore_is_not_a_zero_either(clean, two_slot_slate):
+    """realign_pool_to_roles clears the same scores the same way."""
+    from app.strategy.realign import realign_pool_to_roles
+    a, b = _slate_job("rra", 92.0), _slate_job("rrb", 90.0)
+    assert _place(a, 92.0).created and _place(b, 90.0).created
+    stats = realign_pool_to_roles(UID, ["Backend Engineer", "Platform Engineer"],
+                                  old_roles=["Data Engineer"])
+    assert stats["rescore"] == 2
+    p = _place(_slate_job("rrc", 65.0), 65.0)
+    assert not p.created and p.outcome == "below_cutoff", p
+    assert _status_of(a) == _status_of(b) == ApplicationStatus.SHORTLISTED
 
 
 def test_only_a_changed_file_counts_as_a_new_resume(clean):
