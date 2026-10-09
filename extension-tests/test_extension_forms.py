@@ -489,6 +489,11 @@ def main():
         saves = [p for m, p in REQUESTS[ht_from:] if m == "POST" and "save-answer" in p]
         check("HT9 nothing is learned (no save-answer: not the listbox pick, not a box we wrote)",
               not saves, str(saves))
+        check("HT10 a section with only the question and the next one (unlinked <label>): "
+              "'Other' is picked and the next question stays blank",
+              v("#ht-sel4") == "other" and v("#ht-else") == "", f"{v('#ht-sel4')} / {v('#ht-else')}")
+        check("HT11 the radio variant: 'Other' is picked and 'Who referred you?' stays blank",
+              radio("ht_src2") == "other" and v("#ht-who") == "", f"{radio('ht_src2')} / {v('#ht-who')}")
         page.close()
 
         # ── API surface actually exercised ──────────────────────────────────

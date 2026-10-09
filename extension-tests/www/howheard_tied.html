@@ -67,6 +67,31 @@
       <textarea id="ht-more" placeholder="Your answer" rows="2"></textarea>
     </div>
 
+    <!-- 7. Review 2026-10-09: a section holding ONLY the how-heard question
+         and the next question, whose label is a sibling <label> without
+         `for`. The section is not the question's own container: the next
+         question stays blank (select and radio variants). -->
+    <section id="ht-two-a">
+      <label for="ht-sel4">How did you hear about the opening?</label>
+      <select id="ht-sel4" name="q_two_a">
+        <option value="">Select...</option>
+        <option value="li">LinkedIn</option>
+        <option value="indeed">Indeed</option>
+        <option value="other">Other</option>
+      </select>
+      <label>Is there anything else you would like us to know?</label>
+      <textarea id="ht-else" name="anything_else" rows="2"></textarea>
+    </section>
+    <section id="ht-two-b">
+      <fieldset>
+        <legend>Where did you hear about this position?</legend>
+        <label><input type="radio" name="ht_src2" value="li"> LinkedIn</label>
+        <label><input type="radio" name="ht_src2" value="other"> Other</label>
+      </fieldset>
+      <label>Who referred you?</label>
+      <input id="ht-who" name="referred_by">
+    </section>
+
     <!-- 6. A dropdown BUTTON (aria-haspopup=listbox) with role=option items:
          the pick is the extension's, and is never learned. -->
     <div class="field">

@@ -57,6 +57,10 @@ _STOP = {
     "team", "role", "work", "working", "help", "build", "building",
     "etc.", "plus", "nice", "preferred", "required", "requirements",
     "responsibilities", "qualifications", "skills", "knowledge",
+    # Contraction tails: the tokenizer splits "You'll" / "you're" / "we've" at
+    # the apostrophe, and the heading "What You'll Bring" became the keyword
+    # "ll bring" (then "bring").
+    "ll", "re", "ve", "bring",
     # Plain English function words. The ranker counted single words by
     # frequency, so "where" and "them" reached the Tailoring Studio as "Not
     # covered" keywords and as "I've used Where" buttons (live test,
@@ -575,16 +579,33 @@ _OFFER_WORDS = frozenset({"benefits", "benefit", "perks", "perk", "compensation"
 # Offer" list the work itself, and "Life at" takes a name of one or two words.
 _OFFER_HEADING_RE = re.compile(
     r"(?:\byou(?:'ll| will)? (?:get|receive)(?: from us)?|\bin it for you)$"
-    r"|^(?:in return |(?:here's |here is )?what (?:else )?)?we (?:can )?(?:provide|offer)(?: you)?$"
+    r"|^(?:in return |at [a-z']+(?: [a-z']+)? |(?:here's |here is )?what (?:else )?)?"
+    r"we (?:can )?(?:provide|offer)(?: you)?$"
     r"|^life at [a-z']+(?: [a-z']+)?$")
-# "Total Rewards" names the package only as the whole heading, in Title Case
-# or capitals ("Total Rewards", "Our Total Rewards", "Total Rewards
-# Package"). An HR posting writes the field the same way: "About the Total
-# Rewards Team", a "Total Rewards Analyst" title line, a "Total Rewards
-# Administration" skill, or "Total rewards" in sentence case. Those are the
-# job, and the lines after them are its skills.
-_TOTAL_REWARDS_RE = re.compile(
-    r"(?:(?:Our|Your|OUR|YOUR) )?(?:Total Rewards|TOTAL REWARDS)(?: (?:Package|PACKAGE))?")
+# "Total Rewards" names the package only in Title Case or capitals and only
+# beside package words ("Total Rewards", "Our Total Rewards", "Total Rewards
+# Package", "Total Rewards & Benefits", "Total Rewards at Acme",
+# "Compensation & Total Rewards"). An HR posting writes the field the same
+# way: "About the Total Rewards Team", a "Total Rewards Analyst" title line, a
+# "Total Rewards Administration" skill, or "Total rewards" in sentence case.
+# Those are the job, and the lines after them are its skills.
+_TOTAL_REWARDS_RE = re.compile(r"\b(?:Total Rewards|TOTAL REWARDS)\b")
+_REWARDS_COMPANIONS = frozenset({
+    "our", "your", "the", "at", "and", "benefits", "perks", "compensation", "package",
+    "packages", "program", "programs", "overview", "philosophy", "offering", "offerings",
+})
+
+
+def _is_total_rewards_heading(body: str) -> bool:
+    if not _TOTAL_REWARDS_RE.search(body):
+        return False
+    toks = [w.lower() for w in _TOKEN_RE.findall(body)]
+    if not toks or toks[0] == "about":
+        return False
+    rest = list(toks)
+    for w in ("total", "rewards"):
+        rest.remove(w)
+    return all(t in _REWARDS_COMPANIONS or t == _CO_MARK for t in rest)
 # Words that end an offer section: the next heading about the job ("The
 # Opportunity" after "Life at Acme" is the role).
 _SECTION_WORDS_RE = re.compile(
@@ -597,6 +618,15 @@ _SECTION_WORDS_RE = re.compile(
 _HEADING_NOUNS = frozenset({
     "skills", "requirements", "qualifications", "responsibilities", "duties",
     "functions", "competencies", "demands", "certifications", "haves", "stack",
+})
+# Words that only qualify a section noun ("Key Skills", "Strong technical
+# skills", "Core Competencies"): a bullet made of these and a section noun
+# names no skill.
+_HEADING_QUALIFIERS = frozenset({
+    "key", "core", "technical", "soft", "essential", "general", "other", "additional",
+    "relevant", "required", "preferred", "minimum", "physical", "written", "verbal",
+    "strong", "excellent", "good", "great", "solid", "proven", "demonstrated",
+    "basic", "advanced",
 })
 
 
@@ -631,7 +661,7 @@ def _is_offer_heading(body: str, words: List[str]) -> bool:
     if ((words[0] == "why" or offer)
             and all(w in _GENERIC or w == _CO_MARK for w in words)):
         return True
-    if _TOTAL_REWARDS_RE.fullmatch(body.rstrip(" :")):
+    if _is_total_rewards_heading(body):
         return True
     return bool(_OFFER_HEADING_RE.search(plain))
 
@@ -700,6 +730,11 @@ def _list_items(text: str) -> frozenset:
         # A bullet is an item, never the list's heading ("- Basic Math Skills").
         if not bullet and (_is_section_heading(body) or (opens_list[i] and not _names_tool(words))):
             continue                       # the list's heading, not an item
+        # ...but a heading-shaped bullet names no skill: "<li>Strong technical
+        # skills</li>" or "- Key Responsibilities" left "technical" / "key".
+        if (bullet and words[-1] in _HEADING_NOUNS
+                and all(w in _STOP or w in _HEADING_QUALIFIERS for w in words[:-1])):
+            continue
         for part in re.split(r",|;|\s(?:and|or|&)\s|\s/\s", body.lower()):
             toks = _TOKEN_RE.findall(part)
             while toks and toks[0] in _STOP:

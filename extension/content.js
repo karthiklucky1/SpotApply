@@ -1280,7 +1280,13 @@ function _shownFields() {
 /**
  * Does `box` sit in the question's own container? The smallest element
  * holding the question's controls (`own`) and the box holds no other field,
- * and the box has no label of its own (a label makes it another question).
+ * the box has no label of its own (a label makes it another question), the
+ * container holds the question's own caption (its <label>/<legend>), and it
+ * holds no other caption or text: every word in it is the question's label or
+ * an option's. A section holding the how-heard question and the NEXT question
+ * with an unlinked label (a sibling <label> without `for`, a div caption) is
+ * not the question's container (review 2026-10-09: that next question got
+ * the saved answer after an Other pick).
  */
 function _inQuestionContainer(box, own) {
   if ((box.labels && box.labels.length) || box.getAttribute('aria-labelledby') ||
@@ -1288,8 +1294,27 @@ function _inQuestionContainer(box, own) {
   let node = own[0] && own[0].parentElement;
   while (node && !(node.contains(box) && own.every((o) => node.contains(o)))) node = node.parentElement;
   if (!node || node === document.body || node === document.documentElement) return false;
-  return Array.from(node.querySelectorAll('input:not([type="hidden"]), select, textarea'))
-    .every((f) => f === box || own.includes(f));
+  if (!Array.from(node.querySelectorAll('input:not([type="hidden"]), select, textarea'))
+    .every((f) => f === box || own.includes(f))) return false;
+  const captions = new Set();
+  for (const o of own) {
+    for (const l of Array.from(o.labels || [])) captions.add(l);
+    const fs = o.closest && o.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) captions.add(lg);
+  }
+  const mine = (n) => {
+    for (let p = n.parentElement; p && p !== node.parentElement; p = p.parentElement) {
+      if (captions.has(p) || own.includes(p) || p === box) return true;
+    }
+    return false;
+  };
+  if (!Array.from(captions).some((c) => node.contains(c))) return false;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (String(t.nodeValue || '').trim() && !mine(t)) return false;
+  }
+  return true;
 }
 
 /**
