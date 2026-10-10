@@ -124,7 +124,7 @@ def test_status_handlers_update_in_place_instead_of_reloading():
         assert "applyStatusChange(" in body, f"{name} does not update the board in place"
     # The did-you-submit prompt's Gone / Yes buttons too.
     i = src.index("document.getElementById('hp-sc-gone').onclick")
-    prompt = src[i: src.index("Auto-dismiss after 25s", i)]
+    prompt = src[i: src.index("window.addEventListener('blur', _markPendingLeft)", i)]
     assert "location.reload()" not in prompt and prompt.count("applyStatusChange(") == 2
 
 

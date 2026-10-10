@@ -79,66 +79,6 @@ def _state(job_id):
         return (bool(j.is_closed), j.closed_reason or "", a.status if a else None, (a.notes or "") if a else "")
 
 
-# ── absence from a complete listing closes every copy ───────────────────────
-
-def test_absence_from_a_complete_listing_closes_every_copy():
-    gone_shared = _job(SHARED_POOL_USER, f"{_P}gone")
-    gone_u1 = _job("dad-u1", f"{_P}gone")
-    gone_u2 = _job("dad-u2", f"{_P}gone")
-    live_shared = _job(SHARED_POOL_USER, f"{_P}live")
-    live_u1 = _job("dad-u1", f"{_P}live")
-    _app("dad-u1", gone_u1, ApplicationStatus.SHORTLISTED)   # waiting → Removed
-    _app("dad-u2", gone_u2, ApplicationStatus.TAILORED)      # engaged → keeps its place
-    _app("dad-u1", live_u1, ApplicationStatus.SHORTLISTED)
-
-    out = gate.close_absent_from_board("GREENHOUSE", _CO, [f"{_P}live"], listing_complete=True)
-    assert out["gone"] == 1 and out["jobs_closed"] == 3
-    assert out["applications_removed"] == 1 and out["kept_engaged"] == 1
-
-    closed, reason, status, notes = _state(gone_u1)
-    assert closed and "absent from the greenhouse board" in reason
-    assert status == ApplicationStatus.SKIPPED and "Job closed" in notes   # a system skip, never "not interested"
-    closed2, _, status2, _ = _state(gone_u2)
-    assert closed2 and status2 == ApplicationStatus.TAILORED
-    assert _state(gone_shared)[0] is True
-    # The live posting is untouched, on every copy.
-    assert _state(live_shared)[0] is False and _state(live_u1) == (False, "", ApplicationStatus.SHORTLISTED, "")
-    # And the free evidence is on record for the gate.
-    state, _ = lv.load_states([("greenhouse", f"{_P}gone")]).get(("greenhouse", f"{_P}gone"), (None, None))
-    assert state == JobLivenessState.REMOVED.value
-
-
-@pytest.mark.parametrize("present,complete,why", [
-    ([], True, "empty_listing"),                   # an empty fetch never closes a board
-    ([f"{_P}other"], False, "incomplete_listing"), # a truncated/partial listing says nothing
-])
-def test_partial_or_empty_listings_close_nothing(present, complete, why):
-    jid = _job(SHARED_POOL_USER, f"{_P}keep")
-    _job("dad-u1", f"{_P}keep")
-    out = gate.close_absent_from_board("greenhouse", _CO, present, listing_complete=complete)
-    assert out["skipped"] == why and out["jobs_closed"] == 0
-    assert _state(jid)[0] is False
-
-
-def test_mass_absence_is_a_changed_filter_not_a_mass_closing():
-    ids = [_job(SHARED_POOL_USER, f"{_P}m{i}") for i in range(12)]
-    # Only 2 of 12 still listed: >50% vanished at once → skipped, nothing closed.
-    out = gate.close_absent_from_board("greenhouse", _CO, [f"{_P}m0", f"{_P}m1"], listing_complete=True)
-    assert out["skipped"] == "mass_absence" and out["jobs_closed"] == 0
-    assert all(_state(i)[0] is False for i in ids)
-    # 2 of 12 gone is a normal day: closed.
-    present = [f"{_P}m{i}" for i in range(2, 12)]
-    out = gate.close_absent_from_board("greenhouse", _CO, present, listing_complete=True)
-    assert out["gone"] == 2 and out["jobs_closed"] == 2
-
-
-def test_unverifiable_and_unknown_sources_are_left_alone():
-    jid = _job(SHARED_POOL_USER, f"{_P}agg", source=JobSource.REMOTIVE)
-    out = gate.close_absent_from_board("remotive", _CO, [f"{_P}x"], listing_complete=True)
-    assert out["skipped"] == "unverifiable_source" and _state(jid)[0] is False
-    assert gate.close_absent_from_board("not-an-ats", _CO, [f"{_P}x"], listing_complete=True)["skipped"] in ("unverifiable_source", "unknown_source")
-
-
 # ── re-verification of postings already on boards ───────────────────────────
 
 def _patch_fetch(monkeypatch, status, body=""):
@@ -217,13 +157,14 @@ def test_engaged_work_keeps_its_place_on_reverification(monkeypatch):
 
 # ── wiring: the lanes call it ────────────────────────────────────────────────
 
-def test_the_pulse_lane_closes_absent_postings_only_from_complete_listings():
+def test_the_pulse_lane_routes_absence_through_board_absence():
+    """Postings that left a completely fetched board are closed by main's
+    board_absence census (pulse_lane._queue_absence → _run_absence); the
+    branch's own closer was retired in the merge so there is ONE
+    implementation. The re-verification below is the complementary HTTP path."""
     from app.strategy import pulse_lane
     src = inspect.getsource(pulse_lane._run_pulse_tick_locked)
-    assert "close_absent_from_board" in src
-    assert "listing_complete=bool(_lc) and bool(parsed_all)" in src
-    for key in ("absent_gone", "absent_closed", "absent_removed"):
-        assert f'"{key}": 0' in src
+    assert "_queue_absence(" in src and "close_absent_from_board" not in src
 
 
 def test_the_scoring_lane_closes_every_copy_and_reverifies_after_scoring():
@@ -242,7 +183,8 @@ def test_workday_tells_listing_completeness_apart_from_detail_completeness():
     from app.discovery import workday, smartrecruiters
     src = inspect.getsource(workday.WorkdayScraper.fetch)
     assert "self.listing_complete = True" in src
-    assert src.count("self.listing_complete = False") == 2      # page failure, cap truncation — not detail GETs
+    assert src.count("self.listing_complete = False") >= 2      # page failure, cap truncation — never a detail GET
+    assert "capped = True" in src and src.index("capped = True") > src.index("self.listing_complete = False")
     assert "self.listing_complete = self.fetch_complete" in inspect.getsource(smartrecruiters)
 
 

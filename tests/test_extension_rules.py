@@ -292,9 +292,12 @@ def test_the_resume_request_always_says_what_the_field_takes():
     """Review 2026-10-09: 1.0.1+ always sends ?accept= ("*" when the field
     names nothing), so a request without it is the 1.0.0 Store build."""
     body = _function(CONTENT, "attachResume")
-    assert "|| '*'" in body
-    assert "/resume?accept=${encodeURIComponent(_accept)}" in body
+    assert "|| '*'" in body and "fetchResumeFile(pack, _accept)" in body
     assert "(_accept ?" not in body, "the accept parameter must never be optional again"
+    # The download itself lives in the helper the native-autofill layer shares.
+    fetch = _function(CONTENT, "fetchResumeFile")
+    assert "/resume?accept=${encodeURIComponent(_acc)}" in fetch
+    assert "String(accept || '*')" in fetch and "(_acc ?" not in fetch
 
 
 def test_the_current_company_is_the_current_employer():

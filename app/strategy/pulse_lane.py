@@ -1030,10 +1030,7 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
              # still high means the floor itself is above what the lane can do.
              "board_cap": cap,
              "unchanged": 0, "changed": 0, "fetched_jobs": 0,
-             "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0,
-             # Death after delivery (delivery_gate.close_absent_from_board):
-             # postings absent from a complete listing, and what that closed.
-             "absent_gone": 0, "absent_closed": 0, "absent_removed": 0}
+             "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0}
     # RESERVE ~40% of the budget for SCORING. During the bootstrap backlog the
     # fetch/route phase would otherwise eat the whole tick (deferring hundreds of
     # boards) and score ZERO — so fresh jobs land but sit "Queued" until the

@@ -231,7 +231,7 @@ def set_native_autofill(ctx, enabled):
 
 
 def resume_fetches():
-    return sum(1 for _, p in REQUESTS if p.endswith("/resume"))
+    return sum(1 for _, p in REQUESTS if p.split("?")[0].endswith("/resume"))
 
 
 def main():
