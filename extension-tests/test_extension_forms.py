@@ -9,6 +9,12 @@ form the way production does and asserting on the resulting field values:
   Workday     data-automation-id only, no usable labels, country dropdown
   React       controlled inputs that revert any value written without a
               proper native setter + input event (the classic autofill killer)
+  Native      the board's OWN autofill-from-resume (Workday's "Autofill with
+              Resume" button, Ashby's autofill card) is fed the resume FIRST;
+              what it filled is kept, a wrong identity field is corrected, its
+              history entries are left alone, the resume is not attached twice,
+              and a page without such a widget — or the switch off — takes the
+              normal path (workday-autofill.html, ashby-parse.html)
 
 A stub backend serves the endpoints the content script calls (résumé download,
 recall-answers, telemetry) so the résumé attach path runs for real instead of
@@ -177,6 +183,57 @@ def drive_fill(ctx, page_url, pack):
     return page, logs
 
 
+def drive_fill_reply(ctx, page_url, pack, timeout_ms=40000):
+    """Like drive_fill, but WAIT for the content script's DO_FILL reply — the
+    result the popup shows — and return it as the third value. A native
+    autofill run waits for the board's parser to settle and the resume attach
+    polls for the site's acknowledgement, so the reply can take ~10 s."""
+    global CURRENT_PACK
+    CURRENT_PACK = pack
+    sw = ctx.service_workers[0]
+    sw.evaluate(
+        """(pack) => new Promise((resolve) => {
+            chrome.storage.local.set({
+                spotapply_fill_pack: pack,
+                spotapply_copilot_pack: pack,
+                spotapply_copilot_ts: Date.now(),
+                spotapply_auto_fill: false,
+            }, resolve);
+        })""", pack)
+    page = ctx.new_page()
+    logs = []
+    page.on("console", lambda m: logs.append(m.text) if "[SpotApply]" in m.text else None)
+    page.goto(page_url)
+    page.wait_for_timeout(1500)
+    reply = sw.evaluate(
+        """(args) => new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ timeout: true }), args.timeout);
+            chrome.tabs.query({}, (tabs) => {
+                const t = tabs.find(t => t.url && t.url.includes(args.needle));
+                if (!t) { clearTimeout(timer); return resolve({ error: 'no-tab' }); }
+                chrome.tabs.sendMessage(t.id, { type: 'DO_FILL', fillPack: args.pack }, (r) => {
+                    clearTimeout(timer);
+                    resolve(r || { error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'no reply' });
+                });
+            });
+        })""", {"needle": page_url.rsplit("/", 1)[-1], "pack": pack, "timeout": timeout_ms})
+    page.wait_for_timeout(500)
+    return page, logs, reply or {}
+
+
+def set_native_autofill(ctx, enabled):
+    """The user's native-autofill switch (popup setting; absent = ON)."""
+    ctx.service_workers[0].evaluate(
+        """(on) => new Promise((resolve) => {
+            if (on === null) chrome.storage.local.remove(['spotapply_native_autofill'], resolve);
+            else chrome.storage.local.set({ spotapply_native_autofill: on }, resolve);
+        })""", enabled)
+
+
+def resume_fetches():
+    return sum(1 for _, p in REQUESTS if p.endswith("/resume"))
+
+
 def main():
     handler = partial(StubBackend, directory=str(HERE / "www"))
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), handler)
@@ -290,11 +347,16 @@ def main():
         page.close()
 
         # ── A: Ashby — essay prompt, parser widget, required radios ─────────
-        # All three reproduced from a live Gen Digital Ashby req.
-        print("\nAshby layout (essay prompt · autofill-from-résumé trap · radios)")
+        # All three reproduced from a live Gen Digital Ashby req. The parser
+        # card is now the board's native autofill: it is fed FIRST (before any
+        # field is written), and one that takes the file and changes nothing
+        # is emptied again so the real Resume field is still attached to —
+        # the old failure was feeding it AFTER the fill and letting it
+        # overwrite the identity we had just written.
+        print("\nAshby layout (essay prompt · unresponsive autofill parser · radios)")
         pack = base_pack(f"{BASE}/ashby.html")
         pack["work_experience"] = [{"company": "Globali20 India", "title": "ML Engineer"}]
-        page, _ = drive_fill(ctx, f"{BASE}/ashby.html", pack)
+        page, ashby_logs = drive_fill(ctx, f"{BASE}/ashby.html", pack)
         v = lambda sel: page.eval_on_selector(sel, "el => el.value")
         check("A1 name filled", pack["first_name"] in (v("#ash-name") or ""), v("#ash-name"))
         check("A2 email filled", v("#ash-email") == pack["email"], v("#ash-email"))
@@ -305,11 +367,14 @@ def main():
         essay = v("#ash-essay") or ""
         check("A4 essay prompt NOT filled with the company name",
               "Globali20" not in essay, repr(essay[:60]))
-        # The parser widget must stay empty or it re-parses and overwrites.
+        # The parser was tried first; it never reacted, so nothing may be left
+        # stranded in it and the real field must still get the file.
         parser_files = page.eval_on_selector("#autofill-parser", "el => el.files.length")
         resume_files = page.eval_on_selector("#ash-resume", "el => el.files.length")
         check("A5 résumé attached to the REAL resume field", resume_files == 1, f"files={resume_files}")
-        check("A6 autofill-from-résumé parser left empty", parser_files == 0, f"files={parser_files}")
+        check("A6 unresponsive autofill parser tried first, then emptied again", parser_files == 0
+              and any("Native autofill (ashby): no_response" in l for l in ashby_logs),
+              f"files={parser_files} logs={[l for l in ashby_logs if 'Native autofill' in l][:2]}")
         # Required radios and the résumé must be visible to the counter.
         counts = page.evaluate(
             """() => { const h = document.getElementById('hp-copilot-overlay');
@@ -442,6 +507,122 @@ def main():
               repr((v("#hispanic"), v("#disability"), v("#veteran"))))
         check("E12 custom dropdown untouched", v("#gender-value") == "", repr(v("#gender-value")))
         page.close()
+
+        # ── N: the board's OWN autofill-from-resume goes first ─────────────
+        # Founder's ask (2026-10-10): a few boards fill the application from
+        # the uploaded resume themselves — use that whenever it is offered, it
+        # saves the time our filler cannot (multi-entry history), then fill
+        # only what it left empty or got wrong. The human still clicks Submit.
+        print("\nNative autofill — Workday-like 'Autofill with Resume' (one upload, parsed)")
+        fetched_before = resume_fetches()
+        pack = base_pack(f"{BASE}/workday-autofill.html")
+        page, logs, reply = drive_fill_reply(ctx, f"{BASE}/workday-autofill.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        ours = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapplyFilled === 'true'")
+        na = reply.get("native_autofill") or {}
+        check("N1 the native widget was used (reply carries the outcome)",
+              na.get("used") is True and na.get("ats") == "workday" and na.get("reason") == "settled",
+              json.dumps(na))
+        check("N2 ...after the parse settled, with the site's fields counted",
+              800 <= int(na.get("settled_ms") or 0) <= 20000 and int(na.get("fields_prefilled") or 0) >= 5,
+              json.dumps(na))
+        check("N3 the option was clicked and the upload revealed",
+              page.eval_on_selector("#wd-dropzone", "el => !el.hidden")
+              and page.evaluate("() => window.__wdParses()") == 1)
+        # What the site filled correctly stays — in ITS formatting, not ours.
+        check("N4 name the site filled is kept (not rewritten by us)",
+              v("#wd-first") == "Alexandra" and v("#wd-last") == "Nguyen" and not ours("#wd-first"),
+              f"{v('#wd-first')!r} ours={ours('#wd-first')}")
+        check("N5 same phone in the site's own format is kept", v("#wd-phone") == "(415) 555-0199", repr(v("#wd-phone")))
+        check("N6 city without the state is not a conflict", v("#wd-city") == "San Francisco", repr(v("#wd-city")))
+        # The applicant's identity is the one thing a wrong parse may not keep.
+        check("N7 a WRONG email from the parser is corrected to the profile's",
+              v("#wd-email") == pack["email"] and ours("#wd-email"), repr(v("#wd-email")))
+        # The multi-entry sections the site built are exactly the time saved.
+        entries = page.evaluate("""() => Array.from(document.querySelectorAll('[data-automation-id="jobTitle"]')).map(e => e.value)""")
+        companies = page.evaluate("""() => Array.from(document.querySelectorAll('[data-automation-id="company"]')).map(e => e.value)""")
+        locations = page.evaluate("""() => Array.from(document.querySelectorAll('.wd-entry [data-automation-id="location"]')).map(e => e.value)""")
+        school = page.evaluate("""() => { const s = document.querySelector('[data-automation-id="school"]'); return s ? s.value : null; }""")
+        check("N8 work-history entries the site created are left alone (none added, none rewritten)",
+              entries == ["Staff Engineer", "Software Engineer"] and companies == ["Acme Robotics", "Globex"]
+              and locations == ["Austin, TX", "Denver, CO"], f"{entries} {companies} {locations}")
+        check("N9 education entry left alone", school == "UC Berkeley", repr(school))
+        # The one upload IS the resume: fed once, fetched once, not attached again.
+        check("N10 resume not attached a second time",
+              page.evaluate("() => window.__wdUploads()") == 1
+              and page.eval_on_selector("#wd-upload-file", "el => el.files.length") == 1,
+              f"uploads={page.evaluate('() => window.__wdUploads()')}")
+        check("N11 the resume document was downloaded once for both takers",
+              resume_fetches() - fetched_before == 1, f"fetches={resume_fetches() - fetched_before}")
+        overlay = page.evaluate(
+            """() => { const h = document.getElementById('hp-copilot-overlay');
+                       const b = h && h.shadowRoot && h.shadowRoot.querySelector('.body');
+                       return b ? b.textContent : ''; }""")
+        check("N12 the widget reports the resume as attached", "Resume attached" in overlay, overlay[:120])
+        check("N13 nothing was submitted", not [r for r in REQUESTS if r[1].endswith("/submit")])
+        page.close()
+
+        print("\nNative autofill — Ashby-like autofill card beside the real Resume field")
+        fetched_before = resume_fetches()
+        pack = base_pack(f"{BASE}/ashby-parse.html")
+        page, logs, reply = drive_fill_reply(ctx, f"{BASE}/ashby-parse.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        ours = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapplyFilled === 'true'")
+        na = reply.get("native_autofill") or {}
+        check("N14 native autofill used on the Ashby-like card",
+              na.get("used") is True and na.get("ats") == "ashby" and int(na.get("fields_prefilled") or 0) == 4,
+              json.dumps(na))
+        check("N15 name the parser filled is kept", v("#ash-name") == "Alexandra Nguyen" and not ours("#ash-name"),
+              repr(v("#ash-name")))
+        check("N16 the parser's SHORT company name is kept (not identity — the applicant reviews it)",
+              v("#ash-company") == "Globali20", repr(v("#ash-company")))
+        check("N17 an OLD LinkedIn URL from the parser is corrected to the profile's",
+              v("#ash-linkedin") == pack["linkedin_url"] and ours("#ash-linkedin"), repr(v("#ash-linkedin")))
+        check("N18 what the parser missed is filled by us", v("#ash-phone") == pack["phone"], repr(v("#ash-phone")))
+        check("N19 the parser card got the file once; the real Resume field is attached too",
+              page.evaluate("() => window.__ashUploads()") == 1
+              and page.eval_on_selector("#ash-autofill", "el => el.files.length") == 1
+              and page.eval_on_selector("#ash-resume", "el => el.files.length") == 1,
+              f"uploads={page.evaluate('() => window.__ashUploads()')}")
+        check("N20 one download for both uploads", resume_fetches() - fetched_before == 1,
+              f"fetches={resume_fetches() - fetched_before}")
+        page.close()
+
+        print("\nNative autofill — no widget offered: the normal path")
+        pack = base_pack(f"{BASE}/workday.html")
+        page, _, reply = drive_fill_reply(ctx, f"{BASE}/workday.html", pack)
+        na = reply.get("native_autofill") or {}
+        check("N21 a plain 'Resume/CV' upload is NOT native autofill (Workday-like page)",
+              na.get("used") is False and na.get("reason") == "no_widget" and na.get("ats") == "workday", json.dumps(na))
+        check("N22 ...and the form is filled as before",
+              page.eval_on_selector("#wd-first", "el => el.value") == pack["first_name"])
+        page.close()
+        pack = base_pack(f"{BASE}/greenhouse.html")
+        page, _, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse.html", pack)
+        na = reply.get("native_autofill") or {}
+        check("N23 a plain 'Upload resume' field on a Greenhouse-like page is NOT native autofill",
+              na.get("used") is False and na.get("reason") == "no_widget" and na.get("ats") == "greenhouse", json.dumps(na))
+        page.close()
+
+        print("\nNative autofill — switched OFF: the normal path even when a widget is offered")
+        set_native_autofill(ctx, False)
+        try:
+            pack = base_pack(f"{BASE}/workday-autofill.html")
+            page, _, reply = drive_fill_reply(ctx, f"{BASE}/workday-autofill.html", pack)
+            v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+            na = reply.get("native_autofill") or {}
+            check("N24 the switch is honoured (reason: disabled)",
+                  na.get("used") is False and na.get("reason") == "disabled", json.dumps(na))
+            check("N25 the site's autofill option was never clicked, nothing parsed",
+                  page.eval_on_selector("#wd-dropzone", "el => el.hidden")
+                  and page.evaluate("() => window.__wdParses()") == 0)
+            check("N26 our fill still lands", v("#wd-first") == pack["first_name"] and v("#wd-email") == pack["email"],
+                  f"{v('#wd-first')!r} {v('#wd-email')!r}")
+            check("N27 the only upload still receives the resume (normal attach path)",
+                  page.eval_on_selector("#wd-upload-file", "el => el.files.length") == 1)
+            page.close()
+        finally:
+            set_native_autofill(ctx, None)   # back to the default: ON
 
         ctx.close()
 

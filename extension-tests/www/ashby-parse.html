@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>AI Engineer — Ashby-style application with autofill</title>
+<style>[hidden] { display: none; }</style>
+</head>
+<body>
+  <h1>Apply — Ashby layout, native autofill</h1>
+
+  <!-- Ashby's autofill card: a SEPARATE upload above the form that reads the
+       resume and fills the fields. The application's own Resume field sits in
+       the form below and still has to be attached to. -->
+  <div class="ashby-autofill-card" id="autofill-card">
+    <label for="ash-autofill">Autofill application from resume</label>
+    <p>Upload your resume and we'll fill in the fields below for you.</p>
+    <input type="file" id="ash-autofill" name="autofill_resume">
+    <p id="ash-autofill-status" hidden>Reading your resume…</p>
+  </div>
+
+  <form id="ashby-form">
+    <label for="ash-name">Name *</label>
+    <input type="text" id="ash-name" name="_systemfield_name" required>
+
+    <label for="ash-email">Email *</label>
+    <input type="email" id="ash-email" name="_systemfield_email" required>
+
+    <label for="ash-phone">Phone</label>
+    <input type="tel" id="ash-phone" name="_systemfield_phone">
+
+    <label for="ash-linkedin">LinkedIn Profile</label>
+    <input type="text" id="ash-linkedin" name="linkedin_url">
+
+    <label for="ash-company">Current company</label>
+    <input type="text" id="ash-company" name="current_company">
+
+    <label for="ash-resume">Resume *</label>
+    <input type="file" id="ash-resume" name="_systemfield_resume" required>
+
+    <button type="submit">Submit application</button>
+  </form>
+
+  <script>
+  // The parser, simulated: ~600 ms of "Reading your resume…" (aria-busy on the
+  // form), then the fields it could read. It reads the name and email right,
+  // an OLD LinkedIn URL from the resume header (a conflict with the profile),
+  // the employer's short name (not a conflict we may correct — it is the
+  // applicant's to review), and finds no phone number at all.
+  (function () {
+    const input = document.getElementById('ash-autofill');
+    const status = document.getElementById('ash-autofill-status');
+    const form = document.getElementById('ashby-form');
+    let uploads = 0, parses = 0;
+    window.__ashUploads = () => uploads;
+    window.__ashParses = () => parses;
+    input.addEventListener('change', () => {
+      uploads++;
+      if (!input.files.length) return;
+      status.hidden = false;
+      form.setAttribute('aria-busy', 'true');
+      setTimeout(() => {
+        parses++;
+        document.getElementById('ash-name').value = 'Alexandra Nguyen';
+        document.getElementById('ash-email').value = 'alexandra.nguyen@example.com';
+        document.getElementById('ash-linkedin').value = 'https://www.linkedin.com/in/alexnguyen-old';
+        document.getElementById('ash-company').value = 'Globali20';
+        status.hidden = true;
+        form.removeAttribute('aria-busy');
+      }, 600);
+    });
+  })();
+  </script>
+</body>
+</html>

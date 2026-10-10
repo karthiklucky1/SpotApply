@@ -38,9 +38,11 @@ FUNCTIONS = [
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
     "eeoStated", "eeoCategory", "eeoPickOption", "eeoValueFor",
+    "nativeAutofillLabelMatches", "_normValue", "valuesEquivalent", "shouldOverwrite",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
-          "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE"]
+          "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE",
+          "_NATIVE_AUTOFILL_RE", "_NATIVE_AUTOFILL_IDENTITY", "NATIVE_AUTOFILL_ATS"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -375,3 +377,85 @@ def test_a_confirmed_decline_is_a_stated_answer():
 def test_the_custom_dropdown_pass_respects_the_opt_out():
     body = _function(CONTENT, "fillEEOCustomDropdowns")
     assert "_eeoAutofillEnabled" in body and "eeoStated(" in body and "eeoKindOf(" in body
+
+
+# ── the board's own autofill-from-resume goes first ─────────────────────────
+# Founder's ask (2026-10-10): some boards fill the application from the
+# uploaded resume themselves — use that whenever it is offered, then fill only
+# what it left empty or got wrong. Two pure rules carry the behaviour: which
+# wording IS such a widget (a plain "Upload resume" is not), and what may be
+# written over a value the board's parser produced.
+
+@pytest.mark.parametrize("text,want", [
+    ("Autofill with Resume", True),                                    # Workday's option
+    ("Autofill application from resume", True),                        # Ashby's card
+    ("Autofill from your resume", True),
+    ("Upload your resume and we'll autofill the form for you.", True),
+    ("We'll parse your CV to prefill the form", True),
+    ("Parse resume", True),
+    ("Résumé parsing", True),                                          # decomposed accent too
+    ("Resume * Drag and drop, or upload a file — we'll autofill the form from it.", True),
+    # Ordinary uploads, however they are worded, are NOT native autofill.
+    ("Upload resume", False), ("Resume/CV *", False), ("Attach resume/CV", False), ("Résumé *", False),
+    ("Drop your resume here or select a file", False),
+    ("Upload a resume to automatically fill in the fields below.", False),   # no fill-from verb
+    ("Cover letter", False), ("Import from LinkedIn", False),
+    # An "autofill" with no resume in the same sentence is Chrome's, or a note.
+    ("Autofill", False), ("Please fill in your resume details", False),
+    ("We'll autofill the form from it. Résumé *", False),              # sentence-bounded on purpose
+    ("", False),
+])
+def test_native_autofill_wording_is_recognised(text, want):
+    assert run_js([["nativeAutofillLabelMatches", text]])[0] is want
+
+
+@pytest.mark.parametrize("kind,current,wanted,want", [
+    # Empty: filled. Nothing to write: never.
+    ("email", "", "a@b.co", True), ("title", "", "Engineer", True), ("email", "x@y.z", "", False),
+    # Already the same thing, in the board's own formatting: kept.
+    ("email", "A@B.CO", "a@b.co", False),
+    ("phone", "(415) 555-0199", "+1 415 555 0199", False),
+    ("linkedin", "https://www.linkedin.com/in/x/", "https://linkedin.com/in/x", False),
+    ("first_name", "Alexandra", "ALEXANDRA ", False),
+    ("full_name", "Alexandra  Nguyen", "Alexandra Nguyen", False),
+    ("location", "San Francisco", "San Francisco, CA", False),          # coarser grain, same place
+    # A DIFFERENT value: corrected only for the applicant's identity.
+    ("email", "old@b.co", "a@b.co", True),
+    ("phone", "415-555-0100", "+1 415 555 0199", True),
+    ("linkedin", "linkedin.com/in/old", "https://linkedin.com/in/x", True),
+    ("last_name", "Nguyen-Smith", "Nguyen", True),
+    ("location", "Austin, TX", "San Francisco, CA", True),
+    # ...never for what the parser read elsewhere — the applicant reviews it.
+    ("company", "Globali20", "Globali20 India", False),
+    ("title", "Staff Engineer", "ML Engineer", False),
+    (None, "Acme", "Beta", False),
+])
+def test_only_empty_or_conflicting_identity_is_written_over_the_boards_autofill(kind, current, wanted, want):
+    assert run_js([["shouldOverwrite", kind, current, wanted]])[0] is want
+
+
+def test_native_autofill_runs_first_only_on_trusted_boards_and_never_submits():
+    step = _function(CONTENT, "runCopilotStep")
+    assert step.index("runNativeAutofill(") < step.index("fillCurrentPage("), "the board's autofill must run BEFORE our fill"
+    run = _function(CONTENT, "runNativeAutofill")
+    assert "_nativeAutofillEnabled" in run and "NATIVE_AUTOFILL_ATS.has(" in run, "kill switch + per-board gate"
+    assert run.index("_nativeAutofillEnabled") < run.index("detectNativeAutofill("), "a disabled switch means no detection at all"
+    # The only thing it ever clicks is the autofill option it detected.
+    assert re.findall(r"_pressElement\(([^)]*)\)", run) == ["widget.element"]
+    detect = _function(CONTENT, "detectNativeAutofill")
+    assert "submit" not in detect.lower() and "next" not in detect.lower()
+    # The one source of the rule, at every writer that could meet a parsed value.
+    assert "shouldOverwrite(" in _function(CONTENT, "fillInput")
+    assert "shouldOverwrite('phone'" in _function(CONTENT, "fillPhoneField")
+    assert "_nativePrefillActive" in _function(CONTENT, "fillWorkdayExperienceAndEducation"), \
+        "history sections the board built must be left alone"
+    assert "detectNativeAutofill(" in _function(CONTENT, "findAndClickApply"), "the chooser prefers the board's autofill option"
+    assert "native_autofill" in _function(CONTENT, "summarizeStep"), "the DO_FILL reply carries the outcome"
+    assert run_js([["(() => [...NATIVE_AUTOFILL_ATS].sort())"]])[0] == ["ashby", "greenhouse", "lever", "smartrecruiters", "workday"]
+
+
+def test_the_native_autofill_switch_defaults_on():
+    # An absent key is ON (installs predating the setting), an explicit false is OFF.
+    assert "chrome.storage.local.get(['spotapply_native_autofill']" in CONTENT
+    assert "!(d && d.spotapply_native_autofill === false)" in CONTENT
+    assert "changes.spotapply_native_autofill.newValue !== false" in CONTENT

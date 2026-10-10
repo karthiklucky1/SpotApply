@@ -120,6 +120,24 @@ try {
   });
 } catch (_) {}
 
+// ── Native autofill switch ───────────────────────────────────────────────────
+// Some boards parse the uploaded resume themselves ("Autofill with Resume" on
+// Workday, Ashby's autofill card, Lever's parsing upload). When one is offered
+// we feed it the resume FIRST and only fill what it left empty or got wrong
+// (see runNativeAutofill). ON unless the user switched it off: an absent key
+// is ON, so an install predating the setting behaves the same as a new one.
+let _nativeAutofillEnabled = true;
+try {
+  chrome.storage.local.get(['spotapply_native_autofill'], (d) => {
+    _nativeAutofillEnabled = !(d && d.spotapply_native_autofill === false);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.spotapply_native_autofill) {
+      _nativeAutofillEnabled = changes.spotapply_native_autofill.newValue !== false;
+    }
+  });
+} catch (_) {}
+
 // Protected self-identification questions, by their wording. Used at every
 // write path that is not fillEEOField itself — saved-answer recall, dropdown
 // learning, AI answers — so the opt-out cannot be bypassed by a remembered
@@ -451,6 +469,16 @@ function fillPhoneField(el, raw) {
   if (!want) return false;
   const wantDigits = want.replace(/\D/g, '').slice(-10);   // national significant digits
   if (!wantDigits) return false;
+
+  // After the board's own resume autofill, its formatting of the SAME number
+  // stands ("(415) 555-0199" for "+1 415 555 0199"); only a different number
+  // is corrected — the number is the applicant's, so a wrong parse is not.
+  _lastWriteKept = false;
+  if (_nativePrefillActive && String(el.value || '').trim() &&
+      !shouldOverwrite('phone', el.value, want)) {
+    _lastWriteKept = true;
+    return true;
+  }
 
   const beforeCountry = intlTelCountry(el);
   // Verify by DIGITS, never by string equality: every phone widget reformats
@@ -1047,6 +1075,7 @@ document.addEventListener('click', (e) => {
       console.log('[SpotApply] User clicked next/continue button — clearing overlay and scheduling check');
       removeOverlay();
       _resumeAttachedOnPage = null; // reset for next page
+      _nativeAutofillOnPage = null; // the next step may offer its own autofill
       if (_resumeStatus && _resumeStatus.state !== 'error') _resumeStatus = null;
       
       // Force a check after 2 seconds to see if we transitioned to a new step
@@ -1233,6 +1262,7 @@ function fillInput(el, value) {
     return false;
   }
   _lastWriteSkippedEmpty = false;
+  _lastWriteKept = false;
 
   // Never treat a file input as a text field. Browsers forbid setting .value on
   // <input type="file"> (it throws "accepts a filename"), and the resume is
@@ -1251,6 +1281,20 @@ function fillInput(el, value) {
   // Guard: only operate on actual form elements — prevents "Illegal invocation"
   // when called on DIVs/spans (e.g. Workday data-automation-id containers)
   const tag = el.tagName;
+  // After the board's own resume autofill, what it wrote is kept unless it is
+  // the applicant's identity and wrong: the pack is their canonical data, but
+  // a company, a title or a history entry the parser read is theirs to review
+  // (shouldOverwrite). Without the parser having run this changes nothing.
+  if (_nativePrefillActive && (tag === "INPUT" || tag === "TEXTAREA")) {
+    const current = String(el.value || "");
+    if (current.trim()) {
+      const kind = identityKindOf(el);
+      if (!shouldOverwrite(kind, current, _s)) {
+        _lastWriteKept = true;
+        return valuesEquivalent(kind, current, _s);   // true: it already says this
+      }
+    }
+  }
   if (tag === "BUTTON") {
     const isWorkday = hostIs(window.location.hostname, 'workday.com') || hostIs(window.location.hostname, 'myworkdayjobs.com');
     const isSelectBtn = el.getAttribute('data-automation-id') === 'select-button' || el.getAttribute('aria-haspopup') === 'listbox';
@@ -1605,8 +1649,10 @@ async function fillGreenhouse(pack) {
     const lbl = labelText(inp);
     if (!lbl) continue;
 
-    // Skip already-filled fixed fields
-    if (inp.value && inp.value.trim()) continue;
+    // Skip already-filled fixed fields — unless the board's own resume
+    // autofill wrote them and they are identity fields, which fillInput then
+    // checks against the pack (a wrong parse of the applicant's own details).
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
 
     if (/first.?name|given.?name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
@@ -1985,7 +2031,18 @@ async function fillWorkdayDateWidget(container, side, info) {
 
 async function fillWorkdayExperienceAndEducation(pack) {
   // ── Work Experience ──
-  if (pack.work_experience && pack.work_experience.length > 0) {
+  // After the board's own resume autofill, the entries it created are its
+  // work: this filler cannot merge into a multi-entry section it did not build
+  // (it would add duplicates and overwrite parsed dates), so a section that
+  // already holds entries is left exactly as parsed — that is the time saved.
+  const keepParsed = (what, sel) => {
+    if (!_nativePrefillActive || !document.querySelector(sel)) return false;
+    console.log(`[SpotApply] Keeping the ${what} entries the site filled from your resume`);
+    return true;
+  };
+
+  if (pack.work_experience && pack.work_experience.length > 0 &&
+      !keepParsed('work experience', 'input[data-automation-id="jobTitle"], input[id*="jobTitle" i]')) {
     // Find the Work Experience section or default to body
     const workSection = document.querySelector('[data-automation-id="workExperienceSection"]') || document.body;
     
@@ -2122,7 +2179,8 @@ async function fillWorkdayExperienceAndEducation(pack) {
   }
 
   // ── Education ──
-  if (pack.education && pack.education.length > 0) {
+  if (pack.education && pack.education.length > 0 &&
+      !keepParsed('education', 'input[data-automation-id="school"], input[data-automation-id="institution"], input[id*="school" i], input[id*="institution" i]')) {
     const eduSection = document.querySelector('[data-automation-id="educationSection"]') || document.body;
     
     let addBtn = eduSection.querySelector('button[data-automation-id="Add"], button[data-automation-id="education-add"]');
@@ -2245,7 +2303,7 @@ async function fillWorkday(pack) {
       ? container
       : container.querySelector('input, textarea, select');
     if (!el) continue;
-    if (el.value && el.value.trim() && el.tagName !== 'SELECT') continue;
+    if (el.value && el.value.trim() && el.tagName !== 'SELECT' && !nativeMayCorrect(el)) continue;
 
     // ── Name ──
     if (/firstName|legalFirstName|legalNameSection_firstName/i.test(aid)) fillInput(el, pack.first_name);
@@ -2275,7 +2333,7 @@ async function fillWorkday(pack) {
 
   // aria-label fallback (only for fields not already filled)
   for (const inp of document.querySelectorAll("input[aria-label], textarea[aria-label]")) {
-    if (inp.value && inp.value.trim()) continue;
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
     const lbl = (inp.getAttribute("aria-label") || "").toLowerCase();
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
@@ -2308,7 +2366,7 @@ async function fillAvature(pack) {
     "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']), textarea"
   );
   for (const inp of inputs) {
-    if (inp.value && inp.value.trim()) continue;
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
     const ctx = (
       labelText(inp) + " " +
       (inp.getAttribute("name") || "") + " " +
@@ -2448,7 +2506,9 @@ async function fillUniversal(pack) {
       const txt = inp.textContent ? inp.textContent.trim() : '';
       if (txt && !/select\b|choose\b|^-$|select\s+option/i.test(txt)) continue; // already filled
     } else {
-      if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT') continue; // already filled
+      // Already filled — unless the board's own resume autofill wrote an
+      // identity field, which fillInput then checks against the pack.
+      if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT' && !nativeMayCorrect(inp)) continue;
     }
 
     // Gather ALL signals into one text blob for matching
@@ -2597,6 +2657,9 @@ async function fillUniversal(pack) {
       } else if (_lastWriteSkippedEmpty) {
         // Matched a rule, but the profile has nothing for it. Expected, quiet.
         console.debug('[SpotApply] No profile value for:', signals.slice(0, 60));
+      } else if (_lastWriteKept) {
+        // The board's own resume autofill already filled it. Expected, quiet.
+        console.debug('[SpotApply] Kept the value the site filled from the resume:', signals.slice(0, 60));
       } else {
         attempted++;
         console.warn('[SpotApply] Matched but nothing landed:', signals.slice(0, 60));
@@ -2930,36 +2993,22 @@ async function attachResume(root, pack) {
   const allFileInputs = queryAllDeep('input[type="file"]', root);
   if (!allFileInputs.length) return false; // form may render the field later
 
-  // The "field-sized" container around a file input: the nearest ancestor small
-  // enough to plausibly be this one field's wrapper. Checking the old broad
-  // closest('div,section,fieldset') matched page-level wrappers, so a Remove
-  // button on an unrelated field (education entry, cover letter) marked the
-  // resume as already-uploaded and it was silently skipped forever.
-  const fieldScope = (fi) => {
-    let n = fi.parentElement, best = fi.parentElement, depth = 0;
-    while (n && depth < 6) {
-      const len = (n.textContent || '').length;
-      if (len > 600) break;
-      best = n;
-      n = n.parentElement; depth++;
-    }
-    return best;
-  };
-
-  const hasUploadedMarker = (fi) => {
-    const c = fieldScope(fi);
-    return !!(c && (
-      c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
-      /successfully uploaded/i.test(c.textContent || '')
-    ));
-  };
+  // Field scope and upload markers are shared with the native autofill layer
+  // (module-level helpers below); the names here are the ones this function
+  // has always used.
+  const hasUploadedMarker = _hasUploadedMarker;
   const isUploaded = (fi) => (fi.files && fi.files.length) || hasUploadedMarker(fi);
 
-  // "Autofill from resume" widgets are a TRAP. Ashby (and others) put an
-  // optional parser upload next to the real Resume field; its container also
-  // says "resume", so it matched, we attached to both, and the parser then
-  // re-read the .docx and OVERWROTE the identity we had just filled — same
-  // form, two runs, two different applicants. Never feed the parser.
+  // "Autofill from resume" widgets were a TRAP for THIS path. Ashby (and
+  // others) put an optional parser upload next to the real Resume field; its
+  // container also says "resume", so it matched, we attached to both AFTER
+  // filling, and the parser then re-read the .docx and OVERWROTE the identity
+  // we had just written — same form, two runs, two different applicants.
+  // runNativeAutofill now feeds such a widget FIRST (before any field is
+  // written) and the fill afterwards corrects it; by the time this function
+  // runs, a widget it used already holds the file and is skipped as uploaded.
+  // The penalty below is for the fallback: native autofill off, or a board
+  // the native layer does not trust yet — then the parser stays a poor choice.
   const isParserWidget = (fi) => {
     const scope = fi.closest('div, section, fieldset, form');
     const text = ((labelText(fi) || '') + ' ' + (fi.getAttribute('aria-label') || '') + ' ' +
@@ -2978,9 +3027,7 @@ async function attachResume(root, pack) {
   // generic name and a wrapper div with no "Resume" text — so it matched none
   // of the resume tests, candidates came back empty, and the required upload
   // never happened with no log line either way.
-  const resumeCtx = (fi) => (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
-                             (fi.getAttribute("aria-label") || "") + " " +
-                             (fi.getAttribute("data-automation-id") || "")).toLowerCase();
+  const resumeCtx = _resumeCtx;
 
   // Walk several ancestors, not just the immediate div — the "Resume *" label
   // usually sits a couple of levels above the input inside a dropzone.
@@ -3043,47 +3090,28 @@ async function attachResume(root, pack) {
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);
 
-  const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume`,
-    "GET", pack.auth_token, null
-  );
-  if (!res.ok || !res.data || !res.data.base64) {
+  // ONE download per application, shared with the native autofill layer: the
+  // same base64 document goes into whichever control takes it.
+  const got = await fetchResumeFile(pack);
+  if (!got.ok) {
+    if (got.reason === 'decode_failed') {
+      console.warn("[SpotApply] resume decode failed:", got.error);
+      reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
+      return false;
+    }
     // Surface WHY to the user — a silent console.warn here was the main way
     // "resume is not uploading" reports happened with no visible explanation.
-    const status = res.status || 0;
-    let reason, hint;
-    if (status === 401) {
-      reason = 'auth_expired';
-      hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
-    } else if (status === 422) {
-      // Not transient — the server is telling us exactly what the profile is
-      // missing. Show that instead of retrying into the void, and stop trying.
-      reason = 'profile_incomplete';
-      hint = (res.data && res.data.detail) ||
-             "Your profile is missing information needed to build a resume.";
-      _resumeBlockedReason = hint;
-    } else if (status === 503) {
-      reason = 'tailoring_failed';
-      hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
-    } else {
-      reason = 'fetch_failed';
-      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
-    }
-    console.warn("[SpotApply] resume fetch failed:", status, res.error || '');
-    setResumeStatus('error', '', '', hint);
+    console.warn("[SpotApply] resume fetch failed:", got.status, got.error || '');
+    setResumeStatus('error', '', '', got.hint);
     showOverlay(
-      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
+      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${got.hint}</small>`,
       [], true
     );
-    reportTelemetry(pack, 'resume_attach_failed', { reason, status });
+    reportTelemetry(pack, 'resume_attach_failed', { reason: got.reason, status: got.status });
     return false;
   }
 
-  const { filename, mime, base64 } = res.data;
-  const kind = res.data.tailored === false ? "original" : "tailored";
-  // The server substituted the base résumé (tailoring limit, a withheld
-  // draft): say so instead of attaching it silently.
-  const notice = res.data.notice ? String(res.data.notice) : '';
+  const { filename, mime, kind, notice, file } = got;
   if (document.body.innerText.includes(filename)) {
     setResumeStatus('accepted', filename, kind, notice);
     return true; // already on the page
@@ -3103,31 +3131,10 @@ async function attachResume(root, pack) {
   }
   targets = targets.filter((fi) => fileMatchesAccept(fi, filename, mime));
 
-  let file;
-  try {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    file = new File([bytes], filename, { type: mime });
-  } catch (e) {
-    console.warn("[SpotApply] resume decode failed:", e.message);
-    reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
-    return false;
-  }
-
   let domSet = false;
   for (const fi of targets) {
     if (fi.dataset.spotapplyUserModified === 'true') continue;   // the user's own file
-    try {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fi.files = dt.files;
-      fi.dispatchEvent(new Event("input", { bubbles: true }));
-      fi.dispatchEvent(new Event("change", { bubbles: true }));
-      if (fi.files && fi.files.length) domSet = true;
-    } catch (e) {
-      console.warn("[SpotApply] Could not set file input:", e.message);
-    }
+    if (setFileOnInput(fi, file)) domSet = true;
   }
   if (!domSet) {
     setResumeStatus('failed', filename, kind, '');
@@ -3202,6 +3209,579 @@ function showResumeHint(filename) {
   );
 }
 
+// ── Resume document: one download, two takers ───────────────────────────────
+// attachResume and runNativeAutofill put the SAME file into different
+// controls, so the download and the decode live here and the result is kept
+// for the application: the second taker never re-fetches, and a failure is
+// explained once, by attachResume, which owns the user-facing messages.
+let _resumeFileCache = null;
+
+/**
+ * The applicant's resume for this application as a File, or why not:
+ * { ok, filename, mime, kind, notice, file } / { ok: false, status, reason, hint, error }.
+ */
+async function fetchResumeFile(pack) {
+  const appId = pack && pack.app_id;
+  if (_resumeFileCache && _resumeFileCache.ok && _resumeFileCache.app_id === appId) return _resumeFileCache;
+  const res = await apiFetch(
+    `${packBase(pack)}/api/fill-pack/${appId}/resume`,
+    "GET", pack.auth_token, null
+  );
+  if (!res.ok || !res.data || !res.data.base64) {
+    const status = res.status || 0;
+    let reason, hint;
+    if (status === 401) {
+      reason = 'auth_expired';
+      hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
+    } else if (status === 422) {
+      // Not transient — the server is telling us exactly what the profile is
+      // missing. Show that instead of retrying into the void, and stop trying.
+      reason = 'profile_incomplete';
+      hint = (res.data && res.data.detail) ||
+             "Your profile is missing information needed to build a resume.";
+      _resumeBlockedReason = hint;
+    } else if (status === 503) {
+      reason = 'tailoring_failed';
+      hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
+    } else {
+      reason = 'fetch_failed';
+      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
+    }
+    return { ok: false, status, reason, hint, error: res.error || '' };
+  }
+  const { filename, mime, base64 } = res.data;
+  const kind = res.data.tailored === false ? "original" : "tailored";
+  // The server substituted the base resume (tailoring limit, a withheld
+  // draft): say so instead of attaching it silently.
+  const notice = res.data.notice ? String(res.data.notice) : '';
+  let file;
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    file = new File([bytes], filename, { type: mime });
+  } catch (e) {
+    return { ok: false, status: res.status || 200, reason: 'decode_failed', hint: '', error: e.message };
+  }
+  _resumeFileCache = { ok: true, app_id: appId, filename, mime, kind, notice, file };
+  return _resumeFileCache;
+}
+
+/** Put a File into a file input the way a user's pick would arrive: the files
+ *  list, then input + change so the site's uploader notices. True if it took. */
+function setFileOnInput(fi, file) {
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fi.files = dt.files;
+    fi.dispatchEvent(new Event("input", { bubbles: true }));
+    fi.dispatchEvent(new Event("change", { bubbles: true }));
+    return !!(fi.files && fi.files.length);
+  } catch (e) {
+    console.warn("[SpotApply] Could not set file input:", e.message);
+    return false;
+  }
+}
+
+// The "field-sized" container around a control: the nearest ancestor small
+// enough to plausibly be this one field's wrapper. The old broad
+// closest('div,section,fieldset') matched page-level wrappers, so a Remove
+// button on an unrelated field (education entry, cover letter) marked the
+// resume as already-uploaded and it was silently skipped forever. A wider
+// block holding a SECOND file input is another field's, so the walk stops.
+function _fileFieldScope(el) {
+  let n = el.parentElement, best = el.parentElement, depth = 0;
+  while (n && depth < 6) {
+    if ((n.textContent || '').length > 600) break;
+    if (depth > 0 && n.querySelectorAll('input[type="file"]').length > 1) break;
+    best = n;
+    n = n.parentElement; depth++;
+  }
+  return best;
+}
+
+/** Has the site's uploader acknowledged a file in this field (a Remove/Delete
+ *  control or a success note beside it)? */
+function _hasUploadedMarker(fi) {
+  const c = _fileFieldScope(fi);
+  return !!(c && (
+    c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
+    /successfully uploaded/i.test(c.textContent || '')
+  ));
+}
+
+/** Everything a file input is named by — label, name, id, aria, automation id. */
+function _resumeCtx(fi) {
+  return (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
+          (fi.getAttribute("aria-label") || "") + " " +
+          (fi.getAttribute("data-automation-id") || "")).toLowerCase();
+}
+
+// ── Native autofill: the board's own "autofill from resume" goes first ───────
+// Several boards parse the uploaded resume and fill the application
+// themselves: Workday's "Autofill with Resume", Ashby's autofill card,
+// SmartRecruiters' "Autofill from resume", Lever's parsing upload, newer
+// Greenhouse forms. Where one is offered it is used FIRST — it builds the
+// multi-entry history sections this filler cannot — and only once it has
+// settled does fillCurrentPage fill what it left empty or got wrong. Feeding
+// such a widget AFTER our fill was the Ashby incident (the parser rewrote the
+// identity we had just written), so this layer owns the ordering.
+//
+// Nothing here submits or advances a page: the human reviews and clicks.
+//
+// Boards whose native autofill is trusted. A board not listed takes the normal
+// path even when its page says "autofill": the label matcher below is
+// deliberately permissive, this gate is not.
+const NATIVE_AUTOFILL_ATS = new Set(['workday', 'greenhouse', 'lever', 'ashby', 'smartrecruiters']);
+
+// A control is native autofill only when its wording ties a resume/CV to the
+// act of filling or parsing — "Autofill with Resume", "Upload your resume to
+// prefill the form", "we'll parse your CV". A plain "Upload resume", "Attach
+// resume/CV" or "Resume/CV *" is an ordinary upload and never matches, nor
+// does an "autofill" with no resume in the same sentence (Chrome's own, a
+// footnote). One line: tests/test_extension_rules.py extracts it by statement.
+const _NATIVE_AUTOFILL_RE = /\b(?:auto-?fill|pre-?fill|pre-?populate|populate|pars(?:e|es|ed|ing)|fill(?:\s+(?:it|this|the\s+form|in|out))*\s+(?:from|with|using))\w*\b[^.!?]{0,80}?\b(?:resume|cv|curriculum vitae)\b|\b(?:resume|cv|curriculum vitae)\b[^.!?]{0,80}?\b(?:auto-?fill|pre-?fill|pre-?populate|populate|pars(?:e|es|ed|ing)|fill(?:\s+(?:it|this|the\s+form|in|out))*\s+(?:from|with|using))/i;
+
+// The applicant's own details: the ONE class of field a wrong parse may be
+// corrected in, because the pack is their canonical data. Everything else the
+// parser read (company, title, dates, history entries) is theirs to review.
+const _NATIVE_AUTOFILL_IDENTITY = new Set(['first_name', 'last_name', 'full_name', 'email', 'phone', 'linkedin', 'location']);
+
+// How long the board gets to parse: quiet for `quietMs` with no spinner, at
+// least `minMs` in all (an upload round-trip precedes any parsing, and a form
+// that has not changed yet is not a form that is done), never past `maxMs`.
+const _NATIVE_SETTLE = { quietMs: 1500, minMs: 2500, maxMs: 20000 };
+
+let _nativeAutofillOnPage = null;    // location.href the layer already ran on
+let _nativeAutofillOutcome = null;   // what happened on this page (reply + telemetry)
+let _nativePrefillActive = false;    // the board filled from the resume: fill only empty/conflicting
+let _nativeChooserPending = null;    // { ats, ts } after we clicked a chooser option
+
+/** True when the wording offers to fill or parse the application FROM a resume. */
+function nativeAutofillLabelMatches(text) {
+  const t = deaccent(String(text || '')).replace(/\s+/g, ' ').trim();
+  return !!t && _NATIVE_AUTOFILL_RE.test(t);
+}
+
+/** One comparable form of a value, by the kind of field that holds it. */
+function _normValue(kind, v) {
+  const s = deaccent(String(v == null ? '' : v)).toLowerCase().trim();
+  if (kind === 'phone') {
+    const d = s.replace(/\D/g, '');
+    // A national number and the same number with its +1 are one number.
+    return d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  }
+  if (kind === 'email') return s;
+  if (kind === 'linkedin' || kind === 'url') {
+    return s.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+  }
+  return s.replace(/[^\p{L}\p{N}@+.]+/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Do two values say the same thing, allowing for formatting? A location is
+ *  the same place at a coarser grain too: a City field the board filled with
+ *  "San Francisco" is not in conflict with the pack's "San Francisco, CA". */
+function valuesEquivalent(kind, a, b) {
+  const x = _normValue(kind, a), y = _normValue(kind, b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (kind === 'location') return (' ' + x + ' ').includes(' ' + y + ' ') || (' ' + y + ' ').includes(' ' + x + ' ');
+  return false;
+}
+
+/**
+ * After the board's own autofill: write `wanted` over `current`? An empty
+ * field is filled; one that already says the same thing is kept, in the
+ * board's own formatting; a DIFFERENT value is corrected only when the field
+ * is the applicant's identity (_NATIVE_AUTOFILL_IDENTITY) — a wrong parse of
+ * their own email is wrong, a parsed company is theirs to review.
+ */
+function shouldOverwrite(kind, current, wanted) {
+  const want = String(wanted == null ? '' : wanted).trim();
+  if (!want) return false;
+  const cur = String(current == null ? '' : current).trim();
+  if (!cur) return true;
+  if (valuesEquivalent(kind, cur, want)) return false;
+  return _NATIVE_AUTOFILL_IDENTITY.has(String(kind || ''));
+}
+
+/**
+ * Which of the applicant's own details a field holds — first_name, last_name,
+ * full_name, email, phone, linkedin, location — or null for anything else. A
+ * field inside a work-history or education entry is never identity: that
+ * entry's "Location" is the job's, and the entry is the parser's work.
+ */
+function identityKindOf(el) {
+  if (!el || !el.getAttribute) return null;
+  try {
+    if (el.closest('[data-automation-id*="workExperience" i], [data-automation-id*="education" i], ' +
+                   '[data-automation-id*="-item" i], [class*="experience" i], [class*="education" i], ' +
+                   '[class*="work-history" i], [class*="employment" i]')) return null;
+  } catch (_) {}
+  const type = String(el.getAttribute('type') || '').toLowerCase();
+  if (type === 'email') return 'email';
+  if (type === 'tel') return 'phone';
+  // Ids and automation ids join words with "_" and "-", which \b treats as
+  // word characters: "addressSection_city" must still read as "city".
+  const sig = [labelText(el), el.getAttribute('aria-label'), el.getAttribute('name'), el.id,
+               el.getAttribute('data-automation-id'), el.getAttribute('placeholder'),
+               el.getAttribute('autocomplete')]
+    .filter(Boolean).join(' ').toLowerCase().replace(/[_\-]+/g, ' ');
+  if (!sig.trim()) return null;
+  if (/first.?name|legal.?first|given.?name|forename|\bfname\b/.test(sig)) return 'first_name';
+  if (/last.?name|legal.?last|family.?name|surname|\blname\b/.test(sig)) return 'last_name';
+  if (/full.?name|candidate.?name|legal.?name|(^|[\s|])name([\s*|]|$)/.test(sig)) return 'full_name';
+  if (/\bemail\b|\be[\s-]?mail\b/.test(sig) && !/confirm|verify|re.?enter/.test(sig)) return 'email';
+  if (/\bphone\b|\bmobile\b|\btelephone\b|\btel\b/.test(sig) && !/extension|\bext\b|device|type|code/.test(sig)) return 'phone';
+  if (/linkedin/.test(sig)) return 'linkedin';
+  if (/\bcity\b|\btown\b|\blocation\b|where.*(based|live)|\baddress\b|\bstate\b|\bprovince\b|postal|\bzip\b/.test(sig)) return 'location';
+  return null;
+}
+
+/** May a non-empty field be re-checked against the pack? Only after the
+ *  board's own autofill, and only an identity field (fillInput then decides). */
+function nativeMayCorrect(el) {
+  return _nativePrefillActive && identityKindOf(el) !== null;
+}
+
+/** Which board renders this page, for the native-autofill gate: by host, else
+ *  by the vendor's own markup (custom career domains), else 'generic'. */
+function nativeAutofillAts() {
+  const h = location.hostname;
+  if (hostIs(h, 'myworkdayjobs.com') || hostIs(h, 'workday.com') || hostIs(h, 'myworkdaysite.com')) return 'workday';
+  if (hostIs(h, 'greenhouse.io')) return 'greenhouse';
+  if (hostIs(h, 'lever.co')) return 'lever';
+  if (hostIs(h, 'ashbyhq.com')) return 'ashby';
+  if (hostIs(h, 'smartrecruiters.com')) return 'smartrecruiters';
+  const has = (sel) => { try { return !!document.querySelector(sel); } catch (_) { return false; } };
+  if (has('[data-automation-id="legalNameSection"], [data-automation-id="autofillWithResume"], ' +
+          '[data-automation-id="bottom-navigation-next-button"], [data-automation-id="file-upload-input-ref"]')) return 'workday';
+  if (has('input[name^="_systemfield_"], [data-ashby-id], [class*="ashby-" i]')) return 'ashby';
+  if (has('form#application_form, input[name^="job_application["], iframe[src*="greenhouse.io"]')) return 'greenhouse';
+  if (has('input[name="urls[LinkedIn]"], form.application-form input[name="resume"]')) return 'lever';
+  return 'generic';
+}
+
+/** Is the element, or the field around it, drawn on the page? A file input is
+ *  usually visually hidden behind a styled button, so its surroundings decide. */
+function _renderedNear(el) {
+  if (!el) return false;
+  try {
+    if (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length)) return true;
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      if (node.getClientRects && node.getClientRects().length) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** The wording a file input is presented with: its own label and attributes
+ *  plus the field-sized block around it — never the whole form, whose other
+ *  fields would bleed into the match. */
+function _nativeWidgetText(fi) {
+  const parts = [labelText(fi), fi.getAttribute('aria-label'), fi.getAttribute('title'),
+                 fi.getAttribute('placeholder'), fi.name, fi.id];
+  const scope = _fileFieldScope(fi);
+  if (scope) parts.push((scope.textContent || '').slice(0, 600));
+  return parts.filter(Boolean).join(' ');
+}
+
+/**
+ * The board's own autofill-from-resume control on this page, or null:
+ * { ats, kind: 'input' | 'button', element, input, via }.
+ *   input  — a file input whose wording (or vendor attribute) says the upload
+ *            fills the application; the resume goes straight into it.
+ *   button — an option that reveals the upload (Workday's "Autofill with
+ *            Resume"); `input` is a file input already beside it, if any.
+ * Stable vendor attributes decide first, then visible wording near a file
+ * input or on a button (nativeAutofillLabelMatches). A plain resume upload
+ * with no such wording is NOT native autofill — attachResume owns those.
+ */
+function detectNativeAutofill() {
+  const ats = nativeAutofillAts();
+  const ours = (el) => { try { return !!el.closest('[id^="hp-"], [id^="spotapply-"]'); } catch (_) { return false; } };
+  const fileInputs = queryAllDeep('input[type="file"]').filter((fi) =>
+    !ours(fi) && !(fi.files && fi.files.length) && fi.dataset.spotapplyNativeTried !== 'true');
+  const asInput = (fi, via) => ({ ats, kind: 'input', element: fi, input: fi, via });
+  // The option that reveals or starts the flow: vendor attribute first, then
+  // wording on a button or link (a chooser option, not a paragraph).
+  const findButton = () => {
+    const byAttr = queryAllDeep(
+      '[data-automation-id="autofillWithResume"], #resume_autofill, [data-autofill-resume], ' +
+      'button[data-testid*="autofill" i], button[name*="autofill" i]'
+    ).find((el) => !ours(el) && _renderedNear(el) && !(el.tagName === 'INPUT' && el.type === 'file'));
+    if (byAttr) return byAttr;
+    return queryAllDeep('button, a, [role="button"]').find((el) => {
+      if (ours(el) || !_renderedNear(el) || el.tagName === 'INPUT' || el.closest('label')) return false;
+      const text = (el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '');
+      return text.trim().length <= 80 && nativeAutofillLabelMatches(text);
+    }) || null;
+  };
+  // An upload that is not displayed yet is reached through the option that
+  // reveals it, when there is one — that click is what a user does, and some
+  // widgets only start parsing once their flow was chosen (Workday).
+  const viaButtonIfHidden = (fi, via) => {
+    if (fi.offsetParent !== null) return asInput(fi, via);
+    const btn = findButton();
+    return btn ? { ats, kind: 'button', element: btn, input: fi, via } : asInput(fi, via);
+  };
+  const withNearbyInput = (el) => {
+    // A file input the option controls, or one inside its own block, is the
+    // upload it would reveal — set directly if the click does not show it.
+    let input = null;
+    try {
+      const controls = el.getAttribute('aria-controls');
+      const target = controls && document.getElementById(controls);
+      if (target) input = target.matches('input[type="file"]') ? target : target.querySelector('input[type="file"]');
+      if (!input) {
+        const scope = _fileFieldScope(el);
+        input = (scope && Array.from(scope.querySelectorAll('input[type="file"]'))
+          .find((f) => !(f.files && f.files.length))) || null;
+      }
+    } catch (_) {}
+    return { ats, kind: 'button', element: el, input, via: 'label' };
+  };
+
+  // 0. A chooser option we clicked moments ago (Workday): the upload that
+  //    followed IS the autofill upload, whatever the page around it says.
+  if (_nativeChooserPending && Date.now() - _nativeChooserPending.ts < 120000) {
+    const fi = fileInputs.find(_renderedNear);
+    if (fi) return asInput(fi, 'chooser');
+  }
+
+  // 1. Vendor attributes.
+  const attrInput = fileInputs.find((fi) => /autofill|auto-fill|prefill|pre-fill|parse/i.test(
+    [fi.name, fi.id, fi.getAttribute('data-automation-id'), fi.getAttribute('data-testid'),
+     fi.getAttribute('aria-label')].filter(Boolean).join(' ')));
+  if (attrInput) return viaButtonIfHidden(attrInput, 'attribute');
+  if (ats === 'lever') {
+    // Lever parses whatever lands in its resume field and fills the form from
+    // it: the upload IS the autofill, so it goes in before any field is written.
+    const fi = fileInputs.find((f) => f.name === 'resume' && _renderedNear(f));
+    if (fi) return asInput(fi, 'attribute');
+  }
+
+  // 2. Wording near a file input.
+  for (const fi of fileInputs) {
+    if (!_renderedNear(fi)) continue;
+    if (_OTHER_DOC_RE.test(_resumeCtx(fi))) continue;
+    if (nativeAutofillLabelMatches(_nativeWidgetText(fi))) return viaButtonIfHidden(fi, 'label');
+  }
+
+  // 3. The option alone (a chooser with no upload on this page yet).
+  const btn = findButton();
+  if (btn) return withNearbyInput(btn);
+  return null;
+}
+
+/** A click a React/Workday button recognises: pointer events, then click(). */
+function _pressElement(el) {
+  try { if (el.focus) el.focus(); } catch (_) {}
+  for (const type of ['mousedown', 'mouseup']) {
+    try { el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+  }
+  try { el.click(); } catch (_) {}
+}
+
+/** After clicking an autofill option: the file input it revealed — new on the
+ *  page, or newly drawn — within `maxMs`; a known hidden one after a grace
+ *  (a hidden input still takes a file; the click may only have styled it). */
+async function _waitForRevealedFileInput(before, wasShown, known, maxMs) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    await delay(200);
+    const now = queryAllDeep('input[type="file"]').filter((fi) => !(fi.files && fi.files.length));
+    const fresh = now.find((fi) => !before.has(fi) && _renderedNear(fi));
+    if (fresh) return fresh;
+    const shown = now.find((fi) => before.has(fi) && !wasShown.get(fi) && fi.offsetParent !== null);
+    if (shown) return shown;
+    if (known && Date.now() - start >= 1500 && document.contains(known)) return known;
+  }
+  return null;
+}
+
+/** Values of every text-like control, to measure what the site's autofill wrote. */
+function _fieldValueSnapshot() {
+  const m = new Map();
+  for (const el of queryAllDeep('input, textarea, select')) {
+    if (['file', 'hidden', 'submit', 'button', 'checkbox', 'radio', 'image'].includes(el.type)) continue;
+    m.set(el, String(el.value || '').trim());
+  }
+  return m;
+}
+
+/** Controls empty (or absent) before and holding a value now. */
+function _countPrefilled(before) {
+  let n = 0;
+  for (const [el, v] of _fieldValueSnapshot()) if (v && !(before.get(el) || '')) n++;
+  return n;
+}
+
+/** Everything a parser could change, as one string: values, files, checks. */
+function _formStateSignature() {
+  const parts = [];
+  for (const el of queryAllDeep('input, textarea, select')) {
+    if (el.type === 'file') parts.push('f' + (el.files ? el.files.length : 0));
+    else if (el.type === 'checkbox' || el.type === 'radio') parts.push(el.checked ? '1' : '0');
+    else parts.push(String(el.value || ''));
+  }
+  return parts.length + '|' + parts.join('\u0001');
+}
+
+// What a board shows while it parses: ARIA busy/progress, a spinner or
+// loading class that is actually drawn, or "Parsing…"/"Uploading…" copy inside
+// the widget's own block. Any of them means more changes are coming.
+const _BUSY_SEL = '[aria-busy="true"], [role="progressbar"], [class*="spinner" i], [class*="loading" i], ' +
+                  '[data-automation-id*="loading" i], [data-automation-id*="progress" i]';
+function _pageLooksBusy(widget) {
+  try {
+    if (document.body.getAttribute('aria-busy') === 'true') return true;
+    const drawn = (el) => el !== document.body && !el.closest('[id^="hp-"]') &&
+      (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length));
+    if (queryAllDeep(_BUSY_SEL).some(drawn)) return true;
+    // innerText, not textContent: a "Parsing…" note that is display:none is
+    // not showing, and reading it as busy held the wait to its 20 s cap.
+    const scope = widget && _fileFieldScope(widget);
+    return !!scope && /\b(parsing|uploading|processing|importing|reading your)\b/i.test(String(scope.innerText || '').slice(0, 600));
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Wait until the board has stopped changing the form (see _NATIVE_SETTLE). */
+async function _waitForNativeAutofillToSettle(widget, { quietMs, minMs, maxMs }) {
+  const start = Date.now();
+  let last = _formStateSignature(), lastChange = start;
+  for (;;) {
+    await delay(250);
+    const now = Date.now();
+    const sig = _formStateSignature();
+    if (sig !== last) { last = sig; lastChange = now; }
+    if (_pageLooksBusy(widget)) lastChange = now;
+    if (now - start >= maxMs) return { ms: now - start, timedOut: true };
+    if (now - start >= minMs && now - lastChange >= quietMs) return { ms: now - start, timedOut: false };
+  }
+}
+
+/** The outcome in the shape every DO_FILL reply and telemetry event carries. */
+function nativeAutofillOutcome() {
+  const o = _nativeAutofillOutcome || {};
+  return {
+    ats: o.ats || nativeAutofillAts(),
+    used: o.used === true,
+    reason: o.reason || 'not_run',
+    settled_ms: o.settled_ms || 0,
+    fields_prefilled: o.fields_prefilled || 0,
+  };
+}
+
+/**
+ * Use the board's own autofill-from-resume, once per page, BEFORE our fill:
+ * detect it, feed it the same resume document attachResume would attach,
+ * wait for the parse to settle, and record what happened. Reasons:
+ *   disabled · ats_not_enabled · no_widget · resume_unavailable ·
+ *   input_not_revealed · format_not_accepted · user_file · dom_set_failed ·
+ *   no_response (took the file, changed nothing) · settled · settled_timeout.
+ * Sets _nativePrefillActive when the board did fill something, which switches
+ * fillInput to "only empty or conflicting" for the rest of this application.
+ */
+async function runNativeAutofill(pack) {
+  const pageKey = location.href;
+  if (_nativeAutofillOnPage === pageKey) return nativeAutofillOutcome();
+  _nativeAutofillOnPage = pageKey;
+  const ats = nativeAutofillAts();
+  const done = (fields, widgetKind) => {
+    _nativeAutofillOutcome = Object.assign(
+      { ats, used: false, reason: 'no_widget', settled_ms: 0, fields_prefilled: 0 }, fields);
+    const o = nativeAutofillOutcome();
+    if (widgetKind) {
+      // Only a page that OFFERED a widget is worth a server-side event; the
+      // event name carries the verdict (a *_failed event is passed=false).
+      reportTelemetry(pack, o.used ? 'native_autofill_used' : 'native_autofill_failed',
+                      Object.assign({ kind: widgetKind }, o));
+      console.log(`[SpotApply] Native autofill (${o.ats}): ${o.reason}` +
+                  (o.used ? ` — the site filled ${o.fields_prefilled} field(s) in ${o.settled_ms} ms` : ''));
+    } else {
+      console.debug(`[SpotApply] Native autofill (${o.ats}): ${o.reason}`);
+    }
+    return o;
+  };
+
+  if (!_nativeAutofillEnabled) return done({ reason: 'disabled' });
+  if (!NATIVE_AUTOFILL_ATS.has(ats)) return done({ reason: 'ats_not_enabled' });
+  const widget = detectNativeAutofill();
+  if (!widget) return done({ reason: 'no_widget' });
+  if (!packBase(pack) || !pack.auth_token || !pack.app_id || _resumeBlockedReason) {
+    return done({ reason: 'resume_unavailable' }, widget.kind);
+  }
+
+  showOverlay('⚡ <b>Using the site\'s own resume autofill first</b><br>' +
+              '<small>Your SpotApply resume is going in. Anything it misses gets filled right after.</small>',
+              [], false);
+
+  const got = await fetchResumeFile(pack);
+  if (!got.ok) return done({ reason: 'resume_unavailable' }, widget.kind);   // attachResume explains why
+
+  // The upload control: offered outright, or revealed by the option we click.
+  let input = widget.kind === 'input' ? widget.input : null;
+  if (!input) {
+    const before = new Set(queryAllDeep('input[type="file"]'));
+    const wasShown = new Map(Array.from(before).map((fi) => [fi, fi.offsetParent !== null]));
+    _pressElement(widget.element);
+    input = await _waitForRevealedFileInput(before, wasShown, widget.input, 8000);
+    if (!input) {
+      // The option may have navigated instead (Workday: a sign-in, or its
+      // upload step): the next page's detection takes over via this flag.
+      _nativeChooserPending = { ats, ts: Date.now() };
+      return done({ reason: 'input_not_revealed' }, widget.kind);
+    }
+  }
+  _nativeChooserPending = null;
+  input.dataset.spotapplyNativeTried = 'true';
+  if (input.dataset.spotapplyUserModified === 'true') return done({ reason: 'user_file' }, widget.kind);
+  if (!fileMatchesAccept(input, got.filename, got.mime)) return done({ reason: 'format_not_accepted' }, widget.kind);
+
+  // Is this upload also the application's resume field? Workday: yes, the one
+  // upload. Ashby: a parser card beside the real Resume field — when another
+  // upload on the page is named "resume", THAT is the application's resume
+  // and this widget only reads the file.
+  const others = queryAllDeep('input[type="file"]').filter((fi) => fi !== input);
+  const namedResume = (fi) => saysResume(_resumeCtx(fi)) ||
+    saysResume(((_fileFieldScope(fi) || {}).textContent || '').slice(0, 400));
+  const isResumeField = !others.some(namedResume) && (namedResume(input) || others.length === 0);
+  const snapshot = _fieldValueSnapshot();
+  if (!setFileOnInput(input, got.file)) return done({ reason: 'dom_set_failed' }, widget.kind);
+
+  const settle = await _waitForNativeAutofillToSettle(input, _NATIVE_SETTLE);
+  const prefilled = _countPrefilled(snapshot);
+  const registered = prefilled > 0 || document.body.innerText.includes(got.filename) || _hasUploadedMarker(input);
+
+  if (!registered) {
+    // It took the file and nothing happened. The resume field keeps the file
+    // and the audit asks the user to confirm it, as attachResume would; a
+    // separate parser is emptied again so attachResume still reaches the
+    // real resume field — never a file stranded in a widget that ignored it.
+    if (isResumeField) {
+      input.dataset.spotapplyUpload = 'unconfirmed';
+      setResumeStatus('unconfirmed', got.filename, got.kind, '');
+    } else {
+      try { input.value = ''; } catch (_) {}
+    }
+    return done({ reason: 'no_response', settled_ms: settle.ms }, widget.kind);
+  }
+
+  _nativePrefillActive = true;
+  if (isResumeField) {
+    input.dataset.spotapplyUpload = 'accepted';
+    setResumeStatus('accepted', got.filename, got.kind, got.notice);
+    _resumeAttachedOnPage = pageKey;              // attachResume: nothing left to do here
+    reportTelemetry(pack, 'resume_attached', { source: got.kind, via: 'native_autofill' });
+  }
+  return done({ used: true, reason: settle.timedOut ? 'settled_timeout' : 'settled',
+                settled_ms: settle.ms, fields_prefilled: prefilled }, widget.kind);
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 // Copilot mode: fill what we can, highlight gaps in yellow, wait for user
 // to click Next, then repeat on the next page. User interaction at every step.
@@ -3212,6 +3792,9 @@ let _fillingInProgress = false;
 let _resumeAttachedOnPage = null;
 // True when the last fillInput bailed because the pack had no value for it.
 let _lastWriteSkippedEmpty = false;
+// True when the last write was withheld because the board's own resume
+// autofill had already filled the field (see runNativeAutofill).
+let _lastWriteKept = false;
 // Set when the server says the resume can't be built for a reason the user must
 // fix (422). Retrying is pointless until they do, so we stop and keep saying why.
 let _resumeBlockedReason = null;
@@ -3353,6 +3936,16 @@ async function runCopilotStep() {
   // Lock to prevent re-entrant calls
   _fillingInProgress = true;
   try {
+    // The board's own resume autofill goes FIRST, when it offers one: it fills
+    // whole history sections we cannot, and feeding it AFTER our fill is how a
+    // parser once overwrote the identity we had just written. Once it has
+    // settled, fillCurrentPage only fills what it left empty or got wrong.
+    try {
+      await runNativeAutofill(pack);
+    } catch (e) {
+      console.warn('[SpotApply] native autofill error:', e.message);
+    }
+
     // Run the fill
     const result = await fillCurrentPage(pack);
     showStepOverlay(result, pack);
@@ -3389,7 +3982,11 @@ async function runCopilotStep() {
 
 /** The DO_FILL reply / popup message: counts, never an unconditional "Done". */
 function summarizeStep(r) {
-  if (!r) return { ok: true, state: 'filled' };
+  // Whether the board's own resume autofill was used on this page travels
+  // with every reply, so the dashboard can measure how often it is offered,
+  // taken and useful (fields_prefilled) without a second round-trip.
+  const native = nativeAutofillOutcome();
+  if (!r) return { ok: true, state: 'filled', native_autofill: native };
   return {
     ok: true,
     state: r.needUser || r.failed ? 'needs_review' : 'ready_for_review',
@@ -3397,6 +3994,7 @@ function summarizeStep(r) {
     needUser: r.needUser || 0,
     failed: r.failed || 0,
     problems: (r.problems || []).slice(0, 6),
+    native_autofill: native,
   };
 }
 
@@ -3915,6 +4513,7 @@ function watchForPageAdvance(pack) {
     if (location.href !== _lastUrl) {
       _lastUrl = location.href;
       _resumeAttachedOnPage = null; // reset resume guard on new page
+      _nativeAutofillOnPage = null;
       clearInterval(urlPoll);
       if (_advanceObserver) { _advanceObserver.disconnect(); _advanceObserver = null; }
       clearHighlights();
@@ -3954,6 +4553,7 @@ function watchForPageAdvance(pack) {
         if (_fillingInProgress) return;
         if (location.href === _lastUrl) {
           _resumeAttachedOnPage = null;
+          _nativeAutofillOnPage = null;
           clearHighlights();
           removeOverlay();
           runCopilotStep();
@@ -3980,6 +4580,7 @@ function watchForPageAdvance(pack) {
         if (Date.now() - _lastFillTimestamp < 1500) return;
         if (location.href === _lastUrl) { // only if URL didn't change (handled above)
           _resumeAttachedOnPage = null; // new page section, allow resume again
+          _nativeAutofillOnPage = null;
           clearHighlights();
           removeOverlay();
           runCopilotStep();
@@ -4041,8 +4642,25 @@ function findAndClickApply(pack) {
 
   const labelOf = (el) => ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
 
-  // Workday "Start Your Application" chooser: prefer "Apply Manually" so we
-  // control the fill (avoid Workday's own resume parser / LinkedIn flows).
+  // The board's own "Autofill with Resume" option (Workday's chooser) comes
+  // first while native autofill is on: it fills the history sections we cannot
+  // and the next step feeds it the resume. "Apply Manually" was preferred
+  // before, which left every field to us. Never the LinkedIn/Indeed shortcuts.
+  if (_nativeAutofillEnabled && NATIVE_AUTOFILL_ATS.has(nativeAutofillAts())) {
+    const native = detectNativeAutofill();
+    if (native && native.kind === 'button') {
+      _nativeChooserPending = { ats: native.ats, ts: Date.now() };
+      _pressElement(native.element);
+      console.log('[SpotApply] Clicked the site\'s own resume autofill option (' + native.ats + ')');
+      showOverlay('⚡ Using the site\'s own resume autofill first…<br><small style="color:#94a3b8">Your SpotApply resume goes in next; anything it misses gets filled after. If a sign-in appears, log in — I\'ll resume.</small>', [], false);
+      watchForFormAppearance();
+      return true;
+    }
+  }
+
+  // Workday "Start Your Application" chooser: "Apply Manually" when its own
+  // autofill is off or not offered, so we control the fill (never the
+  // LinkedIn flow).
   const chooser = clickables.find(el => /apply\s*manually/i.test(labelOf(el)));
   if (chooser) {
     chooser.click();
@@ -4272,6 +4890,7 @@ function buildDiagnosticReport() {
     frameActive: typeof HP_FRAME_ACTIVE !== 'undefined' ? HP_FRAME_ACTIVE : null,
     fieldCount: fields.length,
     filledCount: fields.filter(f => f.filledBySpotApply).length,
+    nativeAutofill: nativeAutofillOutcome(),
     emptyRequired: fields.filter(f => f.required && !f.valueLen).map(f => f.signals.slice(0, 60)),
     fields,
   };

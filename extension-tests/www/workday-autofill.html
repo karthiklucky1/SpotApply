@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Platform Engineer — Workday-style application with Autofill</title>
+<style>[hidden] { display: none; }</style>
+</head>
+<body>
+  <h1>My Information</h1>
+
+  <!-- Workday's own autofill: the "Autofill with Resume" option reveals an
+       upload; the resume is parsed and the form is populated — including the
+       multi-entry Work Experience and Education sections our filler cannot
+       build. The one upload IS the application's resume. -->
+  <div data-automation-id="autofillSection">
+    <button type="button" data-automation-id="autofillWithResume">Autofill with Resume</button>
+    <div data-automation-id="file-upload-drop-zone" id="wd-dropzone" hidden>
+      <p>Drop your resume here or select a file</p>
+      <input type="file" id="wd-upload-file" data-automation-id="file-upload-input-ref">
+      <div data-automation-id="file-upload-successful" id="wd-chip" hidden></div>
+    </div>
+    <div id="wd-parsing" hidden>Parsing your resume…</div>
+  </div>
+
+  <form id="wd-form" data-automation-id="applicationForm">
+    <div data-automation-id="legalNameSection">
+      <label for="wd-first">First Name</label>
+      <input type="text" id="wd-first" data-automation-id="legalNameSection_firstName">
+
+      <label for="wd-last">Last Name</label>
+      <input type="text" id="wd-last" data-automation-id="legalNameSection_lastName">
+    </div>
+
+    <div data-automation-id="contactInformationSection">
+      <label for="wd-email">Email Address</label>
+      <input type="email" id="wd-email" data-automation-id="email">
+
+      <label for="wd-phone">Phone Number</label>
+      <input type="tel" id="wd-phone" data-automation-id="phone-number">
+
+      <label for="wd-city">City</label>
+      <input type="text" id="wd-city" data-automation-id="addressSection_city">
+    </div>
+
+    <div data-automation-id="sourceSection">
+      <label for="wd-country">Country</label>
+      <select id="wd-country" data-automation-id="countryDropdown">
+        <option value="">Select One</option>
+        <option>United States of America</option>
+        <option>United Kingdom</option>
+        <option>India</option>
+        <option>Canada</option>
+      </select>
+    </div>
+
+    <h2>Work Experience</h2>
+    <div data-automation-id="workExperienceSection" id="wd-work">
+      <button type="button" data-automation-id="Add">Add</button>
+    </div>
+
+    <h2>Education</h2>
+    <div data-automation-id="educationSection" id="wd-edu">
+      <button type="button" data-automation-id="Add">Add</button>
+    </div>
+
+    <button type="button" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+  </form>
+
+  <script>
+  // Workday-like behaviour, simulated: choosing "Autofill with Resume" reveals
+  // the upload; a file dropped there is "parsed" for ~800 ms (aria-busy on the
+  // form, a Parsing… note) and the form is populated from the resume. The
+  // parser is a parser: it reads an OLD email out of the resume header (a
+  // conflict with the profile), formats the phone its own way (the same
+  // number), fills City without the state, and builds two work-experience
+  // entries plus one education entry. A file set on the upload while it is
+  // still hidden (the normal attach path) is stored but not parsed, as the
+  // real autofill step only exists after the option is chosen.
+  (function () {
+    const btn = document.querySelector('[data-automation-id="autofillWithResume"]');
+    const zone = document.getElementById('wd-dropzone');
+    const input = document.getElementById('wd-upload-file');
+    const chip = document.getElementById('wd-chip');
+    const parsing = document.getElementById('wd-parsing');
+    const form = document.getElementById('wd-form');
+    let uploads = 0, parses = 0;
+    window.__wdUploads = () => uploads;
+    window.__wdParses = () => parses;
+
+    btn.addEventListener('click', () => { zone.hidden = false; });
+
+    const entry = (aid, fields) => {
+      const div = document.createElement('div');
+      div.setAttribute('data-automation-id', aid);
+      div.className = 'wd-entry';
+      for (const [label, fieldAid, value] of fields) {
+        const l = document.createElement('label');
+        l.textContent = label + ' ';
+        const i = document.createElement('input');
+        i.type = 'text';
+        i.setAttribute('data-automation-id', fieldAid);
+        i.value = value;
+        l.appendChild(i);
+        div.appendChild(l);
+      }
+      return div;
+    };
+
+    input.addEventListener('change', () => {
+      uploads++;
+      if (!input.files.length || zone.hidden) return;
+      form.setAttribute('aria-busy', 'true');
+      parsing.hidden = false;
+      setTimeout(() => {
+        parses++;
+        document.getElementById('wd-first').value = 'Alexandra';
+        document.getElementById('wd-last').value = 'Nguyen';
+        document.getElementById('wd-email').value = 'a.nguyen@oldmail.example';   // the resume header's old address
+        document.getElementById('wd-phone').value = '(415) 555-0199';              // same number, Workday's format
+        document.getElementById('wd-city').value = 'San Francisco';
+        const work = document.getElementById('wd-work');
+        work.appendChild(entry('workExperience-1', [
+          ['Job Title', 'jobTitle', 'Staff Engineer'], ['Company', 'company', 'Acme Robotics'],
+          ['Location', 'location', 'Austin, TX'], ['From', 'startDate', '03/2021']]));
+        work.appendChild(entry('workExperience-2', [
+          ['Job Title', 'jobTitle', 'Software Engineer'], ['Company', 'company', 'Globex'],
+          ['Location', 'location', 'Denver, CO'], ['From', 'startDate', '06/2017']]));
+        document.getElementById('wd-edu').appendChild(entry('education-1', [
+          ['School or University', 'school', 'UC Berkeley'], ['Degree', 'degree', 'Bachelor of Science'],
+          ['Field of Study', 'fieldOfStudy', 'Computer Science']]));
+        chip.textContent = input.files[0].name;
+        chip.hidden = false;
+        parsing.hidden = true;
+        form.removeAttribute('aria-busy');
+      }, 800);
+    });
+  })();
+  </script>
+</body>
+</html>
