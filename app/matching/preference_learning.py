@@ -112,7 +112,8 @@ class PreferenceProfile:
                 "weigh them when scoring fit: the candidate " + "; ".join(parts) + ".")
 
 
-def _is_user_dismissal(app: Application) -> bool:
+def _is_user_dismissal(app) -> bool:
+    """``app`` needs only ``.status`` and ``.notes`` (an Application or a projected row)."""
     if app.status != ApplicationStatus.SKIPPED:
         return False
     notes = (app.notes or "").lower()
@@ -123,35 +124,79 @@ def _is_user_dismissal(app: Application) -> bool:
     return not any(h in notes for h in _SYSTEM_SKIP_HINTS)
 
 
+# The profile is read on EVERY /dashboard render and every matching pass.
+# Cached per user for this long; any meaningful action (a skip, an apply — the
+# very things it learns from) invalidates it (server._get_user_id).
+PREFERENCE_CACHE_SECONDS = 300
+
+
+def _preference_cache_key(user_id: str | None) -> str:
+    return f"pref:{user_id or 'local'}"
+
+
+class _Row:
+    """The four columns the profile reads, detached from any session."""
+    __slots__ = ("company", "notes", "status", "title")
+
+    def __init__(self, status, notes, company, title):
+        self.status, self.notes, self.company, self.title = status, notes, company, title
+
+
 def build_preference_profile(user_id: str | None) -> PreferenceProfile:
     """Derive the user's revealed preferences from their application history.
-    Cheap (one join query); safe to call per matching pass / dashboard render."""
+
+    PROJECTED and CACHED (2026-10-10): this used to `select(Application, Job)`
+    over every application the user ever had — whole rows, full descriptions,
+    reasoning and insights — on every dashboard render, with no limit, timeout
+    or cache. One account holds 16k SKIPPED rows; loading them from a
+    cross-region database was the single largest cost of a /dashboard render
+    (p50 11-18 s over the last week). The profile reads four columns; it now
+    selects four columns, and the result is cached for PREFERENCE_CACHE_SECONDS.
+    """
+    from app.common import ttl_cache
+    try:
+        return ttl_cache.get_or_compute(
+            _preference_cache_key(user_id), PREFERENCE_CACHE_SECONDS,
+            lambda: _build_preference_profile_uncached(user_id))
+    except Exception as e:                       # never fail a render over a hint
+        log.debug("preference profile unavailable for %s: %s", user_id, e)
+        return PreferenceProfile()
+
+
+def invalidate_preference_profile(user_id: str | None) -> None:
+    from app.common import ttl_cache
+    ttl_cache.invalidate(_preference_cache_key(user_id))
+
+
+def _build_preference_profile_uncached(user_id: str | None) -> PreferenceProfile:
     prof = PreferenceProfile()
     try:
         with get_session() as session:
-            rows = session.exec(
-                select(Application, Job)
-                .join(Job, Application.job_id == Job.id)
-                .where(Job.user_id == user_id)
-            ).all()
+            rows = [
+                _Row(*r) for r in session.exec(
+                    select(Application.status, Application.notes, Job.company, Job.title)
+                    .join(Job, Application.job_id == Job.id)
+                    .where(Job.user_id == user_id)
+                ).all()
+            ]
     except Exception as e:
         log.debug("preference profile query failed for %s: %s", user_id, e)
         return prof
 
     dismissed_by_company: Counter = Counter()
     engaged_companies: set = set()
-    for app, job in rows:
-        company = (job.company or "").strip().lower()
-        if app.status in _ENGAGED_STATUSES:
+    for row in rows:
+        company = (row.company or "").strip().lower()
+        if row.status in _ENGAGED_STATUSES:
             prof.engaged_total += 1
             if company:
                 engaged_companies.add(company)
-            prof.liked_tokens.update(set(_title_tokens(job.title)))
-        elif _is_user_dismissal(app):
+            prof.liked_tokens.update(set(_title_tokens(row.title)))
+        elif _is_user_dismissal(row):
             prof.dismissed_total += 1
             if company:
                 dismissed_by_company[company] += 1
-            prof.disliked_tokens.update(set(_title_tokens(job.title)))
+            prof.disliked_tokens.update(set(_title_tokens(row.title)))
 
     prof.liked_companies = engaged_companies
     prof.disliked_companies = {

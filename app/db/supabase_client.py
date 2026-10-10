@@ -14,7 +14,10 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import threading
 import time
 from functools import lru_cache
 from typing import Optional
@@ -30,8 +33,39 @@ log = logging.getLogger(__name__)
 # so a revoked token stops working within the TTL and a transient error never
 # locks out a valid session.
 _JWT_CACHE: dict[str, tuple[float, dict]] = {}   # token -> (expires_monotonic, payload)
-_JWT_CACHE_TTL = 60.0
+# A verified token is trusted until it EXPIRES (capped), not for 60 s. The old
+# minute-long TTL meant one Auth round-trip (100-500 ms, blocking a thread) per
+# user per minute — and a page load fires ~20 authed fetches at once, so after
+# any idle minute all of them missed TOGETHER and each made its own call
+# (2026-10-10 latency review). Supabase access tokens are stateless JWTs that
+# stay valid until `exp` anyway; `forget_user` still evicts a deleted account
+# at once, and a revoked-but-unexpired token is bounded by the cap below.
+_JWT_CACHE_TTL = 60.0                 # floor, and the TTL when `exp` is unreadable
+_JWT_CACHE_MAX_TTL = 900.0            # cap: at most 15 min between re-verifications
 _JWT_CACHE_MAX = 4096
+_JWT_INFLIGHT: dict[str, threading.Lock] = {}   # single-flight per token
+_JWT_INFLIGHT_GUARD = threading.Lock()
+
+
+def _jwt_exp(token: str) -> float | None:
+    """The token's `exp` (epoch seconds) read WITHOUT verifying — only used to
+    bound how long a verification we already made is trusted."""
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(part.encode("ascii")))
+        exp = payload.get("exp")
+        return float(exp) if exp else None
+    except Exception:
+        return None
+
+
+def _jwt_cache_ttl(token: str) -> float:
+    exp = _jwt_exp(token)
+    if exp is None:
+        return _JWT_CACHE_TTL
+    remaining = exp - time.time()
+    return max(_JWT_CACHE_TTL, min(_JWT_CACHE_MAX_TTL, remaining))
 
 
 def _jwt_cache_put(token: str, payload: dict, now: float) -> None:
@@ -41,7 +75,17 @@ def _jwt_cache_put(token: str, payload: dict, now: float) -> None:
             _JWT_CACHE.pop(k, None)
         if len(_JWT_CACHE) >= _JWT_CACHE_MAX:
             _JWT_CACHE.clear()
-    _JWT_CACHE[token] = (now + _JWT_CACHE_TTL, payload)
+    _JWT_CACHE[token] = (now + _jwt_cache_ttl(token), payload)
+
+
+def _inflight_lock(token: str) -> threading.Lock:
+    with _JWT_INFLIGHT_GUARD:
+        if len(_JWT_INFLIGHT) > 512:
+            _JWT_INFLIGHT.clear()
+        lock = _JWT_INFLIGHT.get(token)
+        if lock is None:
+            lock = _JWT_INFLIGHT[token] = threading.Lock()
+        return lock
 
 
 def forget_user(uid: str) -> int:
@@ -96,18 +140,24 @@ def verify_jwt(token: str) -> Optional[dict]:
     hit = _JWT_CACHE.get(token)
     if hit and hit[0] > now:
         return hit[1]
-    try:
-        sb = service_client()
-        result = sb.auth.get_user(token)
-        if result and result.user:
-            u = result.user
-            payload = {"sub": u.id, "email": getattr(u, "email", None),
-                       "email_confirmed": bool(getattr(u, "email_confirmed_at", None)),
-                       "phone_confirmed": bool(getattr(u, "phone_confirmed_at", None))}
-            _jwt_cache_put(token, payload, now)
-            return payload
-    except Exception as e:
-        log.debug("JWT verification failed: %s", e)
+    # Single-flight: concurrent misses on the SAME token (a page load's parallel
+    # fetches) wait for one verification instead of each making an Auth call.
+    with _inflight_lock(token):
+        hit = _JWT_CACHE.get(token)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        try:
+            sb = service_client()
+            result = sb.auth.get_user(token)
+            if result and result.user:
+                u = result.user
+                payload = {"sub": u.id, "email": getattr(u, "email", None),
+                           "email_confirmed": bool(getattr(u, "email_confirmed_at", None)),
+                           "phone_confirmed": bool(getattr(u, "phone_confirmed_at", None))}
+                _jwt_cache_put(token, payload, time.monotonic())
+                return payload
+        except Exception as e:
+            log.debug("JWT verification failed: %s", e)
     return None
 
 

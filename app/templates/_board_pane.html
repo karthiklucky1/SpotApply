@@ -1,0 +1,40 @@
+{#- ONE board pane's inner HTML. Rendered by /dashboard (include, all five
+    panes) AND by GET /api/board/pane (one pane, after an in-place status
+    change — the board no longer reloads the page on Mark Applied / Interview /
+    Rejected / Remove / No longer available). One definition, so a card that
+    moved without a reload is drawn by the same code as the full render.
+    Context: stage, rows, visa_framing, total_submitted_count, all_submitted. -#}
+{% from "_board_macros.html" import jobrow, jobcard with context %}
+{% if stage == 'shortlist' %}{% for app, job in rows %}
+                    {{ jobrow(app, job, visa_framing) }}
+                    {% else %}
+                    <div id="empty-shortlist-state" class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">🔍 Your AI agent is finding your first matches…</p> <p class="text-slate-600 text-xs mt-1">New jobs are scanned, scored and shortlisted for you automatically — around the clock, no button needed. First matches usually appear within minutes of uploading your resume; “Discover Jobs” just runs an extra pass right now.</p> </div>
+                    {% endfor %}
+{% elif stage == 'submitted' %}{% for app, job in rows %}
+                    {{ jobrow(app, job, visa_framing, 'submitted') }}
+                    {% else %}
+                    <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No submitted roles yet.</p> <p class="text-slate-600 text-xs mt-1">Apply from your shortlist and they will land here.</p> </div>
+                    {% endfor %}
+                    {% if total_submitted_count > 20 %}
+                    <div class="pt-3 text-center flex justify-center"> {% if all_submitted %}
+                        <a href="/dashboard" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full border border-slate-700 bg-slate-900 text-slate-300 hover:text-white transition duration-150"> Show Less</a> {% else %}
+                        <a href="/dashboard?all_submitted=true" class="inline-block text-[10.5px] font-bold px-4 py-2 rounded-full text-white transition duration-150" style="background:linear-gradient(135deg,var(--sage),var(--sage-600));"> Show All (+{{ total_submitted_count - 20 }} more)</a> {% endif %}
+                    </div> {% endif %}
+{% elif stage == 'interviewing' %}{% for app, job in rows %}
+                    {{ jobrow(app, job, visa_framing, 'interviewing') }}
+                    {% else %}
+                    <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No interviews scheduled yet.</p> <p class="text-slate-600 text-xs mt-1">Heard back? Mark a submitted job as Interview to track it here.</p> </div>
+                    {% endfor %}
+{% elif stage == 'rejected' %} {% for app, job in rows %}
+                    {% call jobcard(app, job, 'rose', false, 'Rejected', visa_framing) %}
+                        <div class="grid grid-cols-2 gap-2 mt-2"> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[10px] py-2"> Documents
+                            </button> <button type="button" data-app-id="{{ app.id }}" onclick="event.stopPropagation(); removeApplication(+this.dataset.appId, this)" class="jbtn text-[10px] py-2" style="background:rgba(255,255,255,0.03);color:#94a3b8;border:1px solid rgba(255,255,255,0.08);"> Delete
+                            </button> </div> {% endcall %}
+                    {% else %}
+                    <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-rejected-msg"> No rejections logged. Keep pushing!
+                    </div> {% endfor %}
+{% elif stage == 'skipped' %} {% for app, job in rows %}
+                    <div class="glass rounded-[20px] p-4 border-slate-800/60 opacity-60 hover:opacity-100 transition-opacity duration-200" id="skipped-card-{{ app.id }}"> <div class="flex justify-between items-start gap-2"> <div class="min-w-0 flex-1"> <h3 class="text-xs font-bold text-slate-300 leading-snug line-clamp-1">{{ job.title }}</h3> <p class="text-[10px] text-slate-500 font-semibold mt-1"> {{ job.company or 'Unknown' }} |  {{ job.location or 'Remote' }}</p> </div> {# job.is_closed is on the board's load_only list (app.notes is not — reading it here would fail the render); retention never closes a job that has an application, so on this card it means the posting itself is gone #}{% if job.is_closed %}<span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 border border-slate-500/20 shrink-0" style="color:#b45309;" title="The posting has closed">No longer available</span>{% else %}<span class="text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-400 border border-slate-500/20 shrink-0">Removed</span>{% endif %} </div> </div> {% else %}
+                    <div class="text-center py-8 text-slate-600 text-xs font-semibold col-span-full" id="no-skipped-msg"> No removed or cancelled applications.
+                    </div> {% endfor %}
+{% endif %}

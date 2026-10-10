@@ -131,61 +131,17 @@ if _os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
-# ── Supabase session-refresh middleware ─────────────────────────────────────
-# When SUPABASE_URL is configured, every response gets a refreshed access
-# token in the X-Supabase-Token header so the frontend can keep the session
-# alive without the user having to re-login every hour.
+# ── Middleware imports ────────────────────────────────────────────────────────
+# (The Supabase session-refresh middleware that used to live here was removed on
+# 2026-10-10: it passed the ACCESS token to auth.refresh_session, which takes the
+# REFRESH token, so every call failed — and no client ever read the
+# X-Supabase-Token header it tried to set. The browser's supabase-js refreshes
+# the session itself. It cost one failing Auth round-trip per token.)
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
-_REFRESH_ATTEMPTED: dict = {}          # token -> monotonic ts of last refresh try
-_REFRESH_THROTTLE_SECONDS = 600        # at most one Auth API call per token / 10 min
-_REFRESH_MAP_MAX = 5000                # bound memory; evict oldest half when hit
-
-
-class SupabaseSessionMiddleware(BaseHTTPMiddleware):
-    """Rolls the Supabase session token forward.
-
-    Throttled + off-loop: this used to call the SYNC gotrue refresh endpoint on
-    the event loop after EVERY authenticated response — one blocking ~100-500ms
-    Auth round-trip per request serialized the whole app (the single hottest
-    scalability bug found in the production review). Tokens live ~1h, so one
-    refresh attempt per token per 10 minutes is plenty, and the call now runs
-    in the threadpool so the loop keeps serving other users."""
-    async def dispatch(self, request: StarletteRequest, call_next):
-        response = await call_next(request)
-        from app.config import settings
-        if not settings.use_supabase:
-            return response
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return response
-        token = auth_header.split(" ", 1)[1]
-        import time as _t
-        now = _t.monotonic()
-        last = _REFRESH_ATTEMPTED.get(token)
-        if last is not None and now - last < _REFRESH_THROTTLE_SECONDS:
-            return response
-        if len(_REFRESH_ATTEMPTED) > _REFRESH_MAP_MAX:
-            for k in list(_REFRESH_ATTEMPTED)[: _REFRESH_MAP_MAX // 2]:
-                _REFRESH_ATTEMPTED.pop(k, None)
-        _REFRESH_ATTEMPTED[token] = now
-        try:
-            import anyio
-
-            def _refresh():
-                from app.db.supabase_client import anon_client
-                sb = anon_client()
-                return sb.auth.refresh_session(token)
-
-            result = await anyio.to_thread.run_sync(_refresh)
-            if result and result.session:
-                response.headers["X-Supabase-Token"] = result.session.access_token
-        except Exception:
-            pass
-        return response
 
 class CanonicalHostMiddleware(BaseHTTPMiddleware):
     """301 apex/www traffic to the canonical host, preserving path + query.
@@ -218,7 +174,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(SupabaseSessionMiddleware)
 app.add_middleware(CanonicalHostMiddleware)
 
 
@@ -296,15 +251,29 @@ class JourneyMiddleware(BaseHTTPMiddleware):
                     if uid:
                         outcome = (request.query_params.get("outcome") or "").lower() or None \
                             if name == "outcome_recorded" else None
-                        import anyio
-                        await anyio.to_thread.run_sync(
-                            lambda: record(uid if uid != "local" else None, name, outcome=outcome))
+                        # Fire-and-forget on the default (persistent) executor: the
+                        # response does not wait for the metric's DB write. It used
+                        # to — one more cross-region round-trip on every status click.
+                        import asyncio as _aio
+
+                        def _write(_uid=uid, _name=name, _outcome=outcome):
+                            try:
+                                record(_uid if _uid != "local" else None, _name, outcome=_outcome)
+                            except Exception as _e:
+                                log.debug("journey record failed: %s", _e)
+                        _aio.get_running_loop().run_in_executor(None, _write)
         except Exception as e:                    # a metric never fails a request
             log.debug("journey middleware: %s", e)
         return response
 
 
 app.add_middleware(JourneyMiddleware)
+
+# Compress every response over 2 KB. The dashboard HTML is 1-3 MB of mostly
+# repeated markup and is `no-store` (PrivateCacheMiddleware), so every load paid
+# the full transfer uncompressed. Added LAST = outermost, so it wraps everything.
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 
 # ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -337,9 +306,11 @@ def _get_user_id(request: Request) -> str | None:
             kind = _activity_kind(request)
             if kind is not None:
                 if kind == "meaningful":
-                    # An action can move the counts /api/stats caches.
+                    # An action can move the counts /api/stats caches, and a
+                    # skip/apply is exactly what the preference profile learns from.
                     from app.common import ttl_cache as _tc
                     _tc.invalidate(f"stats:{uid}")
+                    _tc.invalidate(f"pref:{uid if uid != 'local' else 'local'}")
                 _touch_last_active(uid, meaningful=(kind == "meaningful"),
                                    welcome=_may_welcome(request))
             return uid
@@ -4155,6 +4126,98 @@ class _BoundedReads:
             return default
 
 
+_BOARD_PANE_STAGES = ("submitted", "interviewing", "rejected", "skipped")
+_BOARD_PANE_LIMIT = 20          # rejected / skipped / default submitted page
+
+
+def _board_visible_clause():
+    """Aggregator-redirect ghosts never render on any pane."""
+    return Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+
+
+def _board_stage_query(stage: str, owner: str | None, all_submitted: bool = False):
+    """The rows one secondary board pane lists. ONE definition, read by the
+    /dashboard render AND /api/board/pane: a card moved in place after a status
+    click must be drawn from the same rows a reload would show."""
+    q = select(Application, Job).join(Job).options(
+        *_dashboard_load_options()).where(_board_visible_clause())
+    if stage == "submitted":
+        q = q.where(Application.status == ApplicationStatus.SUBMITTED
+                    ).order_by(Application.submitted_at.desc())
+        if not all_submitted:
+            q = q.limit(_BOARD_PANE_LIMIT)
+    elif stage == "interviewing":     # uncapped: active interviews are few
+        q = q.where(Application.status.in_([
+            ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED,
+        ])).order_by(Application.updated_at.desc())
+    elif stage == "rejected":
+        q = q.where(Application.status == ApplicationStatus.REJECTED
+                    ).order_by(Application.updated_at.desc()).limit(_BOARD_PANE_LIMIT)
+    elif stage == "skipped":
+        q = q.where(Application.status == ApplicationStatus.SKIPPED
+                    ).order_by(Application.updated_at.desc()).limit(_BOARD_PANE_LIMIT)
+    else:
+        raise ValueError(f"unknown board stage {stage!r}")
+    if owner:
+        q = q.where(Application.user_id == owner)
+    return q
+
+
+def _board_submitted_count_query(owner: str | None):
+    q = select(func.count(Application.id)).join(Job).where(
+        Application.status == ApplicationStatus.SUBMITTED).where(_board_visible_clause())
+    if owner:
+        q = q.where(Application.user_id == owner)
+    return q
+
+
+def _board_visa_framing(owner: str | None):
+    """The work-authorization framing the card macros read (visa-fit panel)."""
+    try:
+        from app.intelligence.work_auth import assess_profile
+        from app.autofill.answer_pack import _get_or_create_profile
+        return assess_profile(_get_or_create_profile(user_id=owner))
+    except Exception as _e:
+        log.debug("visa framing unavailable: %s", _e)
+        return None
+
+
+@app.get("/api/board/pane")
+def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dict:
+    """ONE board pane, re-rendered — what a status click fetches instead of
+    reloading the page (2026-10-10). Every Mark Applied / Interview / Rejected /
+    Remove / No longer available used to end in `location.reload()`: a full
+    /dashboard render (p50 11-18 s that week) plus ~20 follow-up requests, for a
+    one-row change. The card now leaves its pane in the browser and the
+    DESTINATION pane is fetched from here when it is next looked at, drawn by
+    the same template include the full render uses (`_board_pane.html`)."""
+    uid = _require_user(request)
+    if stage not in _BOARD_PANE_STAGES:
+        raise HTTPException(status_code=400, detail=f"Unknown pane: {stage}")
+    owner = uid if uid != "local" else None
+    total_submitted = 0
+    with get_session() as session:
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        rows = reads.get([], lambda: list(session.exec(
+            _board_stage_query(stage, owner, all_submitted)).all()))
+        if stage == "submitted":
+            total_submitted = reads.get(
+                len(rows), lambda: _scalar(session.exec(_board_submitted_count_query(owner)).first() or 0))
+        degraded = reads.degraded
+    from datetime import datetime as _dt
+    if stage == "submitted":
+        rows.sort(key=lambda x: x[0].submitted_at or x[0].updated_at or _dt.min, reverse=True)
+    else:
+        rows.sort(key=lambda x: x[0].updated_at or _dt.min, reverse=True)
+    html = templates.get_template("_board_pane.html").render(
+        request=request, stage=stage, rows=rows, visa_framing=_board_visa_framing(owner),
+        total_submitted_count=total_submitted, all_submitted=all_submitted,
+    )
+    return {"stage": stage, "html": html, "count": len(rows),
+            "total": total_submitted if stage == "submitted" else len(rows),
+            "degraded": degraded}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, all_submitted: bool = False):
     """Kanban board UI for tracking application progress."""
@@ -4229,83 +4292,28 @@ def dashboard(request: Request, all_submitted: bool = False):
             total_shortlisted_count = reads.get(
                 len(shortlisted), lambda: _scalar(session.exec(q_short_total).first() or 0))
 
-            # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
-            q_sub = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.SUBMITTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.submitted_at.desc())
-            if _uid_filter:
-                q_sub = q_sub.where(Application.user_id == uid)
-
-            # Get total count of submitted for the UI toggle button
-            q_sub_count = select(func.count(Application.id)).join(Job).where(
-                Application.status == ApplicationStatus.SUBMITTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            )
-            if _uid_filter:
-                q_sub_count = q_sub_count.where(Application.user_id == uid)
-
-            if not all_submitted:
-                q_sub = q_sub.limit(20)
-            # Load the rows BEFORE the count, so a timed-out count can fall back
-            # to the number actually on the page instead of a bare 0.
-            submitted = reads.get([], lambda: list(session.exec(q_sub).all()))
+            # 2-5. The secondary panes — ONE query definition each, shared with
+            # GET /api/board/pane (which re-renders a single pane after an
+            # in-place status change). Rows load BEFORE the submitted count, so
+            # a timed-out count can fall back to what is on the page, never 0.
+            _owner = uid if _uid_filter else None
+            submitted = reads.get([], lambda: list(session.exec(
+                _board_stage_query("submitted", _owner, all_submitted)).all()))
             total_submitted_count = reads.get(
-                len(submitted), lambda: session.exec(q_sub_count).first() or 0)
-
-            # 3. Fetch Interviewing (uncapped since active interviews are few)
-            q_int = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status.in_([ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED])
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc())
-            if _uid_filter:
-                q_int = q_int.where(Application.user_id == uid)
-            interviewing = reads.get([], lambda: list(session.exec(q_int).all()))
-
-            # 4. Fetch Rejected (limit to 20 by default)
-            q_rej = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.REJECTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc()).limit(20)
-            if _uid_filter:
-                q_rej = q_rej.where(Application.user_id == uid)
-            rejected = reads.get([], lambda: list(session.exec(q_rej).all()))
-
-            # 5. Fetch Skipped (limit to 20)
-            q_skip = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.SKIPPED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc()).limit(20)
-            if _uid_filter:
-                q_skip = q_skip.where(Application.user_id == uid)
-            skipped = reads.get([], lambda: list(session.exec(q_skip).all()))
+                len(submitted), lambda: session.exec(_board_submitted_count_query(_owner)).first() or 0)
+            interviewing = reads.get([], lambda: list(session.exec(
+                _board_stage_query("interviewing", _owner)).all()))
+            rejected = reads.get([], lambda: list(session.exec(
+                _board_stage_query("rejected", _owner)).all()))
+            skipped = reads.get([], lambda: list(session.exec(
+                _board_stage_query("skipped", _owner)).all()))
             board_degraded = reads.degraded
 
     from datetime import datetime as _dt
 
     # Legal work-authorization framing for this user (drives the visa-fit panel
     # and the sponsorship-aware ranking boost below).
-    visa_framing = None
-    try:
-        from app.intelligence.work_auth import assess_profile
-        from app.autofill.answer_pack import _get_or_create_profile
-        _prof = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
-        visa_framing = assess_profile(_prof)
-    except Exception as _e:
-        log.debug("visa framing unavailable: %s", _e)
+    visa_framing = _board_visa_framing(uid if uid and uid != "local" else None)
 
     # For users who need sponsorship, float no-lottery (cap-exempt) and known
     # sponsors to the top — those are the jobs that can actually hire them.
@@ -10547,7 +10555,7 @@ def rate_intro(intro_id: int, request: Request, body: dict) -> dict:
 
 
 @app.post("/api/verify/identity")
-def verify_identity(request: Request) -> dict:
+def verify_identity(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Sync email/phone verification status from Supabase Auth (email is
     confirmed at signup via the magic link). Sets the flags that feed the
     Identity trust dimension, then recomputes the Trust Profile."""
@@ -10585,8 +10593,11 @@ def verify_identity(request: Request) -> dict:
         session.add(profile)
         session.commit()
 
+    # The Trust Profile recompute makes up to two GitHub API calls and a storage
+    # listing (measured 0.9-4.6 s per call in production). The flags above are
+    # the answer; the recompute runs after the response is sent.
     from app.intelligence.trust_service import compute_and_store
-    compute_and_store(user_id_arg)
+    background_tasks.add_task(compute_and_store, user_id_arg)
     return {"email_verified": email_ok, "phone_verified": phone_ok}
 
 
