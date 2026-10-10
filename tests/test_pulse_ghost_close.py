@@ -346,7 +346,7 @@ def test_closing_sources_pin_a_posting_to_one_board():
     from app.discovery.pipeline import scraper_for
 
     assert not board_absence.CLOSING_SOURCES & TENANT_SCOPED_SOURCES
-    excluded = {"workday", "teamtailor", "bamboohr", "workable"}
+    excluded = {"workday", "teamtailor", "bamboohr", "workable", "join"}
     assert not board_absence.CLOSING_SOURCES & excluded
     polled = {src for src in JobSource if scraper_for(src, "x", "https://x.wd1.myworkdayjobs.com/y")}
     assert {s.value for s in polled} == board_absence.CLOSING_SOURCES | excluded
@@ -1212,3 +1212,57 @@ def test_record_board_states_is_one_upsert():
     assert lv1.state == "REMOVED" and lv1.inconclusive_streak == 0 and lv1.http_status is None
     assert _liveness(_gh("lv2")).state == "REMOVED"
     assert _liveness(_gh("lv3")).state == "LIVE"
+
+
+# ── Verification 2026-10-10 ─────────────────────────────────────────────────
+
+def test_join_is_not_a_closing_source():
+    """A multi-page JOIN walk (5 a page, by offset) could end early or skip a
+    posting unpublished mid-walk and still read complete."""
+    assert "join" not in board_absence.CLOSING_SOURCES
+    assert not board_absence.closes_on_absence("join")
+
+
+def test_an_engaged_copy_reopens_with_its_posting():
+    """A TAILORED copy only got is_closed when its posting left the board, so
+    when the posting is listed again the copy reopens too (its "May be
+    closed" chip must not outlive a false closure). Its application is left
+    exactly as it was."""
+    ids = {n: _job(_gh(n), url=f"{_GH}{n}") for n in (1, 2, 3, 4)}
+    engaged = _job(_gh(2), url=f"{_GH}2", uid="u2", status=ApplicationStatus.TAILORED)
+    waiting = _job(_gh(2), url=f"{_GH}2", uid="u3", status=ApplicationStatus.SHORTLISTED)
+    missing = [_raw(_gh(n), f"{_GH}{n}") for n in (1, 3, 4)]
+    res = board_absence.reconcile(_listing("greenhouse", missing, {"complete_declared": True}),
+                                  budget=10)
+    assert res.closed == 1 and _get(engaged).is_closed
+    assert _app(waiting).status == ApplicationStatus.SKIPPED
+    back = [_raw(_gh(n), f"{_GH}{n}") for n in (1, 2, 3, 4)]
+    board_absence.reconcile(_listing("greenhouse", back, {"complete_declared": True}), budget=10)
+    assert not _get(ids[2]).is_closed
+    assert not _get(engaged).is_closed, "the engaged copy reopens with its posting"
+    assert _app(engaged).status == ApplicationStatus.TAILORED
+    # the copy whose application the closure moved to Removed stays as it is
+    assert _get(waiting).is_closed and _app(waiting).status == ApplicationStatus.SKIPPED
+
+
+def test_the_statement_ceiling_shrinks_to_what_is_left_of_the_slice():
+    """Near the end of its slice the step must not start a read that may take
+    the full 10 s ceiling (twice: census and rows)."""
+    seen = []
+
+    class _S:
+        def get_bind(self):
+            return type("B", (), {"dialect": type("D", (), {"name": "postgresql"})()})()
+
+        def execute(self, stmt):
+            seen.append(str(stmt))
+
+    board_absence._arm_timeout(_S())
+    board_absence._arm_timeout(_S(), 3.2)
+    board_absence._arm_timeout(_S(), 0.2)
+    board_absence._arm_timeout(_S(), 60)
+    assert seen == ["SET LOCAL statement_timeout = 10000", "SET LOCAL statement_timeout = 3200",
+                    "SET LOCAL statement_timeout = 1000", "SET LOCAL statement_timeout = 10000"]
+    # and a slice with under a second left judges no board at all
+    results, _ = board_absence.reconcile_many([object()], budget=5, seconds=0.5)
+    assert results[0].outcome == "deferred"

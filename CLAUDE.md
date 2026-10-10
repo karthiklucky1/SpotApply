@@ -534,9 +534,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   boards were never ghost-closed (Ashby has no other signal). ONLY
   `CLOSING_SOURCES` — ids platform-wide + edit-stable, URL names the board:
   Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio, Rippling,
-  Breezy, Pinpoint, JOIN. Workday (multi-site reqs, moved paths), Teamtailor
-  (slug in the id), BambooHR (tenant ids) and Workable (no board in the URL;
-  display names collide) never close here: full pass + 45-day retention. A
+  Breezy, Pinpoint. Workday (multi-site reqs, moved paths), Teamtailor
+  (slug in the id), BambooHR (tenant ids), Workable (no board in the URL;
+  display names collide) and JOIN (offset pages of 5: an early-ended or
+  shifted walk still read complete) never close here: full pass + 45-day
+  retention. A
   changed board's listing is queued only if its adapter DECLARED it whole
   (`fetch_complete`, or `listing_complete` + `listed_ids`); AFTER the consume
   loop, in a slice (`PULSE_GHOST_CLOSE_MAX_SECONDS`) and ONE session: one
@@ -551,8 +553,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `PULSE_GHOST_CLOSE_CONFIRM_POLLS` (3) polls agree; census 0/none = no
   closing. `PULSE_GHOST_CLOSE_MAX_PER_TICK`; only a board with pending absent
   rows is CARRIED to the next tick (no re-poll, schedule untouched); reopening
-  never waits on the budget. A later complete listing REOPENS (`Removed from
-  company` reasons) + records LIVE; a Removed application stays Removed.
+  never waits on the budget; under 1 s of slice left no board is judged, and
+  the statement ceiling shrinks to what is left. A later complete listing
+  REOPENS (`Removed from company` reasons) + records LIVE, TAILORED-or-later
+  copies included; a Removed application stays Removed.
   Guard: `test_pulse_ghost_close`. The gate runs LATE (`strategy/delivery_gate.py`):
   `slate.place()` holds the cached in-session backstop, the scoring lane does the
   network refresh outside its session for candidates that already cleared the

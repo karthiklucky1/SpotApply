@@ -101,7 +101,10 @@ CLOSING_SOURCES = frozenset({
     "rippling",         # UUIDs
     "breezy",           # per-position hex ids (the title slug is not part of it)
     "pinpoint",         # platform-wide numeric ids
-    "join",             # platform-wide numeric ids; company = the board slug
+    # "join" is NOT here (verification 2026-10-10): its walk pages at 5 a page
+    # by offset, a 404 or empty later page ended the walk still "complete",
+    # and a posting unpublished mid-walk shifts the next one into a page
+    # already read, so a multi-page JOIN listing can omit live postings.
 })
 
 _CHUNK = 200
@@ -354,8 +357,15 @@ def reconcile_many(listings: list, *, budget: int,
         with get_session() as s:
             _arm_timeout(s)
             for i, listing in enumerate(listings):
-                if stop is not None and time.monotonic() >= stop:
-                    break
+                if stop is not None:
+                    left = stop - time.monotonic()
+                    if left < 1.0:
+                        break
+                    if left < _STATEMENT_TIMEOUT_S:
+                        # Near the end of the slice a board's read may not
+                        # take the full ceiling: the step must not overrun
+                        # the tick's deadline by two statement timeouts.
+                        _arm_timeout(s, left)
                 res = AbsenceResult()
                 results[i] = res
                 _bump("boards_checked")
@@ -400,11 +410,13 @@ def reconcile_many(listings: list, *, budget: int,
     return results, totals
 
 
-def _arm_timeout(session) -> None:
+def _arm_timeout(session, seconds: Optional[float] = None) -> None:
+    secs = float(_STATEMENT_TIMEOUT_S) if seconds is None else \
+        max(1.0, min(float(_STATEMENT_TIMEOUT_S), float(seconds)))
     try:
         if session.get_bind().dialect.name == "postgresql":
             from sqlalchemy import text
-            session.execute(text(f"SET LOCAL statement_timeout = {_STATEMENT_TIMEOUT_S * 1000}"))
+            session.execute(text(f"SET LOCAL statement_timeout = {int(secs * 1000)}"))
     except Exception as e:
         log.debug("board absence statement_timeout not armed: %s", type(e).__name__)
 
@@ -733,10 +745,17 @@ def _apply(s, plans: list, totals: AbsenceResult) -> None:
         if not rows:
             continue
         copies = [c for r in rows for c in reopen_copies[src].get(r.id, ())]
+        # A copy whose application this closure moved (waiting -> Removed),
+        # or that is still waiting, stays as it is: slate.place is the only
+        # writer of a SHORTLISTED application. A TAILORED-or-later copy was
+        # never touched beyond is_closed, so it reopens with the posting
+        # (otherwise its "May be closed" chip outlived a false closure).
         held: set = set()
         for chunk in _chunks(sorted({c.id for c in copies})):
-            held.update(s.exec(select(Application.job_id)
-                               .where(Application.job_id.in_(chunk))).all())
+            for jid, st in s.exec(select(Application.job_id, Application.status)
+                                  .where(Application.job_id.in_(chunk))).all():
+                if str(getattr(st, "value", st)).lower() in _HOLD_ON_REOPEN:
+                    held.add(jid)
         totals.reopened += _reopen_rows(s, sorted(r.id for r in rows), like)
         totals.copies_reopened += _reopen_rows(
             s, sorted({c.id for c in copies if c.id not in held}), like)
@@ -755,6 +774,9 @@ def _apply(s, plans: list, totals: AbsenceResult) -> None:
     except Exception as e:
         log.debug("board absence liveness record skipped: %s", type(e).__name__)
     s.commit()
+
+
+_HOLD_ON_REOPEN = frozenset({"discovered", "matched", "shortlisted", "error", "skipped"})
 
 
 def _reopen_rows(s, ids: list, like: str) -> int:
