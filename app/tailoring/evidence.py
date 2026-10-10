@@ -58,9 +58,15 @@ _MONTHS = r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 # "**Senior Backend Engineer** | Acme | Jun 2022 - Mar 2024 | Remote"
 _EXPERIENCE_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?\*\*(?P<title>[^*|]+)\*\*\s*\|(?P<rest>.+)$")
 
+# A range is month+year or a bare year at either end: "Jun 2022 - Mar 2024",
+# "2019 - 2022", "2021 - Present". Year-only ranges were not dates to this
+# module, so "**Engineer** | Acme | 2019 - 2022" read "2019 - 2022" as an
+# EMPLOYER — and a draft that re-spaced it to "2019-2022" was blocked for an
+# invented employer — while an invented year-only range was never a date fact.
+_YEAR_TOKEN = r"(?:19|20)\d{2}"
 _DATE_RANGE_RE = re.compile(
-    rf"\b(?:{_MONTHS})[a-z]*\.?\s*\d{{4}}\s*(?:[-–—]|to)\s*"
-    rf"(?:(?:{_MONTHS})[a-z]*\.?\s*\d{{4}}|present|current|now|ongoing)",
+    rf"\b(?:(?:{_MONTHS})[a-z]*\.?\s*{_YEAR_TOKEN}|{_YEAR_TOKEN})\s*(?:[-–—]|\bto\b)\s*"
+    rf"(?:(?:{_MONTHS})[a-z]*\.?\s*{_YEAR_TOKEN}|{_YEAR_TOKEN}|present|current|now|ongoing)\b",
     re.IGNORECASE,
 )
 _STANDALONE_MONTH_YEAR_RE = re.compile(rf"\b(?:{_MONTHS})[a-z]*\.?\s*\d{{4}}\b", re.IGNORECASE)
@@ -201,6 +207,8 @@ def extract_facts(md: str) -> FactSet:
                 continue
             if _DATE_RANGE_RE.search(seg) or _STANDALONE_MONTH_YEAR_RE.search(seg):
                 continue
+            if _YEAR_RE.match(seg):
+                continue          # "**B.S.** | 2019" — a graduation year, not an employer
             # "Cincinnati, OH" / "Remote" / "Hybrid" are locations, not employers.
             if re.search(r",\s*[a-z]{2}$", seg) or seg in {"remote", "hybrid", "onsite", "on-site"}:
                 continue

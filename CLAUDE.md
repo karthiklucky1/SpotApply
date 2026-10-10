@@ -582,6 +582,23 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   not a hiring probability. Year-only dates are admitted as approximate, and only
   dates feeding a total can make a total approximate. Guards:
   `evidence_inventory`, `requirement_review`.
+- **A résumé arrives as PLAIN TEXT** (2026-10-10, `inventory.py`): PDF/DOCX uploads
+  are read back by pypdf/python-docx — no `#`, no `**` — and the inventory knew only
+  markdown: the founder's résumé rendered to PDF read ZERO roles (3/3 files).
+  `_bare_section` (exact canonical names, "EXPERIENCE"/"Skills:"/"E X P E R I E N C E";
+  never "Project Manager"), `_header_like` (a dated line that reads as a NAME, not a
+  sentence), title/employer taken from the 1–2 short lines above a date line, `###`
+  role sub-headings, and `_DEGREE_LINE_RE` (a degree is academic in any section).
+  `evidence._DATE_RANGE_RE` accepts year-only ranges ("2019 - 2022" was an EMPLOYER).
+  Tailor loop: every attempt is kept and `_best_attempt` ships the best SHIPPABLE
+  draft, not the last; a style-only Doctor failure (banned words, weak bullets)
+  ships TAILORED with `_quality_note` — ONLY fabrications, grounding and
+  `doctor_integrity` park a draft at ERROR (8 of 19 production ERRORs were style).
+  Cover readers strip the on-disk `---COVER---` header (`_cover_body`); the master
+  résumé is the NEWEST `resume.*` object (`pipeline.list_resume_objects`; upload
+  removes the other extensions; `/api/resume/synthesize` never overwrites one); the
+  extension route charges a credit only after the ERROR re-check. Guard:
+  `test_tailor_fixes`.
 - **The owner's resume rules** (2026-10-08, `tailoring/rules.py` + `render.py`):
   every tailor is a FULL rewrite (L0 skip off) under `TAILOR_SYSTEM`; then
   deterministic steps: em dashes scrubbed (date facts canonicalized in

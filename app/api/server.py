@@ -2308,6 +2308,15 @@ async def upload_resume(request: Request):
                 path = f"{uid}/resume.{ext}"
                 sb.storage.from_("resume").upload(path, content, {"upsert": "true", "content-type": content_type})
                 public_url = sb.storage.from_("resume").get_public_url(path)
+                # ONE master résumé per user. An older upload under another
+                # extension (or the onboarding stub, resume.md) would otherwise
+                # stay in the folder and could be read instead of this file.
+                try:
+                    from app.matching.pipeline import RESUME_EXTENSIONS
+                    stale = [f"{uid}/resume.{e}" for e in RESUME_EXTENSIONS if e != ext]
+                    sb.storage.from_("resume").remove(stale)
+                except Exception as _rm:
+                    log.debug("stale resume objects not removed for %s: %s", uid, _rm)
                 return {"success": True, "url": public_url, "path": path}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
@@ -2940,8 +2949,8 @@ def view_resume(request: Request) -> dict:
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
-            files = sb.storage.from_("resume").list(uid)
-            names = [f.get("name", "") for f in (files or []) if f.get("name", "").startswith("resume.")]
+            from app.matching.pipeline import list_resume_objects
+            names = list_resume_objects(sb, uid) or []     # newest first
             if names:
                 signed = sb.storage.from_("resume").create_signed_url(f"{uid}/{names[0]}", 3600)
                 url = (signed or {}).get("signedURL") or (signed or {}).get("signedUrl")
@@ -3018,6 +3027,13 @@ def synthesize_resume(request: Request) -> dict:
         f"## Experience\n{profile.current_title or ''}\n"
     )
     from app.config import settings
+    # The stub exists to unblock matching for a profile WITHOUT a résumé. The
+    # onboarding form calls this on every save, so with a résumé already on
+    # file it wrote resume.md beside the user's PDF — and the fixed md-first
+    # read order then scored and tailored from a four-line stub.
+    if _user_has_resume(uid):
+        return {"success": True, "skipped": True,
+                "reason": "A resume is already on file; it was kept."}
     if settings.use_supabase and uid != "local":
         try:
             from app.db.supabase_client import service_client
@@ -4634,6 +4650,22 @@ def _rehydrate_tailored_file(local_path: str | None, uid: str | None) -> str | N
         return None
 
 
+_COVER_MARKER = "---COVER---"
+
+
+def _cover_body(text: str) -> str:
+    """The letter itself. ``tailor.py`` writes a metadata header (company, role,
+    posted date, URL) above a ``---COVER---`` marker so the .txt on disk is
+    self-describing — and every reader handed that header on: the extension
+    pasted "Company: … URL: … ---COVER---" into cover-letter fields and the
+    drawer showed it above the letter. One strip, for every reader."""
+    if not text:
+        return ""
+    if _COVER_MARKER in text:
+        return text.split(_COVER_MARKER, 1)[1].strip()
+    return text.strip()
+
+
 @app.get("/application/{application_id}/details")
 def application_details(application_id: int, request: Request) -> dict:
     """Return tailored resume + cover letter text for modal preview."""
@@ -4695,7 +4727,8 @@ def application_details(application_id: int, request: Request) -> dict:
 
         if application.cover_letter_path:
             try:
-                cover_text = Path(application.cover_letter_path).read_text(encoding="utf-8")
+                cover_text = _cover_body(
+                    Path(application.cover_letter_path).read_text(encoding="utf-8"))
             except Exception as e:
                 cover_text = f"(Could not read cover letter: {e})"
 
@@ -5312,7 +5345,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     if not export_blocked:
         if application.cover_letter_path:
             try:
-                cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
+                cover_text = _cover_body(
+                    _P(application.cover_letter_path).read_text(encoding="utf-8"))
             except Exception:
                 pass
         if application.tailored_resume_path:
@@ -5526,8 +5560,8 @@ def _base_resume_bytes(uid: str | None):
         if settings.use_supabase and uid and uid != "local":
             from app.db.supabase_client import service_client
             sb = service_client()
-            files = sb.storage.from_("resume").list(uid) or []
-            names = [f.get("name", "") for f in files if (f.get("name") or "").startswith("resume.")]
+            from app.matching.pipeline import list_resume_objects
+            names = list_resume_objects(sb, uid) or []     # newest first
             if not names:
                 return None
             name = names[0]
@@ -5686,14 +5720,17 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             from app.tailoring.tailor import tailor_for_application
             resume_path, _ = tailor_for_application(application_id)
             path = str(resume_path)
-            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
             # The tailor may have parked the application at ERROR (grounding
             # failure) while still writing the file — re-check before serving.
+            # The credit is charged AFTER that check: a refused draft costs
+            # nothing on the settle path (_tailor_and_settle_owned) and used to
+            # cost one here, the route the extension actually attaches from.
             with get_session() as session:
                 application = session.get(Application, application_id)
                 if application and application.status == ApplicationStatus.ERROR:
                     app_notes = application.notes
                     return _grounding_blocked_response()
+            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
         except HTTPException:
             raise
         except Exception as e:

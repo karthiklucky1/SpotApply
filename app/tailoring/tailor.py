@@ -621,6 +621,57 @@ def _persist_tailored_to_storage(uid: str | None, application_id: int, files: li
         log.debug("tailored storage persist skipped: %s", e)
 
 
+#: The per-attempt state `tailor_for_application` keeps so the best draft, not
+#: the last one, is the one rendered. Order matters: the restore unpacks it.
+_ATTEMPT_FIELDS = (
+    "resume_md", "fabrications", "grounding_failed", "grounding_notes", "grounding_ran",
+    "grounding_tier", "grounding_calls", "grounding_cache_hits", "grounding_spans_changed",
+    "grounding_spans_verified", "doctor_failed", "doctor_notes", "doctor_score", "doctor_ats",
+    "doctor_verdict", "doctor_weak", "doctor_banned", "doctor_integrity", "doctor_human",
+    "doctor_fingerprints", "human_failed", "keyword_cov", "coverage_short", "locked_fields",
+    "bold_trimmed",
+)
+
+
+def _attempt_rank(a: dict) -> tuple:
+    """Higher is better. Shippable first (nothing invented, grounding not
+    failed, history intact), then the Doctor's own verdict, then reads-human,
+    then keyword coverage, then the scores — so a 72 that kept the keywords
+    beats a 74 that dropped them only when both cleared the same gates."""
+    shippable = not a["fabrications"] and not a["grounding_failed"] and not a["doctor_integrity"]
+    cov = a["keyword_cov"] or {}
+    return (
+        shippable,
+        not a["doctor_failed"],
+        not a["human_failed"],
+        not a["coverage_short"],
+        a["doctor_score"] if a["doctor_score"] is not None else -1,
+        cov.get("kept_pct") if cov.get("kept_pct") is not None else -1,
+    )
+
+
+def _best_attempt(attempts: list) -> Optional[dict]:
+    """The attempt to render: the best-ranked SHIPPABLE one, else None (the
+    caller keeps the last attempt, which the ERROR branch then refuses)."""
+    shippable = [a for a in attempts if _attempt_rank(a)[0]]
+    if not shippable:
+        return None
+    return max(shippable, key=_attempt_rank)
+
+
+def _quality_note(score, doctor_notes: Optional[str], attempts: int) -> str:
+    """What the user reads when a truthful draft did not clear the Doctor's
+    style bar: the findings, in one line, and what to do about them."""
+    findings = [ln.strip() for ln in (doctor_notes or "").splitlines()[1:] if ln.strip()]
+    findings = [f for f in findings if not f.lower().startswith("missing or altered")][:3]
+    head = (f"⚠ Quality check: {score}/100 after {attempts} draft"
+            f"{'s' if attempts != 1 else ''}." if score is not None
+            else "⚠ This draft did not clear our quality check.")
+    body = (" " + "; ".join(findings) + ".") if findings else ""
+    return (head + body + " Nothing in it contradicts your master resume, but tighten "
+            "those lines in your own words before you submit.")
+
+
 def tailor_for_application(application_id: int, user_instruction: Optional[str] = None) -> Tuple[Path, Path]:
     """Generate tailored resume + cover letter for one application."""
     import random
@@ -797,6 +848,9 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
     grounding_spans_verified = 0
     attempts_used = 0
     revision_notes = None
+    # Every attempt's draft and verdicts, so the BEST shippable one is rendered
+    # rather than simply the last (see "Best draft wins" below).
+    attempts: list = []
 
     for attempt in range(1, MAX_TAILOR_ATTEMPTS + 1):
         attempts_used = attempt
@@ -982,6 +1036,16 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 "supports it, naturally, never as a list: "
                 + ", ".join(keyword_cov["missing_achievable"]))
 
+        # ── Best draft wins ───────────────────────────────────────────────────
+        # The rebuild is not always the better draft: fixing the banned words can
+        # drop keywords or weaken a bullet, and the loop used to ship whatever the
+        # LAST attempt produced. Each attempt is kept with its verdicts; after the
+        # loop `_best_attempt` picks the strongest SHIPPABLE one (nothing
+        # invented, grounding not failed, history intact). When none is shippable
+        # the last attempt stands, and the ERROR branch below refuses it.
+        _frame = locals()
+        attempts.append({k: _frame[k] for k in _ATTEMPT_FIELDS})
+
         if break_after_checks:
             break                      # L0: nothing was generated, so nothing to rebuild
         if (not grounding_failed and not doctor_failed and not fabrications
@@ -992,6 +1056,18 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 n for n in (grounding_notes, doctor_notes, fabrication_notes, coverage_notes) if n)
             log.info("Rebuilding tailored resume for app %d (attempt %d failed review)",
                      application_id, attempt)
+
+    best = _best_attempt(attempts)
+    if best is not None and best is not attempts[-1]:
+        log.info("Tailor app %d: shipping attempt %d (doctor %s) over attempt %d (doctor %s)",
+                 application_id, attempts.index(best) + 1, best["doctor_score"],
+                 len(attempts), attempts[-1]["doctor_score"])
+        (resume_md, fabrications, grounding_failed, grounding_notes, grounding_ran,
+         grounding_tier, grounding_calls, grounding_cache_hits, grounding_spans_changed,
+         grounding_spans_verified, doctor_failed, doctor_notes, doctor_score, doctor_ats,
+         doctor_verdict, doctor_weak, doctor_banned, doctor_integrity, doctor_human,
+         doctor_fingerprints, human_failed, keyword_cov, coverage_short, locked_fields,
+         bold_trimmed) = (best[k] for k in _ATTEMPT_FIELDS)
 
     # Build output paths — name files after the actual application owner.
     # Prefer the user's saved profile (multi-tenant); fall back to the static
@@ -1275,10 +1351,18 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
             app.status = ApplicationStatus.ERROR
             app.notes = grounding_notes
             log.warning("Application %d blocked at ERROR: grounding failure", application_id)
-        elif doctor_failed:
+        elif doctor_integrity:
+            # The Doctor's HARD gate: an employer, an employment date range or a
+            # degree from the user's real history is missing or altered. That is
+            # a truth failure and is withheld like a fabrication. Its other
+            # findings (banned words, bullets without a verb or metric, keyword
+            # coverage) are style: a weak draft, not a false one, delivered
+            # below with the findings attached. 8 of the 19 drafts production
+            # ever parked at ERROR were style-only — the user got nothing over
+            # the word "dynamic".
             app.status = ApplicationStatus.ERROR
             app.notes = doctor_notes
-            log.warning("Application %d blocked at ERROR: doctor quality failure", application_id)
+            log.warning("Application %d blocked at ERROR: doctor integrity failure", application_id)
         elif not grounding_ran and settings.grounding_required:
             # Strict posture: refuse to hand over a résumé whose claims were never
             # checked. Off by default because a transient ML-stack failure would
@@ -1301,6 +1385,8 @@ def tailor_for_application(application_id: int, user_instruction: Optional[str] 
                 notes.append(_unverified_note)
             if human_failed:
                 notes.append(_style_note)
+            if doctor_failed:
+                notes.append(_quality_note(doctor_score, doctor_notes, attempts_used))
             if skipped_reason:
                 notes.append(skipped_reason)
             if pdf_withheld:

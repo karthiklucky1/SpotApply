@@ -146,6 +146,134 @@ _RANGE_RE = re.compile(
 _LOCATION_TAIL_RE = re.compile(
     r"^(?:remote|hybrid|on-?site|[a-z .'-]+,\s*[a-z]{2}|[a-z .'-]+,\s*[a-z ]+)$", re.I)
 
+# ── headers in every shape a résumé actually arrives in ─────────────────────
+# A PDF or DOCX upload is read back as PLAIN TEXT (pipeline._fetch_resume_from_
+# storage): no `#`, no `**`. Measured 2026-10-10 on the three founder résumés
+# rendered to PDF/DOCX and read back the way Storage returns them: every one
+# parsed to ZERO roles and "none on the resume" for tenure, while the same text
+# as markdown read 3 years 2 months. The rules below recognise the shapes that
+# text has — a bare "EXPERIENCE" line, "Title | Company | dates" without bold,
+# a title on one line and the dates on the next — without loosening what counts
+# as a claim.
+_BULLET_GLYPHS = "-*•·–—‣▪◦●» \t"
+_SKILLS_SECTION_RE = re.compile(
+    r"\b(?:skill|technolog|tool|competenc|stack|expertise|languages)", re.I)
+#: A line that IS a section name (optionally decorated: "EXPERIENCE:", "— Skills —").
+#: Exact names only: "Software Engineering Intern" and "Project Manager" contain
+#: section words and must never be read as sections, or every role under them
+#: inherits the wrong kind.
+_CANONICAL_SECTION_RE = re.compile(
+    r"^(?:"
+    r"(?:professional|work|relevant|industry|employment|research|teaching|leadership|"
+    r"volunteer|internship|clinical|military|other|additional|related)\s+experience"
+    r"|experience|employment(?:\s+history)?|work\s+history|career\s+(?:history|summary)"
+    r"|internships?|positions?\s+held"
+    r"|(?:technical|personal|academic|selected|key|notable|side|open[- ]source|software)"
+    r"\s+projects?|projects?"
+    r"|education(?:\s*(?:&|and)\s*(?:training|certifications?))?|academic\s+background"
+    r"|(?:relevant\s+)?coursework|research|publications?|thesis"
+    r"|(?:technical|core|key|relevant|professional)\s+skills"
+    r"|skills(?:\s*(?:&|and)\s*(?:tools|technologies|interests|expertise))?"
+    r"|technologies|tools|core\s+competencies|competencies|languages|technical\s+summary"
+    r"|areas\s+of\s+expertise|summary\s+of\s+qualifications"
+    r"|(?:professional\s+|career\s+|executive\s+)?(?:summary|profile|objective)|about(?:\s+me)?"
+    r"|highlights|(?:licenses?\s*(?:&|and)\s*)?certifications?(?:\s*(?:&|and)\s*licenses?)?"
+    r"|certificates|licenses?|training"
+    r"|awards(?:\s*(?:&|and)\s*(?:honors|recognition))?|honors(?:\s*(?:&|and)\s*awards)?"
+    r"|achievements|accomplishments"
+    r"|volunteer(?:ing|\s+work|\s+activities)?|community\s+(?:service|involvement)"
+    r"|leadership(?:\s*(?:&|and)\s*activities)?|activities|extracurricular(?:\s+activities)?"
+    r"|interests|hobbies|references|additional\s+information|affiliations|memberships"
+    r"|professional\s+(?:affiliations|memberships|development)"
+    r")$", re.I)
+_HEADER_SMALL_WORDS = frozenset({
+    "at", "of", "and", "the", "for", "in", "a", "an", "&", "to", "via", "with",
+    "de", "la", "du", "von", "van", "inc", "llc", "ltd", "co", "corp", "plc", "gmbh"})
+_SENTENCE_END = (".", "!", "?", ";")
+_CITY_STATE_RE = re.compile(r"^[a-z .'-]+,\s*[a-z]{2}$", re.I)
+_CONTACT_LINE_RE = re.compile(r"@|https?://|www\.|linkedin\.|github\.|\d{3}[-.) ]\d{3}[-. ]\d{4}")
+_DEGREE_LINE_RE = re.compile(
+    r"\b(?:b\.s\.|m\.s\.|b\.a\.|m\.a\.|b\.e\.|m\.e\.|ph\.?d|bsc|msc|b\.?tech|m\.?tech|mba"
+    r"|bachelor(?:'s)?|master(?:'s)?\s+(?:of|in|degree)|doctor(?:ate)?\s+of"
+    r"|associate(?:'s)?\s+(?:of|degree)|(?:bs|ms|ba|ma|be|me)\s+in\s+|gpa\b"
+    r"|high\s+school\s+diploma)", re.I)
+
+
+def _bare_section(line: str) -> Optional[str]:
+    """'EXPERIENCE', 'Work Experience:', '— Skills —' → the section name, else None."""
+    s = (line or "").strip()
+    if not s or _RANGE_RE.search(s) or s.startswith("#"):
+        return None
+    core = s.strip(" :|—–-_[]()*#•·\t")
+    if re.fullmatch(r"(?:[A-Za-z]\s)+[A-Za-z]", core):
+        core = core.replace(" ", "")          # "E X P E R I E N C E" (small caps)
+    if not core or len(core.split()) > 5:
+        return None
+    return core if _CANONICAL_SECTION_RE.match(core) else None
+
+
+def _lowercase_share(words: Sequence[str]) -> float:
+    cands = [w for w in words if w[:1].isalpha()]
+    if not cands:
+        return 0.0
+    low = sum(1 for w in cands
+              if w[0].islower() and w.lower().strip(".,") not in _HEADER_SMALL_WORDS)
+    return low / len(cands)
+
+
+def _header_like(raw: str) -> bool:
+    """Does a line carrying a date range read as a ROLE HEADER rather than a
+    bullet that happens to mention dates? Headers are names: title case or
+    caps, pipe- or comma-separated, no sentence punctuation. A bullet reads as
+    a sentence ("Led the migration from Jan 2020 - Mar 2021 ...")."""
+    core = (raw or "").strip().lstrip(_BULLET_GLYPHS).strip()
+    rest = _RANGE_RE.sub(" ", core).strip(" ,|()–—-:\t")
+    if not rest:
+        return True
+    if "|" in rest:
+        return True
+    if rest.endswith(_SENTENCE_END):
+        return False
+    words = rest.split()
+    if len(words) > 12:
+        return False
+    return _lowercase_share(words) <= 0.34
+
+
+def _short_header_line(line: str) -> bool:
+    """A title or employer line above a date line: short, name-like, not a
+    section, not a bullet, not contact details, not a bare location."""
+    s = (line or "").strip()
+    if not s or _bare_section(s) or _RANGE_RE.search(s) or _CONTACT_LINE_RE.search(s):
+        return False
+    core = s.lstrip("#").strip().lstrip(_BULLET_GLYPHS).strip()
+    if s.startswith("#") and _CANONICAL_SECTION_RE.match(core):
+        return False
+    if not core or core.endswith(_SENTENCE_END) or len(core.split()) > 8:
+        return False
+    # A bare place ("Columbus, OH", "Remote") is not a title or an employer.
+    # Only the City, ST shape is excluded: `_LOCATION_TAIL_RE`'s "City, Country"
+    # alternative also matches "B.S. in Statistics, University of Illinois".
+    if _CITY_STATE_RE.match(core) or core.lower() in ("remote", "hybrid", "onsite", "on-site"):
+        return False
+    return _lowercase_share(core.split()) <= 0.34
+
+
+def _preceding_header_lines(lines: Sequence[str], i: int, limit: int = 2) -> List[str]:
+    """Up to ``limit`` short header-like lines directly above line ``i``
+    (nearest first), stopping at the first line that is not one."""
+    out: List[str] = []
+    back = i - 1
+    while back >= 0 and len(out) < limit:
+        prev = lines[back].strip()
+        back -= 1
+        if not prev:
+            continue
+        if not _short_header_line(prev):
+            break
+        out.append(prev.lstrip("#").strip().lstrip(_BULLET_GLYPHS).strip())
+    return out
+
 
 def _span_id(text: str) -> str:
     """Content address for one claim line.
@@ -375,6 +503,12 @@ def _section_kind(header: str) -> Optional[str]:
 def _refine_kind(kind: str, title: str, org: str) -> str:
     """A title/employer override beats the section it sits under."""
     blob = f"{title} {org}"
+    if _DEGREE_LINE_RE.search(title or ""):
+        # "B.S. Computer Science, Ohio State University | 2018 - 2022" in a résumé
+        # whose sections were lost to PDF extraction is a degree, not four years
+        # of employment. Judged on the TITLE only: an engineer employed BY a
+        # university is still employed.
+        return ACADEMIC
     for pattern, refined in _TITLE_KINDS:
         if pattern.search(blob):
             # An academic section stays academic; a title override cannot promote
@@ -453,20 +587,49 @@ def build_inventory(master_md: str, *, extra_skills: Sequence[str] = ()) -> Inve
     owner: Dict[int, int] = {}
     section = ""
     section_kind: Optional[str] = None
+    section_level = 0
     current: Optional[int] = None
     pending_spans: Dict[int, List[str]] = {}
     skills_section_lines: List[str] = []
     in_skills = False
 
+    def _enter_section(name: str, level: int) -> None:
+        nonlocal section, section_kind, section_level, current, in_skills
+        section = name
+        section_kind = _section_kind(name)
+        section_level = level
+        current = None
+        in_skills = bool(_SKILLS_SECTION_RE.search(name))
+
     for i, raw in enumerate(lines):
         header = _SECTION_RE.match(raw)
         if header:
-            section = header.group(1).strip()
-            section_kind = _section_kind(section)
-            current = None
-            in_skills = bool(re.search(r"\b(?:skill|technolog|tool|competenc|stack)",
-                                       section, re.I))
-            continue
+            htext = header.group(1).strip()
+            level = len(raw.strip()) - len(raw.strip().lstrip("#"))
+            if _RANGE_RE.search(htext):
+                # "### Senior Engineer | Acme | 2019 - 2022": a role written as a
+                # sub-heading. Read as a role line; it is not a section.
+                raw = htext
+                current = None
+            elif (section_level and level > section_level
+                  and not _CANONICAL_SECTION_RE.match(htext)):
+                # "### B.S. Computer Science, Ohio State" under "## Education",
+                # "### Acme Corp" under "## Experience": a sub-heading naming a
+                # role or school, whose dates follow on the next line. It is the
+                # title source for that date line (below) and never replaces
+                # the section it sits in — doing so made the degree PROFESSIONAL.
+                current = None
+                continue
+            else:
+                _enter_section(htext, level)
+                continue
+        else:
+            bare = _bare_section(raw)
+            if bare is not None:
+                # "EXPERIENCE" / "Technical Skills:" — the section names a PDF
+                # or DOCX upload keeps once its markup is gone.
+                _enter_section(bare, section_level or 2)
+                continue
 
         if in_skills:
             # Collect every line until the next header — a skills block is
@@ -478,20 +641,32 @@ def build_inventory(master_md: str, *, extra_skills: Sequence[str] = ()) -> Inve
 
         rng = _RANGE_RE.search(raw)
         pipe = _PIPE_HEADER_RE.match(raw)
-        if rng and (pipe or not _is_claim_line(raw)):
+        if rng and (pipe or _header_like(raw)):
             if pipe:
                 title = pipe.group("title").strip()
                 org = _pipe_org(pipe.group("rest"))
             else:
-                stripped = (raw[:rng.start()] + " " + raw[rng.end():]).strip(" ,|–—-\t")
-                title, org = _split_header(stripped)
-                if not title:
-                    # The date sits on its own line; the header is just above it.
-                    for back in range(i - 1, max(i - 3, -1), -1):
-                        prev = lines[back].strip()
-                        if prev and not _RANGE_RE.search(prev) and not _SECTION_RE.match(prev):
-                            title, org = _split_header(prev.lstrip("-*•· \t"))
-                            break
+                stripped = (raw[:rng.start()] + " " + raw[rng.end():]).strip(" ,|()–—-\t")
+                title, org = _split_header(stripped.lstrip(_BULLET_GLYPHS))
+                if not title or not org:
+                    # The date sits on its own line, or shares a line with only
+                    # the employer: the title (and maybe the employer) is the
+                    # short line or two just above it.
+                    #   Software Engineer            Software Engineer
+                    #   Acme Corp, Columbus, OH      Acme Corp | Jan 2020 - Present
+                    #   Jan 2020 - Present
+                    above = _preceding_header_lines(lines, i)
+                    if not title and above:
+                        if len(above) > 1:
+                            # title line, then employer line ("Globex Corporation,
+                            # Chicago, IL" — the employer is its FIRST field).
+                            title, _ = _split_header(above[1])
+                            org, _ = _split_header(above[0])
+                        else:
+                            title, org = _split_header(above[0])
+                    elif title and not org and above:
+                        org = title
+                        title, _ = _split_header(above[0])
             s_abs, s_guess = _abs_month(rng.group("start"))
             e_abs, e_guess = _abs_month(rng.group("end"))
             kind = _refine_kind(section_kind or PROFESSIONAL, title, org)

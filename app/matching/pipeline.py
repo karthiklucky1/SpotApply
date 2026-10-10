@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -232,30 +233,74 @@ def _load_resume_file(user_id: str | None = None) -> str:
     return p.read_text(encoding="utf-8")
 
 
+RESUME_EXTENSIONS = ("pdf", "docx", "txt", "md")
+_RESUME_OBJECT_RE = re.compile(r"^resume\.(?:pdf|docx|txt|md)$", re.IGNORECASE)
+
+
+def list_resume_objects(sb, user_id: str) -> list[str] | None:
+    """The ``resume.<ext>`` object names in a user's Storage folder, NEWEST
+    first (by ``updated_at``/``created_at``; ties broken pdf > docx > txt > md).
+    ``None`` means the listing itself failed — "no résumé" and "could not look"
+    are different answers and the callers treat them differently.
+
+    Why newest: onboarding writes a profile stub as ``resume.md``
+    (``/api/resume/synthesize``) and the upload route writes ``resume.<ext of
+    the file>``, so one folder can hold both. Reading by a FIXED extension
+    order (md first) made the stub win over a PDF uploaded minutes later — for
+    scoring, tailoring and the extension's "original resume" alike — and
+    nothing the user did could change it short of re-uploading as markdown.
+    """
+    try:
+        files = sb.storage.from_("resume").list(user_id) or []
+    except Exception as e:
+        log.debug("resume listing failed for %s: %s", user_id, e)
+        return None
+    ranked: list[tuple[str, int, str]] = []
+    for f in files:
+        name = str((f.get("name") if isinstance(f, dict) else getattr(f, "name", "")) or "")
+        if not _RESUME_OBJECT_RE.match(name):
+            continue
+        stamp = ""
+        if isinstance(f, dict):
+            stamp = str(f.get("updated_at") or f.get("created_at") or "")
+        ext = name.rsplit(".", 1)[-1].lower()
+        ranked.append((stamp, -RESUME_EXTENSIONS.index(ext), name))
+    ranked.sort(reverse=True)
+    return [name for _, _, name in ranked]
+
+
+def resume_text_from_bytes(name: str, data: bytes) -> str:
+    """Plain text from an uploaded résumé file, by extension."""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext == "docx":
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if ext == "pdf":
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    return data.decode("utf-8", errors="ignore")
+
+
 def _fetch_resume_from_storage(user_id: str) -> str:
     """The actual Storage download + parse (uncached; callers go through
     _load_resume_file). Raises when no résumé exists — a MISS is never cached,
     so a user who uploads seconds later isn't stuck behind a negative entry."""
-    for ext in ("md", "txt", "pdf", "docx"):
+    from app.db.supabase_client import service_client
+    sb = service_client()
+    names = list_resume_objects(sb, user_id)
+    if names is None:
+        # The listing is unavailable: fall back to trying each name, newest
+        # kind first, rather than reporting a résumé the user has as missing.
+        names = [f"resume.{ext}" for ext in RESUME_EXTENSIONS]
+    for name in names:
         try:
-            from app.db.supabase_client import service_client
-            sb = service_client()
-            path = f"{user_id}/resume.{ext}"
-            data = sb.storage.from_("resume").download(path)
+            data = sb.storage.from_("resume").download(f"{user_id}/{name}")
             if data:
-                if ext in ("md", "txt"):
-                    return data.decode("utf-8", errors="ignore")
-                # For PDF/DOCX, extract text
-                if ext == "docx":
-                    import io
-                    from docx import Document
-                    doc = Document(io.BytesIO(data))
-                    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-                if ext == "pdf":
-                    import io
-                    from pypdf import PdfReader
-                    reader = PdfReader(io.BytesIO(data))
-                    return "\n".join((page.extract_text() or "") for page in reader.pages)
+                return resume_text_from_bytes(name, data)
         except Exception:
             continue
     raise ValueError("No resume found. Please upload your resume in the Profile page first.")
