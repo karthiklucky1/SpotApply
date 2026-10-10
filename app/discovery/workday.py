@@ -95,6 +95,11 @@ class WorkdayScraper:
         # mid-pagination failure (or hitting max_total on a big board) would
         # permanently close live postings and SKIP their applications.
         self.fetch_complete = True
+        # The LISTING alone: False only when a page failed or the cap truncated
+        # the walk — a failed detail GET leaves it True. The pulse lane's
+        # board-absence close reads THIS, because absence is a listing question
+        # and detail-fetch luck must not decide what gets closed.
+        self.listing_complete = True
         # LISTING-phase identity of every tech posting considered, collected
         # BEFORE the per-posting detail GETs. The pulse lane hashes THESE for
         # its poll signature: the parsed job list shrinks with every failed
@@ -123,6 +128,7 @@ class WorkdayScraper:
                     log.warning("Workday fetch failed for %s: HTTP %d", tenant, r.status_code)
                     # If offset is 0, this is a fatal run error
                     self.fetch_complete = False
+                    self.listing_complete = False
                     self.signature_stable = False
                     return None if offset == 0 else jobs
                     
@@ -143,6 +149,7 @@ class WorkdayScraper:
                     if len(self.signature_entries) >= max_total:
                         # Truncated at the cap — the board may hold more.
                         self.fetch_complete = False
+                        self.listing_complete = False
                         break
                     # Stable listing identity, recorded whether or not the
                     # detail fetch below succeeds.

@@ -789,13 +789,16 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
     # lane can never overlap itself waiting on slow boards.
     _live_budget = _CycleBudget()
 
-    def _close_dead(job_id: int) -> None:
-        """Take a conclusively dead posting out of the queue.
+    def _close_dead(job_id: int, pair=None) -> None:
+        """Take a conclusively dead posting out of the queue — EVERY copy.
 
         Same reason as the matching lane's own dead path and `slate.place()`:
         refusing a job without closing it leaves the row open, so every later
         cycle re-nominates it. Production refused one posting 17 times in 7
-        hours. Only ever reached on REMOVED/EXPIRED.
+        hours. Only ever reached on REMOVED/EXPIRED. Since 2026-10-10 the other
+        copies of the posting close too (close_dead_everywhere): this one row
+        used to close while the same dead posting stayed queued for other
+        users and on their boards.
         """
         try:
             with get_session() as s:
@@ -807,6 +810,20 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                     s.commit()
         except Exception as e:
             log.debug("could not close dead job %s: %s", job_id, e)
+        if pair:
+            _close_everywhere_from_cache(pair, "before delivery")
+
+    def _close_everywhere_from_cache(pair, found_by: str) -> None:
+        try:
+            from app.strategy.delivery_gate import _cached as _gate_cached
+            from app.strategy.delivery_gate import close_dead_everywhere as _close_all
+            src, ext, url = pair
+            src = src.value if hasattr(src, "value") else str(src)
+            state, _ = _gate_cached(src, str(ext))
+            if state:
+                _close_all(src, str(ext), state, found_by=found_by, checked_url=url or "")
+        except Exception as e:
+            log.debug("close-everywhere skipped: %s", e)
 
     def _liveness_pair(job_id: int):
         """(source, external_id, url) for one job — a tiny projected read."""
@@ -818,6 +835,7 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
         except Exception:
             return None
 
+    _dead_at_place: list = []
     for jid, score in sorted(scored, key=lambda x: -x[1]):  # best first
         is_local = jid in local_jids
         if score < shortlist_threshold(is_local):
@@ -830,7 +848,7 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
         _pair = _liveness_pair(jid)
         if _pair and _verified_dead(*_pair, budget=_live_budget):
             dead_skipped += 1
-            _close_dead(jid)
+            _close_dead(jid, _pair)
             continue                      # try the next candidate; do not stop
         # A first-hour catch-up posting (older than the normal window) needs
         # POSITIVE evidence it is still open, not just "not known dead".
@@ -850,6 +868,8 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
             res = _slate.place(session, job, score, user_id=uid, is_local=is_local)
             session.commit()
             if not res.created:
+                if res.outcome == "dead" and _pair:
+                    _dead_at_place.append(_pair)   # closed everywhere below, outside the session
                 if res.outcome == "below_cutoff":
                     break
                 continue
@@ -863,6 +883,8 @@ def _shortlist_user(uid, scored: List[Tuple[int, float]], stats: dict) -> None:
                     session.commit()
             shortlisted.append(jid)
             today_count += 1
+    for _p in _dead_at_place:
+        _close_everywhere_from_cache(_p, "at delivery")
     if dead_skipped:
         stats["dead_before_delivery"] = stats.get("dead_before_delivery", 0) + dead_skipped
     stats["shortlisted"] += len(shortlisted)
@@ -1723,6 +1745,23 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # each line is that cycle's activity rather than an ever-growing total, and
     # only when something actually happened. Aggregate keys only: fixed strings
     # and by_source:<ats>, never a job or external id.
+    # Re-verify postings already ON boards (2026-10-10): the gate checked a
+    # posting at delivery and never again. Bounded — its own wall-clock
+    # allowance, a per-cycle request cap and a platform daily cap
+    # (settings.liveness_reverify_*) — and AFTER scoring, so it can never
+    # spend the cycle's scoring time (the housekeeping rule).
+    try:
+        if settings.liveness_gate_enabled and int(settings.liveness_reverify_per_cycle or 0) > 0:
+            from app.strategy.delivery_gate import reverify_delivered as _reverify
+            _rv = _reverify(max_seconds=float(settings.liveness_reverify_seconds_per_cycle),
+                            max_checks=int(settings.liveness_reverify_per_cycle),
+                            min_age_hours=int(settings.liveness_reverify_hours),
+                            daily_cap=int(settings.liveness_reverify_daily_cap))
+            if _rv.get("checked") or _rv.get("closed") or _rv.get("closed_known_dead"):
+                stats["reverify"] = _rv
+    except Exception as e:
+        log.debug("post-delivery re-verification skipped: %s", e)
+
     try:
         from app.strategy.delivery_gate import metrics_snapshot as _gate_metrics
         _gate = _gate_metrics(reset=True)

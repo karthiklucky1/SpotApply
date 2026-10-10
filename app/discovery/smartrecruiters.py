@@ -135,6 +135,9 @@ class SmartRecruitersScraper:
         total_found = payload.get("totalFound")
         self.fetch_complete = not (
             isinstance(total_found, int) and total_found > len(postings))
+        # The listing is one atomic page: complete unless truncated. Detail
+        # failures below flip fetch_complete, never this (board-absence reads it).
+        self.listing_complete = self.fetch_complete
         if not self.fetch_complete:
             log.info("SmartRecruiters[%s]: board truncated (%d of %d) — ghost-close disabled",
                      self.company_slug, len(postings), total_found)

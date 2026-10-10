@@ -541,3 +541,169 @@ def confirmed_open(source, external_id: str, url: str,
     ok = state == JobLivenessState.LIVE.value
     _bump("catchup_open_checked" if ok else "catchup_refused_unconfirmed")
     return ok
+
+
+# ── Death AFTER delivery ─────────────────────────────────────────────────────
+# Production review, 2026-10-10: the gate verified a posting at delivery and
+# never again. The pulse lane re-fetched live boards every 5-60 minutes and
+# closed nothing; `mark_ghost_jobs` reached the 400 oldest boards per 6-hour
+# pass and recorded absence for SHARED rows only. So a posting that closed the
+# day after it reached a board stayed there until the 5-day freshness sweep
+# (14 days once tailored) — the "dead jobs" users keep opening. Two fixes, both
+# conservative: absence from a COMPLETE listing closes every copy for 0 HTTP,
+# and postings already on boards are re-checked on a bounded schedule.
+
+def close_absent_from_board(source, company: str, present_ids, *, listing_complete: bool,
+                            max_closes: int = 50, max_share: float = 0.5) -> dict:
+    """A posting missing from a COMPLETE board listing is gone: close the shared
+    row, the queued copies and the copies waiting on boards (`_close_copies`),
+    and record REMOVED so the gate never needs a request for it.
+
+    Guards, each a known failure class:
+    * an incomplete or EMPTY listing records nothing — absence from a partial
+      list is not absence (Workday caps a fetch at 100, a failed page truncates);
+    * more than ``max_share`` of the board's known open postings vanishing at
+      once is a changed filter or a renamed board, never a mass closing: skipped
+      and said so (the full lane's `mark_ghost_jobs` had no such guard);
+    * at most ``max_closes`` postings per board per call, so one tick's
+      bookkeeping stays bounded;
+    * a BARE id (job_identity.looks_unscoped) closes only this company's copies.
+    Counts only, never ids."""
+    from sqlmodel import select
+
+    from app.db.init_db import get_session
+    from app.db.models import Job, JobSource
+    from app.discovery import liveness as lv
+    from app.discovery.job_identity import looks_unscoped
+    from app.discovery.pipeline import SHARED_POOL_USER
+
+    out = {"gone": 0, "jobs_closed": 0, "applications_removed": 0, "kept_engaged": 0, "skipped": ""}
+    src = (source.value if hasattr(source, "value") else str(source or "")).lower()
+    present = {str(p) for p in (present_ids or []) if p}
+    if not listing_complete:
+        out["skipped"] = "incomplete_listing"
+        return out
+    if not present:
+        out["skipped"] = "empty_listing"
+        return out
+    if src not in _VERIFIABLE_SOURCES:
+        out["skipped"] = "unverifiable_source"
+        return out
+    try:
+        src_enum = JobSource(src)
+    except ValueError:
+        out["skipped"] = "unknown_source"
+        return out
+    company = (company or "").strip()
+    if not company:
+        out["skipped"] = "no_company"
+        return out
+    with get_session() as s:
+        known = [str(e) for e in s.exec(select(Job.external_id).where(
+            Job.source == src_enum, Job.company == company,
+            Job.user_id == SHARED_POOL_USER, Job.is_closed == False,  # noqa: E712
+        )).all() if e]
+    gone = sorted({e for e in known if e not in present})
+    if not gone:
+        return out
+    if len(known) >= 10 and len(gone) > max_share * len(known):
+        out["skipped"] = "mass_absence"
+        _bump("board_absence_mass_skipped")
+        return out
+    gone = gone[:max(1, int(max_closes))]
+    out["gone"] = len(gone)
+    with get_session() as s:
+        rows = s.exec(select(Job.id, Job.external_id, Job.company).where(
+            Job.source == src_enum, Job.external_id.in_(gone), Job.is_closed == False,  # noqa: E712
+        )).all()
+        ids = [r[0] for r in rows
+               if not looks_unscoped(src, str(r[1])) or (r[2] or "").strip() == company]
+        from datetime import datetime as _dt
+        res = _close_copies(
+            s, ids,
+            closed_reason=f"Deactivated (posting REMOVED, absent from the {src} board listing)",
+            note=f"\nJob closed — the posting left the company's {src} board on {_dt.utcnow():%Y-%m-%d}.")
+        s.commit()
+    out.update({k: res[k] for k in ("jobs_closed", "applications_removed", "kept_engaged")})
+    # Evidence AFTER the closes committed, in its own session (a second write
+    # connection while the first holds locks waits out SQLite's lock timeout).
+    try:
+        lv.record_board_absence(src, present_ids=present, known_ids=gone, board_complete=True)
+    except Exception as e:
+        log.debug("board-absence liveness record skipped for %s: %s", src, e)
+    _bump("board_absence_closed", out["jobs_closed"])
+    _bump("board_absence_applications_removed", out["applications_removed"])
+    return out
+
+
+def reverify_delivered(*, max_seconds: float = 15.0, max_checks: int = 40,
+                       min_age_hours: int = 24, daily_cap: int = 2000) -> dict:
+    """Re-check postings that are ON boards right now (applications still
+    waiting on the user) whose liveness verdict is older than ``min_age_hours``
+    or missing — oldest verdict first. A REMOVED/EXPIRED answer closes every
+    copy; a refusal (429/403/timeout) changes nothing, as everywhere else.
+
+    Bounded three ways: ``max_seconds`` of wall clock, ``max_checks`` requests
+    per call, and a platform ``daily_cap`` taken from `daily_counter` (survives
+    deploys and replicas). A posting already known dead but still on a board
+    (the free board-absence signal landed after delivery) is closed without a
+    request. Counts only."""
+    from datetime import datetime as _dt
+
+    from sqlmodel import select
+
+    from app.common import daily_counter
+    from app.db.init_db import get_session
+    from app.db.models import Application, ApplicationStatus, Job
+    from app.discovery import liveness as lv
+
+    started = time.monotonic()
+    out = {"candidates": 0, "due": 0, "checked": 0, "dead": 0, "closed": 0, "skipped_cap": 0,
+           "closed_known_dead": 0}
+    waiting = [ApplicationStatus(s) for s in _WAITING_STATUSES]
+    with get_session() as s:
+        rows = s.exec(select(Job.source, Job.external_id, Job.url).join(
+            Application, Application.job_id == Job.id,
+        ).where(Application.status.in_(waiting), Job.is_closed == False,  # noqa: E712
+                Job.url.is_not(None)).distinct().limit(2000)).all()
+    pairs = []
+    seen = set()
+    for r in rows:
+        src = r[0].value if hasattr(r[0], "value") else str(r[0])
+        key = (src, str(r[1]))
+        if src in _VERIFIABLE_SOURCES and r[2] and key not in seen:
+            seen.add(key)
+            pairs.append((src, str(r[1]), r[2]))
+    out["candidates"] = len(pairs)
+    if not pairs:
+        return out
+    states = lv.load_states([(src, ext) for src, ext, _ in pairs])
+    due = []
+    for src, ext, url in pairs:
+        state, checked = states.get((src, ext), (None, None))
+        if lv.is_dead(state):
+            res = close_dead_everywhere(src, ext, state, found_by="on re-verification after delivery",
+                                        checked_url=url)
+            out["closed_known_dead"] += res["jobs_closed"]
+            continue
+        if lv.needs_check(state, checked, max_age_hours=min_age_hours):
+            due.append((checked or _dt.min, src, ext, url))
+    due.sort(key=lambda d: d[0])
+    out["due"] = len(due)
+    for _checked, src, ext, url in due[:max(0, int(max_checks))]:
+        if time.monotonic() - started > max_seconds:
+            break
+        if not daily_counter.reserve("liveness:reverify", int(daily_cap)):
+            out["skipped_cap"] += 1
+            _bump("reverify_daily_cap_hit")
+            break
+        state, _how = verify_for_delivery(src, ext, url)
+        out["checked"] += 1
+        if lv.is_dead(state):
+            out["dead"] += 1
+            res = close_dead_everywhere(src, ext, state, found_by="on re-verification after delivery",
+                                        checked_url=url)
+            out["closed"] += res["jobs_closed"]
+    _bump("reverify_checked", out["checked"])
+    _bump("reverify_dead", out["dead"])
+    return out

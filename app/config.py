@@ -369,6 +369,16 @@ class Settings(BaseSettings):
     # only — jobs still deliver, they are just delivered unverified, which is
     # the same fail-open direction as every other inconclusive result.
     liveness_budget_seconds_per_cycle: float = 20.0  # LIVENESS_BUDGET_SECONDS_PER_CYCLE
+    # Postings already ON boards are re-checked after this long (the gate used
+    # to check once, at delivery, and never again — 2026-10-10). Per scoring
+    # cycle: at most this many GETs inside this many seconds, AFTER scoring (so
+    # it can never spend the cycle's scoring time), and never more than the
+    # platform daily cap (daily_counter: survives deploys and replicas).
+    # 13 users × ≤40 waiting postings, re-checked daily ≈ 500 GETs/day.
+    liveness_reverify_hours: int = 24                   # LIVENESS_REVERIFY_HOURS
+    liveness_reverify_per_cycle: int = 40               # LIVENESS_REVERIFY_PER_CYCLE (0 disables)
+    liveness_reverify_seconds_per_cycle: float = 15.0   # LIVENESS_REVERIFY_SECONDS_PER_CYCLE
+    liveness_reverify_daily_cap: int = 2000             # LIVENESS_REVERIFY_DAILY_CAP
     # "This job is no longer available" (POST /application/{id}/unavailable).
     # The reporter's own copy closes at once; the posting is RE-CHECKED for
     # everyone else, forced past a LIVE verdict younger than

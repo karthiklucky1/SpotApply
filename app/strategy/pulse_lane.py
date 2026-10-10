@@ -901,7 +901,10 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
              # still high means the floor itself is above what the lane can do.
              "board_cap": cap,
              "unchanged": 0, "changed": 0, "fetched_jobs": 0,
-             "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0}
+             "new_jobs": 0, "scored": 0, "shortlisted": 0, "alerts": 0,
+             # Death after delivery (delivery_gate.close_absent_from_board):
+             # postings absent from a complete listing, and what that closed.
+             "absent_gone": 0, "absent_closed": 0, "absent_removed": 0}
     # RESERVE ~40% of the budget for SCORING. During the bootstrap backlog the
     # fetch/route phase would otherwise eat the whole tick (deferring hundreds of
     # boards) and score ZERO — so fresh jobs land but sit "Queued" until the
@@ -947,6 +950,10 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 return board, None, soft_err, time.monotonic() - t0, None
             meta = {
                 "complete": bool(getattr(scraper, "fetch_complete", True)),
+                # LISTING completeness, apart from detail-fetch completeness:
+                # a failed detail GET makes the parse partial but says nothing
+                # about which postings the board lists (workday.py).
+                "listing_complete": getattr(scraper, "listing_complete", None),
                 "entries": getattr(scraper, "signature_entries", None),
                 "sig_stable": getattr(scraper, "signature_stable", None),
             }
@@ -1102,6 +1109,30 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             except Exception as e:
                 log.debug("pulse shared upsert failed %s: %s", board.slug, e)
             timings["upsert_shared"].append(time.monotonic() - _t)
+            # Death after delivery (2026-10-10): a posting missing from this
+            # listing is gone. Close EVERY copy — shared, queued, waiting on a
+            # board — for 0 HTTP. This lane re-fetches live boards every
+            # ≤60 min, so it is the fastest death signal there is; the gate
+            # never looked at a posting again after delivery, and
+            # mark_ghost_jobs reached 400 boards per 6-hour pass, shared rows
+            # only, so a posting that closed the day after it reached a board
+            # stayed there until the 5-day sweep. Only a listing we know is
+            # COMPLETE and parsed in full may say what is absent.
+            try:
+                _lc = meta.get("listing_complete")
+                if _lc is None:
+                    _lc = meta.get("complete", True)
+                _company = (((raw[0].company if raw else "") or board.company_name or "")).strip()
+                if raw and _company:
+                    from app.strategy.delivery_gate import close_absent_from_board as _close_absent
+                    _abs = _close_absent(board.ats, _company,
+                                         [getattr(r, "external_id", None) for r in raw],
+                                         listing_complete=bool(_lc) and bool(parsed_all))
+                    stats["absent_gone"] += _abs.get("gone", 0)
+                    stats["absent_closed"] += _abs.get("jobs_closed", 0)
+                    stats["absent_removed"] += _abs.get("applications_removed", 0)
+            except Exception as e:
+                log.debug("pulse absence close skipped for %s: %s", board.slug, e)
             _t = time.monotonic()
             for u in users:
                 relevant = [r for r in raw if _title_matches(r.title, u["roles"])]

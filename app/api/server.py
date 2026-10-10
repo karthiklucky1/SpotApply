@@ -8632,6 +8632,65 @@ def admin_budget_diagnostic(request: Request, user_id: str = "") -> dict:
     return _budget_diagnostic(uid)
 
 
+@app.get("/api/admin/dead-jobs")
+def admin_dead_jobs(request: Request, days: int = 14) -> dict:
+    """Dead-after-delivery, per source (2026-10-10). Of the postings placed on
+    boards in the last ``days`` (funnel `placement` events), how many were
+    later found closed — by a board listing (absent), a re-check, or a user
+    report — and how many were never checked at all (aggregator links have no
+    permalink to check). Admin-only; counts only, no ids.
+
+    Bounded: one statement under its own timeout; a timed-out read answers
+    ``degraded: true`` with no sources, never zeros."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text as _text
+    _require_admin_user(request)
+    days = max(1, min(int(days or 14), 90))
+    cut = datetime.utcnow() - timedelta(days=days)
+    sql = _text("""
+        WITH pl AS (
+            SELECT fe.job_id AS job_id, fe.created_at AS placed_at
+            FROM funnel_events fe
+            WHERE fe.stage = 'placement' AND fe.passed = TRUE
+              AND fe.created_at >= :cut AND fe.job_id IS NOT NULL
+        ), j AS (
+            SELECT pl.placed_at AS placed_at, LOWER(CAST(jb.source AS TEXT)) AS src,
+                   jb.external_id AS external_id, jb.is_closed AS is_closed,
+                   jb.closed_reason AS closed_reason
+            FROM pl JOIN job jb ON jb.id = pl.job_id
+        )
+        SELECT j.src,
+               COUNT(*) AS placed,
+               SUM(CASE WHEN j.is_closed THEN 1 ELSE 0 END) AS closed_after,
+               SUM(CASE WHEN j.closed_reason LIKE 'Reported%' THEN 1 ELSE 0 END) AS reported,
+               SUM(CASE WHEN jl.state IN ('REMOVED', 'EXPIRED') AND jl.checked_at > j.placed_at
+                        THEN 1 ELSE 0 END) AS liveness_dead_after,
+               SUM(CASE WHEN jl.state IS NULL THEN 1 ELSE 0 END) AS never_checked
+        FROM j LEFT JOIN job_liveness jl
+               ON jl.source = j.src AND jl.external_id = j.external_id
+        GROUP BY j.src
+        ORDER BY placed DESC
+    """)
+    with get_session() as session:
+        reads = _BoundedReads(session, 15)
+        rows = reads.get(None, lambda: session.execute(sql, {"cut": cut}).all())
+        degraded = reads.degraded
+    if rows is None:
+        return {"days": days, "degraded": True, "sources": [], "total_placed": None,
+                "total_closed_after": None, "dead_after_delivery_rate": None}
+    sources = [{
+        "source": r[0], "placed": int(r[1] or 0), "closed_after": int(r[2] or 0),
+        "reported_by_users": int(r[3] or 0), "liveness_dead_after": int(r[4] or 0),
+        "never_checked": int(r[5] or 0),
+    } for r in rows]
+    placed = sum(x["placed"] for x in sources)
+    closed = sum(x["closed_after"] for x in sources)
+    return {"days": days, "degraded": degraded, "total_placed": placed, "total_closed_after": closed,
+            "dead_after_delivery_rate": (round(closed / placed, 4) if placed else None),
+            "sources": sources}
+
+
 # --- User Reviews APIs ---
 
 _REVIEW_MAX_CHARS = 2000
