@@ -393,6 +393,56 @@ def main():
         check("A1 résumé endpoint called", any("resume" in p for _, p in REQUESTS))
         check("A2 no unexpected API host", True, f"{len(REQUESTS)} requests, all to the stub")
 
+        # ── E: voluntary self-identification (owner's report, 2026-10-10) ───
+        # The answers SAVED in the profile land on the form — a Greenhouse-style
+        # Hispanic/Latino Yes/No (derived from the ethnicity answer) that reveals
+        # Race, selects whose wording shares no substring with the profile value,
+        # and a React-select custom dropdown that is not a <select> at all. The
+        # same page with an UNCONFIRMED pack is left exactly as it was.
+        print("\nEEO layout (confirmed profile answers reach every control type)")
+        pack = base_pack(f"{BASE}/eeo.html")
+        pack.update({
+            "eeo_confirmed": True,
+            "gender": "Male",
+            "ethnicity": "Asian",
+            "veteran_status": "I am not a protected veteran",
+            "disability_status": "No, I do not have a disability, or history/record of having a disability",
+        })
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E1 Hispanic/Latino = No (derived from Asian)", v("#hispanic") == "No", repr(v("#hispanic")))
+        check("E2 Race revealed and set to Asian (qualifier ignored)",
+              v("#race") == "Asian (Not Hispanic or Latino)", repr(v("#race")))
+        check("E3 disability matched by category, not wording",
+              v("#disability") == "No, I do not have a disability and have not had one in the past", repr(v("#disability")))
+        check("E4 veteran = not a protected veteran", v("#veteran") == "I am not a protected veteran", repr(v("#veteran")))
+        check("E5 React-select gender answered", v("#gender-value") == "Male", repr(v("#gender-value")))
+        check("E6 non-demographic custom dropdown untouched", v("#source-value") == "", repr(v("#source-value")))
+        check("E7 name still filled", v("#first_name") == pack["first_name"], v("#first_name"))
+        page.close()
+
+        print("\nEEO layout, confirmed DECLINE")
+        pack = base_pack(f"{BASE}/eeo.html")
+        # The base pack declines gender/ethnicity; veteran/disability there are
+        # legacy "No" answers, so this scenario declines disability explicitly.
+        pack.update({"eeo_confirmed": True, "disability_status": "Decline to self-identify"})
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E8 a confirmed decline is written (Hispanic)", v("#hispanic") == "Decline To Self Identify", repr(v("#hispanic")))
+        check("E9 a confirmed decline is written (disability wording differs)",
+              v("#disability") == "I do not want to answer", repr(v("#disability")))
+        check("E10 React-select decline", v("#gender-value") == "Decline To Self Identify", repr(v("#gender-value")))
+        page.close()
+
+        print("\nEEO layout, UNCONFIRMED profile (left for the applicant)")
+        pack = base_pack(f"{BASE}/eeo.html")           # no eeo_confirmed key
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E11 selects untouched", v("#hispanic") == "" and v("#disability") == "" and v("#veteran") == "",
+              repr((v("#hispanic"), v("#disability"), v("#veteran"))))
+        check("E12 custom dropdown untouched", v("#gender-value") == "", repr(v("#gender-value")))
+        page.close()
+
         ctx.close()
 
     passed = sum(1 for _, ok, _ in results if ok)

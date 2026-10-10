@@ -129,15 +129,176 @@ function isDemographicQuestion(text) {
   return _DEMOGRAPHIC_RE.test(deaccent(String(text || '')));
 }
 
-/** An answer the user CHOSE in their profile (not a default, not "decline"). */
+/** An answer the user SAVED in their SpotApply profile. Consent is the saved
+ *  form (`eeo_confirmed`), not the wording: a saved "Decline to self-identify"
+ *  is as deliberate as "Male". The old rule skipped declines, so a confirmed
+ *  decline was the one profile answer the form then asked the user again
+ *  (owner's report, 2026-10-10: the self-identification given in the profile
+ *  was not filled). An unconfirmed profile states nothing — the server already
+ *  sends its legacy defaults as "Decline", and those are never written. */
 function eeoStated(value) {
   const v = String(value || '').trim();
-  return !!(v && _copilotPack && _copilotPack.eeo_confirmed && !/^decline\b|decline to|prefer not/i.test(v));
+  return !!(v && _copilotPack && _copilotPack.eeo_confirmed);
+}
+
+// ── EEO answer categories ────────────────────────────────────────────────────
+// Employer forms phrase the same answers a dozen ways ("Decline to
+// self-identify" / "I don't wish to answer" / "Prefer not to say"; "I am not a
+// protected veteran" / "No, I am not a veteran"), so a profile value is matched
+// to an option by CATEGORY, never by substring: "Male" contains-matches
+// "Female", and a confirmed decline matched nothing on a form whose option
+// reads "I decline to self-identify". Parenthetical qualifiers are dropped
+// first — "Asian (Not Hispanic or Latino)" is Asian, not Hispanic. Order within
+// a kind matters: the negative phrasing is tested before the positive one it
+// contains ("I am NOT a protected veteran" holds "protected veteran").
+const _EEO_DECLINE_RE = /decline|prefer not|do not wish|don.t wish|choose not|not to (?:answer|disclose|identify|self|say|specify|provide)|rather not|no answer|don.t want|not want to answer|wish not/i;
+const _EEO_CATEGORIES = {
+  gender: [
+    ['nonbinary', /non.?binary|genderqueer|gender.?(?:fluid|non.?conform|diverse)|third gender/i],
+    ['male',      /^male\b|\bman\b|^m$/i],
+    ['female',    /^female\b|\bwoman\b|^f$/i],
+    ['other',     /\bother\b|another|self.?describe|not listed/i],
+  ],
+  ethnicity: [
+    ['two_or_more',     /two or more|multi.?racial|mixed/i],
+    ['hispanic',        /hispanic|latin/i],
+    ['black',           /\bblack\b|african.?american/i],
+    ['asian',           /\basian\b/i],
+    ['native_american', /american indian|alaskan? native|native american|indigenous|first nations/i],
+    ['pacific',         /hawaiian|pacific islander/i],
+    ['white',           /\bwhite\b|caucasian/i],
+    ['middle_eastern',  /middle eastern|north african/i],
+  ],
+  veteran: [
+    ['no',  /not a (?:protected )?veteran|not protected|^no\b|i am not|do not identify/i],
+    ['yes', /^yes\b|protected veteran|i am a veteran|one or more of the classifications|identify as (?:a )?(?:protected )?veteran|disabled veteran|recently separated|active.?duty|armed forces|served/i],
+  ],
+  disability: [
+    ['no',  /^no\b|do not have|don.t have|not have a disability|no disability|never had/i],
+    ['yes', /^yes\b|i have a disability|have a disability|history.record of having|had one in the past/i],
+  ],
+  // Greenhouse asks "Are you Hispanic/Latino?" as its own Yes/No before Race.
+  hispanic: [
+    ['no',  /^no\b|not hispanic/i],
+    ['yes', /^yes\b|hispanic or latin/i],
+  ],
+};
+const _EEO_PLACEHOLDER_RE = /^(?:please )?(?:select|choose)\b|^-+$|^\s*$/i;
+
+function eeoCategory(kind, text) {
+  const t = deaccent(String(text || '')).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  if (_EEO_DECLINE_RE.test(t)) return 'decline';
+  for (const pair of (_EEO_CATEGORIES[kind] || [])) {
+    if (pair[1].test(t)) return pair[0];
+  }
+  return null;
+}
+
+/** Index of the option that answers `value` for a `kind` question, else -1. */
+function eeoPickOption(kind, value, optionTexts) {
+  const want = eeoCategory(kind, value);
+  const texts = (optionTexts || []).map(t => String(t || ''));
+  if (!want) {
+    // A value with no category: only an exact match may stand in for it.
+    const lower = String(value || '').toLowerCase().trim();
+    return lower ? texts.findIndex(t => t.toLowerCase().trim() === lower) : -1;
+  }
+  for (let i = 0; i < texts.length; i++) {
+    if (_EEO_PLACEHOLDER_RE.test(texts[i].trim())) continue;
+    if (eeoCategory(kind, texts[i]) === want) return i;
+  }
+  return -1;
+}
+
+/** The profile's answer to a `kind` question. Greenhouse's separate
+ *  "Are you Hispanic/Latino?" is derived from the ethnicity answer. */
+function eeoValueFor(pack, kind) {
+  const p = pack || {};
+  if (kind === 'gender') return p.gender || '';
+  if (kind === 'ethnicity') return p.ethnicity || '';
+  if (kind === 'veteran') return p.veteran_status || '';
+  if (kind === 'disability') return p.disability_status || '';
+  if (kind === 'hispanic') {
+    const cat = eeoCategory('ethnicity', p.ethnicity);
+    if (!cat) return '';
+    if (cat === 'decline') return 'Decline to self-identify';
+    return cat === 'hispanic' ? 'Yes' : 'No';
+  }
+  return '';
+}
+
+/** Which protected question an element asks (from its own label, name, id,
+ *  aria text — and its field block's label only when that block holds exactly
+ *  one control), or null. The kind decides WHICH profile answer is written;
+ *  a wrong guess here would write a demographic answer into another field. */
+function eeoKindOf(el) {
+  const ctx = deaccent(_eeoContextText(el)).toLowerCase();
+  if (!ctx.trim()) return null;
+  if (/hispanic|latin[oax]?\b/.test(ctx) && !/\brace\b|ethnic/.test(ctx)) return 'hispanic';
+  if (/\bgender\b|\bsex\b/.test(ctx)) return 'gender';
+  if (/\brace\b|racial|ethnic/.test(ctx)) return 'ethnicity';
+  if (/veteran/.test(ctx)) return 'veteran';
+  if (/disab/.test(ctx)) return 'disability';
+  return null;
+}
+
+function _eeoContextText(el) {
+  if (!el || !el.getAttribute) return '';
+  const parts = [];
+  try { parts.push(labelText(el) || ''); } catch (_) {}
+  for (const a of ['aria-label', 'name', 'id', 'data-automation-id', 'placeholder', 'title']) {
+    const v = el.getAttribute(a);
+    if (v) parts.push(v);
+  }
+  try {
+    const inner = el.querySelector && el.querySelector('input, [role="combobox"]');
+    if (inner && inner !== el) parts.push(_eeoContextText(inner));   // a control wrapping its input
+    const block = el.closest('[class*="field"], [class*="question"], [class*="form-group"], fieldset, li, .form-row');
+    if (block) {
+      const controls = block.querySelectorAll('select, [role="combobox"], button[aria-haspopup="listbox"], input:not([type="hidden"])');
+      const lab = block.querySelector('label, legend, [class*="label"]');
+      if (lab && controls.length <= 2) parts.push(lab.textContent || '');
+    }
+  } catch (_) {}
+  return parts.join(' ');
+}
+
+function selectEEOOption(el, kind, value) {
+  if (el.dataset && el.dataset.spotapplyUserModified === 'true') {
+    console.log('[SpotApply] Keeping your own choice in', el.name || el.id || 'a dropdown');
+    return false;
+  }
+  const opts = Array.from(el.options || []);
+  const idx = eeoPickOption(kind || eeoKindOf(el), value, opts.map(o => o.text));
+  if (idx < 0) return selectOption(el, value);     // unknown wording: the literal, or nothing
+  el.value = opts[idx].value;
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function selectEEORadio(radio, kind, value) {
+  const name = radio.getAttribute('name');
+  const group = name
+    ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`))
+    : [radio];
+  const texts = group.map(r => labelText(r) || (r.closest('label') ? r.closest('label').textContent : '') || r.value || '');
+  const idx = eeoPickOption(kind || eeoKindOf(radio), value, texts);
+  if (idx < 0) return false;
+  const pick = group[idx];
+  if (pick.dataset && pick.dataset.spotapplyUserModified === 'true') return false;
+  if (!pick.checked) {
+    pick.click();
+    if (!pick.checked) { pick.checked = true; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+  try { pick.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  return true;
 }
 
 /** Write an EEO answer only with explicit consent. Returns true if written. */
-function fillEEOField(el, value) {
-  // Consent = the popup switch, OR the user having stated this answer in their
+function fillEEOField(el, value, kind) {
+  // Consent = the popup switch, OR the user having saved this answer in their
   // own SpotApply profile (owner's rule, 2026-09-30). A remembered answer from
   // another form is still never consent (recall skips these questions).
   if (!_eeoAutofillEnabled && !eeoStated(value)) {
@@ -145,8 +306,98 @@ function fillEEOField(el, value) {
                 (el && (el.name || el.id)) || 'field');
     return false;
   }
-  if (!value) return false;
-  return el && el.tagName === 'SELECT' ? selectOption(el, value) : fillInput(el, value);
+  if (!value || !el) return false;
+  if (el.tagName === 'SELECT') return selectEEOOption(el, kind, value);
+  if (el.tagName === 'INPUT' && el.type === 'radio') return selectEEORadio(el, kind, value);
+  // A button or combobox opens asynchronously — fillEEOCustomDropdowns owns
+  // those, after the synchronous writers have run.
+  if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'combobox') return false;
+  return fillInput(el, value);
+}
+
+/** The EEO <select>s a page shows, by id or label — run twice on Greenhouse,
+ *  whose Race dropdown appears only after "Are you Hispanic/Latino?" = No. */
+function fillEEOSelectsIn(root, pack) {
+  let n = 0;
+  for (const el of root.querySelectorAll(
+    "select[id*='gender' i], select[id*='race' i], select[id*='ethnic' i], select[id*='hispanic' i], " +
+    "select[id*='veteran' i], select[id*='disab' i]"
+  )) {
+    if (el.value && el.value !== '') continue;
+    const kind = eeoKindOf(el);
+    if (!kind) continue;
+    if (fillEEOField(el, eeoValueFor(pack, kind) || 'decline', kind)) n++;
+  }
+  return n;
+}
+
+function _customDropdownHasValue(el) {
+  const txt = ((el.textContent || '') + ' ' + (el.value || '')).replace(/\s+/g, ' ').trim();
+  if (!txt) return false;
+  return !_EEO_PLACEHOLDER_RE.test(txt) && !/^select\b|^choose\b|^-$|^select an option|^select\.\.\./i.test(txt);
+}
+
+/** Voluntary self-ID on CUSTOM dropdowns — Greenhouse's React selects
+ *  (`.select__control` + `input[role=combobox]`), Workday's listbox buttons,
+ *  Avature-style comboboxes. These never rendered as <select>, so the sync
+ *  writers above could not reach them; a confirmed answer was left blank on
+ *  every such form. Same consent rule, category matching, nothing else touched. */
+async function fillEEOCustomDropdowns(pack) {
+  let n = 0;
+  const seen = new Set();
+  const controls = queryAllDeep(
+    "[role='combobox'], button[aria-haspopup='listbox'], button[data-automation-id='select-button'], [class*='select__control']"
+  );
+  for (const raw of controls) {
+    const el = (raw.closest && raw.closest('[class*="select__control"]')) || raw;
+    if (seen.has(el) || el.tagName === 'SELECT') continue;
+    seen.add(el);
+    if (!el.offsetParent && !el.getClientRects().length) continue;
+    if (el.dataset && (el.dataset.spotapplyUserModified === 'true' || el.dataset.spotapplyFilled === 'true')) continue;
+    const kind = eeoKindOf(el);
+    if (!kind) continue;
+    const value = eeoValueFor(pack, kind);
+    if (!value) continue;
+    if (!_eeoAutofillEnabled && !eeoStated(value)) {
+      console.log('[SpotApply] Leaving demographic question for you (EEO autofill is off):', kind);
+      continue;
+    }
+    if (_customDropdownHasValue(el)) continue;
+    try {
+      if (await selectEEOCustom(el, kind, value)) n++;
+    } catch (e) {
+      console.warn('[SpotApply] EEO dropdown failed:', e.message);
+    }
+  }
+  return n;
+}
+
+async function selectEEOCustom(el, kind, value) {
+  const trigger = (el.querySelector && el.querySelector('input[role="combobox"], [role="combobox"]')) || el;
+  const press = (t) => {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  };
+  try { trigger.focus(); } catch (_) {}
+  press(el);
+  if (trigger !== el) press(trigger);
+  await delay(350);
+  const options = queryAllDeep(
+    '[role="option"], [role="listbox"] li, [class*="select__option"], [data-automation-id*="option" i], ' +
+    '.wd-Dropdown-Option, [role="menuitem"], [data-automation-label]'
+  ).filter(o => o.offsetParent !== null || o.getClientRects().length);
+  const texts = options.map(o => (o.getAttribute('data-automation-label') || o.textContent || '').trim());
+  const idx = eeoPickOption(kind, value, texts);
+  if (idx < 0) {
+    try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    console.log('[SpotApply] No option answers', kind, 'on this dropdown — left for you');
+    return false;
+  }
+  press(options[idx]);
+  await delay(300);
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  return true;
 }
 
 // ── Essay prompts vs field labels ────────────────────────────────────────────
@@ -1376,27 +1627,20 @@ async function fillGreenhouse(pack) {
     else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
     else if (/pronouns/i.test(lbl)) fillInput(inp, "");
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
+      if (/hispanic|latin/i.test(lbl) && !/\brace\b|ethnic/i.test(lbl)) fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
+      else if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || 'decline', 'gender');
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || 'decline', 'disability');
       else if (/sponsor|visa|authoriz/i.test(lbl)) answerWorkAuthField(inp, pack, lbl);
       else if (/country/i.test(lbl) && residenceCountry(pack)) selectOption(inp, residenceCountry(pack));
     }
   }
 
-  // ── EEOC selects (by ID pattern, catches any missed above) ──
-  for (const el of root.querySelectorAll(
-    "select[id*='gender'], select[id*='race'], select[id*='ethnicity'], select[id*='veteran'], select[id*='disability']"
-  )) {
-    if (!el.value || el.value === "") {
-      const id = el.id.toLowerCase();
-      if (id.includes("gender")) fillEEOField(el, pack.gender || "decline");
-      else if (id.includes("race") || id.includes("ethnicity")) fillEEOField(el, pack.ethnicity || "decline");
-      else if (id.includes("veteran")) fillEEOField(el, pack.veteran_status || "decline");
-      else if (id.includes("disability")) fillEEOField(el, pack.disability_status || "decline");
-    }
-  }
+  // ── EEOC selects (by id or label; catches any missed above) ──
+  // Twice: Greenhouse reveals Race only after "Are you Hispanic/Latino?" = No.
+  fillEEOSelectsIn(root, pack);
+  setTimeout(() => { try { fillEEOSelectsIn(root, pack); } catch (_) {} }, 700);
 
   // ── Work authorization radio/select ──
   if (pack.work_authorization) {
@@ -2091,10 +2335,10 @@ async function fillAvature(pack) {
   for (const sel of document.querySelectorAll("select")) {
     if (sel.value && sel.value !== "") continue;
     const ctx = (labelText(sel) + " " + (sel.getAttribute("name") || "") + " " + (sel.id || "")).toLowerCase();
-    if (/gender/i.test(ctx)) fillEEOField(sel, pack.gender || "decline");
-    else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || "decline");
-    else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || "decline");
-    else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || "decline");
+    if (/gender/i.test(ctx)) fillEEOField(sel, pack.gender || 'decline', 'gender');
+    else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || 'decline', 'ethnicity');
+    else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || 'decline', 'veteran');
+    else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || 'decline', 'disability');
     else if (/country/.test(ctx)) { if (residenceCountry(pack)) selectOption(sel, residenceCountry(pack)); }
     else if (/sponsor|visa|authoriz/.test(ctx)) answerWorkAuthField(sel, pack, ctx);
   }
@@ -2170,10 +2414,11 @@ async function fillGeneric(pack) {
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
+      if (/hispanic|latin/i.test(lbl) && !/\brace\b|ethnic/i.test(lbl)) fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
+      else if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || 'decline', 'gender');
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || 'decline', 'disability');
     }
   }
 
@@ -2321,14 +2566,16 @@ async function fillUniversal(pack) {
       // Residence country, stated by the user — never assumed (a Toronto
       // profile was told it lives in the United States).
       matched = !!residenceCountry(pack) && !!selectOption(inp, residenceCountry(pack));
+    } else if (/hispanic|latin/i.test(signals) && !/\brace\b|ethnic/i.test(signals)) {
+      matched = fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
     } else if (/gender/i.test(signals)) {
-      matched = fillEEOField(inp, pack.gender || 'decline');
+      matched = fillEEOField(inp, pack.gender || 'decline', 'gender');
     } else if (/race|ethnic/i.test(signals)) {
-      matched = fillEEOField(inp, pack.ethnicity || 'decline');
+      matched = fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
     } else if (/veteran/i.test(signals)) {
-      matched = fillEEOField(inp, pack.veteran_status || 'decline');
+      matched = fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
     } else if (/disability/i.test(signals)) {
-      matched = fillEEOField(inp, pack.disability_status || 'decline');
+      matched = fillEEOField(inp, pack.disability_status || 'decline', 'disability');
     } else if (/sponsor|visa|authoriz/i.test(signals)) {
       matched = answerWorkAuthField(inp, pack, signals);
     } else if (/postal|zip.?code/i.test(signals)) {
@@ -3206,6 +3453,12 @@ async function fillCurrentPage(pack) {
   // Step 2: Universal signal-based filler — catches anything platform handlers missed
   try {
     const universalCount = await fillUniversal(pack);
+    // Voluntary self-ID on custom dropdowns (Greenhouse's React selects,
+    // Workday listboxes): the synchronous writers only reach <select>/radio.
+    try {
+      const eeoCustom = await fillEEOCustomDropdowns(pack);
+      if (eeoCustom) console.log('[SpotApply] Answered', eeoCustom, 'self-identification dropdown(s) from your profile');
+    } catch (e) { console.warn('[SpotApply] EEO dropdowns:', e.message); }
     if (universalCount > 0) console.log('[SpotApply] Universal filler filled', universalCount, 'additional fields');
   } catch (e) {
     console.warn('[SpotApply] universal fill error:', e.message);
@@ -4312,7 +4565,7 @@ function isActionablePage() {
   console.log('[SpotApply] Email scanner activated on', _host, '· extension v1.1.1 (paginated scan)');
 
   // ── Job-related keyword filter ────────────────────────────────────────────
-  const _JOB_KEYWORDS = /application|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent/i;
+  const _JOB_KEYWORDS = /application|applied|applying|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent|assessment|coding challenge|hackerrank|codility|phone screen|availability|thank you for your interest/i;
 
   function isJobRelated(subject, snippet) {
     return _JOB_KEYWORDS.test(subject || '') || _JOB_KEYWORDS.test(snippet || '');
@@ -4585,7 +4838,8 @@ function isActionablePage() {
   // Gmail only renders ~50 rows per page (virtualized list). To cover a full
   // date range we scrape the visible page, then click "Older" and repeat until
   // we pass the cutoff date or run out of pages.
-  async function scrapeGmailEmails(dayRange) {
+  async function scrapeGmailEmails(dayRange, selfEmail) {
+    selfEmail = String(selfEmail || '').toLowerCase();
     const results = [];
     const seen = new Set();
     const cutoff = Date.now() - (dayRange * 24 * 60 * 60 * 1000);
@@ -4606,8 +4860,15 @@ function isActionablePage() {
             || row.querySelector('.bog span');
           const subject = subjectEl?.textContent?.trim() || '';
 
-          const senderSpan = row.querySelector('.yW span[email]')
-            || row.querySelector('.zF');
+          // A thread the user replied to lists them first ("me"): take the
+          // first participant that is NOT the user, or the server would read
+          // "me" as a company and match it to any employer containing "me".
+          const spans = Array.from(row.querySelectorAll('.yW span[email]'));
+          const senderSpan = spans.find(sp => {
+            const e = (sp.getAttribute('email') || '').toLowerCase();
+            const nm = (sp.getAttribute('name') || sp.textContent || '').trim().toLowerCase();
+            return e && e !== selfEmail && nm !== 'me';
+          }) || spans[0] || row.querySelector('.zF');
           const senderEmail = senderSpan?.getAttribute('email') || '';
           const senderName = senderSpan?.getAttribute('name')
             || senderSpan?.textContent?.trim() || '';
@@ -4641,6 +4902,8 @@ function isActionablePage() {
           results.push({
             subject,
             sender: senderEmail || senderName,
+            sender_name: senderName,
+            thread_id: threadId,
             body: snippet,
             date: dateStr,
             company_guess: guessCompany(senderEmail, senderName),
@@ -4781,6 +5044,7 @@ function isActionablePage() {
         results.push({
           subject,
           sender: senderEmail || senderName,
+          sender_name: senderName,
           body: snippet,
           date: dateStr,
           company_guess: guessCompany(senderEmail, senderName),
@@ -4810,8 +5074,15 @@ function isActionablePage() {
 
   // ── Scan execution & POST to backend ──────────────────────────────────────
   async function executeScan(dayRange) {
+    // The pack first: the scraper needs the user's own address to skip "me".
+    const pack = await new Promise((resolve) => {
+      chromeCall(() => {
+        chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'],
+          (data) => resolve((data && (data.spotapply_copilot_pack || data.spotapply_fill_pack)) || null));
+      });
+    });
     const scraper = _isGmail ? scrapeGmailEmails : scrapeOutlookEmails;
-    const emails = await scraper(dayRange);
+    const emails = await scraper(dayRange, pack && pack.email);
     console.log(`[SpotApply] Scan complete: ${emails.length} job emails found`);
 
     if (emails.length === 0) {
@@ -4823,16 +5094,9 @@ function isActionablePage() {
       return;
     }
 
-    console.log('[SpotApply] executeScan: emails found > 0, getting storage...');
     // POST to backend
     return new Promise((resolve) => {
-      chromeCall(() => {
-        console.log('[SpotApply] executeScan: calling chrome.storage.local.get');
-        chrome.storage.local.get(
-          ['spotapply_copilot_pack', 'spotapply_fill_pack'],
-          async (data) => {
-            console.log('[SpotApply] executeScan: storage data received:', data);
-            const pack = data?.spotapply_copilot_pack || data?.spotapply_fill_pack;
+      (async () => {
             if (!pack || !packBase(pack)) {
               console.log('[SpotApply] executeScan: no active pack/connection found in storage.');
               showScannerToast(
@@ -4890,9 +5154,7 @@ function isActionablePage() {
               );
               resolve(false);
             }
-          }
-        );
-      });
+      })();
     });
   }
 

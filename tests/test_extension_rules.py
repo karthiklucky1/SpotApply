@@ -37,9 +37,10 @@ FUNCTIONS = [
     "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "subjectMatchesTitles", "_countryIn",
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
+    "eeoStated", "eeoCategory", "eeoPickOption", "eeoValueFor",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
-          "_OTHER_DOC_RE"]
+          "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -75,7 +76,9 @@ def _const(src: str, name: str) -> str:
     return src[m.start():end] + ";"
 
 
-PRELUDE = "\n".join([_const(CONTENT, c) for c in CONSTS] +
+# content.js state the extracted functions read (eeoStated reads the live pack).
+PRELUDE = "\n".join(["let _copilotPack = null;"] +
+                    [_const(CONTENT, c) for c in CONSTS] +
                     [_function(CONTENT, f) for f in FUNCTIONS])
 
 
@@ -298,3 +301,77 @@ def test_every_write_path_respects_the_demographic_opt_out():
     the direct EEO writer was the only path that checked (audit 2026-09-30)."""
     for fn in ("recallFromMemory", "observeField", "fillEssayQuestions"):
         assert "isDemographicQuestion(" in _function(CONTENT, fn), fn
+
+
+# ── voluntary self-identification: the saved answer lands on the form ───────
+# Owner's report (2026-10-10): the self-identification given in the profile was
+# not filled. Two causes, both pinned here: a CONFIRMED "Decline to
+# self-identify" counted as "no answer", and options were matched by substring,
+# so "I decline to self-identify" / "I don't wish to answer" never matched and
+# "Male" could land on "Female".
+
+GH_GENDER = ["Please select", "Male", "Female", "Decline To Self Identify"]
+GH_RACE = ["Please select", "American Indian or Alaskan Native", "Asian (Not Hispanic or Latino)",
+           "Black or African American (Not Hispanic or Latino)", "Hispanic or Latino",
+           "White (Not Hispanic or Latino)", "Native Hawaiian or Other Pacific Islander",
+           "Two or More Races (Not Hispanic or Latino)", "Decline To Self Identify"]
+GH_VETERAN = ["Please select", "I identify as one or more of the classifications of a protected veteran",
+              "I am not a protected veteran", "I decline to self-identify"]
+GH_DISABILITY = ["Please select", "Yes, I have a disability, or have had one in the past",
+                 "No, I do not have a disability and have not had one in the past", "I do not want to answer"]
+
+
+@pytest.mark.parametrize("kind,value,options,want", [
+    ("gender", "Male", GH_GENDER, 1),
+    ("gender", "Female", GH_GENDER, 2),
+    ("gender", "Male", ["Female", "Male"], 1),                       # never a substring match
+    ("gender", "Decline to self-identify", GH_GENDER, 3),
+    ("gender", "Decline to self-identify", ["Select", "Man", "Woman", "I don't wish to answer"], 3),
+    ("gender", "Decline to self-identify", ["Select", "Male", "Female", "Prefer not to say"], 3),
+    ("gender", "Non-binary", ["Select", "Male", "Female", "Non-Binary", "Decline"], 3),
+    ("ethnicity", "Asian", GH_RACE, 2),                                # not "Hispanic" via the qualifier
+    ("ethnicity", "Hispanic or Latino", GH_RACE, 4),
+    ("ethnicity", "White", GH_RACE, 5),
+    ("ethnicity", "Black or African American", GH_RACE, 3),
+    ("ethnicity", "Two or more races", GH_RACE, 7),
+    ("ethnicity", "Decline to self-identify", GH_RACE, 8),
+    ("veteran", "I am not a protected veteran", GH_VETERAN, 2),
+    ("veteran", "I identify as one or more of the classifications of a protected veteran", GH_VETERAN, 1),
+    ("veteran", "Decline to self-identify", GH_VETERAN, 3),
+    ("veteran", "I am not a protected veteran", ["Select", "Yes", "No", "Decline"], 2),
+    ("disability", "No, I do not have a disability, or history/record of having a disability", GH_DISABILITY, 2),
+    ("disability", "Yes, I have a disability (or previously had a disability)", GH_DISABILITY, 1),
+    ("disability", "Decline to self-identify", GH_DISABILITY, 3),
+    ("hispanic", "No", ["Please select", "Yes", "No", "Decline To Self Identify"], 2),
+    ("hispanic", "Yes", ["Please select", "Yes", "No", "Decline To Self Identify"], 1),
+    ("hispanic", "Decline to self-identify", ["Please select", "Yes", "No", "Decline To Self Identify"], 3),
+    # Unknown wording on either side: nothing is guessed.
+    ("gender", "Agender", GH_GENDER, -1),
+    ("ethnicity", "Asian", ["Please select", "Group A", "Group B"], -1),
+])
+def test_the_saved_answer_lands_on_the_matching_option(kind, value, options, want):
+    assert run_js([["eeoPickOption", kind, value, options]])[0] == want
+
+
+@pytest.mark.parametrize("ethnicity,want", [
+    ("Asian", "No"), ("White (Not Hispanic or Latino)", "No"), ("Hispanic or Latino", "Yes"),
+    ("Decline to self-identify", "Decline to self-identify"), ("", ""),
+])
+def test_greenhouses_hispanic_question_is_derived_from_the_ethnicity_answer(ethnicity, want):
+    assert run_js([["eeoValueFor", {"ethnicity": ethnicity}, "hispanic"]])[0] == want
+
+
+def test_a_confirmed_decline_is_a_stated_answer():
+    # The pack the extension holds decides consent — eeo_confirmed, not the wording.
+    confirmed = run_js([["(p => (_copilotPack = p, true))", {"eeo_confirmed": True}],
+                        ["eeoStated", "Decline to self-identify"], ["eeoStated", "Male"], ["eeoStated", ""]])
+    assert confirmed[1:] == [True, True, False]
+    unconfirmed = run_js([["(p => (_copilotPack = p, true))", {"eeo_confirmed": False, "gender": "Male"}],
+                          ["eeoStated", "Male"], ["eeoStated", "Decline to self-identify"]])
+    assert unconfirmed[1:] == [False, False]
+    assert run_js([["eeoStated", "Male"]])[0] is False      # no pack at all
+
+
+def test_the_custom_dropdown_pass_respects_the_opt_out():
+    body = _function(CONTENT, "fillEEOCustomDropdowns")
+    assert "_eeoAutofillEnabled" in body and "eeoStated(" in body and "eeoKindOf(" in body

@@ -340,7 +340,11 @@ def test_a_click_verification_close_is_not_learned_as_a_dismissal():
 
 # ── the dashboard ────────────────────────────────────────────────────────────
 
-HTML = (Path(__file__).resolve().parent.parent / "app/templates/dashboard.html").read_text()
+# The board's card markup lives in the macro + pane includes since 2026-10-10
+# (one definition for the full render and the in-place pane endpoint), so the
+# "dashboard HTML" is the template set, not one file.
+_TPL = Path(__file__).resolve().parent.parent / "app/templates"
+HTML = "\n".join((_TPL / f).read_text() for f in ("dashboard.html", "_board_macros.html", "_board_pane.html"))
 
 
 def _function(name: str) -> str:
