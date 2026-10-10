@@ -18,6 +18,7 @@ from app.discovery.base import (
     EVIDENCE_TEAM_OR_DEPARTMENT,
     GeoEvidence,
     RawJob,
+    listing_truncated,
 )
 from app.discovery.hiring_context import put
 
@@ -36,6 +37,8 @@ class RecruiteeScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"https://{self.board_slug}.recruitee.com/api/offers/"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -55,7 +58,8 @@ class RecruiteeScraper:
 
         payload = r.json()
         jobs: List[RawJob] = []
-        for j in payload.get("offers", []):
+        listing = payload.get("offers", [])
+        for j in listing:
             ext_id = str(j.get("id") or "").strip()
             if not ext_id:
                 continue
@@ -115,5 +119,9 @@ class RecruiteeScraper:
                     geo=geo,
                 )
             )
+        # Unpublished offers are off the public board, so skipping them does
+        # not make the listing partial.
+        self.fetch_complete = ("offers" in payload and isinstance(listing, list)
+                               and not listing_truncated(payload, len(listing)))
         log.info("Recruitee[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

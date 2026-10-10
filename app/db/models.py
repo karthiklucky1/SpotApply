@@ -5,7 +5,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint, desc
 from sqlmodel import Field, SQLModel
 
 
@@ -88,6 +88,11 @@ class Job(SQLModel, table=True):
         Index("ix_job_user_company_title", "user_id", "company", "title"),
         # Adoption/retention/analytics filter the shared pool by recency.
         Index("ix_job_user_discovered", "user_id", "discovered_at"),
+        # The index-friendly window COUNTS (freshness.is_fresh_expr(...,
+        # index_friendly=True): Pool / All Jobs badge, the Ghost badge, the
+        # /api/jobs totals) and the shared pool's "new in 24h". Same DDL as
+        # production's (user_id, first_seen DESC); see init_db._PERF_INDEXES.
+        Index("ix_job_user_firstseen", "user_id", desc("first_seen")),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.
@@ -386,6 +391,12 @@ class UserProfile(SQLModel, table=True):
     # When SpotApply first started searching for this user (their first welcome
     # window). Read by /api/admin/first-hour: time to first / fifth match.
     feed_started_at: Optional[datetime] = None
+    # The master resume now on file: when it was uploaded, and a hash of the
+    # file. A fit report scored before this time is labelled as scored against
+    # the PREVIOUS resume, and a changed hash re-judges what is on the board
+    # (strategy/realign.rescore_board_for_new_resume). NULL = not known.
+    resume_uploaded_at: Optional[datetime] = None
+    resume_sha256: Optional[str] = None
     disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""
@@ -463,6 +474,11 @@ class UserProfile(SQLModel, table=True):
     # a tailored resume is the JOB POSTING's title ("Backend Engineer"). Off:
     # the title the user's own resume gives. Never changes a held job title.
     resume_title_from_jd: bool = False
+    # The user's own answer to "How did you hear about this opportunity?" on
+    # application forms (owner, 2026-10-09). The extension answers that
+    # question ONLY from this, never from memory or a model; "" = the user
+    # answers it on each form.
+    how_heard_answer: str = ""
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

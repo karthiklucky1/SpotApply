@@ -333,6 +333,65 @@ def realign_pool_to_roles(user_id: Optional[str], new_roles: list[str],
     return stats
 
 
+def rescore_board_for_new_resume(user_id: Optional[str]) -> dict:
+    """The master resume changed: re-judge what is on the board NOW.
+
+    A fit report is written against the resume on file when the job was
+    scored, and nothing re-reads it. Live test 2026-10-09: a report cited
+    "trained 120M transformer" and "~3 years production LLM engineering",
+    neither on the current resume. Re-judging the whole pool would burn days of
+    the finals cap on postings nobody is looking at, so this takes exactly the
+    set a role realign re-scores and the same two bounds:
+
+      * SHORTLISTED (on the board, nothing invested) and first seen within
+        ``REALIGN_RESCORE_DAYS`` (2);
+      * at most ``REALIGN_MAX_RESCORE`` jobs, newest first.
+
+    Tailored-and-beyond keep their verdict (the documents were built on it),
+    as do older entries: the report says those were scored against the
+    previous resume (``/application/{id}/match`` -> ``from_previous_resume``).
+    Spend is still paced by the plan's daily finals budget. Returns a stat dict.
+    """
+    from sqlalchemy import update as _upd
+
+    stats = {"rescore": 0, "kept_score": 0, "capped": 0}
+    uid_arg = None if (not user_id or user_id == "local") else user_id
+    cap = max(0, int(getattr(settings, "realign_max_rescore", 500) or 0))
+    rescore_days = max(0, int(getattr(settings, "realign_rescore_days", 2) or 0))
+    fresh_cutoff = datetime.utcnow() - timedelta(days=rescore_days)
+    owner = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
+    app_owner = (Application.user_id == uid_arg) if uid_arg else Application.user_id.is_(None)
+    with get_session() as session:
+        rows = session.exec(
+            select(Job.id, Job.first_seen)
+            .join(Application, Application.job_id == Job.id)
+            .where(owner, app_owner,
+                   Application.status == ApplicationStatus.SHORTLISTED,
+                   Job.is_closed == False,               # noqa: E712
+                   Job.rerank_score.is_not(None))
+            .order_by(Job.first_seen.desc())
+        ).all()
+        ids: list = []
+        for job_id, first_seen in rows:
+            if rescore_days and (first_seen is None or first_seen < fresh_cutoff):
+                stats["kept_score"] += 1
+                continue
+            if cap and len(ids) >= cap:
+                stats["capped"] += 1
+                continue
+            ids.append(job_id)
+        if ids:
+            session.execute(
+                _upd(Job).where(Job.id.in_(ids))
+                .values(rerank_score=None, rerank_reasoning=None, rerank_breakdown=None,
+                        scored_at=None)
+                .execution_options(synchronize_session=False))
+            session.commit()
+        stats["rescore"] = len(ids)
+    log.info("New resume for %s: re-judging the board → %s", user_id or "local", stats)
+    return stats
+
+
 def realign_if_roles_changed(user_id: Optional[str], old_roles: list[str],
                              new_roles: list[str]) -> dict:
     """Realign only on a real role change — the safe entry point for callers."""

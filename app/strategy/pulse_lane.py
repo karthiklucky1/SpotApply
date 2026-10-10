@@ -66,6 +66,25 @@ _POLL_FLUSH_BATCH = 50
 # truncation as last time" back into an unchanged poll at zero schema cost.
 _VOLATILE_SIGS: dict[int, str] = {}
 
+# Board absence (app/discovery/board_absence.py), process-local — a deploy
+# forgets both, and the next CHANGED poll of a board starts over safely.
+#
+# _ABSENCE_CARRY: complete listings whose absence step a tick could not finish
+# — its time slice ran out first, or the tick's closure budget left some of the
+# board's departures — keyed by board id. The NEXT tick judges them again
+# without re-polling the board (no schedule is pulled forward, no extra fetch):
+# rows first seen after the listing's fetch are never judged by it, and a newer
+# listing of the same board replaces it. Dropped after _CARRY_TTL.
+_ABSENCE_CARRY: dict[int, object] = {}
+_CARRY_TTL = timedelta(minutes=30)
+_CARRY_MAX = 500
+# _COLLAPSE_STREAK: consecutive complete polls whose listing COLLAPSED against
+# the board's census (board_absence.census_verdict). Until it reaches
+# pulse_ghost_close_confirm_polls the census is NOT moved (the poll keeps the
+# old job_count), so a board serving a fraction of itself under a 200 cannot
+# make its own shrunken size the baseline the next poll is judged against.
+_COLLAPSE_STREAK: dict[int, int] = {}
+
 # Rows per watchlist pull-forward transaction (see pull_boards_forward).
 _PULL_FORWARD_BATCH = 500
 
@@ -714,6 +733,115 @@ def _fast_path_user(uid: str, score_budget: int,
     return scored, len(shortlisted), alerts
 
 
+# ── Board absence ─────────────────────────────────────────────────────────────
+
+_GHOST_KEYS = ("boards", "closed", "copies_closed", "applications_removed",
+               "kept_engaged", "reopened", "copies_reopened", "pending",
+               "queued", "carried", "deferred", "excluded", "incomplete",
+               "budget_spent", "doubt_empty", "doubt_mass", "doubt_memo",
+               "doubt_collapse", "doubt_baseline", "errors")
+
+
+def _queue_absence(board, raw: list, meta: Optional[dict], board_count: int,
+                   ghost: dict, queue: list) -> int:
+    """Queue this consumed fetch's listing for the absence phase when the
+    adapter can vouch for the WHOLE board and its size is believable against
+    the board's census. In memory only — no database work happens here, so
+    routing is never delayed by it.
+
+    Returns the census (``job_count``) the poll should record: the board's
+    previous one while a collapsed listing is still unconfirmed, so the next
+    poll is judged against the size the board HAD, not the one it just
+    claimed."""
+    from app.discovery import board_absence
+
+    if not board_absence.closes_on_absence(board.ats):
+        # Workday, Teamtailor, BambooHR, Workable: never closed on absence
+        # (board_absence.CLOSING_SOURCES), and their census is recorded as is.
+        ghost["excluded"] += 1
+        return board_count
+    bid = getattr(board, "id", None)
+    prev = getattr(board, "job_count", None)
+    listing = board_absence.listing_from_fetch(
+        board.ats, raw, meta, listed_count=board_count, previous_count=prev,
+        board_id=bid)
+    if listing is None:
+        ghost["incomplete"] += 1
+        return board_count
+    verdict = board_absence.census_verdict(board_count, prev)
+    if verdict == "unknown":
+        # No census to judge the listing against: this poll establishes it.
+        ghost["doubt_baseline"] += 1
+        if bid is not None:
+            _COLLAPSE_STREAK.pop(bid, None)
+        return board_count
+    if verdict == "collapse":
+        streak = (_COLLAPSE_STREAK.get(bid, 0) + 1) if bid is not None else 1
+        if streak < max(1, int(settings.pulse_ghost_close_confirm_polls)):
+            if bid is not None:
+                _COLLAPSE_STREAK[bid] = streak
+            ghost["doubt_collapse"] += 1
+            return int(prev or 0)
+    if bid is not None:
+        _COLLAPSE_STREAK.pop(bid, None)
+    queue.append(listing)
+    ghost["queued"] += 1
+    return board_count
+
+
+def _run_absence(queue: list, ghost: dict, seconds: float) -> None:
+    """Judge the carried listings (oldest first), then this tick's, inside a
+    bounded time slice and ONE session (board_absence.reconcile_many). What
+    the slice or the closure budget could not finish is carried to the next
+    tick. Aggregate counts land in ``ghost``."""
+    from app.discovery import board_absence
+
+    now = datetime.utcnow()
+    fresh = {l.board_id for l in queue if l.board_id is not None}
+    carried = []
+    for bid, listing in list(_ABSENCE_CARRY.items()):
+        at = getattr(listing, "fetched_at", None)
+        if bid in fresh or at is None or now - at > _CARRY_TTL:
+            _ABSENCE_CARRY.pop(bid, None)
+            continue
+        carried.append(listing)
+    carried.sort(key=lambda l: l.fetched_at)
+    ordered = carried + list(queue)
+    if ordered:
+        if seconds > 0:
+            results, totals = board_absence.reconcile_many(
+                ordered, budget=max(0, int(settings.pulse_ghost_close_max_per_tick)),
+                seconds=seconds)
+        else:
+            results = [board_absence.AbsenceResult(outcome="deferred") for _ in ordered]
+            totals = board_absence.AbsenceResult()
+        for key in ("closed", "copies_closed", "applications_removed",
+                    "kept_engaged", "reopened", "copies_reopened"):
+            ghost[key] += getattr(totals, key)
+        for listing, res in zip(ordered, results):
+            ghost["pending"] += res.pending
+            if res.outcome == "deferred":
+                ghost["deferred"] += 1
+            else:
+                ghost["boards"] += 1
+            if res.outcome.startswith("doubt_") or res.outcome == "budget_spent":
+                ghost[res.outcome] += 1
+            elif res.outcome == "error":
+                ghost["errors"] += 1
+            bid = listing.board_id
+            if bid is None:
+                continue
+            if res.outcome in ("deferred", "error") or res.pending:
+                _ABSENCE_CARRY[bid] = listing
+            else:
+                _ABSENCE_CARRY.pop(bid, None)
+    if len(_ABSENCE_CARRY) > _CARRY_MAX:
+        for bid, _l in sorted(_ABSENCE_CARRY.items(),
+                              key=lambda kv: kv[1].fetched_at)[:len(_ABSENCE_CARRY) - _CARRY_MAX]:
+            _ABSENCE_CARRY.pop(bid, None)
+    ghost["carried"] = len(_ABSENCE_CARRY)
+
+
 # ── One scheduler tick ────────────────────────────────────────────────────────
 
 # ONE CONSUMER AT A TIME. Not "usually one" — the lock is never bypassed.
@@ -861,6 +989,7 @@ def run_pulse_tick() -> dict:
 
 
 def _run_pulse_tick_locked(deadline: float) -> dict:
+    from app.common.compute_policy import paused_user_ids
     from app.discovery.pipeline import SHARED_POOL_USER, _upsert, scraper_for
     from app.strategy.hot_lane import (
         _active_users, _mark_polled, _retire_unsupported, _title_matches,
@@ -934,6 +1063,7 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
         produces a hash that varies with where it died — never worth storing).
         """
         t0 = time.monotonic()
+        fetched_at = datetime.utcnow()
         scraper = scraper_for(board.ats, board.slug, board.career_url)
         if scraper is None:
             return board, None, "unsupported", time.monotonic() - t0, None
@@ -956,6 +1086,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
                 "listing_complete": getattr(scraper, "listing_complete", None),
                 "entries": getattr(scraper, "signature_entries", None),
                 "sig_stable": getattr(scraper, "signature_stable", None),
+                # Board absence trusts only what an adapter DECLARED: the
+                # default above (absent → complete) suits the signature, not
+                # closing jobs. See app/discovery/base.py.
+                "complete_declared": getattr(scraper, "fetch_complete", None) is True,
+                "listing_complete": getattr(scraper, "listing_complete", None) is True,
+                "listed_ids": getattr(scraper, "listed_ids", None),
+                "listed_urls": getattr(scraper, "listed_urls", None),
+                # When the fetch STARTED: a shared row first seen after this
+                # (another lane inserted it while the result waited to be
+                # consumed) is one this listing could not have named.
+                "fetched_at": fetched_at,
             }
             return board, raw, None, time.monotonic() - t0, meta
         except Exception as e:
@@ -976,6 +1117,13 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     timings: dict[str, list] = {
         "signature": [], "upsert_shared": [], "upsert_users": [], "flush": [],
     }
+    # Board absence (PULSE_GHOST_CLOSE_ENABLED). The consume loop only QUEUES a
+    # complete listing (in memory); the database work runs after the loop, in
+    # its own bounded slice, so it can never delay routing or cause a
+    # deferral. Aggregate counts only.
+    ghost_on = bool(settings.pulse_ghost_close_enabled)
+    ghost: dict = dict.fromkeys(_GHOST_KEYS, 0)
+    absence_queue: list = []
     backoff = int(getattr(settings, "pulse_failure_backoff_minutes", 0) or 0)
     # NOT pulse_dead_interval_hours. That knob is the ZERO-YIELD cadence, and
     # borrowing it here meant raising the dead-board cadence silently raised the
@@ -1087,10 +1235,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             if (raw or entries) and (sig == (board.poll_hash or "")
                                      or same_volatile):
                 # Unchanged board — zero downstream work. This is the common
-                # case that makes the hourly floor affordable.
+                # case that makes the hourly floor affordable. The one
+                # exception (in memory): a board whose listing collapsed is
+                # still being doubted, so this poll repeats the evidence and
+                # must not move its census either.
                 stats["unchanged"] += 1
+                census = board_count
+                if ghost_on and bid is not None and bid in _COLLAPSE_STREAK:
+                    census = _queue_absence(board, raw, meta, board_count, ghost,
+                                            absence_queue)
                 poll_records.append({
-                    "id": bid, "job_count": board_count,
+                    "id": bid, "job_count": census,
                     "new_jobs": 0, "poll_hash": persist_hash,
                     "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
                 })
@@ -1109,32 +1264,21 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             except Exception as e:
                 log.debug("pulse shared upsert failed %s: %s", board.slug, e)
             timings["upsert_shared"].append(time.monotonic() - _t)
-            # Death after delivery (2026-10-10): a posting missing from this
-            # listing is gone. Close EVERY copy — shared, queued, waiting on a
-            # board — for 0 HTTP. This lane re-fetches live boards every
-            # ≤60 min, so it is the fastest death signal there is; the gate
-            # never looked at a posting again after delivery, and
-            # mark_ghost_jobs reached 400 boards per 6-hour pass, shared rows
-            # only, so a posting that closed the day after it reached a board
-            # stayed there until the 5-day sweep. Only a listing we know is
-            # COMPLETE and parsed in full may say what is absent.
-            try:
-                _lc = meta.get("listing_complete")
-                if _lc is None:
-                    _lc = meta.get("complete", True)
-                _company = (((raw[0].company if raw else "") or board.company_name or "")).strip()
-                if raw and _company:
-                    from app.strategy.delivery_gate import close_absent_from_board as _close_absent
-                    _abs = _close_absent(board.ats, _company,
-                                         [getattr(r, "external_id", None) for r in raw],
-                                         listing_complete=bool(_lc) and bool(parsed_all))
-                    stats["absent_gone"] += _abs.get("gone", 0)
-                    stats["absent_closed"] += _abs.get("jobs_closed", 0)
-                    stats["absent_removed"] += _abs.get("applications_removed", 0)
-            except Exception as e:
-                log.debug("pulse absence close skipped for %s: %s", board.slug, e)
+            # Postings that LEFT the board: a changed signature is exactly how a
+            # removal shows up. Only a complete fetch speaks for the board, and
+            # only its listing is kept here; the closing happens after the loop.
+            census = board_count
+            if ghost_on:
+                census = _queue_absence(board, raw, meta, board_count, ghost,
+                                        absence_queue)
             _t = time.monotonic()
+            # `users` was read when the tick STARTED, a minute or two ago: a
+            # user who paused since must get nothing more from this tick
+            # (2026-10-09: two postings landed 14 s after the Pause click).
+            paused = paused_user_ids()
             for u in users:
+                if u["user_id"] in paused:
+                    continue
                 relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
                 if not relevant:
                     continue
@@ -1163,7 +1307,7 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
             # we write in the same round-trip.
             board.last_new_job_at = datetime.utcnow() if new_here else board.last_new_job_at
             poll_records.append({
-                "id": getattr(board, "id", None), "job_count": board_count,
+                "id": getattr(board, "id", None), "job_count": census,
                 "new_jobs": new_here, "poll_hash": persist_hash,
                 "next_poll_at": datetime.utcnow() + _cadence(board, terms, now),
             })
@@ -1224,6 +1368,17 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     _defer_boards(deferred_boards)
     futures.clear()
 
+    # Board absence: close what the queued (and carried) complete listings no
+    # longer name. After the loop, so it never delays routing; inside its own
+    # slice and never past the tick's deadline; one session for all of it.
+    if ghost_on:
+        _t = time.monotonic()
+        slice_s = min(float(settings.pulse_ghost_close_max_seconds),
+                      deadline - time.monotonic())
+        _run_absence(absence_queue, ghost, slice_s)
+        ghost["ms"] = int((time.monotonic() - _t) * 1000)
+        stats["ghost"] = ghost
+
     # Post-fetch consumer cost, per stage. This is what explains
     # deferred_unconsumed: the fetch is done, so whatever is left is here.
     consumer = {k: _pctl_ms(v) for k, v in timings.items() if v}
@@ -1247,6 +1402,8 @@ def _run_pulse_tick_locked(deadline: float) -> dict:
     for uid in users_touched:
         if budget <= 0 or time.monotonic() >= deadline:
             break
+        if uid in paused_user_ids():
+            continue                  # paused after routing: no scoring, no alert
         try:
             scored, short, alerts = _fast_path_user(uid, budget, deadline)
             budget -= scored

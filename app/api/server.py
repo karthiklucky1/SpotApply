@@ -162,6 +162,33 @@ class CanonicalHostMiddleware(BaseHTTPMiddleware):
             return RedirectResponse(url, status_code=301)
         return await call_next(request)
 
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _public_base_url(request) -> str:
+    """Scheme + host for every ABSOLUTE link we hand out, no trailing slash.
+
+    Behind Railway's TLS-terminating proxy ``request.base_url`` reports
+    ``http://`` (uvicorn trusts forwarded headers only from 127.0.0.1), so the
+    referral link and the public profile link went out as http:// (live test
+    2026-10-09). ``PUBLIC_BASE_URL`` wins when set; otherwise the request's own
+    host, upgraded to https:// when X-Forwarded-Proto says so or whenever the
+    host is not a local one. Local dev keeps http://127.0.0.1:8000.
+    """
+    configured = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    base = str(request.base_url).rstrip("/")
+    if not base.startswith("http://"):
+        return base
+    fwd = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    from urllib.parse import urlparse as _up
+    host = (_up(base).hostname or "").lower()
+    if fwd == "https" or host not in _LOCAL_HOSTS:
+        return "https://" + base[len("http://"):]
+    return base
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # CORS Configuration
@@ -577,6 +604,14 @@ def _notify_if_newly_dormant(profile) -> bool:
     """
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
+        return False
+    # Never for a search the user paused THEMSELVES: they just pressed the
+    # button and the board already says so. This notice is the idle/dormant
+    # one ("while you're away", "or open any job"), and both halves are false
+    # for an explicit pause, which only Resume clears. Live test 2026-10-09:
+    # the bell went 7 -> 8, 45 s after the Pause click.
+    from app.common.compute_policy import is_paused
+    if is_paused(profile):
         return False
     la = getattr(profile, "last_meaningful_activity_at", None)
     notified = getattr(profile, "dormancy_notified_at", None)
@@ -1331,8 +1366,14 @@ def _run_matching_lane(uids) -> None:
         deadline = _t.monotonic() + max(60.0, settings.matching_lane_interval_minutes * 60 * 0.8)
         log.info("Matching lane: scoring %d user(s)", len(uids))
         total = 0
+        from app.common.compute_policy import paused_now
         for uid in uids:
             _uid = uid if uid != "local" else None
+            # `uids` was read before this tick waited for the lock and served
+            # the users ahead: a pause since then stops adoption, matching and
+            # alerts for this user (compute_policy.paused_user_ids).
+            if paused_now(_uid):
+                continue
             _t0 = _t.monotonic()
             user_short = 0
             passes = 0
@@ -1394,12 +1435,17 @@ def _adopt_match_alert(user_ids) -> None:
     """Per-user tail of a global scrape: adopt matching shared-pool jobs
     (cheap DB copy), score them, dispatch fresh alerts. Caller holds the
     discovery lock (matching loads the model + job pool)."""
+    from app.common.compute_policy import paused_now
     from app.strategy.adoption import adopt_shared_jobs
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
     import time as _t
     log.info("adopt/match: starting for %d user(s)", len(user_ids))
     for uid in user_ids:
         _uid = uid if uid != "local" else None
+        # The list predates the scrape (minutes, sometimes far longer) and the
+        # wait for the lock: a user who paused since gets nothing from it.
+        if paused_now(_uid):
+            continue
         _t0 = _t.monotonic()
         try:
             adopt_shared_jobs(_uid)
@@ -1534,6 +1580,11 @@ def _cleantext_filter(value):
 
 templates.env.filters["fromjson"] = _fromjson_filter
 templates.env.filters["cleantext"] = _cleantext_filter
+
+# A card's location: "" for blank and placeholder values ("na", "n/a", "none",
+# "null", "-", "tbd"), so no card reads "na · On-site" (app/common/geo.py).
+from app.common.geo import clean_location as _card_location  # noqa: E402
+templates.env.filters["cardloc"] = _card_location
 
 
 def _humanize_signal_filter(value):
@@ -2260,8 +2311,30 @@ def _clean_seeded_role(raw: str) -> str:
 _MAX_LINKEDIN_PDF_BYTES = 10 * 1024 * 1024
 
 
+def _stamp_resume_upload(uid: str, sha: str) -> bool:
+    """Record the master resume now on file. True when it CHANGED (a new hash,
+    or the first one we have recorded). One short session; creates the profile
+    row only when there is none yet, as the profile extraction would."""
+    from app.db.models import UserProfile
+    from datetime import datetime as _dt
+    uid_arg = uid if (uid and uid != "local") else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == uid_arg) if uid_arg
+            else UserProfile.user_id.is_(None))).first()
+        if prof is None:
+            prof = UserProfile(user_id=uid_arg)
+        elif (prof.resume_sha256 or "") == sha:
+            return False                       # the same file again
+        prof.resume_sha256 = sha
+        prof.resume_uploaded_at = _dt.utcnow()
+        session.add(prof)
+        session.commit()
+    return True
+
+
 @app.post("/api/resume/upload")
-async def upload_resume(request: Request):
+async def upload_resume(request: Request, background_tasks: BackgroundTasks):
     """Upload resume file. Stores in Supabase Storage (production) or local disk (dev)."""
     uid = _require_user(request)
     form = await request.form()
@@ -2337,6 +2410,19 @@ async def upload_resume(request: Request):
         invalidate_resume_cache(uid)
     except Exception:
         pass
+    # Record WHICH resume is on file. When the file actually changed, the fit
+    # reports on the board were written against the old one (live test: a
+    # report citing experience the current resume no longer has), so the
+    # recent shortlisted jobs are re-judged, bounded like a role realign.
+    try:
+        import hashlib as _hashlib
+        _sha = _hashlib.sha256(content).hexdigest()
+        if await anyio.to_thread.run_sync(_stamp_resume_upload, uid, _sha):
+            from app.strategy.realign import rescore_board_for_new_resume
+            background_tasks.add_task(rescore_board_for_new_resume,
+                                      uid if uid != "local" else None)
+    except Exception as _stamp_err:
+        log.warning("resume upload stamp skipped for %s: %s", uid, _stamp_err)
     # A résumé plus target roles is a scorable profile — record the
     # onboarding-complete moment (once) so new-user latency is measurable.
     await anyio.to_thread.run_sync(_record_profile_completed_once, uid)
@@ -3160,7 +3246,11 @@ def verify_job(job_id: int, request: Request) -> dict:
     - an ATS permalink (`_VERIFIABLE_SOURCES`): `verify_for_delivery(force=True)`
       — GET + body, single-flighted, at most one fetch per posting per
       LIVENESS_REPORT_MIN_RECHECK_MINUTES however many people open it, the
-      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`);
+      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`).
+      A Greenhouse redirect to the board's own index is REMOVED, and a posting
+      the page cannot speak for (an employer-site `gh_jid` page, a redirect it
+      could not place) is asked of the ATS's own API (`delivery_gate._check`;
+      live test 2026-10-09: closed Hasbro and Accela postings read "open");
     - any other link (aggregator, user-submitted): a 404/410 or a redirect to a
       careers index closes THIS user's copy only (`close_own_copy`).
     429/403/timeouts close nothing. No session is open during the fetch.
@@ -3341,7 +3431,7 @@ def shortlist(request: Request):
             "id": j.id,
             "company": j.company,
             "title": j.title,
-            "location": j.location,
+            "location": _card_location(j.location),
             "url": j.url,
             "similarity": j.similarity_score,
             "rerank": j.rerank_score,
@@ -3429,30 +3519,37 @@ def _compute_stats(uid) -> dict:
                 q = q.where(Job.is_closed == False)  # noqa: E712
             return q
 
-        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed. This is
-        # the Pool stat card and `funnel.total_pool`, and the onboarding banner
-        # reads `total_jobs == 0` as "this user has nothing yet". The tab badges
-        # are a different question and get their own windowed counts.
+        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed:
+        # `funnel.total_pool`, and the onboarding banner reads
+        # `total_jobs == 0` as "this user has nothing yet". NOT the Pool tile:
+        # that is "jobs found" (freshness.found_jobs_expr, /api/pipeline/live),
+        # and writing this number into it made the tile jump 473 / 3.8k.
         total_jobs = _n(_mine(select(func.count(Job.id))))
-        closed_jobs = _n(_mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                               open_only=False))
 
         # Closed jobs INSIDE the explorer's window — fills the Ghost Jobs tab
         # badge at page load; built from the setting the tab's query defaults
-        # to, or the badge changes value the moment the tab opens.
+        # to, or the badge changes value the moment the tab opens. Built here,
+        # COUNTED LAST (below): a slow closed-history count must never cost
+        # the open-pool numbers the Insights panel shows.
+        #
+        # There is no all-history closed count any more (2026-10-09). Nothing
+        # displayed it, yet it was the second statement of every load: 73k
+        # closed rows on one account took ~5 s, and the windowed count after
+        # it (coalesce form, 11 s) hit the statement timeout — which marked
+        # the read degraded and skipped EVERY count below, so Insights said
+        # "No jobs yet" to a user with 473 jobs and the Ghost badge fell back
+        # to 73,171 before reading 3 once the tab opened.
         from app.common.freshness import is_fresh_expr as _fresh_expr
         _explorer_age = int(getattr(settings, "explorer_max_age_days", 0) or 0)
         _recent_filter = _fresh_expr(
             _explorer_age,
             int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
-            for_render=True,
+            for_render=True, index_friendly=True,
         ) if _explorer_age > 0 else None
+        _closed_q = _mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
+                          open_only=False)
         if _recent_filter is not None:
-            closed_jobs_recent = _n(_mine(
-                select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                open_only=False).where(_recent_filter))
-        else:
-            closed_jobs_recent = closed_jobs
+            _closed_q = _closed_q.where(_recent_filter)
 
         # Everything below describes the CURRENT (open) pool. It counted every
         # row the account ever held — closed history included — which is what
@@ -3536,6 +3633,8 @@ def _compute_stats(uid) -> dict:
             total_validated_jobs = _n(select(func.coalesce(func.sum(CompanyRegistry.job_count), 0)))
         except Exception as re_:
             log.warning("stats: registry counts unavailable: %s", re_)
+        # Last: the one count that reads CLOSED (history) rows.
+        closed_jobs_recent = _n(_closed_q)
         degraded = reads.degraded
 
     def _minus(a, b):
@@ -3543,7 +3642,6 @@ def _compute_stats(uid) -> dict:
 
     return {
         "total_jobs": total_jobs,
-        "closed_jobs": closed_jobs,
         "closed_jobs_recent": closed_jobs_recent,
         "total_companies": total_companies,
         "funnel": {
@@ -3809,7 +3907,7 @@ def api_jobs(
             int(getattr(settings, "explorer_max_age_days", 0) or 0)
             if max_age_days is None else int(max_age_days)
         )
-        _age_filter = None
+        _age_filter = _age_count_filter = None
         if _effective_age > 0:
             from app.common.freshness import is_fresh_expr as _fresh_expr
             _age_filter = _fresh_expr(
@@ -3819,6 +3917,15 @@ def api_jobs(
             )
             if _age_filter is not None:
                 query = query.where(_age_filter)
+            # The SAME window for the two COUNTs, spelled so the first_seen
+            # index serves it (freshness.is_fresh_expr, index_friendly): the
+            # Ghost tab's count took 11 s on a 73k-closed-row account. The
+            # page query keeps the form its ordered index scan needs.
+            _age_count_filter = _fresh_expr(
+                _effective_age,
+                int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+                for_render=True, index_friendly=True,
+            )
 
         # Get total count (for pagination)
         count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
@@ -3854,8 +3961,8 @@ def api_jobs(
             )
         if _roles_cond is not None:
             count_query = count_query.where(_roles_cond)
-        if _age_filter is not None:
-            count_query = count_query.where(_age_filter)
+        if _age_count_filter is not None:
+            count_query = count_query.where(_age_count_filter)
         # Built here, EXECUTED after the page query below — see the note there.
 
         # Open-pool size INSIDE the caller's age window — the "All Jobs" tab
@@ -3875,8 +3982,8 @@ def api_jobs(
         open_q = select(func.count(Job.id)).where(Job.is_closed == False)  # noqa: E712
         if _uid_filter:
             open_q = open_q.where(Job.user_id == uid)
-        if _age_filter is not None:
-            open_q = open_q.where(_age_filter)
+        if _age_count_filter is not None:
+            open_q = open_q.where(_age_count_filter)
 
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
@@ -3978,7 +4085,7 @@ def api_jobs(
                 "source": jsource.value if jsource else "manual",
                 "company": jcompany,
                 "title": jtitle,
-                "location": jlocation,
+                "location": _card_location(jlocation),
                 "remote": jremote,
                 "url": jurl,
                 "posted": _posted.isoformat() if _posted else None,
@@ -4027,6 +4134,12 @@ def api_jobs(
             "jobs": jobs_list,
             "total": total,
             "total_open": total_open,
+            # True when total_open was counted over the All Jobs window
+            # (freshness.found_jobs_expr) — the number the Pool tile and the
+            # All Jobs badge show. A "New today" or all-time view is a
+            # different number and must not overwrite them.
+            "found_window": _effective_age == int(
+                getattr(settings, "explorer_max_age_days", 0) or 0),
             "page": page,
             "pages": pages,
             "limit": limit,
@@ -4079,6 +4192,9 @@ def _dashboard_load_options():
             Job.salary_text, Job.sponsorship_json, Job.is_cap_exempt,
             Job.rerank_score, Job.blended_score, Job.hire_probability_score,
             Job.ghost_score, Job.ghost_flags, Job.is_closed,
+            # 64 chars: what tells one role posted per city from two roles
+            # (slate.same_role), read by the board's same-role collapse.
+            Job.content_hash,
         ),
     )
 
@@ -4259,6 +4375,8 @@ def dashboard(request: Request, all_submitted: bool = False):
     manual_queue = []
     total_submitted_count = 0
     total_shortlisted_count = 0
+    total_rejected_count = 0
+    total_skipped_count = 0
     board_degraded = False
 
     if not (settings.use_supabase and not uid):
@@ -4328,13 +4446,37 @@ def dashboard(request: Request, all_submitted: bool = False):
                 _board_stage_query("rejected", _owner)).all()))
             skipped = reads.get([], lambda: list(session.exec(
                 _board_stage_query("skipped", _owner)).all()))
+
+            # The Rejected and Removed tabs count the STAGE, not the page: both
+            # lists stop at 20, and `skipped|length` held the Removed tab at 20
+            # for an account with 2,700 removed jobs (live test 2026-10-09).
+            # Same visibility filter as the lists; a count that did not finish
+            # falls back to what rendered, never 0.
+            def _stage_count(status):
+                q = select(func.count(Application.id)).join(Job).where(
+                    Application.status == status).where(_board_visible_clause())
+                return q.where(Application.user_id == uid) if _uid_filter else q
+
+            total_rejected_count = reads.get(len(rejected), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.REJECTED)).first() or 0))
+            total_skipped_count = reads.get(len(skipped), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.SKIPPED)).first() or 0))
             board_degraded = reads.degraded
 
     from datetime import datetime as _dt
 
     # Legal work-authorization framing for this user (drives the visa-fit panel
     # and the sponsorship-aware ranking boost below).
-    visa_framing = _board_visa_framing(uid if uid and uid != "local" else None)
+    _owner_id = uid if uid and uid != "local" else None
+    visa_framing = _board_visa_framing(_owner_id)
+    _prof = None
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        _prof = _get_or_create_profile(user_id=_owner_id)
+    except Exception as _e:
+        log.debug("profile unavailable for first paint: %s", _e)
+    first_paint = _dashboard_first_paint(uid if ssr_authed else None,
+                                         _prof if ssr_authed else None)
 
     # For users who need sponsorship, float no-lottery (cap-exempt) and known
     # sponsors to the top — those are the jobs that can actually hire them.
@@ -4453,6 +4595,38 @@ def dashboard(request: Request, all_submitted: bool = False):
     # the true uncapped total (computed above); the template shows a "top N shown"
     # note when the render/per-company cap leaves rendered < total, so the number
     # and the cards never silently disagree.
+    #
+    # Before that cap: one role, one card. The slate refuses a second copy of a role at
+    # placement (slate.same_role), but rows placed before that rule, or by two
+    # lanes inside the same second, are already on the board: a plain
+    # SHORTLISTED copy of a role that is already shown is not rendered. A copy
+    # the user opened work on (tailored, filled) always renders.
+    def _collapse_same_role(items):
+        from app.strategy.slate import role_key, same_role
+        shown: dict = {}
+        # Invested rows claim the role first, then best-first sort order.
+        order = sorted(range(len(items)),
+                       key=lambda i: (items[i][0].status == ApplicationStatus.SHORTLISTED, i))
+        drop = set()
+        for i in order:
+            app_model, job_model = items[i]
+            key = role_key(job_model.company, job_model.title)
+            if key is None:
+                continue
+            if app_model.status == ApplicationStatus.SHORTLISTED and any(
+                    same_role(job_model.source, job_model.location, job_model.remote,
+                              job_model.content_hash, o.source, o.location, o.remote,
+                              o.content_hash)
+                    for o in shown.get(key, ())):
+                drop.add(i)
+                continue
+            shown.setdefault(key, []).append(job_model)
+        return [it for i, it in enumerate(items) if i not in drop]
+
+    try:
+        shortlisted = _collapse_same_role(shortlisted)
+    except Exception as _dup_err:          # never lose the board over a tidy-up
+        log.debug("same-role collapse skipped: %s", _dup_err)
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
@@ -4474,6 +4648,8 @@ def dashboard(request: Request, all_submitted: bool = False):
             "visa_framing": visa_framing,
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
+            "total_rejected_count": total_rejected_count,
+            "total_skipped_count": total_skipped_count,
             "shortlist_strong_threshold": settings.shortlist_strong_threshold,
             # The bar the AI score is judged against. The board used to
             # hard-code 35 in its status copy, which stopped being the bar
@@ -4484,8 +4660,64 @@ def dashboard(request: Request, all_submitted: bool = False):
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
+            "first_paint": first_paint,
         }
      )
+
+
+def _dashboard_first_paint(uid, prof) -> dict:
+    """What the header and the search notice can say at FIRST PAINT, from
+    what this request already holds — the profile row the page loaded anyway
+    and counts some other request already cached. Never a new query: the page
+    must not wait on a count to draw its header.
+
+    Before this the header read "? Profile", "Pool …" and "Checking boards…"
+    until three API calls came back (8 s on the owner's account), and a
+    PAUSED search showed "Checking boards…" and no notice for 15-18 s, until
+    /api/search/state answered."""
+    out = {"first_name": "", "initial": "", "pool": None, "search": None}
+    if prof is not None:
+        first = (getattr(prof, "first_name", "") or "").strip()
+        last = (getattr(prof, "last_name", "") or "").strip()
+        out["first_name"] = first
+        out["initial"] = (first[:1] or last[:1]).upper()
+        # The paused notice is the one state the server can state outright: an
+        # explicit pause is cleared only by Resume, so nothing about this
+        # page load can change it. (Idle/dormant depend on the activity stamp
+        # this very request writes, so those wait for /api/search/state.)
+        if getattr(prof, "search_paused_at", None) is not None:
+            try:
+                out["search"] = _search_state_payload(uid or "local", prof=prof)
+            except Exception as e:
+                log.debug("first paint: search state unavailable: %s", e)
+    if uid:
+        # The Pool tile's own cache (/api/pipeline/live, found_jobs_expr) —
+        # read, never computed here.
+        try:
+            from app.common import ttl_cache as _tc
+            pool = _tc.get(f"pool_count:{uid or 'local'}")
+            if isinstance(pool, int):
+                out["pool"] = pool
+                out["pool_text"] = _fmt_k(pool)        # the tile, as _fmtK writes it
+                out["pool_full"] = f"{pool:,}"        # the All Jobs badge
+        except Exception:
+            out["pool"] = None
+    return out
+
+
+def _fmt_k(n: int) -> str:
+    """dashboard.html's ``_fmtK``: 950 · 3.8k · 12k · 120k · 1.2M."""
+    import math
+
+    def _trim1(x: float) -> str:
+        r = math.floor(abs(x) * 10 + 0.5) / 10 * (1 if x >= 0 else -1)
+        return str(int(r)) if r == int(r) else f"{r:.1f}"
+    a = abs(n)
+    if a < 1000:
+        return str(n)
+    if a < 1_000_000:
+        return (_trim1(n / 1e3) if a < 100_000 else str(int(math.floor(n / 1e3 + 0.5)))) + "k"
+    return (_trim1(n / 1e6) if a < 100_000_000 else str(int(math.floor(n / 1e6 + 0.5)))) + "M"
 
 
 _PIPELINE_LIVE_TTL_SECONDS = 10
@@ -4597,7 +4829,7 @@ def _pipeline_live_uncached(uid) -> dict:
                     "app_id": app_id,
                     "title": j_title,
                     "company": j_company,
-                    "location": j_location,
+                    "location": _card_location(j_location),
                     "remote": bool(j_remote),
                     "score": round(j_rerank) if j_rerank is not None else None,
                     "track": apply_track,
@@ -4704,7 +4936,8 @@ def application_details(application_id: int, request: Request) -> dict:
     _verdict = _export_verdict(application_id, loaded={
         "rejected": application.status == ApplicationStatus.ERROR,
         "notes": application.notes or "", "path": application.tailored_resume_path,
-        "uid": application.user_id, "jd": (job.description or "") if job else ""})
+        "uid": application.user_id, "jd": (job.description or "") if job else "",
+        "company": (job.company or "") if job else ""})
     if _verdict.blocked:
         _reason = (_verdict.reason or "").strip() or \
             "This draft did not pass the grounding check."
@@ -4753,11 +4986,12 @@ def application_details(application_id: int, request: Request) -> dict:
             if report_path.exists():
                 quality = _json.loads(report_path.read_text(encoding="utf-8"))
                 # Reports written before the verdict post-check still carry a
-                # false "future-dated" sentence or a dangling "2." — clean at
-                # read time too, so old drafts stop saying it.
+                # false "future-dated" sentence, a dangling "2." or a
+                # "1. Yes —" lead-in: clean at read time too, so old drafts
+                # stop saying it.
                 if isinstance(quality, dict) and quality.get("verdict"):
-                    from app.tailoring.doctor import drop_false_future_claims
-                    quality["verdict"] = drop_false_future_claims(quality["verdict"])
+                    from app.tailoring.doctor import clean_verdict
+                    quality["verdict"] = clean_verdict(quality["verdict"])
         except Exception:
             quality = None
 
@@ -4770,7 +5004,7 @@ def application_details(application_id: int, request: Request) -> dict:
     if resume_text and not _verdict.blocked and (job.description or "").strip():
         try:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
-            report = _ats_analyze(job.description, resume_text)
+            report = _ats_analyze(job.description, resume_text, company=job.company or "")
             ats = {
                 "matched": report.matched,
                 "missing": report.missing,
@@ -4812,12 +5046,19 @@ def application_match(application_id: int, request: Request) -> dict:
     """Why this job matched: overall score, plain-English reason, and the
     per-factor breakdown (skills / experience / location / work_auth)."""
     import json as _json
-    _require_owned_application(request, application_id)
+    from app.db.models import UserProfile
+    uid = _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+        # The owner's profile: the report's notes are held to it below. One
+        # indexed read; no profile is created as a side effect.
+        _uid_arg = uid if (uid and uid != "local") else None
+        report_profile = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == _uid_arg) if _uid_arg
+            else UserProfile.user_id.is_(None))).first()
     breakdown = {}
     if job and job.rerank_breakdown:
         try:
@@ -4826,6 +5067,31 @@ def application_match(application_id: int, request: Request) -> dict:
             breakdown = {}
 
     reason = (job.rerank_reasoning if job else "") or ""
+    # Stored verdicts predate today's rules: hold their notes to the profile
+    # the same way a fresh verdict is (reranker.reconcile_with_profile) — the
+    # visa status decides "needs sponsorship", and "candidate shows 0 years"
+    # is a years figure the resume never states (live test 2026-10-09).
+    try:
+        from app.matching.reranker import reconcile_with_profile as _reconcile
+        _head, _sep, _tail = reason.partition("\nConcerns:")
+        _concerns = [c.strip() for c in _tail.split(";") if c.strip()] if _sep else []
+        _, _head, _concerns, breakdown = _reconcile(
+            (0.0, _head, _concerns, breakdown if isinstance(breakdown, dict) else {}),
+            report_profile, (job.description if job else "") or "")
+        reason = _head + (("\nConcerns: " + "; ".join(_concerns)) if _concerns else "")
+    except Exception as _re_err:
+        log.debug("match report reconcile skipped for app %d: %s", application_id, _re_err)
+
+    # Scored against a resume the user has since replaced? The reasoning may
+    # cite experience that is no longer on it (live test: "trained 120M
+    # transformer" on a July score, after an August upload). Known only when
+    # BOTH times are known: the verdict's own clock, or, for rows from before
+    # that column, the delivery (a job is scored before it is placed).
+    resume_at = getattr(report_profile, "resume_uploaded_at", None)
+    verdict_at = (getattr(job, "scored_at", None) if job else None) or \
+        getattr(application, "created_at", None)
+    from_previous_resume = bool(job and job.rerank_score is not None and resume_at
+                                and verdict_at and verdict_at < resume_at)
     # Reconcile work-auth with Sponsorship Reality: if the employer is a verified
     # H-1B sponsor (strong public filing record), a "needs sponsorship" penalty
     # contradicts the data — lift the work_auth factor and drop the concern so the
@@ -4865,7 +5131,7 @@ def application_match(application_id: int, request: Request) -> dict:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
             resume_text = _load_resume(user_id=_get_user_id(request))
             if resume_text:
-                rep = _ats_analyze(job.description, resume_text)
+                rep = _ats_analyze(job.description, resume_text, company=job.company or "")
                 skills = {
                     "matched": rep.matched,
                     "missing": rep.missing,
@@ -4920,11 +5186,15 @@ def application_match(application_id: int, request: Request) -> dict:
         "id": application_id,
         "company": job.company if job else "",
         "title": job.title if job else "",
-        "location": job.location if job else "",
+        "location": _card_location(job.location) if job else "",
         "remote": bool(job.remote) if job else False,
         "score": score,
         "reason": reason,
         "breakdown": breakdown,
+        # True when this verdict was written before the resume now on file
+        # was uploaded; the drawer says so above the reasoning.
+        "from_previous_resume": from_previous_resume,
+        "resume_uploaded_at": resume_at.isoformat() if (from_previous_resume and resume_at) else None,
         "skills": skills,
         "signals": signals,
         "hire_probability": hp,
@@ -5283,6 +5553,34 @@ def _authorized_now_for_pack(profile) -> Optional[bool]:
     return bool(fr.authorized_now)
 
 
+def _work_auth_note_for_pack(profile) -> str:
+    """Why the extension leaves "are you authorized to work?" for the user, in
+    one line it can show beside that question — "" when it can answer it.
+
+    Live test 2026-10-09: an F-1 OPT profile with no EAD end date left the
+    question blank with no explanation, which read as a fill failure."""
+    if profile is None or _authorized_now_for_pack(profile) is not None:
+        return ""
+    blob = ((getattr(profile, "work_authorization", "") or "") + " "
+            + (getattr(profile, "work_auth_status", "") or "") + " "
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    if not blob:
+        return ("Add your work authorization in your SpotApply profile so this "
+                "question can be answered for you.")
+    try:
+        from app.intelligence.work_auth import assess_profile
+        validity = assess_profile(profile).validity
+    except Exception:
+        return ""
+    if validity == "unknown":
+        return ("Add your work authorization end date in your SpotApply profile so "
+                "this question can be answered for you.")
+    if validity == "expired":
+        return ("The work authorization end date in your profile has passed, so "
+                "this question is left for you.")
+    return ""
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
 def get_fill_pack(application_id: int, request: Request) -> dict:
@@ -5306,7 +5604,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         has_draft = bool(application.tailored_resume_path)
         _loaded = {"rejected": grounding_blocked, "notes": application.notes or "",
                    "path": application.tailored_resume_path, "uid": application.user_id,
-                   "jd": (job.description or "") if job else ""}
+                   "jd": (job.description or "") if job else "",
+                   "company": (job.company or "") if job else ""}
     # Draft text only leaves through the ONE export verdict (review, download,
     # details and attach read the same one). Re-tailoring is still gated on the
     # grounding status alone — an unconfirmed claim is fixed by the user.
@@ -5393,6 +5692,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # OPT whose EAD date has passed read "authorized" from the status text
         # alone and would have been answered Yes on employer forms.
         "authorized_now": _authorized_now_for_pack(p),
+        # Shown beside an authorization question left blank because of that.
+        "work_auth_note": _work_auth_note_for_pack(p),
         # Voluntary self-identification: only what the user chose; anything else
         # is sent as "decline" (never the old affirmative defaults).
         "gender": _eeo_answer(p.gender if p else "", _eeo_ok),
@@ -5436,6 +5737,10 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # first, else these; a skill the résumé does not show at all is No.
         "skill_role_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["role"],
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
+        # The user's saved answer to "How did you hear about this opportunity?":
+        # the ONLY source the extension answers that question from ("" = left
+        # for the user). Never a remembered answer and never a model's.
+        "how_heard_answer": (getattr(p, "how_heard_answer", "") if p else "") or "",
         # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
         # does not branch on it — the server already resolved the choice — but
         # it makes the setting visible in the popup's diagnostics instead of
@@ -5454,21 +5759,11 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         pack["ai_answers"] = {}
 
     # Base URL + auth token so the extension can call back (save answers,
-    # fetch the tailored résumé, report submission).
-    # request.base_url keeps local dev on 127.0.0.1:8000, but behind the
-    # TLS-terminating proxy it reports http:// — and an http:// base makes every
-    # extension call either blocked as mixed content or redirected, and a
-    # cross-scheme redirect drops the Authorization header, so authed calls 401.
-    # Trust X-Forwarded-Proto, and never hand out http:// for a remote host.
-    _base = str(request.base_url).rstrip("/")
-    _fwd_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-    if _fwd_proto == "https" and _base.startswith("http://"):
-        _base = "https://" + _base[len("http://"):]
-    elif _base.startswith("http://"):
-        from urllib.parse import urlparse as _up
-        _host = _up(_base).hostname or ""
-        if _host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            _base = "https://" + _base[len("http://"):]
+    # fetch the tailored résumé, report submission). An http:// base makes
+    # every extension call either blocked as mixed content or redirected, and
+    # a cross-scheme redirect drops the Authorization header, so authed calls
+    # 401 — hence the ONE helper every absolute link uses.
+    _base = _public_base_url(request)
     pack["spotapply_url"] = _base
     # Legacy alias: extensions installed before the rename read hirepath_url.
     # Installs update independently of deploys, so keep sending both.
@@ -5617,15 +5912,56 @@ def _autofill_resume_source(session, uid: str | None) -> str:
     return pref if pref in ("tailored", "original") else "tailored"
 
 
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _accept_allows(accept: str, ext: str, mime: str) -> bool:
+    """Does an upload field's ``accept="…"`` allow this file? No accept = anything.
+
+    The same reading as the extension's ``fileMatchesAccept`` (content.js)."""
+    tokens = [t.strip().lower() for t in (accept or "").split(",") if t.strip()]
+    if not tokens:
+        return True
+    ext, mime = ext.lower(), mime.lower()
+    for t in tokens:
+        if t.startswith("."):
+            if t == ext:
+                return True
+        elif t in ("*", "*/*"):
+            return True
+        elif t.endswith("/*"):
+            if mime.startswith(t[:-1]):
+                return True
+        elif t == mime:
+            return True
+    return False
+
+
 @app.get("/api/fill-pack/{application_id}/resume")
 @_rate_limit("15/minute")
-def get_tailored_resume(application_id: int, request: Request) -> dict:
-    """Return the résumé .docx as base64 so the extension can attach it to a
-    form's file input.
+def get_tailored_resume(application_id: int, request: Request, accept: str = "") -> dict:
+    """Return the résumé as base64 so the extension can attach it to a form's
+    file input.
 
     Which résumé depends on the user's ``autofill_resume_source`` preference:
     "tailored" (the default — the per-job rewrite, auto-tailoring first if none
     exists yet) or "original" (their uploaded master résumé, untouched).
+
+    Which FILE of the tailored résumé: the one-page PDF the tailor writes beside
+    the Word file (owner, 2026-10-09: the PDF is the delivered resume), unless
+    the upload field's ``accept`` rules PDF out, or no PDF exists — then the
+    .docx. Extension 1.0.1+ ALWAYS sends ``?accept=`` (the field's own value,
+    or ``*`` when it names none), so a request WITHOUT the parameter is the
+    1.0.0 Store build.
+
+    Known tradeoff for that old build, accepted by design: it cannot say what
+    the field takes, so it gets the PDF too. On the rare upload field whose
+    ``accept`` excludes PDF (e.g. ``.doc,.docx``) its own ``fileMatchesAccept``
+    then refuses the file and attaches nothing ("format not accepted", the
+    user attaches by hand), where before it attached the .docx. Serving the
+    .docx to every parameterless caller instead would undo the PDF for the
+    common case (fields that take PDF) on the build most users still run.
+    The miss ends when the Store update (1.0.1+) reaches them.
     """
     import base64
     from pathlib import Path as _P
@@ -5638,6 +5974,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         path = application.tailored_resume_path
         app_status = application.status
         app_notes = application.notes
+        owner_uid = application.user_id
         resume_source = _autofill_resume_source(session, uid)
 
     if resume_source == "original":
@@ -5799,14 +6136,35 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
     if not p.exists():
         raise HTTPException(status_code=404, detail="Resume file not found")
 
-    data = p.read_bytes()
-    mime = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            if p.suffix == ".docx" else "application/octet-stream")
+    # The one-page PDF when the field takes one. It is rendered in the same run
+    # as the .docx from the same checked text (tailor.py), so the export verdict
+    # above covers it; a run that could not draw it deletes both the local and
+    # the stored copy, so an older PDF never stands in for this draft.
+    serve = p
+    if p.suffix.lower() == ".docx" and _accept_allows(accept, ".pdf", "application/pdf"):
+        pdf = p.with_suffix(".pdf")
+        if not pdf.exists():
+            _rehydrate_tailored_file(str(pdf), owner_uid)
+        try:
+            if pdf.exists() and pdf.stat().st_size > 0:
+                serve = pdf
+        except OSError:
+            serve = p
+        if serve is not p and "accept" not in request.query_params:
+            # The 1.0.0 Store build (no ?accept=): it gets the PDF even on a
+            # field that takes only Word (see the docstring). Logged so the
+            # remaining share of old builds is measurable.
+            log.info("resume: PDF served to an extension build that sends no accept= "
+                     "(pre-1.0.1) for app %d", application_id)
+    data = serve.read_bytes()
+    mime = {".pdf": "application/pdf", ".docx": _DOCX_MIME}.get(
+        serve.suffix.lower(), "application/octet-stream")
 
     # The filename is what the ATS displays next to the upload — always present
-    # a clean "First_Last_Resume.docx" (the owner's naming rule, the same
+    # a clean "First_Last_Resume.pdf" (the owner's naming rule, the same
     # helper the tailor names the file with), never an internal name.
-    display_name = p.name
+    display_name = serve.name
+    p = serve
     try:
         import re as _re
         uid = _get_user_id(request)
@@ -6086,8 +6444,13 @@ def _compute_freshness_stats(user_id_arg: str | None) -> dict:
         # whose first_seen is re-stamped at adoption), 18,921 (same by
         # discovered_at) — shown side by side as if comparable. The shared
         # pool counts each posting once, across every lane, no duplication.
+        # count(*), not count(id): ix_job_user_firstseen holds both predicate
+        # columns, so Postgres answers from the index alone. count(id) made it
+        # visit ~21k heap rows (prod 2026-10-09: 4.9-11 s against this route's
+        # 5 s budget vs ~1.1 s index-only), so the number came back None and
+        # the header fell back to the user's OWN pool under this label.
         shared_new_24h = reads.get(None, lambda: _scalar(session.exec(
-            select(func.count(Job.id)).where(
+            select(func.count()).select_from(Job).where(
                 Job.user_id == SHARED_POOL_USER, Job.first_seen > day_ago)).one()))
 
         # 6. Global (shared-pool) runs count too — they feed this user via
@@ -6567,6 +6930,15 @@ def save_answer(request: Request, body: SaveAnswerBody) -> dict:
     answer = body.answer.strip()
     if not question or not answer:
         raise HTTPException(status_code=400, detail="question and answer required")
+    # A captcha field's value is a token, not an answer, and a model's reply
+    # ABOUT the question is not one either: neither is remembered (it would be
+    # served back into the next form). The applicant TYPED this, so only the
+    # forms a model alone writes ("I'd be happy to help, but…") are refused:
+    # "I am unable to start before January" is their answer and stays theirs.
+    # 200, so older extensions log nothing alarming.
+    from app.autofill import field_guards as _fg
+    if _fg.is_anti_bot_field(question) or _fg.is_model_only_reply(answer):
+        return {"ok": False, "skipped": "not_an_answer"}
     norm = question.lower().strip()
     user_id_arg = uid if uid != "local" else None
     with get_session() as session:
@@ -6601,10 +6973,14 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
     Lets the extension pre-fill fields on a NEW application using answers the
     user typed by hand on PREVIOUS applications. Pure cache lookup — free.
     """
+    from app.autofill import field_guards as _fg
     from app.db.models import AnswerMemory
     uid = _require_user(request)
     user_id_arg = uid if uid != "local" else None
-    labels = [l.strip() for l in (body.labels or []) if l and l.strip()]
+    # An anti-bot field (a captcha's hidden textarea) is never filled from
+    # memory, whatever an older build cached under its name.
+    labels = [l.strip() for l in (body.labels or [])
+              if l and l.strip() and not _fg.is_anti_bot_field(l)]
     if not labels:
         return {"answers": {}}
     # Map normalized label -> original label so we can return by the caller's key
@@ -6618,7 +6994,9 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
             q = q.where(AnswerMemory.user_id == user_id_arg)
         for mem in session.exec(q).all():
             orig = norm_to_orig.get(mem.label_normalized)
-            if orig and mem.answer:
+            # These are answers the user typed: only a model's own form
+            # ("I'd be happy to help, but…") is withheld, never a real answer.
+            if orig and mem.answer and not _fg.is_model_only_reply(mem.answer):
                 answers[orig] = mem.answer
     return {"answers": answers}
 
@@ -6641,10 +7019,17 @@ def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     if not question:
         raise HTTPException(status_code=400, detail="question required")
     _require_owned_application(request, body.app_id)
-    from app.autofill.answer_pack import answer_question
+    from app.autofill.answer_pack import answer_question_with_source
     user_id_arg = uid if uid != "local" else None
-    answer = answer_question(question, body.app_id, user_id=user_id_arg)
-    return {"answer": answer, "cached": bool(answer)}
+    # Refusals (a captcha field, a field NAME, a fact only the applicant holds,
+    # a model reply about the question) come back as "" — the extension then
+    # leaves the field for the user. Checked before the cache, so a reply an
+    # older build cached for such a key is never served again.
+    answer, source = answer_question_with_source(question, body.app_id, user_id=user_id_arg)
+    out = {"answer": answer, "cached": source == "cache", "source": source.split(":", 1)[0]}
+    if source.startswith("refused:"):
+        out["refused"] = source.split(":", 1)[1]
+    return out
 
 
 @app.get("/api/extension/download")
@@ -6969,12 +7354,20 @@ def application_funnel(request: Request) -> dict:
     }
 
 
-def _discover_then_match(user_id) -> None:
+def _discover_then_match(user_id, *, automatic: bool = False) -> None:
     """Discover → rank, tracking staged status (discovering → ranking → done)
     in a DiscoveryRun row so the UI can show live progress + a final summary.
     Serialized with the fresh/hot lanes so only one heavy pass holds the model
-    + job pool in memory at a time (prevents the OOM crash). Both the 6h
-    scheduler and the manual Discover button route through here."""
+    + job pool in memory at a time (prevents the OOM crash). The manual
+    Discover button and the onboarding seed's thin-feed scrape route through
+    here.
+
+    ``automatic=True`` is the seed (adoption.seed_new_user): work done FOR the
+    user, which a Pause stops (compute_policy). The lock wait below can be
+    minutes (the global pass, hot lane and matching lane all hold it), so the
+    pause is asked again once the lock is ours and between the waves, and a
+    run stopped by it files no "Job Discovery Completed" notice. The manual
+    button passes nothing: that click is the user asking."""
     from app.common.discovery_lock import discovery_guard
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     with discovery_guard(label="full discovery") as ran:
@@ -6985,7 +7378,42 @@ def _discover_then_match(user_id) -> None:
             finish_discovery_run(rid, "error",
                                  error="Another discovery run is in progress — please wait for it to finish.")
             return
-        _discover_then_match_locked(user_id)
+        if automatic and _auto_discovery_paused(user_id):
+            return          # paused during the lock wait: no run row, no scrape
+        _discover_then_match_locked(user_id, automatic=automatic)
+
+
+def _auto_discovery_paused(user_id) -> bool:
+    """Has the user paused since the seed decided to scrape for them? One
+    indexed read (compute_policy.user_paused), fresh, not the lanes' cached set:
+    this runs a handful of times per scrape, not once per job."""
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id):
+        log.info("Thin-feed discovery stopped: the search is paused")   # no user id in the line
+        return True
+    return False
+
+
+def _close_paused_run(run_id) -> None:
+    """End an automatic run the user paused, WITHOUT the bell notice that
+    finish_discovery_run files: it was work done for them, and they asked us
+    to stop. Status "cancelled" is the one the dashboard poller already drops."""
+    if not run_id:
+        return
+    from datetime import datetime
+
+    from app.db.models import DiscoveryRun
+    try:
+        with get_session() as session:
+            row = session.get(DiscoveryRun, run_id)
+            if row is not None:
+                row.status = "cancelled"
+                row.error = "Search paused"
+                row.finished_at = datetime.utcnow()
+                session.add(row)
+                session.commit()
+    except Exception as e:
+        log.warning("Could not close a paused discovery run: %s", e)
 
 
 def _internship_keywords(roles: list[str], prof) -> list[str]:
@@ -7016,9 +7444,24 @@ def _internship_keywords(roles: list[str], prof) -> list[str]:
     return out
 
 
-def _discover_then_match_locked(user_id) -> None:
+def _discover_then_match_locked(user_id, *, automatic: bool = False) -> None:
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
+
+    def _paused_stop() -> bool:
+        """Automatic runs only (see `_discover_then_match`): a Pause between
+        two steps ends the run there, closed with no notice."""
+        if automatic and _auto_discovery_paused(user_id):
+            _close_paused_run(run_id)
+            return True
+        return False
+
+    def _finish(status: str, **kw) -> None:
+        # Asked once more at the end: a Pause during the last wave still means
+        # no "Job Discovery Completed" (or "Failed") in the bell.
+        if not _paused_stop():
+            finish_discovery_run(run_id, status, **kw)
+
     # Tailor the keyword search to the user's saved Target Roles when set.
     roles = _get_target_roles(user_id) or None
     # Load the profile once for keyword augmentation (cap-exempt + internships +
@@ -7054,6 +7497,8 @@ def _discover_then_match_locked(user_id) -> None:
     first_ids: list[int] = []
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="fast")
+        if _paused_stop():
+            return
         first_ids = run_matching(user_id) or []
         try:
             from app.db.models import DiscoveryRun
@@ -7068,13 +7513,17 @@ def _discover_then_match_locked(user_id) -> None:
             log.debug("first_results status write failed: %s", _fe)
     except Exception as e:
         log.exception("Fast discovery wave failed: %s", e)
-        finish_discovery_run(run_id, "error", error=str(e))
+        _finish("error", error=str(e))
+        return
+    if _paused_stop():          # between the waves: no deep scrape into their pool
         return
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="boards")
+        if _paused_stop():
+            return
         shortlisted = run_matching(user_id) or []
         total = len(set(first_ids) | set(shortlisted))
-        finish_discovery_run(run_id, "done", total_shortlisted=total)
+        _finish("done", total_shortlisted=total)
         try:
             from app.strategy.fresh_alerts import dispatch_fresh_alerts
             dispatch_fresh_alerts(user_id, list(set(first_ids) | set(shortlisted)))
@@ -7084,10 +7533,10 @@ def _discover_then_match_locked(user_id) -> None:
         log.exception("Deep discovery wave failed: %s", e)
         # First-wave results are already live — surface them rather than erroring out.
         if first_ids:
-            finish_discovery_run(run_id, "done", total_shortlisted=len(first_ids),
-                                 error=f"Company-board scan failed: {e}")
+            _finish("done", total_shortlisted=len(first_ids),
+                    error=f"Company-board scan failed: {e}")
         else:
-            finish_discovery_run(run_id, "error", error=str(e))
+            _finish("error", error=str(e))
 
 
 @app.post("/run/discovery")
@@ -7506,7 +7955,7 @@ def get_referral(request: Request) -> dict:
     from app.db.models import UserReferralReward
     with get_session() as session:
         reward = session.exec(select(UserReferralReward).where(UserReferralReward.user_id == uid)).first()
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     return {
         "code": code,
         "link": f"{base}/login?ref={code}" if code else "",
@@ -9132,7 +9581,7 @@ def billing_portal(request: Request) -> dict:
     from app.billing import create_portal_session, stripe_enabled
     if not stripe_enabled():
         raise HTTPException(status_code=503, detail="Card billing isn't live yet.")
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_portal_session(uid, base)
     except LookupError:
@@ -9175,7 +9624,7 @@ def billing_checkout(request: Request) -> dict:
         email = _get_user_email(request)
     except Exception:
         pass
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_checkout_session(uid, email, base)
     except AlreadySubscribed:
@@ -9783,6 +10232,7 @@ _USERPROFILE_COLUMNS = [
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("how_heard_answer", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9920,6 +10370,7 @@ def get_profile(request: Request) -> dict:
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
+        "how_heard_answer": getattr(profile, "how_heard_answer", "") or "",
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
         # Also edited by the form; missing here meant a save wiped them.
@@ -9928,6 +10379,10 @@ def get_profile(request: Request) -> dict:
         "opt_unemployment_days_used": int(getattr(profile, "opt_unemployment_days_used", 0) or 0),
         "stem_opt": bool(getattr(profile, "stem_opt", False)),
     }
+
+
+# The profile's "How did you hear about us?" answer (the input's maxlength too).
+HOW_HEARD_MAX_LEN = 100
 
 
 class ProfileUpdate(BaseModel):
@@ -9971,6 +10426,8 @@ class ProfileUpdate(BaseModel):
     relocation_resume_optin: Optional[bool] = None
     resume_use_job_city: Optional[bool] = None
     resume_title_from_jd: Optional[bool] = None
+    # Typed into employer forms as written: one line, trimmed, bounded.
+    how_heard_answer: Optional[str] = None
     relocation_targets: Optional[str] = None
     relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
@@ -9992,6 +10449,16 @@ class ProfileUpdate(BaseModel):
         v = str(v).strip().lower()
         if v not in ("tailored", "original"):
             raise ValueError("autofill_resume_source must be 'tailored' or 'original'")
+        return v
+
+    @field_validator("how_heard_answer")
+    @classmethod
+    def _one_line_how_heard(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = " ".join(str(v).split())          # one line: no tabs or line breaks
+        if len(v) > HOW_HEARD_MAX_LEN:
+            raise ValueError(f"'How did you hear about us?' is limited to {HOW_HEARD_MAX_LEN} characters")
         return v
 
 
@@ -10203,12 +10670,14 @@ def _own_profile_query(uid: str):
     return select(UserProfile).where(UserProfile.user_id.is_(None))
 
 
-def _search_state_payload(uid: str) -> dict:
+def _search_state_payload(uid: str, prof=None) -> dict:
+    """``prof``: the caller's own profile row when it is already loaded (the
+    dashboard's first paint), so the answer costs no second read."""
     from app.common.compute_policy import (PAID_AI, QUEUE, dormant_after, idle_after,
                                            search_state)
-    from app.db.models import UserProfile
-    with get_session() as session:
-        prof = session.exec(_own_profile_query(uid)).first()
+    if prof is None:
+        with get_session() as session:
+            prof = session.exec(_own_profile_query(uid)).first()
     st = search_state(prof, paid=_user_paid_search_is_live)
     return {
         "state": st.state,
@@ -10844,7 +11313,7 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
                 evidence = _json.loads(profile.trust_evidence)
             except (ValueError, TypeError):
                 evidence = {}
-        base = str(request.base_url).rstrip("/")
+        base = _public_base_url(request)
         # Momentum — first vs latest snapshot, so candidates see growth.
         from app.db.models import TrustHistory
         hist = session.exec(
@@ -12206,6 +12675,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                 "path": application.tailored_resume_path,
                 "uid": application.user_id,
                 "jd": (job.description or "") if job else None,
+                "company": (job.company or "") if job else None,
             }
     rejected, notes, path, uid = (loaded.get("rejected"), loaded.get("notes") or "",
                                   loaded.get("path"), loaded.get("uid"))
@@ -12227,11 +12697,16 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
 
     def _compute():
         jd = loaded.get("jd")
-        if jd is None:
+        # The hiring company feeds the same review the tailor ran, so every
+        # door judges the draft with the same inputs.
+        company = loaded.get("company")
+        if jd is None or company is None:
             with get_session() as session:
                 app_row = session.get(Application, application_id)
                 job = session.get(Job, app_row.job_id) if app_row else None
-                jd = (job.description or "") if job else ""
+                if jd is None:
+                    jd = (job.description or "") if job else ""
+                company = (job.company or "") if job else ""
         tailored = ""
         try:
             from app.autofill.answer_pack import _load_resume_text_from_path
@@ -12248,7 +12723,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                           application_id, exc)
         try:
             return evaluate(grounding_rejected=False, grounding_reason="",
-                            master=master, tailored=tailored, jd=jd)
+                            master=master, tailored=tailored, jd=jd, company=company)
         except Exception as exc:
             # The check itself failing is not evidence the draft is clean — but
             # it is not evidence of a fabrication either, and grounding already
@@ -12347,7 +12822,7 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         tailored_path = application.tailored_resume_path
         _loaded = {"rejected": application.status == ApplicationStatus.ERROR,
                    "notes": application.notes or "", "path": tailored_path,
-                   "uid": uid, "jd": jd}
+                   "uid": uid, "jd": jd, "company": job_company or ""}
 
     from app.matching.pipeline import _load_resume
     master = _load_resume(user_id=uid) or ""
@@ -12371,7 +12846,8 @@ def application_pre_download_review(application_id: int, request: Request) -> di
 
     from app.tailoring.requirements import review as build_review
     try:
-        rep = getattr(verdict, "review", None) or build_review(master, tailored, jd)
+        rep = getattr(verdict, "review", None) or build_review(
+            master, tailored, jd, company=job_company or "")
     except Exception as exc:
         log.exception("pre-download review failed for application %s", application_id)
         raise HTTPException(status_code=500,

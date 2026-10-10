@@ -496,6 +496,37 @@ def norm_country(name: str) -> str:
     return aliases.get(n, n)
 
 
+# What an ATS writes into a location field when it has no location. Stored
+# verbatim, "na" rendered on a Stripe card as if it were a place: "na · On-site"
+# (live test 2026-10-09). Matched against the WHOLE value, or every
+# comma-separated part of it ("N/A, N/A"), never a part on its own: "Remote, NA"
+# is North America, and dropping the "NA" would lose the only region it names.
+_PLACEHOLDER_LOCATIONS = frozenset({
+    "na", "n/a", "n.a", "n.a.", "n\\a", "none", "null", "nil", "undefined",
+    "-", "--", "---", "—", "–", "?", "tbd", "tba", "tbc",
+    "unknown", "not specified", "unspecified", "not available", "not applicable",
+    "location", "locations",
+})
+
+
+def is_placeholder_location(location) -> bool:
+    """True when the field holds no place at all (blank or a placeholder)."""
+    if not isinstance(location, str):
+        return location is None
+    parts = [p.strip().strip(".").strip().lower() for p in location.split(",")]
+    return all((not p) or p in _PLACEHOLDER_LOCATIONS
+               or (p + ".") in _PLACEHOLDER_LOCATIONS for p in parts)
+
+
+def clean_location(location) -> str:
+    """The location to show on a card or put in a prompt: the stored value,
+    trimmed, or '' when it is blank or a placeholder ("na", "n/a", "none",
+    "null", "-", "tbd"...). Display only; matching reads the stored value."""
+    if not isinstance(location, str):
+        return ""
+    return "" if is_placeholder_location(location) else location.strip()
+
+
 def detect_region(location: str) -> str:
     """Region anchor ('eu', 'europe', 'emea', 'apac', 'latam'), '' if none."""
     loc = " " + (location or "").lower().strip() + " "

@@ -70,6 +70,99 @@ function queryAllDeep(selector, root = document) {
   return out;
 }
 
+// ── Fields nobody may fill ───────────────────────────────────────────────────
+// Live test 2026-10-09 (Ashby): the page's HIDDEN reCAPTCHA textarea
+// (name="g-recaptcha-response", display:none) has no label, so its NAME became
+// the "question", the AI's reply ("I'd be happy to help, but…") came back and
+// was typed into it. A captcha / anti-bot field, a honeypot, and a text field
+// the user cannot see are never filled, never asked about, never learned from.
+// Honeypot WORDING counts only when the whole text is the instruction ("Leave
+// this field blank") or it addresses humans ("If you are human, ..."): a real
+// field that says "leave blank if none" is the applicant's to fill. "Human"
+// counts only as the whole address (then punctuation, the end, or "leave" /
+// "don't"): "If you are a Human Resources professional, ..." is a question.
+// Keep the pattern IDENTICAL to app/autofill/field_guards.py.
+const _ANTI_BOT_RE = /(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot|if you(?:'re|’re| are) (?:a )?human(?:\s*[,.;:!?)]|\s*$|\s+(?:please |then )?(?:leave|do ?n[o'’]t)\b)|^\W*(?:please )?(?:leave this (?:field |input |box )?(?:blank|empty)|do ?n[o'’]t (?:fill|change) (?:in )?this(?: field)?(?: in| out)?)\W*$)/i;
+// Captcha WIDGETS (never a page or form wrapper, whose class may mention captcha).
+const _CAPTCHA_WIDGET_SEL = '.g-recaptcha, .grecaptcha-badge, .h-captcha, .cf-turnstile, .frc-captcha';
+
+function isAntiBotField(el) {
+  if (!el || !el.getAttribute) return false;
+  // Each text on its own (a honeypot sentence must be the WHOLE text), with
+  // its whitespace collapsed the way field_guards.is_anti_bot_field does.
+  const test = (t) => !!t && _ANTI_BOT_RE.test(String(t).replace(/\s+/g, ' ').trim());
+  const own = [el.getAttribute('name'), el.id, el.getAttribute('class'),
+               el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+               el.getAttribute('title')];
+  if (own.some(test)) return true;
+  try { if (el.closest && el.closest(_CAPTCHA_WIDGET_SEL)) return true; } catch (_) {}
+  // A honeypot announces itself to people: "Leave this field blank".
+  try {
+    const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) || '';
+    if (test(lbl)) return true;
+  } catch (_) {}
+  return false;
+}
+
+/** A field a person could actually see and type into right now. */
+function isUserVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+  let style = null;
+  try { style = win.getComputedStyle(el); } catch (_) { return true; }
+  if (!style) return true;
+  if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  if (el.offsetParent === null && style.position !== 'fixed') return false;   // a display:none ancestor
+  const r = el.getBoundingClientRect();
+  if (r.width < 2 && r.height < 2) return false;                // 0x0 / 1px honeypots
+  const sx = win.scrollX || 0, sy = win.scrollY || 0;
+  if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;    // pushed off the page (left:-9999px)
+  return true;
+}
+
+/** A free-text entry: the kind of field a hidden one must never be written into. */
+function isTextEntry(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  const t = (el.getAttribute('type') || 'text').toLowerCase();
+  return ['text', 'email', 'tel', 'url', 'number', 'search', ''].includes(t);
+}
+
+/** May the copilot write into this field at all? */
+function canFillField(el) {
+  if (!el || isAntiBotField(el)) return false;
+  if (isTextEntry(el) && !isUserVisible(el)) return false;
+  return true;
+}
+
+/** A form field's NAME used as its label ("g-recaptcha-response", "question_123"). */
+function looksLikeFieldIdentifier(text) {
+  const s = String(text || '').trim();
+  return !!s && !/\s/.test(s) && /^[A-Za-z0-9_.:\[\]-]+$/.test(s) && /[_\-\d\[\]:.]/.test(s);
+}
+
+// A MODEL reply ABOUT the question instead of an answer to it. Never typed into
+// a form (the server refuses these too; this covers an older server). The full
+// test is for what a model just wrote; a remembered answer may be the user's
+// own words ("I am unable to start before January"), so it is judged only by
+// the forms a model alone writes (looksLikeModelOnlyReply). Same patterns as
+// app/autofill/field_guards.py.
+const _META_START_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help|i(?:'m| am) (?:sorry,? (?:but )?i (?:cannot|can't|can not|am unable to|am not able to)|unable to|not able to) (?:answer|write|respond|provide|help|complete|assist)\b|i(?:'m| am) (?:sorry|unable|not able)\b[^.?!]{0,60}\b(?:the|this|your) (?:essay )?(?:question|prompt)\b|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help(?! but)|complete)|as an ai(?: (?:language )?model| assistant)?\s*,|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))|could you (?:please )?(?:provide|clarify|share)|please (?:provide|clarify|share) (?:the|more|a|an))/i;
+const _META_ANY_RE = /(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)|(?:looks|seems|appears) (?:like|to be) (?:a|an) (?:technical|form|html|internal|system) (?:parameter|field|identifier|name|token|value)|(?:this|that|it|"[^"]{1,80}") (?:is|isn't|is not|doesn't look like|does not look like|doesn't appear to be|does not appear to be) (?:a|an) (?:real |actual |complete |valid )?(?:essay |application )?question\b|form field (?:name|identifier)|provide the (?:actual|full|complete) (?:essay )?question|as an ai language model|as an ai (?:model|assistant),/i;
+const _META_MODEL_ONLY_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help(?: you)?(?:\s*[,!.:;]| with (?:this|that|the|your) (?:essay |application )?(?:question|prompt))|as an ai(?: (?:language )?model| assistant)?\s*,|(?:i notice (?:that )?|it (?:looks|seems|appears) (?:like|that) )?(?:the|this|your) (?:essay )?(?:question|prompt) (?:appears|seems|is) (?:to be )?(?:incomplete|unclear|missing|empty|cut off))/i;
+function looksLikeMetaReply(answer) {
+  const a = String(answer || '').trim();
+  if (!a) return false;
+  if (a.replace(/^[\s."']+|[\s."']+$/g, '').toUpperCase() === 'SKIP') return true;
+  return _META_START_RE.test(a) || _META_ANY_RE.test(a);
+}
+/** A reply in a form only a model writes: safe to apply to the user's own words. */
+function looksLikeModelOnlyReply(answer) {
+  const a = String(answer || '').trim();
+  return !!a && _META_MODEL_ONLY_RE.test(a);
+}
+
 // Backend base URL for a fill pack. The server deploys independently of
 // installed extensions, so accept both the current key and the legacy
 // hirepath_url one — an old server must keep working with a new install and
@@ -466,7 +559,7 @@ function toE164(raw, defaultCc = '1') {
  */
 function fillPhoneField(el, raw) {
   const want = String(raw || '').trim();
-  if (!want) return false;
+  if (!want || isAntiBotField(el)) return false;
   const wantDigits = want.replace(/\D/g, '').slice(-10);   // national significant digits
   if (!wantDigits) return false;
 
@@ -967,6 +1060,788 @@ function answerScreeningRadios(pack) {
   return answered;
 }
 
+// ── Yes/No BUTTON pairs (Ashby) ──────────────────────────────────────────────
+// Ashby renders a boolean question as two <button type="button">s, "Yes" and
+// "No", under the question's label: no radio, no select. Nothing matched them,
+// so on the live test (2026-10-09) both required work-authorization questions
+// stayed blank AND were missing from the "need you" count. The answer comes
+// from the same interpreter as every other control (classifyScreeningQuestion
+// -> interpretWorkAuthQuestion); anything it cannot prove stays for the user.
+function _btnText(b) {
+  return String((b && (b.textContent || (b.getAttribute && b.getAttribute('aria-label')))) || '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** Every rendered Yes/No button pair: {box, yes, no, question, label, entry}. */
+function yesNoButtonGroups(root) {
+  const groups = [];
+  const seen = new Set();
+  for (const yes of queryAllDeep('button', root || document)) {
+    if (!/^yes$/i.test(_btnText(yes))) continue;
+    const host = yes.getRootNode && yes.getRootNode().host;
+    if (host && host.id === 'hp-copilot-overlay') continue;          // our own UI
+    const box = yes.parentElement;
+    if (!box || seen.has(box)) continue;
+    const buttons = Array.from(box.children).filter((c) => c.tagName === 'BUTTON');
+    if (buttons.length !== 2) continue;
+    const no = buttons.find((b) => /^no$/i.test(_btnText(b)));
+    if (!no) continue;
+    // Never press anything that would submit the form.
+    if ([yes, no].some((b) => String(b.type || '').toLowerCase() === 'submit' && b.form)) continue;
+    seen.add(box);
+    const q = yesNoQuestion(box);
+    groups.push({ box, yes, no, question: q.text, label: q.label, entry: q.entry });
+  }
+  return groups;
+}
+
+/** The question a Yes/No pair answers: its field's label, else the field's text. */
+function yesNoQuestion(box) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const by = box.getAttribute && box.getAttribute('aria-labelledby');
+  if (by) {
+    const n = document.getElementById(by.split(/\s+/)[0]);
+    if (n && clean(n.textContent)) return { text: clean(n.textContent), label: n, entry: box.parentElement };
+  }
+  let node = box.parentElement;
+  for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+    // Stop before a container that holds ANOTHER question: its label is not ours.
+    const otherPair = Array.from(node.querySelectorAll('button'))
+      .some((b) => !box.contains(b) && /^(yes|no)$/i.test(_btnText(b)));
+    const otherField = node.querySelector('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), textarea, select');
+    if (otherPair || otherField) break;
+    const label = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i], [role="heading"]'))
+      .find((l) => !box.contains(l) && !l.contains(box) && clean(l.textContent));
+    if (label) return { text: clean(label.textContent), label, entry: node };
+    const text = clean(String(node.textContent || '').replace(box.textContent || '', ' '));
+    if (text.length >= 5) return { text, label: null, entry: node };
+  }
+  return { text: '', label: null, entry: box.parentElement };
+}
+
+function _btnOn(b) {
+  if (!b || !b.getAttribute) return false;
+  for (const a of ['aria-pressed', 'aria-checked', 'aria-selected']) {
+    if (b.getAttribute(a) === 'true') return true;
+  }
+  if (/^(on|checked|active|selected|true)$/i.test(b.getAttribute('data-state') || '')) return true;
+  return /(^|[\s_-])(active|selected|checked|pressed|chosen)([\s_-]|$)/i.test(String(b.getAttribute('class') || ''));
+}
+
+/** 'yes' | 'no' | null — what the pair holds now, by the page's own state first. */
+function yesNoChoice(g) {
+  const y = _btnOn(g.yes), n = _btnOn(g.no);
+  if (y && !n) return 'yes';
+  if (n && !y) return 'no';
+  return (g.box.dataset && (g.box.dataset.spotapplyUserChoice || g.box.dataset.spotapplyChoice)) || null;
+}
+
+function yesNoRequired(g) {
+  if (g.box.getAttribute && g.box.getAttribute('aria-required') === 'true') return true;
+  if (g.label && labelMarksRequired(g.label)) return true;
+  try {
+    if (g.entry && g.entry.querySelector('input[required], input[aria-required="true"]')) return true;
+  } catch (_) {}
+  return /\*/.test(g.question || '');
+}
+
+/** Click Yes/No where the profile proves the answer. Returns how many. */
+function answerYesNoButtons(pack) {
+  let answered = 0;
+  for (const g of yesNoButtonGroups(document)) {
+    if (!g.box.getClientRects().length) continue;                 // not rendered
+    if (yesNoChoice(g)) continue;                                   // already answered, by anyone
+    if (g.box.dataset.spotapplyUserModified === 'true') continue;
+    const q = g.question;
+    if (!q || isDemographicQuestion(q)) continue;
+    const want = classifyScreeningQuestion(q, pack);
+    if (want === null) continue;                                    // not proven: the applicant answers
+    const target = want ? g.yes : g.no;
+    if (target.disabled) continue;
+    try {
+      target.click();      // a click, not a class flip: the app's own handler records it
+      g.box.dataset.spotapplyChoice = want ? 'yes' : 'no';
+      g.box.dataset.spotapplyFilled = 'true';
+      answered++;
+      console.log('[SpotApply] Yes/No answered:', want ? 'Yes' : 'No', '-', q.slice(0, 70));
+    } catch (e) {
+      console.debug('[SpotApply] yes/no click failed:', e.message);
+    }
+  }
+  if (answered) console.log(`[SpotApply] Answered ${answered} Yes/No question(s) from your profile`);
+  return answered;
+}
+
+// A Yes/No the USER pressed is theirs: never re-answered, always counted.
+document.addEventListener('click', (e) => {
+  if (!e.isTrusted || !hpCopilotSurface()) return;
+  const b = e.target && e.target.closest && e.target.closest('button');
+  const t = _btnText(b);
+  if (!b || !/^(yes|no)$/i.test(t) || !b.parentElement) return;
+  b.parentElement.dataset.spotapplyUserModified = 'true';
+  b.parentElement.dataset.spotapplyUserChoice = t.toLowerCase();
+}, { capture: true, passive: true });
+
+// ── "Required", however the form marks it ────────────────────────────────────
+// Ashby draws the asterisk with CSS (label::after { content: "*" }) and tags
+// the label with a `_required_…` class, so the text says "Location" while the
+// page shows "Location*". Reading only the text left required fields yellow
+// (optional) and out of the required count.
+function labelMarksRequired(lbl) {
+  if (!lbl) return false;
+  const t = String(lbl.textContent || '');
+  if (t.includes('*') || /\(required\)|\brequired\b/i.test(t)) return true;
+  const cls = String((lbl.getAttribute && lbl.getAttribute('class')) || '');
+  if (/(^|[\s_-])required([\s_-]|$)/i.test(cls)) return true;
+  try {
+    if (lbl.querySelector && lbl.querySelector('abbr[title*="required" i], [aria-label="required" i]')) return true;
+  } catch (_) {}
+  try {
+    const win = (lbl.ownerDocument && lbl.ownerDocument.defaultView) || window;
+    for (const pseudo of ['::after', '::before']) {
+      if (String(win.getComputedStyle(lbl, pseudo).content || '').includes('*')) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** The label elements that name a field (for a radio: its GROUP's question). */
+function fieldLabelElements(el) {
+  const out = [];
+  try { if (el.labels) out.push(...Array.from(el.labels)); } catch (_) {}
+  try {
+    const doc = (el.getRootNode && el.getRootNode()) || document;
+    if (el.id && doc.querySelector) {
+      const l = doc.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (l) out.push(l);
+    }
+  } catch (_) {}
+  const by = el.getAttribute && el.getAttribute('aria-labelledby');
+  if (by) by.split(/\s+/).forEach((id) => { const n = id && document.getElementById(id); if (n) out.push(n); });
+  if (el.type === 'radio' || el.type === 'checkbox') {
+    const fs = el.closest && el.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) out.push(lg);
+    // The field's own question label: not an option caption (those wrap or
+    // point at a radio/checkbox).
+    let node = el.parentElement;
+    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+      // Never climb into a container that holds another question's inputs.
+      const foreign = Array.from(node.querySelectorAll('input, textarea, select'))
+        .some((o) => o !== el && !((o.type === 'radio' || o.type === 'checkbox') && o.name && o.name === el.name)
+                     && o.type !== 'hidden');
+      if (foreign) break;
+      const q = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i]')).find((l) =>
+        !l.contains(el) && !l.querySelector('input[type="radio"], input[type="checkbox"]') &&
+        !(l.htmlFor && (() => { try { const t = document.getElementById(l.htmlFor); return t && /radio|checkbox/.test(t.type); } catch (_) { return false; } })()));
+      if (q) { out.push(q); break; }
+    }
+  }
+  return out;
+}
+
+// ── Location autocomplete (Ashby and friends) ────────────────────────────────
+// A location "combobox" commits only a SUGGESTION the user picks. Typing
+// "Cincinnati, OH" into it left an uncommitted string the form discarded on
+// blur, so the required Location stayed empty (live test, 2026-10-09). Type the
+// city, wait for the suggestions, pick the one that matches the profile.
+function isAutocompleteInput(el) {
+  if (!el || el.tagName !== 'INPUT') return false;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  const ac = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+  const pop = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+  if (role === 'combobox' || ac === 'list' || ac === 'both' || pop === 'listbox') return true;
+  // Unannotated search-as-you-type boxes still say so: aria-expanded, or a
+  // "Start typing..." placeholder with the browser's own autofill turned off.
+  if (el.hasAttribute('aria-expanded')) return true;
+  return /start typing|type to search|search for a (?:city|location)/i.test(el.getAttribute('placeholder') || '') &&
+    /^(off|new-password|nope)$/i.test(el.getAttribute('autocomplete') || 'off');
+}
+
+/** Write text the way typing does, WITHOUT a blur (blur closes the suggestions). */
+function _typeNoBlur(el, value) {
+  try {
+    const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    const d = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
+    if (d && d.set) d.set.call(el, value); else el.value = value;
+  } catch (_) { try { el.value = value; } catch (__) {} }
+  try {
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+  } catch (_) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function _suggestionsFor(el) {
+  const ids = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .filter(Boolean).join(' ').split(/\s+/).filter(Boolean);
+  const lists = ids.map((id) => document.getElementById(id)).filter(Boolean);
+  const opts = lists.length
+    ? lists.flatMap((l) => Array.from(l.querySelectorAll('[role="option"]')))
+    : queryAllDeep('[role="option"]');
+  return opts.filter((o) => o.getClientRects().length &&
+    !(o.getRootNode && o.getRootNode().host && o.getRootNode().host.id === 'hp-copilot-overlay'));
+}
+
+/**
+ * The suggestion that IS the profile's place, or null when it is not certain.
+ *
+ * The region is compared COMPONENT BY COMPONENT ("London, Ontario, Canada" is
+ * London | Ontario | Canada), never as a substring: "on" is inside "London"
+ * and "Toronto", and "Virginia" inside "West Virginia" (review 2026-10-09: a
+ * substring test committed London, England for "London, ON"). A 2-letter code
+ * matches only as its own, case-sensitive component.
+ */
+function pickLocationSuggestion(options, pack) {
+  const loc = parseLocation(pack && pack.location);
+  const norm = (s) => deaccent(String(s || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const city = norm(loc.city);
+  if (!city) return null;
+  const cityRe = new RegExp('(^|[^a-z])' + esc(city) + '([^a-z]|$)');
+  // A suggestion's comma components, ZIP codes dropped ("OH 45202" is OH).
+  const parts = (o) => String((o && o.textContent) || '').split(',')
+    .map((p) => p.replace(/\b\d{5}(?:-\d{4})?\b/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  let hits = (options || []).filter((o) => cityRe.test(norm(o.textContent)));
+  // "Columbus" is not "Columbus Grove": a suggestion naming the city exactly wins.
+  // The CITY slot only: "New York Mills, New York" names the STATE New York, so
+  // reading any component made every place in that state an exact hit and the
+  // pick came back empty for "New York, NY" (review 2026-10-09).
+  const exact = hits.filter((o) => norm(parts(o)[0] || '') === city);
+  if (exact.length) hits = exact;
+  if (!hits.length) return null;
+
+  // The profile's region as a code and a name ("OH" / "ohio", either written);
+  // a country in that slot ("London, UK") is the country, not a region.
+  const regions = Object.assign({}, US_STATES, CA_PROVINCES);
+  const isRegionCode = (k) => !!k && Object.prototype.hasOwnProperty.call(regions, k);
+  const regionNames = new Set(Object.keys(regions).map((k) => norm(regions[k])));
+  let code = isRegionCode(loc.abbr) ? loc.abbr : '';
+  let regionName = code ? norm(regions[code]) : norm(loc.state);
+  if (!code && regionNames.has(regionName)) {
+    code = Object.keys(regions).find((k) => norm(regions[k]) === regionName) || '';
+  }
+  const slotCountry = code ? '' : _countryIn(loc.state);
+  if (slotCountry) regionName = '';
+  const country = _normCountry(residenceCountry(pack)) || slotCountry ||
+    (US_STATES[code] ? 'united states' : (CA_PROVINCES[code] ? 'canada' : ''));
+  // The components that can name a country: a US state or Canadian province is
+  // a region, never a country ("New Mexico" is not Mexico).
+  const countryParts = (o) => parts(o).slice(1)
+    .filter((p) => !(isRegionCode(p) || regionNames.has(norm(p))));
+  // A suggestion that names a country we know, other than the profile's.
+  const otherCountry = (o) => {
+    const theirs = countryParts(o).map(_countryIn).find(Boolean) || '';
+    return !!(theirs && country && theirs !== country);
+  };
+
+  if (code || regionName) {
+    const isRegion = (p) => (code && p === code) || (!!regionName && norm(p) === regionName);
+    const inRegion = hits.filter((o) => parts(o).slice(1).some(isRegion));
+    if (inRegion.length) return inRegion.length === 1 ? inRegion[0] : null;   // still two: the user picks
+    // No suggestion names the profile's region. A lone one is the place only
+    // when it names no OTHER state or province and no other country.
+    if (hits.length !== 1) return null;
+    if (parts(hits[0]).slice(1).some((p) => isRegionCode(p) || regionNames.has(norm(p)))) return null;
+    return otherCountry(hits[0]) ? null : hits[0];
+  }
+  if (hits.length === 1) return otherCountry(hits[0]) ? null : hits[0];
+  const inCountry = country
+    ? hits.filter((o) => countryParts(o).some((p) => _normCountry(p) === country)) : [];
+  return inCountry.length === 1 ? inCountry[0] : null;   // two Springfields: the user picks
+}
+
+/** Type the profile's city into a location autocomplete and pick its suggestion. */
+async function fillLocationCombobox(el, pack) {
+  _lastWriteSkippedEmpty = false;
+  if (!el || !canFillField(el) || el.dataset.spotapplyUserModified === 'true') return false;
+  const loc = parseLocation(pack && pack.location);
+  if (!loc.city) { _lastWriteSkippedEmpty = true; return false; }
+  try { el.focus(); } catch (_) {}
+  _typeNoBlur(el, loc.city);
+  let pick = null;
+  let lastCount = -1;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    await delay(300);
+    const opts = _suggestionsFor(el);
+    // Wait for the list to settle (a debounced search fills it in steps).
+    if (opts.length && opts.length === lastCount) { pick = pickLocationSuggestion(opts, pack); break; }
+    lastCount = opts.length;
+  }
+  if (!pick) {
+    // Never leave typed-but-uncommitted text behind: the form discards it, and
+    // it looks filled to the user.
+    _typeNoBlur(el, '');
+    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    console.log('[SpotApply] Location suggestions did not include your city, left for you');
+    return false;
+  }
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    try {
+      const Ctor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      pick.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+  }
+  try { pick.click(); } catch (_) {}
+  await delay(300);
+  const ok = deaccent(String(el.value || '')).toLowerCase().includes(deaccent(loc.city).toLowerCase());
+  if (ok) {
+    try {
+      el.dataset.spotapplyFilled = 'true';
+      el.dataset.spotapplyLastWrite = String(el.value || '');
+    } catch (_) {}
+    console.log('[SpotApply] Location picked from suggestions:', String(el.value || '').slice(0, 60));
+  }
+  return ok;
+}
+
+// ── "How did you hear about this opportunity?" ───────────────────────────────
+// Owner's rule (2026-10-09): answered ONLY from the answer the user saved in
+// their profile (UserProfile.how_heard_answer, sent as pack.how_heard_answer).
+// Never from a remembered answer, never by the AI (the server refuses it as a
+// fact only the applicant holds), never guessed. Nothing saved = the applicant
+// answers it, and it is counted with the fields that need them.
+// Keep the pattern IDENTICAL to app/autofill/field_guards.py _HEAR_ABOUT_RE.
+const _HEAR_ABOUT_RE = /how did you (?:first )?(?:hear|learn|find out|find)|hear about (?:us|this)|(?:referral|lead|candidate|application) source|source of (?:referral|application)|where did you (?:hear|find|see|learn)/i;
+
+function isHowHeardQuestion(text) {
+  return _HEAR_ABOUT_RE.test(String(text || '').replace(/\s+/g, ' '));
+}
+
+// _HEAR_ABOUT_RE is the REFUSAL list: no model and no memory answers anything
+// in it. The saved answer FILLS less (review 2026-10-09): only a question about
+// how the applicant came to THIS job, role, position, posting, us or the
+// company, or a referral / lead / application source field. "How did you learn
+// Python?" and "How did you find your current role?" are in the refusal list
+// and stay the applicant's to answer.
+// The asking words, as _HEAR_ABOUT_RE has them.
+const _HH_ASKED = '(?:how did you (?:first )?(?:learn|find out|find)|where did you (?:find|see|learn))';
+const _HOW_HEARD_FILL_RE = new RegExp(
+  'how did you (?:first )?hear|where did you hear|hear about (?:us|this)|' +
+  '(?:referral|lead|candidate|application) source|source of (?:referral|application)|' +
+  _HH_ASKED + ' (?:about |of )?(?:us\\b|(?:this|the|our|that) (?:open |job )?' +
+  '(?:jobs?|roles?|positions?|opportunit(?:y|ies)|openings?|postings?|vacanc(?:y|ies)|company|organi[sz]ation)\\b)',
+  'i');
+
+/** A company's name without its legal suffix: "Acme, Inc." -> "acme". */
+function _companyCore(company) {
+  let s = deaccent(String(company || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s.replace(/[\s,]+(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh)\.?$/, '').trim();
+  }
+  s = s.replace(/^the /, '');
+  return s.length >= 2 ? s : '';
+}
+
+/**
+ * Does the saved how-did-you-hear answer answer this question? Never wider
+ * than the refusal list. `company` is the job's (pack.company): "How did you
+ * first learn about Acme?" asks about this job only on Acme's form.
+ */
+function isHowHeardFillQuestion(text, company) {
+  const t = deaccent(String(text || '')).replace(/\s+/g, ' ');
+  if (!isHowHeardQuestion(t)) return false;
+  if (_HOW_HEARD_FILL_RE.test(t)) return true;
+  const name = _companyCore(company);
+  if (!name) return false;
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(_HH_ASKED + ' (?:about |of )?(?:the )?' + esc + '(?![a-z0-9])', 'i').test(t);
+}
+
+/** The user's saved answer as one line, or "" (= the applicant answers it). */
+function howHeardAnswer(pack) {
+  return String((pack && pack.how_heard_answer) || '').replace(/\s+/g, ' ').trim();
+}
+
+// Other words for the SAME source, never a broader or a narrower one: a saved
+// "Job board" must not become "Indeed", which the user never said.
+const _HOW_HEARD_SYNONYMS = [
+  ['company website', 'company site', 'company web site', 'companys website', 'corporate website',
+   'careers page', 'career page', 'careers site', 'career site', 'careers website', 'career website',
+   'our website', 'your website'],
+  ['job board', 'job boards', 'job site', 'job sites', 'job website', 'job posting site',
+   'job posting website', 'job search site', 'job search website', 'job listing site'],
+  ['referral', 'referred'],
+  ['career fair', 'careers fair', 'job fair', 'hiring event'],
+  ['social media', 'social network', 'social networking'],
+  ['search engine', 'web search', 'online search', 'internet search'],
+];
+
+/** Lowercase words, accents and apostrophes dropped ("Company's" = "companys"). */
+function _hhTokens(s) {
+  return deaccent(String(s || '')).toLowerCase().replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+
+/** Does word list `hay` hold `needle` as a run of whole words? */
+function _hhHas(hay, needle) {
+  if (!needle.length || needle.length > hay.length) return false;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    if (needle.every((w, j) => hay[i + j] === w)) return true;
+  }
+  return false;
+}
+
+function _hhIsOther(tok) { return tok[0] === 'other'; }
+
+/** "Select...", "Please choose", "--": a list's placeholder, not a choice. */
+function _hhIsPlaceholder(text) {
+  return /^\s*(?:-+|(?:please\s+)?(?:select|choose)\b.*)?\s*$/i.test(String(text || ''));
+}
+
+/**
+ * The option (by index into `texts`) that answers the saved how-did-you-hear
+ * answer: {index, specify}, or null when nothing fits for certain. In order:
+ * the option that IS it; the one containing it or contained in it (whole
+ * words); a synonym; else "Other", with the saved text for its "please
+ * specify" box. Two candidates at one step are the applicant's choice.
+ */
+function pickHowHeardOption(texts, saved) {
+  const want = _hhTokens(saved);
+  if (!want.length) return null;
+  const opts = (texts || []).map((t, i) => ({ i, raw: String(t || ''), tok: _hhTokens(t) }))
+    .filter((o) => o.tok.length && !_hhIsPlaceholder(o.raw));
+  const specifyFor = (o) => {
+    if (!_hhIsOther(o.tok)) return '';
+    // "Other: a podcast" -> "a podcast"; a plain "Other" has nothing to add.
+    const s = String(saved).replace(/\s+/g, ' ').trim();
+    const m = s.match(/^other\b\s*[:,-]?\s*(.*)$/i);
+    let rest = m ? m[1] : s;
+    const p = rest.match(/^\((.*)\)$/);
+    if (p) rest = p[1];
+    return rest.trim();
+  };
+  const pick = (o) => ({ index: o.i, specify: specifyFor(o) });
+  const exact = opts.filter((o) => o.tok.join(' ') === want.join(' '));
+  if (exact.length) return pick(exact[0]);
+  const real = opts.filter((o) => !_hhIsOther(o.tok));
+  const contains = real.filter((o) => _hhHas(o.tok, want) || _hhHas(want, o.tok));
+  if (contains.length) return contains.length === 1 ? pick(contains[0]) : null;
+  const families = (tok) => _HOW_HEARD_SYNONYMS
+    .map((f, k) => (f.some((ph) => _hhHas(tok, ph.split(' '))) ? k : -1)).filter((k) => k >= 0);
+  const mine = families(want);
+  if (mine.length) {
+    const syn = real.filter((o) => families(o.tok).some((k) => mine.includes(k)));
+    if (syn.length) return syn.length === 1 ? pick(syn[0]) : null;
+  }
+  const other = opts.filter((o) => _hhIsOther(o.tok));
+  return other.length ? pick(other[0]) : null;
+}
+
+// A box for the "Other" choice says so: "If other, please specify", "Other
+// (please specify)", "Specify other", "Other source", or only "Please
+// specify" / "Other". A box asking to explain, describe or list something is
+// the next question (review 2026-10-09: "Please describe why you want to work
+// at Acme" got the saved answer, and memory learned it).
+const _SPECIFY_RE = /\bif other\b|\bif you (?:selected|chose|picked|answered) \W?other\b|\bother\b[^a-z0-9]*(?:please )?specify\b|\bspecify (?:the |your )?other\b|\bother source\b|^\W*(?:please )?specify\W*$|^\W*other\W*$/i;
+
+function _saysSpecifyOther(text) {
+  return _SPECIFY_RE.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+/** A free-text box whose own words name the "Other" choice. */
+function _isSpecifyField(c) {
+  if (!isTextEntry(c)) return false;
+  return [labelText(c), c.getAttribute('placeholder'), c.getAttribute('aria-label')]
+    .some((t) => _saysSpecifyOther(t));
+}
+
+const _OTHER_BOX_SEL = 'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])' +
+  ':not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"]), textarea, select';
+
+/** The fields on screen now. Taken before a pick, to see what the pick revealed. */
+function _shownFields() {
+  return new Set(queryAllDeep(_OTHER_BOX_SEL).filter(isUserVisible));
+}
+
+/**
+ * Does `box` sit in the question's own container? The smallest element
+ * holding the question's controls (`own`) and the box holds no other field,
+ * the box has no label of its own (a label makes it another question), the
+ * container holds the question's own caption (its <label>/<legend>), and it
+ * holds no other caption or text: every word in it is the question's label or
+ * an option's. A section holding the how-heard question and the NEXT question
+ * with an unlinked label (a sibling <label> without `for`, a div caption) is
+ * not the question's container (review 2026-10-09: that next question got
+ * the saved answer after an Other pick).
+ */
+function _inQuestionContainer(box, own) {
+  if ((box.labels && box.labels.length) || box.getAttribute('aria-labelledby') ||
+      box.getAttribute('aria-label')) return false;
+  let node = own[0] && own[0].parentElement;
+  while (node && !(node.contains(box) && own.every((o) => node.contains(o)))) node = node.parentElement;
+  if (!node || node === document.body || node === document.documentElement) return false;
+  if (!Array.from(node.querySelectorAll('input:not([type="hidden"]), select, textarea'))
+    .every((f) => f === box || own.includes(f))) return false;
+  const captions = new Set();
+  for (const o of own) {
+    for (const l of Array.from(o.labels || [])) captions.add(l);
+    const fs = o.closest && o.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) captions.add(lg);
+  }
+  const mine = (n) => {
+    for (let p = n.parentElement; p && p !== node.parentElement; p = p.parentElement) {
+      if (captions.has(p) || own.includes(p) || p === box) return true;
+    }
+    return false;
+  };
+  if (!Array.from(captions).some((c) => node.contains(c))) return false;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (String(t.nodeValue || '').trim() && !mine(t)) return false;
+  }
+  return true;
+}
+
+/**
+ * The "please specify" box for an Other pick: the next field after the
+ * question, and only when it is tied to that choice. Its own words name
+ * Other / specify, it sits in the question's own container, or the pick
+ * revealed it (`shownBefore`: the fields on screen before the pick). Any
+ * other next field belongs to another question.
+ */
+function _howHeardSpecifyField(anchor, own, shownBefore) {
+  for (const c of queryAllDeep(_OTHER_BOX_SEL)) {
+    if (c === anchor) continue;
+    let following = false;
+    try {
+      following = !!(anchor.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) && !anchor.contains(c);
+    } catch (_) {}
+    if (!following) continue;
+    if (!isTextEntry(c) || !canFillField(c)) return null;
+    const tied = _isSpecifyField(c) || !!(shownBefore && !shownBefore.has(c)) ||
+      _inQuestionContainer(c, own);
+    return tied ? c : null;
+  }
+  return null;
+}
+
+/**
+ * Write the saved answer into the Other choice's box. `own` = the question's
+ * controls, `shownBefore` = _shownFields() taken before the pick.
+ */
+async function fillHowHeardSpecify(anchor, text, own, shownBefore) {
+  if (!anchor || !text) return false;
+  await delay(400);                       // an "If other" box often appears only now
+  const box = _howHeardSpecifyField(anchor, own || [anchor], shownBefore);
+  if (!box || String(box.value || '').trim() || box.dataset.spotapplyUserModified === 'true') return false;
+  // Part of the how-heard answer: never learned, whatever is typed in it later.
+  try { box.dataset.spotapplyHowHeard = 'true'; } catch (_) {}
+  return fillInput(box, text);
+}
+
+/**
+ * A select already holding a real choice (the page's, the user's or ours).
+ * The first option shown only because nothing is selected is not a choice.
+ */
+function _selectHasChoice(el) {
+  const o = el.options && el.options[el.selectedIndex];
+  if (!o || o.value === '' || _hhIsPlaceholder(o.text)) return false;
+  return !(el.selectedIndex === 0 && !o.defaultSelected);
+}
+
+/**
+ * Answer one how-did-you-hear FIELD (a select, a combobox / dropdown button,
+ * or a text box) from the saved answer. true = something was written.
+ */
+async function answerHowHeardField(el, pack) {
+  const saved = howHeardAnswer(pack);
+  _lastWriteSkippedEmpty = false;
+  if (!saved) { _lastWriteSkippedEmpty = true; return false; }   // the applicant answers it
+  if (!el || !canFillField(el) || (el.dataset && el.dataset.spotapplyUserModified === 'true')) return false;
+  if (el.tagName === 'SELECT') {
+    if (_selectHasChoice(el)) return false;              // chosen already, by anyone
+    const opts = Array.from(el.options || []);
+    const pick = pickHowHeardOption(opts.map((o) => o.text), saved);
+    if (!pick) { _lastWriteSkippedEmpty = true; return false; }
+    const shown = pick.specify ? _shownFields() : null;
+    el.value = opts[pick.index].value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+    console.log('[SpotApply] How you heard about the job, from your profile:', opts[pick.index].text);
+    if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
+    return true;
+  }
+  if (el.tagName === 'BUTTON' || isAutocompleteInput(el)) return fillHowHeardDropdown(el, saved);
+  if (isTextEntry(el)) {
+    if (String(el.value || '').trim()) return false;
+    return fillInput(el, saved);
+  }
+  return false;
+}
+
+/** A combobox or dropdown button: open it, pick the saved answer's option. */
+async function fillHowHeardDropdown(el, saved) {
+  const isInput = el.tagName === 'INPUT';
+  if (isInput && String(el.value || '').trim()) return false;
+  const caption = (o) => String(o.textContent || o.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  // Wait until the list stops changing (a debounced search fills it in steps).
+  const settle = async (ms) => {
+    let last = -1;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await delay(250);
+      const o = _suggestionsFor(el);
+      if (o.length && o.length === last) return o;
+      last = o.length;
+    }
+    return _suggestionsFor(el);
+  };
+  const press = (target) => {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      try {
+        const Ctor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        target.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
+      } catch (_) {}
+    }
+    try { target.click(); } catch (_) {}
+  };
+  try { el.focus(); } catch (_) {}
+  press(el);                                    // most lists open on a click, showing every option
+  let opts = await settle(1500);
+  let typed = false;
+  let pick = opts.length ? pickHowHeardOption(opts.map(caption), saved) : null;
+  if (!pick && isInput) {
+    // A search box lists only what matches the text typed.
+    _typeNoBlur(el, saved);
+    typed = true;
+    opts = await settle(4000);
+    pick = opts.length ? pickHowHeardOption(opts.map(caption), saved) : null;
+  }
+  if (!pick) {
+    if (typed) _typeNoBlur(el, '');            // never leave uncommitted text behind
+    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    _lastWriteSkippedEmpty = true;
+    console.log('[SpotApply] No option matches your saved "how did you hear" answer, left for you');
+    return false;
+  }
+  const chosen = caption(opts[pick.index]);
+  const shown = pick.specify ? _shownFields() : null;
+  press(opts[pick.index]);
+  await delay(300);
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  console.log('[SpotApply] How you heard about the job, from your profile:', chosen.slice(0, 60));
+  if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
+  return true;
+}
+
+/** An option's caption: its label (radio) or its own text. */
+function _choiceText(o) {
+  if (o.tagName === 'INPUT') {
+    let lbl = null;
+    try { lbl = (o.id && (o.getRootNode() || document).querySelector(`label[for="${CSS.escape(o.id)}"]`)) || o.closest('label'); } catch (_) {}
+    return String((lbl && lbl.textContent) || o.getAttribute('aria-label') || o.value || '').replace(/\s+/g, ' ').trim();
+  }
+  return _btnText(o);
+}
+
+function _choiceOn(o) {
+  return o.tagName === 'INPUT' ? !!o.checked : _btnOn(o);
+}
+
+/** The question a group of choices answers: {text, label}. */
+function _choiceQuestion(box) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const by = box.getAttribute && box.getAttribute('aria-labelledby');
+  if (by) {
+    const n = document.getElementById(by.split(/\s+/)[0]);
+    if (n && clean(n.textContent)) return { text: clean(n.textContent), label: n };
+  }
+  const al = box.getAttribute && clean(box.getAttribute('aria-label'));
+  if (al) return { text: al, label: null };
+  for (let i = 0, node = box; node && i < 5; i++, node = node.parentElement) {
+    // Never climb into a container that holds another question's fields.
+    if (i > 0 && Array.from(node.querySelectorAll('select, textarea, input:not([type="hidden"])'))
+      .some((c) => !box.contains(c) && !_isSpecifyField(c))) break;
+    if (node.tagName === 'FIELDSET') {
+      const lg = Array.from(node.children).find((c) => c.tagName === 'LEGEND');
+      if (lg && clean(lg.textContent)) return { text: clean(lg.textContent), label: lg };
+    }
+    if (i === 0) continue;
+    const label = Array.from(node.querySelectorAll('legend, label, [class*="question-title" i], [role="heading"]'))
+      .find((l) => !box.contains(l) && !l.contains(box) && clean(l.textContent));
+    if (label) return { text: clean(label.textContent), label };
+  }
+  return { text: '', label: null };
+}
+
+/**
+ * Every rendered group of choices whose question the saved how-did-you-hear
+ * answer answers (isHowHeardFillQuestion; `company` = pack.company): radio
+ * groups, and option lists drawn as buttons or ARIA radios/options (Ashby).
+ * [{box, options, kind, question, label}]
+ */
+function howHeardChoiceGroups(root, company) {
+  const groups = new Map();
+  const add = (box, o, kind) => {
+    if (!groups.has(box)) groups.set(box, { box, options: [], kind });
+    groups.get(box).options.push(o);
+  };
+  const byName = new Map();
+  for (const r of queryAllDeep('input[type="radio"]', root || document)) {
+    if (!r.name) continue;
+    if (!byName.has(r.name)) byName.set(r.name, []);
+    byName.get(r.name).push(r);
+  }
+  for (const [, rs] of byName) {
+    let box = rs[0].parentElement;
+    while (box && !rs.every((r) => box.contains(r))) box = box.parentElement;
+    if (box) rs.forEach((r) => add(box, r, 'radio'));
+  }
+  for (const o of queryAllDeep('button, [role="radio"], [role="option"]', root || document)) {
+    if (o.tagName === 'INPUT') continue;
+    const host = o.getRootNode && o.getRootNode().host;
+    if (host && host.id === 'hp-copilot-overlay') continue;            // our own UI
+    if (o.tagName === 'BUTTON' && String(o.type || '').toLowerCase() === 'submit' && o.form) continue;
+    const box = (o.closest && o.closest('[role="radiogroup"], [role="listbox"]')) || o.parentElement;
+    if (box && !(groups.has(box) && groups.get(box).kind === 'radio')) add(box, o, 'list');
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    if (g.options.length < 2 || !g.box.getClientRects().length) continue;
+    const q = _choiceQuestion(g.box);
+    if (!isHowHeardFillQuestion(q.text, company)) continue;
+    out.push(Object.assign(g, { question: q.text, label: q.label }));
+  }
+  return out;
+}
+
+/** Answer how-did-you-hear radio groups and option lists. Returns how many. */
+async function answerHowHeardChoices(pack) {
+  const saved = howHeardAnswer(pack);
+  if (!saved) return 0;                         // nothing saved: the applicant answers
+  let answered = 0;
+  for (const g of howHeardChoiceGroups(document, pack.company)) {
+    if (g.options.some(_choiceOn)) continue;      // answered already, by anyone
+    if (g.box.dataset.spotapplyUserModified === 'true' ||
+        g.options.some((o) => o.dataset && o.dataset.spotapplyUserModified === 'true')) continue;
+    const pick = pickHowHeardOption(g.options.map(_choiceText), saved);
+    if (!pick) continue;
+    const target = g.options[pick.index];
+    if (target.disabled || isAntiBotField(target)) continue;
+    const shown = pick.specify ? _shownFields() : null;
+    try {
+      target.click();                             // a click: the page's own handler records it
+      if (g.kind === 'radio' && !target.checked) {
+        target.checked = true;
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    } catch (e) {
+      console.debug('[SpotApply] how-heard click failed:', e.message);
+      continue;
+    }
+    try { g.box.dataset.spotapplyFilled = 'true'; target.dataset.spotapplyFilled = 'true'; } catch (_) {}
+    answered++;
+    console.log('[SpotApply] How you heard about the job, from your profile:', _choiceText(target).slice(0, 60));
+    if (pick.specify) await fillHowHeardSpecify(g.options[g.options.length - 1], pick.specify, g.options, shown);
+  }
+  return answered;
+}
+
 // Some ATS templates write "Résumé" with a DECOMPOSED accent (e + U+0301),
 // which a precomposed /résumé/ literal never matches. Strip diacritics before
 // matching so both spellings — and "RESUME", "Resume/CV", "Curriculum Vitae" —
@@ -1037,10 +1912,13 @@ document.addEventListener('click', (e) => {
       const val = opt.textContent?.trim();
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
-        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         // Never learn a protected answer: saved demographic answers would be
-        // written back later without the user's consent.
+        // written back later without the user's consent. Nor how they heard
+        // about one job: only the profile's saved answer is ever used (the
+        // extension's own pick on a listbox button was POSTed here).
         if (isDemographicQuestion(label)) return;
+        if (isHowHeardQuestion(label)) return;
+        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         getTabPack((pack) => {
           if (pack && packBase(pack) && pack.auth_token) {
             apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
@@ -1268,6 +2146,12 @@ function fillInput(el, value) {
   // <input type="file"> (it throws "accepts a filename"), and the resume is
   // handled separately by attachResume.
   if (el.tagName === 'INPUT' && el.type === 'file') return false;
+
+  // A captcha / anti-bot / honeypot field is never written, by any path.
+  if (isAntiBotField(el)) {
+    console.log('[SpotApply] Not touching an anti-bot field:', el.name || el.id || el.tagName);
+    return false;
+  }
 
   // Respect manual user edits — do not overwrite
   if (el.dataset.spotapplyUserModified === 'true') {
@@ -1646,8 +2530,10 @@ async function fillGreenhouse(pack) {
     "input:not([type='hidden']):not([type='file']):not([type='submit']):not([type='checkbox']):not([type='radio']), textarea, select"
   );
   for (const inp of allInputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
     if (!lbl) continue;
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
 
     // Skip already-filled fixed fields — unless the board's own resume
     // autofill wrote them and they are identity fields, which fillInput then
@@ -1663,7 +2549,8 @@ async function fillGreenhouse(pack) {
       fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
+    // An autocomplete is left to fillUniversal, which picks a suggestion.
+    else if (/city|location|where.*based|where.*live/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -1774,9 +2661,12 @@ async function fillAshby(pack) {
     waited += 300;
   }
 
-  const inputs = document.querySelectorAll("input:not([type='file']), textarea");
+  const inputs = document.querySelectorAll("input:not([type='file']):not([type='hidden']), textarea");
   for (const inp of inputs) {
+    // The reCAPTCHA textarea Ashby embeds is hidden and named, not labelled.
+    if (!canFillField(inp)) continue;
     const lbl = labelText(inp);
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
     // "(name)?" is optional, so /first.*(name)?/ reduced to /first/ — it typed
     // the user's surname into "What was your last compensation?" and their
     // forename into "When did you first hear about us?". Require the word.
@@ -1820,6 +2710,14 @@ const US_STATES = {
   'SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont',
   'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming',
   'DC':'District of Columbia',
+};
+// Canadian provinces/territories, read only by pickLocationSuggestion so a
+// "London, ON" profile can recognise "London, Ontario, Canada".
+const CA_PROVINCES = {
+  'AB':'Alberta','BC':'British Columbia','MB':'Manitoba','NB':'New Brunswick',
+  'NL':'Newfoundland and Labrador','NS':'Nova Scotia','NT':'Northwest Territories',
+  'NU':'Nunavut','ON':'Ontario','PE':'Prince Edward Island','QC':'Quebec',
+  'SK':'Saskatchewan','YT':'Yukon',
 };
 
 /**
@@ -2374,6 +3272,7 @@ async function fillAvature(pack) {
       (inp.getAttribute("data-field") || "")
     ).toLowerCase();
 
+    if (isHowHeardQuestion(ctx)) continue;     // fillUniversal: the saved answer only
     if (/first.?name|given.?name|forename/.test(ctx)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/.test(ctx)) fillInput(inp, pack.last_name);
     else if (/full.?name|^name$|candidate.?name/.test(ctx)) fillInput(inp, fullNameOf(pack));
@@ -2459,13 +3358,15 @@ async function fillSmartrecruiters(pack) {
 async function fillGeneric(pack) {
   const inputs = document.querySelectorAll("input:not([type='hidden']):not([type='submit']):not([type='button']), textarea, select");
   for (const inp of inputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|tel/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
+    else if (/city|location/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -2500,6 +3401,7 @@ async function fillUniversal(pack) {
 
   for (const inp of inputs) {
     if (!inp.offsetParent) continue; // skip invisible
+    if (!canFillField(inp)) continue; // captcha / honeypot / off-page
     
     // For buttons, treat as empty if text is placeholder
     if (inp.tagName === 'BUTTON') {
@@ -2540,8 +3442,18 @@ async function fillUniversal(pack) {
       : String(inp.value || '').trim();
     let matched = true;
 
+    // ── How did you hear about us: the saved profile answer, or the user ──
+    // First, so no other rule writes into it ("How did you hear? (LinkedIn,
+    // company website…)" matched the LinkedIn and website rules). The saved
+    // answer only for how they came to THIS job; the rest of the refusal list
+    // ("How did you learn Python?") is left for the applicant.
+    if (isHowHeardQuestion(labelOnly) || isHowHeardQuestion(signals)) {
+      matched = (isHowHeardFillQuestion(labelOnly, pack.company) ||
+                 isHowHeardFillQuestion(signals, pack.company))
+        ? await answerHowHeardField(inp, pack) : false;
+
     // ── Name ──
-    if (/first.?name|legal.?first|given.?name|forename|\bfname\b/i.test(signals)) {
+    } else if (/first.?name|legal.?first|given.?name|forename|\bfname\b/i.test(signals)) {
       fillInput(inp, pack.first_name);
     } else if (/last.?name|legal.?last|family.?name|surname|\blname\b/i.test(signals)) {
       fillInput(inp, pack.last_name);
@@ -2580,10 +3492,13 @@ async function fillUniversal(pack) {
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
     } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, loc.city);
+      // An autocomplete commits only a picked suggestion (Ashby's Location).
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, loc.city);
     // Location/where-based fields get the full location
     } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, pack.location || '');
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, pack.location || '');
 
     // ── State (parsed from location) ──
     } else if (/\bstate\b|\bprovince\b|\bregion\b/i.test(signals) && !/country|united/i.test(signals)) {
@@ -2679,14 +3594,30 @@ async function fillUniversal(pack) {
 // observeField() saves the answer on blur, keyed by the field's label.
 // On the NEXT form, recallFromMemory() retrieves past answers and auto-fills.
 
+/**
+ * The field holds what SpotApply wrote (fillInput records it), not the
+ * user's words. fillInput fires blur and change itself, so a box filled after
+ * a learner started watching it taught memory our own write (review 2026-10-09).
+ */
+function _holdsOurWrite(el) {
+  const w = el && el.dataset ? el.dataset.spotapplyLastWrite : undefined;
+  return w !== undefined && String(el.value || '').trim() === String(w).trim();
+}
+
 function observeField(el, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(el)) return;               // never learn a captcha / honeypot
   if (el.dataset.spotapplyObserved) return; // already watching
   el.dataset.spotapplyObserved = 'true';
 
+  let saved = false;
   const save = () => {
+    if (saved) return;
     const val = el.value?.trim();
     if (!val) return;
+    // Our own write is not the user's answer, and an Other box we filled for
+    // how they heard is part of that answer: never learned.
+    if (_holdsOurWrite(el) || el.dataset.spotapplyHowHeard === 'true') return;
     const label = getFieldSignature(el);
     if (!label || label.length < 3) return;
 
@@ -2696,8 +3627,11 @@ function observeField(el, pack) {
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
     // Never remember protected self-identification answers.
     if (isDemographicQuestion(label + ' ' + (labelText(el) || ''))) return;
+    // Nor how they heard about one job: only the profile's answer is ever used.
+    if (isHowHeardQuestion(label + ' ' + (labelText(el) || ''))) return;
 
     console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
+    saved = true;
     apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
       question: label,
       answer: val,
@@ -2707,8 +3641,10 @@ function observeField(el, pack) {
     highlightField(el, 'green');
   };
 
-  el.addEventListener('blur', save, { once: true });
-  el.addEventListener('change', save, { once: true });
+  // Not { once: true }: our own write's synthetic blur/change must not use up
+  // the listener the user's answer needs.
+  el.addEventListener('blur', save);
+  el.addEventListener('change', save);
 }
 
 // Build a stable signature for a field from all its signals
@@ -2729,6 +3665,10 @@ async function recallFromMemory(root, pack) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   )).filter(el => {
     if (!el.offsetParent) return false;
+    if (!canFillField(el)) return false;
+    // An autocomplete box commits only a picked suggestion; typed text from
+    // memory would sit there uncommitted (and be cleared on blur).
+    if (isAutocompleteInput(el)) return false;
     if (el.tagName === 'BUTTON') {
       const txt = el.textContent ? el.textContent.trim() : '';
       return !txt || /select\b|choose\b|^-$|select\s+option/i.test(txt);
@@ -2775,6 +3715,9 @@ async function recallFromMemory(root, pack) {
     // current profile — an answer remembered from another form (or another
     // visa status) must not override it.
     if (/sponsor|authoriz|visa|work permit|right to work/i.test(fullLabel)) continue;
+    // How the applicant heard about THIS job: their saved profile answer only
+    // (fillUniversal), never one remembered from another form.
+    if (isHowHeardQuestion(fullLabel)) continue;
 
     // Exact question first. A fuzzy match only when nearly all its words
     // agree: "> 0.4" put one question's answer into a different question.
@@ -2897,7 +3840,11 @@ function apiFetch(url, method, token, body) {
 async function fillEssayQuestions(root, pack) {
   const textareas = Array.from(root.querySelectorAll("textarea")).filter(ta => {
     if (ta.value && ta.value.trim()) return false; // already filled
+    // Never a hidden, captcha or honeypot textarea: Ashby's reCAPTCHA response
+    // field was asked about by its name and got an AI reply typed into it.
+    if (!canFillField(ta)) return false;
     const q = labelText(ta);
+    if (looksLikeFieldIdentifier(q)) return false; // its name, not a question
     return q && q.length >= 8; // skip tiny/unlabeled textareas
   });
 
@@ -2907,7 +3854,10 @@ async function fillEssayQuestions(root, pack) {
     const q = labelText(ta);
     // Protected self-identification and work authorization are never
     // AI-written: the first needs consent, the second has ONE interpreter.
+    // How the applicant heard about the role is a fact only they hold: their
+    // saved profile answer fills it (fillUniversal), never the AI.
     if (isDemographicQuestion(q) || /sponsor|authoriz|visa status|work permit/i.test(q)) continue;
+    if (isHowHeardQuestion(q)) continue;
     if (ta.dataset.spotapplyUserModified === 'true') continue;
 
     // 1. Check pre-cached answers from fill-pack (free, no API call)
@@ -2922,6 +3872,7 @@ async function fillEssayQuestions(root, pack) {
     }
 
     // 2. If not cached, call /api/answer-question on-demand (~$0.002, cached after)
+    let generated = false;
     if (!answer && packBase(pack) && pack.auth_token && pack.app_id) {
       const res = await apiFetch(
         `${packBase(pack)}/api/answer-question`,
@@ -2931,12 +3882,22 @@ async function fillEssayQuestions(root, pack) {
       );
       if (res.ok && res.data) {
         answer = res.data.answer || null;
+        // A server too old to name its source may have just generated it.
+        generated = !res.data.source || res.data.source === 'generated';
         if (answer) console.log(`[SpotApply] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
+        else if (res.data.refused) console.log(`[SpotApply] Left for you (${res.data.refused}):`, q.slice(0, 60));
       } else {
         console.warn("[SpotApply] answer-question failed:", res.error || res.status);
       }
     }
 
+    // A reply about the question ("I'd be happy to help, but…") is not an answer.
+    // What a model just wrote gets the full test; a remembered answer may be the
+    // user's own words, so only the forms a model alone writes are dropped.
+    if (answer && (generated ? looksLikeMetaReply(answer) : looksLikeModelOnlyReply(answer))) {
+      console.warn('[SpotApply] Discarded a reply that is not an answer for:', q.slice(0, 60));
+      answer = null;
+    }
     if (answer) fillInput(ta, answer);
 
     // 3. Always observe — if user edits, save their answer to memory
@@ -2956,10 +3917,14 @@ function keywordOverlap(a, b) {
 
 function observeAnswer(ta, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(ta)) return;               // a captcha token is not an answer
   const origValue = ta.value;
   ta.addEventListener('blur', function handler() {
     const newVal = ta.value.trim();
     if (!newVal || newVal === origValue.trim()) return;
+    // A later write of ours (an Other box for how they heard) is not the
+    // user's answer, and that box is never learned at all.
+    if (_holdsOurWrite(ta) || ta.dataset.spotapplyHowHeard === 'true') return;
     const q = labelText(ta);
     if (!q) return;
     ta.removeEventListener('blur', handler);
@@ -2970,8 +3935,9 @@ function observeAnswer(ta, pack) {
 }
 
 // ── Resume file attachment ──────────────────────────────────────────────────────
-// Fetches the tailored resume .docx (base64) via the background worker and sets
-// it on any empty file inputs using a synthetic DataTransfer.
+// Fetches the tailored resume (base64: the one-page PDF, or the .docx when the
+// field does not take PDF) via the background worker and sets it on the resume
+// file input using a synthetic DataTransfer.
 // Returns true when the resume is handled (attached now, or already present),
 // false when we tried and couldn't — so the caller retries on a later pass
 // instead of wrongly marking it "done".
@@ -3090,9 +4056,14 @@ async function attachResume(root, pack) {
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);
 
-  // ONE download per application, shared with the native autofill layer: the
-  // same base64 document goes into whichever control takes it.
-  const got = await fetchResumeFile(pack);
+  // Tell the server what the field takes: it answers with the one-page PDF
+  // (the owner's delivered resume) unless the field rules PDF out, then Word.
+  // ALWAYS sent ("*" when the field names nothing), so the server can tell
+  // this build from the 1.0.0 Store build, which sends no accept at all.
+  // ONE download per application and accept, shared with the native autofill
+  // layer: the same base64 document goes into whichever control takes it.
+  const _accept = String(targets[0].getAttribute('accept') || '').trim() || '*';
+  const got = await fetchResumeFile(pack, _accept);
   if (!got.ok) {
     if (got.reason === 'decode_failed') {
       console.warn("[SpotApply] resume decode failed:", got.error);
@@ -3187,6 +4158,7 @@ function fileMatchesAccept(fi, filename, mime) {
   const name = String(filename || '').toLowerCase();
   const type = String(mime || '').toLowerCase();
   return accept.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean).some((a) => {
+    if (a === '*' || a === '*/*') return true;          // the server's _accept_allows reads these the same
     if (a.startsWith('.')) return name.endsWith(a);
     if (a.endsWith('/*')) return type.startsWith(a.slice(0, -1));
     return type === a;
@@ -3220,11 +4192,13 @@ let _resumeFileCache = null;
  * The applicant's resume for this application as a File, or why not:
  * { ok, filename, mime, kind, notice, file } / { ok: false, status, reason, hint, error }.
  */
-async function fetchResumeFile(pack) {
+async function fetchResumeFile(pack, accept) {
   const appId = pack && pack.app_id;
-  if (_resumeFileCache && _resumeFileCache.ok && _resumeFileCache.app_id === appId) return _resumeFileCache;
+  const _acc = String(accept || '*');
+  if (_resumeFileCache && _resumeFileCache.ok && _resumeFileCache.app_id === appId &&
+      _resumeFileCache.accept === _acc) return _resumeFileCache;
   const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${appId}/resume`,
+    `${packBase(pack)}/api/fill-pack/${appId}/resume?accept=${encodeURIComponent(_acc)}`,
     "GET", pack.auth_token, null
   );
   if (!res.ok || !res.data || !res.data.base64) {
@@ -3263,7 +4237,7 @@ async function fetchResumeFile(pack) {
   } catch (e) {
     return { ok: false, status: res.status || 200, reason: 'decode_failed', hint: '', error: e.message };
   }
-  _resumeFileCache = { ok: true, app_id: appId, filename, mime, kind, notice, file };
+  _resumeFileCache = { ok: true, app_id: appId, accept: _acc, filename, mime, kind, notice, file };
   return _resumeFileCache;
 }
 
@@ -3898,10 +4872,12 @@ function hasApplicationForm() {
   // Shadow-DOM aware throughout — a form rendered inside a shadow root is
   // still an application form, and querySelectorAll cannot see it.
   if (queryAllDeep("input[type='email'], input[type='file']").length) return true;
+  // A captcha's hidden response textarea sits on job DESCRIPTION pages too; it
+  // is not an application field.
   const named = queryAllDeep(
     "input[name*='first' i], input[name*='last' i], input[name*='name' i]," +
     "input[id*='first' i], input[id*='last' i], textarea"
-  );
+  ).filter((el) => !isAntiBotField(el));
   if (named.length >= 2) return true;
   // Fallback: many visible text inputs usually means a form
   const visibleText = queryAllDeep("input[type='text'], input:not([type])")
@@ -4079,6 +5055,19 @@ async function fillCurrentPage(pack) {
   } catch (e) {
     console.warn('[SpotApply] screening radio error:', e.message);
   }
+  // Same rules for Yes/No BUTTON pairs (Ashby has no radios for these).
+  try {
+    answerYesNoButtons(pack);
+  } catch (e) {
+    console.warn('[SpotApply] yes/no button error:', e.message);
+  }
+  // "How did you hear about us?" as radios or an option list: the answer the
+  // user saved in their profile, or nothing.
+  try {
+    await answerHowHeardChoices(pack);
+  } catch (e) {
+    console.warn('[SpotApply] how-heard choice error:', e.message);
+  }
 
   // Step 4: Fill essay questions via AI
   await fillEssayQuestions(document, pack);
@@ -4124,13 +5113,27 @@ function auditPageFields(pack, platformFilled) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
     'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   ).filter((el) => {
+    // A captcha response box or a honeypot is not a question for anyone.
+    if (isAntiBotField(el)) return false;
     const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });
+  // Yes/No BUTTON pairs (Ashby) are questions too: missing from this tally,
+  // two required ones were blank while the widget counted three. Any input
+  // inside one of their fields belongs to the pair, not to a second question.
+  const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
+  const inYesNoField = (el) => ynGroups.some((g) => (g.entry || g.box).contains(el));
 
   let filled = 0, needUser = 0, skipped = 0, failed = 0;
   const needUserEls = [];
   const problems = [];
+  // Why a question was left for the user, when we know (shown in the widget).
+  const notes = [];
+  const noteWorkAuth = (question) => {
+    const msg = pack && pack.work_auth_note;
+    if (msg && /authoriz|eligible to work|right to work|legally/i.test(question || '') &&
+        !/sponsor/i.test(question || '') && !notes.includes(msg)) notes.push(msg);
+  };
   const seenRadioGroups = new Set();
   const nameOf = (el) => (labelText(el) || el.getAttribute('aria-label') || el.name || el.id || 'a field')
     .replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -4141,6 +5144,7 @@ function auditPageFields(pack, platformFilled) {
   };
 
   for (const el of allInputs) {
+    if ((el.type === 'radio' || el.type === 'checkbox') && inYesNoField(el)) continue;
     // File inputs: a file IN the input is not an upload. Ours count only once
     // the uploader acknowledged them (attachResume marks the outcome); a file
     // the user picked themselves is theirs and counts.
@@ -4166,6 +5170,7 @@ function auditPageFields(pack, platformFilled) {
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
         needUser++; needUserEls.push(el); highlightField(el, 'red');
+        noteWorkAuth(radioGroupQuestion(el));
       } else { skipped++; }
       continue;
     }
@@ -4205,9 +5210,27 @@ function auditPageFields(pack, platformFilled) {
       needUserEls.push(el);
       const isReq = isFieldRequired(el);
       highlightField(el, isReq ? 'red' : 'yellow');
+      if (isReq) noteWorkAuth(labelText(el));
       // Observe unfilled fields for cross-form learning
       observeField(el, pack);
     }
+  }
+
+  for (const g of ynGroups) {
+    if (yesNoChoice(g)) { filled++; highlightField(g.box, 'green'); continue; }
+    if (yesNoRequired(g)) {
+      needUser++; needUserEls.push(g.box); highlightField(g.box, 'red');
+      noteWorkAuth(g.question);
+    } else { skipped++; }
+  }
+
+  // A how-did-you-hear option list drawn as buttons or ARIA options (Ashby)
+  // is a question too; radio groups are already counted above.
+  for (const g of howHeardChoiceGroups(document, pack && pack.company)) {
+    if (g.kind === 'radio') continue;
+    if (g.options.some(_choiceOn)) { filled++; highlightField(g.box, 'green'); continue; }
+    needUser++; needUserEls.push(g.box);
+    highlightField(g.box, g.label && labelMarksRequired(g.label) ? 'red' : 'yellow');
   }
 
   // The résumé's own outcome survives every recount until it changes.
@@ -4217,7 +5240,7 @@ function auditPageFields(pack, platformFilled) {
     problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
   }
 
-  return { filled, needUser, needUserEls, platformFilled, failed, problems };
+  return { filled, needUser, needUserEls, platformFilled, failed, problems, notes };
 }
 
 function isFieldRequired(el) {
@@ -4243,7 +5266,14 @@ function isFieldRequired(el) {
       }
     }
   } catch (e) {}
-  
+
+  // A label marked required by class or a CSS "*" (Ashby), and a required
+  // group around a radio.
+  try {
+    if (fieldLabelElements(el).some(labelMarksRequired)) return true;
+    if (el.closest && el.closest('[role="radiogroup"][aria-required="true"], [role="group"][aria-required="true"]')) return true;
+  } catch (e) {}
+
   return false;
 }
 
@@ -4259,14 +5289,14 @@ function highlightField(el, color) {
     el.style.borderColor = 'rgba(239,68,68,0.9)';
     el.dataset.spotapply = 'needs-fill-required';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   } else {
     el.style.boxShadow = '0 0 0 2px rgba(245,158,11,0.6)';
     el.style.borderColor = 'rgba(245,158,11,0.8)';
     el.dataset.spotapply = 'needs-fill';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   }
 }
@@ -4298,11 +5328,15 @@ function showStepOverlay(result, pack) {
 
   // "No fields found" + "All fields filled!" used to render together, which
   // read as a contradiction in one toast. Three distinct states now.
+  // "…then click Next" only where there IS a Next: on a single-page form
+  // (Ashby, 2026-10-09) the next step is the user's own review and Submit.
+  const multiStep = hasNextStepButton();
+  const nextStep = multiStep ? 'then click Next' : 'then review the whole form and submit it yourself';
   const instructions = nothingHere
-    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here — I'll pick up on the application form.</div>`
+    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here. I'll pick up on the application form.</div>`
     : needUser > 0
-      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
-      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled — review, then click Next.</div>`;
+      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">highlighted fields</span> above, ${nextStep}.</div>`
+      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled. Review them, ${nextStep}.</div>`;
 
   // The résumé line: which file, and what the site did with it.
   let resumeHtml = '';
@@ -4318,13 +5352,30 @@ function showStepOverlay(result, pack) {
   const probs = (result.problems || []).filter((p) => !/^Resume:/.test(p) || !rs).slice(0, 4);
   const probHtml = probs.length
     ? `<div style="font-size:11px;color:#fca5a5;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
+  const notes = (result.notes || []).slice(0, 2);
+  const noteHtml = notes.length
+    ? `<div style="font-size:11px;color:#c4b5fd;margin-top:6px">${notes.map(esc).join('<br>')}</div>` : '';
   // "Ready to review" means the form looks complete to US — never that the
   // employer accepted anything.
   const finalInstr = (!nothingHere && needUser === 0 && failed === 0)
-    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review — check every field, then continue.</div>`
+    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
-  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}`, [], true);
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
+}
+
+/** Does this page lead to another step (Next / Continue), or is it the whole form? */
+function hasNextStepButton() {
+  const NEXT = /^(next|continue|save (?:and|&) continue|save (?:and|&) next|next step|proceed)\b/i;
+  return queryAllDeep('button, input[type="submit"], input[type="button"], a[role="button"], [role="button"]')
+    .some((b) => {
+      const host = b.getRootNode && b.getRootNode().host;
+      if (host && host.id === 'hp-copilot-overlay') return false;
+      if (!b.getClientRects || !b.getClientRects().length) return false;
+      const t = String(b.textContent || b.value || (b.getAttribute && b.getAttribute('aria-label')) || '')
+        .replace(/\s+/g, ' ').trim();
+      return NEXT.test(t) || (b.getAttribute && /^(next|continue)/i.test(b.getAttribute('data-automation-id') || '') );
+    });
 }
 
 // ── Pause overlay (login / captcha) ──────────────────────────────────────────
@@ -4466,14 +5517,40 @@ function detectStepText() {
 // ── Login / CAPTCHA detection ─────────────────────────────────────────────────
 
 function isLoginWall() {
-  const body = document.body.innerText.toLowerCase();
-  const hasLoginForm = !!document.querySelector('input[type="password"]');
-  const hasLoginText = /sign in|log in|login|create an? account|register to apply/.test(body);
-  const noRealForm = !document.querySelector('input[type="text"], input[type="email"], textarea');
-  // Workday OAuth gateway pages (wday/authgwy) are login walls even without
-  // a visible password field — they redirect to SSO then back.
-  const isAuthGateway = /authgwy|auth-gateway|saml|sso/i.test(window.location.pathname);
-  return hasLoginForm || (hasLoginText && noRealForm) || isAuthGateway;
+  const shown = (el) => !!el && el.offsetParent !== null;
+  // 1. A VISIBLE password field is a sign-in form (a hidden one in a header
+  //    dropdown is not).
+  if (queryAllDeep('input[type="password"]').some(shown)) return true;
+  // 2. Workday OAuth gateway pages (wday/authgwy) are login walls even without
+  //    a visible password field — they redirect to SSO then back. By path
+  //    SEGMENT: the bare substring /sso/ matched ".../assistant-profeSSOr".
+  if (/(^|[\/_.-])(authgwy|auth-gateway|saml2?|sso)([\/_.?-]|$)/i.test(window.location.pathname)) return true;
+  // 3. An application form, or a job page's own Apply button, is not a wall.
+  if (queryAllDeep('input[type="text"], input[type="email"], input:not([type]), textarea')
+        .some((el) => shown(el) && !isAntiBotField(el))) return false;
+  if (pageHasApplyControl()) return false;
+  // 4. Sign-in wording on the page's CONTROLS and headings, as whole words —
+  //    never the job description. The whole body text was searched, so the
+  //    Horizon3 posting's "deSIGN INtegration schemas" read as "sign in" and the
+  //    Ashby job page was reported as a login wall (live test, 2026-10-09).
+  return queryAllDeep('button, a, [role="button"], h1, h2, h3, legend, label')
+    .filter(shown)
+    .some((el) => {
+      const t = String(el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      return t.length <= 60 &&
+        /\b(sign[ -]?in|log[ -]?in|create an? account|register to apply)\b/i.test(t);
+    });
+}
+
+/** A visible Apply control: the page is a job posting, not a sign-in wall. */
+function pageHasApplyControl() {
+  return queryAllDeep("a, button, [role='button'], input[type='button'], input[type='submit']")
+    .some((el) => {
+      if (el.offsetParent === null) return false;
+      const t = String(el.textContent || el.value || el.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ').trim();
+      return t.length <= 60 && /\bapply\b/i.test(t) && !/\bwith (linkedin|indeed)\b/i.test(t);
+    });
 }
 
 function isCaptcha() {

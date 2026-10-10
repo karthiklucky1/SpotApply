@@ -133,3 +133,50 @@ def fetch_error(scraper) -> str:
     adapter raises on failure, so an empty list from it is a real empty board.
     """
     return (getattr(scraper, "last_error", "") or "").strip()
+
+
+# ── completeness: "this list is the WHOLE board" ─────────────────────────────
+# An adapter sets ``fetch_complete = True`` only once it has proof the list it
+# returns covers every posting the board lists: the request succeeded, the
+# response had the shape we read, no page/item cap was hit and no pagination
+# was left unwalked. ANY doubt is ``False``. The pulse lane closes shared rows
+# that are absent from a complete fetch (app/discovery/board_absence.py), so a
+# complete flag on a capped or failed fetch would close live postings — the
+# failure mode is silent and permanent for the user who loses the job.
+#
+# Two optional attributes refine it for adapters that FILTER or ENRICH the
+# listing before returning it (Workday, SmartRecruiters skip non-tech titles
+# and fetch each posting's detail): ``listed_ids`` / ``listed_urls`` name every
+# posting the listing carried, and ``listing_complete`` says that LISTING was
+# whole even when a detail fetch failed. Absence is judged against those, never
+# against the filtered list.
+
+_TOTAL_KEYS = ("total", "totalCount", "total_count", "totalFound",
+               "totalResults", "total_results")
+_MORE_KEYS = ("next", "next_page", "nextPage", "next_url", "nextUrl",
+              "hasMore", "has_more", "hasNextPage", "has_next_page")
+
+
+def listing_truncated(payload, n_items: int) -> bool:
+    """True when a listing ENVELOPE says it holds more than it returned.
+
+    Reads the envelope itself and the usual pagination sub-objects
+    (``meta``/``pagination``/``links``/``page_info``): a stated total above the
+    items we got, or a "next page" marker. A bare list has no envelope and
+    says nothing. Used by adapters that request ONE page and assume it is the
+    whole board — the assumption this makes checkable rather than silent.
+    """
+    if not isinstance(payload, dict):
+        return False
+    scopes = [payload] + [payload[k] for k in ("meta", "pagination", "links",
+                                                "page_info", "pageInfo")
+                          if isinstance(payload.get(k), dict)]
+    for d in scopes:
+        for key in _TOTAL_KEYS:
+            v = d.get(key)
+            if isinstance(v, int) and not isinstance(v, bool) and v > n_items:
+                return True
+        for key in _MORE_KEYS:
+            if d.get(key):
+                return True
+    return False

@@ -19,6 +19,7 @@ from app.discovery.base import (
     EVIDENCE_TITLE_ONLY,
     GeoEvidence,
     RawJob,
+    listing_truncated,
 )
 from app.discovery.hiring_context import put
 
@@ -45,6 +46,8 @@ class PinpointScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"https://{self.board_slug}.pinpointhq.com/postings.json"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -125,5 +128,8 @@ class PinpointScraper:
                     geo=geo,
                 )
             )
+        self.fetch_complete = isinstance(payload, list) or (
+            isinstance(payload, dict) and "data" in payload and isinstance(items, list)
+            and not listing_truncated(payload, len(items)))
         log.info("Pinpoint[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

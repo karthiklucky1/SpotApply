@@ -226,12 +226,13 @@ def _accept(canonical: str, phrase: str, raw_jd: str) -> bool:
     return _proper_noun_in(phrase, raw_jd)
 
 
-def demanded_skills(jd_text: str, per_job: int = _PHRASES_PER_JOB) -> list[str]:
+def demanded_skills(jd_text: str, per_job: int = _PHRASES_PER_JOB, company: str = "") -> list[str]:
     """Canonical skills one posting asks for — skill-like phrases only, with
-    the boilerplate gone and the short language names added back."""
+    the boilerplate gone and the short language names added back. ``company``
+    lets the extractor drop the employer's own name (main, 2026-10-09)."""
     text = _strip_boilerplate(jd_text or "")
     try:
-        phrases = extract_jd_phrases(text, top_n=per_job * 2)
+        phrases = extract_jd_phrases(text, top_n=per_job * 2, company=company or "")
     except Exception:
         phrases = []
     out: list[str] = []
@@ -423,7 +424,7 @@ def compute_skill_gap(user_id: Optional[str], top_n_jobs: int = 30) -> dict:
         jd = job.description or ""
         if not jd.strip():
             continue
-        for key in demanded_skills(jd):
+        for key in demanded_skills(jd, company=getattr(job, "company", "") or ""):
             entry = demand.setdefault(key, {"demand": 0, "jobs": []})
             entry["demand"] += 1
             if len(entry["jobs"]) < 3:

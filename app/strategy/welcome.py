@@ -40,6 +40,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+from app.common.geo import clean_location
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -477,7 +478,7 @@ _SENTINEL_MAX = 10.0
 def _row(job, state: str, score: Optional[float] = None) -> dict:
     return {"id": job.id, "title": (job.title or "")[:120],
             "company": (job.company or "")[:80],
-            "location": (job.location or "")[:60],
+            "location": clean_location(job.location)[:60],
             "state": state,
             "score": int(round(score)) if score is not None else None}
 

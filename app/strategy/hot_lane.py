@@ -237,6 +237,7 @@ def _run_hot_lane_cycle() -> dict:
     A heartbeat is recorded for EVERY cycle (including early exits) with a
     reason, so the dashboard tile shows why instead of a silent 'idle'."""
     from app.discovery.pipeline import scraper_for, _upsert
+    from app.common.compute_policy import paused_user_ids
     from app.common.discovery_lock import discovery_guard
 
     limit = int(getattr(settings, "hot_lane_max_boards", 400))
@@ -314,9 +315,14 @@ def _run_hot_lane_cycle() -> dict:
             log.debug("hot lane shared-pool upsert failed: %s", e)
 
         # Distribute each posting only to users whose target roles it matches.
+        # `users` was read at the start of the cycle: re-ask about a pause
+        # before every per-user write (app/common/compute_policy.paused_user_ids).
         routed_ids: set = set()
         board_new = 0
+        paused = paused_user_ids()
         for u in users:
+            if u["user_id"] in paused:
+                continue
             relevant = [r for r in raw if _title_matches(r.title, u["roles"])]
             if not relevant:
                 continue
@@ -351,7 +357,7 @@ def _run_hot_lane_cycle() -> dict:
     # cycle. run_matching's freshness reserve then guarantees those fresh jobs a
     # scoring slot. Bounded: once scored, a user drops out of the pending set.
     pending = _users_with_pending_fresh(users)
-    to_match = set(users_touched) | pending
+    to_match = (set(users_touched) | pending) - paused_user_ids()
     alerts = 0
     matching = "no new jobs"
     if to_match:
@@ -361,6 +367,8 @@ def _run_hot_lane_cycle() -> dict:
                 from app.matching.pipeline import run_matching
                 from app.strategy.fresh_alerts import dispatch_fresh_alerts
                 for uid in to_match:
+                    if uid in paused_user_ids():
+                        continue
                     try:
                         shortlisted = run_matching(uid) or []
                         alerts += dispatch_fresh_alerts(uid, shortlisted)

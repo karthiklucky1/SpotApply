@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>How did you hear: application form</title>
+<style>
+  ._opts_x1 button { margin-right: 4px; }
+  ._opts_x1 button._active_x1 { background: #222; color: #fff; }
+  #hh-combo-list { list-style: none; margin: 0; padding: 0; }
+</style></head>
+<body>
+  <h1>Apply</h1>
+  <!-- "How did you hear about this opportunity?" in every shape the extension
+       answers it in. It fills ONLY from the profile's saved answer. -->
+  <form id="hh-form" onsubmit="return false">
+    <label for="hh-first">First name *</label>
+    <input id="hh-first" name="first_name" required>
+    <label for="hh-email">Email *</label>
+    <input id="hh-email" type="email" name="email" required>
+
+    <!-- 1. A select whose option says more than the saved answer. -->
+    <label for="hh-select">How did you hear about this opportunity? *</label>
+    <select id="hh-select" name="question_hear" required>
+      <option value="">Select...</option>
+      <option value="li">LinkedIn</option>
+      <option value="site">Company Website / Careers Page</option>
+      <option value="indeed">Indeed</option>
+      <option value="other">Other</option>
+    </select>
+
+    <!-- 2. Ashby-style option list: the choices are buttons under the label. -->
+    <div class="ashby-application-form-field-entry" id="hh-list-entry">
+      <label class="ashby-application-form-question-title">How did you first learn about Acme?</label>
+      <div class="_opts_x1" id="hh-list">
+        <button type="button" class="_option_x1">LinkedIn</button>
+        <button type="button" class="_option_x1">Careers page</button>
+        <button type="button" class="_option_x1">Employee referral</button>
+        <button type="button" class="_option_x1">Other</button>
+      </div>
+    </div>
+
+    <!-- 3. Radios where only "Other" fits, and the box that appears for it. -->
+    <fieldset id="hh-radio-set">
+      <legend>Where did you see this job posted? *</legend>
+      <label><input type="radio" name="seen_where" value="li" required> LinkedIn</label>
+      <label><input type="radio" name="seen_where" value="glassdoor" required> Glassdoor</label>
+      <label><input type="radio" name="seen_where" value="other" required> Other (please specify)</label>
+    </fieldset>
+    <div id="hh-specify-wrap" style="display:none">
+      <label for="hh-specify">If other, please specify</label>
+      <input id="hh-specify" name="seen_where_other">
+    </div>
+
+    <!-- 4. A combobox that lists its choices on a click. -->
+    <div class="field">
+      <label for="hh-combo">How did you hear about the role?</label>
+      <input id="hh-combo" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+             aria-controls="hh-combo-list" autocomplete="off" placeholder="Select...">
+      <ul id="hh-combo-list" role="listbox"></ul>
+    </div>
+
+    <!-- 5. Free text. -->
+    <label for="hh-text">Referral source</label>
+    <input id="hh-text" name="referral_source">
+
+    <!-- 6. A label naming LinkedIn and a website is still this question: never
+         the LinkedIn URL or the portfolio. -->
+    <label for="hh-text2">How did you hear about us? (LinkedIn, company website, etc.)</label>
+    <input id="hh-text2" name="hear_detail">
+
+    <!-- 7. A textarea: the saved answer, never an AI essay. -->
+    <label for="hh-ta">Where did you hear about this position? Tell us a little more.</label>
+    <textarea id="hh-ta" name="hear_more" rows="2"></textarea>
+
+    <button type="submit">Submit application</button>
+  </form>
+  <script>
+    document.querySelectorAll('._opts_x1').forEach(function (box) {
+      box.querySelectorAll('button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          box.querySelectorAll('button').forEach(function (o) { o.classList.remove('_active_x1'); });
+          b.classList.add('_active_x1');
+        });
+      });
+    });
+    document.querySelectorAll('input[name="seen_where"]').forEach(function (r) {
+      r.addEventListener('change', function () {
+        var on = document.querySelector('input[name="seen_where"]:checked');
+        document.getElementById('hh-specify-wrap').style.display = on && on.value === 'other' ? '' : 'none';
+      });
+    });
+    var combo = document.getElementById('hh-combo'), list = document.getElementById('hh-combo-list');
+    var CHOICES = ['Job board', 'Company site', 'Friend or colleague'];
+    function openList(filter) {
+      list.innerHTML = '';
+      CHOICES.filter(function (c) { return !filter || c.toLowerCase().indexOf(filter.toLowerCase()) >= 0; })
+        .forEach(function (c) {
+          var li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.textContent = c;
+          li.addEventListener('mousedown', function (e) {
+            e.preventDefault(); combo.value = c; list.innerHTML = '';
+            combo.setAttribute('aria-expanded', 'false');
+          });
+          list.appendChild(li);
+        });
+      combo.setAttribute('aria-expanded', 'true');
+    }
+    combo.addEventListener('mousedown', function () { openList(''); });
+    combo.addEventListener('input', function () { openList(combo.value); });
+    combo.addEventListener('blur', function () {
+      if (CHOICES.indexOf(combo.value) < 0) combo.value = '';
+      list.innerHTML = '';
+    });
+  </script>
+</body></html>

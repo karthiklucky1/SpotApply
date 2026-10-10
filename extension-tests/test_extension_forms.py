@@ -117,7 +117,7 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         REQUESTS.append(("GET", self.path))
-        if self.path.endswith("/resume"):
+        if self.path.split("?")[0].endswith("/resume"):
             import base64
             return self._json({
                 "filename": "Alexandra_Nguyen_Resume.docx",
@@ -450,6 +450,117 @@ def main():
               page.eval_on_selector("#rp-first", "el => el.value"))
         page.close()
 
+        # ── LB: "leave blank if none" is a question, not a honeypot ─────────
+        # Review 2026-10-09: the honeypot pattern matched these labels, so the
+        # build stopped filling LinkedIn/GitHub fields 1.0.0 filled.
+        print("\nReal fields that say when to leave them blank")
+        pack = base_pack(f"{BASE}/leaveblank.html")
+        page, _ = drive_fill(ctx, f"{BASE}/leaveblank.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("LB1 'LinkedIn profile (leave blank if none)' is filled",
+              v("#lb-li") == pack["linkedin_url"], v("#lb-li"))
+        check("LB2 'GitHub URL - leave empty if you don't have one' is filled",
+              v("#lb-gh") == pack["github_url"], v("#lb-gh"))
+        check("LB3 the off-page 'Leave this field blank' honeypot stays empty",
+              v("#lb-hp") == "", v("#lb-hp"))
+        check("LB4 identity still filled", v("#lb-fn") == pack["first_name"], v("#lb-fn"))
+        page.close()
+
+        # ── HH: "How did you hear about this opportunity?" ──────────────────
+        # Owner, 2026-10-09: answered ONLY from the profile's saved answer, in
+        # every shape the question takes; nothing saved = left for the user.
+        print("\nHow did you hear (select · option list · radios + specify · combobox · text)")
+        hh_from = len(REQUESTS)          # the requests these fills make (the log is shared)
+        # The form is Acme's: "How did you first learn about Acme?" names the company.
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme",
+                    how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        on = lambda sel: page.evaluate(
+            "(s) => { const b = document.querySelector(s + ' button._active_x1'); return b ? b.textContent : ''; }", sel)
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HH1 select: the option containing the saved answer",
+              v("#hh-select") == "site", v("#hh-select"))
+        check("HH2 Ashby-style option list: a synonym ('Careers page')",
+              on("#hh-list") == "Careers page", on("#hh-list"))
+        check("HH3 radios with no match: 'Other'", radio("seen_where") == "other", str(radio("seen_where")))
+        check("HH4 ...and the saved answer in its 'please specify' box",
+              v("#hh-specify") == "Company website", v("#hh-specify"))
+        check("HH5 combobox: the listed synonym is picked ('Company site')",
+              v("#hh-combo") == "Company site", v("#hh-combo"))
+        check("HH6 free text gets the saved answer", v("#hh-text") == "Company website", v("#hh-text"))
+        check("HH7 a label naming LinkedIn gets the saved answer, never the LinkedIn URL",
+              v("#hh-text2") == "Company website", v("#hh-text2"))
+        check("HH7b a textarea gets the saved answer", v("#hh-ta") == "Company website", v("#hh-ta"))
+        check("HH8 the AI is never asked, nothing is learned from it",
+              not [p for m, p in REQUESTS[hh_from:]
+                   if m == "POST" and ("answer-question" in p or "save-answer" in p)],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        page.close()
+
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme", how_heard_answer="")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        flag = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapply || ''")
+        blank = {"select": v("#hh-select"), "list": on("#hh-list"), "radio": radio("seen_where"),
+                 "combo": v("#hh-combo"), "text": v("#hh-text"), "text2": v("#hh-text2"),
+                 "ta": v("#hh-ta")}
+        check("HH9 nothing saved: every how-did-you-hear question is left for the user",
+              blank == {"select": "", "list": "", "radio": None, "combo": "", "text": "",
+                        "text2": "", "ta": ""},
+              json.dumps(blank))
+        check("HH9b ...and the AI is still never asked",
+              not [p for m, p in REQUESTS[hh_from:] if m == "POST" and "answer-question" in p],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        check("HH10 ...and each is counted as needing the user (required ones red)",
+              flag("#hh-select") == "needs-fill-required" and flag("#hh-list") == "needs-fill"
+              and flag("#hh-text") == "needs-fill",
+              json.dumps({s: flag(s) for s in ("#hh-select", "#hh-list", "#hh-text")}))
+        check("HH11 identity still filled", v("#hh-first") == pack["first_name"], v("#hh-first"))
+        page.close()
+
+        # ── HT: the saved answer reaches only THIS question and its Other box ─
+        # Review 2026-10-09: "How did you learn Python?" got the saved answer,
+        # the question after an "Other" pick got it as "please specify", and a
+        # listbox button's pick was POSTed to save-answer.
+        print("\nHow did you hear: only this question, only its Other box, nothing learned")
+        ht_from = len(REQUESTS)
+        pack = dict(base_pack(f"{BASE}/howheard_tied.html"), company="Acme",
+                    how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard_tied.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HT1 only 'Other' fits: 'Other' is picked", v("#ht-sel") == "other", v("#ht-sel"))
+        check("HT2 ...and 'Please describe why you want to work at Acme' after it stays blank",
+              v("#ht-why") == "", v("#ht-why"))
+        check("HT3 radios: 'Other' is picked", radio("ht_src") == "other", str(radio("ht_src")))
+        check("HT4 ...and 'Please explain any gaps in your employment history' stays blank",
+              v("#ht-gaps") == "", v("#ht-gaps"))
+        learned = {s: v(s) for s in ("#ht-learn", "#ht-code", "#ht-program", "#ht-find")}
+        check("HT5 'How did you learn Python / to code', 'Where did you learn to program', "
+              "'How did you find your current role' stay blank",
+              set(learned.values()) == {""}, json.dumps(learned))
+        check("HT6 a box that appears only once 'Other' is picked gets the saved answer",
+              v("#ht-sel2") == "other" and v("#ht-where") == "Company website",
+              f"{v('#ht-sel2')} / {v('#ht-where')}")
+        check("HT7 an unlabelled box in the question's own container gets it",
+              v("#ht-sel3") == "other" and v("#ht-more") == "Company website",
+              f"{v('#ht-sel3')} / {v('#ht-more')}")
+        btn = page.eval_on_selector("#ht-btn", "el => el.textContent.trim()")
+        check("HT8 a listbox button gets the option that is the saved answer",
+              btn == "Company Website", btn)
+        saves = [p for m, p in REQUESTS[ht_from:] if m == "POST" and "save-answer" in p]
+        check("HT9 nothing is learned (no save-answer: not the listbox pick, not a box we wrote)",
+              not saves, str(saves))
+        check("HT10 a section with only the question and the next one (unlinked <label>): "
+              "'Other' is picked and the next question stays blank",
+              v("#ht-sel4") == "other" and v("#ht-else") == "", f"{v('#ht-sel4')} / {v('#ht-else')}")
+        check("HT11 the radio variant: 'Other' is picked and 'Who referred you?' stays blank",
+              radio("ht_src2") == "other" and v("#ht-who") == "", f"{radio('ht_src2')} / {v('#ht-who')}")
+        page.close()
+
         # ── API surface actually exercised ──────────────────────────────────
         print("\nBackend calls made by the extension during these fills")
         paths = sorted({p for _, p in REQUESTS if p.startswith("/api") or "resume" in p})
@@ -457,6 +568,11 @@ def main():
             print("   ", p_)
         check("A1 résumé endpoint called", any("resume" in p for _, p in REQUESTS))
         check("A2 no unexpected API host", True, f"{len(REQUESTS)} requests, all to the stub")
+        # 1.0.1+ always names what the field takes ("*" when it names nothing),
+        # so the server can tell it from the 1.0.0 Store build (no parameter).
+        resume_gets = [p for m, p in REQUESTS if m == "GET" and p.split("?")[0].endswith("/resume")]
+        check("A8 every resume request carries ?accept=",
+              bool(resume_gets) and all("accept=" in p for p in resume_gets), str(resume_gets[:4]))
 
         # ── E: voluntary self-identification (owner's report, 2026-10-10) ───
         # The answers SAVED in the profile land on the form — a Greenhouse-style

@@ -80,7 +80,10 @@ def test_partial_board_fetch_does_not_ghost_close(monkeypatch):
     import inspect
     from app.discovery import pipeline as dp
 
-    src = inspect.getsource(dp.run_discovery)
+    # run_discovery closes ghosts through one helper (shared with the
+    # pulse lane's board-absence work, 2026-10-10); the guard sits there.
+    assert "_close_ghosts_after_fetch(" in inspect.getsource(dp.run_discovery)
+    src = inspect.getsource(dp._close_ghosts_after_fetch)
     call_line = next((ln for ln in src.splitlines()
                       if "mark_ghost_jobs(scraper.name" in ln), None)
     assert call_line is not None, "ghost-close call site moved — re-point this guard"

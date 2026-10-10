@@ -373,6 +373,306 @@ def fabrication_violations(master_md: str, tailored_md: str) -> List[Tuple[str, 
     return added
 
 
+# ── the summary ──────────────────────────────────────────────────────────────
+# The summary is where a generator SYNTHESISES: it restates a career in two or
+# three sentences, so it is also where a job's duties get written up as the
+# candidate's ("translating API documentation into tested connectors"). Grounding
+# used to read only Experience/Projects bullets, so those sentences were never
+# checked and the result still said "Grounded in your resume" (live test,
+# 2026-10-09). These helpers find the summary's sentences so grounding can
+# verify them, and remove the ones it cannot back. Deterministic, no model.
+
+_KNOWN_SECTION_RE = re.compile(
+    r"^(?:professional\s+|career\s+|technical\s+|executive\s+|work\s+|core\s+|relevant\s+)?"
+    r"(summary|profile|objective|about(?:\s+me)?|overview|introduction|experience|employment|"
+    r"education|skills|projects|certifications?|achievements|awards|publications|leadership|"
+    r"activities|history|competencies|qualifications|interests|volunteering|volunteer)$",
+    re.IGNORECASE)
+_SUMMARY_TITLE_RE = re.compile(
+    r"\b(summary|profile|objective|about(?:\s+me)?|overview|introduction)\b", re.IGNORECASE)
+_NOT_SUMMARY_TITLE_RE = re.compile(
+    r"experience|employment|project|skill|education|certif|work history", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[*_]*[A-Z0-9\"“(])")
+_CONTACT_HINT_RE = re.compile(
+    r"@|https?://|www\.|linkedin|github|\(\d{3}\)|\d{3}[\s.-]\d{3}[\s.-]\d{4}", re.IGNORECASE)
+
+
+def _section_title(line: str) -> Optional[str]:
+    """The section a heading line opens, or None when the line is not a heading.
+
+    A markdown ``# Name`` is the candidate's name, not a section, unless it is a
+    known section word. A plain line counts as a heading when it is a short
+    known section name ("Professional Summary") or a short ALL-CAPS line, which
+    is how a PDF/DOCX upload writes them.
+    """
+    s = (line or "").strip()
+    if not s:
+        return None
+    m = re.match(r"^(#{1,6})\s+(.*\S)\s*$", s)
+    if m:
+        title = _MD_NOISE_RE.sub("", m.group(2)).strip().rstrip(":").strip()
+        if len(m.group(1)) == 1 and not _KNOWN_SECTION_RE.match(title):
+            return None                       # "# Alex Tenant"
+        return title
+    core = _MD_NOISE_RE.sub("", s).strip().rstrip(":").strip()
+    if not core or len(core.split()) > 4 or core.endswith((".", ",", ";")):
+        return None
+    if _KNOWN_SECTION_RE.match(core):
+        return core
+    if core.isupper() and re.search(r"[A-Z]{3}", core):
+        return core
+    return None
+
+
+def _is_summary_title(title: str) -> bool:
+    return bool(_SUMMARY_TITLE_RE.search(title or "")) and not _NOT_SUMMARY_TITLE_RE.search(title or "")
+
+
+def _is_prose(line: str) -> bool:
+    """A sentence of description, not a contact line, headline or list. A
+    pipe-separated tagline is prose when it is not just short titles or skills
+    ("Integrations Engineer | Translating API documentation into tested
+    connectors" asserts work; "Backend Engineer | Python | AWS" does not)."""
+    s = (line or "").strip()
+    if len(s.split()) < 8 or _CONTACT_HINT_RE.search(s):
+        return False
+    if "|" in s and _is_title_or_skill_list(_pipe_segments(_MD_NOISE_RE.sub("", s))):
+        return False
+    return bool(re.search(r"\b[a-z]{3,}\b", s))
+
+
+def _summary_line_indexes(md: str) -> Tuple[List[int], Optional[int]]:
+    """Line numbers that hold the summary, and the line of its heading (if any).
+
+    The summary is the section headed Summary / Profile / Objective / About /
+    Overview, plus any prose paragraph sitting above the first section (an
+    unheaded summary under the name).
+    """
+    lines = (md or "").splitlines()
+    idx: List[int] = []
+    header_at: Optional[int] = None
+    seen_section = False
+    in_summary = False
+    for i, line in enumerate(lines):
+        title = _section_title(line)
+        if title is not None:
+            seen_section = True
+            in_summary = _is_summary_title(title)
+            if in_summary and header_at is None:
+                header_at = i
+            continue
+        if in_summary:
+            if line.strip():
+                idx.append(i)
+        elif not seen_section and _is_prose(line):
+            idx.append(i)
+    return idx, header_at
+
+
+def _split_summary_line(line: str) -> Tuple[str, List[str]]:
+    """(bullet lead, sentences) for one summary line."""
+    m = re.match(r"^(\s*(?:[-*•·]\s+)?)", line or "")
+    lead = m.group(1) if m else ""
+    body = (line or "")[len(lead):].strip()
+    return lead, [p.strip() for p in _SENTENCE_SPLIT_RE.split(body) if p.strip()]
+
+
+def _is_summary_claim(sentence: str) -> bool:
+    plain = _MD_NOISE_RE.sub("", sentence or "").strip()
+    if len(plain.split()) < 4 or plain.endswith(":"):
+        return False
+    # The opt-in relocation line (tailoring/relocation.py) is the candidate's
+    # own profile setting, written in by request, not a claim about past work;
+    # the master resume never says it, so checking it would delete it.
+    if re.match(r"^open to relocation to\b", plain, re.IGNORECASE):
+        return False
+    # A comma-run list of skills ("Core skills: Python, AWS, Docker") is checked
+    # by the skill review (requirements.review), not read as a sentence.
+    return not re.match(r"^[^.:]{1,40}:\s*\S+(?:\s*,\s*\S+){2,}\s*$", plain)
+
+
+def _pipe_segments(text: str) -> List[str]:
+    return [s.strip() for s in (text or "").split("|") if s.strip()]
+
+
+# A segment that opens on a verb or holds a clause asserts something done:
+# "Translating API documentation into tested connectors", "Led a 6-person team".
+_LEAD_VERB_RE = re.compile(r"^[A-Za-z]+(?:ing|ed)$|^(?:led|built|ran|grew|won|made|wrote|"
+                           r"drove|shipped|cut|saved|owned|own|owns|lead|leads|build|"
+                           r"builds|ship|ships|deliver|delivers|turn|turns)$", re.IGNORECASE)
+# Fields that end in -ing are nouns at the head of a title ("Engineering
+# Manager", "Machine Learning", "Nursing Leadership").
+_ING_NOUNS = frozenset({
+    "engineering", "marketing", "accounting", "nursing", "learning", "computing",
+    "testing", "manufacturing", "consulting", "banking", "publishing", "programming",
+    "networking", "recruiting", "training", "planning", "processing", "sourcing",
+    "modeling", "modelling", "billing", "coding", "lending", "underwriting",
+    "auditing", "merchandising", "purchasing", "advertising", "teaching", "tutoring",
+    "counseling", "counselling", "staffing", "trading", "pricing", "licensing",
+})
+_CLAUSE_WORD_RE = re.compile(r"\b(?:who|that|which)\b", re.IGNORECASE)
+
+
+def _is_title_or_skill_list(segments: List[str]) -> bool:
+    """True when every pipe segment is a short noun phrase (a title, a skill,
+    a domain: four words or fewer, no verb, no clause). Only then is the line a
+    headline the skill review covers rather than a claim to verify."""
+    for seg in segments:
+        words = re.findall(r"[A-Za-z0-9][\w'+#./-]*", seg)
+        if len(words) > 4:
+            return False
+        if not words:
+            continue
+        first = words[0].lower()
+        if (_LEAD_VERB_RE.match(first) and first not in _ING_NOUNS) or _CLAUSE_WORD_RE.search(seg):
+            return False
+    return True
+
+
+def _claim_parts(sentence: str) -> List[str]:
+    """The claim-bearing parts of one summary sentence, markdown removed.
+
+    A pipe-separated line made only of titles and skills claims nothing the
+    skill review does not already check. Any other pipe line is a run of
+    claims: each segment of four or more words is verified on its own, so
+    "Integrations Engineer | Translating API documentation into tested
+    connectors | Shipping systems customers configure without support
+    escalation" no longer passes unread as a "skills list"."""
+    plain = _MD_NOISE_RE.sub("", sentence or "").strip()
+    if "|" not in plain:
+        return [plain] if _is_summary_claim(plain) else []
+    segments = _pipe_segments(plain)
+    if _is_title_or_skill_list(segments):
+        return []
+    return [s for s in segments if _is_summary_claim(s)]
+
+
+def summary_sentences(md: str) -> List[str]:
+    """The claim-bearing sentences of a resume's summary, markdown removed. A
+    pipe-separated tagline contributes each claim-bearing segment."""
+    lines = (md or "").splitlines()
+    idx, _ = _summary_line_indexes(md)
+    out: List[str] = []
+    for i in idx:
+        _, sentences = _split_summary_line(lines[i])
+        for sentence in sentences:
+            out.extend(_claim_parts(sentence))
+    return out
+
+
+_EMPHASIS_RE = re.compile(r"(?<!\*)\*\*(?!\*)|(?<!\*)\*(?!\*)")
+
+
+def _rejoin_kept(pieces: List[Tuple[int, str, bool]]) -> str:
+    """The summary line rebuilt from the pieces that stay: segments of one
+    sentence pipe-joined, sentences space-joined.
+
+    Emphasis that ran into a removed piece is closed (or reopened) inside the
+    text that stays: "**Integrations Engineer | Translating API documentation
+    into tested connectors**" loses its second segment and keeps
+    "**Integrations Engineer**", never a lone "**" the renderer prints as
+    text. Markers that were never paired are left as they were."""
+    flat, spans = "", []
+    for k, (sent, text, _) in enumerate(pieces):
+        if k:
+            flat += "|" if pieces[k - 1][0] == sent else " "
+        spans.append((len(flat), len(flat) + len(text)))
+        flat += text
+
+    def piece_at(pos: int) -> int:
+        return next(k for k, (a, b) in enumerate(spans) if a <= pos < b)
+
+    pre, post = [""] * len(pieces), [""] * len(pieces)
+    for mark in ("**", "*"):
+        opened: List[int] = []
+        for m in _EMPHASIS_RE.finditer(flat):
+            if m.group(0) != mark:
+                continue
+            s, e = m.span()
+            if s and not flat[s - 1].isspace() and opened:
+                a, b = piece_at(opened.pop()), piece_at(s)
+                if pieces[a][2] or pieces[b][2]:
+                    kept = [k for k in range(a, b + 1) if not pieces[k][2] and pieces[k][1].strip()]
+                    if kept and pieces[a][2]:
+                        pre[kept[0]] = mark + pre[kept[0]]
+                    if kept and pieces[b][2]:
+                        post[kept[-1]] += mark
+            elif e < len(flat) and not flat[e].isspace():
+                opened.append(s)
+    out, last = "", None
+    for k, (sent, text, gone) in enumerate(pieces):
+        if gone or not text.strip():
+            continue
+        if out:
+            out += " | " if sent == last else " "
+        out += pre[k] + text.strip() + post[k]
+        last = sent
+    return out
+
+
+def remove_summary_sentences(md: str, sentences, master_md: str = "") -> Tuple[str, List[str]]:
+    """Take the given sentences out of the summary; never adds a word of its own.
+
+    A summary sentence the master resume cannot back comes out, and the rest of
+    the summary stays. When nothing is left, the master's own summary is put
+    back (the candidate's words, already true) or, with none, the empty heading
+    goes. Returns (new_markdown, sentences_actually_removed).
+    """
+    targets = {normalize_text(s) for s in (sentences or []) if (s or "").strip()}
+    if not targets or not (md or "").strip():
+        return md, []
+    lines = (md or "").splitlines()
+    idx, header_at = _summary_line_indexes(md)
+    removed: List[str] = []
+    replaced: Dict[int, Optional[str]] = {}
+    for i in idx:
+        lead, parts = _split_summary_line(lines[i])
+        # (sentence number, text, removed): a sentence, or one segment of a
+        # pipe tagline, where only the unbacked segments go ("Integrations
+        # Engineer | Python" survives its invented clause).
+        pieces: List[Tuple[int, str, bool]] = []
+        for n, part in enumerate(parts):
+            if normalize_text(part) in targets:
+                removed.append(_MD_NOISE_RE.sub("", part).strip())
+                pieces.append((n, part, True))
+                continue
+            segs = part.split("|")
+            flags = [len(segs) > 1 and bool(s.strip()) and normalize_text(s) in targets
+                     for s in segs]
+            if not any(flags):
+                pieces.append((n, part, False))
+                continue
+            removed.extend(_MD_NOISE_RE.sub("", s).strip() for s, f in zip(segs, flags) if f)
+            pieces.extend((n, s, f) for s, f in zip(segs, flags))
+        if any(gone for _, _, gone in pieces):
+            text = _rejoin_kept(pieces)
+            replaced[i] = (lead + text) if text else None
+    if not removed:
+        return md, []
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        if i in replaced:
+            if replaced[i] is not None:
+                out.append(replaced[i])
+            continue
+        out.append(line)
+    new_md = "\n".join(out)
+    if header_at is not None:
+        left_idx, left_header = _summary_line_indexes(new_md)
+        new_lines = new_md.splitlines()
+        section_left = [j for j in left_idx if left_header is not None and j > left_header]
+        if left_header is not None and not section_left:
+            m_lines = (master_md or "").splitlines()
+            m_idx, m_header = _summary_line_indexes(master_md or "")
+            fallback = [m_lines[j] for j in m_idx if m_header is None or j > m_header]
+            if fallback:
+                new_lines[left_header + 1:left_header + 1] = fallback
+            else:
+                del new_lines[left_header]
+            new_md = "\n".join(new_lines)
+    return new_md, removed
+
+
 def _presence_text(text: str) -> str:
     t = re.sub(r"[*_`#>]", " ", (text or "").lower())
     t = re.sub(r"[|•·]", " ", t)

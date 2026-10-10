@@ -220,9 +220,17 @@ def test_api_jobs_exposes_new_fields(_seeded_jobs):
     assert top["company"] == "BetaAI"
 
 
-def test_dashboard_caps_two_per_company():
-    """Three shortlisted roles at the same company → dashboard shows at most 2."""
+def test_dashboard_caps_two_per_company(monkeypatch):
+    """Three shortlisted roles at the same company → dashboard shows at most 2.
+
+    The cap is ``settings.company_cap`` (3 by default), so it is pinned to 2
+    here. This used to pass at 3 by accident: an earlier fixture leaves
+    applications behind whose job ids SQLite re-issues to these jobs, so two
+    of them had TWO cards each and the cap of 3 hid "Engineer 0". The board
+    now shows one card per role (server._collapse_same_role)."""
     from sqlmodel import select as _select
+    from app.config import settings
+    monkeypatch.setattr(settings, "company_cap", 2)
     with get_session() as s:
         for j in s.exec(_select(Job).where(Job.external_id.like("capdisp-%"))).all():
             for a in s.exec(_select(Application).where(Application.job_id == j.id)).all():

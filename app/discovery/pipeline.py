@@ -1283,11 +1283,22 @@ def record_board_failures_bulk(failures: list) -> int:
     return deactivated
 
 
-def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], user_id: str | None = None):
+def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], user_id: str | None = None,
+                    present_urls: List[str] | None = None):
     """Mark jobs that disappeared from a direct ATS board as closed.
 
     Scoped to a single user — jobs are per-user, so one user's discovery run must
     never close another tenant's jobs.
+
+    ``present_urls`` (the fetch's posting URLs) scopes the close to THIS board:
+    a row is a candidate only when its URL sits on a board this fetch listed
+    (`board_absence.board_prefix`), and a row whose URL the fetch listed is
+    present. One Workday tenant runs several sites under ONE company name
+    (FedEx has three), so the company-only scope closed site B's postings
+    every time it read site A.
+
+    Rows are closed in ascending id order — the order `board_absence` and
+    `slate.place` lock job rows in.
     """
     # Safety: an empty active list means we have nothing to compare against —
     # never close every job for the company on an empty/failed fetch.
@@ -1302,7 +1313,7 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         # source/company, was a recurring Supabase statement-timeout + egress
         # hit). Full rows are loaded below only for the few jobs actually
         # being closed. Backed by ix_job_user_source_company (models.py).
-        q = select(Job.id, Job.external_id).where(
+        q = select(Job.id, Job.external_id, Job.url).where(
             Job.source == JobSource(source),
             Job.company == company,
             Job.is_closed == False,  # noqa: E712
@@ -1310,8 +1321,15 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         if user_id is not None:
             q = q.where(Job.user_id == user_id)
         rows = session.exec(q).all()
-        to_close = [jid for jid, ext in rows if ext not in active]
-        gone_ext = [ext for _jid, ext in rows if ext not in active]
+        if present_urls:
+            from app.discovery.board_absence import board_prefix, norm_url
+            urls = {norm_url(u) for u in present_urls}
+            boards = {board_prefix(u) for u in urls} - {""}
+            rows = [r for r in rows
+                    if board_prefix(r[2]) in boards and norm_url(r[2]) not in urls]
+        gone = sorted((r[0], r[1]) for r in rows if r[1] not in active)
+        to_close = [jid for jid, _ext in gone]
+        gone_ext = [ext for _jid, ext in gone]
 
         closed_count = 0
         source_name = source.value if hasattr(source, "value") else str(source)
@@ -1347,7 +1365,10 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
     # must never be able to stop a job from being closed, and opening a second
     # write connection while the first held its locks made every call wait out
     # SQLite's 30 s lock timeout (and then drop the evidence).
-    _gone = sorted(set(gone_ext))
+    # Never under a BARE Workday/BambooHR/Teamtailor id: that key is shared by
+    # other employers, and a REMOVED verdict there would block their posting.
+    from app.discovery.job_identity import looks_unscoped
+    _gone = sorted(e for e in set(gone_ext) if not looks_unscoped(source_name, e))
     if _gone:
         try:
             from app.discovery import liveness as _lv
@@ -1356,6 +1377,36 @@ def mark_ghost_jobs(source: str, company: str, active_external_ids: List[str], u
         except Exception as _e:
             log.debug("liveness board-absence record skipped for %s: %s",
                       source_name, _e)
+
+
+def _close_ghosts_after_fetch(scraper, raw: list, user_id: str | None) -> None:
+    """The full pass's ghost-close for one fetched board.
+
+    Close ghost jobs ONLY on a successful, non-empty fetch. An empty result is
+    indistinguishable from a soft failure (rate-limit / transient empty
+    response), and ghost-closing on it would wrongly close every job for the
+    company and SKIP their applications. A scraper that truncated or failed
+    mid-pagination sets fetch_complete=False: its list is a SUBSET of the
+    board, and closing everything absent from a subset permanently kills live
+    postings (and SKIPs their applications). Absent attribute → True, so
+    scrapers that always return whole boards are unaffected.
+
+    Presence is every posting the LISTING named, not only the parsed ones
+    (Workday/SmartRecruiters skip non-tech titles: ``listed_ids`` /
+    ``listed_urls``), and the URLs scope the close to this board.
+    """
+    if raw and getattr(scraper, "fetch_complete", True):
+        active_ids = [r.external_id for r in raw]
+        active_ids += list(getattr(scraper, "listed_ids", None) or ())
+        urls = [r.url for r in raw if r.url]
+        urls += list(getattr(scraper, "listed_urls", None) or ())
+        company_name = raw[0].company
+        if company_name:
+            mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id,
+                            present_urls=urls)
+    elif raw:
+        log.info("Ghost-close skipped for %s — partial/truncated fetch (%d jobs)",
+                 scraper.name, len(raw))
 
 
 async def feed_companies_from_aggregators(raw_jobs: List[RawJob]):
@@ -1657,23 +1708,7 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                          or getattr(scraper, "org_slug", None))
                 _touch_registry(scraper.name, _slug, len(raw))
 
-                # Close ghost jobs ONLY on a successful, non-empty fetch. An empty
-                # result is indistinguishable from a soft failure (rate-limit /
-                # transient empty response), and ghost-closing on it would wrongly
-                # close every job for the company and SKIP their applications.
-                # A scraper that truncated or failed mid-pagination sets
-                # fetch_complete=False: its list is a SUBSET of the board, and
-                # closing everything absent from a subset permanently kills live
-                # postings (and SKIPs their applications). Absent attribute →
-                # True, so scrapers that always return whole boards are unaffected.
-                if raw and len(raw) > 0 and getattr(scraper, "fetch_complete", True):
-                    active_ids = [r.external_id for r in raw]
-                    company_name = raw[0].company
-                    if company_name:
-                        mark_ghost_jobs(scraper.name, company_name, active_ids, user_id=user_id)
-                elif raw and not getattr(scraper, "fetch_complete", True):
-                    log.info("Ghost-close skipped for %s — partial/truncated fetch (%d jobs)",
-                             scraper.name, len(raw))
+                _close_ghosts_after_fetch(scraper, raw, user_id)
             # Failed fetches (raw is None) were already retired in bulk above.
         except Exception as e:
             log.exception("Scraper %s processing failed: %s", scraper.name, e)

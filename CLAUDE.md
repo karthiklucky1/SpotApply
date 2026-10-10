@@ -528,7 +528,36 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
   the vacancy, and treating it as death would close live jobs whenever a board
   throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
-  an incomplete fetch records nothing. The gate runs LATE (`strategy/delivery_gate.py`):
+  an incomplete fetch records nothing. **The pulse lane closes on it**
+  (2026-10-10, `discovery/board_absence.py`, `PULSE_GHOST_CLOSE_ENABLED`, on):
+  the full pass rotates by `last_seen`, which the pulse bumps, so pulse-watched
+  boards were never ghost-closed (Ashby has no other signal). ONLY
+  `CLOSING_SOURCES` — ids platform-wide + edit-stable, URL names the board:
+  Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio, Rippling,
+  Breezy, Pinpoint. Workday (multi-site reqs, moved paths), Teamtailor
+  (slug in the id), BambooHR (tenant ids), Workable (no board in the URL;
+  display names collide) and JOIN (offset pages of 5: an early-ended or
+  shifted walk still read complete) never close here: full pass + 45-day
+  retention. A
+  changed board's listing is queued only if its adapter DECLARED it whole
+  (`fetch_complete`, or `listing_complete` + `listed_ids`); AFTER the consume
+  loop, in a slice (`PULSE_GHOST_CLOSE_MAX_SECONDS`) and ONE session: one
+  aggregate per board (rows read only when something closes/reopens), scoped
+  source + company + URL board prefix + `first_seen` before the fetch STARTED;
+  closes via `_close_copies` in one transaction, job rows locked ascending
+  first (`slate.place`'s order), REMOVED as one ON CONFLICT upsert under a
+  SAVEPOINT. Doubt closes NOTHING: empty listing; >50% of open rows and >3
+  (decided by the count, memoised while no new listing could resolve it or
+  after a census timeout, ≤6 h — one census of a 21.7k-row board is ~11 s); a
+  listing that collapsed vs the census is held — census NOT moved — until
+  `PULSE_GHOST_CLOSE_CONFIRM_POLLS` (3) polls agree; census 0/none = no
+  closing. `PULSE_GHOST_CLOSE_MAX_PER_TICK`; only a board with pending absent
+  rows is CARRIED to the next tick (no re-poll, schedule untouched); reopening
+  never waits on the budget; under 1 s of slice left no board is judged, and
+  the statement ceiling shrinks to what is left. A later complete listing
+  REOPENS (`Removed from company` reasons) + records LIVE, TAILORED-or-later
+  copies included; a Removed application stays Removed.
+  Guard: `test_pulse_ghost_close`. The gate runs LATE (`strategy/delivery_gate.py`):
   `slate.place()` holds the cached in-session backstop, the scoring lane does the
   network refresh outside its session for candidates that already cleared the
   bar, single-flighted per posting and bounded by `CycleBudget`. Measured: ~55
@@ -551,7 +580,14 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`/api/jobs/{id}/verify`) uses the SAME rules — forced gate check, no
   session across the fetch; an aggregator link closes only the opener's copy
   (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
-  `test_click_verification`.
+  `test_click_verification`. A Greenhouse posting redirected to its board's
+  index (`?error=true`) is REMOVED; one the page can't speak for (employer-site
+  `gh_jid`, stored or redirected to from a hosted URL; token = the ONE registry
+  slug naming its company; any WRONG_PAGE) asks the ATS API: 200 LIVE, 404
+  REMOVED only if the board answers 200 (`delivery_gate._check`, guard:
+  `test_closed_posting_detection`). **Not a sweep:** the check guards NEW
+  deliveries (a refusal closes only the copy being placed); a copy already on
+  a board is re-checked only when someone opens or reports it.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows
@@ -702,7 +738,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `compute_policy.user_paused`/`is_paused` (welcome begin/refresh, onboarding
   seed, `/api/welcome/status` → `paused`); `_may_welcome` skips `/api/search/*`
   because the stamp runs before the route body — clicking Pause opened a boost
-  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Journey
+  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Inside
+  a lane every per-user write re-asks `compute_policy.paused_now` (one cached
+  read for all users): a tick's user list is minutes old, and a pulse tick
+  routed 2 jobs into a pool 14 s after Pause (2026-10-09). Adoption and
+  `dispatch_fresh_alerts` refuse a paused user themselves. Journey
   metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
   Dedup: same company + normalised title within 40 d is one role (`slate.py`).
   Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.
@@ -790,9 +830,24 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   from `degree_fields`; ONE work-auth interpreter, `authorized_now` (status + its end
   date) wins over the status text; any "without sponsorship" wording is left for the
   user unless citizen/green card; country from `residence_country` (never defaulted).
+  "How did you hear?" = `UserProfile.how_heard_answer` ONLY (select/radio/option
+  list/combobox/text, else "Other" + specify; never memory or AI; empty = the
+  user's; guard: `test_how_heard_answer`).
   Demographics are filled when the user saved them (`eeo_confirmed`) or opted in —
   never from recall/learning/AI. Uploads skip other-document fields, honour
   `accept`, count only when acknowledged; DO_FILL replies with the real outcome.
+  Captcha/honeypot/hidden fields are never filled, AI-asked or learned
+  (`canFillField` ↔ `autofill/field_guards.py`, refused BEFORE the AnswerMemory
+  cache; honeypot WORDING only when the whole label is the instruction, so
+  "LinkedIn (leave blank if none)" stays fillable). A MODEL reply about the
+  question is never returned/cached; text the USER typed is refused only in
+  model-only forms (`is_model_only_reply`). Ashby Yes/No buttons + location
+  autocompletes go through the same rules (region compared per comma
+  component, never a substring: "on" is in "London"). The resume route serves
+  the one-page PDF unless `?accept=` rules it out; 1.0.1+ ALWAYS sends it (`*`
+  if the field names none), so no parameter = the 1.0.0 Store build, which gets
+  the PDF and attaches nothing on a Word-only field (accepted tradeoff, logged)
+  (live test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
   **Setup after a resume upload**: review profile (what was read + what's missing)
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +

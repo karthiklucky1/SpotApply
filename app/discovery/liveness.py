@@ -57,6 +57,11 @@ _INDEX_BODY = re.compile(
     r"(all open (?:roles|positions|jobs)|browse (?:all )?(?:jobs|openings)|"
     r"\b\d+\s+open (?:roles|positions|jobs)\b)", re.I)
 
+#: A posting on Greenhouse's own hosted board: ``/{board token}/jobs/{id}``.
+#: (EU boards included; the token is case-insensitive on Greenhouse's side.)
+GREENHOUSE_POSTING = re.compile(
+    r"^https?://(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io/([^/?#]+)/jobs/(\d+)", re.I)
+
 #: Only these mean the vacancy is gone.
 DEAD_STATES = (JobLivenessState.REMOVED.value, JobLivenessState.EXPIRED.value)
 #: These mean "ask again", and must never close a job.
@@ -107,6 +112,17 @@ def classify(status: Optional[int], *, requested_url: str = "",
         if pattern.search(head):
             return S.REMOVED.value, "body_no_longer_active"
 
+    # Greenhouse answers a closed posting by redirecting to the board's own
+    # index (`/hasbro?error=true`, "The job you are looking for is no longer
+    # open."), and that message is drawn in the browser, so the body we read
+    # never says it. Live test 2026-10-09: Hasbro and Accela, both closed, were
+    # filed WRONG_PAGE ("redirected_to_index") and the board said "still open".
+    # This is not the generic careers-index case below: the redirect stays on
+    # Greenhouse, lands on the SAME board and drops the id, which is what the
+    # ATS does for exactly one reason.
+    if greenhouse_board_redirect(requested_url, final_url):
+        return S.REMOVED.value, "greenhouse_redirect_to_board"
+
     # Redirected away from the posting to a listing page. Compare identifiers
     # rather than whole URLs: many boards legitimately canonicalise a slug.
     if final_url and requested_url and final_url != requested_url:
@@ -121,6 +137,38 @@ def classify(status: Optional[int], *, requested_url: str = "",
         return S.WRONG_PAGE.value, "index_body"
 
     return S.LIVE.value, "http_200"
+
+
+def greenhouse_board_redirect(requested_url: str, final_url: str) -> bool:
+    """A Greenhouse posting URL that ended on its own board's index.
+
+    True only when ALL of: the request was a hosted Greenhouse posting
+    (`GREENHOUSE_POSTING`); the final URL is still on greenhouse.io; the
+    posting id is gone from it; and it is the same board's root or carries
+    Greenhouse's ``error=true`` flag. A redirect to the employer's own careers
+    page (``?gh_jid=<id>`` keeps the id) or anywhere else is not this case.
+    That employer page reads LIVE to `classify`, which sees only the page;
+    `delivery_gate._check` asks Greenhouse's API before accepting it.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    m = GREENHOUSE_POSTING.match(requested_url or "")
+    if not m or not final_url:
+        return False
+    token, job_id = m.group(1).lower(), m.group(2)
+    try:
+        p = urlparse(final_url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    if host != "greenhouse.io" and not host.endswith(".greenhouse.io"):
+        return False
+    if job_id in final_url:
+        return False
+    path = (p.path or "").rstrip("/").lower()
+    errored = any(v.strip().lower() == "true"
+                  for v in parse_qs(p.query or "").get("error", []))
+    return errored or path in (f"/{token}", f"/{token}/jobs")
 
 
 def _identifier(url: str) -> str:
@@ -196,10 +244,77 @@ def record_board_absence(source: str, present_ids: Iterable[str],
         return 0
     present = set(present_ids)
     gone = [e for e in known_ids if e not in present]
-    for ext in gone:
-        record(source, ext, JobLivenessState.REMOVED.value,
-               reason="absent_from_complete_board_fetch")
+    record_board_states(source, removed=gone)
     return len(gone)
+
+
+def record_board_states(source: str, *, removed: Iterable[str] = (),
+                        live: Iterable[str] = (), session=None) -> int:
+    """Board-level verdicts for many postings at once: REMOVED for postings
+    absent from a COMPLETE board fetch, LIVE for postings a complete fetch
+    lists again after board absence had closed them.
+
+    Both are conclusive, so — exactly as `record` treats a conclusive state —
+    they overwrite whatever the row said. ONE ``INSERT … ON CONFLICT (source,
+    external_id) DO UPDATE`` per 200 keys, in sorted key order: no read first,
+    and no race with a concurrent writer of the same key (the read-then-insert
+    version fell back to a session PER KEY on that race — ~4 round trips each
+    on the pulse lane's consumer). With ``session`` the caller commits; without
+    one this opens and commits its own.
+    """
+    wanted: dict = {}
+    for ext in removed:
+        if ext:
+            wanted[str(ext)] = (JobLivenessState.REMOVED.value,
+                                "absent_from_complete_board_fetch")
+    for ext in live:
+        if ext:
+            wanted[str(ext)] = (JobLivenessState.LIVE.value,
+                                "present_in_complete_board_fetch")
+    if not wanted:
+        return 0
+    if session is not None:
+        _upsert_states(session, source, wanted)
+        return len(wanted)
+    from app.db.init_db import get_session
+    try:
+        with get_session() as s:
+            _upsert_states(s, source, wanted)
+            s.commit()
+        return len(wanted)
+    except Exception as e:
+        log.debug("liveness.record_board_states failed for %s: %s", source, e)
+        return 0
+
+
+def _upsert_states(session, source: str, wanted: dict) -> None:
+    from app.db.models import JobLiveness
+
+    now = datetime.utcnow()
+    keys = sorted(wanted)
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:                                   # no upsert dialect: one row at a time
+        for ext in keys:
+            state, reason = wanted[ext]
+            record(source, ext, state, reason=reason)
+        return
+    tbl = JobLiveness.__table__
+    for start in range(0, len(keys), 200):
+        values = [{"source": source, "external_id": ext, "state": wanted[ext][0],
+                   "reason": wanted[ext][1], "http_status": None,
+                   "inconclusive_streak": 0, "checked_at": now}
+                  for ext in keys[start:start + 200]]
+        stmt = insert(tbl).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[tbl.c.source, tbl.c.external_id],
+            set_={"state": stmt.excluded.state, "reason": stmt.excluded.reason,
+                  "http_status": None, "inconclusive_streak": 0,
+                  "checked_at": stmt.excluded.checked_at})
+        session.execute(stmt)
 
 
 def needs_check(state: Optional[str], checked_at: Optional[datetime],
