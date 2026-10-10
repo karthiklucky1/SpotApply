@@ -8408,7 +8408,12 @@
         if (e.key === 'Escape' && document.getElementById('jobModalOverlay').classList.contains('open')) closeJobDrawer();
     });
 
-    // ── Referral / outreach drafts (draft-only; user sends them) ─────────────
+    // ── Outreach kit (draft-only; the user sends from their own account) ──────
+    // Each draft is one click away from being sent: an email draft opens Gmail /
+    // Outlook / the mail app with subject and body filled in, a LinkedIn note
+    // opens the people search that finds the recipient. "Mark as sent" records
+    // it so the inbox scan can report the reply (/api/sync-emails).
+    let _outreachKit = null;
     async function openReferral(appId) {
         if (typeof closeJobDrawer === 'function') closeJobDrawer();
         const ov = document.getElementById('referralOverlay');
@@ -8416,16 +8421,107 @@
         ov.classList.add('open'); document.body.style.overflow = 'hidden';
         body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Drafting your outreach…</p>';
         try {
-            const tok = localStorage.getItem('sb_token');
-            const res = await fetch(`/application/${appId}/referral`, { headers: tok ? { 'Authorization': `Bearer ${tok}` } : {} });
+            const res = await fetch(`/application/${appId}/referral`, { headers: authHeaders() });
             if (!res.ok) { body.innerHTML = `<p class="text-rose-500 text-sm py-6 text-center">Couldn't draft outreach (${res.status}).</p>`; return; }
             const data = await res.json();
-            let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:rgba(245,158,11,.10);color:#92400e;"> ${_esc(data.note)}</p>`;
-            (data.drafts || []).forEach(d => {
-                html += `<div class="rounded-xl p-4 mb-3" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-center justify-between mb-1"> <p class="text-[11px] font-extrabold" style="color:var(--sage-700);">${_esc(d.label)}</p> <button onclick="copyText(this.dataset.body, this)" data-body="${_esc(d.body)}" class="text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> </div> <p class="text-[10px] mb-2" style="color:var(--muted-2);">${_esc(d.channel || '')}</p> <p class="text-sm whitespace-pre-wrap leading-relaxed" style="color:var(--ink);">${_esc(d.body)}</p> </div>`;
-            });
-            body.innerHTML = html;
+            _outreachKit = { appId, data };
+            renderOutreachKit(appId, data);
         } catch (e) { body.innerHTML = '<p class="text-rose-500 text-sm py-6 text-center">Network error.</p>'; }
+    }
+    function _outreachPill(text, tone) {
+        const bg = tone === 'email' ? 'rgba(99,102,241,.12)' : tone === 'linkedin' ? 'rgba(10,102,194,.12)' : 'rgba(16,185,129,.12)';
+        const fg = tone === 'email' ? '#4f46e5' : tone === 'linkedin' ? '#0a66c2' : '#059669';
+        return `<span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full" style="background:${bg};color:${fg};">${_esc(text)}</span>`;
+    }
+    function renderOutreachKit(appId, data) {
+        const body = document.getElementById('referralBody');
+        const kit = data.kit || { drafts: data.drafts || [], people: [], searches: [] };
+        let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:rgba(245,158,11,.10);color:#92400e;">${_esc(data.note || '')}</p>`;
+        if ((kit.people || []).length) {
+            html += `<div class="rounded-xl p-3 mb-3" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.35);"> <p class="text-[10.5px] font-black uppercase tracking-widest mb-1.5" style="color:var(--sage-700);">The posting names</p>`;
+            kit.people.forEach(p => {
+                const who = [p.name, p.title].filter(Boolean).join(', ') || p.email || '';
+                html += `<div class="flex items-start justify-between gap-2 py-1"> <div class="min-w-0"> <p class="text-[12px] font-bold" style="color:var(--ink);">${_esc(p.label)}: ${_esc(who)}</p> ${p.evidence ? `<p class="text-[10.5px] italic" style="color:var(--muted);">“${_esc(p.evidence.slice(0, 160))}”</p>` : ''} </div> <div class="flex gap-1.5 shrink-0"> ${p.email ? `<a href="mailto:${_escUrl(p.email)}" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Email ↗</a>` : ''} <a href="${_escUrl(p.search_url)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Find on LinkedIn ↗</a> </div> </div>`;
+            });
+            html += `</div>`;
+        }
+        if ((kit.searches || []).length) {
+            html += `<div class="flex flex-wrap gap-1.5 mb-3">` + kit.searches.map(s =>
+                `<a href="${_escUrl(s.url)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">${_esc(s.label)} ↗</a>`).join('') + `</div>`;
+        }
+        (kit.drafts || []).forEach((d, i) => {
+            const isEmail = d.channel_kind === 'email';
+            const links = d.links || {};
+            const over = !isEmail && d.over_limit;
+            html += `<div class="rounded-xl p-4 mb-3" id="outreach-draft-${i}" style="background:var(--surface-2);border:1px solid var(--border);">
+                <div class="flex items-center justify-between gap-2 mb-1"> <div class="flex items-center gap-2 min-w-0"> <p class="text-[11px] font-extrabold truncate" style="color:var(--sage-700);">${_esc(d.label || '')}</p> ${_outreachPill(isEmail ? 'Email' : 'LinkedIn', isEmail ? 'email' : 'linkedin')} </div> <span class="text-[10px] shrink-0" style="color:${over ? '#dc2626' : 'var(--muted-2)'};">${d.chars || 0} chars${over ? ' · over LinkedIn’s ' + (kit.linkedin_note_limit || 300) : ''}</span> </div>
+                ${isEmail && d.subject ? `<div class="flex items-center gap-2 mb-1.5"> <p class="text-[11.5px] font-bold flex-1 truncate" style="color:var(--ink);">Subject: ${_esc(d.subject)}</p> <button type="button" onclick="copyText(this.dataset.v, this)" data-v="${_esc(d.subject)}" class="text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> </div>` : ''}
+                <p class="text-sm whitespace-pre-wrap leading-relaxed" style="color:var(--ink-soft);">${_esc(d.body || '')}</p>
+                ${d.verify_before_sending ? `<p class="text-[10.5px] mt-2 px-2.5 py-1.5 rounded-lg" style="background:rgba(245,158,11,.10);color:#92400e;">${_esc(d.verify_before_sending)}</p>` : ''}
+                <div class="flex flex-wrap items-center gap-1.5 mt-3">
+                    <button type="button" onclick="copyText(this.dataset.v, this)" data-v="${_esc(d.body || '')}" class="jbtn jbtn-apply text-[10.5px] px-3 py-1.5">Copy message</button>
+                    ${isEmail ? `<a href="${_escUrl(links.gmail)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Gmail ↗</a> <a href="${_escUrl(links.outlook)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Outlook ↗</a> <a href="${_escUrl(links.mailto)}" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Mail app</a>`
+                              : `${links.profile ? `<a href="${_escUrl(links.profile)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Open profile ↗</a>` : ''} <a href="${_escUrl(links.search)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Find them on LinkedIn ↗</a>`}
+                    <button type="button" onclick="showOutreachSentForm(${i})" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5 ml-auto">Mark as sent</button>
+                </div>
+                <div id="outreach-sent-form-${i}" class="hidden mt-2 flex flex-wrap items-center gap-2"> <input id="outreach-to-${i}" placeholder="${isEmail ? 'Sent to (name or email)' : 'Sent to (name or profile link)'}" class="flex-1 min-w-[180px] text-[11.5px] rounded-xl px-3 py-2" style="background:var(--surface);border:1px solid var(--border);color:var(--ink);" /> <button type="button" onclick="markOutreachSent(${appId}, ${i})" class="jbtn jbtn-apply text-[10.5px] px-3 py-2">Save</button> </div>
+            </div>`;
+        });
+        html += `<div id="outreach-sent-list">${renderOutreachSent(data.sent || [])}</div>`;
+        body.innerHTML = html;
+    }
+    function _agoLabel(iso) {
+        if (!iso) return '';
+        const d = new Date(iso); if (isNaN(d)) return '';
+        const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+        return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+    }
+    function renderOutreachSent(rows) {
+        if (!rows || !rows.length) return '';
+        let html = `<div class="rounded-xl p-3 mt-1" style="background:var(--surface-2);border:1px solid var(--border);"> <p class="text-[10.5px] font-black uppercase tracking-widest mb-1.5" style="color:var(--muted-2);">Sent · ${rows.length}</p>`;
+        rows.forEach(r => {
+            const replied = !!r.replied_at;
+            html += `<div class="flex items-center justify-between gap-2 py-1.5" style="border-top:1px solid var(--border);"> <div class="min-w-0"> <p class="text-[12px] font-bold truncate" style="color:var(--ink);">${_outreachPill(r.channel === 'email' ? 'Email' : 'LinkedIn', r.channel)} ${_esc(r.recipient_label || (r.channel === 'email' ? 'email' : 'LinkedIn note'))}${r.subject ? ` · ${_esc(r.subject)}` : ''}</p> <p class="text-[10.5px]" style="color:${replied ? '#059669' : 'var(--muted)'};">${replied ? `Reply received ${_agoLabel(r.replied_at)}${r.reply_how && r.reply_how !== 'manual' ? ' (found in your inbox)' : ''}` : `Sent ${_agoLabel(r.sent_at)} · no reply yet`}</p> </div> <div class="flex gap-1.5 shrink-0"> <button type="button" onclick="toggleOutreachReplied(${r.id}, ${replied ? 'false' : 'true'})" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">${replied ? 'Undo reply' : 'They replied'}</button> <button type="button" onclick="deleteOutreach(${r.id})" class="text-[10px] text-slate-500 hover:text-rose-500 px-1" title="Remove">✕</button> </div> </div>`;
+        });
+        return html + `</div>`;
+    }
+    function showOutreachSentForm(i) {
+        const f = document.getElementById(`outreach-sent-form-${i}`);
+        if (f) { f.classList.toggle('hidden'); const inp = document.getElementById(`outreach-to-${i}`); if (inp && !f.classList.contains('hidden')) inp.focus(); }
+    }
+    async function markOutreachSent(appId, i) {
+        if (!_outreachKit || _outreachKit.appId !== appId) return;
+        const d = ((_outreachKit.data.kit || {}).drafts || _outreachKit.data.drafts || [])[i];
+        if (!d) return;
+        const to = (document.getElementById(`outreach-to-${i}`) || {}).value || '';
+        const isUrl = /^https?:\/\//i.test(to.trim());
+        const payload = { channel: d.channel_kind === 'email' ? 'email' : 'linkedin', kind: d.type || '',
+            recipient_label: to.trim(), recipient_url: isUrl ? to.trim() : ((d.suggested_contact || {}).profile_url || null),
+            recipient_email: (to.includes('@') && !isUrl) ? to.trim() : null, subject: d.subject || null, body: d.body || '' };
+        try {
+            const res = await fetch(`/application/${appId}/outreach`, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(payload) });
+            if (!res.ok) { showToast('Could not record the message.', 'error'); return; }
+            const row = await res.json();
+            _outreachKit.data.sent = [row.sent, ...(_outreachKit.data.sent || [])];
+            document.getElementById('outreach-sent-list').innerHTML = renderOutreachSent(_outreachKit.data.sent);
+            showOutreachSentForm(i);
+            showToast('Recorded. Your inbox scan will flag the reply.', 'success');
+        } catch (e) { showToast('Network error.', 'error'); }
+    }
+    async function toggleOutreachReplied(id, replied) {
+        try {
+            const res = await fetch(`/api/outreach/${id}/replied`, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ replied }) });
+            if (!res.ok) { showToast('Could not update.', 'error'); return; }
+            const row = await res.json();
+            if (_outreachKit) { _outreachKit.data.sent = (_outreachKit.data.sent || []).map(r => r.id === id ? row.sent : r); document.getElementById('outreach-sent-list').innerHTML = renderOutreachSent(_outreachKit.data.sent); }
+        } catch (e) { showToast('Network error.', 'error'); }
+    }
+    async function deleteOutreach(id) {
+        try {
+            const res = await fetch(`/api/outreach/${id}`, { method: 'DELETE', headers: authHeaders() });
+            if (!res.ok) { showToast('Could not remove.', 'error'); return; }
+            if (_outreachKit) { _outreachKit.data.sent = (_outreachKit.data.sent || []).filter(r => r.id !== id); document.getElementById('outreach-sent-list').innerHTML = renderOutreachSent(_outreachKit.data.sent); }
+        } catch (e) { showToast('Network error.', 'error'); }
     }
     function closeReferral() {
         document.getElementById('referralOverlay').classList.remove('open');
@@ -8475,7 +8571,7 @@
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && document.getElementById('connOverlay').classList.contains('open')) closeConnections();
     });
-</script> <div id="referralOverlay" onclick="if(event.target===this) closeReferral()"> <div id="referralModal" role="dialog" aria-modal="true" aria-label="Referral drafts"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> Referral &amp; outreach drafts</h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Personalize the recipient, then send from your own account.</p> </div> <button type="button" id="referralClose" onclick="closeReferral()" title="Close (Esc)">&times;</button> </div> <div id="referralBody" class="jd-body"></div> </div>
+</script> <div id="referralOverlay" onclick="if(event.target===this) closeReferral()"> <div id="referralModal" role="dialog" aria-modal="true" aria-label="Referral drafts"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> Outreach kit</h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Copy a message or open it in your mail app, find the person on LinkedIn, then mark it sent. Replies are flagged by your inbox scan.</p> </div> <button type="button" id="referralClose" onclick="closeReferral()" title="Close (Esc)">&times;</button> </div> <div id="referralBody" class="jd-body"></div> </div>
 </div> <div id="connOverlay" onclick="if(event.target===this) closeConnections()"> <div id="connModal" role="dialog" aria-modal="true" aria-label="Find referrers"> <div class="jd-head"> <div class="min-w-0 flex-1"> <h2 class="text-sm font-bold" style="color:var(--ink);"> Possible contacts <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:999px;border:1px solid rgba(217,119,6,.55);color:rgb(217,119,6);vertical-align:middle;">Research preview · on hold</span></h2> <p class="text-[11px] mt-1" style="color:var(--muted);">Unverified public search results (Google, no login or scraping). We do not yet check that a person still works there or has anything to do with this role — confirm both yourself before contacting anyone. Nothing is ever sent for you.</p> </div> <button type="button" id="connClose" onclick="closeConnections()" title="Close (Esc)">&times;</button> </div> <div id="connBody" class="jd-body"></div> </div>
 </div> <!-- Add Job from Link modal (moved out of the main board into the sidebar) -->
 <!-- Insights modal — Fit-Score Distribution + Discovery Sources (moved out of the main board) -->

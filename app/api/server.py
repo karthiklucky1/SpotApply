@@ -3070,11 +3070,16 @@ def clear_jobs(request: Request) -> dict:
     deleted_apps = 0
     deleted_jobs = 0
     with get_session() as session:
+        from sqlmodel import delete as _sql_delete
+        from app.db.models import OutreachMessage
         aq = select(Application)
         jq = select(Job)
+        oq = _sql_delete(OutreachMessage)
         if _scoped:
             aq = aq.where(Application.user_id == uid)
             jq = jq.where(Job.user_id == uid)
+            oq = oq.where(OutreachMessage.user_id == uid)
+        session.exec(oq)        # Postgres cascades from application; SQLite does not
         for a in session.exec(aq).all():
             session.delete(a)
             deleted_apps += 1
@@ -11871,12 +11876,229 @@ def get_referral_drafts(application_id: int, request: Request) -> dict:
     uid = _get_user_id(request)
     from app.intelligence.referral import generate_referral_drafts
     try:
-        return generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
+        data = generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         log.exception("Referral draft generation failed for app %d: %s", application_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+    # The kit: subjects, one-click compose links, LinkedIn people searches, the
+    # people the posting itself names, and what the user already sent.
+    try:
+        data["kit"] = _outreach_kit(application_id, data)
+    except Exception as e:
+        log.warning("outreach kit skipped for app %d: %s", application_id, e)
+    data["sent"] = _outreach_rows(application_id, uid)
+    return data
+
+
+def _outreach_kit(application_id: int, data: dict) -> dict:
+    from app.discovery.hiring_context import load_context
+    from app.intelligence import outreach as _o
+    with get_session() as session:
+        row = session.exec(
+            select(Job.source, Job.external_id, Job.url, Job.company, Job.title,
+                   Job.corporate_insights)
+            .join(Application, Application.job_id == Job.id)
+            .where(Application.id == application_id)).first()
+    if row is None:
+        return _o.build_kit(data.get("drafts") or [], company=data.get("company") or "",
+                            role=data.get("title") or "")
+    source, external_id, job_url, company, title, insights = row
+    source_v = source.value if hasattr(source, "value") else str(source)
+    fields: dict = {}
+    try:
+        ctx = load_context([(source_v, external_id)]).get((source_v, external_id)) or {}
+        evidence = ctx.get("evidence") or {}
+        for key in ("recruiter_name", "reporting_manager_name", "reporting_title",
+                    "posting_creator_name", "contact_email"):
+            if ctx.get(key):
+                meta = evidence.get(key) or {}
+                fields[key] = {"value": ctx.get(key), "quote": meta.get("quote") or ""}
+    except Exception as e:
+        log.debug("hiring context unavailable for outreach kit (app %d): %s", application_id, e)
+    reporting = (fields.get("reporting_title") or {}).get("value") or ""
+    if not reporting:
+        try:
+            reporting = (_json.loads(insights or "{}").get("reporting_to") or "").strip()
+        except (ValueError, TypeError, AttributeError):
+            reporting = ""
+    return _o.build_kit(data.get("drafts") or [], company=company or "", role=title or "",
+                        job_url=job_url or "", context_fields=fields, reporting_title=reporting)
+
+
+def _outreach_row_dict(r) -> dict:
+    return {
+        "id": r.id, "application_id": r.application_id, "channel": r.channel, "kind": r.kind,
+        "recipient_label": r.recipient_label, "recipient_url": r.recipient_url,
+        "recipient_email": r.recipient_email, "subject": r.subject, "body": r.body,
+        "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+        "replied_at": r.replied_at.isoformat() if r.replied_at else None,
+        "reply_how": r.reply_how, "reply_subject": r.reply_subject,
+    }
+
+
+def _outreach_rows(application_id: int, uid) -> list:
+    from app.db.models import OutreachMessage
+    with get_session() as session:
+        q = select(OutreachMessage).where(OutreachMessage.application_id == application_id)
+        if uid and uid != "local":
+            q = q.where(OutreachMessage.user_id == uid)
+        rows = session.exec(q.order_by(OutreachMessage.id.desc())).all()
+        return [_outreach_row_dict(r) for r in rows]
+
+
+class OutreachSentPayload(BaseModel):
+    channel: str = "linkedin"           # "email" | "linkedin"
+    kind: str = ""
+    recipient_label: str = ""
+    recipient_url: Optional[str] = None
+    recipient_email: Optional[str] = None
+    subject: Optional[str] = None
+    body: str = ""
+
+
+@app.get("/application/{application_id}/outreach")
+def list_outreach(application_id: int, request: Request) -> dict:
+    """The outreach messages the user recorded for this application, newest first."""
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    return {"sent": _outreach_rows(application_id, uid)}
+
+
+@app.post("/application/{application_id}/outreach")
+@_rate_limit("30/minute")
+def record_outreach_sent(application_id: int, payload: OutreachSentPayload, request: Request) -> dict:
+    """The user sent a message themselves and says so. Recorded so the inbox
+    scan can report the reply; nothing is sent by this route."""
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage
+    from app.intelligence import outreach as _o
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    owner = uid if uid and uid != "local" else None
+    channel = "email" if (payload.channel or "").lower() == "email" else "linkedin"
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="An empty message cannot have been sent.")
+    recipient_email = (payload.recipient_email or "").strip().lower() or None
+    if recipient_email and "@" not in recipient_email:
+        recipient_email = None
+    now = _dt.utcnow()
+    with get_session() as session:
+        row = OutreachMessage(
+            user_id=owner, application_id=application_id, channel=channel,
+            kind=(payload.kind or "")[:40], recipient_label=(payload.recipient_label or "")[:160],
+            recipient_url=(payload.recipient_url or "")[:500] or None,
+            recipient_email=recipient_email[:200] if recipient_email else None,
+            subject=(payload.subject or "")[:300] or None,
+            subject_key=_o.subject_key(payload.subject or "") or None,
+            body=body[:4000], sent_at=now)
+        session.add(row)
+        app_obj = session.get(Application, application_id)
+        if app_obj:
+            who = f" to {row.recipient_label}" if row.recipient_label else ""
+            _note_once(app_obj, f"Outreach sent ({'email' if channel == 'email' else 'LinkedIn'}){who} on {now:%Y-%m-%d}.")
+            session.add(app_obj)
+        session.commit()
+        session.refresh(row)
+        return {"success": True, "sent": _outreach_row_dict(row)}
+
+
+class OutreachRepliedPayload(BaseModel):
+    replied: bool = True
+
+
+@app.post("/api/outreach/{outreach_id}/replied")
+def set_outreach_replied(outreach_id: int, payload: OutreachRepliedPayload, request: Request) -> dict:
+    """The user says a reply came (or undoes a wrong flag). The inbox scan sets
+    the same fields automatically with reply_how naming the evidence."""
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage
+    uid = _require_user(request)
+    with get_session() as session:
+        row = session.get(OutreachMessage, outreach_id)
+        if row is None or (uid != "local" and row.user_id != uid):
+            raise HTTPException(status_code=404, detail="Not found")
+        if payload.replied:
+            row.replied_at = row.replied_at or _dt.utcnow()
+            row.reply_how = "manual"
+        else:
+            row.replied_at = None
+            row.reply_how = None
+            row.reply_subject = None
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return {"success": True, "sent": _outreach_row_dict(row)}
+
+
+@app.delete("/api/outreach/{outreach_id}")
+def delete_outreach(outreach_id: int, request: Request) -> dict:
+    from app.db.models import OutreachMessage
+    uid = _require_user(request)
+    with get_session() as session:
+        row = session.get(OutreachMessage, outreach_id)
+        if row is None or (uid != "local" and row.user_id != uid):
+            raise HTTPException(status_code=404, detail="Not found")
+        session.delete(row)
+        session.commit()
+    return {"success": True}
+
+
+def _open_outreach(owner, uid_filter: bool) -> tuple[list, dict]:
+    """Sent messages still waiting for an answer (last 90 days), plus the
+    company each one's application is for — what match_reply needs."""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.db.models import OutreachMessage
+    since = _dt.utcnow() - _td(days=90)
+    with get_session() as session:
+        q = (select(OutreachMessage, Job.company)
+             .join(Application, Application.id == OutreachMessage.application_id)
+             .join(Job, Job.id == Application.job_id)
+             .where(OutreachMessage.sent_at.is_not(None), OutreachMessage.replied_at.is_(None),
+                    OutreachMessage.sent_at >= since))
+        if uid_filter:
+            q = q.where(OutreachMessage.user_id == owner)
+        pairs = session.exec(q).all()
+        rows = [r for r, _ in pairs]
+        company_of = {r.application_id: (c or "") for r, c in pairs}
+        for r in rows:
+            session.expunge(r)
+    return rows, company_of
+
+
+def _mark_outreach_replied(row_id: int, how: str, subject: str, owner) -> None:
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage, UserNotification
+    now = _dt.utcnow()
+    with get_session() as session:
+        row = session.get(OutreachMessage, row_id)
+        if row is None or row.replied_at is not None:
+            return
+        row.replied_at = now
+        row.reply_how = how
+        row.reply_subject = (subject or "")[:300] or None
+        session.add(row)
+        app_obj = session.get(Application, row.application_id)
+        company = ""
+        if app_obj:
+            job = session.get(Job, app_obj.job_id)
+            company = (job.company if job else "") or ""
+            _note_once(app_obj, f"Reply to your outreach ({'email' if row.channel == 'email' else 'LinkedIn'}) "
+                                f"found in your inbox on {now:%Y-%m-%d}.")
+            session.add(app_obj)
+        try:
+            session.add(UserNotification(
+                user_id=owner or "local",
+                title="Someone replied to your outreach",
+                message=(f"{company}: {subject}".strip(": ") or "A reply to your outreach is in your inbox."),
+                type="outreach_reply",
+                link=f"/dashboard?app={row.application_id}",
+            ))
+        except Exception as e:
+            log.debug("outreach reply notification skipped: %s", e)
+        session.commit()
 
 
 @app.get("/application/{application_id}/connections")
@@ -12681,8 +12903,19 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
                                submitted_at=r[3], updated_at=r[4]) for r in rows]
 
     stats = {"processed": 0, "matched": 0, "imported": 0, "rejections": 0, "interviews": 0,
-             "assessments": 0, "offers": 0, "ignored": 0, "uncertain": 0, "outreach": 0}
+             "assessments": 0, "offers": 0, "ignored": 0, "uncertain": 0, "outreach": 0,
+             "replies": 0}
     unmatched_list: list[dict] = []
+    # Outreach the user marked as sent and nobody has answered yet: an email that
+    # answers one is flagged here, before the application matching, because a
+    # reply can read as anything (a recruiter's note, an interview invite) and
+    # must still count as the answer it is.
+    try:
+        from app.intelligence import outreach as _outreach
+        open_outreach, outreach_company = _open_outreach(owner, bool(_uid_filter))
+    except Exception as e:
+        log.debug("sync-emails: outreach lookup skipped: %s", e)
+        _outreach, open_outreach, outreach_company = None, [], {}
     for email in list(payload.emails or [])[:_SYNC_EMAILS_MAX]:
         if not isinstance(email, dict):
             continue
@@ -12699,6 +12932,16 @@ async def sync_emails(payload: SyncEmailPayload, request: Request, bg: Backgroun
         if signal.is_noise:
             stats["ignored"] += 1
             continue
+        if open_outreach and skind not in ("ats", "job_board", "self"):
+            hit = _outreach.match_reply(email, open_outreach, company_of=outreach_company)
+            if hit:
+                hit_row, how = hit
+                try:
+                    _mark_outreach_replied(hit_row.id, how, subject, owner)
+                    stats["replies"] += 1
+                except Exception as e:
+                    log.warning("sync-emails: could not record outreach reply: %s", e)
+                open_outreach = [r for r in open_outreach if r.id != hit_row.id]
         if signal.kind == "recruiter_outreach":
             stats["outreach"] += 1              # a recruiter's note, not an application the user made
             continue

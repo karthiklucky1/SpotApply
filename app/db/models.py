@@ -5,7 +5,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -818,6 +818,41 @@ class UserNotification(SQLModel, table=True):
     read: bool = Field(default=False, index=True)
     link: Optional[str] = None                # clickable link in the UI
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OutreachMessage(SQLModel, table=True):
+    """One outreach message the user SENT THEMSELVES (email or LinkedIn note)
+    about one application, and whether anyone answered.
+
+    SpotApply drafts the words and builds the compose/search links
+    (intelligence/outreach.py); the user clicks "Mark as sent" after sending
+    from their own account — nothing is sent for them. The inbox scan
+    (`/api/sync-emails`) then closes the loop: an email whose subject is the
+    one we drafted, or from the address it went to, or from a person at the
+    company's domain after it went out, stamps `replied_at`.
+
+    Owned by `user_id`; `application_id` cascades with the application so a
+    cleared or re-pointed board leaves no orphan. Guard: `test_outreach`.
+    """
+    __tablename__ = "outreach_messages"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    application_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("application.id", ondelete="CASCADE"), nullable=False, index=True))
+    channel: str = Field(default="linkedin", index=True)      # "email" | "linkedin"
+    kind: str = ""                              # the draft type it came from
+    recipient_label: str = ""                   # what the user typed: a name, "Recruiter", …
+    recipient_url: Optional[str] = None         # a profile the user pasted (never guessed)
+    recipient_email: Optional[str] = None
+    subject: Optional[str] = None
+    subject_key: Optional[str] = Field(default=None, index=True)   # outreach.subject_key
+    body: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    sent_at: Optional[datetime] = Field(default=None, index=True)
+    replied_at: Optional[datetime] = None
+    reply_subject: Optional[str] = None
+    reply_how: Optional[str] = None             # email_subject | email_sender | email_domain | manual
 
 
 class LlmSpend(SQLModel, table=True):

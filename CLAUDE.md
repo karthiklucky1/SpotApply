@@ -615,6 +615,17 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   compare). `rules_checklist` lives in report.json, backend only
   (owner). No "90+ on any ATS" promise: under 90% of the job keywords the
   master HAS earns one rebuild. Guards: `test_resume_rules`, `test_resume_render`.
+- **Outreach kit** (2026-10-10, `intelligence/outreach.py`, `OutreachMessage`):
+  `referral.py` drafts the words (draft-only, Haiku upgrade now behind the SAME
+  breaker + budget, booked as kind="outreach"); the kit makes each draft one click
+  away from sent — a subject for email drafts, Gmail/Outlook/mailto compose links
+  with subject+body filled, LinkedIn people SEARCHES (never a guessed profile URL),
+  and the people the posting itself names (`hiring_context`, with evidence). "Mark
+  as sent" records `sent_at`; `/api/sync-emails` then calls `match_reply` BEFORE
+  application matching (subject under Re:/Fwd: prefixes > the recipient's address
+  > a PERSON at the company's domain after `sent_at`; robot mailboxes never) and
+  stamps `replied_at` + a card note + a notification; manual flag/unflag via
+  `/api/outreach/{id}/replied`. Nothing is ever sent for the user. Guard: `test_outreach`.
 - **Contact research is ON HOLD, and "no data" is not zero**
   (`intelligence/contact_research.py`, docs/RECRUITER_RESEARCH_READINESS.md):
   THREE features wear the word recruiter — `/recruiter` is an INBOUND portal
