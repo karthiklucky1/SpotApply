@@ -200,15 +200,18 @@ class SerpAPISource:
                     r = await client.get(_SEARCH_URL, params=params)
                 except Exception as e:
                     log.warning("SerpAPI: request failed for '%s': %s", kw, e)
+                    self.last_error = f"request failed: {type(e).__name__}"
                     return None
                 if r.status_code in (401, 429):
                     # Invalid key / quota exhausted — stop firing more searches.
                     log.warning("SerpAPI: HTTP %d (%s) — stopping further searches",
                                 r.status_code, "auth" if r.status_code == 401 else "quota")
+                    self.last_error = "quota exhausted (HTTP 429)" if r.status_code == 429 else "invalid API key (HTTP 401)"
                     stop.set()
                     return None
                 if r.status_code != 200:
                     log.warning("SerpAPI: HTTP %d for '%s': %s", r.status_code, kw, r.text[:200])
+                    self.last_error = f"HTTP {r.status_code}"
                     return None
                 try:
                     return r.json().get("jobs_results", [])

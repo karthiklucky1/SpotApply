@@ -8691,6 +8691,117 @@ def admin_dead_jobs(request: Request, days: int = 14) -> dict:
             "sources": sources}
 
 
+@app.get("/api/admin/source-quality")
+def admin_source_quality(request: Request, days: int = 7) -> dict:
+    """Which boards are worth their cost (2026-10-10). Per source — by the real
+    producer, `coalesce(origin, source)` — over the last ``days``: postings
+    ingested into the shared pool, copies adopted into user pools, how many of
+    those a scorer reached (Claude final / Tier-1 only), how many aged out
+    unscored, ghost stamps, shortlists and applications. Admin-only, counts
+    only, cached 300 s (60 s when degraded), one bounded statement per panel —
+    a timed-out panel is ``null``, never 0.
+
+    Reads: the lifecycle columns (scored_at / prescored_at / expired_at), never
+    `rerank_score IS NOT NULL` (which also matches the expiry/ghost stamps —
+    CLAUDE.md, "rerank_score is overloaded")."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text as _text
+    from app.common import ttl_cache as _tc
+    _require_admin_user(request)
+    days = max(1, min(int(days or 7), 60))
+
+    def _compute():
+        cut = datetime.utcnow() - timedelta(days=days)
+        # Lowercased on BOTH sides: rows written before 2026-09-15 carry an
+        # uppercase origin, and WORKDAY/workday must be one bucket.
+        src_expr = "LOWER(COALESCE(sh.origin, CAST(sh.source AS TEXT)))"
+        pool_sql = _text(f"""
+            SELECT {src_expr} AS src,
+                   COUNT(*) AS ingested,
+                   SUM(CASE WHEN sh.is_closed THEN 1 ELSE 0 END) AS closed_now
+            FROM job sh
+            WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            GROUP BY {src_expr}
+        """)
+        copies_sql = _text(f"""
+            WITH sh AS (
+                SELECT {src_expr} AS src, sh.source AS source, sh.external_id AS external_id
+                FROM job sh
+                WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            )
+            SELECT sh.src,
+                   COUNT(*) AS copies,
+                   SUM(CASE WHEN c.scored_at IS NOT NULL THEN 1 ELSE 0 END) AS claude_scored,
+                   SUM(CASE WHEN c.prescored_at IS NOT NULL AND c.scored_at IS NULL THEN 1 ELSE 0 END) AS tier1_only,
+                   SUM(CASE WHEN c.expired_at IS NOT NULL THEN 1 ELSE 0 END) AS expired_unscored,
+                   SUM(CASE WHEN c.rerank_score = 5.0 THEN 1 ELSE 0 END) AS ghost
+            FROM sh JOIN job c ON c.source = sh.source AND c.external_id = sh.external_id
+                                 AND c.user_id <> :shared
+            GROUP BY sh.src
+        """)
+        apps_sql = _text(f"""
+            WITH sh AS (
+                SELECT {src_expr} AS src, sh.source AS source, sh.external_id AS external_id
+                FROM job sh
+                WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            )
+            SELECT sh.src,
+                   COUNT(*) AS shortlisted,
+                   SUM(CASE WHEN UPPER(CAST(a.status AS TEXT)) IN ('SUBMITTED', 'INTERVIEWING', 'OFFER', 'ACCEPTED', 'REJECTED')
+                            THEN 1 ELSE 0 END) AS applied
+            FROM sh JOIN job c ON c.source = sh.source AND c.external_id = sh.external_id
+                                 AND c.user_id <> :shared
+                    JOIN application a ON a.job_id = c.id
+            WHERE a.apply_track IS NULL OR a.apply_track <> 'email_import'
+            GROUP BY sh.src
+        """)
+        from app.discovery.pipeline import SHARED_POOL_USER
+        params = {"shared": SHARED_POOL_USER, "cut": cut}
+        panels = {}
+        degraded = False
+        with get_session() as session:
+            reads = _BoundedReads(session, 15)
+            for name, sql in (("pool", pool_sql), ("copies", copies_sql), ("apps", apps_sql)):
+                panels[name] = reads.get(None, lambda sql=sql: session.execute(sql, params).all())
+            degraded = reads.degraded
+        by_src: dict = {}
+
+        def _row(src):
+            return by_src.setdefault(src, {
+                "source": src, "ingested": None, "closed_now": None, "copies": None,
+                "claude_scored": None, "tier1_only": None, "expired_unscored": None,
+                "ghost": None, "shortlisted": None, "applied": None,
+            })
+        if panels["pool"] is not None:
+            for r in panels["pool"]:
+                row = _row(r[0] or "unknown")
+                row["ingested"], row["closed_now"] = int(r[1] or 0), int(r[2] or 0)
+        if panels["copies"] is not None:
+            for r in panels["copies"]:
+                row = _row(r[0] or "unknown")
+                row.update(copies=int(r[1] or 0), claude_scored=int(r[2] or 0), tier1_only=int(r[3] or 0),
+                           expired_unscored=int(r[4] or 0), ghost=int(r[5] or 0))
+        if panels["apps"] is not None:
+            for r in panels["apps"]:
+                row = _row(r[0] or "unknown")
+                row["shortlisted"], row["applied"] = int(r[1] or 0), int(r[2] or 0)
+        for row in by_src.values():
+            # Rates only where the denominator is real (≥30), else null.
+            c = row["copies"] or 0
+            row["shortlist_rate"] = round((row["shortlisted"] or 0) / c, 4) if c >= 30 and row["shortlisted"] is not None else None
+            row["ghost_rate"] = round((row["ghost"] or 0) / c, 4) if c >= 30 and row["ghost"] is not None else None
+            row["expired_unscored_rate"] = round((row["expired_unscored"] or 0) / c, 4) if c >= 30 and row["expired_unscored"] is not None else None
+        sources = sorted(by_src.values(), key=lambda r: -(r["ingested"] or 0))
+        return {"days": days, "degraded": degraded, "sources": sources,
+                "note": ("Rates are null below 30 copies. A source with ingested>0 and copies=0 "
+                         "matched nobody's roles/country; shortlisted/copies is the yield that "
+                         "decides which boards are worth their cost.")}
+
+    return _tc.get_or_compute(f"admin:source-quality:{days}",
+                              lambda v: 60 if v.get("degraded") else 300, _compute)
+
+
 # --- User Reviews APIs ---
 
 _REVIEW_MAX_CHARS = 2000

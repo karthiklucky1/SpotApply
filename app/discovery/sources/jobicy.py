@@ -55,6 +55,7 @@ class JobicySource:
                             continue
                         if r.status_code != 200:
                             log.warning("Jobicy: HTTP %d for tag %s", r.status_code, tag)
+                            self.last_error = f"HTTP {r.status_code}"
                             continue
 
                         data = r.json()
@@ -120,6 +121,7 @@ class JobicySource:
 
         except Exception as e:
             log.warning("Jobicy: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("JobicySource: fetched %d jobs", len(jobs))
         return jobs

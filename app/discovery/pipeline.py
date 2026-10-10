@@ -1824,8 +1824,18 @@ def run_discovery(user_id: str | None = None, run_id: int | None = None,
                 else:
                     src = src_cls(keywords=_keywords)
                     raw_jobs = await asyncio.wait_for(src.fetch_jobs(), timeout=45)
-                source_stats[name] = {"fetched": len(raw_jobs)}
-                log.info("%s: fetched %d jobs", name, len(raw_jobs))
+                stat = {"fetched": len(raw_jobs)}
+                # A source that swallowed a failure (quota, 429, HTTP error) and
+                # returned [] used to show a bare "0" — indistinguishable from
+                # "nothing matched". Adapters now leave the reason on
+                # `last_error` (sources/base.py); a true empty result says so.
+                _err = getattr(src, "last_error", None)
+                if not raw_jobs and _err:
+                    stat["error"] = str(_err)[:200]
+                elif not raw_jobs:
+                    stat["note"] = "no postings matched your roles and country this run"
+                source_stats[name] = stat
+                log.info("%s: fetched %d jobs%s", name, len(raw_jobs), f" ({_err})" if _err else "")
                 _save_incremental()
                 return raw_jobs
             except asyncio.TimeoutError:

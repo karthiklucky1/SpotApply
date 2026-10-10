@@ -43,9 +43,11 @@ class ArbeitnowSource:
                     r = await client.get(_API_URL, params={"page": page})
                     if r.status_code == 429:
                         log.warning("Arbeitnow: rate-limited — stopping")
+                        self.last_error = "rate-limited (HTTP 429)"
                         break
                     if r.status_code != 200:
                         log.warning("Arbeitnow: HTTP %d on page %d", r.status_code, page)
+                        self.last_error = f"HTTP {r.status_code}"
                         break
 
                     data = r.json()
@@ -106,6 +108,7 @@ class ArbeitnowSource:
 
         except Exception as e:
             log.warning("Arbeitnow: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("ArbeitnowSource: fetched %d jobs", len(jobs))
         return jobs

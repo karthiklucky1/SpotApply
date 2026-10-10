@@ -2249,10 +2249,13 @@
                 const s = sources[name];
                 if (s) {
                     const n = s.fetched || 0;
-                    const tip = s.error || s.skipped;
+                    // A zero is never bare: off (no key / disabled), ⚠ (the
+                    // source failed — hover for why), or "none" (it answered,
+                    // nothing matched your roles and country this run).
+                    const tip = s.error || s.skipped || s.note;
                     const err = tip ? ` title="${_esc(tip)}"` : '';
                     const dot = s.error ? '#ef4444' : (n > 0 ? '#10b981' : '#64748b');
-                    const label = s.error ? '⚠' : (s.skipped ? 'off' : n);
+                    const label = s.error ? '⚠' : (s.skipped ? 'off' : (n > 0 ? n : 'none'));
                     return `<div class="flex items-center justify-between text-[11px] px-3 py-1.5 rounded-lg mb-1" style="background:rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04);"${err}> <span class="flex items-center gap-2 text-slate-300"> <span style="width:7px;height:7px;border-radius:50%;background:${dot};display:inline-block;box-shadow: 0 0 6px ${dot}"></span> <span>${_esc(name)}</span> </span> <span class="font-bold ${n > 0 ? 'text-emerald-400' : 'text-slate-500'}">${label}</span> </div>`;
                 } else {
                     return `<div class="flex items-center justify-between text-[11px] px-3 py-1.5 rounded-lg mb-1 opacity-50" style="background:rgba(255,255,255,0.01);"> <span class="flex items-center gap-2 text-slate-400"> <span class="animate-pulse" style="width:7px;height:7px;border-radius:50%;background:#818cf8;display:inline-block;box-shadow: 0 0 6px #818cf8"></span> <span>${name}</span> </span> <span class="font-bold text-indigo-400 animate-pulse text-[10px]">fetching...</span> </div>`;

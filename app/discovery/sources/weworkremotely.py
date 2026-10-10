@@ -55,6 +55,7 @@ class WeWorkRemotelySource:
                         r = await client.get(feed_url)
                         if r.status_code != 200:
                             log.warning("WeWorkRemotely: HTTP %d for %s", r.status_code, feed_url)
+                            self.last_error = f"HTTP {r.status_code}"
                             continue
 
                         root = ET.fromstring(r.text)
@@ -135,6 +136,7 @@ class WeWorkRemotelySource:
 
         except Exception as e:
             log.warning("WeWorkRemotely: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("WeWorkRemotelySource: fetched %d jobs", len(jobs))
         return jobs
