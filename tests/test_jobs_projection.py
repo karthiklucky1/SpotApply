@@ -99,7 +99,7 @@ def test_a_job_without_an_application_reports_none(client):
 # same egress path as /api/jobs (docs/research/explorer-refresh-2026-08.md).
 # Shrink it; never grow it. An unlisted offender fails this test.
 _UNPROJECTED_JOB_APP_SELECTS = {
-    "sync_emails",
+    # sync_emails left this list on 2026-10-10: it now selects five columns.
     "export_applications_csv",
 }
 

@@ -12230,364 +12230,292 @@ def delete_account(request: Request):
 
 
 # ── Email sync (browser extension) ───────────────────────────────────────────
+# Classification, company extraction and application matching live in
+# app/intelligence/email_signals.py — pure functions, MEASURED against the
+# labelled corpus in tests/test_email_signals.py (legacy 69% kind / 31% company
+# on 64 emails → 95% / 97%). This route owns the writes only.
+
+from app.intelligence.email_signals import (  # noqa: E402  (kept importable from here)
+    ACKNOWLEDGMENT_KEYWORDS as _ACKNOWLEDGMENT_KEYWORDS,
+    POSITIVE_KEYWORDS as _POSITIVE_KEYWORDS,
+    REJECTION_KEYWORDS as _REJECTION_KEYWORDS,
+    SCHEDULING_HINTS as _SCHEDULING_HINTS,
+    STAGE_NOUNS as _STAGE_NOUNS,
+)
+
 
 class SyncEmailPayload(BaseModel):
-    emails: list  # List of dicts with keys: subject, sender, body, date, company_guess
+    # dicts: subject, sender (address, or the display name when the inbox showed
+    # none), sender_name?, body (the inbox PREVIEW SNIPPET — never a message
+    # body), date, company_guess? (older extensions), thread_id?
+    emails: list
     source: str = "inbox"  # "gmail" | "outlook"
     day_range: Optional[int] = None
 
 
-_REJECTION_KEYWORDS = [
-    'unfortunately', 'not moving forward', 'other candidates',
-    'other applicants', 'not selected', 'regret to inform',
-    'we regret', 'decided not to', 'will not be proceeding',
-    'not be proceeding', 'position has been filled', 'role has been filled',
-    'no longer under consideration', 'not be moving forward',
-    "won't be moving forward", 'will not be moving forward',
-    'decided to move forward with other', 'decided to proceed with other',
-    'pursue other candidates', 'not to move forward',
-    'after careful consideration', 'we have chosen', 'were not selected',
-    'wish you the best', 'wish you success', 'wish you well',
-    'not a match at this time', 'not be advancing', 'will not be advancing',
-    'unable to offer', 'not be extending', 'application was unsuccessful',
-    'were unsuccessful', 'thank you for your interest, however',
-    'not progressing', 'will not progress',
-    # Common post-interview rejection phrasings — these emails often mention
-    # the interview stage ("after your phone screen…"), so missing them here
-    # used to flip rejections into INTERVIEWING.
-    "won't proceed", 'will not proceed', "won't be proceeding",
-    'not continue with', "won't continue", 'unable to move forward',
-    'no longer being considered', 'not been selected', 'has not been selected',
-    'unsuccessful on this occasion', 'on this occasion',
-    'move forward with another candidate', 'proceed with another candidate',
-    'gone with another candidate', 'selected another candidate',
-    'chosen another candidate', 'offer the position to another',
-    'keep your resume on file', 'keep your cv on file',
-    'keep your application on file', 'encourage you to apply for future',
-    'apply to future openings', 'future opportunities that match',
-]
+_SYNC_EMAILS_MAX = 500          # one scan is at most ~40 Gmail pages of rows
 
-# Phrases that strongly indicate a real interview invite / scheduling request.
-# Keep these precise — loose words like bare 'interview' or 'next steps' cause
-# false positives on acknowledgment auto-replies that mention the job title or
-# describe a multi-step review process.
-_POSITIVE_KEYWORDS = [
-    'invitation to interview',
-    'schedule an interview',
-    'schedule a call',
-    'schedule a time',
-    'please schedule',
-    'book a time',
-    'set up a call',
-    'set up an interview',
-    'pleased to invite you',
-    'invite you to interview',
-    'move forward with your candidacy',
-    'move forward with your application and',
-    'selected for an interview',
-    'selected to interview',
-    'advance to the interview',
-    'advance to the next round',
-    'like to speak with you about the role',
-    'like to speak with you about this role',
-    'love to chat about the role',
-    'share your availability',
-    'your availability for',
-    'pick a time',
-    'choose a time that works',
-]
 
-# Interview-STAGE nouns — these appear in invites, but just as often in
-# post-interview rejections ("after your phone screen…") and in process
-# descriptions. Alone they prove nothing: they only count as an interview
-# signal when a scheduling hint appears in the same email.
-_STAGE_NOUNS = [
-    'phone screen',
-    'recruiter screen',
-    'video call',
-    'video interview',
-    'meet the team',
-    'next round',
-    'technical assessment',
-    'coding challenge',
-    'take-home assessment',
-    'technical interview',
-    'onsite interview',
-    'on-site interview',
-    'final round',
-]
+def _clean_email_title(subj: str, company: str) -> str:
+    """Best-effort job title from an email subject line."""
+    import re as _re
+    t = subj or ""
+    # Strip common boilerplate prefixes/suffixes
+    t = _re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", t)
+    t = _re.sub(r"(?i)\b(thank you for (applying|your application|your interest)( (to|in))?|"
+                r"your application( (for|to))?|application (received|update|status|next steps)|"
+                r"we received your application|application to|application for)\b", "", t)
+    if company:
+        t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
+    t = _re.sub(r"[\-–—|@:]+", " ", t)
+    t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
+    # If nothing meaningful survived, fall back to the company name.
+    if len(t) < 3:
+        return f"Application — {company}" if company else "Application (from email)"
+    return t[:120]
 
-_SCHEDULING_HINTS = [
-    'schedule', 'calendly', 'book a', 'set up a', 'availability',
-    'pick a time', 'choose a time', 'invite', 'invitation',
-]
 
-# Phrases that mark an email as an acknowledgment / under-review auto-reply.
-# If any of these appear, we suppress a false-positive interview signal so that
-# plain confirmation emails do not flip the card to INTERVIEWING.
-_ACKNOWLEDGMENT_KEYWORDS = [
-    'thank you for applying',
-    'thank you for your application',
-    'we have received your application',
-    'we received your application',
-    'your application has been received',
-    'application is currently under review',
-    'application is under review',
-    'currently under review',
-    'profile is currently under review',
-    'profile is under review',
-    'under consideration',
-    'our team will review',
-    'our recruiting team will',
-    'will be in touch',
-    'will reach out',
-    'will contact you',
-    'will get back to you',
-    'if your experience matches',
-    'if selected for',
-    'if you are selected',
-    'reviewing applications',
-    'reviewing all applications',
-    'application has been submitted',
-    'application was submitted',
-    'confirmation of your application',
-    'application confirmation',
-]
+def _note_once(app_obj, text: str) -> bool:
+    """Append ``text`` to the application's notes unless an equivalent line is
+    there already (re-syncing the same inbox must not stack notes)."""
+    key = text.split(" on ")[0][:48]
+    if key and key in (app_obj.notes or ""):
+        return False
+    app_obj.notes = ((app_obj.notes or "") + "\n" + text).strip()
+    return True
+
+
+def _queue_rejection_analysis(bg, app_id: int, job_id: int, email_body: str, uid) -> None:
+    """The rejection post-mortem (RejectionAnalyzer) runs after the response."""
+    def _run():
+        try:
+            from app.tailoring.analyzer import RejectionAnalyzer
+            import json as _json
+            with get_session() as s:
+                a = s.get(Application, app_id)
+                j = s.get(Job, job_id) if job_id else None
+                jd = (j.description or "") if j else ""
+                tailored_path = a.tailored_resume_path if a else None
+            resume_text = ""
+            try:
+                from app.autofill.answer_pack import _load_resume_text_from_path
+                resume_text = _load_resume_text_from_path(tailored_path) if tailored_path else ""
+            except Exception:
+                resume_text = ""
+            if not resume_text:
+                try:
+                    from app.matching.pipeline import _load_resume
+                    resume_text = _load_resume(user_id=uid)
+                except Exception:
+                    resume_text = ""
+            result = RejectionAnalyzer().analyze(jd, resume_text, email_body)
+            with get_session() as s:
+                a = s.get(Application, app_id)
+                if a:
+                    a.rejection_analysis = _json.dumps(result)
+                    s.add(a)
+                    s.commit()
+        except Exception as e:
+            log.debug("rejection analysis skipped for app %s: %s", app_id, e)
+    bg.add_task(_run)
+
+
+def _apply_email_signal(match, signal, email: dict, uid, bg, stats: dict) -> None:
+    """Move ONE matched application by what the email says. Only a confident
+    rejection / interview / offer changes the status; everything weaker is a
+    note the user sees on the card."""
+    from datetime import datetime
+    now = datetime.utcnow()
+    kind = signal.kind
+    with get_session() as session:
+        app_obj = session.get(Application, match.id)
+        if not app_obj:
+            return
+        changed = False
+        if kind == "rejection":
+            if signal.moves_status:
+                stats["rejections"] += 1
+                if app_obj.status != ApplicationStatus.REJECTED:
+                    app_obj.status = ApplicationStatus.REJECTED
+                    app_obj.updated_at = now
+                    _note_once(app_obj, f"Auto-detected rejection from email on {now:%Y-%m-%d}.")
+                    changed = True
+            else:
+                stats["uncertain"] += 1
+                cue = (signal.cues or ["wording"])[0]
+                changed = _note_once(app_obj, f"Possible rejection signal in an email on {now:%Y-%m-%d} "
+                                              f"(\"{cue}\") — not applied; mark it rejected if that is what it said.")
+        elif kind == "interview":
+            if signal.moves_status:
+                stats["interviews"] += 1
+                if app_obj.status == ApplicationStatus.SUBMITTED:
+                    app_obj.status = ApplicationStatus.INTERVIEWING
+                    app_obj.updated_at = now
+                    _note_once(app_obj, f"Auto-detected interview signal from email on {now:%Y-%m-%d}.")
+                    changed = True
+            else:
+                stats["uncertain"] += 1
+                changed = _note_once(app_obj, f"Possible interview signal in an email on {now:%Y-%m-%d} — not applied.")
+        elif kind == "offer":
+            stats["offers"] += 1
+            if signal.moves_status and app_obj.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING):
+                app_obj.status = ApplicationStatus.OFFER
+                app_obj.updated_at = now
+                _note_once(app_obj, f"Auto-detected offer from email on {now:%Y-%m-%d}.")
+                changed = True
+        elif kind == "assessment":
+            stats["assessments"] += 1
+            changed = _note_once(app_obj, f"Assessment invitation received by email on {now:%Y-%m-%d}.")
+        # "ack": the employer confirmed receipt — nothing to change.
+        if changed:
+            session.add(app_obj)
+            session.commit()
+        job_id = app_obj.job_id
+    if kind == "rejection" and signal.moves_status:
+        _queue_rejection_analysis(bg, match.id, job_id, str(email.get("body") or ""), uid)
+
+
+def _import_email_application(owner, uid_filter: bool, company: str, subject: str, snippet: str,
+                              signal, source: str, stats: dict) -> bool:
+    """A job email about an application made OUTSIDE SpotApply: track it so
+    nothing is lost. Keyed by (user, company, title) so a re-sync never
+    duplicates; an existing import only moves on a stronger signal."""
+    import hashlib as _hashlib
+    from datetime import datetime
+    now = datetime.utcnow()
+    title = _clean_email_title(subject, company)
+    ext_id = "email:" + _hashlib.sha1(
+        f"{(owner or 'local')}|{company.lower()}|{title.lower()}".encode()
+    ).hexdigest()[:20]
+    if signal.kind == "rejection" and signal.moves_status:
+        status = ApplicationStatus.REJECTED
+    elif signal.kind == "interview" and signal.moves_status:
+        status = ApplicationStatus.INTERVIEWING
+    elif signal.kind == "offer" and signal.moves_status:
+        status = ApplicationStatus.OFFER
+    else:
+        status = ApplicationStatus.SUBMITTED
+    with get_session() as session:
+        q = select(Job).where(Job.source == JobSource.MANUAL, Job.external_id == ext_id)
+        q = q.where((Job.user_id == owner) if uid_filter else (Job.user_id.is_(None) | (Job.user_id == "local")))
+        existing = session.exec(q).first()
+        if existing:
+            app_obj = session.exec(select(Application).where(Application.job_id == existing.id)).first()
+            if app_obj and status in (ApplicationStatus.REJECTED, ApplicationStatus.OFFER) and app_obj.status != status:
+                app_obj.status = status
+                app_obj.updated_at = now
+                session.add(app_obj)
+                session.commit()
+            elif app_obj and status == ApplicationStatus.INTERVIEWING and app_obj.status == ApplicationStatus.SUBMITTED:
+                app_obj.status = status
+                app_obj.updated_at = now
+                session.add(app_obj)
+                session.commit()
+            return False
+        job = Job(user_id=owner, source=JobSource.MANUAL, external_id=ext_id, company=company,
+                  title=title, url="", description=snippet or "")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        session.add(Application(
+            user_id=owner, job_id=job.id, status=status, apply_track="email_import",
+            submitted_at=now, notes=f"Imported from {source} email on {now:%Y-%m-%d}.",
+        ))
+        session.commit()
+    if status == ApplicationStatus.REJECTED:
+        stats["rejections"] += 1
+    elif status == ApplicationStatus.INTERVIEWING:
+        stats["interviews"] += 1
+    elif status == ApplicationStatus.OFFER:
+        stats["offers"] += 1
+    elif signal.kind == "assessment":
+        stats["assessments"] += 1
+    return True
 
 
 @app.post("/api/sync-emails")
 @_rate_limit("10/minute")
 async def sync_emails(payload: SyncEmailPayload, request: Request, bg: BackgroundTasks) -> dict:
-    """Ingest emails from the browser extension, match to applications,
-    and auto-detect rejections / interview invitations."""
-    from datetime import datetime
+    """Ingest inbox rows from the browser extension: match each to one of the
+    user's applications and move its status on a CONFIDENT signal, import job
+    emails about applications made outside SpotApply, and drop the noise.
+
+    What changed on 2026-10-10, from production's 84 imported rows: the company
+    was the sender's DOMAIN, so Greenhouse / Workable / LinkedIn mailers were
+    filed as the employer in 50 of 50 sampled rows; job alerts, a sign-in link
+    and a promo were imported as applications; matching was a raw substring
+    over every application, SKIPPED included, first hit wins. Now the company
+    comes from the subject or display name for platform senders, noise is
+    skipped and counted, matching is by normalised name against non-SKIPPED
+    applications preferring the ones the user submitted, and a weak signal is
+    a note on the card, never a status change (email_signals.STATUS_CHANGE_CONFIDENCE).
+    """
+    from app.intelligence import email_signals as es
 
     uid = _require_user(request)
     _uid_filter = uid and uid != "local"
+    owner = uid if _uid_filter else None
 
-    # Load all user applications joined with their jobs
+    # Projected: the matcher reads five columns, never whole rows (DB egress rule).
     with get_session() as session:
-        q = select(Application, Job).join(Job)
+        q = select(Application.id, Application.status, Application.job_id, Application.submitted_at,
+                   Application.updated_at, Job.company, Job.title).join(
+            Job, Application.job_id == Job.id).where(Application.status != ApplicationStatus.SKIPPED)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         rows = session.exec(q).all()
+        user_email = None
+        try:
+            from app.db.models import UserProfile
+            user_email = session.exec(select(UserProfile.email).where(UserProfile.user_id == owner)).first()
+        except Exception:
+            user_email = None
+    candidates = [es.Candidate(id=r[0], status=r[1], company=r[5] or "", title=r[6] or "",
+                               submitted_at=r[3], updated_at=r[4]) for r in rows]
 
-    matched = 0
-    rejections = 0
-    interviews = 0
-    imported = 0
+    stats = {"processed": 0, "matched": 0, "imported": 0, "rejections": 0, "interviews": 0,
+             "assessments": 0, "offers": 0, "ignored": 0, "uncertain": 0, "outreach": 0}
     unmatched_list: list[dict] = []
+    for email in list(payload.emails or [])[:_SYNC_EMAILS_MAX]:
+        if not isinstance(email, dict):
+            continue
+        stats["processed"] += 1
+        subject = str(email.get("subject") or "")
+        snippet = str(email.get("body") or "")
+        sender = str(email.get("sender") or "").strip()
+        sender_name = str(email.get("sender_name") or "").strip()
+        addr = sender if "@" in sender else ""
+        if not addr and not sender_name:
+            sender_name = sender                # older extensions: the display name when no address was shown
+        skind = es.sender_kind(addr, sender_name, user_email)
+        signal = es.classify(subject, snippet, skind)
+        if signal.is_noise:
+            stats["ignored"] += 1
+            continue
+        if signal.kind == "recruiter_outreach":
+            stats["outreach"] += 1              # a recruiter's note, not an application the user made
+            continue
+        company = es.extract_company(subject, addr, sender_name, user_email,
+                                     email.get("company_guess"), snippet)
+        title_hint = _clean_email_title(subject, company or "")
+        match = es.pick_application(company, title_hint, candidates) if company else None
+        if match:
+            stats["matched"] += 1
+            _apply_email_signal(match, signal, email, uid, bg, stats)
+            continue
+        if not company or signal.kind == "other":
+            # No employer, or nothing about an application: not a tracked application.
+            unmatched_list.append({"subject": subject, "sender": sender, "company_guess": company})
+            continue
+        try:
+            if _import_email_application(owner, bool(_uid_filter), company, subject, snippet,
+                                         signal, payload.source, stats):
+                stats["imported"] += 1
+        except Exception as e:
+            log.warning("sync-emails: failed to import email %r: %s", subject[:60], e)
+            unmatched_list.append({"subject": subject, "sender": sender, "company_guess": company})
 
-    def _email_status(is_rej: bool, is_int: bool) -> "ApplicationStatus":
-        if is_rej:
-            return ApplicationStatus.REJECTED
-        if is_int:
-            return ApplicationStatus.INTERVIEWING
-        return ApplicationStatus.SUBMITTED
-
-    def _clean_email_title(subj: str, company: str) -> str:
-        """Best-effort job title from an email subject line."""
-        import re as _re
-        t = subj or ""
-        # Strip common boilerplate prefixes/suffixes
-        t = _re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", t)
-        t = _re.sub(r"(?i)\b(thank you for (applying|your application|your interest)( (to|in))?|"
-                    r"your application( (for|to))?|application (received|update|status|next steps)|"
-                    r"we received your application|application to|application for)\b", "", t)
-        if company:
-            t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
-        t = _re.sub(r"[\-–—|@:]+", " ", t)
-        t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
-        # If nothing meaningful survived, fall back to the company name.
-        if len(t) < 3:
-            return f"Application — {company}" if company else "Application (from email)"
-        return t[:120]
-
-    for email in payload.emails:
-        company_guess = (email.get("company_guess") or "").strip().lower()
-        body_lower = (email.get("body") or "").lower()
-        subject_lower = (email.get("subject") or "").lower()
-        combined_text = subject_lower + " " + body_lower
-
-        # ── Fuzzy match to an existing application ──────────────────────
-        matched_app = None
-        matched_job = None
-        if company_guess:
-            for app_row, job_row in rows:
-                if company_guess in (job_row.company or "").lower():
-                    matched_app = app_row
-                    matched_job = job_row
-                    break
-
-        # ── Detect rejection / positive signal ──────────────────────────
-        is_rejection = any(kw in combined_text for kw in _REJECTION_KEYWORDS)
-        # An acknowledgment email ("under review", "we received your application")
-        # suppresses a positive signal so confirmation auto-replies don't flip
-        # the card to INTERVIEWING incorrectly.
-        is_acknowledgment = any(kw in combined_text for kw in _ACKNOWLEDGMENT_KEYWORDS)
-        # Interview = an explicit invite/scheduling phrase, OR an interview-stage
-        # noun combined with a scheduling hint. A rejection ALWAYS wins — the
-        # classic failure was "we enjoyed the phone screen, but we won't
-        # proceed" landing in the Interviewing column.
-        _strong_invite = any(kw in combined_text for kw in _POSITIVE_KEYWORDS)
-        _stage_mention = any(kw in combined_text for kw in _STAGE_NOUNS)
-        _sched_hint = any(kw in combined_text for kw in _SCHEDULING_HINTS)
-        is_interview = (
-            not is_acknowledgment
-            and not is_rejection
-            and (_strong_invite or (_stage_mention and _sched_hint))
-        )
-
-        if matched_app and matched_job:
-            matched += 1
-
-            if is_rejection:
-                rejections += 1
-                with get_session() as session:
-                    app_obj = session.get(Application, matched_app.id)
-                    if app_obj:
-                        app_obj.status = ApplicationStatus.REJECTED
-                        app_obj.updated_at = datetime.utcnow()
-                        app_obj.notes = (
-                            (app_obj.notes or "")
-                            + f"\nAuto-detected rejection from email on {datetime.utcnow():%Y-%m-%d}."
-                        )
-                        session.add(app_obj)
-                        session.commit()
-
-                # Build resume text for background analysis
-                try:
-                    from app.autofill.answer_pack import _load_resume_text_from_path
-                    resume_text = _load_resume_text_from_path(matched_app.tailored_resume_path)
-                except Exception:
-                    resume_text = ""
-                if not resume_text:
-                    try:
-                        from app.matching.pipeline import _load_resume
-                        resume_text = _load_resume(user_id=uid)
-                    except Exception:
-                        resume_text = ""
-
-                def _run_analysis(app_id: int, jd: str, resume_md: str, email_body: str):
-                    from app.tailoring.analyzer import RejectionAnalyzer
-                    import json
-                    result = RejectionAnalyzer().analyze(jd, resume_md, email_body)
-                    with get_session() as s:
-                        a = s.get(Application, app_id)
-                        if a:
-                            a.rejection_analysis = json.dumps(result)
-                            s.add(a)
-                            s.commit()
-
-                bg.add_task(
-                    _run_analysis,
-                    matched_app.id,
-                    matched_job.description or "",
-                    resume_text,
-                    email.get("body") or "",
-                )
-
-            elif is_interview:
-                interviews += 1
-                with get_session() as session:
-                    app_obj = session.get(Application, matched_app.id)
-                    if app_obj and app_obj.status == ApplicationStatus.SUBMITTED:
-                        app_obj.status = ApplicationStatus.INTERVIEWING
-                        app_obj.updated_at = datetime.utcnow()
-                        app_obj.notes = (
-                            (app_obj.notes or "")
-                            + f"\nAuto-detected interview signal from email on {datetime.utcnow():%Y-%m-%d}."
-                        )
-                        session.add(app_obj)
-                        session.commit()
-        else:
-            # ── No existing application matched — import as a tracked one ────
-            # These are real job-related emails (rejections, acknowledgements,
-            # interview invites) for jobs the user applied to OUTSIDE SpotApply.
-            # We surface them in the dashboard tracker so nothing is lost.
-            raw_company = (email.get("company_guess") or "").strip()
-            if not raw_company:
-                unmatched_list.append({
-                    "subject": email.get("subject"),
-                    "sender": email.get("sender"),
-                    "company_guess": email.get("company_guess"),
-                })
-                continue
-
-            import hashlib as _hashlib
-            title = _clean_email_title(email.get("subject") or "", raw_company)
-            ext_id = "email:" + _hashlib.sha1(
-                f"{(uid or 'local')}|{raw_company.lower()}|{title.lower()}".encode()
-            ).hexdigest()[:20]
-
-            try:
-                with get_session() as session:
-                    existing = session.exec(
-                        select(Job).where(
-                            Job.source == JobSource.MANUAL,
-                            Job.external_id == ext_id,
-                        ).where(
-                            (Job.user_id == uid) if _uid_filter else (Job.user_id.is_(None) | (Job.user_id == "local"))
-                        )
-                    ).first()
-
-                    if existing:
-                        # Already imported — only upgrade status on a stronger signal.
-                        app_obj = session.exec(
-                            select(Application).where(Application.job_id == existing.id)
-                        ).first()
-                        if app_obj and is_rejection and app_obj.status != ApplicationStatus.REJECTED:
-                            app_obj.status = ApplicationStatus.REJECTED
-                            app_obj.updated_at = datetime.utcnow()
-                            session.add(app_obj)
-                            session.commit()
-                        continue
-
-                    job = Job(
-                        user_id=uid if _uid_filter else None,
-                        source=JobSource.MANUAL,
-                        external_id=ext_id,
-                        company=raw_company,
-                        title=title,
-                        url="",
-                        description=email.get("body") or "",
-                    )
-                    session.add(job)
-                    session.commit()
-                    session.refresh(job)
-
-                    app_obj = Application(
-                        user_id=uid if _uid_filter else None,
-                        job_id=job.id,
-                        status=_email_status(is_rejection, is_interview),
-                        apply_track="email_import",
-                        submitted_at=datetime.utcnow(),
-                        notes=f"Imported from {payload.source} email on {datetime.utcnow():%Y-%m-%d}.",
-                    )
-                    session.add(app_obj)
-                    session.commit()
-                imported += 1
-                if is_rejection:
-                    rejections += 1
-                elif is_interview:
-                    interviews += 1
-            except Exception as e:
-                log.warning("sync-emails: failed to import email %r: %s", title, e)
-                unmatched_list.append({
-                    "subject": email.get("subject"),
-                    "sender": email.get("sender"),
-                    "company_guess": email.get("company_guess"),
-                })
-
-    return {
-        "success": True,
-        "processed": len(payload.emails),
-        "matched": matched,
-        "imported": imported,
-        "rejections": rejections,
-        "interviews": interviews,
-        "unmatched": len(unmatched_list),
-    }
+    return {"success": True, **stats, "unmatched": len(unmatched_list)}
 
 
 # ── CSV export ───────────────────────────────────────────────────────────────
