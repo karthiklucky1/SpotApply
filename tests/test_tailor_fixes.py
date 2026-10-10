@@ -25,10 +25,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from sqlmodel import delete, select
+from sqlmodel import delete
 
 from app.tailoring import inventory as inv_mod
 from app.tailoring.inventory import ACADEMIC, INTERNSHIP, PROFESSIONAL, build_inventory

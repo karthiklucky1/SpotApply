@@ -802,6 +802,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   still strips diacritics so employer forms that write "Résumé" are recognised.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
+  **Auto-apply research** (2026-10-10, `docs/AUTO_APPLY_RESEARCH.md`): CAPTCHAs are
+  detected, paused on and never solved or evaded; accounts (Workday/iCIMS) are the
+  user's — prefill the email, leave passwords to the browser, GUIDE the code step;
+  no auto-submit flag, not even OFF ("Submit from SpotApply" is a product decision
+  written down there). The server agent's browser-fingerprint "stealth" script was
+  removed; `autofill_multi_user_enabled` stays founder-only and the human submits.
 
 - **Distilled scorer (shadow)** — `docs/DISTILLATION.md`: export LLM finals
   (`scripts/export_training_data.py`) → fine-tune cross-encoder on Colab
