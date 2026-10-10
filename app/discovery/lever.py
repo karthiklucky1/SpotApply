@@ -36,6 +36,8 @@ class LeverScraper:
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.company_slug}?mode=json"
         self.last_error = ""
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -49,7 +51,8 @@ class LeverScraper:
         from app.discovery.geo_verify import lever_geo
 
         jobs: List[RawJob] = []
-        for j in r.json():
+        listing = r.json()
+        for j in listing:
             cats = j.get("categories") or {}
             location = cats.get("location") or ""
             # EVERY site, the structured `country` code and `workplaceType`
@@ -98,5 +101,8 @@ class LeverScraper:
                     geo=geo if (geo.sites or geo.country or geo.work_mode) else None,
                 )
             )
+        # No `limit`/`skip` sent, so the API answers with every posting in one
+        # array. Anything but an array is not a listing we can vouch for.
+        self.fetch_complete = isinstance(listing, list)
         log.info("Lever[%s]: %d jobs", self.company_slug, len(jobs))
         return jobs

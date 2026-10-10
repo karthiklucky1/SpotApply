@@ -13,7 +13,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import GeoEvidence, RawJob, listing_truncated
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ class BreezyScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"https://{self.board_slug}.breezy.hr/json"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -108,5 +110,8 @@ class BreezyScraper:
                     geo=geo,
                 )
             )
+        self.fetch_complete = isinstance(payload, list) or (
+            isinstance(payload, dict) and isinstance(items, list)
+            and "positions" in payload and not listing_truncated(payload, len(items)))
         log.info("Breezy[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

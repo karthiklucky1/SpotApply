@@ -36,6 +36,7 @@ from app.discovery.base import (
     EVIDENCE_TEAM_OR_DEPARTMENT,
     GeoEvidence,
     RawJob,
+    listing_truncated,
 )
 from app.discovery.hiring_context import put
 
@@ -192,6 +193,10 @@ class AshbyScraper:
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.org_slug}?includeCompensation=true"
         self.last_error = ""
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        # Ashby has no public per-posting endpoint, so absence from a complete
+        # board fetch is the ONLY way an Ashby closure is ever detected.
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -205,7 +210,8 @@ class AshbyScraper:
         payload = r.json()
         jobs: List[RawJob] = []
         unlisted = 0
-        for j in payload.get("jobs", []):
+        listing = payload.get("jobs", [])
+        for j in listing:
             # `isListed: false` is a posting the org has taken off its public
             # board (kept for direct-link applicants). Not public → not ours.
             # Absent means listed: the field is newer than some tenants.
@@ -254,6 +260,10 @@ class AshbyScraper:
                     geo=_geo_of(j),
                 )
             )
+        # An `isListed: false` posting is OFF the public board, so leaving it
+        # out does not make the listing partial.
+        self.fetch_complete = ("jobs" in payload and isinstance(listing, list)
+                               and not listing_truncated(payload, len(listing)))
         log.info("Ashby[%s]: %d jobs (%d unlisted skipped)",
                  self.org_slug, len(jobs), unlisted)
         return jobs

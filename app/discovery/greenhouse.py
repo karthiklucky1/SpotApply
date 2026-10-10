@@ -20,6 +20,7 @@ from app.discovery.base import (
     EVIDENCE_TITLE_ONLY,
     GeoEvidence,
     RawJob,
+    listing_truncated,
 )
 from app.discovery.hiring_context import put
 
@@ -118,6 +119,8 @@ class GreenhouseScraper:
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.board_slug}/jobs?content=true"
         self.last_error = ""
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -132,7 +135,8 @@ class GreenhouseScraper:
 
         payload = r.json()
         jobs: List[RawJob] = []
-        for j in payload.get("jobs", []):
+        listing = payload.get("jobs", [])
+        for j in listing:
             # Coerce to "" — a posting can carry {"location": {"name": null}},
             # and .get("name", "") returns None (the key exists), so .lower()
             # below would crash and take down the WHOLE board's fetch.
@@ -193,5 +197,9 @@ class GreenhouseScraper:
                     geo=_geo_of(j, location),
                 )
             )
+        # One unpaginated response: whole when it carried the `jobs` list and
+        # its `meta.total` (when present) is not above what we read.
+        self.fetch_complete = ("jobs" in payload and isinstance(listing, list)
+                               and not listing_truncated(payload, len(listing)))
         log.info("Greenhouse[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

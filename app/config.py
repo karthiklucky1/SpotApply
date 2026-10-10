@@ -723,6 +723,38 @@ class Settings(BaseSettings):
     # and retires the board on a 404 or at BOARD_DEACTIVATE_AFTER_FAILURES.
     pulse_failure_backoff_minutes: int = 15
     pulse_fast_path_score_cap: int = 10    # max brand-new jobs LLM-scored per tick via the fast path (kept small so the tick stays short; the rest are scored by the 5-min matching lane)
+    # ── Board absence: closing what a COMPLETE fetch no longer lists ──────────
+    # (app/discovery/board_absence.py). The full discovery pass was the only
+    # ghost-closer, and it rotates boards by last_seen ascending — which the
+    # pulse lane bumps on every poll — so pulse-watched boards were rarely or
+    # never ghost-closed: a closed Hasbro posting stayed open in the shared pool
+    # with copies on other users' boards (live test 2026-10-09), and Ashby has
+    # no per-posting endpoint at all, so for Ashby this is the only way a
+    # closure is ever seen. The pulse lane queues the listing of a changed board
+    # whose fetch was COMPLETE and, AFTER its consume loop, closes that exact
+    # board's absent shared rows (+ copies); an incomplete, failed, deferred,
+    # 429 or 403 fetch records nothing. Only board_absence.CLOSING_SOURCES
+    # close (Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio,
+    # Rippling, Breezy, Pinpoint, JOIN); Workday, Teamtailor, BambooHR and
+    # Workable never do and keep the full pass + 45-day retention.
+    # PULSE_GHOST_CLOSE_ENABLED=0 turns off the absence step only (no reads, no
+    # closes, no reopens, the census is recorded as before). It does NOT undo
+    # the adapters' stricter completeness flags or mark_ghost_jobs' board
+    # scoping — those only ever make the full pass close LESS — and no fetch
+    # costs more with it on (the Workday walk keeps its old two-page depth).
+    pulse_ghost_close_enabled: bool = True     # PULSE_GHOST_CLOSE_ENABLED
+    pulse_ghost_close_max_per_tick: int = 300  # PULSE_GHOST_CLOSE_MAX_PER_TICK — shared rows closed per tick across all boards; a board's overflow is carried to the next tick without re-polling it. Production (2026-10-09, read-only): open shared rows above the board's census on active Greenhouse/Lever/Ashby boards ≈ 12k on ~550 boards (+ up to 3 each on ~1k more), so the first pass drains in hours, not one tick
+    pulse_ghost_close_max_seconds: float = 10.0  # PULSE_GHOST_CLOSE_MAX_SECONDS — wall-clock slice per tick for the step (never past the tick deadline); listings it does not reach are carried to the next tick
+    # DOUBT GUARD — "delete nothing on any doubt". A complete fetch that would
+    # close MORE than this share of the board's open shared rows (and more than
+    # pulse_ghost_close_min_rows of them) closes NOTHING: that is what a board
+    # serving a partial list under a 200 looks like. A listing that shrank by
+    # more than this share against the board's census is held until it repeats
+    # on pulse_ghost_close_confirm_polls consecutive complete polls, and the
+    # census is not moved meanwhile. An empty listing never closes anything.
+    pulse_ghost_close_max_share: float = 0.5   # PULSE_GHOST_CLOSE_MAX_SHARE
+    pulse_ghost_close_min_rows: int = 3        # PULSE_GHOST_CLOSE_MIN_ROWS — "more than a few": a small board may lose all of these at once
+    pulse_ghost_close_confirm_polls: int = 3   # PULSE_GHOST_CLOSE_CONFIRM_POLLS
     # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.
     # The rest goes to proven yielders + productive boards. Kept low so tens of
     # thousands of dead seeded slugs can't eat the budget (they 404 and get

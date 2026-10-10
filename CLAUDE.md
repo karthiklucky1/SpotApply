@@ -528,7 +528,32 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
   the vacancy, and treating it as death would close live jobs whenever a board
   throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
-  an incomplete fetch records nothing. The gate runs LATE (`strategy/delivery_gate.py`):
+  an incomplete fetch records nothing. **The pulse lane closes on it**
+  (2026-10-10, `discovery/board_absence.py`, `PULSE_GHOST_CLOSE_ENABLED`, on):
+  the full pass rotates by `last_seen`, which the pulse bumps, so pulse-watched
+  boards were never ghost-closed (Ashby has no other signal). ONLY
+  `CLOSING_SOURCES` — ids platform-wide + edit-stable, URL names the board:
+  Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio, Rippling,
+  Breezy, Pinpoint, JOIN. Workday (multi-site reqs, moved paths), Teamtailor
+  (slug in the id), BambooHR (tenant ids) and Workable (no board in the URL;
+  display names collide) never close here: full pass + 45-day retention. A
+  changed board's listing is queued only if its adapter DECLARED it whole
+  (`fetch_complete`, or `listing_complete` + `listed_ids`); AFTER the consume
+  loop, in a slice (`PULSE_GHOST_CLOSE_MAX_SECONDS`) and ONE session: one
+  aggregate per board (rows read only when something closes/reopens), scoped
+  source + company + URL board prefix + `first_seen` before the fetch STARTED;
+  closes via `_close_copies` in one transaction, job rows locked ascending
+  first (`slate.place`'s order), REMOVED as one ON CONFLICT upsert under a
+  SAVEPOINT. Doubt closes NOTHING: empty listing; >50% of open rows and >3
+  (decided by the count, memoised while no new listing could resolve it or
+  after a census timeout, ≤6 h — one census of a 21.7k-row board is ~11 s); a
+  listing that collapsed vs the census is held — census NOT moved — until
+  `PULSE_GHOST_CLOSE_CONFIRM_POLLS` (3) polls agree; census 0/none = no
+  closing. `PULSE_GHOST_CLOSE_MAX_PER_TICK`; only a board with pending absent
+  rows is CARRIED to the next tick (no re-poll, schedule untouched); reopening
+  never waits on the budget. A later complete listing REOPENS (`Removed from
+  company` reasons) + records LIVE; a Removed application stays Removed.
+  Guard: `test_pulse_ghost_close`. The gate runs LATE (`strategy/delivery_gate.py`):
   `slate.place()` holds the cached in-session backstop, the scoring lane does the
   network refresh outside its session for candidates that already cleared the
   bar, single-flighted per posting and bounded by `CycleBudget`. Measured: ~55

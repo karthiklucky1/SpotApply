@@ -12,7 +12,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import GeoEvidence, RawJob, listing_truncated
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ class WorkableScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.board_slug}?details=true"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -51,7 +53,8 @@ class WorkableScraper:
         payload = r.json()
         company = (payload.get("name") or self.board_slug.replace("-", " ").title()).strip()
         jobs: List[RawJob] = []
-        for j in payload.get("jobs", []):
+        listing = payload.get("jobs", [])
+        for j in listing:
             shortcode = str(j.get("shortcode") or j.get("code") or "").strip()
             if not shortcode:
                 continue
@@ -96,5 +99,8 @@ class WorkableScraper:
                     geo=geo,
                 )
             )
+        # The widget endpoint answers with every published job in one response.
+        self.fetch_complete = ("jobs" in payload and isinstance(listing, list)
+                               and not listing_truncated(payload, len(listing)))
         log.info("Workable[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

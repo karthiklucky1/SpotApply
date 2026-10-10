@@ -244,10 +244,77 @@ def record_board_absence(source: str, present_ids: Iterable[str],
         return 0
     present = set(present_ids)
     gone = [e for e in known_ids if e not in present]
-    for ext in gone:
-        record(source, ext, JobLivenessState.REMOVED.value,
-               reason="absent_from_complete_board_fetch")
+    record_board_states(source, removed=gone)
     return len(gone)
+
+
+def record_board_states(source: str, *, removed: Iterable[str] = (),
+                        live: Iterable[str] = (), session=None) -> int:
+    """Board-level verdicts for many postings at once: REMOVED for postings
+    absent from a COMPLETE board fetch, LIVE for postings a complete fetch
+    lists again after board absence had closed them.
+
+    Both are conclusive, so — exactly as `record` treats a conclusive state —
+    they overwrite whatever the row said. ONE ``INSERT … ON CONFLICT (source,
+    external_id) DO UPDATE`` per 200 keys, in sorted key order: no read first,
+    and no race with a concurrent writer of the same key (the read-then-insert
+    version fell back to a session PER KEY on that race — ~4 round trips each
+    on the pulse lane's consumer). With ``session`` the caller commits; without
+    one this opens and commits its own.
+    """
+    wanted: dict = {}
+    for ext in removed:
+        if ext:
+            wanted[str(ext)] = (JobLivenessState.REMOVED.value,
+                                "absent_from_complete_board_fetch")
+    for ext in live:
+        if ext:
+            wanted[str(ext)] = (JobLivenessState.LIVE.value,
+                                "present_in_complete_board_fetch")
+    if not wanted:
+        return 0
+    if session is not None:
+        _upsert_states(session, source, wanted)
+        return len(wanted)
+    from app.db.init_db import get_session
+    try:
+        with get_session() as s:
+            _upsert_states(s, source, wanted)
+            s.commit()
+        return len(wanted)
+    except Exception as e:
+        log.debug("liveness.record_board_states failed for %s: %s", source, e)
+        return 0
+
+
+def _upsert_states(session, source: str, wanted: dict) -> None:
+    from app.db.models import JobLiveness
+
+    now = datetime.utcnow()
+    keys = sorted(wanted)
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:                                   # no upsert dialect: one row at a time
+        for ext in keys:
+            state, reason = wanted[ext]
+            record(source, ext, state, reason=reason)
+        return
+    tbl = JobLiveness.__table__
+    for start in range(0, len(keys), 200):
+        values = [{"source": source, "external_id": ext, "state": wanted[ext][0],
+                   "reason": wanted[ext][1], "http_status": None,
+                   "inconclusive_streak": 0, "checked_at": now}
+                  for ext in keys[start:start + 200]]
+        stmt = insert(tbl).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[tbl.c.source, tbl.c.external_id],
+            set_={"state": stmt.excluded.state, "reason": stmt.excluded.reason,
+                  "http_status": None, "inconclusive_streak": 0,
+                  "checked_at": stmt.excluded.checked_at})
+        session.execute(stmt)
 
 
 def needs_check(state: Optional[str], checked_at: Optional[datetime],

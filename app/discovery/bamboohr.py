@@ -36,6 +36,8 @@ class BambooHRScraper:
 
     def fetch(self) -> List[RawJob]:
         widget_url = _WIDGET.format(slug=self.board_slug)
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(widget_url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -126,5 +128,9 @@ class BambooHRScraper:
                         geo=geo,
                     )
                 )
+        # items[:_MAX_JOBS] above: a longer board was cut, so it is a subset —
+        # a deterministic one, so its poll signature is still a stable baseline.
+        self.fetch_complete = len(items) <= _MAX_JOBS
+        self.signature_stable = True
         log.info("BambooHR[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

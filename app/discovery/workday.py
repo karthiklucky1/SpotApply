@@ -89,6 +89,12 @@ class WorkdayScraper:
         offset = 0
         limit = 20
         total = 0   # source-reported posting count; set per fetched page
+        # The LARGEST total any page reported. Most tenants send `total` on the
+        # first page only (0 afterwards), so the per-page `total` ends the walk
+        # at page 2 — kept as is: walking a 250-posting board to its end costs
+        # ~2.5x the requests on every poll. What changes is the CLAIM: a walk
+        # that stopped short of the size the board stated is partial.
+        reported_total = 0
         max_total = 100  # Cap postings considered per company run to avoid timeouts
         # A PARTIAL result must never be treated as "the whole board". The
         # pipeline ghost-closes every stored job missing from a fetch, so a
@@ -109,6 +115,18 @@ class WorkdayScraper:
         # varies with WHERE it died, and a volatile signature must never be
         # stored as the board's baseline.
         self.signature_stable = True
+        # Every posting the LISTING carried (non-tech skips included), as the
+        # posting URL this adapter stores — the req id that becomes the
+        # external_id needs the detail fetch, the URL does not. The full pass's
+        # ghost-close (`pipeline.mark_ghost_jobs`) counts these as present, so
+        # a skipped title never reads as "gone". (Workday is NOT closed on
+        # pulse-lane board absence: board_absence.CLOSING_SOURCES.)
+        # `listing_complete` says the walk covered the whole board even when a
+        # detail fetch failed; `fetch_complete` additionally needs every detail.
+        self.listed_urls: set[str] = set()
+        self.listing_complete = False
+        walk_finished = False
+        capped = False
 
         try:
             while len(self.signature_entries) < max_total:
@@ -128,14 +146,24 @@ class WorkdayScraper:
                     
                 data = r.json()
                 postings = data.get("jobPostings", [])
+                try:
+                    reported_total = max(reported_total, int(data.get("total") or 0))
+                except (TypeError, ValueError):
+                    pass                  # unreadable: the size stays unknown
                 if not postings:
+                    # An empty page ends the walk; it only ends the BOARD when
+                    # the walk already covered what the board said it holds.
+                    walk_finished = offset >= reported_total
                     break
-                    
+
                 for p in postings:
                     title = p.get("title", "")
+                    _path = p.get("externalPath")
+                    if _path:
+                        self.listed_urls.add(f"https://{domain}/{site}{_path}")
                     if _is_obvious_non_tech(title):
                         continue
-                        
+
                     ext_path = p.get("externalPath")
                     if not ext_path:
                         continue
@@ -143,6 +171,7 @@ class WorkdayScraper:
                     if len(self.signature_entries) >= max_total:
                         # Truncated at the cap — the board may hold more.
                         self.fetch_complete = False
+                        capped = True
                         break
                     # Stable listing identity, recorded whether or not the
                     # detail fetch below succeeds.
@@ -241,10 +270,18 @@ class WorkdayScraper:
                         )
                     )
                     
-                # Next page
-                total = data.get("total", 0)
+                # Next page — the walk's depth is unchanged (per-page total).
+                try:
+                    total = int(data.get("total") or 0)
+                except (TypeError, ValueError):
+                    total = 0
                 offset += limit
                 if offset >= total:
+                    # The board said nothing more on this page. Finished only
+                    # if the walk covered every posting the board ever said it
+                    # holds — or, when it never said, the page came back short.
+                    walk_finished = (offset >= reported_total if reported_total > 0
+                                     else len(postings) < limit)
                     break
                     
         except httpx.HTTPError as e:
@@ -260,7 +297,17 @@ class WorkdayScraper:
         # treat the first max_total postings as the whole board. If the source
         # reported more postings than the pages we consumed, the result is
         # partial, full stop.
-        if len(self.signature_entries) >= max_total and offset < total:
+        if len(self.signature_entries) >= max_total and offset < max(total, reported_total):
+            self.fetch_complete = False
+
+        # The LISTING is whole only when the walk reached the end on its own
+        # (not the cap, not an error) and it named at least as many postings
+        # as the board says it has — a board that changed mid-walk, or a page
+        # that came back short, fails the count and is treated as partial.
+        self.listing_complete = bool(
+            walk_finished and not capped and self.signature_stable
+            and len(self.listed_urls) >= reported_total)
+        if not self.listing_complete:
             self.fetch_complete = False
 
         log.info("Workday[%s]: %d tech jobs parsed successfully", tenant, len(jobs))

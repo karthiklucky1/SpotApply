@@ -11,7 +11,7 @@ from typing import List
 import httpx
 from bs4 import BeautifulSoup
 
-from app.discovery.base import GeoEvidence, RawJob
+from app.discovery.base import GeoEvidence, RawJob, listing_truncated
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,8 @@ class RipplingScraper:
         self.board_slug = board_slug
 
     def fetch(self) -> List[RawJob]:
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(_API.format(slug=self.board_slug), timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -101,5 +103,11 @@ class RipplingScraper:
                     geo=geo,
                 )
             )
+        # A bare array is the whole board; an envelope is whole only when it
+        # carried a list we read and says nothing about further pages.
+        self.fetch_complete = isinstance(payload, list) or (
+            isinstance(payload, dict) and isinstance(items, list)
+            and ("items" in payload or "jobs" in payload)
+            and not listing_truncated(payload, len(items)))
         log.info("Rippling[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

@@ -33,6 +33,11 @@ from app.discovery.job_identity import scoped_external_id
 
 log = logging.getLogger(__name__)
 
+# jobs.rss stops at 100 items. Production's registry shows it: 41 Teamtailor
+# boards sit at EXACTLY job_count=100 and none above it (2026-10-09). A feed
+# that full is a subset of a bigger board, never proof of the whole board.
+_FEED_CAP = 100
+
 
 def _strip_html(html: str) -> str:
     return BeautifulSoup(html or "", "html.parser").get_text(separator="\n").strip()
@@ -81,6 +86,8 @@ class TeamtailorScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"https://{self.board_slug}.teamtailor.com/jobs.rss"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -105,7 +112,8 @@ class TeamtailorScraper:
             return []
 
         jobs: List[RawJob] = []
-        for item in root.iter("item"):
+        items = list(root.iter("item"))
+        for item in items:
             link = (item.findtext("link") or "").strip()
             title = (item.findtext("title") or "").strip()
             if not link or not title:
@@ -145,5 +153,10 @@ class TeamtailorScraper:
                     geo=geo,
                 )
             )
+        # The feed stops at _FEED_CAP items, so a full feed may be a subset.
+        # The cut is deterministic (the same first items every poll), so the
+        # poll signature of a capped feed is still a stable baseline.
+        self.fetch_complete = len(items) < _FEED_CAP
+        self.signature_stable = True
         log.info("Teamtailor[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

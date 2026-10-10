@@ -274,3 +274,29 @@ def test_the_board_can_render_a_full_day_for_every_plan():
     assert settings.daily_shortlist_limit >= biggest, (
         "the global fallback must sit above every plan — an unknown plan falls "
         "back to it and must not get LESS than a known one")
+
+
+# ── board absence (pulse lane ghost-close) ───────────────────────────────────
+
+def test_board_absence_doubts_a_board_that_mostly_vanished():
+    """Closing what a complete fetch no longer lists is only safe while the
+    doubt guard holds (app/discovery/board_absence.py): a board serving a
+    partial list under a 200 looks exactly like a mass closure, and closing on
+    it removes live jobs from people's boards. "Delete nothing on any doubt":
+    the share a single fetch may close stays at or below half the board, "a
+    few rows" stays a few, and a budget of 0 would make the lane's closing a
+    silent no-op that still reports itself as enabled."""
+    assert 0 < settings.pulse_ghost_close_max_share <= 0.5
+    assert 0 <= settings.pulse_ghost_close_min_rows <= 5
+    assert settings.pulse_ghost_close_max_per_tick > 0
+    # A collapsed listing is believed only once it repeats: 1 would make the
+    # guard a one-shot again (the doubted poll's size became the next poll's
+    # baseline, and the next poll closed).
+    assert settings.pulse_ghost_close_confirm_polls >= 2
+
+
+def test_board_absence_slice_cannot_eat_the_tick():
+    """The absence step runs after the consume loop inside its own slice. A
+    slice that is most of the tick would take the fast path's (alert) time and
+    hold the lane's cadence; zero would make the lane's closing a no-op."""
+    assert 0 < settings.pulse_ghost_close_max_seconds <= 0.2 * settings.pulse_tick_max_seconds

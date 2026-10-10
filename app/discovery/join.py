@@ -370,6 +370,12 @@ class JoinScraper:
                             total_pages = page
                         break
                 else:
+                    # No page count to stop on, so the walk ends here. Only a
+                    # SHORT page proves the board ends here too: a full one can
+                    # have more behind it, and calling that list the whole
+                    # board would let board-absence close what is on page 2.
+                    if len(items) >= _candidate_page_sizes()[0]:
+                        self.fetch_complete = False
                     if page == 1 and pagination:
                         log.info("Join[%s]: pagination envelope keys=%s — no known "
                                  "page-count field", self.board_slug,

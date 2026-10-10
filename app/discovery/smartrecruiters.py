@@ -115,6 +115,12 @@ class SmartRecruitersScraper:
 
     def fetch(self) -> List[RawJob] | None:
         url = f"{BASE}/{self.company_slug}/postings"
+        # Complete only once proven (app/discovery/base.py). Two levels: the
+        # LISTING (every posting id the board carries, non-tech included) and
+        # the parsed result (every tech posting's detail fetched).
+        self.fetch_complete = False
+        self.listing_complete = False
+        self.listed_ids: set = set()
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             if r.status_code != 200:
@@ -133,10 +139,16 @@ class SmartRecruitersScraper:
         # TRUNCATED. Flag it so the pipeline does not ghost-close the postings
         # we simply never saw. Same flag is set below if a detail fetch fails.
         total_found = payload.get("totalFound")
-        self.fetch_complete = not (
-            isinstance(total_found, int) and total_found > len(postings))
+        # Whole only when the API SAID how many it holds and we hold them all.
+        # A missing totalFound used to read as complete, which is a guess.
+        self.fetch_complete = (
+            isinstance(total_found, int) and total_found <= len(postings))
+        self.listing_complete = self.fetch_complete
+        # Every posting the listing carried — the non-tech ones this adapter
+        # skips below included, so their stored rows are never read as gone.
+        self.listed_ids = {str(p["id"]) for p in postings if p.get("id")}
         if not self.fetch_complete:
-            log.info("SmartRecruiters[%s]: board truncated (%d of %d) — ghost-close disabled",
+            log.info("SmartRecruiters[%s]: board truncated or unsized (%d of %s) — ghost-close disabled",
                      self.company_slug, len(postings), total_found)
         log.info("SmartRecruiters[%s]: found %d total job postings", self.company_slug, len(postings))
 
