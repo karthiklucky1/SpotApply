@@ -111,3 +111,48 @@ def test_project_suggestions_known_template_and_fallback():
     fallback = out[1]
     assert "quantum computing" in fallback["name"] or "quantum computing" in fallback["what"]
     assert fallback["bullet"]
+
+
+# ── Date parsing and gaps (2026-10-10) ──────────────────────────────────────
+import pytest  # noqa: E402
+from app.intelligence import resume_xray as rx  # noqa: E402
+
+
+@pytest.mark.parametrize("text,ranges", [
+    ("Engineer, Acme 03/2021 - 05/2024", [((2021, 3), (2024, 5))]),
+    ("Engineer, Acme 2021-03 – 2024-05", [((2021, 3), (2024, 5))]),
+    ("Engineer, Acme 2018-2019", [((2018, 6), (2019, 6))]),
+    ("Engineer, Acme March 2020 to Present", None),
+])
+def test_numeric_and_iso_date_ranges_parse(text, ranges):
+    found = [(rx._parse_month(m.group(1)), rx._parse_month(m.group(2))) for m in rx._RANGE_RE.finditer(text)]
+    if ranges is None:
+        assert len(found) == 1 and found[0][0] == (2020, 3) and found[0][1] is not None
+    else:
+        assert found == ranges
+
+
+def test_a_year_range_is_never_a_phone_number():
+    assert rx._find_phone("Engineer 2019 - 2021 at Acme") is None
+    assert rx._find_phone("Call +1 (415) 555-0199 any time") == "+1 (415) 555-0199"
+
+
+def test_concurrent_roles_open_no_gap():
+    text = ("Senior Engineer, Acme Jan 2019 - Present\n"
+            "Consultant, Side LLC Mar 2017 - Jun 2021\n"
+            "Engineer, Old Co Jan 2015 - Feb 2017\n")
+    gaps = rx.employment_gaps(text)
+    assert gaps == [], gaps
+
+
+def test_year_only_dates_are_approximate():
+    # 2018-2019 then 2020-Present: a "12-month gap" is an artefact of mid-year placement.
+    assert rx.employment_gaps("Engineer, Acme 2018 - 2019\nEngineer, Beta 2020 - Present") == []
+    gaps = rx.employment_gaps("Engineer, Acme 2015 - 2016\nEngineer, Beta 2019 - Present")
+    assert len(gaps) == 1 and gaps[0]["approximate"] is True and gaps[0]["months"] > 12
+
+
+def test_education_years_are_not_employment():
+    text = ("Education\nB.S. Computer Science, State University 2014 - 2018\n"
+            "Experience\nEngineer, Acme Jun 2018 - Present\n")
+    assert rx.employment_gaps(text) == []

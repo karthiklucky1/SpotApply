@@ -47,26 +47,62 @@ _FIRST_PERSON_RE = re.compile(r"\b(I|my|me)\b")
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+# One date token: "Mar 2023", "March 2023", "03/2021", "2021-03", "2023",
+# "Present". Numeric forms were missing, so a resume written "03/2021 -
+# 05/2024" yielded ZERO ranges and the blocking "No employment date ranges
+# detected" (2026-10-10). ISO needs the lookahead or "2018-2019" reads as the
+# month "2018-20" followed by a stray "19".
+_DATE_TOKEN = (r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}"
+               r"|\d{1,2}/\d{4}|\d{4}-\d{2}(?!\d)|\d{4}")
 _RANGE_RE = re.compile(
-    r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4})"
-    r"\s*[-–—to]+\s*"
-    r"((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*\d{4}|\d{4}|present|current|now)",
+    rf"({_DATE_TOKEN})"
+    r"\s*(?:[-–—]+|to|until|through)\s*"
+    rf"({_DATE_TOKEN}|present|current|now|today)",
     re.I,
 )
+# Whole words / dotted degree abbreviations only: an unanchored "m.?a.?" read
+# "Mar 2024" (and "b.?a.?" read "backend") as education and skipped the role.
+_EDUCATION_LINE_RE = re.compile(
+    r"\b(?:university|college|institute|school|bachelor|master'?s?|ph\.?d|mba|degree|gpa|"
+    r"coursework|diploma|graduat\w*|bsc|msc|btech|mtech|b\.sc|m\.sc|b\.tech|m\.tech|"
+    r"b\.s\.|m\.s\.|b\.a\.|m\.a\.|b\.e\.)(?![a-z])", re.I)
+
+
+def _is_approximate(tok: str) -> bool:
+    """A bare year says nothing about the month: any gap it bounds is approximate."""
+    return bool(re.fullmatch(r"\s*\d{4}\s*", tok or ""))
 
 
 def _parse_month(tok: str) -> Optional[Tuple[int, int]]:
-    """'Mar 2023' / '2023' / 'present' → (year, month) or None."""
+    """'Mar 2023' / '03/2021' / '2021-03' / '2023' / 'present' → (year, month) or None."""
     tok = tok.strip().lower().rstrip(".")
-    if tok in ("present", "current", "now"):
+    if tok in ("present", "current", "now", "today"):
         now = datetime.utcnow()
         return now.year, now.month
     m = re.match(r"([a-z]{3,})\.?\s*(\d{4})", tok)
     if m:
         mon = _MONTHS.get(m.group(1)[:3])
         return (int(m.group(2)), mon) if mon else None
+    m = re.fullmatch(r"(\d{1,2})/(\d{4})", tok)
+    if m and 1 <= int(m.group(1)) <= 12:
+        return int(m.group(2)), int(m.group(1))
+    m = re.fullmatch(r"(\d{4})-(\d{2})", tok)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(1)), int(m.group(2))
     if re.fullmatch(r"\d{4}", tok):
         return int(tok), 6  # bare year → assume mid-year (uncertain)
+    return None
+
+
+def _find_phone(text: str) -> Optional[str]:
+    """A phone number is ten or more digits and never a year range: the old
+    regex returned "2019 - 2021" as the candidate's phone (2026-10-10)."""
+    for m in _PHONE_RE.finditer(text or ""):
+        cand = m.group(1)
+        if re.fullmatch(r"\s*\d{4}\s*[-–—/]\s*\d{4}\s*", cand):
+            continue
+        if len(re.sub(r"\D", "", cand)) >= 10:
+            return cand.strip()
     return None
 
 
@@ -90,7 +126,7 @@ def ats_parse(resume_text: str) -> dict:
     if not _EMAIL_RE.search(text):
         issue("fail", "No email address found",
               "An ATS that can't extract contact info files the application as incomplete — some silently drop it.")
-    if not _PHONE_RE.search(text):
+    if not _find_phone(text):
         issue("warn", "No phone number found",
               "Many ATS forms auto-fill phone from the resume; a blank field is a common silent-failure point.")
     if not sections["experience"]:
@@ -118,7 +154,7 @@ def ats_parse(resume_text: str) -> dict:
     return {
         "fields": {
             "email": bool(_EMAIL_RE.search(text)),
-            "phone": bool(_PHONE_RE.search(text)),
+            "phone": bool(_find_phone(text)),
             "linkedin": bool(_LINKEDIN_RE.search(text)),
             "github": bool(_GITHUB_RE.search(text)),
             "sections_found": [k for k, v in sections.items() if v],
@@ -144,21 +180,41 @@ def employment_gaps(resume_text: str, experience_json: Optional[list] = None) ->
                     periods.append((start, end, f"{e.get('title', '?')} @ {e.get('company', '?')}"))
             except Exception:
                 continue
+    approx: List[bool] = [False] * len(periods)
     if not periods:
-        for m in _RANGE_RE.finditer(resume_text or ""):
-            start, end = _parse_month(m.group(1)), _parse_month(m.group(2))
-            if start and end:
-                periods.append((start, end, "role"))
+        for line in (resume_text or "").splitlines():
+            # A degree's years are not employment: "2014 - 2018" under
+            # Education used to open a four-year "gap" before the first job.
+            if _EDUCATION_LINE_RE.search(line):
+                continue
+            for m in _RANGE_RE.finditer(line):
+                start, end = _parse_month(m.group(1)), _parse_month(m.group(2))
+                if start and end and end >= start:
+                    periods.append((start, end, "role"))
+                    approx.append(_is_approximate(m.group(1)) or _is_approximate(m.group(2)))
     if len(periods) < 1:
         return []
-    periods.sort(key=lambda p: p[0])
+    order = sorted(range(len(periods)), key=lambda i: periods[i][0])
+    periods = [periods[i] for i in order]
+    approx = [approx[i] for i in order]
     gaps: List[dict] = []
-    for (s1, e1, r1), (s2, e2, r2) in zip(periods, periods[1:]):
-        months = _months_between(e1, s2)
-        if months > 3:
+    # Running coverage, not pairwise: a role that overlaps the previous one
+    # (concurrent work, a contract alongside a job) ends nothing — the old
+    # pairwise walk reported a 79-month gap on a resume with no gap at all.
+    cur_end = periods[0][1]
+    cur_role = periods[0][2]
+    cur_approx = approx[0]
+    for (s2, e2, r2), ap2 in zip(periods[1:], approx[1:]):
+        months = _months_between(cur_end, s2)
+        # A bare year places a date mid-year at best: only a gap longer than a
+        # year is a claim such dates can support.
+        threshold = 12 if (cur_approx or ap2) else 3
+        if months > threshold:
+            e1, r1 = cur_end, cur_role
             gaps.append({
                 "months": months,
                 "after": r1, "before": r2,
+                "approximate": bool(cur_approx or ap2),
                 "window": f"{e1[0]}-{e1[1]:02d} → {s2[0]}-{s2[1]:02d}",
                 "detail": (
                     f"A {months}-month unexplained gap between '{r1}' and '{r2}'. "
@@ -166,11 +222,13 @@ def employment_gaps(resume_text: str, experience_json: Optional[list] = None) ->
                     "('Career break: relocation / family / full-time upskilling in X — built Y') "
                     "converts the question mark into a data point."),
             })
+        if e2 >= cur_end:
+            cur_end, cur_role, cur_approx = e2, r2, ap2
     # currently-unemployed run-out from the latest role
     latest_end = max(p[1] for p in periods)
     now = datetime.utcnow()
     months_out = _months_between(latest_end, (now.year, now.month))
-    if months_out > 3:
+    if months_out > (12 if any(approx) else 3):
         gaps.append({
             "months": months_out, "after": "your most recent role", "before": "today",
             "window": f"{latest_end[0]}-{latest_end[1]:02d} → now",
