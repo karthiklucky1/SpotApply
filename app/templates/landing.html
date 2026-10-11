@@ -444,6 +444,15 @@
                     <span class="num" id="fr-jobs" style="font-weight:600;color:var(--ink-soft);"></span>
                     new postings picked up in the last seven days.
                 </p>
+                {#- Measured, not claimed: the median minutes from a posting going live on a company board
+                    to the matching alert, from boards whose own publish timestamp we trust
+                    (/api/public/freshness median_post_to_alert_min). Hidden under a 50-alert floor. -#}
+                <p id="latency-line" class="hidden" style="font-size:13.5px;color:var(--muted);margin-top:8px;">
+                    <span class="num" id="fr-latency" style="font-weight:600;color:var(--ink-soft);"></span>
+                    minutes — median from a posting going live on a company board to your alert, measured over the
+                    last seven days on boards that publish a true posting date (Greenhouse, Lever, Ashby,
+                    SmartRecruiters, Workable). About 41% of a posting's applications arrive in its first 48 hours.
+                </p>
             </div>
 
             <div class="lg:col-span-7 grid grid-cols-3" style="gap:28px;">
@@ -1110,6 +1119,14 @@
             if (jobs && line && f.jobs_tracked_7d >= 500) {
                 jobs.textContent = Number(f.jobs_tracked_7d).toLocaleString();
                 line.classList.remove('hidden');
+            }
+            // The speed claim is shown only as a measured median over a real
+            // sample: fewer than 50 alerts in the week and the line stays hidden.
+            var lat = document.getElementById('fr-latency');
+            var latLine = document.getElementById('latency-line');
+            if (lat && latLine && f.fresh_alerts_7d >= 50 && f.median_post_to_alert_min != null && f.median_post_to_alert_min >= 0) {
+                lat.textContent = Math.round(Number(f.median_post_to_alert_min)).toLocaleString();
+                latLine.classList.remove('hidden');
             }
         })
         .catch(function () { /* the stat row stands on its own */ });

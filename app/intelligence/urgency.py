@@ -1,10 +1,14 @@
 """Urgency / timing intelligence.
 
-Agencies win partly on *timing* — the first 48 hours of a posting have the
-highest interview odds, and a role left open for weeks signals a company that is
-struggling to fill it (and will move fast on a good applicant). We can read both
-from lifecycle data we already store on every Job: ``posted_at`` / ``first_seen``
-/ ``last_seen`` / ``is_closed`` / ``ghost_score`` — no new tables, no scraping.
+Timing is read from lifecycle data we already store on every Job: ``posted_at``
+/ ``first_seen`` / ``last_seen`` / ``is_closed`` / ``ghost_score`` — no new
+tables, no scraping. The early window comes from ONE reference clock
+(``app.strategy.earliness.reference``: the earlier of a trusted publish date and
+when we first saw the posting), so a Greenhouse edit date can never make a stale
+posting read as hot. The copy states what is measured — a posting's
+applications are front-loaded (about 41% in the first 48 hours, Dice data via
+the St. Louis Fed) — and never a personal probability: no "odds", no "likely",
+no multiplier (pinned by tests/test_earliness_receipt.py).
 """
 from __future__ import annotations
 
@@ -50,27 +54,33 @@ def assess(job) -> UrgencyAssessment:
     if bool(getattr(job, "is_closed", False)):
         return UrgencyAssessment(0, "", "", "normal")
 
-    posted = (getattr(job, "posted_at", None)
-              or getattr(job, "first_seen", None)
-              or getattr(job, "discovered_at", None))
+    from app.strategy import earliness
+    posted, ref_kind = earliness.reference(job)
+    if posted is None:
+        posted = getattr(job, "discovered_at", None)
     age = _age_days(posted)
     open_span = _span_days(getattr(job, "first_seen", None), getattr(job, "last_seen", None))
     ghost = getattr(job, "ghost_score", 0) or 0
 
-    # Posted today — the highest-response window ("zero-minute application").
-    # Age is whole days, so the old <=2 tier fired "Just posted" on postings up
-    # to ~72h old — right next to a card stamp saying "15h ago", which read as
-    # a contradiction. Day-0 gets the hot label; day 1-6 folds into "Fresh".
-    if age is not None and age == 0:
+    # Inside the early window (default 48h from the reference clock): the hours
+    # left are shown so "apply today" is a measured statement, not a mood. A
+    # board with no trustworthy publish date says the clock started when WE
+    # found the posting, and attributes nothing to the board.
+    window = earliness.early_window(job)
+    if window["in_window"]:
+        left = window["hours_left"]
+        since = ("Posted" if ref_kind == "posted"
+                 else "Found by SpotApply (this board publishes no trustworthy posting date)")
         return UrgencyAssessment(
-            92, "🆕 Posted today",
-            "Posted today — the highest-response window. Applying now "
-            "maximizes your interview odds.", "hot",
+            92, f"⚡ Early window · {left}h left",
+            f"{since} under {earliness.window_hours()}h ago. {earliness.EVIDENCE_NOTE}",
+            "hot",
         )
     if age is not None and age <= 6:
         return UrgencyAssessment(
             68, "🆕 Fresh",
-            "Posted within the last week — still early, ahead of most applicants.",
+            "Posted within the last week. Most of a posting's applications arrive in its "
+            "first few days, so there is still time to be among the earlier ones.",
             "fresh",
         )
 

@@ -10,7 +10,15 @@
                     {% else %}
                     <div id="empty-shortlist-state" class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">🔍 Your AI agent is finding your first matches…</p> <p class="text-slate-600 text-xs mt-1">New jobs are scanned, scored and shortlisted for you automatically — around the clock, no button needed. First matches usually appear within minutes of uploading your resume; “Discover Jobs” just runs an extra pass right now.</p> </div>
                     {% endfor %}
-{% elif stage == 'submitted' %}{% for app, job in rows %}
+{% elif stage == 'submitted' %}{#- Earliness this month: a measured clock over the user's own receipts
+                    (app/strategy/earliness.py), shown only when something was measured. -#}
+                    {% if early_stats and early_stats.measured %}
+                    <div id="early-month-line" style="display:flex;align-items:center;gap:8px;margin:0 4px 10px;font-size:11.5px;font-weight:700;color:var(--muted,#94a3b8);" title="Counted from the receipt on each application you submitted through SpotApply in the last 30 days. About 41% of a posting's applications arrive in its first 48 hours (Dice.com data via the St. Louis Fed). A clock, not odds.">
+                        <span style="color:#C2410C;">⚡ Early (inside {{ early_stats.window_hours }}h) on {{ early_stats.early }} of {{ early_stats.measured }}</span>
+                        <span>application{{ '' if early_stats.measured == 1 else 's' }} this month</span>
+                    </div>
+                    {% endif %}
+                    {% for app, job in rows %}
                     {{ jobrow(app, job, visa_framing, 'submitted') }}
                     {% else %}
                     <div class="text-center py-10 border-2 border-dashed border-slate-800/40 rounded-2xl"> <p class="text-slate-500 text-sm font-semibold">No submitted roles yet.</p> <p class="text-slate-600 text-xs mt-1">Apply from your shortlist and they will land here.</p> </div>

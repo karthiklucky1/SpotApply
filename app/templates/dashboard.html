@@ -9076,12 +9076,33 @@
         if (!rows.length) return;
         const num = (el, k) => parseFloat(el.dataset[k] || '0') || 0;
         const posted = el => { const t = el.dataset.posted; return t ? (new Date(t).getTime() || 0) : 0; };
+        // Early window (data-early, set server-side from ONE reference clock —
+        // app/strategy/earliness.py): in "Freshest" mode the postings still
+        // inside their first 48h come first, best fit first, so the jobs whose
+        // clock is running are applied to today. "Best match" is unchanged.
+        const early = el => el.dataset.early === '1' ? 1 : 0;
         rows.sort((a, b) => mode === 'match'
             ? (num(b, 'score') - num(a, 'score')) || (posted(b) - posted(a))
-            : (posted(b) - posted(a)) || (num(b, 'priority') - num(a, 'priority')));
+            : (early(b) - early(a))
+              || (early(a) ? (num(b, 'priority') - num(a, 'priority')) || (num(b, 'score') - num(a, 'score')) : 0)
+              || (posted(b) - posted(a)) || (num(b, 'priority') - num(a, 'priority')));
         const frag = document.createDocumentFragment();
         rows.forEach(r => frag.appendChild(r));
         container.appendChild(frag);  // re-append in the new order (moves, no clone)
+        // One divider above the early group (idempotent: removed and redrawn).
+        const oldDiv = container.querySelector('#early-window-divider');
+        if (oldDiv) oldDiv.remove();
+        const nEarly = rows.filter(r => early(r) && !r.classList.contains('hidden')).length;
+        if (mode === 'fresh' && nEarly > 0) {
+            const div = document.createElement('div');
+            div.id = 'early-window-divider';
+            div.setAttribute('role', 'note');
+            div.style.cssText = 'display:flex;align-items:center;gap:8px;margin:2px 4px 8px;font-size:11px;font-weight:800;color:#C2410C;';
+            div.innerHTML = '<span>⚡ Apply today — early window (' + nEarly + ')</span>' +
+                '<span style="font-weight:600;color:var(--muted,#94a3b8);">about 41% of a posting\'s applications arrive in its first 48 hours</span>';
+            div.title = 'Postings still inside their first 48 hours, by fit. Dice.com job-board data via the St. Louis Fed: ~41% of applications to a posting arrive in the first 48 hours. A clock, not odds.';
+            container.insertBefore(div, rows[0]);
+        }
     }
     function _initShortlistSort() {
         let mode = 'fresh';

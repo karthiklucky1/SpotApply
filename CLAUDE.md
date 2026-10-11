@@ -879,6 +879,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   OC1–OC8. The server agent's browser-fingerprint "stealth" script was removed;
   `autofill_multi_user_enabled` stays founder-only.
 
+- **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
+  `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the
+  EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)
+  and `first_seen`; an edit date can only make it later. `mark_as_submitted` stamps
+  `Application.applied_after_min`/`applied_ref` (never for email imports); the board
+  puts in-window rows (`data-early`) first; `first_response_at` is first-write-wins
+  and 'ghosted' never sets it. Copy states a clock, never odds — no "likely", no
+  "Nx" (`FORBIDDEN_WORDS`, guard: `test_earliness_receipt`). Baseline 2026-10-11:
+  13/22 SpotApply submissions inside 48h; `scripts/apply_latency_report.py`.
+
 - **Distilled scorer (shadow)** — `docs/DISTILLATION.md`: export LLM finals
   (`scripts/export_training_data.py`) → fine-tune cross-encoder on Colab
   (`scripts/train_local_scorer.py`) → drop model at `LOCAL_SCORER_PATH` →

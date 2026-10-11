@@ -2005,6 +2005,71 @@ def _urgency_of(job):
 
 
 templates.env.globals["urgency_of"] = _urgency_of
+
+
+def _earliness_of(app_row, job):
+    """Jinja global: the earliness receipt chip for a submitted application
+    ("Applied 3h 12m after posting"), or None (app/strategy/earliness.py)."""
+    try:
+        from app.strategy import earliness
+        return earliness.receipt(app_row, job)
+    except Exception:
+        return None
+
+
+def _early_window_of(job):
+    """Jinja global: is this posting still inside its early window (default 48h
+    from the ONE reference clock), and how many hours are left."""
+    try:
+        from app.strategy import earliness
+        return earliness.early_window(job)
+    except Exception:
+        return None
+
+
+templates.env.globals["earliness_of"] = _earliness_of
+templates.env.globals["early_window_of"] = _early_window_of
+
+
+def _early_stats_for(uid) -> dict | None:
+    """The dashboard render's copy of _early_stats: its own short session, so a
+    slow count can never hold the page's main session."""
+    if settings.use_supabase and not uid:
+        return None
+    owner = uid if uid != "local" else None
+    try:
+        with get_session() as session:
+            reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+            return _early_stats(session, owner, reads)
+    except Exception as e:
+        log.debug("early stats unavailable: %s", e)
+        return None
+
+
+def _early_stats(session, owner, reads=None) -> dict:
+    """'Early (inside 48h) on K of N applications this month' for the Submitted
+    pane: N = measured receipts (not email imports) in the last 30 days, K = those
+    inside the window. Bounded like every other board count; None = unknown."""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.strategy import earliness
+    window_min = earliness.window_hours() * 60
+    since = _dt.utcnow() - _td(days=30)
+    base = select(func.count(Application.id)).where(
+        Application.applied_after_min.is_not(None),
+        Application.apply_track != "email_import",
+        Application.submitted_at >= since,
+    )
+    if owner:
+        base = base.where(Application.user_id == owner)
+    early_q = base.where(Application.applied_after_min <= window_min)
+
+    def _count(q):
+        fn = lambda: int(_scalar(session.exec(q).first() or 0))  # noqa: E731
+        return reads.get(None, fn) if reads is not None else fn()
+
+    measured = _count(base)
+    early = _count(early_q) if measured else 0
+    return {"measured": measured, "early": early, "window_hours": earliness.window_hours()}
 # The ONE link to the extension's Chrome Web Store listing, for every page.
 templates.env.globals["chrome_web_store_url"] = settings.chrome_web_store_url
 
@@ -4180,6 +4245,10 @@ def _dashboard_load_options():
             Application.tailored_at,
             # Submitted cards swap the 👻 button for a "Marked ghosted" label.
             Application.response_type,
+            # The earliness receipt chip ("Applied 3h 12m after posting"): off
+            # this list the two columns defer, the lazy load runs after the
+            # session closed, and the chip silently vanishes.
+            Application.applied_after_min, Application.applied_ref,
         ),
         Load(Job).load_only(
             Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
@@ -4337,9 +4406,11 @@ def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dic
         reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
         rows = reads.get([], lambda: list(session.exec(
             _board_stage_query(stage, owner, all_submitted)).all()))
+        early_stats = None
         if stage == "submitted":
             total_submitted = reads.get(
                 len(rows), lambda: _scalar(session.exec(_board_submitted_count_query(owner)).first() or 0))
+            early_stats = _early_stats(session, owner, reads)
         degraded = reads.degraded
     from datetime import datetime as _dt
     if stage == "submitted":
@@ -4349,7 +4420,7 @@ def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dic
     html = templates.get_template("_board_pane.html").render(
         request=request, stage=stage, rows=rows, visa_framing=_board_visa_framing(owner),
         total_submitted_count=total_submitted, all_submitted=all_submitted,
-        one_click_submit=_one_click_setting(owner),
+        one_click_submit=_one_click_setting(owner), early_stats=early_stats,
     )
     return {"stage": stage, "html": html, "count": len(rows),
             "total": total_submitted if stage == "submitted" else len(rows),
@@ -4651,6 +4722,7 @@ def dashboard(request: Request, all_submitted: bool = False):
             "one_click_submit": (settings.one_click_submit_enabled
                                  and bool(getattr(_prof, "one_click_submit", False))),
             "total_submitted_count": total_submitted_count,
+            "early_stats": _early_stats_for(uid),
             "total_shortlisted_count": total_shortlisted_count,
             "total_rejected_count": total_rejected_count,
             "total_skipped_count": total_skipped_count,
@@ -7258,8 +7330,16 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
             return {"success": False, "application_id": application_id,
                     "detail": f"Not marking submitted from status '{application.status.value}'."}
         application.status = ApplicationStatus.SUBMITTED
-        application.submitted_at = datetime.utcnow()
-        application.updated_at = datetime.utcnow()
+        _now = datetime.utcnow()
+        application.submitted_at = _now
+        application.updated_at = _now
+        # Earliness receipt: how long after the posting's reference clock this
+        # went in (app/strategy/earliness.py). Email imports never get one.
+        try:
+            from app.strategy import earliness as _earliness
+            _earliness.stamp(application, session.get(Job, application.job_id), _now)
+        except Exception as e:
+            log.debug("earliness stamp skipped for app %s: %s", application_id, e)
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}
@@ -7451,6 +7531,10 @@ def mark_outcome(application_id: int, request: Request, outcome: str) -> dict:
             application.status = status
         application.response_type = _RESPONSE_TYPES.get(key, application.response_type)
         application.updated_at = datetime.utcnow()
+        # The first employer response, if this is one. 'ghosted' is the absence
+        # of a response and never sets it; an earlier email signal wins.
+        if key in ("interviewing", "offer", "accepted", "rejected") and not application.first_response_at:
+            application.first_response_at = datetime.utcnow()
         application.notes = (application.notes or "") + f"\nOutcome '{outcome}' on {datetime.utcnow():%Y-%m-%d}."
         session.add(application)
         session.add(FunnelEvent(
@@ -13392,6 +13476,29 @@ def _queue_rejection_analysis(bg, app_id: int, job_id: int, email_body: str, uid
     bg.add_task(_run)
 
 
+def _email_datetime(email: dict):
+    """The message's own date as a naive UTC datetime, or None when the inbox
+    gave none we can read (the caller then uses the sync time)."""
+    raw = (email or {}).get("date")
+    if not raw:
+        return None
+    from datetime import datetime as _dt, timezone as _tz
+    from email.utils import parsedate_to_datetime
+    for parse in (parsedate_to_datetime, lambda v: _dt.fromisoformat(str(v).replace("Z", "+00:00"))):
+        try:
+            dt = parse(str(raw).strip())
+        except Exception:
+            continue
+        if dt is None:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_tz.utc).replace(tzinfo=None)
+        if dt > _dt.utcnow():
+            return None            # a future-dated header is not a response time
+        return dt
+    return None
+
+
 def _apply_email_signal(match, signal, email: dict, uid, bg, stats: dict) -> None:
     """Move ONE matched application by what the email says. Only a confident
     rejection / interview / offer changes the status; everything weaker is a
@@ -13439,6 +13546,12 @@ def _apply_email_signal(match, signal, email: dict, uid, bg, stats: dict) -> Non
             stats["assessments"] += 1
             changed = _note_once(app_obj, f"Assessment invitation received by email on {now:%Y-%m-%d}.")
         # "ack": the employer confirmed receipt — nothing to change.
+        # A confident human response (or an assessment invitation) is the first
+        # employer response; an 'ack' auto-receipt and an uncertain cue are not.
+        if ((kind in ("rejection", "interview", "offer") and signal.moves_status) or kind == "assessment") \
+                and not app_obj.first_response_at:
+            app_obj.first_response_at = _email_datetime(email) or now
+            changed = True
         if changed:
             session.add(app_obj)
             session.commit()

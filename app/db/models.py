@@ -240,6 +240,17 @@ class Application(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     submitted_at: Optional[datetime] = None
+    # Earliness receipt (app/strategy/earliness.py, 2026-10-11): minutes between
+    # the posting's reference clock — the EARLIER of a trusted ATS publish date
+    # and when we first saw it — and the user's submit; `applied_ref` names the
+    # clock ('posted' | 'found'). NULL = unmeasured (email imports, rows that
+    # predate the column); never backfilled or guessed.
+    applied_after_min: Optional[int] = None
+    applied_ref: Optional[str] = None
+    # First employer response: a confident email signal (rejection / interview /
+    # offer / assessment) or a recorded outcome. First write wins; 'ghosted'
+    # never sets it, so NULL on an old application means silence.
+    first_response_at: Optional[datetime] = None
     notes: Optional[str] = None
     # "autofill" = Greenhouse/Lever/Ashby (bot fills the form)
     # "manual"   = LinkedIn/Indeed/etc. (bot preps materials, human applies)
