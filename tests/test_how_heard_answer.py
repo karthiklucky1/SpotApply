@@ -85,15 +85,16 @@ def test_the_column_is_in_every_hand_written_migration_list():
 @pytest.fixture()
 def local_app(client):
     """An application of the local dev tenant, and that tenant's profile row
-    (the fill pack reads user_id == "local"), restored or removed after."""
+    (the fill pack resolves "local" as _get_or_create_profile does: the one
+    local row, stored with user_id NULL), restored or removed after."""
     with get_session() as s:
         s.exec(delete(Application).where(Application.notes == "hh-test"))
         s.exec(delete(Job).where(Job.external_id == "hh-job"))
-        prof = s.exec(select(UserProfile).where(UserProfile.user_id == "local")).first()
+        prof = s.exec(select(UserProfile)).first()
         created = prof is None
         before = None if created else prof.how_heard_answer
         if created:
-            prof = UserProfile(user_id="local")
+            prof = UserProfile(user_id=None)
             s.add(prof)
         j = Job(user_id="local", source=JobSource.GREENHOUSE, external_id="hh-job", company="HHCo",
                 title="Engineer", url="https://boards.greenhouse.io/hhco/jobs/1", description="d")
@@ -107,7 +108,7 @@ def local_app(client):
 
     def set_answer(value: str) -> None:
         with get_session() as s:
-            p = s.exec(select(UserProfile).where(UserProfile.user_id == "local")).first()
+            p = s.exec(select(UserProfile)).first()
             p.how_heard_answer = value
             s.add(p)
             s.commit()
@@ -116,7 +117,7 @@ def local_app(client):
     with get_session() as s:
         s.exec(delete(Application).where(Application.notes == "hh-test"))
         s.exec(delete(Job).where(Job.external_id == "hh-job"))
-        p = s.exec(select(UserProfile).where(UserProfile.user_id == "local")).first()
+        p = s.exec(select(UserProfile)).first()
         if p is not None:
             if created:
                 s.delete(p)

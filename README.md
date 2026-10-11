@@ -6,8 +6,12 @@ tailored résumés and cover letters (fact-checked against your real experience)
 auto-fills application forms in your browser, and keeps you in control of the final
 **Submit**.
 
-> **You always click Submit.** SpotApply prepares and fills — it never silently fires
-> off applications on your behalf. *The machine prepares, the human decides.*
+> **Submit is always your click.** By default you press Submit on the form; with the
+> optional One-click submit setting, your "Apply & Submit" click on the dashboard
+> approves that one application and the extension presses the form's Submit for you,
+> only on login-free boards, only with every required field filled, never past a
+> CAPTCHA or a sign-in. Nothing is ever fired off unattended. *The machine prepares,
+> the human decides.*
 
 It began as a single-user personal job agent and has grown into a multi-tenant web app
 with accounts, per-user matching, a freshness engine, a browser extension, and a

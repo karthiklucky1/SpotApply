@@ -131,9 +131,9 @@ the fill set from "demographics skipped on every control that was not a plain
 `<select>`" to 66 of 66 scenarios passing. There is no number for live ATS
 pages from here; the harness is the lower bound we can stand behind.
 
-## 5. What was built tonight, and what is deliberately not
+## 5. What was built, and what is deliberately not
 
-Built:
+Built on 2026-10-10:
 
 - **ATS native autofill** in the extension (Workday "Autofill with Resume",
   Ashby/Lever/Greenhouse/SmartRecruiters parse-on-upload): used first when
@@ -143,39 +143,196 @@ Built:
 - **Stealth script removed** from the server-side agent; the dead
   `_click_submit` helper with it. The agent fills; it does not disguise or
   submit.
-- **CAPTCHA and login handling** reviewed and kept: pause and guide. No
-  change needed.
+
+Built on 2026-10-11 (founder decision, after reading §4: "if auto submit works
+for a few boards, build it there; research how Tsenta handles email login and
+CAPTCHAs"):
+
+- **One-click submit — the "Submit from SpotApply" shape, exactly as §5 of the
+  10-10 version described it.** `UserProfile.one_click_submit` is OFF by
+  default (Settings → Autofill). While it is on, the board's fill button reads
+  **Apply & Submit** and asks for confirmation; that click is the user's
+  approval of THAT application. The server decides, once, in
+  `_one_click_decision` (`app/api/server.py`), and the extension only obeys
+  `pack.auto_submit`: the kill switch `ONE_CLICK_SUBMIT_ENABLED`, the setting,
+  an aggregator-redirect link (never), the apply URL's host on the login-free
+  allow-list `ONE_CLICK_SUBMIT_HOSTS` (greenhouse.io, lever.co, ashbyhq.com,
+  smartrecruiters.com — exact host or real subdomain, never a substring), and
+  `ONE_CLICK_SUBMIT_DAILY_LIMIT` (25 approved clicks a day, reserved in
+  `UserUsage.one_click_submit_count`; a refused click costs nothing). In the
+  tab, `maybeAutoSubmit` (`extension/content.js`) runs AFTER the fill, the
+  resume attach and the field audit, and refuses — with the reason shown in
+  the overlay and sent as `auto_submit_blocked` — when the host is off the
+  list, the page is a login wall or shows a CAPTCHA, any required field still
+  needs the human or the resume was not acknowledged, no Submit control is
+  found inside an application form (a sign-in form's button never counts, nor
+  Cancel/Back/Save/Withdraw), the button is disabled, or the browser's own
+  validation rejects the form. Otherwise it presses the form's OWN Submit
+  button (never `form.submit()`), announced through the same
+  `noteSubmitAttempt` path as a human click, and **"Submitted" is still
+  written only when the employer's confirmation page appears** (or the user
+  answers Yes). Terms §3/§4 and the landing, pricing, README and extension
+  pages say so. Guards: `tests/test_one_click_submit.py`, the one-click block
+  in `tests/test_extension_rules.py`, harness scenarios OC1–OC8.
+- **Login handoff, step 1 of §3.** On a sign-in / create-account page the
+  extension fills the account EMAIL (and its "verify email" twin), never a
+  password, and reports `login_needed`; a page asking for an emailed code is
+  recognised (`verificationCodeField`: `autocomplete="one-time-code"`,
+  otp/verification/passcode names, "verification code" labels), left to the
+  user and reported as `verification_code_needed`; a visible CAPTCHA is
+  reported as `captcha_needed`. Each handoff raises ONE dashboard
+  notification, "Your application needs you" (`_notify_needs_you`, 15-minute
+  dedup), so a user who switched tabs learns the form is waiting.
 
 Not built, on purpose:
 
-- **CAPTCHA solving or evasion** of any kind. See §1 and §3.
+- **CAPTCHA solving or evasion** of any kind. See §1 and §3. One-click submit
+  stops at a visible challenge and never retries past it.
 - **Unattended account creation or password handling.** The browser's
-  password manager is the credential store.
+  password manager is the credential store. The email prefill is the whole of
+  our part in a sign-in.
+- **Fetching the verification code from the inbox** (§3 step 2). Designed,
+  not built: it needs a fixture inbox and an explicit permission prompt in
+  the popup first.
+- **One-click submit on account-walled ATSes** (Workday, iCIMS, Taleo, Oracle,
+  SuccessFactors). The allow-list is the login-free boards only; the account
+  step is the human's, and a submit there would mean a stored login.
 - **Headless or server-side submission for users.** `autofill_multi_user_enabled`
   stays founder-only, and even there the human submits.
-- **Auto-submit.** Not even as an opt-in flag. A flag defaulting OFF is still a
-  flag the Store reviewer reads and the Terms would have to disclose, and the
-  one thing every ATS operator can point to. If the founder wants to revisit
-  this for the login-free, CAPTCHA-free boards (Greenhouse, Lever, Ashby),
-  the honest shape is "Submit from SpotApply": the user clicks Submit on the
-  REVIEW screen in the dashboard, having seen the exact field values and
-  documents, and the extension presses the form's button in their open tab.
-  That keeps the user's click as the submit, moves it earlier, and needs:
-  Terms and Store listing updates, a per-user daily cap, a refusal whenever a
-  required field is empty, a CAPTCHA is visible or the page is a login wall,
-  and an audit row per submission. It is a product decision, not a code one,
-  so it is written down here and not in `content.js`.
 
 ## 6. Recommendation
 
-1. Ship tonight's work (native autofill, EEO, stealth removal) and measure the
-   Workday flow on real tenants with the harness telemetry
-   (`native_autofill` in the DO_FILL outcome).
-2. Build the verification-code GUIDE (§3 step 1) next; it is an hour of
-   extension work and removes the most confusing moment of a Workday apply.
-3. Decide on "Submit from SpotApply" with the Terms in front of you. The code
-   path is small; the policy exposure is the whole product.
+1. Measure one-click submit for two weeks before widening the allow-list:
+   `auto_submit_attempted` vs `auto_submit_blocked` by reason and host
+   (FunnelEvent `extension_auto_submit_*`), and the share of attempts that
+   reached a confirmation (`/application/{id}/submit` with `how=one_click`).
+   A board where most attempts end in `no_submit_button` or `validation`
+   needs its form studied, not the gate loosened.
+2. Update the Chrome Web Store listing with the new behaviour (the 1.1.0
+   manifest is awaiting review): the one-click submit is opt-in, the user
+   approves each application, and the extension never solves a CAPTCHA or
+   stores a password. The Terms already say it.
+3. Build §3 step 2 (the inbox fetch of a verification code) only with the
+   popup permission prompt and a fixture inbox; it is the one remaining
+   friction on Workday applies that is ours to remove.
 4. Keep saying what the product is: the fastest path from a posting to a
    reviewed, submitted application — not a bot that applies while you sleep.
    The tools that promise the second have the worst ratings in the category
    for a reason, and the employers on the other side know what a bot looks like.
+
+## 7. Research, 2026-10-11: how the category does it, and what the founder asked
+
+Six research angles ran in parallel (Tsenta; ten other auto-apply products;
+the login-free ATSes; the account-walled ATSes; verification-code prior art;
+Chrome Web Store / ATS-terms / legal), 177 findings, then one synthesis. Every
+vendor, policy and ATS help page was read through search snippets or GitHub
+mirrors because this container has no egress to them, so quotes may be
+truncated and **someone with a browser must re-read the live Chrome Web Store
+policy pages and the Workday / Greenhouse / Lever help articles before any of
+this is quoted in Terms, the Store listing or marketing**.
+
+**The founder's premise** was "auto-submit works for a few boards and direct
+links; Tsenta does it because they handle email login and CAPTCHAs". The first
+half holds; the second does not:
+
+- **Tsenta** (tsenta.com, YC S26 — no product called "Treats AI" exists)
+  submits from a **cloud browser worker**, not the user's browser; the
+  extension only queues postings. Account walls are solved by **credential
+  custody**: "we even create your Workday accounts!", with a Tsenta-held
+  per-user "application password" whose storage is undisclosed. Verification
+  codes come from an **optional read-only inbox OAuth** (its own Gmail app,
+  Composio for Outlook) that "temporarily process[es] limited email content
+  for the sole purpose of detecting and autofilling one-time passwords". Its
+  pre-submit review pause works only on "compatible" systems and its Auto
+  Apply mode skips review entirely. **CAPTCHAs are mentioned nowhere** on its
+  site, docs, API docs, privacy policy or terms; its blog concedes bots "get
+  stuck on a captcha" and its FAQ says it "does not promise that automated
+  assistance is undetectable". Receipts are text records; pricing sells volume
+  (25 free, $19/600, $39/1,500, $99/4,500 per 30 days).
+- **The category** splits into autofill-first extensions where the human
+  presses Submit (Simplify ~600k users at 4.86★, Jobright, Careerflow, Huntr —
+  the best reputations) and true submitters: Easy-Apply session bots
+  (LazyApply, on LinkedIn/Indeed, whose terms ban them) or cloud agents
+  (Tsenta, JobCopilot, Sonara, Massive, AIApply, LoopCV) whose reported
+  failures are exactly email verification walls (Sonara: 25–50% of submissions
+  failed), Workday logins and CAPTCHAs. No vendor publishes how it handles a
+  CAPTCHA; LoopCV alone states a posture — "stop and hand back to the human".
+  Five rules explain the reputation gradient: the human presses or explicitly
+  approves Submit; fail loudly, never guess; charge nothing on failure;
+  employer ATS forms, never LinkedIn/Indeed; show exactly what was sent.
+- **The login-free ATSes** have **no applicant-side apply API** — Greenhouse,
+  Lever, Ashby, SmartRecruiters, Workable, Breezy, BambooHR all need the
+  EMPLOYER's key — so one-click submit can only be a trusted click on the HTML
+  form in the user's own browser. They are login-free, not challenge-free:
+  Greenhouse runs invisible reCAPTCHA with three post-click outcomes (silent
+  pass / emailed verification code / visual challenge, employer-tuned); Lever
+  uses hCaptcha and may lock the Location field BEFORE Submit; Ashby's spam
+  protection scores the whole form and can reject with nothing to solve;
+  Workable tags "AI-assisted" applications for recruiters; Teamtailor filters
+  after submission. Confirmation-page patterns are documented nowhere.
+- **The account-walled ATSes**: Workday needs a per-tenant account only where
+  the employer requires it (some run a guest flow), verifies by emailed LINK
+  more often than code, and sits behind Akamai bot management on some tenants;
+  iCIMS creates the account inline behind invisible hCaptcha; SuccessFactors
+  gates account creation with reCAPTCHA or an email OTP; Oracle Recruiting is
+  passwordless with a 6-digit code at the END of the flow (5 wrong = 30-minute
+  lockout). None of these is ever on the one-click list.
+- **OTP prior art**: the only shipped "suggest a code from email" is
+  Chromium's Gmail OTP service — field-triggered, consent-gated, minutes-scoped,
+  and filled only when the sender's domain relates to the page origin. That
+  origin rule matters: Workday mails from myworkday.com while forms sit on
+  <tenant>.myworkdayjobs.com, so any SpotApply relay needs an explicit per-ATS
+  sender map. Gmail API read scopes are restricted (annual CASA assessment);
+  Gmail's DOM moves (2018, 2022×2, 2023, 2024) and an MV3 fix reaches users
+  only after Store review.
+- **Policy/legal**: the supported shape is exactly ours — the extension, in
+  the user's own Chrome, on an allow-list of login-free boards, after an
+  explicit per-application approval, with the user as the applicant and party
+  to each board's terms. Forbidden or indefensible: CAPTCHA solving, token
+  relay or fingerprint disguise (Google ToS "bypassing protective measures",
+  Store "facilitate unauthorized access", Developer Agreement §4.4.1 + Repeat
+  Abuse, DMCA §1201(a)(2) service liability, a false human attestation to the
+  employer); server-side login or stored ATS passwords (the Ryanair v.
+  Booking.com logged-in-access pattern); any LinkedIn/Indeed submission.
+  Reading mail — DOM or API — is "personal communications" under Store policy:
+  prominent disclosure, a Limited Use statement, no human access, no storage.
+
+**Adopted the same day** (on top of §5): the form-aware challenge check
+`captchaBlocksSubmit` (the page-level `isCaptcha()` answers false whenever a
+form is present, so a checkbox or image challenge INSIDE the form was invisible
+to the gate); the **5-second countdown with Stop** before the press, held while
+the tab is hidden and cancelled by the user's own click or keystroke
+(`submitCountdown`); the post-press watcher's two extra exits — an emailed-code
+step or a visual challenge after the press is a handoff, never a retry; the
+Submit finder never presses Next/Continue and never a job page's "Apply now";
+the submit is bound to the approved posting's own page (`samePosting`); the
+same-day **revocation list** `ONE_CLICK_SUBMIT_HOST_BLOCKLIST`, checked before
+the allow-list; the click's approval survives the extension's pack refresh but
+a real refusal from the server wins; Terms §4 gained the four sentences above
+(not a guarantee of receipt, the applicant is the user, never on sign-in sites,
+not undetectable). Tier-B hosts (Workable, Jobvite, Recruitee, Breezy,
+Pinpoint, Rippling, BambooHR, Teamtailor) are NOT added: the plan's rule is one
+host at a time, after ≥50 human-submitted applications on it with the success
+page recognised and a visible-challenge rate under 10%.
+
+**Not adopted yet, written down for the founder** (the plan's open questions):
+
+1. A full **review sheet** before Apply & Submit (every value the pack will
+   fill, documents, recipient host), built from a `?preview=1` pack that
+   reserves no consent — the Store's "confirm content and recipients" rule
+   read literally. Today the confirm names the company and the in-tab overlay
+   shows the fill audit before the countdown.
+2. A per-submission **receipt** (fields as sent, documents + hashes,
+   confirmation URL/text, mechanism), an admin view per board token, and
+   `auto_submit_confirmed / rejected / cancelled` telemetry split by host.
+3. After the user solves a CAPTCHA on a one-click page: who presses Submit?
+   Recommended: the user (the site asked for a person).
+4. The verification-code **relay** (§3 step 2): GUIDE only until
+   `verification_code_needed` volume justifies a click-triggered "Find my code"
+   reading the user's OPEN Gmail tab with in-extension consent; the Gmail API
+   route (restricted scope + CASA) is likely never worth it.
+5. Host permissions (`*://*/*` vs ATS suffixes + activeTab), the Store listing
+   and Privacy-practices tab for the next extension release, a trust ramp
+   (N manual submissions before one-click can be turned on), plan-based or
+   user-set daily caps, and who receives board/employer notices with a
+   same-day removal SLA.

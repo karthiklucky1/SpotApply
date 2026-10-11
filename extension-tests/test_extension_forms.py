@@ -125,14 +125,30 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 "base64": base64.b64encode(RESUME_BYTES).decode(),
             })
         if "/api/fill-pack/" in self.path:
-            return self._json(CURRENT_PACK or base_pack(f"{BASE}/greenhouse.html"))
+            pack = dict(CURRENT_PACK or base_pack(f"{BASE}/greenhouse.html"))
+            # As the server answers: one-click submit is approved only by the
+            # dashboard's ?submit=1 click; the content script's routine refresh
+            # is a plain GET and reads "not_requested" — the click's verdict
+            # must survive it (fillForm carries it over).
+            if "submit=1" not in self.path and pack.get("auto_submit"):
+                pack["auto_submit"] = False
+                pack["auto_submit_reason"] = "not_requested"
+            return self._json(pack)
         return super().do_GET()
 
     def do_POST(self):
-        REQUESTS.append(("POST", self.path))
         length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        path = self.path
+        # Telemetry carries its event in the body; keep it on the logged path so
+        # a scenario can tell "captcha_needed" from "auto_submit_blocked".
+        if "/api/extension/telemetry" in path:
+            try:
+                payload = json.loads(body.decode("utf-8") or "{}")
+                path = f"{path}#{payload.get('event', '')}:{(payload.get('meta') or {}).get('reason', '')}"
+            except Exception:
+                pass
+        REQUESTS.append(("POST", path))
         if "recall-answers" in self.path:
             return self._json({"answers": []})
         return self._json({"ok": True})
@@ -736,6 +752,103 @@ def main():
                   f"{v('#wd-first')!r} {v('#wd-email')!r}")
             check("N27 the only upload still receives the resume (normal attach path)",
                   page.eval_on_selector("#wd-upload-file", "el => el.files.length") == 1)
+            page.close()
+
+            # ── OC: one-click submit ─────────────────────────────────────────
+            # Founder decision 2026-10-11. pack.auto_submit is the server's
+            # verdict on the user's "Apply & Submit" click; the extension presses
+            # the form's own Submit only when nothing is left for a human, and
+            # "Submitted" is still written only on the employer's confirmation.
+            print("\nOne-click submit (server-approved click → the form's own Submit)")
+            events = lambda since: [p for m, p in REQUESTS[since:] if m == "POST" and "telemetry" in p]
+            submits = lambda since: [p for m, p in REQUESTS[since:] if m == "POST" and p.endswith("/submit")]
+
+            oc_from = len(REQUESTS)
+            pack = dict(base_pack(f"{BASE}/greenhouse-submit.html"),
+                        auto_submit=True, auto_submit_reason="ok", auto_submit_hosts=["127.0.0.1"])
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", pack)
+            auto = reply.get("auto_submit") or {}
+            check("OC1 the reply says the form was submitted", auto.get("attempted") is True and auto.get("reason") == "clicked",
+                  json.dumps(auto))
+            check("OC1b ...and reports the attempt", any("#auto_submit_attempted" in p for p in events(oc_from)),
+                  str(events(oc_from)))
+            # The native submit navigates to the employer's confirmation page; the
+            # content script there recognises it and the background records it.
+            page.wait_for_url("**/thanks.html**", timeout=15000)
+            page.wait_for_timeout(4000)
+            check("OC2 the employer's confirmation page marks it Submitted (POST /submit)",
+                  len(submits(oc_from)) == 1, str(submits(oc_from)))
+            page.close()
+
+            # Held back: a required answer the pack cannot give.
+            oc_from = len(REQUESTS)
+            held = dict(pack, phone="")
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", held)
+            auto = reply.get("auto_submit") or {}
+            check("OC3 a required field with no answer holds the submit back",
+                  auto.get("attempted") is False and auto.get("reason") == "fields_need_you", json.dumps(auto))
+            check("OC3b ...nothing was submitted", not submits(oc_from), str(submits(oc_from)))
+            check("OC3c ...and the dashboard is told why",
+                  any("#auto_submit_blocked:fields_need_you" in p for p in events(oc_from)), str(events(oc_from)))
+            check("OC3d the form is still open for the user", page.url.endswith("/greenhouse-submit.html"), page.url)
+            page.close()
+
+            # Not on the server's list: filled, never submitted.
+            oc_from = len(REQUESTS)
+            foreign = dict(pack, auto_submit_hosts=["greenhouse.io", "lever.co"])
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", foreign)
+            auto = reply.get("auto_submit") or {}
+            check("OC4 a host outside the allow-list is never submitted",
+                  auto.get("attempted") is False and auto.get("reason") == "host_not_allowed", json.dumps(auto))
+            check("OC4b ...but the form was still filled",
+                  page.eval_on_selector("#first_name", "el => el.value") == pack["first_name"])
+            check("OC4c ...and nothing was submitted", not submits(oc_from), str(submits(oc_from)))
+            page.close()
+
+            # No approval: the old behaviour, exactly.
+            oc_from = len(REQUESTS)
+            plain = dict(pack, auto_submit=False, auto_submit_reason="not_requested")
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", plain)
+            auto = reply.get("auto_submit") or {}
+            check("OC5 without the click's approval nothing is pressed",
+                  auto.get("requested") is False and not submits(oc_from), json.dumps(auto) + str(submits(oc_from)))
+            page.close()
+
+            # A visible CAPTCHA: pause, tell the dashboard, press nothing.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/greenhouse-captcha.html",
+                                    dict(pack, apply_url=f"{BASE}/greenhouse-captcha.html"))
+            check("OC6 a visible CAPTCHA is a handoff: captcha_needed reported, nothing submitted",
+                  any("#captcha_needed" in p for p in events(oc_from)) and not submits(oc_from),
+                  str(events(oc_from)))
+            check("OC6b ...and the user is asked to solve it",
+                  any("solve the CAPTCHA" in l or "CAPTCHA" in l for l in logs) or
+                  page.evaluate("() => (document.getElementById('hp-copilot-overlay') || {}).shadowRoot ? true : !!document.getElementById('hp-copilot-overlay')"),
+                  "overlay missing")
+            page.close()
+
+            # An account wall: the email is filled, the password never, and the
+            # dashboard learns the form is waiting on a sign-in.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/account-create.html",
+                                    dict(pack, apply_url=f"{BASE}/account-create.html"))
+            v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+            check("OC7 account email filled on a create-account wall (both boxes)",
+                  v("#email") == pack["email"] and v("#verifyEmail") == pack["email"],
+                  json.dumps({"email": v("#email"), "verify": v("#verifyEmail")}))
+            check("OC7b passwords are never touched", v("#password") == "" and v("#verifyPassword") == "")
+            check("OC7c login_needed reported, nothing submitted",
+                  any("#login_needed" in p for p in events(oc_from)) and not submits(oc_from), str(events(oc_from)))
+            page.close()
+
+            # The emailed verification code: named for the user, never fetched.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/verify-code.html",
+                                    dict(pack, apply_url=f"{BASE}/verify-code.html"))
+            check("OC8 a verification-code step is reported as such",
+                  any("#verification_code_needed" in p for p in events(oc_from)), str(events(oc_from)))
+            check("OC8b the code box is left for the user",
+                  page.eval_on_selector("#code", "el => el.value") == "")
             page.close()
         finally:
             set_native_autofill(ctx, None)   # back to the default: ON

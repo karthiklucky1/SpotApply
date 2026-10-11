@@ -4469,13 +4469,31 @@
             showToast('Job form opened — fill it manually, then click  Applied Manually.', 'info');
         }
 
-        async function fillWithExtension(appId, btn) {
+        async function fillWithExtension(appId, btn, confirmed) {
+            // One-click submit: the button reads "Apply & Submit" when the user
+            // turned it on in Settings, and THIS click is their approval of this
+            // application. The server decides whether the board qualifies
+            // (login-free allow-list, daily cap) and the extension presses the
+            // form's Submit only when every required field is filled and no
+            // CAPTCHA or sign-in step is showing — otherwise it stops and asks.
+            const wantSubmit = !!(btn && btn.dataset && btn.dataset.submit === '1');
+            if (wantSubmit && !confirmed) {
+                const company = (btn.dataset && btn.dataset.company) || '';
+                showCustomConfirm({
+                    title: 'Apply & Submit',
+                    message: `SpotApply will open the form, fill it, attach your resume and submit it${company ? ' to ' + company : ''} in your browser. ` +
+                             'In the tab it shows what it filled and counts down five seconds you can stop. It never presses Submit past a CAPTCHA, a sign-in or an unanswered required question — it stops and tells you. Submit this application?',
+                    okText: 'Apply & Submit',
+                    onConfirm: () => fillWithExtension(appId, btn, true),
+                });
+                return;
+            }
             const orig = btn.innerHTML;
             btn.innerHTML = '⏳ Loading...';
             btn.disabled = true;
             try {
                 const _tok = localStorage.getItem('sb_token');
-                const res = await fetch(`/api/fill-pack/${appId}`, {
+                const res = await fetch(`/api/fill-pack/${appId}${wantSubmit ? '?submit=1' : ''}`, {
                     headers: _tok ? { 'Authorization': `Bearer ${_tok}` } : {}
                 });
                 if (!res.ok) {
@@ -4534,6 +4552,18 @@
                     } else {
                         showToast(' Form opened! <a href="' + CHROME_WEB_STORE_URL + '" target="_blank" rel="noopener" data-no-apply-track class="underline">Add SpotApply to Chrome</a> to auto-fill.', 'info');
                     }
+                } else if (pack.auto_submit) {
+                    showToast(' Opening form… SpotApply will fill it and submit. It stops and tells you if anything needs you.', 'success');
+                } else if (wantSubmit) {
+                    const why = {
+                        host_not_allowed: 'this board is not on the one-click list, so you click Submit yourself',
+                        host_blocked: 'this board is currently excluded from one-click, so you click Submit yourself',
+                        aggregator_link: 'this link goes through an aggregator, so you click Submit yourself',
+                        daily_cap: 'you reached today\'s one-click limit, so you click Submit yourself',
+                        setting_off: 'one-click submit is off in Settings',
+                        kill_switch: 'one-click submit is paused right now',
+                    }[pack.auto_submit_reason] || 'you click Submit yourself on this one';
+                    showToast(' Opening form… it will be filled, but ' + why + '.', 'info');
                 } else {
                     showToast(' Opening form… extension will fill it automatically. Review every field before submitting.', 'success');
                 }
@@ -7639,6 +7669,15 @@
                             <option value="true">Use the job posting's title (for example "Backend Engineer")</option>
                           </select>
                           <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Only the line under your name changes. The job titles you actually held stay exactly as on your resume, and a posting title that names a skill your resume doesn't show is never used.</p>
+                        </div>
+                        <!-- One-click submit (UserProfile.one_click_submit; docs/AUTO_APPLY_RESEARCH.md §5). -->
+                        <div>
+                          <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">One-click submit</label>
+                          <select name="one_click_submit" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
+                            <option value="false">Off: SpotApply fills the form, I click Submit</option>
+                            <option value="true">On: "Apply &amp; Submit" fills and submits on boards that allow it</option>
+                          </select>
+                          <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Each Apply &amp; Submit click approves that one application. SpotApply submits only on login-free boards (Greenhouse, Lever, Ashby, SmartRecruiters), only when every required field is filled, and never past a CAPTCHA or a sign-in. Anything else stops and tells you. Up to 25 a day.</p>
                         </div>
                         <!-- The answer to "How did you hear about this opportunity?" on
                              application forms (UserProfile.how_heard_answer). The extension

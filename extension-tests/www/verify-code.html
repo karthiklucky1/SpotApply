@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html><head><title>Verify your email</title></head>
+<body>
+  <h1>Verify your email</h1>
+  <!-- The one-time-code step after account creation: a password field keeps
+       this a sign-in wall; the code input is what the extension must name. -->
+  <form id="verify">
+    <label for="code">Enter the verification code we emailed you *</label>
+    <input type="text" id="code" name="code" autocomplete="one-time-code" inputmode="numeric" required>
+    <input type="password" id="pw" name="pw" style="display:none">
+    <button type="submit">Verify</button>
+  </form>
+  <p>Didn't get it? <a href="#">Sign in</a> again to resend.</p>
+</body>
+</html>

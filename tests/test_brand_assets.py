@@ -181,13 +181,17 @@ def test_the_terms_date_moved_only_with_a_real_revision():
     """Phase 9 kept "June 2025" because the body had not changed. The
     September 2026 revision added plans/payments (temporary Pro, no
     auto-enrolment), the inactivity pause of automatic search and the
-    AI-document check — the date may say September 2026 only while those
-    sections exist."""
+    AI-document check; October 2026 added the opt-in One-click submit
+    (the dashboard's "Apply & Submit" as the user's approval, allow-listed
+    boards, never past a CAPTCHA or sign-in). The date may say October 2026
+    only while ALL of those sections exist."""
     html = (ROOT / "app" / "templates" / "terms.html").read_text()
-    assert "Last updated: September 2026" in html
-    for section in ("Plans and payments", "Automatic job search", "AI-generated documents"):
+    assert "Last updated: October 2026" in html
+    for section in ("Plans and payments", "Automatic job search", "AI-generated documents",
+                    "One-click submit"):
         assert section in html
     assert "not enrolled in a paid plan" in html
+    assert "never solve or bypass a CAPTCHA" in html
 
 
 @pytest.mark.parametrize("page", ["landing.html", "pricing.html"])

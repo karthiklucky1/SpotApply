@@ -4349,6 +4349,7 @@ def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dic
     html = templates.get_template("_board_pane.html").render(
         request=request, stage=stage, rows=rows, visa_framing=_board_visa_framing(owner),
         total_submitted_count=total_submitted, all_submitted=all_submitted,
+        one_click_submit=_one_click_setting(owner),
     )
     return {"stage": stage, "html": html, "count": len(rows),
             "total": total_submitted if stage == "submitted" else len(rows),
@@ -4646,6 +4647,9 @@ def dashboard(request: Request, all_submitted: bool = False):
             "company_cap": settings.company_cap,
             "pro_price": __import__("app.billing", fromlist=["pro_price_usd"]).pro_price_usd(),
             "visa_framing": visa_framing,
+            # "Apply & Submit" on the cards instead of "Auto-Fill" (one-click submit ON).
+            "one_click_submit": (settings.one_click_submit_enabled
+                                 and bool(getattr(_prof, "one_click_submit", False))),
             "total_submitted_count": total_submitted_count,
             "total_shortlisted_count": total_shortlisted_count,
             "total_rejected_count": total_rejected_count,
@@ -5581,10 +5585,92 @@ def _work_auth_note_for_pack(profile) -> str:
     return ""
 
 
+def _one_click_hosts() -> list:
+    return [h.strip().lower() for h in (settings.one_click_submit_hosts or "").split(",") if h.strip()]
+
+
+def _one_click_blocklist() -> list:
+    return [h.strip().lower() for h in (settings.one_click_submit_host_blocklist or "").split(",") if h.strip()]
+
+
+def _host_allowed(url: str, hosts) -> bool:
+    """Exact host or a real subdomain of an allow-listed suffix (never a substring)."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return bool(host) and any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def _one_click_setting(owner) -> bool:
+    """Is one-click submit ON for this user: the profile flag AND the kill switch."""
+    if not settings.one_click_submit_enabled:
+        return False
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        prof = _get_or_create_profile(user_id=owner)
+        return bool(getattr(prof, "one_click_submit", False))
+    except Exception as e:
+        log.debug("one-click setting unavailable: %s", e)
+        return False
+
+
+def _one_click_decision(uid, profile, apply_url: str, job, requested: bool) -> dict:
+    """May the extension press Submit for THIS application?
+    (docs/AUTO_APPLY_RESEARCH.md §5; founder decision 2026-10-11.)
+
+    Decided here, once, so the extension never carries its own allow-list or
+    cap — it only obeys ``auto_submit``. Reasons, for telemetry and the UI:
+    not_requested · kill_switch · setting_off · aggregator_link · host_blocked ·
+    host_not_allowed · daily_cap · ok. A requested, allowed click RESERVES one
+    of the day's ``one_click_submit_daily_limit`` at once: the click is the
+    consent, and a cap on consents bounds the blast radius of a bad fill.
+    """
+    hosts = _one_click_hosts()
+    out = {"auto_submit": False, "auto_submit_reason": "not_requested", "auto_submit_hosts": hosts}
+    if not requested:
+        return out
+    if not settings.one_click_submit_enabled:
+        out["auto_submit_reason"] = "kill_switch"
+        return out
+    if not bool(getattr(profile, "one_click_submit", False)):
+        out["auto_submit_reason"] = "setting_off"
+        return out
+    flags = (getattr(job, "ghost_flags", "") or "") if job is not None else ""
+    if "aggregator_redirect" in flags:
+        out["auto_submit_reason"] = "aggregator_link"
+        return out
+    # The revocation list wins over the allow-list: a board that asked us to
+    # stop is off one-click the same day (env), whatever the allow-list says.
+    if _host_allowed(apply_url, _one_click_blocklist()):
+        out["auto_submit_reason"] = "host_blocked"
+        return out
+    if not _host_allowed(apply_url, hosts):
+        out["auto_submit_reason"] = "host_not_allowed"
+        return out
+    if uid and uid != "local":
+        with get_session() as session:
+            row = _get_or_create_usage(session, uid)
+            if row.one_click_submit_count >= max(0, int(settings.one_click_submit_daily_limit)):
+                out["auto_submit_reason"] = "daily_cap"
+                return out
+            row.one_click_submit_count += 1
+            session.add(row)
+            session.commit()
+    out["auto_submit"] = True
+    out["auto_submit_reason"] = "ok"
+    return out
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
-def get_fill_pack(application_id: int, request: Request) -> dict:
-    """Returns all data the browser extension needs to fill a job application form."""
+def get_fill_pack(application_id: int, request: Request, submit: bool = False) -> dict:
+    """Returns all data the browser extension needs to fill a job application form.
+
+    ``submit=1`` is the dashboard's "Apply & Submit" click: the user's consent
+    to have THIS application submitted (one-click submit, _one_click_decision).
+    Without it the pack says auto_submit=false and the user clicks Submit."""
     from pathlib import Path as _P
     _require_owned_application(request, application_id)
     uid = _get_user_id(request)
@@ -5594,7 +5680,18 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
         from app.db.models import UserProfile
-        profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
+        # Resolve the profile EXACTLY as _get_or_create_profile and
+        # _autofill_resume_source do: a tenant by user_id; "local" (the SQLite
+        # dev tenant) = the one local row (its writers store NULL, older rows
+        # predate that); no uid in multi-tenant mode reads NOTHING. Matching
+        # the literal "local" found no row, so local mode filled with no
+        # profile at all (one-click submit, how-heard, EEO all read it).
+        if uid and uid != "local":
+            profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        elif uid == "local":
+            profile = session.exec(select(UserProfile)).first()
+        else:
+            profile = None
         needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
         # "Original resume" in Settings promises that autofill never spends a
         # tailoring generation. The résumé route honoured it; this route still
@@ -5667,6 +5764,7 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
                       (getattr(p, f, "") or "").strip() not in _EEO_LEGACY_DEFAULTS and
                       not (getattr(p, f, "") or "").lower().startswith("decline")
                       for f in ("gender", "ethnicity", "veteran_status", "disability_status"))
+    _ocs = _one_click_decision(uid, p, application.apply_url or (job.url if job else ""), job, submit)
     pack = {
         "app_id": application_id,
         "job_title": job.title if job else "",
@@ -5747,6 +5845,13 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # leaving "why did it attach that file?" unanswerable.
         "autofill_resume_source": (
             (getattr(p, "autofill_resume_source", "") if p else "") or "tailored"),
+        # One-click submit: decided HERE, once (_one_click_decision). The
+        # extension presses Submit only when auto_submit is true, and only on
+        # a host in auto_submit_hosts; it never carries its own allow-list.
+        "auto_submit": _ocs["auto_submit"],
+        "auto_submit_reason": _ocs["auto_submit_reason"],
+        "auto_submit_hosts": _ocs["auto_submit_hosts"],
+        "one_click_submit": bool(getattr(p, "one_click_submit", False)) if p else False,
     }
 
     # Add AI-generated essay answers
@@ -6235,7 +6340,66 @@ def extension_telemetry(request: Request, body: ExtensionTelemetryBody) -> dict:
             metadata_json=_json.dumps(meta),
         ))
         session.commit()
+    # "A human is needed in the open tab" reaches the dashboard bell too: a
+    # user who clicked Apply & Submit and switched tabs would otherwise never
+    # learn that the form is waiting on a CAPTCHA, a sign-in or an answer.
+    if event in _NEEDS_YOU_EVENTS and not (event == "auto_submit_blocked" and
+                                           (meta.get("reason") or "") == "cancelled_by_user"):
+        try:
+            _notify_needs_you(uid, event, body.app_id, job_id, meta)
+        except Exception as e:
+            log.debug("needs-you notification skipped: %s", e)
     return {"ok": True}
+
+
+_NEEDS_YOU_EVENTS = {
+    "captcha_needed": "needs you: solve the CAPTCHA in the open tab, then it continues.",
+    "login_needed": "needs you: sign in or create your account in the open tab (your email is filled in; passwords stay with Chrome).",
+    "verification_code_needed": "needs you: enter the verification code the site emailed you.",
+    "auto_submit_blocked": "was filled but NOT submitted: {reason}. Review the open tab and click Submit yourself.",
+}
+_OCS_BLOCK_TEXT = {
+    "fields_need_you": "some fields need your answer",
+    "captcha": "the site shows a CAPTCHA",
+    "login_wall": "the site asks you to sign in",
+    "no_submit_button": "no Submit button was found",
+    "submit_disabled": "the Submit button is disabled",
+    "validation": "the site rejected a field",
+    "host_not_allowed": "this site is not on the one-click list",
+    "different_page": "this page is not the job you approved",
+    "cancelled_by_user": "you stopped it",
+    "already_attempted": "it was already submitted from this tab",
+}
+
+
+def _notify_needs_you(uid, event: str, app_id, job_id, meta: dict) -> None:
+    """One dashboard notification per (application, event) in 15 minutes."""
+    from datetime import datetime, timedelta
+    from app.db.models import UserNotification
+    with get_session() as session:
+        company = ""
+        if job_id:
+            job = session.get(Job, job_id)
+            company = (job.company or "") if job else ""
+        who = company or (meta.get("host") or "The employer")
+        text = _NEEDS_YOU_EVENTS[event]
+        if "{reason}" in text:
+            text = text.format(reason=_OCS_BLOCK_TEXT.get(meta.get("reason") or "", meta.get("reason") or "it needs a look"))
+        link = f"/dashboard?app={app_id}" if app_id else "/dashboard"
+        message = f"{who} {text}"
+        recent = session.exec(
+            select(UserNotification.id).where(
+                UserNotification.user_id == (uid or "local"),
+                UserNotification.type == "needs_you",
+                UserNotification.link == link,
+                UserNotification.message == message,
+                UserNotification.created_at >= datetime.utcnow() - timedelta(minutes=15),
+            ).limit(1)).first()
+        if recent:
+            return
+        session.add(UserNotification(user_id=uid or "local", title="Your application needs you",
+                                     message=message, type="needs_you", link=link))
+        session.commit()
 
 
 class JobCheckBody(BaseModel):
@@ -10232,6 +10396,7 @@ _USERPROFILE_COLUMNS = [
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("one_click_submit", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("how_heard_answer", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -10370,6 +10535,7 @@ def get_profile(request: Request) -> dict:
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
+        "one_click_submit": bool(getattr(profile, "one_click_submit", False)),
         "how_heard_answer": getattr(profile, "how_heard_answer", "") or "",
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
@@ -10426,6 +10592,7 @@ class ProfileUpdate(BaseModel):
     relocation_resume_optin: Optional[bool] = None
     resume_use_job_city: Optional[bool] = None
     resume_title_from_jd: Optional[bool] = None
+    one_click_submit: Optional[bool] = None
     # Typed into employer forms as written: one line, trimmed, bounded.
     how_heard_answer: Optional[str] = None
     relocation_targets: Optional[str] = None

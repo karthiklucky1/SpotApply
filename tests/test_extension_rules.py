@@ -44,8 +44,10 @@ FUNCTIONS = [
     "isHowHeardQuestion", "howHeardAnswer", "_hhTokens", "_hhHas", "_hhIsOther",
     "_hhIsPlaceholder", "pickHowHeardOption", "_selectHasChoice",
     "_companyCore", "isHowHeardFillQuestion", "_saysSpecifyOther",
+    "autoSubmitAllowedHost", "escapeHtml", "samePosting",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
+          "AUTO_SUBMIT_BLOCK_TEXT",
           "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE",
           "_NATIVE_AUTOFILL_RE", "_NATIVE_AUTOFILL_IDENTITY", "NATIVE_AUTOFILL_ATS",
           "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
@@ -885,3 +887,103 @@ def test_the_saved_answer_is_the_only_source():
     assert "if (!saved) return 0;" in _function(CONTENT, "answerHowHeardChoices")
     assert "if (!saved) { _lastWriteSkippedEmpty = true; return false; }" in \
         _function(CONTENT, "answerHowHeardField")
+
+
+# ── one-click submit (2026-10-11): the server decides, the extension obeys ───
+
+@pytest.mark.parametrize("host,hosts,want", [
+    ("boards.greenhouse.io", ["greenhouse.io"], True),
+    ("greenhouse.io", ["greenhouse.io"], True),
+    ("jobs.lever.co", ["greenhouse.io", "lever.co"], True),
+    ("jobs.ashbyhq.com", ["Greenhouse.io", "AshbyHQ.com"], True),      # case-insensitive
+    ("notgreenhouse.io", ["greenhouse.io"], False),                    # a suffix, not a substring
+    ("greenhouse.io.phish.test", ["greenhouse.io"], False),
+    ("acme.wd5.myworkdayjobs.com", ["greenhouse.io", "lever.co"], False),
+    ("boards.greenhouse.io", [], False),
+    ("boards.greenhouse.io", None, False),                             # no list from the server = never
+    ("boards.greenhouse.io", "greenhouse.io", False),                  # a bare string is not a list
+])
+def test_one_click_hosts_match_by_suffix_from_the_servers_list(host, hosts, want):
+    assert run_js([["autoSubmitAllowedHost", host, hosts]])[0] is want
+
+
+def test_the_extension_carries_no_one_click_list_or_cap_of_its_own():
+    """The allow-list and the daily cap live in the server's fill-pack verdict
+    (server._one_click_decision); content.js only reads pack.auto_submit*."""
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    assert "pack.auto_submit_hosts" in fn
+    assert "ONE_CLICK" not in CONTENT.upper().replace("ONE-CLICK", "") or "ONE_CLICK_HOSTS" not in CONTENT
+    assert "auto_submit_hosts" not in BACKGROUND
+    step = _function(CONTENT, "runCopilotStep")
+    assert "pack.auto_submit)" in step and "maybeAutoSubmit(" in step, "only an approved pack reaches the gate"
+
+
+def test_one_click_refuses_before_it_presses_anything():
+    """Login wall, CAPTCHA and an unfinished field audit all stop it BEFORE the
+    Submit control is even looked for; the press is the form's own button,
+    announced as an ATTEMPT (noteSubmitAttempt) — "Submitted" still needs the
+    employer's confirmation."""
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    order = [fn.index(s) for s in ("autoSubmitAllowedHost(", "isLoginWall()", "isCaptcha() || captchaBlocksSubmit()",
+                                   "fields_need_you", "findSubmitControl()", "submitCountdown(pack)",
+                                   "noteSubmitAttempt('one_click')", "btn.click()")]
+    assert order == sorted(order), order
+    # The page-level isCaptcha() answers false whenever a form is present, so
+    # the gate also asks the form-aware check — and asks AGAIN after the dwell.
+    assert fn.count("captchaBlocksSubmit()") >= 2
+    dwell = _function(CONTENT, "submitCountdown")
+    assert "visibilityState !== 'visible'" in dwell, "never in a tab the user cannot see"
+    assert "isTrusted" in dwell and "'keydown'" in dwell and "'mousedown'" in dwell, "the user's own touch cancels"
+    assert "cancelled_by_user" in fn
+    assert _const(CONTENT, "AUTO_SUBMIT_DWELL_SECONDS").strip().rstrip(";").endswith("= 5")
+    assert "form.checkValidity" in fn, "a form the browser would reject is never pressed"
+    assert "requestSubmit" not in fn and ".submit()" not in fn, "only the visible button, never a programmatic submit"
+    find = _function(CONTENT, "findSubmitControl")
+    assert "isLoginForm(" in find, "a sign-in form's button is never the one"
+    negative = re.search(r"const NEGATIVE = /(.*?)/i;", find).group(1)
+    for word in ("sign ?in", "log ?in", "create account", "register", "cancel", "back", "save", "draft",
+                 "delete", "remove", "withdraw"):
+        assert word in negative, word
+    assert "formLooksLikeApplication(" in find, "the typed submit must sit in an application form"
+    watch = _function(CONTENT, "watchForConfirmation")
+    for handoff in ("verification_code_needed", "captcha_needed"):
+        assert handoff in watch, "a code step or a challenge AFTER the press is a handoff, never a retry"
+    assert "noteSubmitAttempt(" not in watch and ".click()" not in watch
+
+
+def test_overlay_text_is_escaped_and_every_block_reason_has_words():
+    assert run_js([["escapeHtml", "<b onclick=\"x\">Tom & Jerry's</b>"]])[0] == \
+        "&lt;b onclick=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/b&gt;"
+    assert run_js([["escapeHtml", None]])[0] == ""
+    text = _const(CONTENT, "AUTO_SUBMIT_BLOCK_TEXT")
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    for reason in re.findall(r"done\(false, '([a-z_]+)'", fn):
+        assert f"{reason}:" in text, f"no user-facing words for {reason}"
+
+
+@pytest.mark.parametrize("apply_url,page_url,want", [
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/acme/jobs/123#app", True),
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/acme/jobs/123?gh_src=x", True),
+    ("https://jobs.lever.co/acme/9f1", "https://jobs.lever.co/acme/9f1/apply", True),
+    ("https://jobs.ashbyhq.com/acme/77", "https://jobs.ashbyhq.com/Acme/77/application", True),  # case-insensitive slug
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/other/jobs/9", False),  # another employer
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://careers.acme.com/apply?gh_jid=123", False),  # employer-hosted copy
+    ("https://jobs.lever.co/acme/9f1", "https://jobs.ashbyhq.com/acme/9f1", False),
+    ("", "https://boards.greenhouse.io/acme/jobs/123", False),
+    ("not a url", "https://boards.greenhouse.io/acme/jobs/123", False),
+])
+def test_one_click_presses_only_on_the_approved_postings_own_page(apply_url, page_url, want):
+    assert run_js([["samePosting", apply_url, page_url]])[0] is want
+
+
+def test_the_clicks_approval_survives_the_packs_refresh_but_not_a_refusal():
+    """fillForm re-fetches /api/fill-pack/{id} (a plain GET → "not_requested")
+    before filling; the dashboard's ?submit=1 verdict must carry over, while a
+    real refusal from the refreshed server (kill switch, setting off) wins."""
+    fn = _function(CONTENT, "fillForm")
+    carry = fn[fn.index("fresh.auto_submit_reason === 'not_requested'"):]
+    assert "fillPack.auto_submit === true" in fn
+    assert "String(fillPack.app_id) === String(fresh.app_id)" in fn, "never another application's approval"
+    assert "fresh.auto_submit = true" in carry
+    gate = _function(CONTENT, "maybeAutoSubmit")
+    assert gate.index("autoSubmitAllowedHost(") < gate.index("samePosting(pack.apply_url") < gate.index("isLoginWall()")

@@ -379,6 +379,23 @@ class Settings(BaseSettings):
     liveness_reverify_per_cycle: int = 40               # LIVENESS_REVERIFY_PER_CYCLE (0 disables)
     liveness_reverify_seconds_per_cycle: float = 15.0   # LIVENESS_REVERIFY_SECONDS_PER_CYCLE
     liveness_reverify_daily_cap: int = 2000             # LIVENESS_REVERIFY_DAILY_CAP
+
+    # ── One-click submit (docs/AUTO_APPLY_RESEARCH.md §5; founder 2026-10-11) ──
+    # The extension presses an application form's own Submit only when the
+    # user's profile has one_click_submit ON, they clicked "Apply & Submit" for
+    # THAT application, the apply URL is on one of these login-free boards, and
+    # the page shows no CAPTCHA, no sign-in step and no unfilled required
+    # field. Account-walled ATSes (Workday, iCIMS, Taleo, SuccessFactors) and
+    # LinkedIn/Indeed (their terms) are never on this list.
+    one_click_submit_enabled: bool = True                 # ONE_CLICK_SUBMIT_ENABLED (kill switch)
+    one_click_submit_hosts: str = (                       # ONE_CLICK_SUBMIT_HOSTS, comma-separated
+        "greenhouse.io,lever.co,ashbyhq.com,smartrecruiters.com")
+    one_click_submit_daily_limit: int = 25                # ONE_CLICK_SUBMIT_DAILY_LIMIT per user
+    # Revocation list, checked BEFORE the allow-list: a board host that objects
+    # (a notice, a block, a rejected-after-click rate that says stop) leaves
+    # one-click the same day with an env change, no deploy. Exact host or
+    # suffix, comma-separated; "" = nothing revoked.
+    one_click_submit_host_blocklist: str = ""             # ONE_CLICK_SUBMIT_HOST_BLOCKLIST
     # "This job is no longer available" (POST /application/{id}/unavailable).
     # The reporter's own copy closes at once; the posting is RE-CHECKED for
     # everyone else, forced past a LIVE verdict younger than

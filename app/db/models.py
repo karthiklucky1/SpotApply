@@ -479,6 +479,14 @@ class UserProfile(SQLModel, table=True):
     # question ONLY from this, never from memory or a model; "" = the user
     # answers it on each form.
     how_heard_answer: str = ""
+    # One-click submit (founder decision 2026-10-11, docs/AUTO_APPLY_RESEARCH.md
+    # §5): with this ON the board's Auto-Fill button reads "Apply & Submit",
+    # and the click on it is the user's approval of THAT application. The
+    # extension then presses the form's own Submit, only on the server's
+    # allow-listed login-free boards, only when every required field is
+    # filled, never past a CAPTCHA or a sign-in step. OFF: the user clicks
+    # Submit on the form, as before.
+    one_click_submit: bool = False
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR
@@ -641,6 +649,9 @@ class UserUsage(SQLModel, table=True):
     # two together are the marginal-yield signal that opens the burst zone.
     finals_count: int = Field(default=0)          # Tier-2 finals paid for today
     finals_hits: int = Field(default=0)           # of those, how many cleared the bar
+    # "Apply & Submit" clicks today (one-click submit). Reserved when the
+    # fill-pack is requested with submit=1; bounded by ONE_CLICK_SUBMIT_DAILY_LIMIT.
+    one_click_submit_count: int = Field(default=0)
 
 
 class FunnelEvent(SQLModel, table=True):

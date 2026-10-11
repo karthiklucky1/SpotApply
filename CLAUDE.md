@@ -7,7 +7,12 @@
 
 AI job-application copilot (app.spotapply.ai). Discovers tech roles from ATS APIs/feeds, scores each
 against the user's résumé via a cascade, tailors résumé+cover letter (grounded), and
-auto-fills forms. **The human always reviews and clicks Submit** — never auto-submit.
+auto-fills forms. **Submit is always the human's click**: on the form by default, or
+— with `UserProfile.one_click_submit` ON (founder 2026-10-11) — the dashboard's
+"Apply & Submit" click approves THAT application and the extension presses the
+form's Submit (`_one_click_decision`: allow-listed login-free boards only, daily
+cap, every required field filled, never past a CAPTCHA or sign-in). Never
+unattended, never a CAPTCHA solved or evaded, never a password stored.
 
 Multi-tenant web app (grew from a single-user agent). Public README has the full story;
 this file is the working map for editing the code.
@@ -857,12 +862,22 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   still strips diacritics so employer forms that write "Résumé" are recognised.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
-  **Auto-apply research** (2026-10-10, `docs/AUTO_APPLY_RESEARCH.md`): CAPTCHAs are
+  **Auto-apply research** (2026-10-10/11, `docs/AUTO_APPLY_RESEARCH.md`): CAPTCHAs are
   detected, paused on and never solved or evaded; accounts (Workday/iCIMS) are the
-  user's — prefill the email, leave passwords to the browser, GUIDE the code step;
-  no auto-submit flag, not even OFF ("Submit from SpotApply" is a product decision
-  written down there). The server agent's browser-fingerprint "stealth" script was
-  removed; `autofill_multi_user_enabled` stays founder-only and the human submits.
+  user's — the extension prefills the account email, leaves passwords to the browser
+  and names the emailed-code step; each handoff (`captcha_needed` / `login_needed` /
+  `verification_code_needed` / `auto_submit_blocked`) raises ONE "needs you"
+  notification. **One-click submit** (2026-10-11, founder decision) is the "Submit
+  from SpotApply" shape: `UserProfile.one_click_submit` OFF by default; the board's
+  "Apply & Submit" click approves ONE application; `_one_click_decision` (server.py)
+  alone says yes — kill switch, login-free allow-list `ONE_CLICK_SUBMIT_HOSTS`
+  (suffix match, never Workday/iCIMS/aggregators), 25/day reserved in `UserUsage` —
+  and `maybeAutoSubmit` (content.js) presses the form's OWN button only after the
+  fill + audit, never past a login wall, CAPTCHA, unanswered field or failed
+  validation; "Submitted" still needs the employer's confirmation. Guards:
+  `test_one_click_submit`, the one-click block of `test_extension_rules`, harness
+  OC1–OC8. The server agent's browser-fingerprint "stealth" script was removed;
+  `autofill_multi_user_enabled` stays founder-only.
 
 - **Distilled scorer (shadow)** — `docs/DISTILLATION.md`: export LLM finals
   (`scripts/export_training_data.py`) → fine-tune cross-encoder on Colab

@@ -2057,6 +2057,19 @@ function watchForConfirmation(pack, since) {
       confirmSubmitted(pack, 'employer_confirmation');
       return;
     }
+    // Greenhouse's other two outcomes after a press: an emailed verification
+    // code, or a visual challenge. Both are the human's; say so once and never
+    // press again (noteSubmitAttempt is not re-run).
+    if (!_confirmPromptOpen && typeof verificationCodeField === 'function' && verificationCodeField()) {
+      showOverlay('📬 <b>Enter the verification code</b><br><small>The site emailed you a code to finish this application — ' +
+                  'check your inbox (and spam) and paste it here.</small>', [], false);
+      reportHandoff(pack, 'verification_code_needed', { after: 'submit' });
+      asked = true;      // the code step is the answer; do not also ask "did it submit?"
+    } else if (!_confirmPromptOpen && typeof captchaBlocksSubmit === 'function' && captchaBlocksSubmit()) {
+      showOverlay('🤖 <b>Please solve the CAPTCHA</b><br><small>The site wants a person here; finish it and click Submit yourself.</small>', [], false);
+      reportHandoff(pack, 'captcha_needed', { after: 'submit' });
+      asked = true;
+    }
     if (!asked && Date.now() - since > 12000) {
       asked = true;
       askIfSubmitted(pack);
@@ -4818,7 +4831,22 @@ async function fillForm(fillPack) {
       "GET", pack.auth_token, null
     );
     if (res.ok && res.data) {
-      pack = res.data;
+      const fresh = res.data;
+      // One-click submit is approved ONCE, by the dashboard click (?submit=1),
+      // and the server reserved the day's allowance then. This routine refresh
+      // is a plain GET, so it answers "not_requested" — carry the click's
+      // verdict over. A real refusal (kill switch, setting turned off since)
+      // is honoured: only "not_requested" is the artefact of the refresh.
+      if (fillPack && fillPack.auto_submit === true && fresh.auto_submit !== true &&
+          fresh.auto_submit_reason === 'not_requested' &&
+          String(fillPack.app_id) === String(fresh.app_id)) {
+        fresh.auto_submit = true;
+        fresh.auto_submit_reason = fillPack.auto_submit_reason || 'ok';
+        if (!Array.isArray(fresh.auto_submit_hosts) || !fresh.auto_submit_hosts.length) {
+          fresh.auto_submit_hosts = Array.isArray(fillPack.auto_submit_hosts) ? fillPack.auto_submit_hosts : [];
+        }
+      }
+      pack = fresh;
     } else if (res.timedOut) {
       // Keep going with what we have, and say so — never a silent stall.
       refreshNote = 'SpotApply was slow to answer, so this fill uses the details you opened the job with.';
@@ -4859,6 +4887,13 @@ async function fillForm(fillPack) {
   // A description page (e.g. accenture.com/.../jobdetails) has search boxes and
   // cookie inputs but no application fields — so we must find & click Apply first.
   if (!hasApplicationForm()) {
+    // A challenge or a sign-in BEFORE the form is the site's own step: hand it
+    // to the human (overlay + telemetry → dashboard bell) and press nothing.
+    // Clicking "Apply" here used to skip the handoff entirely.
+    if (isCaptcha() || isLoginWall()) {
+      const paused = await runCopilotStep();
+      return paused || { ok: true, state: 'waiting' };
+    }
     findAndClickApply(pack);
     return { ok: true, state: 'opening_form', reason: 'Looking for the application form on this page.' };
   }
@@ -4897,16 +4932,37 @@ async function runCopilotStep() {
   }
   const pack = _copilotPack;
 
-  // Detect login wall or CAPTCHA — pause and guide user
-  if (isLoginWall()) {
-    showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
+  // Detect login wall or CAPTCHA — pause and guide user. Both are HANDOFFS to
+  // the human, never worked around: the extension fills the account email on
+  // a sign-in / create-account page (passwords stay with Chrome), names the
+  // verification code the site emailed, and tells the dashboard (telemetry →
+  // notification) so a user who switched tabs learns the form is waiting.
+  // A verification-code page has no password box, so it is not a "wall" by
+  // the rule above — but it is still the site's own step, not a form of ours:
+  // one code field and no application form = hand it to the human.
+  const codeField = verificationCodeField();
+  if (isLoginWall() || (codeField && !hasApplicationForm())) {
+    const code = codeField;
+    const emailed = prefillAccountEmail(pack);
+    if (code) {
+      showOverlay('📬 <b>Enter the verification code</b><br><small>' + escapeHtml(location.hostname) +
+                  ' emailed you a code — check your inbox (and spam), paste it here, and I\'ll continue once you\'re in.</small>', [], false);
+      reportHandoff(pack, 'verification_code_needed', {});
+    } else {
+      showOverlay('🔐 <b>Sign in or create your account to continue</b><br><small>' +
+                  (emailed ? 'Your email is filled in; ' : '') +
+                  'passwords stay with Chrome (use its "suggest strong password"). I\'ll auto-resume once you\'re in.</small>', [], false);
+      reportHandoff(pack, 'login_needed', { email_prefilled: emailed ? 'yes' : 'no' });
+    }
     watchForFormAppearance();
-    return;
+    return { ok: true, state: 'waiting', paused: code ? 'verification_code' : 'login',
+             reason: code ? 'Waiting for the verification code the site emailed you.' : 'Waiting for you to sign in.' };
   }
   if (isCaptcha()) {
     showOverlay('🤖 Please solve the CAPTCHA.<br><small>I\'ll continue automatically after.</small>', [], false);
+    reportHandoff(pack, 'captcha_needed', {});
     watchForFormAppearance();
-    return;
+    return { ok: true, state: 'waiting', paused: 'captcha', reason: 'Waiting for you to solve the CAPTCHA.' };
   }
 
   // Lock to prevent re-entrant calls
@@ -4951,27 +5007,274 @@ async function runCopilotStep() {
   const finalResult = refreshStepOverlay(pack);
   startStatusRefresh(pack);
 
+  // One-click submit: the server said this click approved the submission
+  // (pack.auto_submit). Press the form's own Submit only when the audit above
+  // left nothing for the user; otherwise stop and say what needs them.
+  let autoSubmit = null;
+  if (pack && pack.auto_submit) {
+    try {
+      autoSubmit = await maybeAutoSubmit(pack, finalResult);
+    } catch (e) {
+      console.warn('[SpotApply] one-click submit error:', e.message);
+      autoSubmit = { requested: true, attempted: false, reason: 'error' };
+    }
+  }
+
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
-  return summarizeStep(finalResult);
+  return summarizeStep(finalResult, autoSubmit);
 }
 
 /** The DO_FILL reply / popup message: counts, never an unconditional "Done". */
-function summarizeStep(r) {
+function summarizeStep(r, autoSubmit) {
   // Whether the board's own resume autofill was used on this page travels
   // with every reply, so the dashboard can measure how often it is offered,
   // taken and useful (fields_prefilled) without a second round-trip.
   const native = nativeAutofillOutcome();
-  if (!r) return { ok: true, state: 'filled', native_autofill: native };
+  const auto = autoSubmit || { requested: false, attempted: false, reason: 'not_requested' };
+  if (!r) return { ok: true, state: 'filled', native_autofill: native, auto_submit: auto };
   return {
     ok: true,
-    state: r.needUser || r.failed ? 'needs_review' : 'ready_for_review',
+    state: auto.attempted ? 'submitting' : (r.needUser || r.failed ? 'needs_review' : 'ready_for_review'),
     filled: r.filled || 0,
     needUser: r.needUser || 0,
     failed: r.failed || 0,
     problems: (r.problems || []).slice(0, 6),
     native_autofill: native,
+    auto_submit: auto,
   };
+}
+
+// ── One-click submit ──────────────────────────────────────────────────────────
+// Founder decision 2026-10-11 (docs/AUTO_APPLY_RESEARCH.md §5). The dashboard's
+// "Apply & Submit" click is the user's approval of ONE application; the server
+// turned it into pack.auto_submit after its own checks (setting on, login-free
+// allow-list, daily cap). This layer presses the form's own Submit button —
+// the same control the user would click — and only when nothing is left for
+// a human: no sign-in wall, no visible CAPTCHA, no unfilled required field,
+// browser validation satisfied. Everything else is a HANDOFF: the tab stays
+// open with the overlay naming what is missing, and the dashboard is told.
+// The attempt itself goes through noteSubmitAttempt, so "Submitted" is still
+// only ever written on the employer's confirmation page or the user's Yes.
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+const AUTO_SUBMIT_BLOCK_TEXT = {
+  host_not_allowed: 'this site is not on the one-click list',
+  different_page: 'this page is not the job you approved',
+  login_wall: 'the site asks you to sign in',
+  captcha: 'the site shows a CAPTCHA',
+  fields_need_you: 'some fields still need your answer',
+  no_submit_button: 'no Submit button was found on this page',
+  submit_disabled: 'the Submit button is disabled',
+  validation: 'the site rejected a field',
+  cancelled_by_user: 'you stopped it',
+  already_attempted: 'it was already submitted from this tab',
+};
+const _autoSubmitDone = new Set();
+
+/** A challenge the one-click gate must stop at. isCaptcha() is page-level and
+ * answers false whenever an application form is present, so it cannot see a
+ * checkbox or image challenge sitting INSIDE the form (Greenhouse's visual
+ * reCAPTCHA, Lever's hCaptcha). This looks at the widgets themselves: a
+ * visible widget container or challenge frame, or the board's own "complete
+ * the CAPTCHA" error. The hidden iframes Ashby embeds are not visible. */
+function captchaBlocksSubmit() {
+  const shown = (el) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 10 && el.offsetParent !== null;
+  };
+  const widgets = queryAllDeep('.g-recaptcha, .h-captcha, .cf-turnstile, .frc-captcha, #challenge-stage, ' +
+                               'iframe[src*="recaptcha"][src*="bframe"], iframe[src*="hcaptcha"][src*="challenge"]');
+  if (widgets.some(shown)) return true;
+  const text = String(document.body && document.body.innerText || '');
+  return /\b(complete|solve|finish) the (re)?captcha\b|\bverify (that )?you(?:'re| are) (a )?human\b|\bprove you(?:'re| are) (a )?human\b/i.test(text);
+}
+
+/** Is this page the approved posting's own? Same host and the same first path
+ * segment (the board's company slug on Greenhouse/Lever/Ashby/SmartRecruiters),
+ * so a tab that wandered to another employer's form is never submitted. */
+function samePosting(applyUrl, pageUrl) {
+  try {
+    const a = new URL(String(applyUrl || ''));
+    const b = new URL(String(pageUrl || location.href));
+    if (a.hostname.toLowerCase() !== b.hostname.toLowerCase()) return false;
+    const seg = (u) => u.pathname.split('/').filter(Boolean)[0] || '';
+    return seg(a).toLowerCase() === seg(b).toLowerCase();
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Exact host or a real subdomain of a server allow-listed suffix. */
+function autoSubmitAllowedHost(host, hosts) {
+  const list = Array.isArray(hosts) ? hosts : [];
+  return list.some((d) => typeof d === 'string' && d && hostIs(host, d.toLowerCase()));
+}
+
+/** The application form's own Submit control, or null. Never a sign-in form's. */
+function findSubmitControl() {
+  const visible = (el) => el && el.offsetParent !== null && !el.disabled &&
+    el.getAttribute('aria-disabled') !== 'true';
+  const text = (el) => String(el.value || el.textContent || el.getAttribute('aria-label') || '')
+    .replace(/\s+/g, ' ').trim();
+  const NEGATIVE = /\b(cancel|back|previous|next|continue|proceed|save|draft|sign ?in|log ?in|create account|register|search|subscribe|remove|delete|withdraw)\b/i;
+  const inLogin = (el) => { const f = el.closest && el.closest('form'); return !!(f && isLoginForm(f)); };
+  const all = queryAllDeep('button, input[type="submit"], input[type="button"], [role="button"]')
+    .filter((el) => visible(el) && !inLogin(el) && !NEGATIVE.test(text(el)));
+  // 1. A real submit control inside an application form, worded as one.
+  const typed = all.filter((el) => (el.tagName === 'INPUT' && el.type === 'submit') ||
+                                    (el.tagName === 'BUTTON' && (el.type === 'submit' || !el.getAttribute('type'))))
+                   .filter((el) => el.closest && el.closest('form') && formLooksLikeApplication(el.closest('form')));
+  const worded = (list) => list.find((el) => /\bsubmit\b/i.test(text(el))) ||
+                           list.find((el) => /^(apply( now)?|send application|apply for this job)$/i.test(text(el)));
+  // 2. A board whose Submit sits outside the <form> (React forms): only when
+  //    the page has an application form, and only a control that SAYS submit —
+  //    a job page's "Apply now" opens a form, it submits nothing.
+  const outside = hasApplicationForm() ? all.find((el) => /\bsubmit\b/i.test(text(el))) : null;
+  return worded(typed) || outside || null;
+}
+
+async function maybeAutoSubmit(pack, audit) {
+  const key = String(pack.app_id) + '|' + location.href.split('#')[0];
+  const done = (attempted, reason, extra) => {
+    const out = Object.assign({ requested: true, attempted, reason }, extra || {});
+    if (attempted) {
+      reportTelemetry(pack, 'auto_submit_attempted', { host: location.hostname });
+    } else {
+      reportTelemetry(pack, 'auto_submit_blocked', Object.assign({ reason }, extra || {}));
+      const why = AUTO_SUBMIT_BLOCK_TEXT[reason] || reason;
+      const list = (audit && audit.problems || []).slice(0, 4).map((p) => '<li>' + escapeHtml(p) + '</li>').join('');
+      showOverlay('✋ <b>Filled, but not submitted:</b> ' + escapeHtml(why) + '.<br>' +
+                  (list ? '<ul style="margin:6px 0 0 14px;padding:0;font-size:12px">' + list + '</ul>' : '') +
+                  '<small>Finish it here and click Submit yourself — SpotApply will record it when the site confirms.</small>',
+                  [], true);
+      console.log('[SpotApply] One-click submit held back:', reason);
+    }
+    return out;
+  };
+  if (_autoSubmitDone.has(key)) return { requested: true, attempted: false, reason: 'already_attempted' };
+  if (!autoSubmitAllowedHost(location.hostname, pack.auto_submit_hosts)) return done(false, 'host_not_allowed');
+  if (!samePosting(pack.apply_url, location.href)) return done(false, 'different_page');
+  if (isLoginWall()) return done(false, 'login_wall');
+  if (isCaptcha() || captchaBlocksSubmit()) return done(false, 'captcha');
+  if (!audit || audit.needUser > 0 || audit.failed > 0) return done(false, 'fields_need_you');
+  // Our own resume upload must have been acknowledged on a form that asks for one.
+  const fileInputs = queryAllDeep('input[type="file"]');
+  if (fileInputs.length && !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
+    return done(false, 'fields_need_you', { detail: 'resume not attached' });
+  }
+  const btn = findSubmitControl();
+  if (!btn) return done(false, 'no_submit_button');
+  if (btn.disabled) return done(false, 'submit_disabled');
+  const form = btn.closest && btn.closest('form');
+  if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) {
+    try { form.reportValidity(); } catch (_) {}
+    return done(false, 'validation');
+  }
+  _autoSubmitDone.add(key);
+  // Human pacing: never in a tab the user cannot see, and a 5 s countdown the
+  // user can stop — with the Stop button or by touching the form themselves.
+  const go = await submitCountdown(pack);
+  if (!go) { _autoSubmitDone.delete(key); return done(false, 'cancelled_by_user'); }
+  if (isCaptcha() || captchaBlocksSubmit()) { _autoSubmitDone.delete(key); return done(false, 'captcha'); }
+  showOverlay('🚀 <b>Submitting your application' + (pack.company ? ' to ' + escapeHtml(pack.company) : '') + '…</b><br>' +
+              '<small>SpotApply marks it Submitted only when the site confirms.</small>', [], false);
+  noteSubmitAttempt('one_click');          // SUBMIT_ATTEMPTED + the confirmation watch
+  try { btn.scrollIntoView({ block: 'center' }); } catch (_) {}
+  btn.click();
+  return done(true, 'clicked');
+}
+
+const AUTO_SUBMIT_DWELL_SECONDS = 5;
+/** "Submitting to {company} in 5… [Stop]": resolves true when the countdown
+ * ran out, false when the user stopped it (button, or their own trusted click
+ * or keystroke in the page). Waits while the tab is hidden — a submission
+ * never happens in a tab the user is not looking at. */
+function submitCountdown(pack) {
+  return new Promise((resolve) => {
+    let left = AUTO_SUBMIT_DWELL_SECONDS;
+    let finished = false;
+    const finish = (ok) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(tick);
+      document.removeEventListener('mousedown', onUser, true);
+      document.removeEventListener('keydown', onUser, true);
+      resolve(ok);
+    };
+    const onUser = (e) => {
+      if (!e.isTrusted) return;
+      const root = document.getElementById('hp-copilot-overlay');
+      if (root && e.composedPath && e.composedPath().includes(root)) return;   // the overlay's own Stop handles itself
+      finish(false);
+    };
+    const render = () => {
+      showOverlay('🚀 <b>Submitting your application' + (pack.company ? ' to ' + escapeHtml(pack.company) : '') +
+                  ' in ' + left + '…</b><br><small>Everything is filled. Click Stop, or anywhere in the form, to submit it yourself.</small>' +
+                  '<div style="margin-top:8px"><button data-hp-stop="1" style="background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Stop</button></div>',
+                  [], false);
+      const root = document.getElementById('hp-copilot-overlay');
+      const scope = (root && root.shadowRoot) || document;
+      const stop = scope.querySelector('[data-hp-stop="1"]');
+      if (stop) stop.addEventListener('click', () => finish(false));
+    };
+    document.addEventListener('mousedown', onUser, true);
+    document.addEventListener('keydown', onUser, true);
+    render();
+    const tick = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;   // hold while the tab is hidden
+      left -= 1;
+      if (left <= 0) { finish(true); return; }
+      render();
+    }, 1000);
+  });
+}
+
+/** A sign-in or create-account page: fill the account EMAIL (and a "confirm
+ * email" twin) from the profile, never a password. Returns true if it wrote. */
+function prefillAccountEmail(pack) {
+  const email = String(pack && pack.email || '').trim();
+  if (!email) return false;
+  let wrote = false;
+  const candidates = queryAllDeep('input[type="email"], input[autocomplete="email"], input[autocomplete="username"], ' +
+    'input[name*="email" i], input[id*="email" i], input[data-automation-id*="email" i], input[name*="username" i]')
+    .filter((el) => el.offsetParent !== null && el.type !== 'password' && !String(el.value || '').trim());
+  for (const el of candidates) {
+    try {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (setter && setter.set) setter.set.call(el, email); else el.value = email;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dataset.spotapplyFilled = 'true';
+      wrote = true;
+    } catch (_) {}
+  }
+  return wrote;
+}
+
+/** The field for an emailed one-time code, when the page is asking for one. */
+function verificationCodeField() {
+  const byAttr = queryAllDeep('input[autocomplete="one-time-code"], input[name*="otp" i], input[id*="otp" i], ' +
+                              'input[name*="verification" i], input[id*="verification" i], input[name*="passcode" i]')
+    .find((el) => el.offsetParent !== null);
+  if (byAttr) return byAttr;
+  return queryAllDeep('input:not([type="hidden"]):not([type="password"])').find((el) => {
+    if (el.offsetParent === null) return false;
+    const lbl = (labelText(el) || el.getAttribute('aria-label') || el.placeholder || '');
+    return /\b(verification|security|confirmation|one[- ]time|6[- ]digit)\b.*\bcode\b|\bcode\b.*\b(email|sent)\b/i.test(lbl);
+  }) || null;
+}
+
+/** A handoff to the human, once per page: the dashboard bell learns of it. */
+const _handoffReported = new Set();
+function reportHandoff(pack, event, meta) {
+  const key = event + '|' + location.href.split('#')[0];
+  if (_handoffReported.has(key)) return;
+  _handoffReported.add(key);
+  reportTelemetry(pack, event, Object.assign({ host: location.hostname }, meta || {}));
 }
 
 // Re-audit and re-render the status widget. Cheap (one querySelectorAll pass),
