@@ -208,8 +208,8 @@ Not built, on purpose:
    reached a confirmation (`/application/{id}/submit` with `how=one_click`).
    A board where most attempts end in `no_submit_button` or `validation`
    needs its form studied, not the gate loosened.
-2. Update the Chrome Web Store listing with the new behaviour (the 1.1.0
-   manifest is awaiting review): the one-click submit is opt-in, the user
+2. Update the Chrome Web Store listing with the new behaviour (manifest 1.2.0,
+   packaged 2026-10-12 for review): the one-click submit is opt-in, the user
    approves each application, and the extension never solves a CAPTCHA or
    stores a password. The Terms already say it.
 3. Build §3 step 2 (the inbox fetch of a verification code) only with the
