@@ -1518,9 +1518,13 @@
                    SAME height, actions pinned to the bottom — no ragged grid. */
                 #shortlisted-container, #submitted-container, #interviewing-container { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: stretch; }
                 @media (min-width: 1280px) { #shortlisted-container, #submitted-container, #interviewing-container { grid-template-columns: 1fr 1fr; } }
-                #shortlisted-container > #empty-shortlist-state,
-                #submitted-container > .text-center,
-                #interviewing-container > .text-center { grid-column: 1 / -1; }
+                /* Anything in these grids that is not a card (the "Apply today"
+                   divider, the month's earliness line, an empty state, "Show
+                   All") spans the whole row: in one cell it pushed the first
+                   card into the right column at >=1280px. */
+                #shortlisted-container > :not(.jobrow),
+                #submitted-container > :not(.jobrow),
+                #interviewing-container > :not(.jobrow) { grid-column: 1 / -1; }
                 #shortlisted-container .jobrow, #submitted-container .jobrow, #interviewing-container .jobrow { display: flex; flex-direction: column; height: 100%; }
                 #shortlisted-container .jr-flex, #submitted-container .jr-flex, #interviewing-container .jr-flex { flex: 1; display: flex; }
                 #shortlisted-container .jr-info, #submitted-container .jr-info, #interviewing-container .jr-info { display: flex; flex-direction: column; width: 100%; }
@@ -9097,7 +9101,9 @@
             const div = document.createElement('div');
             div.id = 'early-window-divider';
             div.setAttribute('role', 'note');
-            div.style.cssText = 'display:flex;align-items:center;gap:8px;margin:2px 4px 8px;font-size:11px;font-weight:800;color:#C2410C;';
+            // grid-column: the container is a two-column grid at >=1280px, and
+            // a divider in one cell pushed the first card into the right column.
+            div.style.cssText = 'grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:2px 4px 0;font-size:11px;font-weight:800;color:#C2410C;';
             div.innerHTML = '<span>⚡ Apply today — early window (' + nEarly + ')</span>' +
                 '<span style="font-weight:600;color:var(--muted,#94a3b8);">about 41% of a posting\'s applications arrive in its first 48 hours</span>';
             div.title = 'Postings still inside their first 48 hours, by fit. Dice.com job-board data via the St. Louis Fed: ~41% of applications to a posting arrive in the first 48 hours. A clock, not odds.';
