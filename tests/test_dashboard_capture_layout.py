@@ -229,14 +229,15 @@ def _node_in(tz: str, script: str):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-_TIME_FNS = "\n".join(_function(n) for n in ("_serverTime", "_agoLabel"))
+def _time_fns() -> str:
+    return "\n".join(_function(n) for n in ("_serverTime", "_agoLabel"))
 
 
 @needs_node
 def test_a_note_sent_24_and_a_half_hours_ago_is_not_sent_today():
     # The capture: seeded 2026-10-14 21:18:21 UTC, the LinkedIn note 24.5 h
     # earlier, the viewer in Chicago (UTC-5 in October).
-    out = _node_in("America/Chicago", _TIME_FNS + """
+    out = _node_in("America/Chicago", _time_fns() + """
 Date.now = () => Date.parse('2026-10-14T21:18:21Z');
 console.log(JSON.stringify({
   sent: _agoLabel('2026-10-13T20:48:21.776128'),
@@ -251,7 +252,7 @@ console.log(JSON.stringify({
 def test_today_and_yesterday_follow_the_viewers_calendar():
     # 00:10 in Chicago; a note sent at 23:50 the evening before (20 minutes
     # ago) is "yesterday", and one sent at 00:05 is "today".
-    out = _node_in("America/Chicago", _TIME_FNS + """
+    out = _node_in("America/Chicago", _time_fns() + """
 Date.now = () => Date.parse('2026-10-14T05:10:00Z');
 console.log(JSON.stringify([_agoLabel('2026-10-14T04:50:00'), _agoLabel('2026-10-14T05:05:00')]));
 """)
@@ -260,7 +261,7 @@ console.log(JSON.stringify([_agoLabel('2026-10-14T04:50:00'), _agoLabel('2026-10
 
 @needs_node
 def test_server_time_reads_a_naive_timestamp_as_utc_and_keeps_explicit_offsets():
-    out = _node_in("America/Chicago", _TIME_FNS + """
+    out = _node_in("America/Chicago", _time_fns() + """
 const t = s => { const d = _serverTime(s); return d ? d.toISOString() : null; };
 console.log(JSON.stringify({
   naive: t('2026-10-13T20:48:21'), micro: t('2026-10-13T20:48:21.776128'),
