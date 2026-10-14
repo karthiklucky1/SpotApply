@@ -7,6 +7,8 @@ only the one screen it was seen on.
    two-column shortlist grid, so the first card started in the right column.
 2. Phone: the job drawer's Auto-Fill / Mark Applied sat on top of the title
    ("Senior Backend Eng…") and the company wrapped a word a line.
+3. Phone: the Tailoring Studio's title got ~0px (it vanished; the subtitle
+   went a word a line) and its pills ran off the right edge.
 """
 from __future__ import annotations
 
@@ -86,3 +88,35 @@ def test_the_drawer_header_actions_take_their_own_row_on_a_phone():
     css = _phone_css()
     assert re.search(r"#jobModal \.jd-head \{[^}]*flex-wrap: wrap", css)
     assert re.search(r"#jobModalHeaderActions \{[^}]*order: 3;[^}]*flex: 1 1 100%;[^}]*flex-wrap: wrap", css)
+
+
+# ── 3. the Tailoring Studio header wraps ────────────────────────────────────
+
+def _ts_head() -> str:
+    m = re.search(r'<div id="ts-head"[^>]*>(.*?)\n     </div>\n     <div id="ts-stages"', HTML, re.S)
+    assert m, "the Tailoring Studio header moved — re-read this group"
+    return m.group(0)
+
+
+def test_the_studio_title_claims_space_and_the_pills_wrap():
+    head = _ts_head()
+    # The pills sit in their own wrapping row, never a shrink-0 one, and the
+    # close button is outside it so a phone can keep it beside the title.
+    pills = re.search(r'<div id="ts-pills" class="([^"]*)"', head)
+    assert pills and "shrink-0" not in pills.group(1).split()
+    for pill in ("ts-attempts", "ts-score", "ts-coverage", "ts-grounding"):
+        assert f'id="{pill}"' in head
+    pills_html = head[pills.start():head.index('id="ts-close"')]
+    assert "closeTailorStudio()" not in pills_html
+    assert re.search(r"#ts-head \{ flex-wrap: wrap;", HTML)
+    assert re.search(r"#ts-head-text \{ flex: 1 1 \d+px; \}", HTML)
+    assert re.search(r"#ts-pills \{ flex-wrap: wrap;[^}]*min-width: 0;", HTML)
+
+
+def test_on_a_phone_the_studio_pills_take_their_own_row():
+    css = _phone_css(767)
+    assert re.search(r"#ts-close \{ order: 1; \}", css)
+    assert re.search(r"#ts-pills \{ order: 2; flex: 1 1 100%;", css)
+    # The footer's four buttons wrap too instead of squeezing to three lines each.
+    assert re.search(r"#ts-actions \{ flex-wrap: wrap; \}", css)
+    assert 'id="ts-actions"' in HTML

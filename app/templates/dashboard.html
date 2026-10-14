@@ -904,6 +904,22 @@
       #jobModalHeaderActions { order: 3; flex: 1 1 100%; margin-right: 0; flex-wrap: wrap; }
       #jobModalHeaderActions:empty { display: none; }
     }
+    /* Tailoring Studio header: the title was a bare min-w-0 item beside a
+       shrink-0 pill row, so on a phone it got ~0px (the title vanished, the
+       subtitle went a word a line) and the pills ran off the right edge. The
+       title now claims the free space from a floor, the pills wrap, and on a
+       phone they take a row of their own under the title and the close. */
+    #ts-head { flex-wrap: wrap; row-gap: 8px; }
+    #ts-head-text { flex: 1 1 240px; }
+    #ts-pills { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+    #ts-pills:not(:has(> span:not(.hidden))) { display: none; }
+    #ts-close { flex-shrink: 0; }
+    @media (max-width: 767px) {
+      #ts-close { order: 1; }
+      #ts-pills { order: 2; flex: 1 1 100%; justify-content: flex-start; }
+      #ts-title { white-space: normal; }
+      #ts-actions { flex-wrap: wrap; }
+    }
     #jobModalClose, #referralClose, #connClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; font-size: 18px;
         color: var(--muted); background: var(--surface-2); transition: all .15s ease; }
@@ -1658,17 +1674,17 @@
  <div id="tailor-studio" style="display:none; position:fixed; inset:0; z-index:120;">
    <div onclick="closeTailorStudio()" style="position:absolute; inset:0; background:rgba(2,6,23,0.8); backdrop-filter:blur(6px);"></div>
    <div class="glass" style="position:relative; max-width:1080px; margin:3vh auto; max-height:94vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
-     <div class="flex items-center justify-between gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
-       <div class="min-w-0">
+     <div id="ts-head" class="flex items-center gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
+       <div id="ts-head-text" class="min-w-0">
          <div class="text-sm font-black text-white truncate" id="ts-title">✍️ Tailoring…</div>
          <div class="text-[10px] text-slate-500 mt-0.5" id="ts-subtitle">Grounded in your real resume — nothing invented.</div>
        </div>
-       <div class="flex items-center gap-2 shrink-0">
+       <div id="ts-pills" class="flex items-center gap-2">
          <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
          <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
          <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span> <span id="ts-grounding" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
-         <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
        </div>
+       <button type="button" id="ts-close" onclick="closeTailorStudio()" aria-label="Close the Tailoring Studio" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
      </div>
      <div id="ts-stages" class="px-6 py-3 text-[11px] font-bold text-indigo-300 flex items-center gap-2"><span class="animate-pulse">●</span><span id="ts-stage-text">Reading the job description…</span></div>
      <div class="px-6 pb-2 flex gap-1.5">
@@ -1685,7 +1701,7 @@
        <span id="ts-missing" style="color:var(--caution);font-weight:600"></span>
      </div>
      <div class="px-6 pb-3 hidden" id="ts-feedback"></div>
-     <div class="px-6 pb-5 flex gap-2">
+     <div id="ts-actions" class="px-6 pb-5 flex gap-2">
        <button type="button" id="ts-open-docs" class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl">📄 View Documents</button>
        <a id="ts-download-pdf" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Resume (PDF, 1 page)</a>
        <a id="ts-download" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Word (.docx)</a>
