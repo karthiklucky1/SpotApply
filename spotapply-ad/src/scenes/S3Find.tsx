@@ -17,10 +17,10 @@ import { ProfileCard } from "./S2Reveal";
 // drawer does.
 
 // Source-pixel rects in public/live/board.png and match.png (1075 px wide).
-const BOARD_SLICE_Y = { from: 196, to: 228 };
-const LUMEN_CARD = { x: 40, y: 384, w: 984, h: 710 };
-const MATCH_SLICE_Y = { from: 1090, to: 1150 };
-const WHY_BLOCK = { x: 28, y: 1462, w: 1019, h: 268 };
+const BOARD_SLICE_Y = { from: 181, to: 213 };
+const LUMEN_CARD = { x: 40, y: 369, w: 984, h: 710 };
+const MATCH_SLICE_Y = { from: 1027, to: 1087 };
+const WHY_BLOCK = { x: 28, y: 1400, w: 1019, h: 268 };
 const SLICE_H = 1100;
 
 export const boardGeom = (frame: number): ScreenGeom =>

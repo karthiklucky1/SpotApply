@@ -112,7 +112,7 @@ export const IntroScene: React.FC = () => {
             Meet
           </div>
           <div style={{ marginTop: 10, opacity: wordmark, scale: String(lerp(0.92, 1, wordmark)), transformOrigin: "left center" }}>
-            <Wordmark size={104} markSize={96} />
+            <Wordmark size={92} markSize={86} />
           </div>
           <div
             style={{

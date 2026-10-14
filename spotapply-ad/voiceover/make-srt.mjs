@@ -20,7 +20,9 @@ const ts = (frame) => {
   const p = (n, w = 2) => String(n).padStart(w, "0");
   return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
 };
-// Two lines of at most 42 characters per cue.
+// Two lines of at most 42 characters per cue. A cue that needs two lines is
+// split where the lines come out most even, so no line is left holding one
+// word ("posting says.").
 const wrap = (text) => {
   const words = text.split(" ");
   const rows = [""];
@@ -29,7 +31,14 @@ const wrap = (text) => {
     if ((row + " " + w).trim().length > 42) rows.push(w);
     else rows[rows.length - 1] = (row + " " + w).trim();
   }
-  return rows;
+  if (rows.length !== 2) return rows;
+  let best = rows;
+  for (let i = 1; i < words.length; i++) {
+    const a = words.slice(0, i).join(" ");
+    const b = words.slice(i).join(" ");
+    if (a.length <= 42 && b.length <= 42 && Math.max(a.length, b.length) < Math.max(best[0].length, best[1].length)) best = [a, b];
+  }
+  return best;
 };
 
 const cues = [];

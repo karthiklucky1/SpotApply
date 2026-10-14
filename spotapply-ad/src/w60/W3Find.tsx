@@ -11,8 +11,8 @@ import { SCENES60 } from "./timeline60";
 
 // Source px (2560x1600) in public/live60/board.png and match.png.
 export const BOARD = {
-  shortlist: { x: 180, y: 300, w: 2040 } as Focus, // tabs, divider and first cards
-  lumenCard: { x: 230, y: 600, w: 1000, h: 430 }, // re-measured after each recapture
+  shortlist: { x: 400, y: 560, w: 1360 } as Focus, // stage tabs, the divider, the Lumen card
+  lumenCard: { x: 446, y: 849, w: 1002, h: 470 }, // re-measured after each recapture
 };
 export const MATCH = {
   report: { x: 400, y: 540, w: 1520 } as Focus,

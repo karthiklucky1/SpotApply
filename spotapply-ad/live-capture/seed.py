@@ -149,7 +149,7 @@ JOBS = [
          posted=ago(hours=2, minutes=5), found=ago(hours=1, minutes=58), last_seen=ago(minutes=4),
          score=94.0, prescore=91.0, hire=0.82,
          reason=("Six years of Python/FastAPI against their core requirement, plus the Kafka event "
-                 "pipeline experience this role centres on. Seniority and location match."),
+                 "pipeline experience this role centers on. Seniority and location match."),
          breakdown={"skills": {"score": 95, "note": "Python, FastAPI, Kafka and PostgreSQL all match the core stack"},
                     "experience": {"score": 92, "note": "Six years of backend work against a 5+ year ask"},
                     "location": {"score": 100, "note": "Remote (US); you are in Austin, TX"},
@@ -402,7 +402,7 @@ COVER = """Dear Lumen Data hiring team,
 
 I'm applying for the Senior Backend Engineer role on your Platform Engineering team. For the past six years I've been a backend engineer at Brightwave Logistics, where I built FastAPI APIs supporting 50k requests a day and ran the Kafka event pipeline for our order updates.
 
-Your posting centres on Python services and Kafka event pipelines. That matches my day-to-day work: building APIs in Python and FastAPI, and running an event pipeline on Kafka. PostgreSQL is part of my core toolkit as well.
+Your posting centers on Python services and Kafka event pipelines. That matches my day-to-day work: building APIs in Python and FastAPI, and running an event pipeline on Kafka. PostgreSQL is part of my core toolkit as well.
 
 I'd welcome the chance to talk about how I could help your platform team. Thank you for your time.
 

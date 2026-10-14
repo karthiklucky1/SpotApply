@@ -14,9 +14,9 @@ import { SCENES60 } from "./timeline60";
 // Source px in public/live60/match_sponsor.png.
 // The card spans the report's full width, so the camera eases in only as far
 // as keeps the whole card (and the note under it) inside the window.
-const WIDE: Focus = { x: 360, y: 560, w: 1600 };
+const WIDE: Focus = { x: 380, y: 560, w: 1520 }; // stops short of the side panel's blue rule (x 1912)
 const CLOSE: Focus = { x: 400, y: 640, w: 1500 };
-const CARD = { x: 432, y: 1170, w: 1424, h: 164 };
+const CARD = { x: 430, y: 982, w: 1436, h: 180 };
 
 const camera = (frame: number) =>
   cameraAt(frame, [

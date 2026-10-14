@@ -24,12 +24,22 @@ const ROW_Y = (r: number) => WIN.y + WINDOW_BAR + 132 + r * 104;
 const INPUT_H = 54;
 const HALF = (FORM_W - 20) / 2;
 
-type FieldDef = { label: string; value: React.ReactNode; row: number; col: 0 | 1 | 2; fill: number };
+// `left`/`width` override the half-and-half grid where a value needs the room:
+// the email is wider than a half column once its check badge sits beside it.
+type FieldDef = {
+  label: string;
+  value: React.ReactNode;
+  row: number;
+  col: 0 | 1 | 2;
+  fill: number;
+  left?: number;
+  width?: number;
+};
 const FIELDS: FieldDef[] = [
   { label: "First name", value: CANDIDATE.name.split(" ")[0], row: 0, col: 0, fill: 28 },
   { label: "Last name", value: CANDIDATE.name.split(" ")[1], row: 0, col: 1, fill: 31 },
-  { label: "Email", value: CANDIDATE.email, row: 1, col: 0, fill: 35 },
-  { label: "Phone", value: CANDIDATE.phone, row: 1, col: 1, fill: 39 },
+  { label: "Email", value: CANDIDATE.email, row: 1, col: 0, fill: 35, width: 360 },
+  { label: "Phone", value: CANDIDATE.phone, row: 1, col: 1, fill: 39, left: 380, width: 220 },
   {
     label: "Resume",
     value: (
@@ -47,17 +57,22 @@ const FIELDS: FieldDef[] = [
 const REVIEW_AT = [96, 102, 108, 114, 120, 126];
 const PRESS_AT = 146;
 
-const fieldX = (f: FieldDef) => FORM_X + (f.col === 1 ? HALF + 20 : 0);
-const fieldW = (f: FieldDef) => (f.col === 2 ? FORM_W : HALF);
+const fieldX = (f: FieldDef) => FORM_X + (f.left ?? (f.col === 1 ? HALF + 20 : 0));
+const fieldW = (f: FieldDef) => f.width ?? (f.col === 2 ? FORM_W : HALF);
 
 // The LIVE settings capture (public/live60/settings.png, 2560x1600).
-const SETTINGS_FOCUS: Focus = { x: 800, y: 260, w: 1500 };
-const ONE_CLICK = { x: 810, y: 590, w: 1450, h: 230 }; // re-measured after each recapture
+// The One-click section is the full width of the profile modal: the camera
+// rings it at the modal's width, then pushes in until "Off: fill only, I click
+// Submit" reads at a glance (its help text runs on past the right edge).
+const SETTINGS_FOCUS: Focus = { x: 290, y: 350, w: 1980 };
+const SETTINGS_CLOSE: Focus = { x: 296, y: 672, w: 1300 }; // starts under the title help line
+const ONE_CLICK = { x: 302, y: 694, w: 1956, h: 226 }; // re-measured after each recapture
 
 const settingsCam = (frame: number) =>
   cameraAt(frame, [
     [0, SETTINGS_FOCUS],
-    [1, SETTINGS_FOCUS],
+    [222, SETTINGS_FOCUS],
+    [250, SETTINGS_CLOSE],
   ]);
 
 export const ApplyFinalWindow: React.FC<{ readonly style?: React.CSSProperties }> = ({ style }) => (
@@ -233,7 +248,7 @@ export const ApplyScene60: React.FC = () => {
 
   // The person's cursor reads the fields, then clicks Submit.
   const path: Array<[number, number, number]> = [
-    [84, 1500, 980],
+    [84, 1560, 790], // enters inside the employer window, under the panel
     ...FIELDS.map((f, i): [number, number, number] => [REVIEW_AT[i], fieldX(f) + fieldW(f) - 40, ROW_Y(f.row) + 30 + INPUT_H / 2 + 6]),
     [140, FORM_X + FORM_W / 2 + 20, ROW_Y(4) + 6 + 36],
   ];
@@ -255,7 +270,7 @@ export const ApplyScene60: React.FC = () => {
   // One-click submit: the real setting slides in over the form.
   const settings = prog(frame, 172, 20, ease.inOut);
   const sc = settingsCam(frame);
-  const settingsRing = prog(frame, 196, 10) * (1 - prog(frame, SCENES60.apply - 12, 6));
+  const settingsRing = prog(frame, 194, 10) * (1 - prog(frame, 218, 6));
 
   const supportA = prog(frame, 22, 18) * (1 - prog(frame, 164, 8));
   const supportB = prog(frame, 176, 16) * (1 - prog(frame, SCENES60.apply - 10, 9));
@@ -272,7 +287,7 @@ export const ApplyScene60: React.FC = () => {
         <AppWindow src="live60/settings.png" focus={sc} style={{ translate: `${(1 - settings) * 1100}px 0px` }} />
       ) : null}
       <Focus60 rect={toCanvas60(STAGE_WINDOW, sc, ONE_CLICK)} t={settingsRing} />
-      <Note x={1430} y={100} t={prog(frame, 200, 10) * (1 - prog(frame, SCENES60.apply - 12, 6))} tone="ink">
+      <Note x={1430} y={100} t={prog(frame, 198, 10) * (1 - prog(frame, SCENES60.apply - 12, 6))} tone="ink">
         Off unless you turn it on
       </Note>
 

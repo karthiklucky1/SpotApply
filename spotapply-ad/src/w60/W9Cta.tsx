@@ -9,26 +9,27 @@ import { Wordmark } from "../components/Logo";
 import { AppWindow, DarkBg, FULL, type WindowGeom } from "./components";
 import { COL } from "./layout";
 
-// 54-60s. The end card, widescreen: the deep-blue sheet rises over the recap;
+// 53-60s. The end card, widescreen: the deep-blue sheet rises over the recap;
 // message on the left, three real desktop screens fanned on the right
-// (tagged demo data). Lands by ~1.9 s, then holds perfectly still.
+// (tagged demo data). Everything lands by frame 40 (1.3 s), then holds
+// perfectly still for the last 5.7 s.
 
 const FAN: readonly { src: string; geom: WindowGeom; rotate: number; at: number }[] = [
-  { src: "live60/board.png", geom: { x: 1020, y: 96, w: 740, viewH: 463 }, rotate: -6, at: 20 },
-  { src: "live60/tailor.png", geom: { x: 1100, y: 470, w: 740, viewH: 463 }, rotate: 5, at: 26 },
-  { src: "live60/match.png", geom: { x: 940, y: 290, w: 740, viewH: 463 }, rotate: -1, at: 32 },
+  { src: "live60/board.png", geom: { x: 1020, y: 96, w: 740, viewH: 463 }, rotate: -6, at: 12 },
+  { src: "live60/tailor.png", geom: { x: 1100, y: 470, w: 740, viewH: 463 }, rotate: 5, at: 16 },
+  { src: "live60/match.png", geom: { x: 940, y: 290, w: 740, viewH: 463 }, rotate: -1, at: 20 },
 ];
 
 const rise = (frame: number, at: number, dist = 40) => {
-  const t = prog(frame, at, 20);
+  const t = prog(frame, at, 16);
   return { opacity: t, translate: `0px ${(1 - t) * dist}px` };
 };
 
 export const CtaScene60: React.FC = () => {
   const frame = useCurrentFrame();
   const sheet = prog(frame, 0, 15, ease.inOut);
-  const lockup = prog(frame, 10, 22);
-  const underline = prog(frame, 34, 18, ease.inOut);
+  const lockup = prog(frame, 8, 16);
+  const underline = prog(frame, 24, 14, ease.inOut);
 
   return (
     <AbsoluteFill style={{ fontFamily: FONTS.sans }}>
@@ -43,7 +44,7 @@ export const CtaScene60: React.FC = () => {
         <DarkBg />
 
         {FAN.map((card) => {
-          const t = prog(frame, card.at, 22);
+          const t = prog(frame, card.at, 18);
           return (
             <AppWindow
               key={card.src}
@@ -72,7 +73,7 @@ export const CtaScene60: React.FC = () => {
             color: "rgba(255,255,255,0.85)",
             fontWeight: 600,
             fontSize: 20,
-            ...rise(frame, 40, 16),
+            ...rise(frame, 24, 16),
           }}
         >
           Demo data
@@ -82,7 +83,7 @@ export const CtaScene60: React.FC = () => {
           <Wordmark size={92} markSize={86} color="#FFFFFF" />
         </div>
         <div style={{ position: "absolute", left: COL.x, top: 352 }}>
-          <div style={{ fontWeight: 800, fontSize: 86, letterSpacing: "-0.035em", lineHeight: 1.04, color: "#FFFFFF", ...rise(frame, 14) }}>
+          <div style={{ fontWeight: 800, fontSize: 86, letterSpacing: "-0.035em", lineHeight: 1.04, color: "#FFFFFF", ...rise(frame, 11) }}>
             {COPY.taglineA}
           </div>
           <div
@@ -93,13 +94,13 @@ export const CtaScene60: React.FC = () => {
               lineHeight: 1.0,
               color: COLORS.skyOnDark,
               marginTop: 2,
-              ...rise(frame, 19),
+              ...rise(frame, 14),
             }}
           >
             {COPY.taglineB}
           </div>
         </div>
-        <div style={{ position: "absolute", left: COL.x, top: 640, ...rise(frame, 24) }}>
+        <div style={{ position: "absolute", left: COL.x, top: 640, ...rise(frame, 17) }}>
           <div
             style={{
               display: "inline-flex",
@@ -118,7 +119,7 @@ export const CtaScene60: React.FC = () => {
             <ArrowRightIcon size={46} color={COLORS.accent700} stroke={2.8} />
           </div>
         </div>
-        <div style={{ position: "absolute", left: COL.x, top: 798, fontWeight: 700, fontSize: 64, letterSpacing: "-0.02em", color: "#FFFFFF", ...rise(frame, 28) }}>
+        <div style={{ position: "absolute", left: COL.x, top: 798, fontWeight: 700, fontSize: 64, letterSpacing: "-0.02em", color: "#FFFFFF", ...rise(frame, 20) }}>
           {COPY.url}
         </div>
         <BluePath d={`M ${COL.x} 892 C ${COL.x + 160} 904, ${COL.x + 360} 904, ${COL.x + 530} 890`} progress={underline} stroke={6} head={false} />

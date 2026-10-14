@@ -19,12 +19,12 @@ const RECEIPT = { x: 92, y: 698, w: 434, h: 70 };
 const OUTREACH = stageGeom(
   [
     { y: 140, h: 262 }, // "Outreach kit" header + what it does
-    { y: 788, h: 720 }, // the hiring-manager email draft
+    { y: 1362, h: 720 }, // the hiring-manager email draft
   ],
   840,
   690,
 );
-const SEND_LINKS = { x: 378, y: 1334, w: 556, h: 68 };
+const SEND_LINKS = { x: 374, y: 1906, w: 562, h: 72 };
 
 export const TrackScene: React.FC = () => {
   const frame = useCurrentFrame();

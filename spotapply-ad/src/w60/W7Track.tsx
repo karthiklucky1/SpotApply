@@ -12,12 +12,13 @@ import { SCENES60 } from "./timeline60";
 // Source px in public/live60/submitted.png and outreach.png (re-measured
 // after each recapture).
 export const SUBMITTED = {
-  focus: { x: 180, y: 300, w: 2040 } as Focus,
-  receipt: { x: 1000, y: 680, w: 440, h: 50 },
+  focus: { x: 420, y: 440, w: 1300 } as Focus, // stage tabs, the early line, the Lumen card
+  receipt: { x: 846, y: 758, w: 354, h: 48 },
 };
 export const OUTREACH = {
-  focus: { x: 560, y: 120, w: 1440 } as Focus,
-  sendLinks: { x: 960, y: 900, w: 560, h: 60 },
+  top: { x: 580, y: 70, w: 1400 } as Focus, // the kit opens at its title
+  email: { x: 580, y: 620, w: 1400 } as Focus, // then reads down to the email draft
+  sendLinks: { x: 902, y: 1338, w: 452, h: 60 },
 };
 
 const subCam = (frame: number) =>
@@ -28,8 +29,9 @@ const subCam = (frame: number) =>
   ]);
 const outCam = (frame: number) =>
   cameraAt(frame, [
-    [96, OUTREACH.focus],
-    [97, OUTREACH.focus],
+    [96, OUTREACH.top],
+    [112, OUTREACH.top],
+    [136, OUTREACH.email],
   ]);
 
 export const TrackFinalWindow: React.FC<{ readonly style?: React.CSSProperties }> = ({ style }) => (
@@ -45,7 +47,7 @@ export const TrackScene60: React.FC = () => {
   const oc = outCam(frame);
 
   const receipt = prog(frame, 48, 10) * (1 - prog(frame, 92, 6));
-  const links = prog(frame, 122, 10) * (1 - prog(frame, SCENES60.track - 12, 6));
+  const links = prog(frame, 138, 10) * (1 - prog(frame, SCENES60.track - 12, 6));
 
   return (
     <AbsoluteFill>
@@ -64,7 +66,7 @@ export const TrackScene60: React.FC = () => {
 
       {drawer > 0 ? <AppWindow src="live60/outreach.png" focus={oc} style={{ translate: `${(1 - drawer) * 1100}px 0px` }} /> : null}
       <Focus60 rect={toCanvas60(STAGE_WINDOW, oc, OUTREACH.sendLinks)} t={links} radius={30} />
-      <Note x={1180} y={100} t={prog(frame, 124, 10) * (1 - prog(frame, SCENES60.track - 12, 6))} tone="ink">
+      <Note x={1180} y={100} t={prog(frame, 120, 10) * (1 - prog(frame, SCENES60.track - 12, 6))} tone="ink">
         Drafts only: you send from your own account
       </Note>
 

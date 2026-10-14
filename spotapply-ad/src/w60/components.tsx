@@ -335,35 +335,20 @@ export const ChapterRail: React.FC<{ readonly frame: number; readonly opacity: n
   const x0 = COL.x;
   const gap = 238;
   const active = allDone ? CHAPTERS.length : CHAPTERS.filter((c) => frame >= c.at).length - 1;
+  // Each step is [dot][label][segment to the next dot], laid out by flex so a
+  // segment always starts after its label: one continuous line under the row
+  // struck through every label.
   return (
-    <div style={{ position: "absolute", left: 0, top: RAIL_Y, width: 1920, opacity, fontFamily: FONTS.sans }}>
-      <div
-        style={{
-          position: "absolute",
-          left: x0 + 8,
-          top: 10,
-          width: gap * (CHAPTERS.length - 1),
-          height: 3,
-          background: COLORS.border,
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: x0 + 8,
-          top: 10,
-          width: gap * Math.max(0, Math.min(CHAPTERS.length - 1, active)),
-          height: 3,
-          background: COLORS.accent,
-        }}
-      />
+    <div style={{ position: "absolute", left: x0, top: RAIL_Y, height: 22, opacity, fontFamily: FONTS.sans, display: "flex" }}>
       {CHAPTERS.map((c, i) => {
         const done = i < active || allDone;
         const on = i === active && !allDone;
+        const last = i === CHAPTERS.length - 1;
         return (
-          <div key={c.n} style={{ position: "absolute", left: x0 + i * gap, top: 0, display: "flex", alignItems: "center", gap: 12 }}>
+          <div key={c.n} style={{ width: last ? undefined : gap, display: "flex", alignItems: "center", gap: 12 }}>
             <span
               style={{
+                flex: "none",
                 width: 22,
                 height: 22,
                 borderRadius: 11,
@@ -375,13 +360,18 @@ export const ChapterRail: React.FC<{ readonly frame: number; readonly opacity: n
             />
             <span
               style={{
+                flex: "none",
                 fontWeight: on ? 700 : 600,
                 fontSize: 22,
+                lineHeight: "22px",
                 color: on ? COLORS.ink : done ? COLORS.inkSoft : COLORS.muted,
               }}
             >
               {c.label}
             </span>
+            {last ? null : (
+              <span style={{ flex: 1, height: 3, marginRight: 14, borderRadius: 2, background: done ? COLORS.accent : COLORS.border }} />
+            )}
           </div>
         );
       })}

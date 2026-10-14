@@ -15,10 +15,10 @@ import { CandidateChip, MatchScreenFinal } from "./S3Find";
 // resume" (degree, employer and dates never altered) and the one-page PDF.
 
 // Source-pixel rects in public/live/tailor.png (1075 px wide).
-const SLICE_Y = { from: 548, to: 1110 };
-const SUMMARY = { x: 164, y: 1034, w: 760, h: 270 };
-const LOCKED = { x: 60, y: 1524, w: 955, h: 210 };
-const PDF_BUTTON = { x: 340, y: 2058, w: 254, h: 152 };
+const SLICE_Y = { from: 473, to: 1110 };
+const SUMMARY = { x: 164, y: 959, w: 760, h: 270 };
+const LOCKED = { x: 60, y: 1479, w: 955, h: 210 };
+const PDF_BUTTON = { x: 457, y: 2012, w: 430, h: 94 };
 
 export const tailorGeom = (frame: number): ScreenGeom =>
   stageGeom([{ y: lerp(SLICE_Y.from, SLICE_Y.to, prog(frame, 60, 34, ease.inOut)), h: 1100 }]);

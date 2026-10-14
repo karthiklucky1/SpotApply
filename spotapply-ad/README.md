@@ -1,7 +1,9 @@
-# SpotApply — 30-second social ad (v2: voiceover + live app screens)
+# SpotApply — 30-second social ad + 60-second explainer
 
-A Remotion (React + TypeScript) project that renders a 30-second vertical ad
-for SpotApply: **"Your experience. Less busywork."**
+A Remotion (React + TypeScript) project that renders two videos for
+SpotApply, **"Your experience. Less busywork."**: a 30-second vertical ad
+(below) and a [60-second widescreen explainer](#the-60-second-explainer)
+with its own layout.
 
 | | |
 |---|---|
@@ -26,6 +28,9 @@ npm run render        # → out/spotapply-social-30s.mp4 (with voiceover)
 npm run render:silent # → out/spotapply-social-30s-silent.mp4
 npm run captions      # → out/spotapply-social-30s.srt
 npm run poster        # → out/spotapply-social-30s-poster.png
+npm run render:60     # → out/spotapply-explainer-60s.mp4
+npm run captions:60   # → out/spotapply-explainer-60s.srt
+npm run poster:60     # → out/spotapply-explainer-60s-poster.png
 npm run lint          # eslint + tsc
 ```
 
@@ -59,6 +64,41 @@ fictional demo account; see [`live-capture/`](live-capture/README.md)).
 Each scene starts from the exact last frame of the one before, so the
 hand-offs read as one piece of UI rather than cuts.
 
+## The 60-second explainer
+
+| | |
+|---|---|
+| Output | `out/spotapply-explainer-60s.mp4` (composition `SpotApplyExplainer60`, `src/w60/`) |
+| Format | 1920×1080, 30 fps, 1800 frames, 60.0 s, H.264 High, yuv420p, BT.709 (limited range) |
+| Audio | Voiceover (same voice), AAC 48 kHz. Measured: -13.8 LUFS integrated, -2.0 dBFS true peak. No music. |
+| Captions | `out/spotapply-explainer-60s.srt` |
+| Poster | `out/spotapply-explainer-60s-poster.png` (frame 540: the fit breakdown) |
+
+A redesign, not a longer cut: widescreen instead of vertical; the message
+sits in a left column (a serif chapter number, eyebrow, headline, one line of
+support) and the product in a desktop app window on the right, where a
+camera pans and pushes in across the real desktop screens (`Focus` rects in
+source pixels, `src/w60/components.tsx`); a five-step chapter rail runs
+along the bottom. The live screens are the desktop captures in
+`public/live60/` (1280×800 @2x, `live-capture/capture_v3.py`).
+
+| Time | Scene | On screen | Voiceover |
+|---|---|---|---|
+| 0–5.4 s | `W1Problem` (illustrated, dark) | Six forms from six fictional employers fill with the same name and email, then fold into one resume file. **"Another search. Another form."** | "Another job search. More tabs. Another form, asking for the same details." |
+| 5.4–11 s | `W2Intro` (illustrated) | A light circle opens from the file: **Meet SpotApply**, the upload card ("Read: 6 years · 4 core skills"), target roles and where (Backend / Platform Engineer, United States, Remote, Open to relocating: Seattle, WA). | "Meet SpotApply. Upload your resume once, and choose the roles and places you want." |
+| 11–18.8 s | `W3Find` (**LIVE**) | The board's **Apply today** divider with the Lumen Data card ringed ("⚡ Posted 2 hours ago: apply today"), then its match report: **why it matched** and the **fit breakdown** (skills · experience · location · work auth). **01 Find "Fresh roles that fit." → 02 Understand "See exactly why."** | "It finds fresh roles that fit, and shows you exactly why: skills, experience, location." |
+| 18.8–24.2 s | `W4Sponsor` (**LIVE**) | The same report's **sponsorship card**, as a candidate who needs sponsorship sees it (labelled on screen): "Sponsorship not stated … worth a quick ask", with **"Check employer requirements"**. **"Sponsorship, researched."** | "If you need sponsorship, it shows what the posting says. Always check with the employer." |
+| 24.2–33.6 s | `W5Tailor` (**LIVE**) | **Tailoring Studio**: the summary's keywords highlighted, **Locked to your resume** (degree, employer, dates never altered), the **cover letter** tab, the **one-page PDF and Word** downloads. **03 Prepare "Tailored, not invented."** | "It tailors your resume and cover letter from what you've actually done. Your degree, employers and dates stay locked." |
+| 33.6–43.6 s | `W6Apply` (illustrated form + **LIVE** setting) | The employer's form fills from SpotApply's in-browser panel ("Review the answers, then click Submit yourself."); the person's cursor checks each field and clicks Submit. Then the real **One-click submit** setting, "Off: fill only, I click Submit": **"Off unless you turn it on"**. **04 Review "Filled for you. Sent by you."** | "It fills the form in your browser. You review every answer, and click Submit. Or approve it with one click, if you turn that on." |
+| 43.6–50 s | `W7Track` (**LIVE**) | The Submitted tab's **earliness receipt** ("A measured clock, not a promise"), then the **Outreach kit**, reading down to the email draft and its **Gmail / Outlook / Mail app** links ("Drafts only: you send from your own account"). **05 Track "Know how early you applied."** | "Track every application, see how early you applied, and follow up with a ready-made email." |
+| 50–53 s | `W8Recap` | **Find. Understand. Prepare. Review. Track.** | (the same five words) |
+| 53–60 s | `W9Cta` (dark) | The end card, widescreen: white wordmark, "Your experience. *Less busywork.*", **Start free**, **app.spotapply.ai**, a fan of three real screens (tagged "Demo data"). Lands by 54.3 s, then holds perfectly still for 5.7 s. | "Your experience. Less busywork. Start free with SpotApply." (ends 57.0 s) |
+
+The sponsorship scene is the one place the demo profile changes: Maya Chen
+is a US citizen (her card reads "No sponsorship needed"), so the card is shot
+with an F-1 OPT profile and the scene says "Shown for a candidate who needs
+sponsorship". It is a research signal, never a promise.
+
 ## Product truth
 
 The live site is blocked from the build environment, so "live" means the
@@ -77,10 +117,14 @@ current code on this branch running locally. Claims follow
   an offer.
 - **Fit score 94** appears as the app shows it, in a scene labelled demo data;
   it is never presented as an interview chance.
-- **Not shown on purpose:** LinkedIn drafts (the offline demo can't run the
-  AI shortening, so they show as over LinkedIn's 300-character limit), the
-  GitHub outreach note (it claims open-source activity the lookup did not
-  find), prices, promotions, testimonials, customer counts, sponsorship.
+- **Sponsorship is never promised.** The 30-second ad leaves it out; the
+  explainer shows the card as a research signal with "Check employer
+  requirements" beside it.
+- **Not shown on purpose:** prices, promotions, testimonials, customer
+  counts, interview or offer outcomes. (The LinkedIn drafts that ran past
+  300 characters and the GitHub note that claimed open-source activity the
+  lookup did not find were app bugs, fixed on this branch; see
+  `live-capture/README.md`.)
 - **Demo data:** every product scene carries "Demo data · fictional candidate
   and companies". Maya Chen, Brightwave Logistics, Lumen Data, Orchard Systems
   and the rest are fictional; email uses `example.com`; the phone number is
@@ -98,11 +142,13 @@ src/
   story.ts        the one candidate and role (must match the live seed)
   timeline.ts     scene lengths + where each voiceover line starts
   SocialAd30.tsx  main composition: background, scenes, demo label, voiceover
+  w60/            the 60-second explainer: layout, timeline60, components, W1Problem … W9Cta
   components/     Screen (live captures + focus rings), Headline, Logo, BluePath, Cursor, ...
   scenes/         S1Hook … S7Cta
 public/
-  live/           the five live captures used (board, match, tailor, submitted, outreach)
-  voiceover/      the seven narration clips (-16 LUFS, 48 kHz mono)
+  live/           the five phone captures the 30-second ad uses
+  live60/         the eight desktop captures the explainer uses
+  voiceover/      the narration clips: seven for the ad, nine (w_*) for the explainer (-16 LUFS, 48 kHz mono)
   fonts/, brand/  Outfit + Instrument Serif (OFL) and the SpotApply mark
 voiceover/        lines.json, synthesis + ASR-check scripts, SRT builder, provenance
 live-capture/     run the app locally on fictional data and re-shoot the screens
@@ -112,7 +158,7 @@ live-capture/     run the app locally on fictional data and re-shoot the screens
 
 | Asset | Source | Licence / status |
 |---|---|---|
-| Live screens (`public/live/`) | The SpotApply app (this repo), fictional demo seed | SpotApply's own UI |
+| Live screens (`public/live/`, `public/live60/`) | The SpotApply app (this repo), fictional demo seed | SpotApply's own UI |
 | Narration (`public/voiceover/`) | Kokoro-82M, voice `af_heart`, synthesized locally | Apache-2.0 (model + voices); provenance in `voiceover/README.md` |
 | Outfit, Instrument Serif | `@fontsource/*` (npm) | SIL Open Font License 1.1 (`public/fonts/`) |
 | SpotApply mark | `app/static/favicon.svg`, redrawn in `Logo.tsx` | SpotApply's own brand asset |

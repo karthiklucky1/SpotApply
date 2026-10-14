@@ -3,8 +3,11 @@ dist
 .DS_Store
 .env
 
-# Renders are ignored, except the two deliverables.
+# Renders are ignored, except the deliverables (30 s ad + 60 s explainer).
 out/*
 !out/spotapply-social-30s.mp4
 !out/spotapply-social-30s-poster.png
 !out/spotapply-social-30s.srt
+!out/spotapply-explainer-60s.mp4
+!out/spotapply-explainer-60s-poster.png
+!out/spotapply-explainer-60s.srt

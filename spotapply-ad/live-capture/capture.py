@@ -58,12 +58,6 @@ try {
 """
 
 
-TEXTFIX = """() => { let n = 0;
-  document.querySelectorAll('.jr-actions button').forEach(b => {
-    if (b.textContent.includes('&amp;')) { b.textContent = b.textContent.replace('&amp;', '&'); n++; } });
-  return n; }"""
-
-
 def phase(*args):
     out = subprocess.run([PY, os.path.join(LIVE, "phase.py"), *args], capture_output=True, text=True,
                          env=os.environ.copy())
@@ -168,20 +162,6 @@ async def step_board(page, vp):
         if (d) window.scrollTo(0, d.getBoundingClientRect().top + window.scrollY - (innerWidth < 769 ? 96 : 8)); }""")
     await page.wait_for_timeout(500)
     await shot(page, vp, "01_board_divider", what="Scrolled so the Apply today divider is at the top")
-    # TEXT-FIX VARIANT (clearly labelled): the card's button label is double-escaped by
-    # _board_macros.html (literal '&amp;' inside an autoescaped expression -> "Auto-Fill &amp; Apply").
-    # Same frame with ONLY that label corrected to what the template intends.
-    n = await page.evaluate(TEXTFIX)
-    LOG.setdefault("textfix", []).append(f"{vp}: {n} button labels corrected")
-    await page.wait_for_timeout(200)
-    await shot(page, vp, "01_board_divider_textfix", what="Same as 01_board_divider, '&amp;' label corrected (capture-time DOM text fix)")
-    await page.evaluate("window.scrollTo(0, 0)")
-    await page.wait_for_timeout(300)
-    await shot(page, vp, "01_board_top_textfix", what="Same as 01_board_top, '&amp;' label corrected (capture-time DOM text fix)")
-    await page.evaluate("""() => { const t = document.getElementById('pipe-tabs');
-        if (t) window.scrollTo(0, t.getBoundingClientRect().top + window.scrollY - (innerWidth < 769 ? 96 : 12)); }""")
-    await page.wait_for_timeout(300)
-    await shot(page, vp, "01_board_shortlist_textfix", what="Same as 01_board_shortlist, '&amp;' label corrected")
     await page.reload(wait_until="domcontentloaded")
     await settle(page, 1500)
     await page.evaluate("window.scrollTo(0, 0)")
@@ -220,8 +200,11 @@ async def step_tailor(page, vp):
     await shot(page, vp, "03_tailoring_studio", what="Tailoring Studio: tailored resume (top), grounded + quality pills")
     await scroll_frames(page, vp, "03_tailoring_studio", "#ts-scroll", "Tailoring Studio resume", max_frames=6)
     await page.click("#ts-tab-cover")
-    await page.wait_for_timeout(3000)
-    await shot(page, vp, "03_tailoring_studio_cover", what="Tailoring Studio: cover letter tab")
+    await page.wait_for_timeout(4500)          # the letter types in too, and the pane follows it
+    await shot(page, vp, "03_tailoring_studio_cover_end", what="Cover letter tab as the reveal leaves it")
+    await page.evaluate("document.getElementById('ts-scroll').scrollTop = 0")
+    await page.wait_for_timeout(300)
+    await shot(page, vp, "03_tailoring_studio_cover", what="Tailoring Studio: cover letter tab (top)")
     await page.evaluate("closeTailorStudio()")
     await page.wait_for_timeout(400)
     # (b) View Documents (the card's real button) -> resume + pre-download review.
@@ -310,9 +293,6 @@ async def step_oneclick(page, vp):
         if (d) window.scrollTo(0, d.getBoundingClientRect().top + window.scrollY - (innerWidth < 769 ? 96 : 8)); }""")
     await page.wait_for_timeout(500)
     await shot(page, vp, "08_board_one_click_on", what="Board with one-click submit ON (Apply & Submit)")
-    await page.evaluate(TEXTFIX)
-    await page.wait_for_timeout(200)
-    await shot(page, vp, "08_board_one_click_on_textfix", what="Same, '&amp;' label corrected (capture-time DOM text fix)")
 
 
 STEPS = {

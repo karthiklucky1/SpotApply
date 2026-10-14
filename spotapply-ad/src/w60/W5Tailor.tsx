@@ -11,12 +11,15 @@ import { SCENES60 } from "./timeline60";
 // and Word downloads.
 
 // Source px in public/live60/tailor.png and tailor_cover.png (2560x1600).
+// The lines under the resume pane (legend, Locked, Recruiter's read) start at
+// the modal's left padding, so a push-in keeps that padding in frame and stops
+// above the buttons: a tighter crop slices those lines mid-word.
 const STUDIO: Focus = { x: 180, y: 40, w: 2220 };
-const SUMMARY_FOCUS: Focus = { x: 480, y: 300, w: 1620 };
-const PULLBACK: Focus = { x: 190, y: 210, w: 2200 };
-const SUMMARY = { x: 548, y: 538, w: 1430, h: 140 };
-const LOCKED = { x: 250, y: 1130, w: 2060, h: 124 };
-const DOWNLOADS = { x: 568, y: 1440, w: 606, h: 70 };
+const SUMMARY_FOCUS: Focus = { x: 220, y: 289, w: 1810 };
+const PULLBACK: Focus = { x: 190, y: 186, w: 2200 };
+const SUMMARY = { x: 544, y: 538, w: 1440, h: 136 };
+const LOCKED = { x: 248, y: 1128, w: 2064, h: 130 };
+const DOWNLOADS = { x: 564, y: 1436, w: 616, h: 74 };
 
 const T = {
   summaryRing: [44, 92],

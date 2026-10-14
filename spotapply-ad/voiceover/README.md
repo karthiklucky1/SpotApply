@@ -6,14 +6,15 @@ voice service, no account and no network call at synthesis time.
 
 | File | What it is |
 |---|---|
-| `lines.json` | One entry per scene. `tts` is what the model reads (spelled for pronunciation); `caption` is what a viewer reads. |
+| `lines.json`, `lines60.json` | One entry per scene of the 30-second ad / the 60-second explainer (ids `w_*`). `tts` is what the model reads (spelled for pronunciation); `caption` is what a viewer reads. |
 | `synth.py` | Synthesizes every line with `kokoro-onnx`. |
 | `build_voices.py` | Packs the per-voice `.bin` tensors into the `.npz` `kokoro-onnx` loads. |
 | `asr_check.py` | Offline speech-to-text (pocketsphinx) used to confirm each clip says its line. |
-| `make-srt.mjs` | Writes `out/spotapply-social-30s.srt` from `src/timeline.ts` + `lines.json`. |
+| `make-srt.mjs` | Writes `out/spotapply-social-30s.srt` from `src/timeline.ts` + `lines.json`; with `60`, `out/spotapply-explainer-60s.srt` from `src/w60/timeline60.ts` + `lines60.json` (long lines split in two at the comma or colon nearest the middle). |
 
-Placement lives in `src/timeline.ts` (`VOICEOVER`: each line starts `lead`
-frames into its scene). Change a line's length there if you regenerate it.
+Placement lives in `src/timeline.ts` (`VOICEOVER`) and `src/w60/timeline60.ts`
+(`VOICEOVER60`): each line starts `lead` frames into its scene. Change a
+line's length there if you regenerate it.
 
 ## Pronunciation
 
@@ -44,10 +45,11 @@ npm pack kokoro-q8-shards@1.0.0 kokoro-js@1.2.1    # then untar both
 cat package/kokoro-q8.part{0,1,2,3,4,5}.bin > kokoro-q8.onnx   # from kokoro-q8-shards
 .venv/bin/python build_voices.py <kokoro-js>/package/voices voices-en.npz
 .venv/bin/python synth.py kokoro-q8.onnx voices-en.npz af_heart lines.json raw/
+.venv/bin/python synth.py kokoro-q8.onnx voices-en.npz af_heart lines60.json raw/   # the explainer
 # loudness: every clip to -16 LUFS, 48 kHz mono, into the project
 for f in raw/*.wav; do ffmpeg -y -i $f -af "loudnorm=I=-16:TP=-2:LRA=7" -ar 48000 -ac 1 ../public/voiceover/$(basename $f); done
 .venv/bin/python asr_check.py ../public/voiceover/find.wav   # spot-check the words
-npm run captions
+npm run captions && npm run captions:60
 ```
 
 To swap the voice, change `af_heart` (e.g. `am_michael`, `bf_emma`) and
