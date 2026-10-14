@@ -10,6 +10,7 @@
     "@fontsource/outfit": "5.3.0",
     "@remotion/cli": "4.0.534",
     "@remotion/fonts": "4.0.534",
+    "@remotion/media": "4.0.534",
     "@remotion/paths": "4.0.534",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -30,6 +31,8 @@
     "frames": "remotion render SpotApplySocial30 out/frames --frames=45,100,150,240,262,318,400,470,540,632,700,749,820,899 --image-format=png",
     "build": "remotion bundle",
     "upgrade": "remotion upgrade",
-    "lint": "eslint src && tsc"
+    "lint": "eslint src && tsc",
+    "captions": "node --no-warnings voiceover/make-srt.mjs",
+    "render:silent": "remotion render SpotApplySocial30 out/spotapply-social-30s-silent.mp4 --props={\"voiceover\":false} --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709"
   }
 }

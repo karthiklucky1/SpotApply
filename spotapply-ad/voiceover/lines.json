@@ -1,0 +1,37 @@
+[
+ {
+  "id": "hook",
+  "tts": "Still typing the same details into every application?",
+  "caption": "Still typing the same details into every application?"
+ },
+ {
+  "id": "reveal",
+  "tts": "Meet Spot Apply.",
+  "caption": "Meet SpotApply."
+ },
+ {
+  "id": "find",
+  "tts": "It finds fresh roles that fit your experience, and shows you why.",
+  "caption": "It finds fresh roles that fit your experience, and shows you why."
+ },
+ {
+  "id": "tailor",
+  "tts": "Then it tailors your r\u00e9sum\u00e9, using only what you've actually done.",
+  "caption": "Then it tailors your resume, using only what you've actually done."
+ },
+ {
+  "id": "apply",
+  "tts": "It fills the form in your browser. You check it, and the final click is always yours.",
+  "caption": "It fills the form in your browser. You check it, and the final click is always yours."
+ },
+ {
+  "id": "track",
+  "tts": "Track every application, see how early you applied, and follow up in a click.",
+  "caption": "Track every application, see how early you applied, and follow up in a click."
+ },
+ {
+  "id": "cta",
+  "tts": "Your experience. Less busywork. Start free with Spot Apply.",
+  "caption": "Your experience. Less busywork. Start free with SpotApply."
+ }
+]

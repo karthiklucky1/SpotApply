@@ -1,5 +1,6 @@
 import React from "react";
-import { AbsoluteFill, Series, useCurrentFrame, useVideoConfig } from "remotion";
+import { Audio } from "@remotion/media";
+import { AbsoluteFill, Sequence, Series, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { prog } from "./anim";
 import { FONTS } from "./brand";
 import { Background } from "./components/Background";
@@ -11,13 +12,18 @@ import { TailorScene } from "./scenes/S4Tailor";
 import { ApplyScene } from "./scenes/S5Apply";
 import { TrackScene } from "./scenes/S6Track";
 import { CtaScene } from "./scenes/S7Cta";
-import { SCENES } from "./timeline";
+import { SCENE_START, SCENES, VOICEOVER } from "./timeline";
 import "./fonts";
 
 // The 30-second vertical ad. Scenes play back to back; each one starts from
 // the exact last frame of the one before, so the hand-offs read as one
 // continuous piece of UI rather than cuts.
-export const SocialAd30: React.FC = () => {
+export type SocialAd30Props = {
+  /** false renders the silent, caption-led cut. */
+  readonly voiceover: boolean;
+};
+
+export const SocialAd30: React.FC<SocialAd30Props> = ({ voiceover }) => {
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
 
@@ -54,6 +60,19 @@ export const SocialAd30: React.FC = () => {
         </Series.Sequence>
       </Series>
       <DemoLabel opacity={demo} />
+      {voiceover
+        ? VOICEOVER.map((line) => (
+            <Sequence
+              key={line.id}
+              name={`VO ${line.id}`}
+              from={SCENE_START[line.id] + line.lead}
+              durationInFrames={line.frames}
+              premountFor={fps}
+            >
+              <Audio src={staticFile(`voiceover/${line.id}.wav`)} />
+            </Sequence>
+          ))
+        : null}
     </AbsoluteFill>
   );
 };

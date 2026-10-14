@@ -33,10 +33,10 @@ export const ProfileCard: React.FC<{ readonly frame: number; readonly style?: Re
   frame,
   style,
 }) => {
-  const head = prog(frame, 36, 14);
-  const r1 = prog(frame, 42, 14);
-  const r2 = prog(frame, 48, 14);
-  const r3 = prog(frame, 60, 14);
+  const head = prog(frame, 26, 12);
+  const r1 = prog(frame, 30, 12);
+  const r2 = prog(frame, 34, 12);
+  const r3 = prog(frame, 42, 12);
   return (
     <div
       style={{
@@ -88,7 +88,7 @@ export const ProfileCard: React.FC<{ readonly frame: number; readonly style?: Re
       <Row label="Skills" t={r2}>
         <div style={{ display: "flex", gap: 14 }}>
           {CANDIDATE.skills.map((s, i) => {
-            const c = prog(frame, 50 + i * 4, 12);
+            const c = prog(frame, 36 + i * 3, 10);
             return (
               <span
                 key={s}
@@ -146,15 +146,15 @@ export const RevealScene: React.FC = () => {
   const frame = useCurrentFrame();
 
   // Forms fold into one stack at the centre of the stage.
-  const fold = prog(frame, 0, 20, ease.inOut);
-  const formsOut = prog(frame, 8, 10, ease.in);
+  const fold = prog(frame, 0, 16, ease.inOut);
+  const formsOut = prog(frame, 6, 10, ease.in);
 
   // The stack becomes a single resume file...
-  const fileIn = prog(frame, 16, 10);
-  const fileOut = prog(frame, 30, 12, ease.in);
+  const fileIn = prog(frame, 12, 8);
+  const fileOut = prog(frame, 22, 10, ease.in);
 
   // ...which opens into the profile.
-  const open = prog(frame, 30, 20);
+  const open = prog(frame, 22, 18);
 
   return (
     <AbsoluteFill>

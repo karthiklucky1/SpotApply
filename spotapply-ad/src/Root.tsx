@@ -26,6 +26,7 @@ export const RemotionRoot: React.FC = () => {
       <Composition
         id="SpotApplySocial30"
         component={SocialAd30}
+        defaultProps={{ voiceover: true }}
         durationInFrames={TOTAL_FRAMES}
         fps={VIDEO.fps}
         width={VIDEO.width}

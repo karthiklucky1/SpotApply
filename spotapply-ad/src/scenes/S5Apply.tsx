@@ -34,8 +34,8 @@ const inputCenterY = (row: number) => ROW_Y[row] + INPUT_OFFSET + INPUT_H / 2;
 const FILL_AT = [26, 29, 33, 37] as const; // first, last, email, phone
 const ATTACH_AT = 50; // resume lands in its field
 const BANNER_AT = 56;
-const REVIEW_AT = [110, 118, 126, 134] as const; // rows 0-3
-const PRESS_AT = 152;
+const REVIEW_AT = [96, 104, 112, 120] as const; // rows 0-3
+const PRESS_AT = 140;
 
 const Label: React.FC<{ readonly children: React.ReactNode; readonly y: number; readonly x?: number }> = ({
   children,
@@ -295,15 +295,15 @@ export const ApplyScene: React.FC = () => {
   const fileEnd = { x: FORM.x + PAD + 18 + 210, y: inputCenterY(3) };
 
   // The person's cursor: enters, reads down the fields, clicks Submit.
-  const enter = prog(frame, 94, 16) * (1 - prog(frame, 166, 10));
+  const enter = prog(frame, 80, 16) * (1 - prog(frame, 160, 10));
   const path: Array<[number, number, number]> = [
     // [frame, x, y]
-    [94, 1010, 1660],
-    [110, 900, inputCenterY(0) + 8],
-    [118, 900, inputCenterY(1) + 8],
-    [126, 900, inputCenterY(2) + 8],
-    [134, 900, inputCenterY(3) + 8],
-    [148, 560, BUTTON_Y + BUTTON_H / 2 + 6],
+    [80, 1010, 1660],
+    [96, 900, inputCenterY(0) + 8],
+    [104, 900, inputCenterY(1) + 8],
+    [112, 900, inputCenterY(2) + 8],
+    [120, 900, inputCenterY(3) + 8],
+    [134, 560, BUTTON_Y + BUTTON_H / 2 + 6],
   ];
   let cx = path[0][1];
   let cy = path[0][2];
@@ -368,8 +368,8 @@ export const ApplyScene: React.FC = () => {
 
       <Cursor x={cx} y={cy} opacity={enter} press={press} ripple={ripple} />
 
-      <Headline lines={COPY.fill} enterAt={4} exitAt={84} />
-      <Headline lines={COPY.review} enterAt={94} exitAt={SCENES.apply - 9} />
+      <Headline lines={COPY.fill} enterAt={4} exitAt={72} />
+      <Headline lines={COPY.review} enterAt={82} exitAt={SCENES.apply - 9} />
     </AbsoluteFill>
   );
 };
