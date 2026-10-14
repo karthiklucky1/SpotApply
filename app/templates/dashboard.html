@@ -1731,7 +1731,28 @@
      </div>
    </div>
  </div>
- <!-- Toast Alerts (z above EVERY overlay — job detail is z-90, email-sync/submit-confirm are z-9999; toasts fired inside those were invisible) --> <div id="toast-container" class="fixed bottom-5 right-5 flex flex-col gap-2" style="z-index:10010;"></div> <script> let currentTab = 'resume';
+ <!-- Toast Alerts (z above EVERY overlay — job detail is z-90, email-sync/submit-confirm are z-9999; toasts fired inside those were invisible) --> <div id="toast-container" class="fixed bottom-5 right-5 flex flex-col gap-2" style="z-index:10010;"></div> <script>
+        // ONE parser for every timestamp the server sends. They are UTC, but
+        // isoformat() of a naive datetime carries no offset, and new Date()
+        // reads "2026-10-13T20:48:00" as LOCAL time: in Chicago a note sent
+        // 24.5 hours ago read "Sent today". A date-time without Z or an
+        // offset is UTC; a date-only string already is. Invalid -> null.
+        function _serverTime(iso) {
+            if (iso == null || iso === '') return null;
+            if (iso instanceof Date) return isNaN(iso) ? null : iso;
+            let s = String(iso).trim();
+            if (/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(s) && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(s)) {
+                s = s.replace(' ', 'T') + 'Z';
+            }
+            const d = new Date(s);
+            return isNaN(d) ? null : d;
+        }
+        // Whole minutes since a server timestamp (never negative); null if unparseable.
+        function _minutesSince(iso) {
+            const d = _serverTime(iso);
+            return d ? Math.max(0, Math.round((Date.now() - d.getTime()) / 60000)) : null;
+        }
+        let currentTab = 'resume';
         let currentData = null;
         let currentAppId = null;
 
@@ -2094,9 +2115,8 @@
                         const pulse = f.pulse || {};
                         if (hotEl && pulse.enabled && pulse.last_tick_at) {
                             // Pulse lane: show live coverage (fast boards + floor health).
-                            const ts = /Z$|[+-]\d\d:\d\d$/.test(pulse.last_tick_at) ? pulse.last_tick_at : pulse.last_tick_at + 'Z';
-                            const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
-                            hotEl.textContent = mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
+                            const mins = _minutesSince(pulse.last_tick_at);
+                            hotEl.textContent = mins == null ? '—' : mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
                             if (hotSub) {
                                 // Say which of two different worlds we are in: a handful
                                 // of boards briefly late (a backlog draining), or structural
@@ -2132,9 +2152,8 @@
                             }
                         } else if (hotEl) {
                             if (f.hot_lane_last_run) {
-                                const ts = /Z$|[+-]\d\d:\d\d$/.test(f.hot_lane_last_run) ? f.hot_lane_last_run : f.hot_lane_last_run + 'Z';
-                                const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
-                                hotEl.textContent = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+                                const mins = _minutesSince(f.hot_lane_last_run);
+                                hotEl.textContent = mins == null ? '—' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
                                 if (hotSub) hotSub.textContent = `${f.hot_lane_runs_24h || 0} runs · ${_fmtK(f.hot_lane_jobs_24h || 0)} fetched · +${_fmtK(f.hot_lane_inserted_24h || 0)} added (24h)`;
                             } else {
                                 hotEl.textContent = pulse.enabled ? 'starting…' : 'idle';
@@ -3304,9 +3323,9 @@
                     // Posting age + "New" (discovered <24h) — makes freshness visible per row.
                     const newBadge = j.is_new ? `<span class="text-[9px] bg-rose-500/15 text-rose-400 border border-rose-500/25 px-2 py-0.5 rounded-full font-black ml-1.5 uppercase shrink-0">🆕 New</span>` : '';
                     let ageHtml = '';
-                    if (j.posted) {
-                        const ts = /Z$|[+-]\d\d:\d\d$/.test(j.posted) ? j.posted : j.posted + 'Z';
-                        const h = Math.max(0, (Date.now() - new Date(ts).getTime()) / 3600000);
+                    const _posted = _serverTime(j.posted);
+                    if (_posted) {
+                        const h = Math.max(0, (Date.now() - _posted.getTime()) / 3600000);
                         const ageTxt = h < 1 ? 'just now' : (h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`);
                         // When the source gave us no publish date we are showing
                         // when WE found it, which is only an upper bound on the
@@ -5540,9 +5559,8 @@
                     const f = await r.json();
                     const pulse = f.pulse || {};
                     let sweep = null;
-                    if (pulse.last_tick_at) {
-                        const ts = /Z$|[+-]\d\d:\d\d$/.test(pulse.last_tick_at) ? pulse.last_tick_at : pulse.last_tick_at + 'Z';
-                        const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
+                    const mins = _minutesSince(pulse.last_tick_at);
+                    if (mins != null) {
                         sweep = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min ago' : Math.round(mins / 60) + 'h ago');
                     }
                     // The canonical pipeline number (shared pool, all lanes, no
@@ -6153,9 +6171,9 @@
                     div.className = `notif-card ${n.read ? 'read' : 'unread'}`;
                     
                     // created_at is UTC but serialized without a timezone marker —
-                    // append Z so it renders in the viewer's LOCAL timezone.
-                    const _iso = /Z|[+-]\d\d:\d\d$/.test(n.created_at) ? n.created_at : n.created_at + 'Z';
-                    const timeStr = new Date(_iso).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                    // _serverTime reads it as UTC so it renders in the viewer's LOCAL timezone.
+                    const _ct = _serverTime(n.created_at);
+                    const timeStr = _ct ? _ct.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'}) : '';
                     const typeIcon = ({ high_match: '🎯', fresh_job: '⚡', discovery_completed: '🔍',
                                         profile_suggestions: '💡', resume_suggestions: '📄',
                                         tailor_failed: '⚠️' })[n.type] || '🔔';
@@ -7261,7 +7279,7 @@
                     return;
                 }
                 list.innerHTML = data.entries.map(e => `
-                    <div class="rounded-2xl p-4" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">${e.source}</span> <div class="flex items-center gap-2"> <span class="text-[10px]" style="color:var(--muted-2);">${new Date(/Z|[+-]\d\d:\d\d$/.test(e.created_at) ? e.created_at : e.created_at + 'Z').toLocaleDateString()}</span> <button onclick="deleteMemory(${e.id})" title="Remove this entry" style="background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">&times;</button> </div> </div> ${_renderMemoryMarkdown(e.recommendations)}
+                    <div class="rounded-2xl p-4" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">${e.source}</span> <div class="flex items-center gap-2"> <span class="text-[10px]" style="color:var(--muted-2);">${(_serverTime(e.created_at) || {toLocaleDateString: () => ''}).toLocaleDateString()}</span> <button onclick="deleteMemory(${e.id})" title="Remove this entry" style="background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">&times;</button> </div> </div> ${_renderMemoryMarkdown(e.recommendations)}
                     </div>`).join('');
             } catch (e) {
                 list.innerHTML = '<p class="text-rose-500 text-sm">Could not load your brief.</p>';
@@ -8186,9 +8204,8 @@
             // cite experience the current resume no longer has: say so.
             let prevResumeHtml = '';
             if (d.from_previous_resume) {
-                const ru = d.resume_uploaded_at;
-                const rd = ru ? new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(ru) ? ru : ru + 'Z') : null;
-                const when = (rd && !isNaN(rd)) ? ` (your current one was uploaded ${_esc(rd.toLocaleDateString())})` : '';
+                const rd = _serverTime(d.resume_uploaded_at);
+                const when = rd ? ` (your current one was uploaded ${_esc(rd.toLocaleDateString())})` : '';
                 prevResumeHtml = `<div style="margin-bottom:10px;padding:8px 10px;border-radius:10px;border:1px solid #F0DFB8;background:rgba(240,223,184,0.25);font-size:12px;line-height:1.5;color:#92600A;">Scored against your previous resume${when}. Some details below may not match the resume you have now.</div>`;
             }
             const reasonHtml = `
@@ -8689,10 +8706,15 @@
         html += `<div id="outreach-sent-list">${renderOutreachSent(data.sent || [])}</div>`;
         body.innerHTML = html;
     }
+    // "today" / "yesterday" / "N days ago" by the viewer's CALENDAR, not by
+    // 24-hour blocks: 23:50 yesterday is "yesterday" at 00:10. The server's
+    // timestamps are UTC without an offset (_serverTime): parsing them as
+    // local time made a note sent 24.5 hours ago read "Sent today".
     function _agoLabel(iso) {
-        if (!iso) return '';
-        const d = new Date(iso); if (isNaN(d)) return '';
-        const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+        const d = _serverTime(iso); if (!d) return '';
+        const now = new Date(Date.now());
+        const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const days = Math.round((day(now) - day(d)) / 86400000);  // round: a DST day is 23 or 25 h
         return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
     }
     function renderOutreachSent(rows) {
@@ -9132,7 +9154,7 @@
         const rows = Array.from(container.querySelectorAll('.jobrow'));
         if (!rows.length) return;
         const num = (el, k) => parseFloat(el.dataset[k] || '0') || 0;
-        const posted = el => { const t = el.dataset.posted; return t ? (new Date(t).getTime() || 0) : 0; };
+        const posted = el => { const d = _serverTime(el.dataset.posted); return d ? d.getTime() : 0; };
         // Early window (data-early, set server-side from ONE reference clock —
         // app/strategy/earliness.py): in "Freshest" mode the postings still
         // inside their first 48h come first, best fit first, so the jobs whose

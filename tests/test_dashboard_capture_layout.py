@@ -15,14 +15,26 @@ only the one screen it was seen on.
 5. Phone: "People & team" squeezed each value to ~40px between its label and
    its evidence chip, so it broke mid-word ("Platfor / m Enginee / ring").
 6. Phone: the outreach drafts' job URLs ran past the right edge of the card.
+7. Outreach "Sent" list: a note sent 24.5 hours earlier read "Sent today".
+   The server sends naive UTC ISO strings and `new Date()` reads those as
+   LOCAL time (5 hours off in Chicago). Seven other call sites each carried
+   their own "append Z" fix with three different regexes; _agoLabel had none.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "app/templates/dashboard.html").read_text()
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 
 def _phone_css(max_px: int = 640) -> str:
@@ -204,3 +216,76 @@ def test_outreach_free_text_breaks_long_urls():
         i = fn.index(expr)
         p_open = fn.rindex("<p ", 0, i)
         assert "overflow-wrap:anywhere" in fn[p_open:i], expr
+
+
+# ── 7. server timestamps are UTC, relative labels follow the calendar ───────
+
+def _node_in(tz: str, script: str):
+    env = dict(os.environ, TZ=tz)
+    r = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, env=env)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+_TIME_FNS = "\n".join(_function(n) for n in ("_serverTime", "_agoLabel"))
+
+
+@needs_node
+def test_a_note_sent_24_and_a_half_hours_ago_is_not_sent_today():
+    # The capture: seeded 2026-10-14 21:18:21 UTC, the LinkedIn note 24.5 h
+    # earlier, the viewer in Chicago (UTC-5 in October).
+    out = _node_in("America/Chicago", _TIME_FNS + """
+Date.now = () => Date.parse('2026-10-14T21:18:21Z');
+console.log(JSON.stringify({
+  sent: _agoLabel('2026-10-13T20:48:21.776128'),
+  reply: _agoLabel('2026-10-14T18:18:21.776128'),
+  three: _agoLabel('2026-10-11T22:00:00'),
+}));
+""")
+    assert out == {"sent": "yesterday", "reply": "today", "three": "3 days ago"}
+
+
+@needs_node
+def test_today_and_yesterday_follow_the_viewers_calendar():
+    # 00:10 in Chicago; a note sent at 23:50 the evening before (20 minutes
+    # ago) is "yesterday", and one sent at 00:05 is "today".
+    out = _node_in("America/Chicago", _TIME_FNS + """
+Date.now = () => Date.parse('2026-10-14T05:10:00Z');
+console.log(JSON.stringify([_agoLabel('2026-10-14T04:50:00'), _agoLabel('2026-10-14T05:05:00')]));
+""")
+    assert out == ["yesterday", "today"]
+
+
+@needs_node
+def test_server_time_reads_a_naive_timestamp_as_utc_and_keeps_explicit_offsets():
+    out = _node_in("America/Chicago", _TIME_FNS + """
+const t = s => { const d = _serverTime(s); return d ? d.toISOString() : null; };
+console.log(JSON.stringify({
+  naive: t('2026-10-13T20:48:21'), micro: t('2026-10-13T20:48:21.776128'),
+  space: t('2026-10-13 20:48:21'), z: t('2026-10-13T20:48:21Z'),
+  utc: t('2026-10-13T20:48:21+00:00'), cdt: t('2026-10-13T15:48:21-05:00'),
+  compact: t('2026-10-13T15:48:21-0500'), dateOnly: t('2026-10-13'),
+  bad: t('not a date'), empty: t(''), none: t(null), label: _agoLabel('garbage'),
+}));
+""")
+    same = "2026-10-13T20:48:21.000Z"
+    assert out["naive"] == out["space"] == out["z"] == out["utc"] == out["cdt"] == out["compact"] == same
+    assert out["micro"] == "2026-10-13T20:48:21.776Z"
+    assert out["dateOnly"] == "2026-10-13T00:00:00.000Z"
+    assert out["bad"] is None and out["empty"] is None and out["none"] is None
+    assert out["label"] == ""
+
+
+def test_every_server_timestamp_is_parsed_by_the_one_helper():
+    # The class: a bare new Date(<server string>) reads a naive timestamp as
+    # local time. The only "append Z" left is inside _serverTime, and every
+    # other new Date(...) in the dashboard builds a date from numbers/now.
+    helper = _function("_serverTime")
+    rest = HTML.replace(helper, "")
+    assert "+ 'Z'" not in rest and '+ "Z"' not in rest, "a call site appends Z itself — use _serverTime"
+    allowed = {"", "Date.now()", "x.getFullYear(), x.getMonth(), x.getDate()"}
+    args = re.findall(r"new Date\(([^()]*(?:\([^()]*\)[^()]*)*)\)", rest)
+    stray = [a for a in args if a.strip() not in allowed]
+    assert not stray, f"parse server timestamps with _serverTime(), not new Date(...): {stray}"
+    for caller in ("_agoLabel", "sortShortlist", "loadNotifications"):
+        assert "_serverTime(" in _function(caller), caller
