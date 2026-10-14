@@ -19,6 +19,9 @@ export const COLORS = {
   okBright: "#10B981", // the score circle in the real match report
   okTint: "#ECFDF5",
   okBorder: "#A7F3D0",
+  // End card only: the dark sheet and the tagline accent that reads on it.
+  inkDeep: "#08202F",
+  skyOnDark: "#7DD3FC",
 } as const;
 
 export const FONTS = {
