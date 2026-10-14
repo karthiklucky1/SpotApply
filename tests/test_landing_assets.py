@@ -67,3 +67,32 @@ def test_dashboard_css_covers_js_built_classes():
     dash = (ROOT / "app" / "templates" / "dashboard.html").read_text()
     for phantom in ("slate-850", "slate-750", "slate-350"):
         assert phantom not in dash, f"nonexistent Tailwind class {phantom} reintroduced"
+
+
+def _templates_reached_from(name: str, seen: set) -> set:
+    """Every template `name` includes or imports, transitively."""
+    text = (ROOT / "app" / "templates" / name).read_text()
+    for dep in re.findall(r'\{%-?\s*(?:include|import|from|extends)\s+"([^"]+)"', text):
+        if dep not in seen:
+            seen.add(dep)
+            _templates_reached_from(dep, seen)
+    return seen
+
+
+def test_dashboard_build_scans_every_template_the_dashboard_renders():
+    """The board panes moved out of dashboard.html into _board_pane.html /
+    _board_macros.html (2026-10-10) while the build kept scanning
+    dashboard.html alone: the committed CSS still had the cards' classes only
+    because it predated the move, and the next `npm run build` would have
+    dropped every class only a card uses."""
+    config = (ROOT / "tailwind.dashboard.config.js").read_text()
+    globs = re.findall(r'"\./app/templates/([^"]+)"', config)
+    reached = _templates_reached_from("dashboard.html", {"dashboard.html"})
+    assert len(reached) > 1, "dashboard.html includes no template any more — re-check this guard"
+    for tpl in reached:
+        assert any(Path(tpl).match(g) for g in globs), (
+            f"{tpl} is rendered by the dashboard but tailwind.dashboard.config.js does not scan it")
+    css = (ROOT / "app" / "static" / "tailwind.css").read_text()
+    # Used ONLY by the board templates (never by dashboard.html itself).
+    for cls in (".line-clamp-2", ".opacity-60", r".text-\[8\.5px\]", r".px-0\.5"):
+        assert cls in css, f"{cls} missing — the board templates were not scanned; run `npm run build`"
