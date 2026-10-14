@@ -8418,7 +8418,10 @@
             }
             const d = await r.json();
             const h = d.h1b, a = d.assessment, v = d.vendor;
-            if (!h && !a && !v) {
+            // The server decides from the ONE work-auth interpreter; false only
+            // when a saved, live status establishes it (never for a blank profile).
+            const noNeed = !!(d.candidate && d.candidate.needs_sponsorship === false);
+            if (!h && !a && !v && !noNeed) {
                 slot.innerHTML = `<div class="jd-sec flex items-center justify-center text-xs text-slate-500">No sponsorship details available.</div>`;
                 return;
             }
@@ -8426,7 +8429,15 @@
             const esc_ = (s) => (s || '').replace(/</g, '&lt;');
             // One clear verdict line the user can FEEL, then proof underneath.
             let headline, sub, cardStyle, mark;
-            if (tone === 'good') {
+            if (noNeed) {
+                // Advice about asking an employer to sponsor is noise for someone
+                // who never needs it — say so plainly instead.
+                mark = '<span style="width:34px;height:34px;border-radius:9999px;background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;">✓</span>';
+                headline = 'No sponsorship needed';
+                sub = (d.candidate.summary ? esc_(d.candidate.summary) + ' ' : '')
+                    + 'Whether this employer sponsors visas doesn’t affect your application.';
+                cardStyle = 'background:linear-gradient(180deg,var(--sage-tint),rgba(var(--sage-rgb),0.03));border:1px solid rgba(var(--sage-rgb),0.4);';
+            } else if (tone === 'good') {
                 mark = '<span style="width:34px;height:34px;border-radius:9999px;background:linear-gradient(135deg,var(--sage),var(--sage-600));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0;">✓</span>';
                 headline = a && a.cap_exempt ? 'Sponsors visas — no lottery needed' : 'This employer sponsors work visas';
                 // Only claim a filing record when we actually have one. Cap-exempt
@@ -8464,7 +8475,7 @@
                 cardStyle = 'background:rgba(15,23,42,0.02);border:1px solid var(--border);';
             }
             let statsHtml = '';
-            if (h) {
+            if (h && !noNeed) {
                 const stat = (v, l) => `<div style="background:rgba(255,255,255,0.6);border:1px solid var(--border);border-radius:10px;padding:8px 12px;text-align:center;"><div style="font-size:15px;font-weight:800;color:var(--sage-700);">${v}</div><div style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted-2);margin-top:1px;">${l}</div></div>`;
                 statsHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px;margin-top:11px;">`
                     + stat(h.total_filings.toLocaleString(), 'H-1B filings' + (h.year ? ' · FY' + h.year : ''))

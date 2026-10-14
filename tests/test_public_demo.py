@@ -113,3 +113,19 @@ def test_landing_wires_the_public_preview():
     for leaked in ("match_score", "drafts", "right_door", "top_reason"):
         assert not _re.search(r"[.\[]\s*['\"]?" + leaked, landing), (
             f"{leaked} is not grounded in the visitor's résumé — do not render it")
+
+
+def test_demo_drafts_make_no_claim_about_a_companys_github():
+    """The demo used to tell the recipient "I saw <company>'s open-source
+    contributions on GitHub" for every posting, real shared-pool companies
+    included, without ever looking anything up."""
+    from app.api.demo import PublicDemoRequest, run_demo_match
+    out = run_demo_match(PublicDemoRequest(
+        resume_text="Backend engineer, 5 years of experience. University of Cincinnati.",
+        target_role="Zzz Nonexistent Role Qqq"))
+    assert out["jobs"]
+    for job in out["jobs"]:
+        assert "github_outreach" not in {d["type"] for d in job["drafts"]}
+        for d in job["drafts"]:
+            text = f"{d.get('body', '')} {d.get('channel', '')}".lower()
+            assert "open-source" not in text and "open source" not in text

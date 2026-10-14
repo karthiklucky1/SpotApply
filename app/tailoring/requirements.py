@@ -65,12 +65,20 @@ _REQ_RE = re.compile(
 )
 
 _PREFERRED_RE = re.compile(
-    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]have|a plus|plus\b|bonus|"
+    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]haves?|a plus|plus\b|pluses|plusses|bonus|"
     r"desirable|desired|ideally|ideal candidate|would be great|advantage|"
     r"good to have|not required)\b", re.I)
 _REQUIRED_RE = re.compile(
     r"\b(?:required|requires|require|must have|must[- ]haves?|minimum|at least|"
     r"essential|mandatory|you have|you'll need|qualifications)\b", re.I)
+#: Wording that CONTAINS a required marker but frames a preference: "Preferred
+#: qualifications: Docker" names a section inline, and "Bonus points if you have
+#: Kafka" is conditional. Removed before `_REQUIRED_RE` is consulted, or the
+#: "qualifications" / "you have" inside them outranked the preference itself.
+_PREFERENCE_FRAME_RE = re.compile(
+    r"\b(?:preferred|desired|desirable|bonus|nice[- ]to[- ]have)\s+"
+    r"(?:qualifications?|skills?|experience)\b"
+    r"|\bif\s+you(?:'ve|\s+have)\b", re.I)
 
 # Words between "N years" and the skill that are grammar, not the skill.
 _FILLER = (
@@ -205,7 +213,60 @@ def _is_heading(line: str) -> bool:
     return bool(_HEADING_RE.match(s)) and len(s.split()) <= 6
 
 
-def _clauses(text: str) -> List[Tuple[str, Optional[bool]]]:
+#: Markdown, bullet and bold decoration in front of a label's first word.
+_HEADING_LEAD_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:[-*•]\s*)?(?:\*\*)?\s*")
+
+
+def _heading_preference(line: str) -> Tuple[bool, Optional[bool]]:
+    """(is a section label, what it makes the lines under it).
+
+    The second value is True (required), False (preferred) or None (neither).
+
+    A STRONG label — a markdown heading, a bold line, a line ending in a colon —
+    is a label whatever it says ("Skills that are a plus:"). A short bare line or
+    list item is ambiguous: "Preferred Qualifications" is a label, but "AWS
+    preferred" and "Docker is a plus" are requirements written without a full
+    stop, and reading them as labels made every line BELOW them preferred too —
+    hiding the required skills that followed. So a bare line sets a preferred
+    section only when the preference word LEADS it; otherwise it is content,
+    scoped to its own clause like any other.
+    """
+    s = (line or "").strip()
+    if not _is_heading(s):
+        return False, None
+    strong = s.startswith("#") or s.endswith(":") or "**" in s
+    if strong:
+        if _PREFERRED_RE.search(s):
+            return True, False                # everything below is preferred
+        if _REQUIRED_HEADING_RE.search(s):
+            return True, True
+        return True, None
+    if _PREFERRED_RE.match(_HEADING_LEAD_RE.sub("", s)):
+        return True, False
+    if _PREFERRED_RE.search(s):
+        return False, None                    # "AWS preferred": content
+    if _REQUIRED_HEADING_RE.search(s):
+        return True, True
+    return True, None
+
+
+def _clause_required(clause: str, heading_pref: Optional[bool]) -> bool:
+    """Required or preferred, for one clause under its section's preference.
+
+    Clause wins over heading; an explicit "required" in the clause wins over an
+    explicit preference in the same clause — once wording that merely frames a
+    preference ("Preferred qualifications:", "if you have") is set aside.
+    """
+    if _REQUIRED_RE.search(_PREFERENCE_FRAME_RE.sub(" ", clause)):
+        return True
+    if _PREFERRED_RE.search(clause):
+        return False
+    if heading_pref is not None:
+        return heading_pref
+    return True
+
+
+def _clauses(text: str, *, keep_headings: bool = False) -> List[Tuple[str, Optional[bool]]]:
     """(clause, heading_preference) pairs in document order.
 
     Two scoping fixes live here. A preference word binds to its own CLAUSE, not
@@ -214,6 +275,10 @@ def _clauses(text: str) -> List[Tuple[str, Optional[bool]]]:
     posting asks for. And a "Preferred Qualifications:" HEADING makes the bullets
     under it preferred, which is the usual JD shape — calling those required
     invents blocking gaps and talks a candidate out of a job they could get.
+
+    ``keep_headings`` also yields each label line itself (under the preference
+    it sets): a short line such as "- Docker" passes `_is_heading`, and a scan
+    for where a SKILL is mentioned must not skip it.
     """
     out: List[Tuple[str, Optional[bool]]] = []
     heading_pref: Optional[bool] = None
@@ -221,11 +286,12 @@ def _clauses(text: str) -> List[Tuple[str, Optional[bool]]]:
         line = line.strip()
         if not line:
             continue
-        if _is_heading(line):
-            if _PREFERRED_RE.search(line):
-                heading_pref = False          # everything below is preferred
-            elif _REQUIRED_HEADING_RE.search(line):
-                heading_pref = True
+        is_heading, pref = _heading_preference(line)
+        if is_heading:
+            if pref is not None:
+                heading_pref = pref
+            if keep_headings:
+                out.append((line, heading_pref))
             continue
         # Independent clauses: semicolons and sentence ends. Commas are NOT
         # boundaries — "three (3) years, Java" is one requirement.
@@ -263,17 +329,7 @@ def parse_requirements(jd_text: str, *, limit: int = 12) -> List[ExperienceRequi
             if m.group("plus") or m.group("plus2"):
                 months_max = None       # "2+" has no upper bound
             skill = _skill_after(clause[m.end():])
-
-            # Clause wins over heading; an explicit "required" in the clause wins
-            # over an explicit preference in the same clause.
-            if _REQUIRED_RE.search(clause):
-                required = True
-            elif _PREFERRED_RE.search(clause):
-                required = False
-            elif heading_pref is not None:
-                required = heading_pref
-            else:
-                required = True
+            required = _clause_required(clause, heading_pref)
 
             key = (months_min, skill.lower())
             if key in seen:
@@ -558,6 +614,30 @@ def _present_in(phrase: str, text: str) -> bool:
     return False
 
 
+def _asked_as_required(phrase: str, jd_text: str) -> bool:
+    """Does the posting ask for ``phrase`` as a requirement anywhere?
+
+    False only when EVERY mention of it is preferred — "Experience with Docker
+    and AWS is a plus.", "Bonus: Kubernetes", "Nice to have: Terraform", "Kafka
+    preferred", or a line under a "Preferred Qualifications" heading — scoped
+    exactly as `parse_requirements` scopes a years requirement (`_clauses`,
+    `_clause_required`). One required or neutral mention keeps it required, and
+    so does a phrase we cannot locate in the text: that was the old behaviour
+    for every phrase, and it never hides a real requirement.
+    """
+    from app.tailoring.inventory import _skill_pattern
+
+    pats = [_skill_pattern(f) for f in _number_forms(phrase)]
+    seen = False
+    for clause, heading_pref in _clauses(re.sub(r"<[^>]+>", " ", jd_text or ""),
+                                         keep_headings=True):
+        if any(p.search(clause) for p in pats):
+            seen = True
+            if _clause_required(clause, heading_pref):
+                return True
+    return not seen
+
+
 def review(master_md: str, tailored_md: str, jd_text: str, *,
            suggested_projects: Sequence[str] = (), company: str = "") -> PreDownloadReview:
     """The short review a user reads before downloading the document.
@@ -637,18 +717,32 @@ def review(master_md: str, tailored_md: str, jd_text: str, *,
     # Skills the posting asks for that the résumé evidences nowhere at all. Kept
     # SHORT: this is a requirements review, not a keyword-coverage report, and
     # `ats_keywords.analyze` already covers the latter.
+    #
+    # Scoped like the requirements above. This sweep used to file every phrase
+    # as a genuine gap, so "Experience with Docker and AWS is a plus." put Docker
+    # and AWS under "Genuine gaps" — a preferred shortfall, which is not one
+    # (2026-10-14). They still feed the improvement plan and the draft check:
+    # preferred or not, the résumé does not evidence them.
     named = {r.skill.lower() for r in reqs if r.skill}
-    missing_entirely: List[str] = []
+    missing_required: List[str] = []
+    missing_preferred: List[str] = []
     for phrase in jd_skills:
-        if len(missing_entirely) >= 5:
+        if len(missing_required) >= 5 and len(missing_preferred) >= 5:
             break
         if phrase.lower() in named or inv.skill(phrase) is not None:
             continue
         if _present_in(phrase, master_md):
             continue          # present in the document, just not as an attributed skill
-        missing_entirely.append(phrase)
-    for phrase in missing_entirely:
+        bucket = missing_required if _asked_as_required(phrase, jd_text) else missing_preferred
+        if len(bucket) < 5:
+            bucket.append(phrase)
+    for phrase in missing_required:
         gaps.append(f"{phrase}: not present anywhere on the resume.")
+    for phrase in missing_preferred:
+        questions.append(
+            f"{phrase}: not present anywhere on the resume. The posting lists this as "
+            f"preferred, not required — it is not a blocker on its own.")
+    for phrase in missing_required + missing_preferred:
         if phrase not in unevidenced:
             unevidenced.append(phrase)
 

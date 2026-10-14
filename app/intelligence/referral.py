@@ -15,8 +15,44 @@ Three drafts per job:
 from __future__ import annotations
 
 import logging
+import re
+
+from app.intelligence.outreach import LINKEDIN_NOTE_LIMIT, channel_of
 
 log = logging.getLogger(__name__)
+
+# ── LinkedIn's note limit, met by the built-in drafts on their own ───────────
+#
+# With no AI to shorten them, the built-in notes ran 350-630 characters and the
+# kit marked every one "over LinkedIn's 300" (2026-10-14) — a draft the user
+# cannot paste into a connection request as written. Each LinkedIn note is now a
+# LADDER of variants, fullest first, and `_fit_note` sends the fullest one that
+# fits. What a rung drops, in order: the optional courtesy sentences, the skills
+# line, the second mention of the company, then the role's name — but only
+# where the req link still names the job. Never the ask itself.
+#
+# The req link stays in every referral rung: a referrer must select a SPECIFIC
+# LIVE JOB, so the link is load-bearing (`_fallback_drafts`). Its length is part
+# of the budget, which is why the barest rungs drop the role in favour of it.
+# Only a link longer than any rung can carry (~200+ characters) leaves a note
+# over the limit, and the kit's counter says so; the drafts' channel is
+# "LinkedIn / email", and neither a message to an existing connection nor an
+# email has the connection-note limit.
+
+#: The kit counts the `{name}` placeholder (6 characters), but the user types a
+#: real first name over it, often a longer one. A built-in note leaves this much
+#: room so it still fits once they have.
+NAME_HEADROOM = 10
+NOTE_BUDGET = LINKEDIN_NOTE_LIMIT - NAME_HEADROOM
+
+
+def _fit_note(*variants: str) -> str:
+    """The fullest variant that fits a LinkedIn note, else the shortest one."""
+    rungs = [re.sub(r"\s+", " ", v).strip() for v in variants if v and v.strip()]
+    for v in rungs:
+        if len(v) <= NOTE_BUDGET:
+            return v
+    return min(rungs, key=len)
 
 
 def _fallback_drafts(name: str, title: str, company: str, role: str,
@@ -38,10 +74,20 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
     an information request, which beats the cold referral ask. We no longer lead
     with the cold ask, and we no longer offer a resume on first contact.
     See docs/research/hiring-machine-2026-08.md §1.8, §1.9.
+
+    Every LinkedIn note fits LinkedIn's 300-character note limit by itself
+    (`_fit_note`); the hiring-manager note is an email and keeps its length.
     """
     skills_short = ", ".join([s.strip() for s in (skills or "").split(",") if s.strip()][:3])
     skill_line = f" My background is in {skills_short}." if skills_short else ""
-    link_line = f" Here's the exact req: {job_url}" if job_url else ""
+    url = (job_url or "").strip()
+    link_line = f" Here's the exact req: {url}" if url else ""
+    link = f" {url}" if url else ""
+
+    # Rungs that name the job ONLY by its link exist only when there is a link.
+    def by_link(*variants: str) -> tuple:
+        return variants if url else ()
+
     drafts = [
         {
             # Highest-yield ask. Requires no relationship claim from them, so it
@@ -50,11 +96,25 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
             "type": "referral_request",
             "label": "Ask them to forward the req (highest yield)",
             "channel": "LinkedIn / email to a connection at the company",
-            "body": (
+            "body": _fit_note(
                 f"Hi {{name}}, I'm applying for the {role} role at {company} and wanted to "
                 f"reach out directly.{skill_line} Would you be willing to forward the req to "
                 f"the recruiter with a quick note that I reached out? I know a formal referral "
-                f"puts your name on it, so no pressure at all either way.{link_line}"
+                f"puts your name on it, so no pressure at all either way.{link_line}",
+                f"Hi {{name}}, I'm applying for the {role} role at {company} and wanted to "
+                f"reach out directly. Would you be willing to forward the req to the recruiter "
+                f"with a quick note that I reached out? No formal referral needed, so no "
+                f"pressure either way.{link_line}",
+                f"Hi {{name}}, I'm applying for the {role} role at {company}. Would you "
+                f"forward the req to the recruiter with a quick note that I reached out? "
+                f"No formal referral needed.{link}",
+                f"Hi {{name}}, I'm applying for the {role} role. Would you forward the req to "
+                f"the recruiter with a note that I reached out?{link}",
+                *by_link(
+                    f"Hi {{name}}, I'm applying to {company}. Would you forward the req to the "
+                    f"recruiter with a note that I reached out?{link}",
+                    f"Hi {{name}}, would you forward the req to the recruiter with a note that "
+                    f"I reached out?{link}"),
             ),
         },
         {
@@ -63,11 +123,24 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
             "type": "referral_intro_call",
             "label": "Ask for 15 minutes first",
             "channel": "LinkedIn / email to a connection at the company",
-            "body": (
+            "body": _fit_note(
                 f"Hi {{name}}, I'm looking at the {role} role at {company}.{skill_line} "
                 f"Would you be open to a quick 15 minutes — say Wednesday or Thursday "
                 f"afternoon? If it still looks like a fit afterwards, I'd love to ask about "
-                f"a referral then.{link_line}"
+                f"a referral then.{link_line}",
+                f"Hi {{name}}, I'm looking at the {role} role at {company}. Would you be open "
+                f"to a quick 15 minutes — say Wednesday or Thursday afternoon? If it still "
+                f"looks like a fit, I'd love to ask about a referral then.{link_line}",
+                f"Hi {{name}}, I'm looking at the {role} role at {company}. Open to a quick "
+                f"15 minutes, Wednesday or Thursday afternoon? If it looks like a fit, I'd "
+                f"ask about a referral then.{link}",
+                f"Hi {{name}}, I'm looking at the {role} role. Open to a quick 15 minutes, "
+                f"Wednesday or Thursday afternoon?{link}",
+                *by_link(
+                    f"Hi {{name}}, I'm looking at a role at {company}. Open to a quick 15 "
+                    f"minutes, Wednesday or Thursday afternoon?{link}",
+                    f"Hi {{name}}, open to a quick 15 minutes about this role, Wednesday or "
+                    f"Thursday afternoon?{link}"),
             ),
         },
         {
@@ -75,9 +148,18 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
             "type": "referral_who_owns",
             "label": "Just ask who owns the req",
             "channel": "LinkedIn / email to a connection at the company",
-            "body": (
+            "body": _fit_note(
                 f"Hi {{name}}, quick question if you have a second — do you know who owns "
-                f"the {role} req at {company}? Happy to take it from there myself.{link_line}"
+                f"the {role} req at {company}? Happy to take it from there myself.{link_line}",
+                f"Hi {{name}}, do you know who owns the {role} req at {company}? Happy to "
+                f"take it from there.{link}",
+                f"Hi {{name}}, do you know who owns the {role} req? Happy to take it from "
+                f"there.{link}",
+                *by_link(
+                    f"Hi {{name}}, do you know who owns this req at {company}? Happy to take "
+                    f"it from there.{link}",
+                    f"Hi {{name}}, do you know who owns this req? Happy to take it from "
+                    f"there.{link}"),
             ),
         },
         {
@@ -94,23 +176,65 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
         },
     ]
     if needs_sponsorship:
+        visa_ask = (f"I'm exploring the {role} role there and would love to ask one quick "
+                    f"question about how {company} approaches work authorization.")
         drafts.append({
             "type": "visa_alumni",
             "label": "Visa-alumni connection",
             "channel": "LinkedIn connection request to a fellow visa-process alum",
-            "body": (
+            # The selling point is the user's own work-auth line (`work_auth`),
+            # often 150+ characters; it is the first thing a rung drops.
+            "body": _fit_note(
                 f"Hi {{name}}, I came across your profile and noticed you navigated "
-                f"the visa journey while building your career at {company}. I'm "
-                f"exploring the {role} role there and would love to ask one quick "
-                f"question about how {company} approaches work authorization. "
-                f"{selling or ''} Thanks for considering!"
-            ).strip(),
+                f"the visa journey while building your career at {company}. {visa_ask} "
+                f"{selling or ''} Thanks for considering!",
+                f"Hi {{name}}, I came across your profile and noticed you navigated "
+                f"the visa journey while building your career at {company}. {visa_ask} "
+                f"Thanks for considering!",
+                f"Hi {{name}}, I noticed you navigated the visa journey at {company}. I'm "
+                f"exploring the {role} role there and would love to ask one quick question "
+                f"about how the team approaches work authorization.",
+                f"Hi {{name}}, I'm exploring the {role} role at {company}. May I ask one "
+                f"quick question about how the company approaches work authorization?",
+                f"Hi {{name}}, may I ask one quick question about how {company} approaches "
+                f"work authorization?",
+            ),
         })
     return drafts
 
 
+def _alumni_body(first: str, company: str, uni: str, role: str) -> str:
+    """The university-alumni connection note, fitted to LinkedIn's limit.
+
+    Every rung keeps to what the search established (see the alumni block in
+    `_generate_referral_drafts`): nothing about the recipient's job, and the
+    shared school only as the USER's own — the verify step covers the rest.
+    """
+    return _fit_note(
+        f"Hi {first}, your profile came up while I was looking into {company} — "
+        f"I'm a {uni} alum too, and I'm exploring the {role} role there. "
+        f"Would you be open to connecting? I'd love to hear about your experience "
+        f"of the team.",
+        f"Hi {first}, your profile came up while I was looking into {company} — "
+        f"I'm a {uni} alum too, exploring the {role} role there. Would you be open "
+        f"to connecting?",
+        f"Hi {first}, I'm a {uni} alum exploring the {role} role at {company}. "
+        f"Would you be open to connecting?",
+        f"Hi {first}, I'm a {uni} alum exploring a role at {company}. Would you be "
+        f"open to connecting?",
+    )
+
+
 def get_company_github_repos(company: str) -> list[str]:
-    """Search for the company's GitHub organization and return up to 3 popular repos."""
+    """What a GitHub search for the company's organization actually FOUND: up
+    to 3 of its own (non-fork) public repositories as ``org/repo`` full names.
+
+    ``[]`` means "we found nothing" — no matching org, a refused or failed
+    request, an org with no public repos — and is never evidence that the
+    company does no open source. A hit is a NAME match from a search, not a
+    verified identity, which is why the draft built from it carries a verify
+    step (`_github_draft`).
+    """
     from app.config import settings
     import httpx
     import re
@@ -147,10 +271,103 @@ def get_company_github_repos(company: str) -> list[str]:
             timeout=5,
         )
         if r.status_code == 200:
-            return [repo["name"] for repo in r.json()]
+            # A fork under the org is someone else's project, not its work.
+            return [repo.get("full_name") or f"{slug}/{repo['name']}"
+                    for repo in r.json()
+                    if isinstance(repo, dict) and repo.get("name") and not repo.get("fork")]
     except Exception:
         pass
     return []
+
+
+def _github_draft(company: str, role: str, repos: list[str]) -> dict | None:
+    """The GitHub note — only when the lookup found something, saying only that.
+
+    It used to tell the recipient "I noticed your profile and also saw
+    {company}'s active open-source contributions on GitHub" whether or not the
+    lookup found anything: a refused or failed request returned ``[]`` and the
+    sentence went out anyway (seen 2026-10-14 with every outbound call
+    refused). Even a hit never established it — the lookup is a NAME search
+    for an org, and nothing measured activity or contributions. So:
+
+      * nothing found → no draft. The note's whole premise is common ground on
+        GitHub; with none there is nothing honest to say that the other
+        drafts do not already say.
+      * something found → the repository's name and nothing about the
+        company's open-source work, plus where we found it and a step to
+        confirm the org really is the company's before sending.
+
+    Guard: `test_referral`.
+    """
+    found = [r.strip() for r in (repos or []) if isinstance(r, str) and r.strip()]
+    if not found:
+        return None
+    full = found[0]
+    org, _, repo = full.rpartition("/")
+    repo = repo or full
+    where = f"https://github.com/{full}" if org else ""
+    if org:
+        verify = (f"We found “{full}” by searching GitHub for an organization named "
+                  f"like {company}, and have not confirmed it belongs to {company}. "
+                  f"Open {where} and check before you mention it.")
+    else:
+        verify = (f"We found the {repo} repository by searching GitHub for an "
+                  f"organization named like {company}, and have not confirmed it "
+                  f"belongs to {company}. Check before you mention it.")
+    return {
+        "type": "github_outreach",
+        "label": "GitHub outreach note",
+        "channel": "LinkedIn note to someone who works on a repository we found on GitHub",
+        "unverified": True,
+        "verify_before_sending": verify,
+        "evidence": {
+            "source": "github_org_search",
+            "query": company,
+            "organization": org,
+            "repositories": found[:3],
+            "url": where,
+        },
+        "body": _fit_note(
+            f"Hi {{name}}, I'm exploring the {role} role at {company} and came across "
+            f"the {repo} repository on GitHub. Would you be open to connecting? I'd "
+            f"like to follow the work there.",
+            f"Hi {{name}}, I'm exploring the {role} role at {company} and came across "
+            f"the {repo} repository on GitHub. Would you be open to connecting?",
+            f"Hi {{name}}, I came across the {repo} repository on GitHub while looking "
+            f"at {company}. Would you be open to connecting?",
+            f"Hi {{name}}, I came across the {repo} repository on GitHub. Would you be "
+            f"open to connecting?",
+        ),
+    }
+
+
+def _merge_rewrites(drafts: list[dict], rewrites: list) -> list[dict]:
+    """Take only the BODY from an AI rewrite, per draft type.
+
+    Replacing the list wholesale (as this did) let the model's copy drop what
+    travels with a draft — `unverified`, `verify_before_sending`, `evidence`,
+    `suggested_contact` — and let it return a draft type we never built (a
+    GitHub note for a company where the lookup found nothing). The drafts we
+    built are the set; a rewrite can only change their words.
+
+    And only for the better on the two hard rules the prompt states: a LinkedIn
+    rewrite past LinkedIn's note limit, or one that dropped a link the built-in
+    draft carried (the req link is load-bearing), keeps the built-in words —
+    which already fit (`_fit_note`).
+    """
+    by_type: dict = {}
+    for r in rewrites or ():
+        if isinstance(r, dict) and r.get("type") and isinstance(r.get("body"), str):
+            by_type.setdefault(r["type"], r)
+    out = []
+    for d in drafts:
+        new = (by_type.get(d.get("type")) or {}).get("body", "").strip()
+        if new and channel_of(d) == "linkedin" and len(new) > LINKEDIN_NOTE_LIMIT:
+            new = ""
+        if new and any(u not in new for u in re.findall(r"https?://\S+", d.get("body") or "")):
+            new = ""
+        out.append({**d, "body": new} if new else d)
+    return out
 
 
 def generate_referral_drafts(application_id: int, user_id: str | None = None) -> dict:
@@ -267,31 +484,18 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             first = (matched_alum.get("name", "") or "").split(" ")[0] or "there"
         else:
             first = "{Alumni Name}"
-        alum_draft["body"] = (
-            f"Hi {first}, your profile came up while I was looking into {company} — "
-            f"I'm a {uni} alum too, and I'm exploring the {role} role there. "
-            f"Would you be open to connecting? I'd love to hear about your experience "
-            f"of the team."
-        )
+        alum_draft["body"] = _alumni_body(first, company, uni, role)
         drafts.append(alum_draft)
 
-    # GitHub check
+    # GitHub check: a draft only when the lookup found something (`_github_draft`).
     repos = []
     try:
         repos = get_company_github_repos(company)
     except Exception:
         pass
-
-    drafts.append({
-        "type": "github_outreach",
-        "label": "GitHub outreach note",
-        "channel": "LinkedIn message targeting open-source contributions",
-        "body": (
-            f"Hi {{name}}, I noticed your profile and also saw {company}'s active open-source contributions on GitHub"
-            + (f", particularly the {repos[0]} repository." if repos else ".")
-            + " As a developer working with similar tech, I'd love to connect and follow your work."
-        )
-    })
+    gh_draft = _github_draft(company, role, repos)
+    if gh_draft:
+        drafts.append(gh_draft)
 
     # Try to upgrade the drafts with the LLM (cheap Haiku). Non-fatal on failure.
     # Same breaker and platform budget as the lanes (CLAUDE.md: nothing may call
@@ -328,7 +532,10 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
                 "select a specific live job, so the link is load-bearing.\n"
                 "- Keep the two concrete time windows where a draft offers them.\n"
                 "- Never claim a relationship or shared history that is not in the "
-                "candidate details below.\n\n"
+                "candidate details below.\n"
+                "- Never add a claim about the company (its open-source work, "
+                "products, news, culture) or about the recipient that the draft "
+                "does not already make.\n\n"
                 f"Candidate: {name or 'the candidate'}, {title or 'applicant'}. "
                 f"Skills: {skills or 'n/a'}. University: {uni or 'n/a'}. "
                 f"Role: {role} at {company}. "
@@ -352,7 +559,7 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             raw = re.sub(r"\s*```$", "", raw)
             parsed = json.loads(raw)
             if isinstance(parsed, list) and parsed and all("body" in d for d in parsed):
-                drafts = parsed
+                drafts = _merge_rewrites(drafts, parsed)
     except Exception as e:
         log.debug("referral LLM enrichment skipped: %s", e)
 
@@ -365,8 +572,12 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             d["channel"] = f"LinkedIn connection request to a fellow alum. Find them via: {search_url}"
         elif d.get("type") == "github_outreach":
             import urllib.parse
-            search_url = f"https://github.com/search?q={urllib.parse.quote(company)}&type=users"
-            d["channel"] = f"LinkedIn message targeting open-source contributions. Search org: {search_url}"
+            found = (d.get("evidence") or {}).get("url")
+            where = (f"Where we found it: {found}" if found else
+                     "Search GitHub: https://github.com/search?q="
+                     f"{urllib.parse.quote(company)}&type=users")
+            d["channel"] = ("LinkedIn note to someone who works on a repository we found "
+                            f"on GitHub. {where}")
 
     return {
         "application_id": application_id,
