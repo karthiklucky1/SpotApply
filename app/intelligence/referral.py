@@ -46,6 +46,28 @@ NAME_HEADROOM = 10
 NOTE_BUDGET = LINKEDIN_NOTE_LIMIT - NAME_HEADROOM
 
 
+# Acronyms read letter by letter take "an" when the first LETTER's name
+# starts with a vowel sound (an SRE, an ML engineer, a UX designer).
+_AN_LETTERS = set("AEFHILMNORSX")
+# Words that start with a vowel letter but a consonant sound.
+_A_PREFIXES = ("uni", "use", "usu", "uti", "eu", "one", "once")
+
+
+def _with_article(phrase: str) -> str:
+    """'a Backend Engineer' / 'an Engineer' / 'an SRE' / 'a UX Designer'."""
+    p = (phrase or "").strip()
+    if not p:
+        return p
+    first = p.split()[0]
+    letters = re.sub(r"[^A-Za-z]", "", first)
+    if letters and letters.isupper() and len(letters) > 1:
+        return ("an " if letters[0] in _AN_LETTERS else "a ") + p
+    low = letters.lower()
+    if low[:1] in "aeiou" and not low.startswith(_A_PREFIXES):
+        return "an " + p
+    return "a " + p
+
+
 def _fit_note(*variants: str) -> str:
     """The fullest variant that fits a LinkedIn note, else the shortest one."""
     rungs = [re.sub(r"\s+", " ", v).strip() for v in variants if v and v.strip()]
@@ -168,7 +190,7 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
             "channel": "LinkedIn DM / email to the hiring manager",
             "body": (
                 f"Hi {{name}}, I'm reaching out about the {role} role at {company}. "
-                f"{('As a ' + title + ', ') if title else ''}I think I'd ramp fast —"
+                f"{('As ' + _with_article(title) + ', ') if title else ''}I think I'd ramp fast —"
                 f"{(' ' + skills_short + ' are right in my wheelhouse.') if skills_short else ''} "
                 f"Would you be up for a quick chat this week or next — Wednesday or "
                 f"Thursday work well on my end?"

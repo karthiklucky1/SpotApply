@@ -357,3 +357,24 @@ def test_an_ai_rewrite_that_breaks_a_hard_rule_keeps_the_built_in_words():
     # An email has no note limit.
     long_email = [{"type": "hiring_manager", "body": "Hi {name}, " + "word " * 120}]
     assert _merge_rewrites(built, long_email)[1]["body"].startswith("Hi {name}, word")
+
+
+# ── "As a Engineer": the hiring-manager draft picks a/an ─────────────────────
+
+def test_hiring_manager_draft_uses_the_right_article():
+    from app.intelligence.referral import _fallback_drafts, _with_article
+    assert _with_article("Engineer") == "an Engineer"
+    assert _with_article("Backend Engineer") == "a Backend Engineer"
+    assert _with_article("SRE") == "an SRE"
+    assert _with_article("ML Engineer") == "an ML Engineer"
+    assert _with_article("UX Designer") == "a UX Designer"
+    assert _with_article("User Researcher") == "a User Researcher"
+    assert _with_article("Analyst") == "an Analyst"
+    import inspect
+    params = list(inspect.signature(_fallback_drafts).parameters)
+    args = {"name": "Maya Chen", "title": "Engineer", "company": "Lumen Data",
+            "role": "Senior Backend Engineer"}
+    drafts = _fallback_drafts(*[args.get(p, "") for p in params[:4]],
+                              **{p: "" for p in params[4:] if p not in args})
+    hm = next(d for d in drafts if d["type"] == "hiring_manager")
+    assert "As an Engineer," in hm["body"] and "As a Engineer" not in hm["body"]
