@@ -9,6 +9,12 @@ form the way production does and asserting on the resulting field values:
   Workday     data-automation-id only, no usable labels, country dropdown
   React       controlled inputs that revert any value written without a
               proper native setter + input event (the classic autofill killer)
+  Native      the board's OWN autofill-from-resume (Workday's "Autofill with
+              Resume" button, Ashby's autofill card) is fed the resume FIRST;
+              what it filled is kept, a wrong identity field is corrected, its
+              history entries are left alone, the resume is not attached twice,
+              and a page without such a widget — or the switch off — takes the
+              normal path (workday-autofill.html, ashby-parse.html)
 
 A stub backend serves the endpoints the content script calls (résumé download,
 recall-answers, telemetry) so the résumé attach path runs for real instead of
@@ -111,7 +117,7 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         REQUESTS.append(("GET", self.path))
-        if self.path.endswith("/resume"):
+        if self.path.split("?")[0].endswith("/resume"):
             import base64
             return self._json({
                 "filename": "Alexandra_Nguyen_Resume.docx",
@@ -119,14 +125,30 @@ class StubBackend(http.server.SimpleHTTPRequestHandler):
                 "base64": base64.b64encode(RESUME_BYTES).decode(),
             })
         if "/api/fill-pack/" in self.path:
-            return self._json(CURRENT_PACK or base_pack(f"{BASE}/greenhouse.html"))
+            pack = dict(CURRENT_PACK or base_pack(f"{BASE}/greenhouse.html"))
+            # As the server answers: one-click submit is approved only by the
+            # dashboard's ?submit=1 click; the content script's routine refresh
+            # is a plain GET and reads "not_requested" — the click's verdict
+            # must survive it (fillForm carries it over).
+            if "submit=1" not in self.path and pack.get("auto_submit"):
+                pack["auto_submit"] = False
+                pack["auto_submit_reason"] = "not_requested"
+            return self._json(pack)
         return super().do_GET()
 
     def do_POST(self):
-        REQUESTS.append(("POST", self.path))
         length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        path = self.path
+        # Telemetry carries its event in the body; keep it on the logged path so
+        # a scenario can tell "captcha_needed" from "auto_submit_blocked".
+        if "/api/extension/telemetry" in path:
+            try:
+                payload = json.loads(body.decode("utf-8") or "{}")
+                path = f"{path}#{payload.get('event', '')}:{(payload.get('meta') or {}).get('reason', '')}"
+            except Exception:
+                pass
+        REQUESTS.append(("POST", path))
         if "recall-answers" in self.path:
             return self._json({"answers": []})
         return self._json({"ok": True})
@@ -175,6 +197,57 @@ def drive_fill(ctx, page_url, pack):
         })""", {"needle": page_url.rsplit("/", 1)[-1], "pack": pack})
     page.wait_for_timeout(7000)  # fill is async (résumé fetch, dropdowns)
     return page, logs
+
+
+def drive_fill_reply(ctx, page_url, pack, timeout_ms=40000):
+    """Like drive_fill, but WAIT for the content script's DO_FILL reply — the
+    result the popup shows — and return it as the third value. A native
+    autofill run waits for the board's parser to settle and the resume attach
+    polls for the site's acknowledgement, so the reply can take ~10 s."""
+    global CURRENT_PACK
+    CURRENT_PACK = pack
+    sw = ctx.service_workers[0]
+    sw.evaluate(
+        """(pack) => new Promise((resolve) => {
+            chrome.storage.local.set({
+                spotapply_fill_pack: pack,
+                spotapply_copilot_pack: pack,
+                spotapply_copilot_ts: Date.now(),
+                spotapply_auto_fill: false,
+            }, resolve);
+        })""", pack)
+    page = ctx.new_page()
+    logs = []
+    page.on("console", lambda m: logs.append(m.text) if "[SpotApply]" in m.text else None)
+    page.goto(page_url)
+    page.wait_for_timeout(1500)
+    reply = sw.evaluate(
+        """(args) => new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ timeout: true }), args.timeout);
+            chrome.tabs.query({}, (tabs) => {
+                const t = tabs.find(t => t.url && t.url.includes(args.needle));
+                if (!t) { clearTimeout(timer); return resolve({ error: 'no-tab' }); }
+                chrome.tabs.sendMessage(t.id, { type: 'DO_FILL', fillPack: args.pack }, (r) => {
+                    clearTimeout(timer);
+                    resolve(r || { error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'no reply' });
+                });
+            });
+        })""", {"needle": page_url.rsplit("/", 1)[-1], "pack": pack, "timeout": timeout_ms})
+    page.wait_for_timeout(500)
+    return page, logs, reply or {}
+
+
+def set_native_autofill(ctx, enabled):
+    """The user's native-autofill switch (popup setting; absent = ON)."""
+    ctx.service_workers[0].evaluate(
+        """(on) => new Promise((resolve) => {
+            if (on === null) chrome.storage.local.remove(['spotapply_native_autofill'], resolve);
+            else chrome.storage.local.set({ spotapply_native_autofill: on }, resolve);
+        })""", enabled)
+
+
+def resume_fetches():
+    return sum(1 for _, p in REQUESTS if p.split("?")[0].endswith("/resume"))
 
 
 def main():
@@ -290,11 +363,16 @@ def main():
         page.close()
 
         # ── A: Ashby — essay prompt, parser widget, required radios ─────────
-        # All three reproduced from a live Gen Digital Ashby req.
-        print("\nAshby layout (essay prompt · autofill-from-résumé trap · radios)")
+        # All three reproduced from a live Gen Digital Ashby req. The parser
+        # card is now the board's native autofill: it is fed FIRST (before any
+        # field is written), and one that takes the file and changes nothing
+        # is emptied again so the real Resume field is still attached to —
+        # the old failure was feeding it AFTER the fill and letting it
+        # overwrite the identity we had just written.
+        print("\nAshby layout (essay prompt · unresponsive autofill parser · radios)")
         pack = base_pack(f"{BASE}/ashby.html")
         pack["work_experience"] = [{"company": "Globali20 India", "title": "ML Engineer"}]
-        page, _ = drive_fill(ctx, f"{BASE}/ashby.html", pack)
+        page, ashby_logs = drive_fill(ctx, f"{BASE}/ashby.html", pack)
         v = lambda sel: page.eval_on_selector(sel, "el => el.value")
         check("A1 name filled", pack["first_name"] in (v("#ash-name") or ""), v("#ash-name"))
         check("A2 email filled", v("#ash-email") == pack["email"], v("#ash-email"))
@@ -305,11 +383,14 @@ def main():
         essay = v("#ash-essay") or ""
         check("A4 essay prompt NOT filled with the company name",
               "Globali20" not in essay, repr(essay[:60]))
-        # The parser widget must stay empty or it re-parses and overwrites.
+        # The parser was tried first; it never reacted, so nothing may be left
+        # stranded in it and the real field must still get the file.
         parser_files = page.eval_on_selector("#autofill-parser", "el => el.files.length")
         resume_files = page.eval_on_selector("#ash-resume", "el => el.files.length")
         check("A5 résumé attached to the REAL resume field", resume_files == 1, f"files={resume_files}")
-        check("A6 autofill-from-résumé parser left empty", parser_files == 0, f"files={parser_files}")
+        check("A6 unresponsive autofill parser tried first, then emptied again", parser_files == 0
+              and any("Native autofill (ashby): no_response" in l for l in ashby_logs),
+              f"files={parser_files} logs={[l for l in ashby_logs if 'Native autofill' in l][:2]}")
         # Required radios and the résumé must be visible to the counter.
         counts = page.evaluate(
             """() => { const h = document.getElementById('hp-copilot-overlay');
@@ -385,6 +466,117 @@ def main():
               page.eval_on_selector("#rp-first", "el => el.value"))
         page.close()
 
+        # ── LB: "leave blank if none" is a question, not a honeypot ─────────
+        # Review 2026-10-09: the honeypot pattern matched these labels, so the
+        # build stopped filling LinkedIn/GitHub fields 1.0.0 filled.
+        print("\nReal fields that say when to leave them blank")
+        pack = base_pack(f"{BASE}/leaveblank.html")
+        page, _ = drive_fill(ctx, f"{BASE}/leaveblank.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("LB1 'LinkedIn profile (leave blank if none)' is filled",
+              v("#lb-li") == pack["linkedin_url"], v("#lb-li"))
+        check("LB2 'GitHub URL - leave empty if you don't have one' is filled",
+              v("#lb-gh") == pack["github_url"], v("#lb-gh"))
+        check("LB3 the off-page 'Leave this field blank' honeypot stays empty",
+              v("#lb-hp") == "", v("#lb-hp"))
+        check("LB4 identity still filled", v("#lb-fn") == pack["first_name"], v("#lb-fn"))
+        page.close()
+
+        # ── HH: "How did you hear about this opportunity?" ──────────────────
+        # Owner, 2026-10-09: answered ONLY from the profile's saved answer, in
+        # every shape the question takes; nothing saved = left for the user.
+        print("\nHow did you hear (select · option list · radios + specify · combobox · text)")
+        hh_from = len(REQUESTS)          # the requests these fills make (the log is shared)
+        # The form is Acme's: "How did you first learn about Acme?" names the company.
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme",
+                    how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        on = lambda sel: page.evaluate(
+            "(s) => { const b = document.querySelector(s + ' button._active_x1'); return b ? b.textContent : ''; }", sel)
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HH1 select: the option containing the saved answer",
+              v("#hh-select") == "site", v("#hh-select"))
+        check("HH2 Ashby-style option list: a synonym ('Careers page')",
+              on("#hh-list") == "Careers page", on("#hh-list"))
+        check("HH3 radios with no match: 'Other'", radio("seen_where") == "other", str(radio("seen_where")))
+        check("HH4 ...and the saved answer in its 'please specify' box",
+              v("#hh-specify") == "Company website", v("#hh-specify"))
+        check("HH5 combobox: the listed synonym is picked ('Company site')",
+              v("#hh-combo") == "Company site", v("#hh-combo"))
+        check("HH6 free text gets the saved answer", v("#hh-text") == "Company website", v("#hh-text"))
+        check("HH7 a label naming LinkedIn gets the saved answer, never the LinkedIn URL",
+              v("#hh-text2") == "Company website", v("#hh-text2"))
+        check("HH7b a textarea gets the saved answer", v("#hh-ta") == "Company website", v("#hh-ta"))
+        check("HH8 the AI is never asked, nothing is learned from it",
+              not [p for m, p in REQUESTS[hh_from:]
+                   if m == "POST" and ("answer-question" in p or "save-answer" in p)],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        page.close()
+
+        pack = dict(base_pack(f"{BASE}/howheard.html"), company="Acme", how_heard_answer="")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        flag = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapply || ''")
+        blank = {"select": v("#hh-select"), "list": on("#hh-list"), "radio": radio("seen_where"),
+                 "combo": v("#hh-combo"), "text": v("#hh-text"), "text2": v("#hh-text2"),
+                 "ta": v("#hh-ta")}
+        check("HH9 nothing saved: every how-did-you-hear question is left for the user",
+              blank == {"select": "", "list": "", "radio": None, "combo": "", "text": "",
+                        "text2": "", "ta": ""},
+              json.dumps(blank))
+        check("HH9b ...and the AI is still never asked",
+              not [p for m, p in REQUESTS[hh_from:] if m == "POST" and "answer-question" in p],
+              str([p for _, p in REQUESTS[hh_from:] if "answer" in p]))
+        check("HH10 ...and each is counted as needing the user (required ones red)",
+              flag("#hh-select") == "needs-fill-required" and flag("#hh-list") == "needs-fill"
+              and flag("#hh-text") == "needs-fill",
+              json.dumps({s: flag(s) for s in ("#hh-select", "#hh-list", "#hh-text")}))
+        check("HH11 identity still filled", v("#hh-first") == pack["first_name"], v("#hh-first"))
+        page.close()
+
+        # ── HT: the saved answer reaches only THIS question and its Other box ─
+        # Review 2026-10-09: "How did you learn Python?" got the saved answer,
+        # the question after an "Other" pick got it as "please specify", and a
+        # listbox button's pick was POSTed to save-answer.
+        print("\nHow did you hear: only this question, only its Other box, nothing learned")
+        ht_from = len(REQUESTS)
+        pack = dict(base_pack(f"{BASE}/howheard_tied.html"), company="Acme",
+                    how_heard_answer="Company website")
+        page, _ = drive_fill(ctx, f"{BASE}/howheard_tied.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        radio = lambda name: page.evaluate(
+            "(n) => { const r = document.querySelector(`input[name=\"${n}\"]:checked`); return r ? r.value : null; }", name)
+        check("HT1 only 'Other' fits: 'Other' is picked", v("#ht-sel") == "other", v("#ht-sel"))
+        check("HT2 ...and 'Please describe why you want to work at Acme' after it stays blank",
+              v("#ht-why") == "", v("#ht-why"))
+        check("HT3 radios: 'Other' is picked", radio("ht_src") == "other", str(radio("ht_src")))
+        check("HT4 ...and 'Please explain any gaps in your employment history' stays blank",
+              v("#ht-gaps") == "", v("#ht-gaps"))
+        learned = {s: v(s) for s in ("#ht-learn", "#ht-code", "#ht-program", "#ht-find")}
+        check("HT5 'How did you learn Python / to code', 'Where did you learn to program', "
+              "'How did you find your current role' stay blank",
+              set(learned.values()) == {""}, json.dumps(learned))
+        check("HT6 a box that appears only once 'Other' is picked gets the saved answer",
+              v("#ht-sel2") == "other" and v("#ht-where") == "Company website",
+              f"{v('#ht-sel2')} / {v('#ht-where')}")
+        check("HT7 an unlabelled box in the question's own container gets it",
+              v("#ht-sel3") == "other" and v("#ht-more") == "Company website",
+              f"{v('#ht-sel3')} / {v('#ht-more')}")
+        btn = page.eval_on_selector("#ht-btn", "el => el.textContent.trim()")
+        check("HT8 a listbox button gets the option that is the saved answer",
+              btn == "Company Website", btn)
+        saves = [p for m, p in REQUESTS[ht_from:] if m == "POST" and "save-answer" in p]
+        check("HT9 nothing is learned (no save-answer: not the listbox pick, not a box we wrote)",
+              not saves, str(saves))
+        check("HT10 a section with only the question and the next one (unlinked <label>): "
+              "'Other' is picked and the next question stays blank",
+              v("#ht-sel4") == "other" and v("#ht-else") == "", f"{v('#ht-sel4')} / {v('#ht-else')}")
+        check("HT11 the radio variant: 'Other' is picked and 'Who referred you?' stays blank",
+              radio("ht_src2") == "other" and v("#ht-who") == "", f"{radio('ht_src2')} / {v('#ht-who')}")
+        page.close()
+
         # ── API surface actually exercised ──────────────────────────────────
         print("\nBackend calls made by the extension during these fills")
         paths = sorted({p for _, p in REQUESTS if p.startswith("/api") or "resume" in p})
@@ -392,6 +584,274 @@ def main():
             print("   ", p_)
         check("A1 résumé endpoint called", any("resume" in p for _, p in REQUESTS))
         check("A2 no unexpected API host", True, f"{len(REQUESTS)} requests, all to the stub")
+        # 1.0.1+ always names what the field takes ("*" when it names nothing),
+        # so the server can tell it from the 1.0.0 Store build (no parameter).
+        resume_gets = [p for m, p in REQUESTS if m == "GET" and p.split("?")[0].endswith("/resume")]
+        check("A8 every resume request carries ?accept=",
+              bool(resume_gets) and all("accept=" in p for p in resume_gets), str(resume_gets[:4]))
+
+        # ── E: voluntary self-identification (owner's report, 2026-10-10) ───
+        # The answers SAVED in the profile land on the form — a Greenhouse-style
+        # Hispanic/Latino Yes/No (derived from the ethnicity answer) that reveals
+        # Race, selects whose wording shares no substring with the profile value,
+        # and a React-select custom dropdown that is not a <select> at all. The
+        # same page with an UNCONFIRMED pack is left exactly as it was.
+        print("\nEEO layout (confirmed profile answers reach every control type)")
+        pack = base_pack(f"{BASE}/eeo.html")
+        pack.update({
+            "eeo_confirmed": True,
+            "gender": "Male",
+            "ethnicity": "Asian",
+            "veteran_status": "I am not a protected veteran",
+            "disability_status": "No, I do not have a disability, or history/record of having a disability",
+        })
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E1 Hispanic/Latino = No (derived from Asian)", v("#hispanic") == "No", repr(v("#hispanic")))
+        check("E2 Race revealed and set to Asian (qualifier ignored)",
+              v("#race") == "Asian (Not Hispanic or Latino)", repr(v("#race")))
+        check("E3 disability matched by category, not wording",
+              v("#disability") == "No, I do not have a disability and have not had one in the past", repr(v("#disability")))
+        check("E4 veteran = not a protected veteran", v("#veteran") == "I am not a protected veteran", repr(v("#veteran")))
+        check("E5 React-select gender answered", v("#gender-value") == "Male", repr(v("#gender-value")))
+        check("E6 non-demographic custom dropdown untouched", v("#source-value") == "", repr(v("#source-value")))
+        check("E7 name still filled", v("#first_name") == pack["first_name"], v("#first_name"))
+        page.close()
+
+        print("\nEEO layout, confirmed DECLINE")
+        pack = base_pack(f"{BASE}/eeo.html")
+        # The base pack declines gender/ethnicity; veteran/disability there are
+        # legacy "No" answers, so this scenario declines disability explicitly.
+        pack.update({"eeo_confirmed": True, "disability_status": "Decline to self-identify"})
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E8 a confirmed decline is written (Hispanic)", v("#hispanic") == "Decline To Self Identify", repr(v("#hispanic")))
+        check("E9 a confirmed decline is written (disability wording differs)",
+              v("#disability") == "I do not want to answer", repr(v("#disability")))
+        check("E10 React-select decline", v("#gender-value") == "Decline To Self Identify", repr(v("#gender-value")))
+        page.close()
+
+        print("\nEEO layout, UNCONFIRMED profile (left for the applicant)")
+        pack = base_pack(f"{BASE}/eeo.html")           # no eeo_confirmed key
+        page, _ = drive_fill(ctx, f"{BASE}/eeo.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        check("E11 selects untouched", v("#hispanic") == "" and v("#disability") == "" and v("#veteran") == "",
+              repr((v("#hispanic"), v("#disability"), v("#veteran"))))
+        check("E12 custom dropdown untouched", v("#gender-value") == "", repr(v("#gender-value")))
+        page.close()
+
+        # ── N: the board's OWN autofill-from-resume goes first ─────────────
+        # Founder's ask (2026-10-10): a few boards fill the application from
+        # the uploaded resume themselves — use that whenever it is offered, it
+        # saves the time our filler cannot (multi-entry history), then fill
+        # only what it left empty or got wrong. The human still clicks Submit.
+        print("\nNative autofill — Workday-like 'Autofill with Resume' (one upload, parsed)")
+        fetched_before = resume_fetches()
+        pack = base_pack(f"{BASE}/workday-autofill.html")
+        page, logs, reply = drive_fill_reply(ctx, f"{BASE}/workday-autofill.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        ours = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapplyFilled === 'true'")
+        na = reply.get("native_autofill") or {}
+        check("N1 the native widget was used (reply carries the outcome)",
+              na.get("used") is True and na.get("ats") == "workday" and na.get("reason") == "settled",
+              json.dumps(na))
+        check("N2 ...after the parse settled, with the site's fields counted",
+              800 <= int(na.get("settled_ms") or 0) <= 20000 and int(na.get("fields_prefilled") or 0) >= 5,
+              json.dumps(na))
+        check("N3 the option was clicked and the upload revealed",
+              page.eval_on_selector("#wd-dropzone", "el => !el.hidden")
+              and page.evaluate("() => window.__wdParses()") == 1)
+        # What the site filled correctly stays — in ITS formatting, not ours.
+        check("N4 name the site filled is kept (not rewritten by us)",
+              v("#wd-first") == "Alexandra" and v("#wd-last") == "Nguyen" and not ours("#wd-first"),
+              f"{v('#wd-first')!r} ours={ours('#wd-first')}")
+        check("N5 same phone in the site's own format is kept", v("#wd-phone") == "(415) 555-0199", repr(v("#wd-phone")))
+        check("N6 city without the state is not a conflict", v("#wd-city") == "San Francisco", repr(v("#wd-city")))
+        # The applicant's identity is the one thing a wrong parse may not keep.
+        check("N7 a WRONG email from the parser is corrected to the profile's",
+              v("#wd-email") == pack["email"] and ours("#wd-email"), repr(v("#wd-email")))
+        # The multi-entry sections the site built are exactly the time saved.
+        entries = page.evaluate("""() => Array.from(document.querySelectorAll('[data-automation-id="jobTitle"]')).map(e => e.value)""")
+        companies = page.evaluate("""() => Array.from(document.querySelectorAll('[data-automation-id="company"]')).map(e => e.value)""")
+        locations = page.evaluate("""() => Array.from(document.querySelectorAll('.wd-entry [data-automation-id="location"]')).map(e => e.value)""")
+        school = page.evaluate("""() => { const s = document.querySelector('[data-automation-id="school"]'); return s ? s.value : null; }""")
+        check("N8 work-history entries the site created are left alone (none added, none rewritten)",
+              entries == ["Staff Engineer", "Software Engineer"] and companies == ["Acme Robotics", "Globex"]
+              and locations == ["Austin, TX", "Denver, CO"], f"{entries} {companies} {locations}")
+        check("N9 education entry left alone", school == "UC Berkeley", repr(school))
+        # The one upload IS the resume: fed once, fetched once, not attached again.
+        check("N10 resume not attached a second time",
+              page.evaluate("() => window.__wdUploads()") == 1
+              and page.eval_on_selector("#wd-upload-file", "el => el.files.length") == 1,
+              f"uploads={page.evaluate('() => window.__wdUploads()')}")
+        check("N11 the resume document was downloaded once for both takers",
+              resume_fetches() - fetched_before == 1, f"fetches={resume_fetches() - fetched_before}")
+        overlay = page.evaluate(
+            """() => { const h = document.getElementById('hp-copilot-overlay');
+                       const b = h && h.shadowRoot && h.shadowRoot.querySelector('.body');
+                       return b ? b.textContent : ''; }""")
+        check("N12 the widget reports the resume as attached", "Resume attached" in overlay, overlay[:120])
+        check("N13 nothing was submitted", not [r for r in REQUESTS if r[1].endswith("/submit")])
+        page.close()
+
+        print("\nNative autofill — Ashby-like autofill card beside the real Resume field")
+        fetched_before = resume_fetches()
+        pack = base_pack(f"{BASE}/ashby-parse.html")
+        page, logs, reply = drive_fill_reply(ctx, f"{BASE}/ashby-parse.html", pack)
+        v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+        ours = lambda sel: page.eval_on_selector(sel, "el => el.dataset.spotapplyFilled === 'true'")
+        na = reply.get("native_autofill") or {}
+        check("N14 native autofill used on the Ashby-like card",
+              na.get("used") is True and na.get("ats") == "ashby" and int(na.get("fields_prefilled") or 0) == 4,
+              json.dumps(na))
+        check("N15 name the parser filled is kept", v("#ash-name") == "Alexandra Nguyen" and not ours("#ash-name"),
+              repr(v("#ash-name")))
+        check("N16 the parser's SHORT company name is kept (not identity — the applicant reviews it)",
+              v("#ash-company") == "Globali20", repr(v("#ash-company")))
+        check("N17 an OLD LinkedIn URL from the parser is corrected to the profile's",
+              v("#ash-linkedin") == pack["linkedin_url"] and ours("#ash-linkedin"), repr(v("#ash-linkedin")))
+        check("N18 what the parser missed is filled by us", v("#ash-phone") == pack["phone"], repr(v("#ash-phone")))
+        check("N19 the parser card got the file once; the real Resume field is attached too",
+              page.evaluate("() => window.__ashUploads()") == 1
+              and page.eval_on_selector("#ash-autofill", "el => el.files.length") == 1
+              and page.eval_on_selector("#ash-resume", "el => el.files.length") == 1,
+              f"uploads={page.evaluate('() => window.__ashUploads()')}")
+        check("N20 one download for both uploads", resume_fetches() - fetched_before == 1,
+              f"fetches={resume_fetches() - fetched_before}")
+        page.close()
+
+        print("\nNative autofill — no widget offered: the normal path")
+        pack = base_pack(f"{BASE}/workday.html")
+        page, _, reply = drive_fill_reply(ctx, f"{BASE}/workday.html", pack)
+        na = reply.get("native_autofill") or {}
+        check("N21 a plain 'Resume/CV' upload is NOT native autofill (Workday-like page)",
+              na.get("used") is False and na.get("reason") == "no_widget" and na.get("ats") == "workday", json.dumps(na))
+        check("N22 ...and the form is filled as before",
+              page.eval_on_selector("#wd-first", "el => el.value") == pack["first_name"])
+        page.close()
+        pack = base_pack(f"{BASE}/greenhouse.html")
+        page, _, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse.html", pack)
+        na = reply.get("native_autofill") or {}
+        check("N23 a plain 'Upload resume' field on a Greenhouse-like page is NOT native autofill",
+              na.get("used") is False and na.get("reason") == "no_widget" and na.get("ats") == "greenhouse", json.dumps(na))
+        page.close()
+
+        print("\nNative autofill — switched OFF: the normal path even when a widget is offered")
+        set_native_autofill(ctx, False)
+        try:
+            pack = base_pack(f"{BASE}/workday-autofill.html")
+            page, _, reply = drive_fill_reply(ctx, f"{BASE}/workday-autofill.html", pack)
+            v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+            na = reply.get("native_autofill") or {}
+            check("N24 the switch is honoured (reason: disabled)",
+                  na.get("used") is False and na.get("reason") == "disabled", json.dumps(na))
+            check("N25 the site's autofill option was never clicked, nothing parsed",
+                  page.eval_on_selector("#wd-dropzone", "el => el.hidden")
+                  and page.evaluate("() => window.__wdParses()") == 0)
+            check("N26 our fill still lands", v("#wd-first") == pack["first_name"] and v("#wd-email") == pack["email"],
+                  f"{v('#wd-first')!r} {v('#wd-email')!r}")
+            check("N27 the only upload still receives the resume (normal attach path)",
+                  page.eval_on_selector("#wd-upload-file", "el => el.files.length") == 1)
+            page.close()
+
+            # ── OC: one-click submit ─────────────────────────────────────────
+            # Founder decision 2026-10-11. pack.auto_submit is the server's
+            # verdict on the user's "Apply & Submit" click; the extension presses
+            # the form's own Submit only when nothing is left for a human, and
+            # "Submitted" is still written only on the employer's confirmation.
+            print("\nOne-click submit (server-approved click → the form's own Submit)")
+            events = lambda since: [p for m, p in REQUESTS[since:] if m == "POST" and "telemetry" in p]
+            submits = lambda since: [p for m, p in REQUESTS[since:] if m == "POST" and p.endswith("/submit")]
+
+            oc_from = len(REQUESTS)
+            pack = dict(base_pack(f"{BASE}/greenhouse-submit.html"),
+                        auto_submit=True, auto_submit_reason="ok", auto_submit_hosts=["127.0.0.1"])
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", pack)
+            auto = reply.get("auto_submit") or {}
+            check("OC1 the reply says the form was submitted", auto.get("attempted") is True and auto.get("reason") == "clicked",
+                  json.dumps(auto))
+            check("OC1b ...and reports the attempt", any("#auto_submit_attempted" in p for p in events(oc_from)),
+                  str(events(oc_from)))
+            # The native submit navigates to the employer's confirmation page; the
+            # content script there recognises it and the background records it.
+            page.wait_for_url("**/thanks.html**", timeout=15000)
+            page.wait_for_timeout(4000)
+            check("OC2 the employer's confirmation page marks it Submitted (POST /submit)",
+                  len(submits(oc_from)) == 1, str(submits(oc_from)))
+            page.close()
+
+            # Held back: a required answer the pack cannot give.
+            oc_from = len(REQUESTS)
+            held = dict(pack, phone="")
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", held)
+            auto = reply.get("auto_submit") or {}
+            check("OC3 a required field with no answer holds the submit back",
+                  auto.get("attempted") is False and auto.get("reason") == "fields_need_you", json.dumps(auto))
+            check("OC3b ...nothing was submitted", not submits(oc_from), str(submits(oc_from)))
+            check("OC3c ...and the dashboard is told why",
+                  any("#auto_submit_blocked:fields_need_you" in p for p in events(oc_from)), str(events(oc_from)))
+            check("OC3d the form is still open for the user", page.url.endswith("/greenhouse-submit.html"), page.url)
+            page.close()
+
+            # Not on the server's list: filled, never submitted.
+            oc_from = len(REQUESTS)
+            foreign = dict(pack, auto_submit_hosts=["greenhouse.io", "lever.co"])
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", foreign)
+            auto = reply.get("auto_submit") or {}
+            check("OC4 a host outside the allow-list is never submitted",
+                  auto.get("attempted") is False and auto.get("reason") == "host_not_allowed", json.dumps(auto))
+            check("OC4b ...but the form was still filled",
+                  page.eval_on_selector("#first_name", "el => el.value") == pack["first_name"])
+            check("OC4c ...and nothing was submitted", not submits(oc_from), str(submits(oc_from)))
+            page.close()
+
+            # No approval: the old behaviour, exactly.
+            oc_from = len(REQUESTS)
+            plain = dict(pack, auto_submit=False, auto_submit_reason="not_requested")
+            page, logs, reply = drive_fill_reply(ctx, f"{BASE}/greenhouse-submit.html", plain)
+            auto = reply.get("auto_submit") or {}
+            check("OC5 without the click's approval nothing is pressed",
+                  auto.get("requested") is False and not submits(oc_from), json.dumps(auto) + str(submits(oc_from)))
+            page.close()
+
+            # A visible CAPTCHA: pause, tell the dashboard, press nothing.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/greenhouse-captcha.html",
+                                    dict(pack, apply_url=f"{BASE}/greenhouse-captcha.html"))
+            check("OC6 a visible CAPTCHA is a handoff: captcha_needed reported, nothing submitted",
+                  any("#captcha_needed" in p for p in events(oc_from)) and not submits(oc_from),
+                  str(events(oc_from)))
+            check("OC6b ...and the user is asked to solve it",
+                  any("solve the CAPTCHA" in l or "CAPTCHA" in l for l in logs) or
+                  page.evaluate("() => (document.getElementById('hp-copilot-overlay') || {}).shadowRoot ? true : !!document.getElementById('hp-copilot-overlay')"),
+                  "overlay missing")
+            page.close()
+
+            # An account wall: the email is filled, the password never, and the
+            # dashboard learns the form is waiting on a sign-in.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/account-create.html",
+                                    dict(pack, apply_url=f"{BASE}/account-create.html"))
+            v = lambda sel: page.eval_on_selector(sel, "el => el.value")
+            check("OC7 account email filled on a create-account wall (both boxes)",
+                  v("#email") == pack["email"] and v("#verifyEmail") == pack["email"],
+                  json.dumps({"email": v("#email"), "verify": v("#verifyEmail")}))
+            check("OC7b passwords are never touched", v("#password") == "" and v("#verifyPassword") == "")
+            check("OC7c login_needed reported, nothing submitted",
+                  any("#login_needed" in p for p in events(oc_from)) and not submits(oc_from), str(events(oc_from)))
+            page.close()
+
+            # The emailed verification code: named for the user, never fetched.
+            oc_from = len(REQUESTS)
+            page, logs = drive_fill(ctx, f"{BASE}/verify-code.html",
+                                    dict(pack, apply_url=f"{BASE}/verify-code.html"))
+            check("OC8 a verification-code step is reported as such",
+                  any("#verification_code_needed" in p for p in events(oc_from)), str(events(oc_from)))
+            check("OC8b the code box is left for the user",
+                  page.eval_on_selector("#code", "el => el.value") == "")
+            page.close()
+        finally:
+            set_native_autofill(ctx, None)   # back to the default: ON
 
         ctx.close()
 

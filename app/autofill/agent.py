@@ -36,55 +36,13 @@ class CaptchaDetectedError(Exception):
     pass
 
 
-# Comprehensive stealth init script — patches all fingerprint vectors that
-# reCAPTCHA Enterprise and Lever bot detection check.
-_STEALTH_INIT_JS = """
-(() => {
-  // 1. Hide webdriver flag
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+# No browser-fingerprint patching. An earlier version injected a "stealth"
+# init script here (navigator.webdriver, plugins, WebGL vendor, ...) to get
+# past bot detection. Removed 2026-10-10 (docs/AUTO_APPLY_RESEARCH.md): the
+# founder-only server fill is a convenience for a human who still reviews and
+# submits, and disguising the browser is exactly the behaviour ATS terms
+# forbid. A CAPTCHA or a login wall is reported to the owner, never evaded.
 
-  // 2. Restore plugins (empty in headless)
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
-  });
-
-  // 3. Restore mimeTypes
-  Object.defineProperty(navigator, 'mimeTypes', {
-    get: () => [1, 2, 3],
-  });
-
-  // 4. Add chrome runtime object (absent in headless)
-  if (!window.chrome) {
-    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
-  }
-
-  // 5. Spoof permissions query (Notification permission)
-  const origQuery = window.navigator.permissions && window.navigator.permissions.query.bind(window.navigator.permissions);
-  if (origQuery) {
-    window.navigator.permissions.query = (parameters) =>
-      parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : origQuery(parameters);
-  }
-
-  // 6. Restore languages
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-
-  // 7. Hardware concurrency
-  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-
-  // 8. deviceMemory
-  Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-
-  // 9. Platform
-  Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
-
-  // 10. Remove "HeadlessChrome" from UA products list
-  Object.defineProperty(navigator, 'appVersion', {
-    get: () => navigator.appVersion.replace('Headless', ''),
-  });
-})();
-"""
 
 # Track active headful browser page contexts: application_id -> Page
 _active_previews: dict[int, Page] = {}
@@ -166,35 +124,6 @@ async def _handle_captcha(page: Page, application_id: int, job: Job) -> bool:
         type_="captcha",
     )
     raise CaptchaDetectedError(f"CAPTCHA detected on page for {job.company}")
-
-async def _click_submit(page: Page) -> bool:
-    submit_selectors = [
-        "#submit_app", 
-        "#btn-submit", 
-        "button[type='submit']", 
-        "input[type='submit']",
-        "button:has-text('Submit')",
-        "button:has-text('submit')",
-        "button:has-text('Submit Application')",
-        "button:has-text('submit application')",
-        "input[value='Submit']",
-        "input[value='submit']",
-        "input[value='Submit Application']",
-        "input[value='submit application']",
-        "[role='button']:has-text('Submit')",
-        "[role='button']:has-text('submit')",
-        "button[id*='submit']",
-        "button[class*='submit']"
-    ]
-    for sel in submit_selectors:
-        try:
-            el = await page.query_selector(sel)
-            if el and await el.is_visible():
-                await el.click()
-                return True
-        except Exception:
-            continue
-    return False
 
 async def _fill_humanlike(el, val: str) -> None:
     """Focus, clear, type with jitter, fire React synthetic events, then blur."""
@@ -2105,7 +2034,6 @@ async def _autofill_one(application_id: int) -> List[UnknownField]:
             viewport={"width": 1280, "height": 800},
             locale="en-US",
         )
-        await context.add_init_script(_STEALTH_INIT_JS)
         page = await context.new_page()
         await page.goto(apply_url, wait_until="domcontentloaded")
         await page.wait_for_timeout(2000)
@@ -2307,7 +2235,6 @@ async def _preview_one(application_id: int) -> None:
                 viewport={"width": 1280, "height": 800},
                 locale="en-US",
             )
-            await context.add_init_script(_STEALTH_INIT_JS)
             page = await context.new_page()
             _active_previews[application_id] = page
 

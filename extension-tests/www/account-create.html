@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><title>Create Account — Workday-style sign-in wall</title></head>
+<body>
+  <h1>Create Account</h1>
+  <!-- An account wall: the extension fills the account EMAIL (both boxes),
+       never the password, reports login_needed, and waits for the human. -->
+  <form id="createAccount">
+    <label for="email">Email Address *</label>
+    <input type="email" id="email" name="email" data-automation-id="email" required>
+
+    <label for="verifyEmail">Verify New Email *</label>
+    <input type="email" id="verifyEmail" name="verifyEmail" data-automation-id="verifyEmail" required>
+
+    <label for="password">Password *</label>
+    <input type="password" id="password" name="password" required>
+
+    <label for="verifyPassword">Verify New Password *</label>
+    <input type="password" id="verifyPassword" name="verifyPassword" required>
+
+    <button type="submit" id="createAccountSubmit">Create Account</button>
+  </form>
+  <p>Already have an account? <a href="#">Sign In</a></p>
+</body>
+</html>

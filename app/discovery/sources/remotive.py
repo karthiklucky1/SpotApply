@@ -43,6 +43,7 @@ class RemotiveSource:
                 r = await client.get(_API_URL, params={"limit": 200})
                 if r.status_code != 200:
                     log.warning("Remotive: HTTP %d", r.status_code)
+                    self.last_error = f"HTTP {r.status_code}"
                     return []
 
                 data = r.json()
@@ -98,6 +99,7 @@ class RemotiveSource:
 
         except Exception as e:
             log.warning("Remotive: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("RemotiveSource: fetched %d jobs", len(jobs))
         return jobs

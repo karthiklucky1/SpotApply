@@ -128,6 +128,7 @@ class _Req:
     ("GET", "/api/usage"),
     ("OPTIONS", "/api/profile"),
     ("HEAD", "/dashboard"),
+    ("POST", "/api/verify/identity"),       # fired by the dashboard's own load
 ])
 def test_passive_requests_do_not_renew_the_window(method, path):
     """A tab left open kept an account "active" forever."""
@@ -169,6 +170,46 @@ def test_a_poll_never_stamps_last_active(monkeypatch):
     assert stamped == [("u-poll", True)]
     server._get_user_id(R("GET", "/dashboard"))
     assert stamped[-1] == ("u-poll", False), "a page view is 'seen', not meaningful"
+    # ...and neither is the write that page load fires on its own (2026-10-08:
+    # it made every page view meaningful, renewing paid AI for an open tab).
+    n = len(stamped)
+    server._get_user_id(R("POST", "/api/verify/identity"))
+    assert len(stamped) == n, "the dashboard's own load-time write stamped activity"
+    server._get_user_id(R("PUT", "/api/profile"))
+    assert stamped[-1] == ("u-poll", True), "a real write still counts"
+
+
+def _js_function(html: str, name: str) -> str:
+    import re
+    m = re.search(r"(async\s+)?function\s+" + name + r"\s*\(", html)
+    assert m, name
+    depth, i = 0, html.index("{", m.end())
+    for j in range(i, len(html)):
+        depth += {"{": 1, "}": -1}.get(html[j], 0)
+        if depth == 0:
+            return html[m.start():j + 1]
+    raise AssertionError(name)
+
+
+def test_the_dashboards_load_time_writes_are_all_passive():
+    """Every write the dashboard fires WITHOUT a click is on the passive list.
+
+    The functions below run from page load or a timer (DOMContentLoaded,
+    setTimeout/setInterval polls). A write added to any of them must be added
+    to `_PASSIVE_WRITE_PATHS` too, or a tab left open is "a person" again."""
+    import re
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "app/templates/dashboard.html").read_text()
+    load_time = ["loadTrustProfile", "loadWelcomePanel", "loadSearchState",
+                 "loadResumeStatus", "loadUsage", "loadNotifications", "maybeAskSubmit"]
+    for name in load_time:
+        body = _js_function(html, name)
+        for call in re.finditer(r"fetch\(\s*['\"`]([^'\"`]+)['\"`]\s*,\s*\{([^}]*)\}", body):
+            path, opts = call.group(1), call.group(2)
+            if re.search(r"method:\s*['\"](POST|PUT|PATCH|DELETE)", opts):
+                assert path.split("?")[0] in server._PASSIVE_WRITE_PATHS, \
+                    f"{name}() writes {path} on its own — not on the passive list"
+    assert "/api/verify/identity" in _js_function(html, "loadTrustProfile")
 
 
 def test_an_idle_free_user_goes_dormant(monkeypatch):

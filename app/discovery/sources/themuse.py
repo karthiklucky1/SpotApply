@@ -78,9 +78,11 @@ class TheMuseSource:
                     r = await client.get(_API_URL, params=params)
                     if r.status_code == 429:
                         log.warning("TheMuse: rate-limited — stopping")
+                        self.last_error = "rate-limited (HTTP 429)"
                         break
                     if r.status_code != 200:
                         log.warning("TheMuse: HTTP %d on page %d", r.status_code, page)
+                        self.last_error = f"HTTP {r.status_code}"
                         break
 
                     results = r.json().get("results", [])
@@ -127,6 +129,7 @@ class TheMuseSource:
                             log.debug("TheMuse: parse failed for %s: %s", item.get("id"), e)
         except Exception as e:
             log.warning("TheMuse: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("TheMuseSource: fetched %d jobs", len(jobs))
         return jobs

@@ -70,6 +70,99 @@ function queryAllDeep(selector, root = document) {
   return out;
 }
 
+// ── Fields nobody may fill ───────────────────────────────────────────────────
+// Live test 2026-10-09 (Ashby): the page's HIDDEN reCAPTCHA textarea
+// (name="g-recaptcha-response", display:none) has no label, so its NAME became
+// the "question", the AI's reply ("I'd be happy to help, but…") came back and
+// was typed into it. A captcha / anti-bot field, a honeypot, and a text field
+// the user cannot see are never filled, never asked about, never learned from.
+// Honeypot WORDING counts only when the whole text is the instruction ("Leave
+// this field blank") or it addresses humans ("If you are human, ..."): a real
+// field that says "leave blank if none" is the applicant's to fill. "Human"
+// counts only as the whole address (then punctuation, the end, or "leave" /
+// "don't"): "If you are a Human Resources professional, ..." is a question.
+// Keep the pattern IDENTICAL to app/autofill/field_guards.py.
+const _ANTI_BOT_RE = /(re-?captcha|h-?captcha|captcha|turnstile|cf[-_]chl|honey-?pot|arkose|funcaptcha|friendly-?captcha|frc-captcha|bot[-_ ]?(?:check|trap|field)|anti[-_ ]?bot|if you(?:'re|’re| are) (?:a )?human(?:\s*[,.;:!?)]|\s*$|\s+(?:please |then )?(?:leave|do ?n[o'’]t)\b)|^\W*(?:please )?(?:leave this (?:field |input |box )?(?:blank|empty)|do ?n[o'’]t (?:fill|change) (?:in )?this(?: field)?(?: in| out)?)\W*$)/i;
+// Captcha WIDGETS (never a page or form wrapper, whose class may mention captcha).
+const _CAPTCHA_WIDGET_SEL = '.g-recaptcha, .grecaptcha-badge, .h-captcha, .cf-turnstile, .frc-captcha';
+
+function isAntiBotField(el) {
+  if (!el || !el.getAttribute) return false;
+  // Each text on its own (a honeypot sentence must be the WHOLE text), with
+  // its whitespace collapsed the way field_guards.is_anti_bot_field does.
+  const test = (t) => !!t && _ANTI_BOT_RE.test(String(t).replace(/\s+/g, ' ').trim());
+  const own = [el.getAttribute('name'), el.id, el.getAttribute('class'),
+               el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+               el.getAttribute('title')];
+  if (own.some(test)) return true;
+  try { if (el.closest && el.closest(_CAPTCHA_WIDGET_SEL)) return true; } catch (_) {}
+  // A honeypot announces itself to people: "Leave this field blank".
+  try {
+    const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) || '';
+    if (test(lbl)) return true;
+  } catch (_) {}
+  return false;
+}
+
+/** A field a person could actually see and type into right now. */
+function isUserVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+  let style = null;
+  try { style = win.getComputedStyle(el); } catch (_) { return true; }
+  if (!style) return true;
+  if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  if (el.offsetParent === null && style.position !== 'fixed') return false;   // a display:none ancestor
+  const r = el.getBoundingClientRect();
+  if (r.width < 2 && r.height < 2) return false;                // 0x0 / 1px honeypots
+  const sx = win.scrollX || 0, sy = win.scrollY || 0;
+  if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;    // pushed off the page (left:-9999px)
+  return true;
+}
+
+/** A free-text entry: the kind of field a hidden one must never be written into. */
+function isTextEntry(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  const t = (el.getAttribute('type') || 'text').toLowerCase();
+  return ['text', 'email', 'tel', 'url', 'number', 'search', ''].includes(t);
+}
+
+/** May the copilot write into this field at all? */
+function canFillField(el) {
+  if (!el || isAntiBotField(el)) return false;
+  if (isTextEntry(el) && !isUserVisible(el)) return false;
+  return true;
+}
+
+/** A form field's NAME used as its label ("g-recaptcha-response", "question_123"). */
+function looksLikeFieldIdentifier(text) {
+  const s = String(text || '').trim();
+  return !!s && !/\s/.test(s) && /^[A-Za-z0-9_.:\[\]-]+$/.test(s) && /[_\-\d\[\]:.]/.test(s);
+}
+
+// A MODEL reply ABOUT the question instead of an answer to it. Never typed into
+// a form (the server refuses these too; this covers an older server). The full
+// test is for what a model just wrote; a remembered answer may be the user's
+// own words ("I am unable to start before January"), so it is judged only by
+// the forms a model alone writes (looksLikeModelOnlyReply). Same patterns as
+// app/autofill/field_guards.py.
+const _META_START_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help|i(?:'m| am) (?:sorry,? (?:but )?i (?:cannot|can't|can not|am unable to|am not able to)|unable to|not able to) (?:answer|write|respond|provide|help|complete|assist)\b|i(?:'m| am) (?:sorry|unable|not able)\b[^.?!]{0,60}\b(?:the|this|your) (?:essay )?(?:question|prompt)\b|i (?:cannot|can't|can not|am unable to|won't) (?:answer|write|respond|provide|help(?! but)|complete)|as an ai(?: (?:language )?model| assistant)?\s*,|i notice (?:that )?(?:the|this|your) (?:essay )?(?:question|prompt|field|text)|it (?:looks|seems|appears) (?:like|that) (?:the|this|your) (?:essay )?(?:question|prompt|field|text)|(?:the|this) (?:essay )?(?:question|prompt|field) (?:appears|seems|you provided|is (?:incomplete|unclear|missing))|could you (?:please )?(?:provide|clarify|share)|please (?:provide|clarify|share) (?:the|more|a|an))/i;
+const _META_ANY_RE = /(?:question|prompt) (?:appears|seems) (?:to be )?(?:incomplete|unclear|missing|empty|cut off)|(?:looks|seems|appears) (?:like|to be) (?:a|an) (?:technical|form|html|internal|system) (?:parameter|field|identifier|name|token|value)|(?:this|that|it|"[^"]{1,80}") (?:is|isn't|is not|doesn't look like|does not look like|doesn't appear to be|does not appear to be) (?:a|an) (?:real |actual |complete |valid )?(?:essay |application )?question\b|form field (?:name|identifier)|provide the (?:actual|full|complete) (?:essay )?question|as an ai language model|as an ai (?:model|assistant),/i;
+const _META_MODEL_ONLY_RE = /^\s*["']?(?:i'?d be (?:happy|glad) to help(?: you)?(?:\s*[,!.:;]| with (?:this|that|the|your) (?:essay |application )?(?:question|prompt))|as an ai(?: (?:language )?model| assistant)?\s*,|(?:i notice (?:that )?|it (?:looks|seems|appears) (?:like|that) )?(?:the|this|your) (?:essay )?(?:question|prompt) (?:appears|seems|is) (?:to be )?(?:incomplete|unclear|missing|empty|cut off))/i;
+function looksLikeMetaReply(answer) {
+  const a = String(answer || '').trim();
+  if (!a) return false;
+  if (a.replace(/^[\s."']+|[\s."']+$/g, '').toUpperCase() === 'SKIP') return true;
+  return _META_START_RE.test(a) || _META_ANY_RE.test(a);
+}
+/** A reply in a form only a model writes: safe to apply to the user's own words. */
+function looksLikeModelOnlyReply(answer) {
+  const a = String(answer || '').trim();
+  return !!a && _META_MODEL_ONLY_RE.test(a);
+}
+
 // Backend base URL for a fill pack. The server deploys independently of
 // installed extensions, so accept both the current key and the legacy
 // hirepath_url one — an old server must keep working with a new install and
@@ -120,6 +213,24 @@ try {
   });
 } catch (_) {}
 
+// ── Native autofill switch ───────────────────────────────────────────────────
+// Some boards parse the uploaded resume themselves ("Autofill with Resume" on
+// Workday, Ashby's autofill card, Lever's parsing upload). When one is offered
+// we feed it the resume FIRST and only fill what it left empty or got wrong
+// (see runNativeAutofill). ON unless the user switched it off: an absent key
+// is ON, so an install predating the setting behaves the same as a new one.
+let _nativeAutofillEnabled = true;
+try {
+  chrome.storage.local.get(['spotapply_native_autofill'], (d) => {
+    _nativeAutofillEnabled = !(d && d.spotapply_native_autofill === false);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.spotapply_native_autofill) {
+      _nativeAutofillEnabled = changes.spotapply_native_autofill.newValue !== false;
+    }
+  });
+} catch (_) {}
+
 // Protected self-identification questions, by their wording. Used at every
 // write path that is not fillEEOField itself — saved-answer recall, dropdown
 // learning, AI answers — so the opt-out cannot be bypassed by a remembered
@@ -129,15 +240,176 @@ function isDemographicQuestion(text) {
   return _DEMOGRAPHIC_RE.test(deaccent(String(text || '')));
 }
 
-/** An answer the user CHOSE in their profile (not a default, not "decline"). */
+/** An answer the user SAVED in their SpotApply profile. Consent is the saved
+ *  form (`eeo_confirmed`), not the wording: a saved "Decline to self-identify"
+ *  is as deliberate as "Male". The old rule skipped declines, so a confirmed
+ *  decline was the one profile answer the form then asked the user again
+ *  (owner's report, 2026-10-10: the self-identification given in the profile
+ *  was not filled). An unconfirmed profile states nothing — the server already
+ *  sends its legacy defaults as "Decline", and those are never written. */
 function eeoStated(value) {
   const v = String(value || '').trim();
-  return !!(v && _copilotPack && _copilotPack.eeo_confirmed && !/^decline\b|decline to|prefer not/i.test(v));
+  return !!(v && _copilotPack && _copilotPack.eeo_confirmed);
+}
+
+// ── EEO answer categories ────────────────────────────────────────────────────
+// Employer forms phrase the same answers a dozen ways ("Decline to
+// self-identify" / "I don't wish to answer" / "Prefer not to say"; "I am not a
+// protected veteran" / "No, I am not a veteran"), so a profile value is matched
+// to an option by CATEGORY, never by substring: "Male" contains-matches
+// "Female", and a confirmed decline matched nothing on a form whose option
+// reads "I decline to self-identify". Parenthetical qualifiers are dropped
+// first — "Asian (Not Hispanic or Latino)" is Asian, not Hispanic. Order within
+// a kind matters: the negative phrasing is tested before the positive one it
+// contains ("I am NOT a protected veteran" holds "protected veteran").
+const _EEO_DECLINE_RE = /decline|prefer not|do not wish|don.t wish|choose not|not to (?:answer|disclose|identify|self|say|specify|provide)|rather not|no answer|don.t want|not want to answer|wish not/i;
+const _EEO_CATEGORIES = {
+  gender: [
+    ['nonbinary', /non.?binary|genderqueer|gender.?(?:fluid|non.?conform|diverse)|third gender/i],
+    ['male',      /^male\b|\bman\b|^m$/i],
+    ['female',    /^female\b|\bwoman\b|^f$/i],
+    ['other',     /\bother\b|another|self.?describe|not listed/i],
+  ],
+  ethnicity: [
+    ['two_or_more',     /two or more|multi.?racial|mixed/i],
+    ['hispanic',        /hispanic|latin/i],
+    ['black',           /\bblack\b|african.?american/i],
+    ['asian',           /\basian\b/i],
+    ['native_american', /american indian|alaskan? native|native american|indigenous|first nations/i],
+    ['pacific',         /hawaiian|pacific islander/i],
+    ['white',           /\bwhite\b|caucasian/i],
+    ['middle_eastern',  /middle eastern|north african/i],
+  ],
+  veteran: [
+    ['no',  /not a (?:protected )?veteran|not protected|^no\b|i am not|do not identify/i],
+    ['yes', /^yes\b|protected veteran|i am a veteran|one or more of the classifications|identify as (?:a )?(?:protected )?veteran|disabled veteran|recently separated|active.?duty|armed forces|served/i],
+  ],
+  disability: [
+    ['no',  /^no\b|do not have|don.t have|not have a disability|no disability|never had/i],
+    ['yes', /^yes\b|i have a disability|have a disability|history.record of having|had one in the past/i],
+  ],
+  // Greenhouse asks "Are you Hispanic/Latino?" as its own Yes/No before Race.
+  hispanic: [
+    ['no',  /^no\b|not hispanic/i],
+    ['yes', /^yes\b|hispanic or latin/i],
+  ],
+};
+const _EEO_PLACEHOLDER_RE = /^(?:please )?(?:select|choose)\b|^-+$|^\s*$/i;
+
+function eeoCategory(kind, text) {
+  const t = deaccent(String(text || '')).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  if (_EEO_DECLINE_RE.test(t)) return 'decline';
+  for (const pair of (_EEO_CATEGORIES[kind] || [])) {
+    if (pair[1].test(t)) return pair[0];
+  }
+  return null;
+}
+
+/** Index of the option that answers `value` for a `kind` question, else -1. */
+function eeoPickOption(kind, value, optionTexts) {
+  const want = eeoCategory(kind, value);
+  const texts = (optionTexts || []).map(t => String(t || ''));
+  if (!want) {
+    // A value with no category: only an exact match may stand in for it.
+    const lower = String(value || '').toLowerCase().trim();
+    return lower ? texts.findIndex(t => t.toLowerCase().trim() === lower) : -1;
+  }
+  for (let i = 0; i < texts.length; i++) {
+    if (_EEO_PLACEHOLDER_RE.test(texts[i].trim())) continue;
+    if (eeoCategory(kind, texts[i]) === want) return i;
+  }
+  return -1;
+}
+
+/** The profile's answer to a `kind` question. Greenhouse's separate
+ *  "Are you Hispanic/Latino?" is derived from the ethnicity answer. */
+function eeoValueFor(pack, kind) {
+  const p = pack || {};
+  if (kind === 'gender') return p.gender || '';
+  if (kind === 'ethnicity') return p.ethnicity || '';
+  if (kind === 'veteran') return p.veteran_status || '';
+  if (kind === 'disability') return p.disability_status || '';
+  if (kind === 'hispanic') {
+    const cat = eeoCategory('ethnicity', p.ethnicity);
+    if (!cat) return '';
+    if (cat === 'decline') return 'Decline to self-identify';
+    return cat === 'hispanic' ? 'Yes' : 'No';
+  }
+  return '';
+}
+
+/** Which protected question an element asks (from its own label, name, id,
+ *  aria text — and its field block's label only when that block holds exactly
+ *  one control), or null. The kind decides WHICH profile answer is written;
+ *  a wrong guess here would write a demographic answer into another field. */
+function eeoKindOf(el) {
+  const ctx = deaccent(_eeoContextText(el)).toLowerCase();
+  if (!ctx.trim()) return null;
+  if (/hispanic|latin[oax]?\b/.test(ctx) && !/\brace\b|ethnic/.test(ctx)) return 'hispanic';
+  if (/\bgender\b|\bsex\b/.test(ctx)) return 'gender';
+  if (/\brace\b|racial|ethnic/.test(ctx)) return 'ethnicity';
+  if (/veteran/.test(ctx)) return 'veteran';
+  if (/disab/.test(ctx)) return 'disability';
+  return null;
+}
+
+function _eeoContextText(el) {
+  if (!el || !el.getAttribute) return '';
+  const parts = [];
+  try { parts.push(labelText(el) || ''); } catch (_) {}
+  for (const a of ['aria-label', 'name', 'id', 'data-automation-id', 'placeholder', 'title']) {
+    const v = el.getAttribute(a);
+    if (v) parts.push(v);
+  }
+  try {
+    const inner = el.querySelector && el.querySelector('input, [role="combobox"]');
+    if (inner && inner !== el) parts.push(_eeoContextText(inner));   // a control wrapping its input
+    const block = el.closest('[class*="field"], [class*="question"], [class*="form-group"], fieldset, li, .form-row');
+    if (block) {
+      const controls = block.querySelectorAll('select, [role="combobox"], button[aria-haspopup="listbox"], input:not([type="hidden"])');
+      const lab = block.querySelector('label, legend, [class*="label"]');
+      if (lab && controls.length <= 2) parts.push(lab.textContent || '');
+    }
+  } catch (_) {}
+  return parts.join(' ');
+}
+
+function selectEEOOption(el, kind, value) {
+  if (el.dataset && el.dataset.spotapplyUserModified === 'true') {
+    console.log('[SpotApply] Keeping your own choice in', el.name || el.id || 'a dropdown');
+    return false;
+  }
+  const opts = Array.from(el.options || []);
+  const idx = eeoPickOption(kind || eeoKindOf(el), value, opts.map(o => o.text));
+  if (idx < 0) return selectOption(el, value);     // unknown wording: the literal, or nothing
+  el.value = opts[idx].value;
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function selectEEORadio(radio, kind, value) {
+  const name = radio.getAttribute('name');
+  const group = name
+    ? Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`))
+    : [radio];
+  const texts = group.map(r => labelText(r) || (r.closest('label') ? r.closest('label').textContent : '') || r.value || '');
+  const idx = eeoPickOption(kind || eeoKindOf(radio), value, texts);
+  if (idx < 0) return false;
+  const pick = group[idx];
+  if (pick.dataset && pick.dataset.spotapplyUserModified === 'true') return false;
+  if (!pick.checked) {
+    pick.click();
+    if (!pick.checked) { pick.checked = true; pick.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+  try { pick.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  return true;
 }
 
 /** Write an EEO answer only with explicit consent. Returns true if written. */
-function fillEEOField(el, value) {
-  // Consent = the popup switch, OR the user having stated this answer in their
+function fillEEOField(el, value, kind) {
+  // Consent = the popup switch, OR the user having saved this answer in their
   // own SpotApply profile (owner's rule, 2026-09-30). A remembered answer from
   // another form is still never consent (recall skips these questions).
   if (!_eeoAutofillEnabled && !eeoStated(value)) {
@@ -145,8 +417,98 @@ function fillEEOField(el, value) {
                 (el && (el.name || el.id)) || 'field');
     return false;
   }
-  if (!value) return false;
-  return el && el.tagName === 'SELECT' ? selectOption(el, value) : fillInput(el, value);
+  if (!value || !el) return false;
+  if (el.tagName === 'SELECT') return selectEEOOption(el, kind, value);
+  if (el.tagName === 'INPUT' && el.type === 'radio') return selectEEORadio(el, kind, value);
+  // A button or combobox opens asynchronously — fillEEOCustomDropdowns owns
+  // those, after the synchronous writers have run.
+  if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'combobox') return false;
+  return fillInput(el, value);
+}
+
+/** The EEO <select>s a page shows, by id or label — run twice on Greenhouse,
+ *  whose Race dropdown appears only after "Are you Hispanic/Latino?" = No. */
+function fillEEOSelectsIn(root, pack) {
+  let n = 0;
+  for (const el of root.querySelectorAll(
+    "select[id*='gender' i], select[id*='race' i], select[id*='ethnic' i], select[id*='hispanic' i], " +
+    "select[id*='veteran' i], select[id*='disab' i]"
+  )) {
+    if (el.value && el.value !== '') continue;
+    const kind = eeoKindOf(el);
+    if (!kind) continue;
+    if (fillEEOField(el, eeoValueFor(pack, kind) || 'decline', kind)) n++;
+  }
+  return n;
+}
+
+function _customDropdownHasValue(el) {
+  const txt = ((el.textContent || '') + ' ' + (el.value || '')).replace(/\s+/g, ' ').trim();
+  if (!txt) return false;
+  return !_EEO_PLACEHOLDER_RE.test(txt) && !/^select\b|^choose\b|^-$|^select an option|^select\.\.\./i.test(txt);
+}
+
+/** Voluntary self-ID on CUSTOM dropdowns — Greenhouse's React selects
+ *  (`.select__control` + `input[role=combobox]`), Workday's listbox buttons,
+ *  Avature-style comboboxes. These never rendered as <select>, so the sync
+ *  writers above could not reach them; a confirmed answer was left blank on
+ *  every such form. Same consent rule, category matching, nothing else touched. */
+async function fillEEOCustomDropdowns(pack) {
+  let n = 0;
+  const seen = new Set();
+  const controls = queryAllDeep(
+    "[role='combobox'], button[aria-haspopup='listbox'], button[data-automation-id='select-button'], [class*='select__control']"
+  );
+  for (const raw of controls) {
+    const el = (raw.closest && raw.closest('[class*="select__control"]')) || raw;
+    if (seen.has(el) || el.tagName === 'SELECT') continue;
+    seen.add(el);
+    if (!el.offsetParent && !el.getClientRects().length) continue;
+    if (el.dataset && (el.dataset.spotapplyUserModified === 'true' || el.dataset.spotapplyFilled === 'true')) continue;
+    const kind = eeoKindOf(el);
+    if (!kind) continue;
+    const value = eeoValueFor(pack, kind);
+    if (!value) continue;
+    if (!_eeoAutofillEnabled && !eeoStated(value)) {
+      console.log('[SpotApply] Leaving demographic question for you (EEO autofill is off):', kind);
+      continue;
+    }
+    if (_customDropdownHasValue(el)) continue;
+    try {
+      if (await selectEEOCustom(el, kind, value)) n++;
+    } catch (e) {
+      console.warn('[SpotApply] EEO dropdown failed:', e.message);
+    }
+  }
+  return n;
+}
+
+async function selectEEOCustom(el, kind, value) {
+  const trigger = (el.querySelector && el.querySelector('input[role="combobox"], [role="combobox"]')) || el;
+  const press = (t) => {
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      t.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  };
+  try { trigger.focus(); } catch (_) {}
+  press(el);
+  if (trigger !== el) press(trigger);
+  await delay(350);
+  const options = queryAllDeep(
+    '[role="option"], [role="listbox"] li, [class*="select__option"], [data-automation-id*="option" i], ' +
+    '.wd-Dropdown-Option, [role="menuitem"], [data-automation-label]'
+  ).filter(o => o.offsetParent !== null || o.getClientRects().length);
+  const texts = options.map(o => (o.getAttribute('data-automation-label') || o.textContent || '').trim());
+  const idx = eeoPickOption(kind, value, texts);
+  if (idx < 0) {
+    try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    console.log('[SpotApply] No option answers', kind, 'on this dropdown — left for you');
+    return false;
+  }
+  press(options[idx]);
+  await delay(300);
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  return true;
 }
 
 // ── Essay prompts vs field labels ────────────────────────────────────────────
@@ -197,9 +559,19 @@ function toE164(raw, defaultCc = '1') {
  */
 function fillPhoneField(el, raw) {
   const want = String(raw || '').trim();
-  if (!want) return false;
+  if (!want || isAntiBotField(el)) return false;
   const wantDigits = want.replace(/\D/g, '').slice(-10);   // national significant digits
   if (!wantDigits) return false;
+
+  // After the board's own resume autofill, its formatting of the SAME number
+  // stands ("(415) 555-0199" for "+1 415 555 0199"); only a different number
+  // is corrected — the number is the applicant's, so a wrong parse is not.
+  _lastWriteKept = false;
+  if (_nativePrefillActive && String(el.value || '').trim() &&
+      !shouldOverwrite('phone', el.value, want)) {
+    _lastWriteKept = true;
+    return true;
+  }
 
   const beforeCountry = intlTelCountry(el);
   // Verify by DIGITS, never by string equality: every phone widget reformats
@@ -688,6 +1060,788 @@ function answerScreeningRadios(pack) {
   return answered;
 }
 
+// ── Yes/No BUTTON pairs (Ashby) ──────────────────────────────────────────────
+// Ashby renders a boolean question as two <button type="button">s, "Yes" and
+// "No", under the question's label: no radio, no select. Nothing matched them,
+// so on the live test (2026-10-09) both required work-authorization questions
+// stayed blank AND were missing from the "need you" count. The answer comes
+// from the same interpreter as every other control (classifyScreeningQuestion
+// -> interpretWorkAuthQuestion); anything it cannot prove stays for the user.
+function _btnText(b) {
+  return String((b && (b.textContent || (b.getAttribute && b.getAttribute('aria-label')))) || '')
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** Every rendered Yes/No button pair: {box, yes, no, question, label, entry}. */
+function yesNoButtonGroups(root) {
+  const groups = [];
+  const seen = new Set();
+  for (const yes of queryAllDeep('button', root || document)) {
+    if (!/^yes$/i.test(_btnText(yes))) continue;
+    const host = yes.getRootNode && yes.getRootNode().host;
+    if (host && host.id === 'hp-copilot-overlay') continue;          // our own UI
+    const box = yes.parentElement;
+    if (!box || seen.has(box)) continue;
+    const buttons = Array.from(box.children).filter((c) => c.tagName === 'BUTTON');
+    if (buttons.length !== 2) continue;
+    const no = buttons.find((b) => /^no$/i.test(_btnText(b)));
+    if (!no) continue;
+    // Never press anything that would submit the form.
+    if ([yes, no].some((b) => String(b.type || '').toLowerCase() === 'submit' && b.form)) continue;
+    seen.add(box);
+    const q = yesNoQuestion(box);
+    groups.push({ box, yes, no, question: q.text, label: q.label, entry: q.entry });
+  }
+  return groups;
+}
+
+/** The question a Yes/No pair answers: its field's label, else the field's text. */
+function yesNoQuestion(box) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const by = box.getAttribute && box.getAttribute('aria-labelledby');
+  if (by) {
+    const n = document.getElementById(by.split(/\s+/)[0]);
+    if (n && clean(n.textContent)) return { text: clean(n.textContent), label: n, entry: box.parentElement };
+  }
+  let node = box.parentElement;
+  for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+    // Stop before a container that holds ANOTHER question: its label is not ours.
+    const otherPair = Array.from(node.querySelectorAll('button'))
+      .some((b) => !box.contains(b) && /^(yes|no)$/i.test(_btnText(b)));
+    const otherField = node.querySelector('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), textarea, select');
+    if (otherPair || otherField) break;
+    const label = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i], [role="heading"]'))
+      .find((l) => !box.contains(l) && !l.contains(box) && clean(l.textContent));
+    if (label) return { text: clean(label.textContent), label, entry: node };
+    const text = clean(String(node.textContent || '').replace(box.textContent || '', ' '));
+    if (text.length >= 5) return { text, label: null, entry: node };
+  }
+  return { text: '', label: null, entry: box.parentElement };
+}
+
+function _btnOn(b) {
+  if (!b || !b.getAttribute) return false;
+  for (const a of ['aria-pressed', 'aria-checked', 'aria-selected']) {
+    if (b.getAttribute(a) === 'true') return true;
+  }
+  if (/^(on|checked|active|selected|true)$/i.test(b.getAttribute('data-state') || '')) return true;
+  return /(^|[\s_-])(active|selected|checked|pressed|chosen)([\s_-]|$)/i.test(String(b.getAttribute('class') || ''));
+}
+
+/** 'yes' | 'no' | null — what the pair holds now, by the page's own state first. */
+function yesNoChoice(g) {
+  const y = _btnOn(g.yes), n = _btnOn(g.no);
+  if (y && !n) return 'yes';
+  if (n && !y) return 'no';
+  return (g.box.dataset && (g.box.dataset.spotapplyUserChoice || g.box.dataset.spotapplyChoice)) || null;
+}
+
+function yesNoRequired(g) {
+  if (g.box.getAttribute && g.box.getAttribute('aria-required') === 'true') return true;
+  if (g.label && labelMarksRequired(g.label)) return true;
+  try {
+    if (g.entry && g.entry.querySelector('input[required], input[aria-required="true"]')) return true;
+  } catch (_) {}
+  return /\*/.test(g.question || '');
+}
+
+/** Click Yes/No where the profile proves the answer. Returns how many. */
+function answerYesNoButtons(pack) {
+  let answered = 0;
+  for (const g of yesNoButtonGroups(document)) {
+    if (!g.box.getClientRects().length) continue;                 // not rendered
+    if (yesNoChoice(g)) continue;                                   // already answered, by anyone
+    if (g.box.dataset.spotapplyUserModified === 'true') continue;
+    const q = g.question;
+    if (!q || isDemographicQuestion(q)) continue;
+    const want = classifyScreeningQuestion(q, pack);
+    if (want === null) continue;                                    // not proven: the applicant answers
+    const target = want ? g.yes : g.no;
+    if (target.disabled) continue;
+    try {
+      target.click();      // a click, not a class flip: the app's own handler records it
+      g.box.dataset.spotapplyChoice = want ? 'yes' : 'no';
+      g.box.dataset.spotapplyFilled = 'true';
+      answered++;
+      console.log('[SpotApply] Yes/No answered:', want ? 'Yes' : 'No', '-', q.slice(0, 70));
+    } catch (e) {
+      console.debug('[SpotApply] yes/no click failed:', e.message);
+    }
+  }
+  if (answered) console.log(`[SpotApply] Answered ${answered} Yes/No question(s) from your profile`);
+  return answered;
+}
+
+// A Yes/No the USER pressed is theirs: never re-answered, always counted.
+document.addEventListener('click', (e) => {
+  if (!e.isTrusted || !hpCopilotSurface()) return;
+  const b = e.target && e.target.closest && e.target.closest('button');
+  const t = _btnText(b);
+  if (!b || !/^(yes|no)$/i.test(t) || !b.parentElement) return;
+  b.parentElement.dataset.spotapplyUserModified = 'true';
+  b.parentElement.dataset.spotapplyUserChoice = t.toLowerCase();
+}, { capture: true, passive: true });
+
+// ── "Required", however the form marks it ────────────────────────────────────
+// Ashby draws the asterisk with CSS (label::after { content: "*" }) and tags
+// the label with a `_required_…` class, so the text says "Location" while the
+// page shows "Location*". Reading only the text left required fields yellow
+// (optional) and out of the required count.
+function labelMarksRequired(lbl) {
+  if (!lbl) return false;
+  const t = String(lbl.textContent || '');
+  if (t.includes('*') || /\(required\)|\brequired\b/i.test(t)) return true;
+  const cls = String((lbl.getAttribute && lbl.getAttribute('class')) || '');
+  if (/(^|[\s_-])required([\s_-]|$)/i.test(cls)) return true;
+  try {
+    if (lbl.querySelector && lbl.querySelector('abbr[title*="required" i], [aria-label="required" i]')) return true;
+  } catch (_) {}
+  try {
+    const win = (lbl.ownerDocument && lbl.ownerDocument.defaultView) || window;
+    for (const pseudo of ['::after', '::before']) {
+      if (String(win.getComputedStyle(lbl, pseudo).content || '').includes('*')) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** The label elements that name a field (for a radio: its GROUP's question). */
+function fieldLabelElements(el) {
+  const out = [];
+  try { if (el.labels) out.push(...Array.from(el.labels)); } catch (_) {}
+  try {
+    const doc = (el.getRootNode && el.getRootNode()) || document;
+    if (el.id && doc.querySelector) {
+      const l = doc.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (l) out.push(l);
+    }
+  } catch (_) {}
+  const by = el.getAttribute && el.getAttribute('aria-labelledby');
+  if (by) by.split(/\s+/).forEach((id) => { const n = id && document.getElementById(id); if (n) out.push(n); });
+  if (el.type === 'radio' || el.type === 'checkbox') {
+    const fs = el.closest && el.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) out.push(lg);
+    // The field's own question label: not an option caption (those wrap or
+    // point at a radio/checkbox).
+    let node = el.parentElement;
+    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
+      // Never climb into a container that holds another question's inputs.
+      const foreign = Array.from(node.querySelectorAll('input, textarea, select'))
+        .some((o) => o !== el && !((o.type === 'radio' || o.type === 'checkbox') && o.name && o.name === el.name)
+                     && o.type !== 'hidden');
+      if (foreign) break;
+      const q = Array.from(node.querySelectorAll('label, legend, [class*="question-title" i]')).find((l) =>
+        !l.contains(el) && !l.querySelector('input[type="radio"], input[type="checkbox"]') &&
+        !(l.htmlFor && (() => { try { const t = document.getElementById(l.htmlFor); return t && /radio|checkbox/.test(t.type); } catch (_) { return false; } })()));
+      if (q) { out.push(q); break; }
+    }
+  }
+  return out;
+}
+
+// ── Location autocomplete (Ashby and friends) ────────────────────────────────
+// A location "combobox" commits only a SUGGESTION the user picks. Typing
+// "Cincinnati, OH" into it left an uncommitted string the form discarded on
+// blur, so the required Location stayed empty (live test, 2026-10-09). Type the
+// city, wait for the suggestions, pick the one that matches the profile.
+function isAutocompleteInput(el) {
+  if (!el || el.tagName !== 'INPUT') return false;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  const ac = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+  const pop = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+  if (role === 'combobox' || ac === 'list' || ac === 'both' || pop === 'listbox') return true;
+  // Unannotated search-as-you-type boxes still say so: aria-expanded, or a
+  // "Start typing..." placeholder with the browser's own autofill turned off.
+  if (el.hasAttribute('aria-expanded')) return true;
+  return /start typing|type to search|search for a (?:city|location)/i.test(el.getAttribute('placeholder') || '') &&
+    /^(off|new-password|nope)$/i.test(el.getAttribute('autocomplete') || 'off');
+}
+
+/** Write text the way typing does, WITHOUT a blur (blur closes the suggestions). */
+function _typeNoBlur(el, value) {
+  try {
+    const win = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+    const d = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
+    if (d && d.set) d.set.call(el, value); else el.value = value;
+  } catch (_) { try { el.value = value; } catch (__) {} }
+  try {
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+  } catch (_) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function _suggestionsFor(el) {
+  const ids = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
+    .filter(Boolean).join(' ').split(/\s+/).filter(Boolean);
+  const lists = ids.map((id) => document.getElementById(id)).filter(Boolean);
+  const opts = lists.length
+    ? lists.flatMap((l) => Array.from(l.querySelectorAll('[role="option"]')))
+    : queryAllDeep('[role="option"]');
+  return opts.filter((o) => o.getClientRects().length &&
+    !(o.getRootNode && o.getRootNode().host && o.getRootNode().host.id === 'hp-copilot-overlay'));
+}
+
+/**
+ * The suggestion that IS the profile's place, or null when it is not certain.
+ *
+ * The region is compared COMPONENT BY COMPONENT ("London, Ontario, Canada" is
+ * London | Ontario | Canada), never as a substring: "on" is inside "London"
+ * and "Toronto", and "Virginia" inside "West Virginia" (review 2026-10-09: a
+ * substring test committed London, England for "London, ON"). A 2-letter code
+ * matches only as its own, case-sensitive component.
+ */
+function pickLocationSuggestion(options, pack) {
+  const loc = parseLocation(pack && pack.location);
+  const norm = (s) => deaccent(String(s || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const city = norm(loc.city);
+  if (!city) return null;
+  const cityRe = new RegExp('(^|[^a-z])' + esc(city) + '([^a-z]|$)');
+  // A suggestion's comma components, ZIP codes dropped ("OH 45202" is OH).
+  const parts = (o) => String((o && o.textContent) || '').split(',')
+    .map((p) => p.replace(/\b\d{5}(?:-\d{4})?\b/g, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  let hits = (options || []).filter((o) => cityRe.test(norm(o.textContent)));
+  // "Columbus" is not "Columbus Grove": a suggestion naming the city exactly wins.
+  // The CITY slot only: "New York Mills, New York" names the STATE New York, so
+  // reading any component made every place in that state an exact hit and the
+  // pick came back empty for "New York, NY" (review 2026-10-09).
+  const exact = hits.filter((o) => norm(parts(o)[0] || '') === city);
+  if (exact.length) hits = exact;
+  if (!hits.length) return null;
+
+  // The profile's region as a code and a name ("OH" / "ohio", either written);
+  // a country in that slot ("London, UK") is the country, not a region.
+  const regions = Object.assign({}, US_STATES, CA_PROVINCES);
+  const isRegionCode = (k) => !!k && Object.prototype.hasOwnProperty.call(regions, k);
+  const regionNames = new Set(Object.keys(regions).map((k) => norm(regions[k])));
+  let code = isRegionCode(loc.abbr) ? loc.abbr : '';
+  let regionName = code ? norm(regions[code]) : norm(loc.state);
+  if (!code && regionNames.has(regionName)) {
+    code = Object.keys(regions).find((k) => norm(regions[k]) === regionName) || '';
+  }
+  const slotCountry = code ? '' : _countryIn(loc.state);
+  if (slotCountry) regionName = '';
+  const country = _normCountry(residenceCountry(pack)) || slotCountry ||
+    (US_STATES[code] ? 'united states' : (CA_PROVINCES[code] ? 'canada' : ''));
+  // The components that can name a country: a US state or Canadian province is
+  // a region, never a country ("New Mexico" is not Mexico).
+  const countryParts = (o) => parts(o).slice(1)
+    .filter((p) => !(isRegionCode(p) || regionNames.has(norm(p))));
+  // A suggestion that names a country we know, other than the profile's.
+  const otherCountry = (o) => {
+    const theirs = countryParts(o).map(_countryIn).find(Boolean) || '';
+    return !!(theirs && country && theirs !== country);
+  };
+
+  if (code || regionName) {
+    const isRegion = (p) => (code && p === code) || (!!regionName && norm(p) === regionName);
+    const inRegion = hits.filter((o) => parts(o).slice(1).some(isRegion));
+    if (inRegion.length) return inRegion.length === 1 ? inRegion[0] : null;   // still two: the user picks
+    // No suggestion names the profile's region. A lone one is the place only
+    // when it names no OTHER state or province and no other country.
+    if (hits.length !== 1) return null;
+    if (parts(hits[0]).slice(1).some((p) => isRegionCode(p) || regionNames.has(norm(p)))) return null;
+    return otherCountry(hits[0]) ? null : hits[0];
+  }
+  if (hits.length === 1) return otherCountry(hits[0]) ? null : hits[0];
+  const inCountry = country
+    ? hits.filter((o) => countryParts(o).some((p) => _normCountry(p) === country)) : [];
+  return inCountry.length === 1 ? inCountry[0] : null;   // two Springfields: the user picks
+}
+
+/** Type the profile's city into a location autocomplete and pick its suggestion. */
+async function fillLocationCombobox(el, pack) {
+  _lastWriteSkippedEmpty = false;
+  if (!el || !canFillField(el) || el.dataset.spotapplyUserModified === 'true') return false;
+  const loc = parseLocation(pack && pack.location);
+  if (!loc.city) { _lastWriteSkippedEmpty = true; return false; }
+  try { el.focus(); } catch (_) {}
+  _typeNoBlur(el, loc.city);
+  let pick = null;
+  let lastCount = -1;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    await delay(300);
+    const opts = _suggestionsFor(el);
+    // Wait for the list to settle (a debounced search fills it in steps).
+    if (opts.length && opts.length === lastCount) { pick = pickLocationSuggestion(opts, pack); break; }
+    lastCount = opts.length;
+  }
+  if (!pick) {
+    // Never leave typed-but-uncommitted text behind: the form discards it, and
+    // it looks filled to the user.
+    _typeNoBlur(el, '');
+    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    console.log('[SpotApply] Location suggestions did not include your city, left for you');
+    return false;
+  }
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    try {
+      const Ctor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+      pick.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+  }
+  try { pick.click(); } catch (_) {}
+  await delay(300);
+  const ok = deaccent(String(el.value || '')).toLowerCase().includes(deaccent(loc.city).toLowerCase());
+  if (ok) {
+    try {
+      el.dataset.spotapplyFilled = 'true';
+      el.dataset.spotapplyLastWrite = String(el.value || '');
+    } catch (_) {}
+    console.log('[SpotApply] Location picked from suggestions:', String(el.value || '').slice(0, 60));
+  }
+  return ok;
+}
+
+// ── "How did you hear about this opportunity?" ───────────────────────────────
+// Owner's rule (2026-10-09): answered ONLY from the answer the user saved in
+// their profile (UserProfile.how_heard_answer, sent as pack.how_heard_answer).
+// Never from a remembered answer, never by the AI (the server refuses it as a
+// fact only the applicant holds), never guessed. Nothing saved = the applicant
+// answers it, and it is counted with the fields that need them.
+// Keep the pattern IDENTICAL to app/autofill/field_guards.py _HEAR_ABOUT_RE.
+const _HEAR_ABOUT_RE = /how did you (?:first )?(?:hear|learn|find out|find)|hear about (?:us|this)|(?:referral|lead|candidate|application) source|source of (?:referral|application)|where did you (?:hear|find|see|learn)/i;
+
+function isHowHeardQuestion(text) {
+  return _HEAR_ABOUT_RE.test(String(text || '').replace(/\s+/g, ' '));
+}
+
+// _HEAR_ABOUT_RE is the REFUSAL list: no model and no memory answers anything
+// in it. The saved answer FILLS less (review 2026-10-09): only a question about
+// how the applicant came to THIS job, role, position, posting, us or the
+// company, or a referral / lead / application source field. "How did you learn
+// Python?" and "How did you find your current role?" are in the refusal list
+// and stay the applicant's to answer.
+// The asking words, as _HEAR_ABOUT_RE has them.
+const _HH_ASKED = '(?:how did you (?:first )?(?:learn|find out|find)|where did you (?:find|see|learn))';
+const _HOW_HEARD_FILL_RE = new RegExp(
+  'how did you (?:first )?hear|where did you hear|hear about (?:us|this)|' +
+  '(?:referral|lead|candidate|application) source|source of (?:referral|application)|' +
+  _HH_ASKED + ' (?:about |of )?(?:us\\b|(?:this|the|our|that) (?:open |job )?' +
+  '(?:jobs?|roles?|positions?|opportunit(?:y|ies)|openings?|postings?|vacanc(?:y|ies)|company|organi[sz]ation)\\b)',
+  'i');
+
+/** A company's name without its legal suffix: "Acme, Inc." -> "acme". */
+function _companyCore(company) {
+  let s = deaccent(String(company || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+  for (let prev = ''; prev !== s;) {
+    prev = s;
+    s = s.replace(/[\s,]+(?:inc|incorporated|llc|ltd|limited|corp|corporation|co|company|plc|gmbh)\.?$/, '').trim();
+  }
+  s = s.replace(/^the /, '');
+  return s.length >= 2 ? s : '';
+}
+
+/**
+ * Does the saved how-did-you-hear answer answer this question? Never wider
+ * than the refusal list. `company` is the job's (pack.company): "How did you
+ * first learn about Acme?" asks about this job only on Acme's form.
+ */
+function isHowHeardFillQuestion(text, company) {
+  const t = deaccent(String(text || '')).replace(/\s+/g, ' ');
+  if (!isHowHeardQuestion(t)) return false;
+  if (_HOW_HEARD_FILL_RE.test(t)) return true;
+  const name = _companyCore(company);
+  if (!name) return false;
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(_HH_ASKED + ' (?:about |of )?(?:the )?' + esc + '(?![a-z0-9])', 'i').test(t);
+}
+
+/** The user's saved answer as one line, or "" (= the applicant answers it). */
+function howHeardAnswer(pack) {
+  return String((pack && pack.how_heard_answer) || '').replace(/\s+/g, ' ').trim();
+}
+
+// Other words for the SAME source, never a broader or a narrower one: a saved
+// "Job board" must not become "Indeed", which the user never said.
+const _HOW_HEARD_SYNONYMS = [
+  ['company website', 'company site', 'company web site', 'companys website', 'corporate website',
+   'careers page', 'career page', 'careers site', 'career site', 'careers website', 'career website',
+   'our website', 'your website'],
+  ['job board', 'job boards', 'job site', 'job sites', 'job website', 'job posting site',
+   'job posting website', 'job search site', 'job search website', 'job listing site'],
+  ['referral', 'referred'],
+  ['career fair', 'careers fair', 'job fair', 'hiring event'],
+  ['social media', 'social network', 'social networking'],
+  ['search engine', 'web search', 'online search', 'internet search'],
+];
+
+/** Lowercase words, accents and apostrophes dropped ("Company's" = "companys"). */
+function _hhTokens(s) {
+  return deaccent(String(s || '')).toLowerCase().replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+
+/** Does word list `hay` hold `needle` as a run of whole words? */
+function _hhHas(hay, needle) {
+  if (!needle.length || needle.length > hay.length) return false;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    if (needle.every((w, j) => hay[i + j] === w)) return true;
+  }
+  return false;
+}
+
+function _hhIsOther(tok) { return tok[0] === 'other'; }
+
+/** "Select...", "Please choose", "--": a list's placeholder, not a choice. */
+function _hhIsPlaceholder(text) {
+  return /^\s*(?:-+|(?:please\s+)?(?:select|choose)\b.*)?\s*$/i.test(String(text || ''));
+}
+
+/**
+ * The option (by index into `texts`) that answers the saved how-did-you-hear
+ * answer: {index, specify}, or null when nothing fits for certain. In order:
+ * the option that IS it; the one containing it or contained in it (whole
+ * words); a synonym; else "Other", with the saved text for its "please
+ * specify" box. Two candidates at one step are the applicant's choice.
+ */
+function pickHowHeardOption(texts, saved) {
+  const want = _hhTokens(saved);
+  if (!want.length) return null;
+  const opts = (texts || []).map((t, i) => ({ i, raw: String(t || ''), tok: _hhTokens(t) }))
+    .filter((o) => o.tok.length && !_hhIsPlaceholder(o.raw));
+  const specifyFor = (o) => {
+    if (!_hhIsOther(o.tok)) return '';
+    // "Other: a podcast" -> "a podcast"; a plain "Other" has nothing to add.
+    const s = String(saved).replace(/\s+/g, ' ').trim();
+    const m = s.match(/^other\b\s*[:,-]?\s*(.*)$/i);
+    let rest = m ? m[1] : s;
+    const p = rest.match(/^\((.*)\)$/);
+    if (p) rest = p[1];
+    return rest.trim();
+  };
+  const pick = (o) => ({ index: o.i, specify: specifyFor(o) });
+  const exact = opts.filter((o) => o.tok.join(' ') === want.join(' '));
+  if (exact.length) return pick(exact[0]);
+  const real = opts.filter((o) => !_hhIsOther(o.tok));
+  const contains = real.filter((o) => _hhHas(o.tok, want) || _hhHas(want, o.tok));
+  if (contains.length) return contains.length === 1 ? pick(contains[0]) : null;
+  const families = (tok) => _HOW_HEARD_SYNONYMS
+    .map((f, k) => (f.some((ph) => _hhHas(tok, ph.split(' '))) ? k : -1)).filter((k) => k >= 0);
+  const mine = families(want);
+  if (mine.length) {
+    const syn = real.filter((o) => families(o.tok).some((k) => mine.includes(k)));
+    if (syn.length) return syn.length === 1 ? pick(syn[0]) : null;
+  }
+  const other = opts.filter((o) => _hhIsOther(o.tok));
+  return other.length ? pick(other[0]) : null;
+}
+
+// A box for the "Other" choice says so: "If other, please specify", "Other
+// (please specify)", "Specify other", "Other source", or only "Please
+// specify" / "Other". A box asking to explain, describe or list something is
+// the next question (review 2026-10-09: "Please describe why you want to work
+// at Acme" got the saved answer, and memory learned it).
+const _SPECIFY_RE = /\bif other\b|\bif you (?:selected|chose|picked|answered) \W?other\b|\bother\b[^a-z0-9]*(?:please )?specify\b|\bspecify (?:the |your )?other\b|\bother source\b|^\W*(?:please )?specify\W*$|^\W*other\W*$/i;
+
+function _saysSpecifyOther(text) {
+  return _SPECIFY_RE.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+/** A free-text box whose own words name the "Other" choice. */
+function _isSpecifyField(c) {
+  if (!isTextEntry(c)) return false;
+  return [labelText(c), c.getAttribute('placeholder'), c.getAttribute('aria-label')]
+    .some((t) => _saysSpecifyOther(t));
+}
+
+const _OTHER_BOX_SEL = 'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])' +
+  ':not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"]), textarea, select';
+
+/** The fields on screen now. Taken before a pick, to see what the pick revealed. */
+function _shownFields() {
+  return new Set(queryAllDeep(_OTHER_BOX_SEL).filter(isUserVisible));
+}
+
+/**
+ * Does `box` sit in the question's own container? The smallest element
+ * holding the question's controls (`own`) and the box holds no other field,
+ * the box has no label of its own (a label makes it another question), the
+ * container holds the question's own caption (its <label>/<legend>), and it
+ * holds no other caption or text: every word in it is the question's label or
+ * an option's. A section holding the how-heard question and the NEXT question
+ * with an unlinked label (a sibling <label> without `for`, a div caption) is
+ * not the question's container (review 2026-10-09: that next question got
+ * the saved answer after an Other pick).
+ */
+function _inQuestionContainer(box, own) {
+  if ((box.labels && box.labels.length) || box.getAttribute('aria-labelledby') ||
+      box.getAttribute('aria-label')) return false;
+  let node = own[0] && own[0].parentElement;
+  while (node && !(node.contains(box) && own.every((o) => node.contains(o)))) node = node.parentElement;
+  if (!node || node === document.body || node === document.documentElement) return false;
+  if (!Array.from(node.querySelectorAll('input:not([type="hidden"]), select, textarea'))
+    .every((f) => f === box || own.includes(f))) return false;
+  const captions = new Set();
+  for (const o of own) {
+    for (const l of Array.from(o.labels || [])) captions.add(l);
+    const fs = o.closest && o.closest('fieldset');
+    const lg = fs && fs.querySelector('legend');
+    if (lg) captions.add(lg);
+  }
+  const mine = (n) => {
+    for (let p = n.parentElement; p && p !== node.parentElement; p = p.parentElement) {
+      if (captions.has(p) || own.includes(p) || p === box) return true;
+    }
+    return false;
+  };
+  if (!Array.from(captions).some((c) => node.contains(c))) return false;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (String(t.nodeValue || '').trim() && !mine(t)) return false;
+  }
+  return true;
+}
+
+/**
+ * The "please specify" box for an Other pick: the next field after the
+ * question, and only when it is tied to that choice. Its own words name
+ * Other / specify, it sits in the question's own container, or the pick
+ * revealed it (`shownBefore`: the fields on screen before the pick). Any
+ * other next field belongs to another question.
+ */
+function _howHeardSpecifyField(anchor, own, shownBefore) {
+  for (const c of queryAllDeep(_OTHER_BOX_SEL)) {
+    if (c === anchor) continue;
+    let following = false;
+    try {
+      following = !!(anchor.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) && !anchor.contains(c);
+    } catch (_) {}
+    if (!following) continue;
+    if (!isTextEntry(c) || !canFillField(c)) return null;
+    const tied = _isSpecifyField(c) || !!(shownBefore && !shownBefore.has(c)) ||
+      _inQuestionContainer(c, own);
+    return tied ? c : null;
+  }
+  return null;
+}
+
+/**
+ * Write the saved answer into the Other choice's box. `own` = the question's
+ * controls, `shownBefore` = _shownFields() taken before the pick.
+ */
+async function fillHowHeardSpecify(anchor, text, own, shownBefore) {
+  if (!anchor || !text) return false;
+  await delay(400);                       // an "If other" box often appears only now
+  const box = _howHeardSpecifyField(anchor, own || [anchor], shownBefore);
+  if (!box || String(box.value || '').trim() || box.dataset.spotapplyUserModified === 'true') return false;
+  // Part of the how-heard answer: never learned, whatever is typed in it later.
+  try { box.dataset.spotapplyHowHeard = 'true'; } catch (_) {}
+  return fillInput(box, text);
+}
+
+/**
+ * A select already holding a real choice (the page's, the user's or ours).
+ * The first option shown only because nothing is selected is not a choice.
+ */
+function _selectHasChoice(el) {
+  const o = el.options && el.options[el.selectedIndex];
+  if (!o || o.value === '' || _hhIsPlaceholder(o.text)) return false;
+  return !(el.selectedIndex === 0 && !o.defaultSelected);
+}
+
+/**
+ * Answer one how-did-you-hear FIELD (a select, a combobox / dropdown button,
+ * or a text box) from the saved answer. true = something was written.
+ */
+async function answerHowHeardField(el, pack) {
+  const saved = howHeardAnswer(pack);
+  _lastWriteSkippedEmpty = false;
+  if (!saved) { _lastWriteSkippedEmpty = true; return false; }   // the applicant answers it
+  if (!el || !canFillField(el) || (el.dataset && el.dataset.spotapplyUserModified === 'true')) return false;
+  if (el.tagName === 'SELECT') {
+    if (_selectHasChoice(el)) return false;              // chosen already, by anyone
+    const opts = Array.from(el.options || []);
+    const pick = pickHowHeardOption(opts.map((o) => o.text), saved);
+    if (!pick) { _lastWriteSkippedEmpty = true; return false; }
+    const shown = pick.specify ? _shownFields() : null;
+    el.value = opts[pick.index].value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+    console.log('[SpotApply] How you heard about the job, from your profile:', opts[pick.index].text);
+    if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
+    return true;
+  }
+  if (el.tagName === 'BUTTON' || isAutocompleteInput(el)) return fillHowHeardDropdown(el, saved);
+  if (isTextEntry(el)) {
+    if (String(el.value || '').trim()) return false;
+    return fillInput(el, saved);
+  }
+  return false;
+}
+
+/** A combobox or dropdown button: open it, pick the saved answer's option. */
+async function fillHowHeardDropdown(el, saved) {
+  const isInput = el.tagName === 'INPUT';
+  if (isInput && String(el.value || '').trim()) return false;
+  const caption = (o) => String(o.textContent || o.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  // Wait until the list stops changing (a debounced search fills it in steps).
+  const settle = async (ms) => {
+    let last = -1;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      await delay(250);
+      const o = _suggestionsFor(el);
+      if (o.length && o.length === last) return o;
+      last = o.length;
+    }
+    return _suggestionsFor(el);
+  };
+  const press = (target) => {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      try {
+        const Ctor = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        target.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: window }));
+      } catch (_) {}
+    }
+    try { target.click(); } catch (_) {}
+  };
+  try { el.focus(); } catch (_) {}
+  press(el);                                    // most lists open on a click, showing every option
+  let opts = await settle(1500);
+  let typed = false;
+  let pick = opts.length ? pickHowHeardOption(opts.map(caption), saved) : null;
+  if (!pick && isInput) {
+    // A search box lists only what matches the text typed.
+    _typeNoBlur(el, saved);
+    typed = true;
+    opts = await settle(4000);
+    pick = opts.length ? pickHowHeardOption(opts.map(caption), saved) : null;
+  }
+  if (!pick) {
+    if (typed) _typeNoBlur(el, '');            // never leave uncommitted text behind
+    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (_) {}
+    _lastWriteSkippedEmpty = true;
+    console.log('[SpotApply] No option matches your saved "how did you hear" answer, left for you');
+    return false;
+  }
+  const chosen = caption(opts[pick.index]);
+  const shown = pick.specify ? _shownFields() : null;
+  press(opts[pick.index]);
+  await delay(300);
+  try { el.dataset.spotapplyFilled = 'true'; } catch (_) {}
+  console.log('[SpotApply] How you heard about the job, from your profile:', chosen.slice(0, 60));
+  if (pick.specify) await fillHowHeardSpecify(el, pick.specify, [el], shown);
+  return true;
+}
+
+/** An option's caption: its label (radio) or its own text. */
+function _choiceText(o) {
+  if (o.tagName === 'INPUT') {
+    let lbl = null;
+    try { lbl = (o.id && (o.getRootNode() || document).querySelector(`label[for="${CSS.escape(o.id)}"]`)) || o.closest('label'); } catch (_) {}
+    return String((lbl && lbl.textContent) || o.getAttribute('aria-label') || o.value || '').replace(/\s+/g, ' ').trim();
+  }
+  return _btnText(o);
+}
+
+function _choiceOn(o) {
+  return o.tagName === 'INPUT' ? !!o.checked : _btnOn(o);
+}
+
+/** The question a group of choices answers: {text, label}. */
+function _choiceQuestion(box) {
+  const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const by = box.getAttribute && box.getAttribute('aria-labelledby');
+  if (by) {
+    const n = document.getElementById(by.split(/\s+/)[0]);
+    if (n && clean(n.textContent)) return { text: clean(n.textContent), label: n };
+  }
+  const al = box.getAttribute && clean(box.getAttribute('aria-label'));
+  if (al) return { text: al, label: null };
+  for (let i = 0, node = box; node && i < 5; i++, node = node.parentElement) {
+    // Never climb into a container that holds another question's fields.
+    if (i > 0 && Array.from(node.querySelectorAll('select, textarea, input:not([type="hidden"])'))
+      .some((c) => !box.contains(c) && !_isSpecifyField(c))) break;
+    if (node.tagName === 'FIELDSET') {
+      const lg = Array.from(node.children).find((c) => c.tagName === 'LEGEND');
+      if (lg && clean(lg.textContent)) return { text: clean(lg.textContent), label: lg };
+    }
+    if (i === 0) continue;
+    const label = Array.from(node.querySelectorAll('legend, label, [class*="question-title" i], [role="heading"]'))
+      .find((l) => !box.contains(l) && !l.contains(box) && clean(l.textContent));
+    if (label) return { text: clean(label.textContent), label };
+  }
+  return { text: '', label: null };
+}
+
+/**
+ * Every rendered group of choices whose question the saved how-did-you-hear
+ * answer answers (isHowHeardFillQuestion; `company` = pack.company): radio
+ * groups, and option lists drawn as buttons or ARIA radios/options (Ashby).
+ * [{box, options, kind, question, label}]
+ */
+function howHeardChoiceGroups(root, company) {
+  const groups = new Map();
+  const add = (box, o, kind) => {
+    if (!groups.has(box)) groups.set(box, { box, options: [], kind });
+    groups.get(box).options.push(o);
+  };
+  const byName = new Map();
+  for (const r of queryAllDeep('input[type="radio"]', root || document)) {
+    if (!r.name) continue;
+    if (!byName.has(r.name)) byName.set(r.name, []);
+    byName.get(r.name).push(r);
+  }
+  for (const [, rs] of byName) {
+    let box = rs[0].parentElement;
+    while (box && !rs.every((r) => box.contains(r))) box = box.parentElement;
+    if (box) rs.forEach((r) => add(box, r, 'radio'));
+  }
+  for (const o of queryAllDeep('button, [role="radio"], [role="option"]', root || document)) {
+    if (o.tagName === 'INPUT') continue;
+    const host = o.getRootNode && o.getRootNode().host;
+    if (host && host.id === 'hp-copilot-overlay') continue;            // our own UI
+    if (o.tagName === 'BUTTON' && String(o.type || '').toLowerCase() === 'submit' && o.form) continue;
+    const box = (o.closest && o.closest('[role="radiogroup"], [role="listbox"]')) || o.parentElement;
+    if (box && !(groups.has(box) && groups.get(box).kind === 'radio')) add(box, o, 'list');
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    if (g.options.length < 2 || !g.box.getClientRects().length) continue;
+    const q = _choiceQuestion(g.box);
+    if (!isHowHeardFillQuestion(q.text, company)) continue;
+    out.push(Object.assign(g, { question: q.text, label: q.label }));
+  }
+  return out;
+}
+
+/** Answer how-did-you-hear radio groups and option lists. Returns how many. */
+async function answerHowHeardChoices(pack) {
+  const saved = howHeardAnswer(pack);
+  if (!saved) return 0;                         // nothing saved: the applicant answers
+  let answered = 0;
+  for (const g of howHeardChoiceGroups(document, pack.company)) {
+    if (g.options.some(_choiceOn)) continue;      // answered already, by anyone
+    if (g.box.dataset.spotapplyUserModified === 'true' ||
+        g.options.some((o) => o.dataset && o.dataset.spotapplyUserModified === 'true')) continue;
+    const pick = pickHowHeardOption(g.options.map(_choiceText), saved);
+    if (!pick) continue;
+    const target = g.options[pick.index];
+    if (target.disabled || isAntiBotField(target)) continue;
+    const shown = pick.specify ? _shownFields() : null;
+    try {
+      target.click();                             // a click: the page's own handler records it
+      if (g.kind === 'radio' && !target.checked) {
+        target.checked = true;
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    } catch (e) {
+      console.debug('[SpotApply] how-heard click failed:', e.message);
+      continue;
+    }
+    try { g.box.dataset.spotapplyFilled = 'true'; target.dataset.spotapplyFilled = 'true'; } catch (_) {}
+    answered++;
+    console.log('[SpotApply] How you heard about the job, from your profile:', _choiceText(target).slice(0, 60));
+    if (pick.specify) await fillHowHeardSpecify(g.options[g.options.length - 1], pick.specify, g.options, shown);
+  }
+  return answered;
+}
+
 // Some ATS templates write "Résumé" with a DECOMPOSED accent (e + U+0301),
 // which a precomposed /résumé/ literal never matches. Strip diacritics before
 // matching so both spellings — and "RESUME", "Resume/CV", "Curriculum Vitae" —
@@ -758,10 +1912,13 @@ document.addEventListener('click', (e) => {
       const val = opt.textContent?.trim();
       const label = getFieldSignature(activeBtn);
       if (val && label && label.length >= 3) {
-        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         // Never learn a protected answer: saved demographic answers would be
-        // written back later without the user's consent.
+        // written back later without the user's consent. Nor how they heard
+        // about one job: only the profile's saved answer is ever used (the
+        // extension's own pick on a listbox button was POSTed here).
         if (isDemographicQuestion(label)) return;
+        if (isHowHeardQuestion(label)) return;
+        console.log('[SpotApply] Learning dropdown field:', label, '->', val);
         getTabPack((pack) => {
           if (pack && packBase(pack) && pack.auth_token) {
             apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
@@ -796,6 +1953,7 @@ document.addEventListener('click', (e) => {
       console.log('[SpotApply] User clicked next/continue button — clearing overlay and scheduling check');
       removeOverlay();
       _resumeAttachedOnPage = null; // reset for next page
+      _nativeAutofillOnPage = null; // the next step may offer its own autofill
       if (_resumeStatus && _resumeStatus.state !== 'error') _resumeStatus = null;
       
       // Force a check after 2 seconds to see if we transitioned to a new step
@@ -899,6 +2057,19 @@ function watchForConfirmation(pack, since) {
       confirmSubmitted(pack, 'employer_confirmation');
       return;
     }
+    // Greenhouse's other two outcomes after a press: an emailed verification
+    // code, or a visual challenge. Both are the human's; say so once and never
+    // press again (noteSubmitAttempt is not re-run).
+    if (!_confirmPromptOpen && typeof verificationCodeField === 'function' && verificationCodeField()) {
+      showOverlay('📬 <b>Enter the verification code</b><br><small>The site emailed you a code to finish this application — ' +
+                  'check your inbox (and spam) and paste it here.</small>', [], false);
+      reportHandoff(pack, 'verification_code_needed', { after: 'submit' });
+      asked = true;      // the code step is the answer; do not also ask "did it submit?"
+    } else if (!_confirmPromptOpen && typeof captchaBlocksSubmit === 'function' && captchaBlocksSubmit()) {
+      showOverlay('🤖 <b>Please solve the CAPTCHA</b><br><small>The site wants a person here; finish it and click Submit yourself.</small>', [], false);
+      reportHandoff(pack, 'captcha_needed', { after: 'submit' });
+      asked = true;
+    }
     if (!asked && Date.now() - since > 12000) {
       asked = true;
       askIfSubmitted(pack);
@@ -982,11 +2153,18 @@ function fillInput(el, value) {
     return false;
   }
   _lastWriteSkippedEmpty = false;
+  _lastWriteKept = false;
 
   // Never treat a file input as a text field. Browsers forbid setting .value on
   // <input type="file"> (it throws "accepts a filename"), and the resume is
   // handled separately by attachResume.
   if (el.tagName === 'INPUT' && el.type === 'file') return false;
+
+  // A captcha / anti-bot / honeypot field is never written, by any path.
+  if (isAntiBotField(el)) {
+    console.log('[SpotApply] Not touching an anti-bot field:', el.name || el.id || el.tagName);
+    return false;
+  }
 
   // Respect manual user edits — do not overwrite
   if (el.dataset.spotapplyUserModified === 'true') {
@@ -1000,6 +2178,20 @@ function fillInput(el, value) {
   // Guard: only operate on actual form elements — prevents "Illegal invocation"
   // when called on DIVs/spans (e.g. Workday data-automation-id containers)
   const tag = el.tagName;
+  // After the board's own resume autofill, what it wrote is kept unless it is
+  // the applicant's identity and wrong: the pack is their canonical data, but
+  // a company, a title or a history entry the parser read is theirs to review
+  // (shouldOverwrite). Without the parser having run this changes nothing.
+  if (_nativePrefillActive && (tag === "INPUT" || tag === "TEXTAREA")) {
+    const current = String(el.value || "");
+    if (current.trim()) {
+      const kind = identityKindOf(el);
+      if (!shouldOverwrite(kind, current, _s)) {
+        _lastWriteKept = true;
+        return valuesEquivalent(kind, current, _s);   // true: it already says this
+      }
+    }
+  }
   if (tag === "BUTTON") {
     const isWorkday = hostIs(window.location.hostname, 'workday.com') || hostIs(window.location.hostname, 'myworkdayjobs.com');
     const isSelectBtn = el.getAttribute('data-automation-id') === 'select-button' || el.getAttribute('aria-haspopup') === 'listbox';
@@ -1351,11 +2543,15 @@ async function fillGreenhouse(pack) {
     "input:not([type='hidden']):not([type='file']):not([type='submit']):not([type='checkbox']):not([type='radio']), textarea, select"
   );
   for (const inp of allInputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
     if (!lbl) continue;
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
 
-    // Skip already-filled fixed fields
-    if (inp.value && inp.value.trim()) continue;
+    // Skip already-filled fixed fields — unless the board's own resume
+    // autofill wrote them and they are identity fields, which fillInput then
+    // checks against the pack (a wrong parse of the applicant's own details).
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
 
     if (/first.?name|given.?name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/i.test(lbl)) fillInput(inp, pack.last_name);
@@ -1366,7 +2562,8 @@ async function fillGreenhouse(pack) {
       fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|telephone/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location|where.*based|where.*live/i.test(lbl)) fillInput(inp, pack.location || "");
+    // An autocomplete is left to fillUniversal, which picks a suggestion.
+    else if (/city|location|where.*based|where.*live/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website|personal.*url/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
@@ -1376,27 +2573,20 @@ async function fillGreenhouse(pack) {
     else if (/salary|compensation|expected.*pay/i.test(lbl)) fillInput(inp, String(pack.salary_min || ""));
     else if (/pronouns/i.test(lbl)) fillInput(inp, "");
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
+      if (/hispanic|latin/i.test(lbl) && !/\brace\b|ethnic/i.test(lbl)) fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
+      else if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || 'decline', 'gender');
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || 'decline', 'disability');
       else if (/sponsor|visa|authoriz/i.test(lbl)) answerWorkAuthField(inp, pack, lbl);
       else if (/country/i.test(lbl) && residenceCountry(pack)) selectOption(inp, residenceCountry(pack));
     }
   }
 
-  // ── EEOC selects (by ID pattern, catches any missed above) ──
-  for (const el of root.querySelectorAll(
-    "select[id*='gender'], select[id*='race'], select[id*='ethnicity'], select[id*='veteran'], select[id*='disability']"
-  )) {
-    if (!el.value || el.value === "") {
-      const id = el.id.toLowerCase();
-      if (id.includes("gender")) fillEEOField(el, pack.gender || "decline");
-      else if (id.includes("race") || id.includes("ethnicity")) fillEEOField(el, pack.ethnicity || "decline");
-      else if (id.includes("veteran")) fillEEOField(el, pack.veteran_status || "decline");
-      else if (id.includes("disability")) fillEEOField(el, pack.disability_status || "decline");
-    }
-  }
+  // ── EEOC selects (by id or label; catches any missed above) ──
+  // Twice: Greenhouse reveals Race only after "Are you Hispanic/Latino?" = No.
+  fillEEOSelectsIn(root, pack);
+  setTimeout(() => { try { fillEEOSelectsIn(root, pack); } catch (_) {} }, 700);
 
   // ── Work authorization radio/select ──
   if (pack.work_authorization) {
@@ -1484,9 +2674,12 @@ async function fillAshby(pack) {
     waited += 300;
   }
 
-  const inputs = document.querySelectorAll("input:not([type='file']), textarea");
+  const inputs = document.querySelectorAll("input:not([type='file']):not([type='hidden']), textarea");
   for (const inp of inputs) {
+    // The reCAPTCHA textarea Ashby embeds is hidden and named, not labelled.
+    if (!canFillField(inp)) continue;
     const lbl = labelText(inp);
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
     // "(name)?" is optional, so /first.*(name)?/ reduced to /first/ — it typed
     // the user's surname into "What was your last compensation?" and their
     // forename into "When did you first hear about us?". Require the word.
@@ -1530,6 +2723,14 @@ const US_STATES = {
   'SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont',
   'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming',
   'DC':'District of Columbia',
+};
+// Canadian provinces/territories, read only by pickLocationSuggestion so a
+// "London, ON" profile can recognise "London, Ontario, Canada".
+const CA_PROVINCES = {
+  'AB':'Alberta','BC':'British Columbia','MB':'Manitoba','NB':'New Brunswick',
+  'NL':'Newfoundland and Labrador','NS':'Nova Scotia','NT':'Northwest Territories',
+  'NU':'Nunavut','ON':'Ontario','PE':'Prince Edward Island','QC':'Quebec',
+  'SK':'Saskatchewan','YT':'Yukon',
 };
 
 /**
@@ -1741,7 +2942,18 @@ async function fillWorkdayDateWidget(container, side, info) {
 
 async function fillWorkdayExperienceAndEducation(pack) {
   // ── Work Experience ──
-  if (pack.work_experience && pack.work_experience.length > 0) {
+  // After the board's own resume autofill, the entries it created are its
+  // work: this filler cannot merge into a multi-entry section it did not build
+  // (it would add duplicates and overwrite parsed dates), so a section that
+  // already holds entries is left exactly as parsed — that is the time saved.
+  const keepParsed = (what, sel) => {
+    if (!_nativePrefillActive || !document.querySelector(sel)) return false;
+    console.log(`[SpotApply] Keeping the ${what} entries the site filled from your resume`);
+    return true;
+  };
+
+  if (pack.work_experience && pack.work_experience.length > 0 &&
+      !keepParsed('work experience', 'input[data-automation-id="jobTitle"], input[id*="jobTitle" i]')) {
     // Find the Work Experience section or default to body
     const workSection = document.querySelector('[data-automation-id="workExperienceSection"]') || document.body;
     
@@ -1878,7 +3090,8 @@ async function fillWorkdayExperienceAndEducation(pack) {
   }
 
   // ── Education ──
-  if (pack.education && pack.education.length > 0) {
+  if (pack.education && pack.education.length > 0 &&
+      !keepParsed('education', 'input[data-automation-id="school"], input[data-automation-id="institution"], input[id*="school" i], input[id*="institution" i]')) {
     const eduSection = document.querySelector('[data-automation-id="educationSection"]') || document.body;
     
     let addBtn = eduSection.querySelector('button[data-automation-id="Add"], button[data-automation-id="education-add"]');
@@ -2001,7 +3214,7 @@ async function fillWorkday(pack) {
       ? container
       : container.querySelector('input, textarea, select');
     if (!el) continue;
-    if (el.value && el.value.trim() && el.tagName !== 'SELECT') continue;
+    if (el.value && el.value.trim() && el.tagName !== 'SELECT' && !nativeMayCorrect(el)) continue;
 
     // ── Name ──
     if (/firstName|legalFirstName|legalNameSection_firstName/i.test(aid)) fillInput(el, pack.first_name);
@@ -2031,7 +3244,7 @@ async function fillWorkday(pack) {
 
   // aria-label fallback (only for fields not already filled)
   for (const inp of document.querySelectorAll("input[aria-label], textarea[aria-label]")) {
-    if (inp.value && inp.value.trim()) continue;
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
     const lbl = (inp.getAttribute("aria-label") || "").toLowerCase();
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
@@ -2064,7 +3277,7 @@ async function fillAvature(pack) {
     "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']), textarea"
   );
   for (const inp of inputs) {
-    if (inp.value && inp.value.trim()) continue;
+    if (inp.value && inp.value.trim() && !nativeMayCorrect(inp)) continue;
     const ctx = (
       labelText(inp) + " " +
       (inp.getAttribute("name") || "") + " " +
@@ -2072,6 +3285,7 @@ async function fillAvature(pack) {
       (inp.getAttribute("data-field") || "")
     ).toLowerCase();
 
+    if (isHowHeardQuestion(ctx)) continue;     // fillUniversal: the saved answer only
     if (/first.?name|given.?name|forename/.test(ctx)) fillInput(inp, pack.first_name);
     else if (/last.?name|family.?name|surname/.test(ctx)) fillInput(inp, pack.last_name);
     else if (/full.?name|^name$|candidate.?name/.test(ctx)) fillInput(inp, fullNameOf(pack));
@@ -2091,10 +3305,10 @@ async function fillAvature(pack) {
   for (const sel of document.querySelectorAll("select")) {
     if (sel.value && sel.value !== "") continue;
     const ctx = (labelText(sel) + " " + (sel.getAttribute("name") || "") + " " + (sel.id || "")).toLowerCase();
-    if (/gender/i.test(ctx)) fillEEOField(sel, pack.gender || "decline");
-    else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || "decline");
-    else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || "decline");
-    else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || "decline");
+    if (/gender/i.test(ctx)) fillEEOField(sel, pack.gender || 'decline', 'gender');
+    else if (/race|ethnic/i.test(ctx)) fillEEOField(sel, pack.ethnicity || 'decline', 'ethnicity');
+    else if (/veteran/i.test(ctx)) fillEEOField(sel, pack.veteran_status || 'decline', 'veteran');
+    else if (/disability/i.test(ctx)) fillEEOField(sel, pack.disability_status || 'decline', 'disability');
     else if (/country/.test(ctx)) { if (residenceCountry(pack)) selectOption(sel, residenceCountry(pack)); }
     else if (/sponsor|visa|authoriz/.test(ctx)) answerWorkAuthField(sel, pack, ctx);
   }
@@ -2157,23 +3371,26 @@ async function fillSmartrecruiters(pack) {
 async function fillGeneric(pack) {
   const inputs = document.querySelectorAll("input:not([type='hidden']):not([type='submit']):not([type='button']), textarea, select");
   for (const inp of inputs) {
+    if (!canFillField(inp)) continue;          // hidden / captcha / honeypot
     const lbl = labelText(inp);
+    if (isHowHeardQuestion(lbl)) continue;     // fillUniversal: the saved answer only
     if (/first.*name/i.test(lbl)) fillInput(inp, pack.first_name);
     else if (/last.*name/i.test(lbl)) fillInput(inp, pack.last_name);
     else if (/^(full.?)?name$/i.test(lbl)) fillInput(inp, fullNameOf(pack));
     else if (/\bemail\b/i.test(lbl)) fillInput(inp, pack.email);
     else if (/phone|mobile|tel/i.test(lbl)) fillPhoneField(inp, pack.phone);
-    else if (/city|location/i.test(lbl)) fillInput(inp, pack.location || "");
+    else if (/city|location/i.test(lbl)) { if (!isAutocompleteInput(inp)) fillInput(inp, pack.location || ""); }
     else if (/linkedin/i.test(lbl)) fillInput(inp, pack.linkedin_url || "");
     else if (/github/i.test(lbl)) fillInput(inp, pack.github_url || "");
     else if (/portfolio|personal.*site|website/i.test(lbl)) fillInput(inp, pack.portfolio_url || "");
     else if (/cover.*letter/i.test(lbl) && inp.tagName === "TEXTAREA") fillInput(inp, pack.cover_letter || "");
     else if (/year.*experience/i.test(lbl)) fillInput(inp, String(pack.years_experience || ""));
     else if (inp.tagName === "SELECT") {
-      if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || "decline");
-      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || "decline");
-      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || "decline");
-      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || "decline");
+      if (/hispanic|latin/i.test(lbl) && !/\brace\b|ethnic/i.test(lbl)) fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
+      else if (/gender/i.test(lbl)) fillEEOField(inp, pack.gender || 'decline', 'gender');
+      else if (/race|ethnic/i.test(lbl)) fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
+      else if (/veteran/i.test(lbl)) fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
+      else if (/disability/i.test(lbl)) fillEEOField(inp, pack.disability_status || 'decline', 'disability');
     }
   }
 
@@ -2197,13 +3414,16 @@ async function fillUniversal(pack) {
 
   for (const inp of inputs) {
     if (!inp.offsetParent) continue; // skip invisible
+    if (!canFillField(inp)) continue; // captcha / honeypot / off-page
     
     // For buttons, treat as empty if text is placeholder
     if (inp.tagName === 'BUTTON') {
       const txt = inp.textContent ? inp.textContent.trim() : '';
       if (txt && !/select\b|choose\b|^-$|select\s+option/i.test(txt)) continue; // already filled
     } else {
-      if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT') continue; // already filled
+      // Already filled — unless the board's own resume autofill wrote an
+      // identity field, which fillInput then checks against the pack.
+      if (inp.value && inp.value.trim() && inp.tagName !== 'SELECT' && !nativeMayCorrect(inp)) continue;
     }
 
     // Gather ALL signals into one text blob for matching
@@ -2235,8 +3455,18 @@ async function fillUniversal(pack) {
       : String(inp.value || '').trim();
     let matched = true;
 
+    // ── How did you hear about us: the saved profile answer, or the user ──
+    // First, so no other rule writes into it ("How did you hear? (LinkedIn,
+    // company website…)" matched the LinkedIn and website rules). The saved
+    // answer only for how they came to THIS job; the rest of the refusal list
+    // ("How did you learn Python?") is left for the applicant.
+    if (isHowHeardQuestion(labelOnly) || isHowHeardQuestion(signals)) {
+      matched = (isHowHeardFillQuestion(labelOnly, pack.company) ||
+                 isHowHeardFillQuestion(signals, pack.company))
+        ? await answerHowHeardField(inp, pack) : false;
+
     // ── Name ──
-    if (/first.?name|legal.?first|given.?name|forename|\bfname\b/i.test(signals)) {
+    } else if (/first.?name|legal.?first|given.?name|forename|\bfname\b/i.test(signals)) {
       fillInput(inp, pack.first_name);
     } else if (/last.?name|legal.?last|family.?name|surname|\blname\b/i.test(signals)) {
       fillInput(inp, pack.last_name);
@@ -2275,10 +3505,13 @@ async function fillUniversal(pack) {
 
     // ── City (parsed from location, not the full "Cincinnati, OH" string) ──
     } else if (/\bcity\b|\btown\b/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, loc.city);
+      // An autocomplete commits only a picked suggestion (Ashby's Location).
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, loc.city);
     // Location/where-based fields get the full location
     } else if (/location|where.*based|where.*live|current.?city/i.test(signals) && !essayPrompt && !/country/i.test(signals)) {
-      fillInput(inp, pack.location || '');
+      if (isAutocompleteInput(inp)) await fillLocationCombobox(inp, pack);
+      else fillInput(inp, pack.location || '');
 
     // ── State (parsed from location) ──
     } else if (/\bstate\b|\bprovince\b|\bregion\b/i.test(signals) && !/country|united/i.test(signals)) {
@@ -2321,14 +3554,16 @@ async function fillUniversal(pack) {
       // Residence country, stated by the user — never assumed (a Toronto
       // profile was told it lives in the United States).
       matched = !!residenceCountry(pack) && !!selectOption(inp, residenceCountry(pack));
+    } else if (/hispanic|latin/i.test(signals) && !/\brace\b|ethnic/i.test(signals)) {
+      matched = fillEEOField(inp, eeoValueFor(pack, 'hispanic'), 'hispanic');
     } else if (/gender/i.test(signals)) {
-      matched = fillEEOField(inp, pack.gender || 'decline');
+      matched = fillEEOField(inp, pack.gender || 'decline', 'gender');
     } else if (/race|ethnic/i.test(signals)) {
-      matched = fillEEOField(inp, pack.ethnicity || 'decline');
+      matched = fillEEOField(inp, pack.ethnicity || 'decline', 'ethnicity');
     } else if (/veteran/i.test(signals)) {
-      matched = fillEEOField(inp, pack.veteran_status || 'decline');
+      matched = fillEEOField(inp, pack.veteran_status || 'decline', 'veteran');
     } else if (/disability/i.test(signals)) {
-      matched = fillEEOField(inp, pack.disability_status || 'decline');
+      matched = fillEEOField(inp, pack.disability_status || 'decline', 'disability');
     } else if (/sponsor|visa|authoriz/i.test(signals)) {
       matched = answerWorkAuthField(inp, pack, signals);
     } else if (/postal|zip.?code/i.test(signals)) {
@@ -2350,6 +3585,9 @@ async function fillUniversal(pack) {
       } else if (_lastWriteSkippedEmpty) {
         // Matched a rule, but the profile has nothing for it. Expected, quiet.
         console.debug('[SpotApply] No profile value for:', signals.slice(0, 60));
+      } else if (_lastWriteKept) {
+        // The board's own resume autofill already filled it. Expected, quiet.
+        console.debug('[SpotApply] Kept the value the site filled from the resume:', signals.slice(0, 60));
       } else {
         attempted++;
         console.warn('[SpotApply] Matched but nothing landed:', signals.slice(0, 60));
@@ -2369,14 +3607,30 @@ async function fillUniversal(pack) {
 // observeField() saves the answer on blur, keyed by the field's label.
 // On the NEXT form, recallFromMemory() retrieves past answers and auto-fills.
 
+/**
+ * The field holds what SpotApply wrote (fillInput records it), not the
+ * user's words. fillInput fires blur and change itself, so a box filled after
+ * a learner started watching it taught memory our own write (review 2026-10-09).
+ */
+function _holdsOurWrite(el) {
+  const w = el && el.dataset ? el.dataset.spotapplyLastWrite : undefined;
+  return w !== undefined && String(el.value || '').trim() === String(w).trim();
+}
+
 function observeField(el, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(el)) return;               // never learn a captcha / honeypot
   if (el.dataset.spotapplyObserved) return; // already watching
   el.dataset.spotapplyObserved = 'true';
 
+  let saved = false;
   const save = () => {
+    if (saved) return;
     const val = el.value?.trim();
     if (!val) return;
+    // Our own write is not the user's answer, and an Other box we filled for
+    // how they heard is part of that answer: never learned.
+    if (_holdsOurWrite(el) || el.dataset.spotapplyHowHeard === 'true') return;
     const label = getFieldSignature(el);
     if (!label || label.length < 3) return;
 
@@ -2386,8 +3640,11 @@ function observeField(el, pack) {
     if (/year|month|day|date|\bmm\b|\byyyy\b|\bdd\b/i.test(label) && !/experience/i.test(label)) return;
     // Never remember protected self-identification answers.
     if (isDemographicQuestion(label + ' ' + (labelText(el) || ''))) return;
+    // Nor how they heard about one job: only the profile's answer is ever used.
+    if (isHowHeardQuestion(label + ' ' + (labelText(el) || ''))) return;
 
     console.log('[SpotApply] Learning field:', label, '->', val.slice(0, 40));
+    saved = true;
     apiFetch(`${packBase(pack)}/api/save-answer`, 'POST', pack.auth_token, {
       question: label,
       answer: val,
@@ -2397,8 +3654,10 @@ function observeField(el, pack) {
     highlightField(el, 'green');
   };
 
-  el.addEventListener('blur', save, { once: true });
-  el.addEventListener('change', save, { once: true });
+  // Not { once: true }: our own write's synthetic blur/change must not use up
+  // the listener the user's answer needs.
+  el.addEventListener('blur', save);
+  el.addEventListener('change', save);
 }
 
 // Build a stable signature for a field from all its signals
@@ -2419,6 +3678,10 @@ async function recallFromMemory(root, pack) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   )).filter(el => {
     if (!el.offsetParent) return false;
+    if (!canFillField(el)) return false;
+    // An autocomplete box commits only a picked suggestion; typed text from
+    // memory would sit there uncommitted (and be cleared on blur).
+    if (isAutocompleteInput(el)) return false;
     if (el.tagName === 'BUTTON') {
       const txt = el.textContent ? el.textContent.trim() : '';
       return !txt || /select\b|choose\b|^-$|select\s+option/i.test(txt);
@@ -2465,6 +3728,9 @@ async function recallFromMemory(root, pack) {
     // current profile — an answer remembered from another form (or another
     // visa status) must not override it.
     if (/sponsor|authoriz|visa|work permit|right to work/i.test(fullLabel)) continue;
+    // How the applicant heard about THIS job: their saved profile answer only
+    // (fillUniversal), never one remembered from another form.
+    if (isHowHeardQuestion(fullLabel)) continue;
 
     // Exact question first. A fuzzy match only when nearly all its words
     // agree: "> 0.4" put one question's answer into a different question.
@@ -2587,7 +3853,11 @@ function apiFetch(url, method, token, body) {
 async function fillEssayQuestions(root, pack) {
   const textareas = Array.from(root.querySelectorAll("textarea")).filter(ta => {
     if (ta.value && ta.value.trim()) return false; // already filled
+    // Never a hidden, captcha or honeypot textarea: Ashby's reCAPTCHA response
+    // field was asked about by its name and got an AI reply typed into it.
+    if (!canFillField(ta)) return false;
     const q = labelText(ta);
+    if (looksLikeFieldIdentifier(q)) return false; // its name, not a question
     return q && q.length >= 8; // skip tiny/unlabeled textareas
   });
 
@@ -2597,7 +3867,10 @@ async function fillEssayQuestions(root, pack) {
     const q = labelText(ta);
     // Protected self-identification and work authorization are never
     // AI-written: the first needs consent, the second has ONE interpreter.
+    // How the applicant heard about the role is a fact only they hold: their
+    // saved profile answer fills it (fillUniversal), never the AI.
     if (isDemographicQuestion(q) || /sponsor|authoriz|visa status|work permit/i.test(q)) continue;
+    if (isHowHeardQuestion(q)) continue;
     if (ta.dataset.spotapplyUserModified === 'true') continue;
 
     // 1. Check pre-cached answers from fill-pack (free, no API call)
@@ -2612,6 +3885,7 @@ async function fillEssayQuestions(root, pack) {
     }
 
     // 2. If not cached, call /api/answer-question on-demand (~$0.002, cached after)
+    let generated = false;
     if (!answer && packBase(pack) && pack.auth_token && pack.app_id) {
       const res = await apiFetch(
         `${packBase(pack)}/api/answer-question`,
@@ -2621,12 +3895,22 @@ async function fillEssayQuestions(root, pack) {
       );
       if (res.ok && res.data) {
         answer = res.data.answer || null;
+        // A server too old to name its source may have just generated it.
+        generated = !res.data.source || res.data.source === 'generated';
         if (answer) console.log(`[SpotApply] AI answered "${q.slice(0, 60)}…" (cached=${res.data.cached})`);
+        else if (res.data.refused) console.log(`[SpotApply] Left for you (${res.data.refused}):`, q.slice(0, 60));
       } else {
         console.warn("[SpotApply] answer-question failed:", res.error || res.status);
       }
     }
 
+    // A reply about the question ("I'd be happy to help, but…") is not an answer.
+    // What a model just wrote gets the full test; a remembered answer may be the
+    // user's own words, so only the forms a model alone writes are dropped.
+    if (answer && (generated ? looksLikeMetaReply(answer) : looksLikeModelOnlyReply(answer))) {
+      console.warn('[SpotApply] Discarded a reply that is not an answer for:', q.slice(0, 60));
+      answer = null;
+    }
     if (answer) fillInput(ta, answer);
 
     // 3. Always observe — if user edits, save their answer to memory
@@ -2646,10 +3930,14 @@ function keywordOverlap(a, b) {
 
 function observeAnswer(ta, pack) {
   if (!packBase(pack) || !pack.auth_token) return;
+  if (isAntiBotField(ta)) return;               // a captcha token is not an answer
   const origValue = ta.value;
   ta.addEventListener('blur', function handler() {
     const newVal = ta.value.trim();
     if (!newVal || newVal === origValue.trim()) return;
+    // A later write of ours (an Other box for how they heard) is not the
+    // user's answer, and that box is never learned at all.
+    if (_holdsOurWrite(ta) || ta.dataset.spotapplyHowHeard === 'true') return;
     const q = labelText(ta);
     if (!q) return;
     ta.removeEventListener('blur', handler);
@@ -2660,8 +3948,9 @@ function observeAnswer(ta, pack) {
 }
 
 // ── Resume file attachment ──────────────────────────────────────────────────────
-// Fetches the tailored resume .docx (base64) via the background worker and sets
-// it on any empty file inputs using a synthetic DataTransfer.
+// Fetches the tailored resume (base64: the one-page PDF, or the .docx when the
+// field does not take PDF) via the background worker and sets it on the resume
+// file input using a synthetic DataTransfer.
 // Returns true when the resume is handled (attached now, or already present),
 // false when we tried and couldn't — so the caller retries on a later pass
 // instead of wrongly marking it "done".
@@ -2683,36 +3972,22 @@ async function attachResume(root, pack) {
   const allFileInputs = queryAllDeep('input[type="file"]', root);
   if (!allFileInputs.length) return false; // form may render the field later
 
-  // The "field-sized" container around a file input: the nearest ancestor small
-  // enough to plausibly be this one field's wrapper. Checking the old broad
-  // closest('div,section,fieldset') matched page-level wrappers, so a Remove
-  // button on an unrelated field (education entry, cover letter) marked the
-  // resume as already-uploaded and it was silently skipped forever.
-  const fieldScope = (fi) => {
-    let n = fi.parentElement, best = fi.parentElement, depth = 0;
-    while (n && depth < 6) {
-      const len = (n.textContent || '').length;
-      if (len > 600) break;
-      best = n;
-      n = n.parentElement; depth++;
-    }
-    return best;
-  };
-
-  const hasUploadedMarker = (fi) => {
-    const c = fieldScope(fi);
-    return !!(c && (
-      c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
-      /successfully uploaded/i.test(c.textContent || '')
-    ));
-  };
+  // Field scope and upload markers are shared with the native autofill layer
+  // (module-level helpers below); the names here are the ones this function
+  // has always used.
+  const hasUploadedMarker = _hasUploadedMarker;
   const isUploaded = (fi) => (fi.files && fi.files.length) || hasUploadedMarker(fi);
 
-  // "Autofill from resume" widgets are a TRAP. Ashby (and others) put an
-  // optional parser upload next to the real Resume field; its container also
-  // says "resume", so it matched, we attached to both, and the parser then
-  // re-read the .docx and OVERWROTE the identity we had just filled — same
-  // form, two runs, two different applicants. Never feed the parser.
+  // "Autofill from resume" widgets were a TRAP for THIS path. Ashby (and
+  // others) put an optional parser upload next to the real Resume field; its
+  // container also says "resume", so it matched, we attached to both AFTER
+  // filling, and the parser then re-read the .docx and OVERWROTE the identity
+  // we had just written — same form, two runs, two different applicants.
+  // runNativeAutofill now feeds such a widget FIRST (before any field is
+  // written) and the fill afterwards corrects it; by the time this function
+  // runs, a widget it used already holds the file and is skipped as uploaded.
+  // The penalty below is for the fallback: native autofill off, or a board
+  // the native layer does not trust yet — then the parser stays a poor choice.
   const isParserWidget = (fi) => {
     const scope = fi.closest('div, section, fieldset, form');
     const text = ((labelText(fi) || '') + ' ' + (fi.getAttribute('aria-label') || '') + ' ' +
@@ -2731,9 +4006,7 @@ async function attachResume(root, pack) {
   // generic name and a wrapper div with no "Resume" text — so it matched none
   // of the resume tests, candidates came back empty, and the required upload
   // never happened with no log line either way.
-  const resumeCtx = (fi) => (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
-                             (fi.getAttribute("aria-label") || "") + " " +
-                             (fi.getAttribute("data-automation-id") || "")).toLowerCase();
+  const resumeCtx = _resumeCtx;
 
   // Walk several ancestors, not just the immediate div — the "Resume *" label
   // usually sits a couple of levels above the input inside a dropzone.
@@ -2796,47 +4069,33 @@ async function attachResume(root, pack) {
   // Nothing left to attach → done only if something is genuinely uploaded.
   if (!targets.length) return allFileInputs.some(isUploaded);
 
-  const res = await apiFetch(
-    `${packBase(pack)}/api/fill-pack/${pack.app_id}/resume`,
-    "GET", pack.auth_token, null
-  );
-  if (!res.ok || !res.data || !res.data.base64) {
+  // Tell the server what the field takes: it answers with the one-page PDF
+  // (the owner's delivered resume) unless the field rules PDF out, then Word.
+  // ALWAYS sent ("*" when the field names nothing), so the server can tell
+  // this build from the 1.0.0 Store build, which sends no accept at all.
+  // ONE download per application and accept, shared with the native autofill
+  // layer: the same base64 document goes into whichever control takes it.
+  const _accept = String(targets[0].getAttribute('accept') || '').trim() || '*';
+  const got = await fetchResumeFile(pack, _accept);
+  if (!got.ok) {
+    if (got.reason === 'decode_failed') {
+      console.warn("[SpotApply] resume decode failed:", got.error);
+      reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
+      return false;
+    }
     // Surface WHY to the user — a silent console.warn here was the main way
     // "resume is not uploading" reports happened with no visible explanation.
-    const status = res.status || 0;
-    let reason, hint;
-    if (status === 401) {
-      reason = 'auth_expired';
-      hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
-    } else if (status === 422) {
-      // Not transient — the server is telling us exactly what the profile is
-      // missing. Show that instead of retrying into the void, and stop trying.
-      reason = 'profile_incomplete';
-      hint = (res.data && res.data.detail) ||
-             "Your profile is missing information needed to build a resume.";
-      _resumeBlockedReason = hint;
-    } else if (status === 503) {
-      reason = 'tailoring_failed';
-      hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
-    } else {
-      reason = 'fetch_failed';
-      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
-    }
-    console.warn("[SpotApply] resume fetch failed:", status, res.error || '');
-    setResumeStatus('error', '', '', hint);
+    console.warn("[SpotApply] resume fetch failed:", got.status, got.error || '');
+    setResumeStatus('error', '', '', got.hint);
     showOverlay(
-      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${hint}</small>`,
+      `📎 Resume not attached.<br><small style="color:#c4b5fd;font-weight:400">${got.hint}</small>`,
       [], true
     );
-    reportTelemetry(pack, 'resume_attach_failed', { reason, status });
+    reportTelemetry(pack, 'resume_attach_failed', { reason: got.reason, status: got.status });
     return false;
   }
 
-  const { filename, mime, base64 } = res.data;
-  const kind = res.data.tailored === false ? "original" : "tailored";
-  // The server substituted the base résumé (tailoring limit, a withheld
-  // draft): say so instead of attaching it silently.
-  const notice = res.data.notice ? String(res.data.notice) : '';
+  const { filename, mime, kind, notice, file } = got;
   if (document.body.innerText.includes(filename)) {
     setResumeStatus('accepted', filename, kind, notice);
     return true; // already on the page
@@ -2856,31 +4115,10 @@ async function attachResume(root, pack) {
   }
   targets = targets.filter((fi) => fileMatchesAccept(fi, filename, mime));
 
-  let file;
-  try {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    file = new File([bytes], filename, { type: mime });
-  } catch (e) {
-    console.warn("[SpotApply] resume decode failed:", e.message);
-    reportTelemetry(pack, 'resume_attach_failed', { reason: 'decode_failed' });
-    return false;
-  }
-
   let domSet = false;
   for (const fi of targets) {
     if (fi.dataset.spotapplyUserModified === 'true') continue;   // the user's own file
-    try {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fi.files = dt.files;
-      fi.dispatchEvent(new Event("input", { bubbles: true }));
-      fi.dispatchEvent(new Event("change", { bubbles: true }));
-      if (fi.files && fi.files.length) domSet = true;
-    } catch (e) {
-      console.warn("[SpotApply] Could not set file input:", e.message);
-    }
+    if (setFileOnInput(fi, file)) domSet = true;
   }
   if (!domSet) {
     setResumeStatus('failed', filename, kind, '');
@@ -2933,6 +4171,7 @@ function fileMatchesAccept(fi, filename, mime) {
   const name = String(filename || '').toLowerCase();
   const type = String(mime || '').toLowerCase();
   return accept.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean).some((a) => {
+    if (a === '*' || a === '*/*') return true;          // the server's _accept_allows reads these the same
     if (a.startsWith('.')) return name.endsWith(a);
     if (a.endsWith('/*')) return type.startsWith(a.slice(0, -1));
     return type === a;
@@ -2955,6 +4194,581 @@ function showResumeHint(filename) {
   );
 }
 
+// ── Resume document: one download, two takers ───────────────────────────────
+// attachResume and runNativeAutofill put the SAME file into different
+// controls, so the download and the decode live here and the result is kept
+// for the application: the second taker never re-fetches, and a failure is
+// explained once, by attachResume, which owns the user-facing messages.
+let _resumeFileCache = null;
+
+/**
+ * The applicant's resume for this application as a File, or why not:
+ * { ok, filename, mime, kind, notice, file } / { ok: false, status, reason, hint, error }.
+ */
+async function fetchResumeFile(pack, accept) {
+  const appId = pack && pack.app_id;
+  const _acc = String(accept || '*');
+  if (_resumeFileCache && _resumeFileCache.ok && _resumeFileCache.app_id === appId &&
+      _resumeFileCache.accept === _acc) return _resumeFileCache;
+  const res = await apiFetch(
+    `${packBase(pack)}/api/fill-pack/${appId}/resume?accept=${encodeURIComponent(_acc)}`,
+    "GET", pack.auth_token, null
+  );
+  if (!res.ok || !res.data || !res.data.base64) {
+    const status = res.status || 0;
+    let reason, hint;
+    if (status === 401) {
+      reason = 'auth_expired';
+      hint = "Your SpotApply login timed out. Open the dashboard, sign in, then click Fill again.";
+    } else if (status === 422) {
+      // Not transient — the server is telling us exactly what the profile is
+      // missing. Show that instead of retrying into the void, and stop trying.
+      reason = 'profile_incomplete';
+      hint = (res.data && res.data.detail) ||
+             "Your profile is missing information needed to build a resume.";
+      _resumeBlockedReason = hint;
+    } else if (status === 503) {
+      reason = 'tailoring_failed';
+      hint = "Your tailored resume isn't generated yet. Open this application on the SpotApply dashboard, generate the resume, then return here.";
+    } else {
+      reason = 'fetch_failed';
+      hint = "Couldn't download your resume from SpotApply (network/server). I'll keep retrying — you can also attach it manually.";
+    }
+    return { ok: false, status, reason, hint, error: res.error || '' };
+  }
+  const { filename, mime, base64 } = res.data;
+  const kind = res.data.tailored === false ? "original" : "tailored";
+  // The server substituted the base resume (tailoring limit, a withheld
+  // draft): say so instead of attaching it silently.
+  const notice = res.data.notice ? String(res.data.notice) : '';
+  let file;
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    file = new File([bytes], filename, { type: mime });
+  } catch (e) {
+    return { ok: false, status: res.status || 200, reason: 'decode_failed', hint: '', error: e.message };
+  }
+  _resumeFileCache = { ok: true, app_id: appId, accept: _acc, filename, mime, kind, notice, file };
+  return _resumeFileCache;
+}
+
+/** Put a File into a file input the way a user's pick would arrive: the files
+ *  list, then input + change so the site's uploader notices. True if it took. */
+function setFileOnInput(fi, file) {
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fi.files = dt.files;
+    fi.dispatchEvent(new Event("input", { bubbles: true }));
+    fi.dispatchEvent(new Event("change", { bubbles: true }));
+    return !!(fi.files && fi.files.length);
+  } catch (e) {
+    console.warn("[SpotApply] Could not set file input:", e.message);
+    return false;
+  }
+}
+
+// The "field-sized" container around a control: the nearest ancestor small
+// enough to plausibly be this one field's wrapper. The old broad
+// closest('div,section,fieldset') matched page-level wrappers, so a Remove
+// button on an unrelated field (education entry, cover letter) marked the
+// resume as already-uploaded and it was silently skipped forever. A wider
+// block holding a SECOND file input is another field's, so the walk stops.
+function _fileFieldScope(el) {
+  let n = el.parentElement, best = el.parentElement, depth = 0;
+  while (n && depth < 6) {
+    if ((n.textContent || '').length > 600) break;
+    if (depth > 0 && n.querySelectorAll('input[type="file"]').length > 1) break;
+    best = n;
+    n = n.parentElement; depth++;
+  }
+  return best;
+}
+
+/** Has the site's uploader acknowledged a file in this field (a Remove/Delete
+ *  control or a success note beside it)? */
+function _hasUploadedMarker(fi) {
+  const c = _fileFieldScope(fi);
+  return !!(c && (
+    c.querySelector('[data-automation-id*="delete" i], button[aria-label*="delete" i], [aria-label*="remove" i]') ||
+    /successfully uploaded/i.test(c.textContent || '')
+  ));
+}
+
+/** Everything a file input is named by — label, name, id, aria, automation id. */
+function _resumeCtx(fi) {
+  return (labelText(fi) + " " + (fi.name || "") + " " + (fi.id || "") + " " +
+          (fi.getAttribute("aria-label") || "") + " " +
+          (fi.getAttribute("data-automation-id") || "")).toLowerCase();
+}
+
+// ── Native autofill: the board's own "autofill from resume" goes first ───────
+// Several boards parse the uploaded resume and fill the application
+// themselves: Workday's "Autofill with Resume", Ashby's autofill card,
+// SmartRecruiters' "Autofill from resume", Lever's parsing upload, newer
+// Greenhouse forms. Where one is offered it is used FIRST — it builds the
+// multi-entry history sections this filler cannot — and only once it has
+// settled does fillCurrentPage fill what it left empty or got wrong. Feeding
+// such a widget AFTER our fill was the Ashby incident (the parser rewrote the
+// identity we had just written), so this layer owns the ordering.
+//
+// Nothing here submits or advances a page: the human reviews and clicks.
+//
+// Boards whose native autofill is trusted. A board not listed takes the normal
+// path even when its page says "autofill": the label matcher below is
+// deliberately permissive, this gate is not.
+const NATIVE_AUTOFILL_ATS = new Set(['workday', 'greenhouse', 'lever', 'ashby', 'smartrecruiters']);
+
+// A control is native autofill only when its wording ties a resume/CV to the
+// act of filling or parsing — "Autofill with Resume", "Upload your resume to
+// prefill the form", "we'll parse your CV". A plain "Upload resume", "Attach
+// resume/CV" or "Resume/CV *" is an ordinary upload and never matches, nor
+// does an "autofill" with no resume in the same sentence (Chrome's own, a
+// footnote). One line: tests/test_extension_rules.py extracts it by statement.
+const _NATIVE_AUTOFILL_RE = /\b(?:auto-?fill|pre-?fill|pre-?populate|populate|pars(?:e|es|ed|ing)|fill(?:\s+(?:it|this|the\s+form|in|out))*\s+(?:from|with|using))\w*\b[^.!?]{0,80}?\b(?:resume|cv|curriculum vitae)\b|\b(?:resume|cv|curriculum vitae)\b[^.!?]{0,80}?\b(?:auto-?fill|pre-?fill|pre-?populate|populate|pars(?:e|es|ed|ing)|fill(?:\s+(?:it|this|the\s+form|in|out))*\s+(?:from|with|using))/i;
+
+// The applicant's own details: the ONE class of field a wrong parse may be
+// corrected in, because the pack is their canonical data. Everything else the
+// parser read (company, title, dates, history entries) is theirs to review.
+const _NATIVE_AUTOFILL_IDENTITY = new Set(['first_name', 'last_name', 'full_name', 'email', 'phone', 'linkedin', 'location']);
+
+// How long the board gets to parse: quiet for `quietMs` with no spinner, at
+// least `minMs` in all (an upload round-trip precedes any parsing, and a form
+// that has not changed yet is not a form that is done), never past `maxMs`.
+const _NATIVE_SETTLE = { quietMs: 1500, minMs: 2500, maxMs: 20000 };
+
+let _nativeAutofillOnPage = null;    // location.href the layer already ran on
+let _nativeAutofillOutcome = null;   // what happened on this page (reply + telemetry)
+let _nativePrefillActive = false;    // the board filled from the resume: fill only empty/conflicting
+let _nativeChooserPending = null;    // { ats, ts } after we clicked a chooser option
+
+/** True when the wording offers to fill or parse the application FROM a resume. */
+function nativeAutofillLabelMatches(text) {
+  const t = deaccent(String(text || '')).replace(/\s+/g, ' ').trim();
+  return !!t && _NATIVE_AUTOFILL_RE.test(t);
+}
+
+/** One comparable form of a value, by the kind of field that holds it. */
+function _normValue(kind, v) {
+  const s = deaccent(String(v == null ? '' : v)).toLowerCase().trim();
+  if (kind === 'phone') {
+    const d = s.replace(/\D/g, '');
+    // A national number and the same number with its +1 are one number.
+    return d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  }
+  if (kind === 'email') return s;
+  if (kind === 'linkedin' || kind === 'url') {
+    return s.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+  }
+  return s.replace(/[^\p{L}\p{N}@+.]+/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Do two values say the same thing, allowing for formatting? A location is
+ *  the same place at a coarser grain too: a City field the board filled with
+ *  "San Francisco" is not in conflict with the pack's "San Francisco, CA". */
+function valuesEquivalent(kind, a, b) {
+  const x = _normValue(kind, a), y = _normValue(kind, b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (kind === 'location') return (' ' + x + ' ').includes(' ' + y + ' ') || (' ' + y + ' ').includes(' ' + x + ' ');
+  return false;
+}
+
+/**
+ * After the board's own autofill: write `wanted` over `current`? An empty
+ * field is filled; one that already says the same thing is kept, in the
+ * board's own formatting; a DIFFERENT value is corrected only when the field
+ * is the applicant's identity (_NATIVE_AUTOFILL_IDENTITY) — a wrong parse of
+ * their own email is wrong, a parsed company is theirs to review.
+ */
+function shouldOverwrite(kind, current, wanted) {
+  const want = String(wanted == null ? '' : wanted).trim();
+  if (!want) return false;
+  const cur = String(current == null ? '' : current).trim();
+  if (!cur) return true;
+  if (valuesEquivalent(kind, cur, want)) return false;
+  return _NATIVE_AUTOFILL_IDENTITY.has(String(kind || ''));
+}
+
+/**
+ * Which of the applicant's own details a field holds — first_name, last_name,
+ * full_name, email, phone, linkedin, location — or null for anything else. A
+ * field inside a work-history or education entry is never identity: that
+ * entry's "Location" is the job's, and the entry is the parser's work.
+ */
+function identityKindOf(el) {
+  if (!el || !el.getAttribute) return null;
+  try {
+    if (el.closest('[data-automation-id*="workExperience" i], [data-automation-id*="education" i], ' +
+                   '[data-automation-id*="-item" i], [class*="experience" i], [class*="education" i], ' +
+                   '[class*="work-history" i], [class*="employment" i]')) return null;
+  } catch (_) {}
+  const type = String(el.getAttribute('type') || '').toLowerCase();
+  if (type === 'email') return 'email';
+  if (type === 'tel') return 'phone';
+  // Ids and automation ids join words with "_" and "-", which \b treats as
+  // word characters: "addressSection_city" must still read as "city".
+  const sig = [labelText(el), el.getAttribute('aria-label'), el.getAttribute('name'), el.id,
+               el.getAttribute('data-automation-id'), el.getAttribute('placeholder'),
+               el.getAttribute('autocomplete')]
+    .filter(Boolean).join(' ').toLowerCase().replace(/[_\-]+/g, ' ');
+  if (!sig.trim()) return null;
+  if (/first.?name|legal.?first|given.?name|forename|\bfname\b/.test(sig)) return 'first_name';
+  if (/last.?name|legal.?last|family.?name|surname|\blname\b/.test(sig)) return 'last_name';
+  if (/full.?name|candidate.?name|legal.?name|(^|[\s|])name([\s*|]|$)/.test(sig)) return 'full_name';
+  if (/\bemail\b|\be[\s-]?mail\b/.test(sig) && !/confirm|verify|re.?enter/.test(sig)) return 'email';
+  if (/\bphone\b|\bmobile\b|\btelephone\b|\btel\b/.test(sig) && !/extension|\bext\b|device|type|code/.test(sig)) return 'phone';
+  if (/linkedin/.test(sig)) return 'linkedin';
+  if (/\bcity\b|\btown\b|\blocation\b|where.*(based|live)|\baddress\b|\bstate\b|\bprovince\b|postal|\bzip\b/.test(sig)) return 'location';
+  return null;
+}
+
+/** May a non-empty field be re-checked against the pack? Only after the
+ *  board's own autofill, and only an identity field (fillInput then decides). */
+function nativeMayCorrect(el) {
+  return _nativePrefillActive && identityKindOf(el) !== null;
+}
+
+/** Which board renders this page, for the native-autofill gate: by host, else
+ *  by the vendor's own markup (custom career domains), else 'generic'. */
+function nativeAutofillAts() {
+  const h = location.hostname;
+  if (hostIs(h, 'myworkdayjobs.com') || hostIs(h, 'workday.com') || hostIs(h, 'myworkdaysite.com')) return 'workday';
+  if (hostIs(h, 'greenhouse.io')) return 'greenhouse';
+  if (hostIs(h, 'lever.co')) return 'lever';
+  if (hostIs(h, 'ashbyhq.com')) return 'ashby';
+  if (hostIs(h, 'smartrecruiters.com')) return 'smartrecruiters';
+  const has = (sel) => { try { return !!document.querySelector(sel); } catch (_) { return false; } };
+  if (has('[data-automation-id="legalNameSection"], [data-automation-id="autofillWithResume"], ' +
+          '[data-automation-id="bottom-navigation-next-button"], [data-automation-id="file-upload-input-ref"]')) return 'workday';
+  if (has('input[name^="_systemfield_"], [data-ashby-id], [class*="ashby-" i]')) return 'ashby';
+  if (has('form#application_form, input[name^="job_application["], iframe[src*="greenhouse.io"]')) return 'greenhouse';
+  if (has('input[name="urls[LinkedIn]"], form.application-form input[name="resume"]')) return 'lever';
+  return 'generic';
+}
+
+/** Is the element, or the field around it, drawn on the page? A file input is
+ *  usually visually hidden behind a styled button, so its surroundings decide. */
+function _renderedNear(el) {
+  if (!el) return false;
+  try {
+    if (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length)) return true;
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      if (node.getClientRects && node.getClientRects().length) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** The wording a file input is presented with: its own label and attributes
+ *  plus the field-sized block around it — never the whole form, whose other
+ *  fields would bleed into the match. */
+function _nativeWidgetText(fi) {
+  const parts = [labelText(fi), fi.getAttribute('aria-label'), fi.getAttribute('title'),
+                 fi.getAttribute('placeholder'), fi.name, fi.id];
+  const scope = _fileFieldScope(fi);
+  if (scope) parts.push((scope.textContent || '').slice(0, 600));
+  return parts.filter(Boolean).join(' ');
+}
+
+/**
+ * The board's own autofill-from-resume control on this page, or null:
+ * { ats, kind: 'input' | 'button', element, input, via }.
+ *   input  — a file input whose wording (or vendor attribute) says the upload
+ *            fills the application; the resume goes straight into it.
+ *   button — an option that reveals the upload (Workday's "Autofill with
+ *            Resume"); `input` is a file input already beside it, if any.
+ * Stable vendor attributes decide first, then visible wording near a file
+ * input or on a button (nativeAutofillLabelMatches). A plain resume upload
+ * with no such wording is NOT native autofill — attachResume owns those.
+ */
+function detectNativeAutofill() {
+  const ats = nativeAutofillAts();
+  const ours = (el) => { try { return !!el.closest('[id^="hp-"], [id^="spotapply-"]'); } catch (_) { return false; } };
+  const fileInputs = queryAllDeep('input[type="file"]').filter((fi) =>
+    !ours(fi) && !(fi.files && fi.files.length) && fi.dataset.spotapplyNativeTried !== 'true');
+  const asInput = (fi, via) => ({ ats, kind: 'input', element: fi, input: fi, via });
+  // The option that reveals or starts the flow: vendor attribute first, then
+  // wording on a button or link (a chooser option, not a paragraph).
+  const findButton = () => {
+    const byAttr = queryAllDeep(
+      '[data-automation-id="autofillWithResume"], #resume_autofill, [data-autofill-resume], ' +
+      'button[data-testid*="autofill" i], button[name*="autofill" i]'
+    ).find((el) => !ours(el) && _renderedNear(el) && !(el.tagName === 'INPUT' && el.type === 'file'));
+    if (byAttr) return byAttr;
+    return queryAllDeep('button, a, [role="button"]').find((el) => {
+      if (ours(el) || !_renderedNear(el) || el.tagName === 'INPUT' || el.closest('label')) return false;
+      const text = (el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '');
+      return text.trim().length <= 80 && nativeAutofillLabelMatches(text);
+    }) || null;
+  };
+  // An upload that is not displayed yet is reached through the option that
+  // reveals it, when there is one — that click is what a user does, and some
+  // widgets only start parsing once their flow was chosen (Workday).
+  const viaButtonIfHidden = (fi, via) => {
+    if (fi.offsetParent !== null) return asInput(fi, via);
+    const btn = findButton();
+    return btn ? { ats, kind: 'button', element: btn, input: fi, via } : asInput(fi, via);
+  };
+  const withNearbyInput = (el) => {
+    // A file input the option controls, or one inside its own block, is the
+    // upload it would reveal — set directly if the click does not show it.
+    let input = null;
+    try {
+      const controls = el.getAttribute('aria-controls');
+      const target = controls && document.getElementById(controls);
+      if (target) input = target.matches('input[type="file"]') ? target : target.querySelector('input[type="file"]');
+      if (!input) {
+        const scope = _fileFieldScope(el);
+        input = (scope && Array.from(scope.querySelectorAll('input[type="file"]'))
+          .find((f) => !(f.files && f.files.length))) || null;
+      }
+    } catch (_) {}
+    return { ats, kind: 'button', element: el, input, via: 'label' };
+  };
+
+  // 0. A chooser option we clicked moments ago (Workday): the upload that
+  //    followed IS the autofill upload, whatever the page around it says.
+  if (_nativeChooserPending && Date.now() - _nativeChooserPending.ts < 120000) {
+    const fi = fileInputs.find(_renderedNear);
+    if (fi) return asInput(fi, 'chooser');
+  }
+
+  // 1. Vendor attributes.
+  const attrInput = fileInputs.find((fi) => /autofill|auto-fill|prefill|pre-fill|parse/i.test(
+    [fi.name, fi.id, fi.getAttribute('data-automation-id'), fi.getAttribute('data-testid'),
+     fi.getAttribute('aria-label')].filter(Boolean).join(' ')));
+  if (attrInput) return viaButtonIfHidden(attrInput, 'attribute');
+  if (ats === 'lever') {
+    // Lever parses whatever lands in its resume field and fills the form from
+    // it: the upload IS the autofill, so it goes in before any field is written.
+    const fi = fileInputs.find((f) => f.name === 'resume' && _renderedNear(f));
+    if (fi) return asInput(fi, 'attribute');
+  }
+
+  // 2. Wording near a file input.
+  for (const fi of fileInputs) {
+    if (!_renderedNear(fi)) continue;
+    if (_OTHER_DOC_RE.test(_resumeCtx(fi))) continue;
+    if (nativeAutofillLabelMatches(_nativeWidgetText(fi))) return viaButtonIfHidden(fi, 'label');
+  }
+
+  // 3. The option alone (a chooser with no upload on this page yet).
+  const btn = findButton();
+  if (btn) return withNearbyInput(btn);
+  return null;
+}
+
+/** A click a React/Workday button recognises: pointer events, then click(). */
+function _pressElement(el) {
+  try { if (el.focus) el.focus(); } catch (_) {}
+  for (const type of ['mousedown', 'mouseup']) {
+    try { el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+  }
+  try { el.click(); } catch (_) {}
+}
+
+/** After clicking an autofill option: the file input it revealed — new on the
+ *  page, or newly drawn — within `maxMs`; a known hidden one after a grace
+ *  (a hidden input still takes a file; the click may only have styled it). */
+async function _waitForRevealedFileInput(before, wasShown, known, maxMs) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    await delay(200);
+    const now = queryAllDeep('input[type="file"]').filter((fi) => !(fi.files && fi.files.length));
+    const fresh = now.find((fi) => !before.has(fi) && _renderedNear(fi));
+    if (fresh) return fresh;
+    const shown = now.find((fi) => before.has(fi) && !wasShown.get(fi) && fi.offsetParent !== null);
+    if (shown) return shown;
+    if (known && Date.now() - start >= 1500 && document.contains(known)) return known;
+  }
+  return null;
+}
+
+/** Values of every text-like control, to measure what the site's autofill wrote. */
+function _fieldValueSnapshot() {
+  const m = new Map();
+  for (const el of queryAllDeep('input, textarea, select')) {
+    if (['file', 'hidden', 'submit', 'button', 'checkbox', 'radio', 'image'].includes(el.type)) continue;
+    m.set(el, String(el.value || '').trim());
+  }
+  return m;
+}
+
+/** Controls empty (or absent) before and holding a value now. */
+function _countPrefilled(before) {
+  let n = 0;
+  for (const [el, v] of _fieldValueSnapshot()) if (v && !(before.get(el) || '')) n++;
+  return n;
+}
+
+/** Everything a parser could change, as one string: values, files, checks. */
+function _formStateSignature() {
+  const parts = [];
+  for (const el of queryAllDeep('input, textarea, select')) {
+    if (el.type === 'file') parts.push('f' + (el.files ? el.files.length : 0));
+    else if (el.type === 'checkbox' || el.type === 'radio') parts.push(el.checked ? '1' : '0');
+    else parts.push(String(el.value || ''));
+  }
+  return parts.length + '|' + parts.join('\u0001');
+}
+
+// What a board shows while it parses: ARIA busy/progress, a spinner or
+// loading class that is actually drawn, or "Parsing…"/"Uploading…" copy inside
+// the widget's own block. Any of them means more changes are coming.
+const _BUSY_SEL = '[aria-busy="true"], [role="progressbar"], [class*="spinner" i], [class*="loading" i], ' +
+                  '[data-automation-id*="loading" i], [data-automation-id*="progress" i]';
+function _pageLooksBusy(widget) {
+  try {
+    if (document.body.getAttribute('aria-busy') === 'true') return true;
+    const drawn = (el) => el !== document.body && !el.closest('[id^="hp-"]') &&
+      (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length));
+    if (queryAllDeep(_BUSY_SEL).some(drawn)) return true;
+    // innerText, not textContent: a "Parsing…" note that is display:none is
+    // not showing, and reading it as busy held the wait to its 20 s cap.
+    const scope = widget && _fileFieldScope(widget);
+    return !!scope && /\b(parsing|uploading|processing|importing|reading your)\b/i.test(String(scope.innerText || '').slice(0, 600));
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Wait until the board has stopped changing the form (see _NATIVE_SETTLE). */
+async function _waitForNativeAutofillToSettle(widget, { quietMs, minMs, maxMs }) {
+  const start = Date.now();
+  let last = _formStateSignature(), lastChange = start;
+  for (;;) {
+    await delay(250);
+    const now = Date.now();
+    const sig = _formStateSignature();
+    if (sig !== last) { last = sig; lastChange = now; }
+    if (_pageLooksBusy(widget)) lastChange = now;
+    if (now - start >= maxMs) return { ms: now - start, timedOut: true };
+    if (now - start >= minMs && now - lastChange >= quietMs) return { ms: now - start, timedOut: false };
+  }
+}
+
+/** The outcome in the shape every DO_FILL reply and telemetry event carries. */
+function nativeAutofillOutcome() {
+  const o = _nativeAutofillOutcome || {};
+  return {
+    ats: o.ats || nativeAutofillAts(),
+    used: o.used === true,
+    reason: o.reason || 'not_run',
+    settled_ms: o.settled_ms || 0,
+    fields_prefilled: o.fields_prefilled || 0,
+  };
+}
+
+/**
+ * Use the board's own autofill-from-resume, once per page, BEFORE our fill:
+ * detect it, feed it the same resume document attachResume would attach,
+ * wait for the parse to settle, and record what happened. Reasons:
+ *   disabled · ats_not_enabled · no_widget · resume_unavailable ·
+ *   input_not_revealed · format_not_accepted · user_file · dom_set_failed ·
+ *   no_response (took the file, changed nothing) · settled · settled_timeout.
+ * Sets _nativePrefillActive when the board did fill something, which switches
+ * fillInput to "only empty or conflicting" for the rest of this application.
+ */
+async function runNativeAutofill(pack) {
+  const pageKey = location.href;
+  if (_nativeAutofillOnPage === pageKey) return nativeAutofillOutcome();
+  _nativeAutofillOnPage = pageKey;
+  const ats = nativeAutofillAts();
+  const done = (fields, widgetKind) => {
+    _nativeAutofillOutcome = Object.assign(
+      { ats, used: false, reason: 'no_widget', settled_ms: 0, fields_prefilled: 0 }, fields);
+    const o = nativeAutofillOutcome();
+    if (widgetKind) {
+      // Only a page that OFFERED a widget is worth a server-side event; the
+      // event name carries the verdict (a *_failed event is passed=false).
+      reportTelemetry(pack, o.used ? 'native_autofill_used' : 'native_autofill_failed',
+                      Object.assign({ kind: widgetKind }, o));
+      console.log(`[SpotApply] Native autofill (${o.ats}): ${o.reason}` +
+                  (o.used ? ` — the site filled ${o.fields_prefilled} field(s) in ${o.settled_ms} ms` : ''));
+    } else {
+      console.debug(`[SpotApply] Native autofill (${o.ats}): ${o.reason}`);
+    }
+    return o;
+  };
+
+  if (!_nativeAutofillEnabled) return done({ reason: 'disabled' });
+  if (!NATIVE_AUTOFILL_ATS.has(ats)) return done({ reason: 'ats_not_enabled' });
+  const widget = detectNativeAutofill();
+  if (!widget) return done({ reason: 'no_widget' });
+  if (!packBase(pack) || !pack.auth_token || !pack.app_id || _resumeBlockedReason) {
+    return done({ reason: 'resume_unavailable' }, widget.kind);
+  }
+
+  showOverlay('⚡ <b>Using the site\'s own resume autofill first</b><br>' +
+              '<small>Your SpotApply resume is going in. Anything it misses gets filled right after.</small>',
+              [], false);
+
+  const got = await fetchResumeFile(pack);
+  if (!got.ok) return done({ reason: 'resume_unavailable' }, widget.kind);   // attachResume explains why
+
+  // The upload control: offered outright, or revealed by the option we click.
+  let input = widget.kind === 'input' ? widget.input : null;
+  if (!input) {
+    const before = new Set(queryAllDeep('input[type="file"]'));
+    const wasShown = new Map(Array.from(before).map((fi) => [fi, fi.offsetParent !== null]));
+    _pressElement(widget.element);
+    input = await _waitForRevealedFileInput(before, wasShown, widget.input, 8000);
+    if (!input) {
+      // The option may have navigated instead (Workday: a sign-in, or its
+      // upload step): the next page's detection takes over via this flag.
+      _nativeChooserPending = { ats, ts: Date.now() };
+      return done({ reason: 'input_not_revealed' }, widget.kind);
+    }
+  }
+  _nativeChooserPending = null;
+  input.dataset.spotapplyNativeTried = 'true';
+  if (input.dataset.spotapplyUserModified === 'true') return done({ reason: 'user_file' }, widget.kind);
+  if (!fileMatchesAccept(input, got.filename, got.mime)) return done({ reason: 'format_not_accepted' }, widget.kind);
+
+  // Is this upload also the application's resume field? Workday: yes, the one
+  // upload. Ashby: a parser card beside the real Resume field — when another
+  // upload on the page is named "resume", THAT is the application's resume
+  // and this widget only reads the file.
+  const others = queryAllDeep('input[type="file"]').filter((fi) => fi !== input);
+  const namedResume = (fi) => saysResume(_resumeCtx(fi)) ||
+    saysResume(((_fileFieldScope(fi) || {}).textContent || '').slice(0, 400));
+  const isResumeField = !others.some(namedResume) && (namedResume(input) || others.length === 0);
+  const snapshot = _fieldValueSnapshot();
+  if (!setFileOnInput(input, got.file)) return done({ reason: 'dom_set_failed' }, widget.kind);
+
+  const settle = await _waitForNativeAutofillToSettle(input, _NATIVE_SETTLE);
+  const prefilled = _countPrefilled(snapshot);
+  const registered = prefilled > 0 || document.body.innerText.includes(got.filename) || _hasUploadedMarker(input);
+
+  if (!registered) {
+    // It took the file and nothing happened. The resume field keeps the file
+    // and the audit asks the user to confirm it, as attachResume would; a
+    // separate parser is emptied again so attachResume still reaches the
+    // real resume field — never a file stranded in a widget that ignored it.
+    if (isResumeField) {
+      input.dataset.spotapplyUpload = 'unconfirmed';
+      setResumeStatus('unconfirmed', got.filename, got.kind, '');
+    } else {
+      try { input.value = ''; } catch (_) {}
+    }
+    return done({ reason: 'no_response', settled_ms: settle.ms }, widget.kind);
+  }
+
+  _nativePrefillActive = true;
+  if (isResumeField) {
+    input.dataset.spotapplyUpload = 'accepted';
+    setResumeStatus('accepted', got.filename, got.kind, got.notice);
+    _resumeAttachedOnPage = pageKey;              // attachResume: nothing left to do here
+    reportTelemetry(pack, 'resume_attached', { source: got.kind, via: 'native_autofill' });
+  }
+  return done({ used: true, reason: settle.timedOut ? 'settled_timeout' : 'settled',
+                settled_ms: settle.ms, fields_prefilled: prefilled }, widget.kind);
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 // Copilot mode: fill what we can, highlight gaps in yellow, wait for user
 // to click Next, then repeat on the next page. User interaction at every step.
@@ -2965,6 +4779,9 @@ let _fillingInProgress = false;
 let _resumeAttachedOnPage = null;
 // True when the last fillInput bailed because the pack had no value for it.
 let _lastWriteSkippedEmpty = false;
+// True when the last write was withheld because the board's own resume
+// autofill had already filled the field (see runNativeAutofill).
+let _lastWriteKept = false;
 // Set when the server says the resume can't be built for a reason the user must
 // fix (422). Retrying is pointless until they do, so we stop and keep saying why.
 let _resumeBlockedReason = null;
@@ -3014,7 +4831,22 @@ async function fillForm(fillPack) {
       "GET", pack.auth_token, null
     );
     if (res.ok && res.data) {
-      pack = res.data;
+      const fresh = res.data;
+      // One-click submit is approved ONCE, by the dashboard click (?submit=1),
+      // and the server reserved the day's allowance then. This routine refresh
+      // is a plain GET, so it answers "not_requested" — carry the click's
+      // verdict over. A real refusal (kill switch, setting turned off since)
+      // is honoured: only "not_requested" is the artefact of the refresh.
+      if (fillPack && fillPack.auto_submit === true && fresh.auto_submit !== true &&
+          fresh.auto_submit_reason === 'not_requested' &&
+          String(fillPack.app_id) === String(fresh.app_id)) {
+        fresh.auto_submit = true;
+        fresh.auto_submit_reason = fillPack.auto_submit_reason || 'ok';
+        if (!Array.isArray(fresh.auto_submit_hosts) || !fresh.auto_submit_hosts.length) {
+          fresh.auto_submit_hosts = Array.isArray(fillPack.auto_submit_hosts) ? fillPack.auto_submit_hosts : [];
+        }
+      }
+      pack = fresh;
     } else if (res.timedOut) {
       // Keep going with what we have, and say so — never a silent stall.
       refreshNote = 'SpotApply was slow to answer, so this fill uses the details you opened the job with.';
@@ -3055,6 +4887,13 @@ async function fillForm(fillPack) {
   // A description page (e.g. accenture.com/.../jobdetails) has search boxes and
   // cookie inputs but no application fields — so we must find & click Apply first.
   if (!hasApplicationForm()) {
+    // A challenge or a sign-in BEFORE the form is the site's own step: hand it
+    // to the human (overlay + telemetry → dashboard bell) and press nothing.
+    // Clicking "Apply" here used to skip the handoff entirely.
+    if (isCaptcha() || isLoginWall()) {
+      const paused = await runCopilotStep();
+      return paused || { ok: true, state: 'waiting' };
+    }
     findAndClickApply(pack);
     return { ok: true, state: 'opening_form', reason: 'Looking for the application form on this page.' };
   }
@@ -3068,10 +4907,12 @@ function hasApplicationForm() {
   // Shadow-DOM aware throughout — a form rendered inside a shadow root is
   // still an application form, and querySelectorAll cannot see it.
   if (queryAllDeep("input[type='email'], input[type='file']").length) return true;
+  // A captcha's hidden response textarea sits on job DESCRIPTION pages too; it
+  // is not an application field.
   const named = queryAllDeep(
     "input[name*='first' i], input[name*='last' i], input[name*='name' i]," +
     "input[id*='first' i], input[id*='last' i], textarea"
-  );
+  ).filter((el) => !isAntiBotField(el));
   if (named.length >= 2) return true;
   // Fallback: many visible text inputs usually means a form
   const visibleText = queryAllDeep("input[type='text'], input:not([type])")
@@ -3091,21 +4932,52 @@ async function runCopilotStep() {
   }
   const pack = _copilotPack;
 
-  // Detect login wall or CAPTCHA — pause and guide user
-  if (isLoginWall()) {
-    showOverlay('🔐 Please log in to continue.<br><small>I\'ll auto-resume once you\'re in.</small>', [], false);
+  // Detect login wall or CAPTCHA — pause and guide user. Both are HANDOFFS to
+  // the human, never worked around: the extension fills the account email on
+  // a sign-in / create-account page (passwords stay with Chrome), names the
+  // verification code the site emailed, and tells the dashboard (telemetry →
+  // notification) so a user who switched tabs learns the form is waiting.
+  // A verification-code page has no password box, so it is not a "wall" by
+  // the rule above — but it is still the site's own step, not a form of ours:
+  // one code field and no application form = hand it to the human.
+  const codeField = verificationCodeField();
+  if (isLoginWall() || (codeField && !hasApplicationForm())) {
+    const code = codeField;
+    const emailed = prefillAccountEmail(pack);
+    if (code) {
+      showOverlay('📬 <b>Enter the verification code</b><br><small>' + escapeHtml(location.hostname) +
+                  ' emailed you a code — check your inbox (and spam), paste it here, and I\'ll continue once you\'re in.</small>', [], false);
+      reportHandoff(pack, 'verification_code_needed', {});
+    } else {
+      showOverlay('🔐 <b>Sign in or create your account to continue</b><br><small>' +
+                  (emailed ? 'Your email is filled in; ' : '') +
+                  'passwords stay with Chrome (use its "suggest strong password"). I\'ll auto-resume once you\'re in.</small>', [], false);
+      reportHandoff(pack, 'login_needed', { email_prefilled: emailed ? 'yes' : 'no' });
+    }
     watchForFormAppearance();
-    return;
+    return { ok: true, state: 'waiting', paused: code ? 'verification_code' : 'login',
+             reason: code ? 'Waiting for the verification code the site emailed you.' : 'Waiting for you to sign in.' };
   }
   if (isCaptcha()) {
     showOverlay('🤖 Please solve the CAPTCHA.<br><small>I\'ll continue automatically after.</small>', [], false);
+    reportHandoff(pack, 'captcha_needed', {});
     watchForFormAppearance();
-    return;
+    return { ok: true, state: 'waiting', paused: 'captcha', reason: 'Waiting for you to solve the CAPTCHA.' };
   }
 
   // Lock to prevent re-entrant calls
   _fillingInProgress = true;
   try {
+    // The board's own resume autofill goes FIRST, when it offers one: it fills
+    // whole history sections we cannot, and feeding it AFTER our fill is how a
+    // parser once overwrote the identity we had just written. Once it has
+    // settled, fillCurrentPage only fills what it left empty or got wrong.
+    try {
+      await runNativeAutofill(pack);
+    } catch (e) {
+      console.warn('[SpotApply] native autofill error:', e.message);
+    }
+
     // Run the fill
     const result = await fillCurrentPage(pack);
     showStepOverlay(result, pack);
@@ -3135,22 +5007,274 @@ async function runCopilotStep() {
   const finalResult = refreshStepOverlay(pack);
   startStatusRefresh(pack);
 
+  // One-click submit: the server said this click approved the submission
+  // (pack.auto_submit). Press the form's own Submit only when the audit above
+  // left nothing for the user; otherwise stop and say what needs them.
+  let autoSubmit = null;
+  if (pack && pack.auto_submit) {
+    try {
+      autoSubmit = await maybeAutoSubmit(pack, finalResult);
+    } catch (e) {
+      console.warn('[SpotApply] one-click submit error:', e.message);
+      autoSubmit = { requested: true, attempted: false, reason: 'error' };
+    }
+  }
+
   // Watch for user advancing to next page
   watchForPageAdvance(pack);
-  return summarizeStep(finalResult);
+  return summarizeStep(finalResult, autoSubmit);
 }
 
 /** The DO_FILL reply / popup message: counts, never an unconditional "Done". */
-function summarizeStep(r) {
-  if (!r) return { ok: true, state: 'filled' };
+function summarizeStep(r, autoSubmit) {
+  // Whether the board's own resume autofill was used on this page travels
+  // with every reply, so the dashboard can measure how often it is offered,
+  // taken and useful (fields_prefilled) without a second round-trip.
+  const native = nativeAutofillOutcome();
+  const auto = autoSubmit || { requested: false, attempted: false, reason: 'not_requested' };
+  if (!r) return { ok: true, state: 'filled', native_autofill: native, auto_submit: auto };
   return {
     ok: true,
-    state: r.needUser || r.failed ? 'needs_review' : 'ready_for_review',
+    state: auto.attempted ? 'submitting' : (r.needUser || r.failed ? 'needs_review' : 'ready_for_review'),
     filled: r.filled || 0,
     needUser: r.needUser || 0,
     failed: r.failed || 0,
     problems: (r.problems || []).slice(0, 6),
+    native_autofill: native,
+    auto_submit: auto,
   };
+}
+
+// ── One-click submit ──────────────────────────────────────────────────────────
+// Founder decision 2026-10-11 (docs/AUTO_APPLY_RESEARCH.md §5). The dashboard's
+// "Apply & Submit" click is the user's approval of ONE application; the server
+// turned it into pack.auto_submit after its own checks (setting on, login-free
+// allow-list, daily cap). This layer presses the form's own Submit button —
+// the same control the user would click — and only when nothing is left for
+// a human: no sign-in wall, no visible CAPTCHA, no unfilled required field,
+// browser validation satisfied. Everything else is a HANDOFF: the tab stays
+// open with the overlay naming what is missing, and the dashboard is told.
+// The attempt itself goes through noteSubmitAttempt, so "Submitted" is still
+// only ever written on the employer's confirmation page or the user's Yes.
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+const AUTO_SUBMIT_BLOCK_TEXT = {
+  host_not_allowed: 'this site is not on the one-click list',
+  different_page: 'this page is not the job you approved',
+  login_wall: 'the site asks you to sign in',
+  captcha: 'the site shows a CAPTCHA',
+  fields_need_you: 'some fields still need your answer',
+  no_submit_button: 'no Submit button was found on this page',
+  submit_disabled: 'the Submit button is disabled',
+  validation: 'the site rejected a field',
+  cancelled_by_user: 'you stopped it',
+  already_attempted: 'it was already submitted from this tab',
+};
+const _autoSubmitDone = new Set();
+
+/** A challenge the one-click gate must stop at. isCaptcha() is page-level and
+ * answers false whenever an application form is present, so it cannot see a
+ * checkbox or image challenge sitting INSIDE the form (Greenhouse's visual
+ * reCAPTCHA, Lever's hCaptcha). This looks at the widgets themselves: a
+ * visible widget container or challenge frame, or the board's own "complete
+ * the CAPTCHA" error. The hidden iframes Ashby embeds are not visible. */
+function captchaBlocksSubmit() {
+  const shown = (el) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 10 && el.offsetParent !== null;
+  };
+  const widgets = queryAllDeep('.g-recaptcha, .h-captcha, .cf-turnstile, .frc-captcha, #challenge-stage, ' +
+                               'iframe[src*="recaptcha"][src*="bframe"], iframe[src*="hcaptcha"][src*="challenge"]');
+  if (widgets.some(shown)) return true;
+  const text = String(document.body && document.body.innerText || '');
+  return /\b(complete|solve|finish) the (re)?captcha\b|\bverify (that )?you(?:'re| are) (a )?human\b|\bprove you(?:'re| are) (a )?human\b/i.test(text);
+}
+
+/** Is this page the approved posting's own? Same host and the same first path
+ * segment (the board's company slug on Greenhouse/Lever/Ashby/SmartRecruiters),
+ * so a tab that wandered to another employer's form is never submitted. */
+function samePosting(applyUrl, pageUrl) {
+  try {
+    const a = new URL(String(applyUrl || ''));
+    const b = new URL(String(pageUrl || location.href));
+    if (a.hostname.toLowerCase() !== b.hostname.toLowerCase()) return false;
+    const seg = (u) => u.pathname.split('/').filter(Boolean)[0] || '';
+    return seg(a).toLowerCase() === seg(b).toLowerCase();
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Exact host or a real subdomain of a server allow-listed suffix. */
+function autoSubmitAllowedHost(host, hosts) {
+  const list = Array.isArray(hosts) ? hosts : [];
+  return list.some((d) => typeof d === 'string' && d && hostIs(host, d.toLowerCase()));
+}
+
+/** The application form's own Submit control, or null. Never a sign-in form's. */
+function findSubmitControl() {
+  const visible = (el) => el && el.offsetParent !== null && !el.disabled &&
+    el.getAttribute('aria-disabled') !== 'true';
+  const text = (el) => String(el.value || el.textContent || el.getAttribute('aria-label') || '')
+    .replace(/\s+/g, ' ').trim();
+  const NEGATIVE = /\b(cancel|back|previous|next|continue|proceed|save|draft|sign ?in|log ?in|create account|register|search|subscribe|remove|delete|withdraw)\b/i;
+  const inLogin = (el) => { const f = el.closest && el.closest('form'); return !!(f && isLoginForm(f)); };
+  const all = queryAllDeep('button, input[type="submit"], input[type="button"], [role="button"]')
+    .filter((el) => visible(el) && !inLogin(el) && !NEGATIVE.test(text(el)));
+  // 1. A real submit control inside an application form, worded as one.
+  const typed = all.filter((el) => (el.tagName === 'INPUT' && el.type === 'submit') ||
+                                    (el.tagName === 'BUTTON' && (el.type === 'submit' || !el.getAttribute('type'))))
+                   .filter((el) => el.closest && el.closest('form') && formLooksLikeApplication(el.closest('form')));
+  const worded = (list) => list.find((el) => /\bsubmit\b/i.test(text(el))) ||
+                           list.find((el) => /^(apply( now)?|send application|apply for this job)$/i.test(text(el)));
+  // 2. A board whose Submit sits outside the <form> (React forms): only when
+  //    the page has an application form, and only a control that SAYS submit —
+  //    a job page's "Apply now" opens a form, it submits nothing.
+  const outside = hasApplicationForm() ? all.find((el) => /\bsubmit\b/i.test(text(el))) : null;
+  return worded(typed) || outside || null;
+}
+
+async function maybeAutoSubmit(pack, audit) {
+  const key = String(pack.app_id) + '|' + location.href.split('#')[0];
+  const done = (attempted, reason, extra) => {
+    const out = Object.assign({ requested: true, attempted, reason }, extra || {});
+    if (attempted) {
+      reportTelemetry(pack, 'auto_submit_attempted', { host: location.hostname });
+    } else {
+      reportTelemetry(pack, 'auto_submit_blocked', Object.assign({ reason }, extra || {}));
+      const why = AUTO_SUBMIT_BLOCK_TEXT[reason] || reason;
+      const list = (audit && audit.problems || []).slice(0, 4).map((p) => '<li>' + escapeHtml(p) + '</li>').join('');
+      showOverlay('✋ <b>Filled, but not submitted:</b> ' + escapeHtml(why) + '.<br>' +
+                  (list ? '<ul style="margin:6px 0 0 14px;padding:0;font-size:12px">' + list + '</ul>' : '') +
+                  '<small>Finish it here and click Submit yourself — SpotApply will record it when the site confirms.</small>',
+                  [], true);
+      console.log('[SpotApply] One-click submit held back:', reason);
+    }
+    return out;
+  };
+  if (_autoSubmitDone.has(key)) return { requested: true, attempted: false, reason: 'already_attempted' };
+  if (!autoSubmitAllowedHost(location.hostname, pack.auto_submit_hosts)) return done(false, 'host_not_allowed');
+  if (!samePosting(pack.apply_url, location.href)) return done(false, 'different_page');
+  if (isLoginWall()) return done(false, 'login_wall');
+  if (isCaptcha() || captchaBlocksSubmit()) return done(false, 'captcha');
+  if (!audit || audit.needUser > 0 || audit.failed > 0) return done(false, 'fields_need_you');
+  // Our own resume upload must have been acknowledged on a form that asks for one.
+  const fileInputs = queryAllDeep('input[type="file"]');
+  if (fileInputs.length && !fileInputs.some((fi) => (fi.files && fi.files.length) || fi.dataset.spotapplyUpload === 'accepted')) {
+    return done(false, 'fields_need_you', { detail: 'resume not attached' });
+  }
+  const btn = findSubmitControl();
+  if (!btn) return done(false, 'no_submit_button');
+  if (btn.disabled) return done(false, 'submit_disabled');
+  const form = btn.closest && btn.closest('form');
+  if (form && typeof form.checkValidity === 'function' && !form.checkValidity()) {
+    try { form.reportValidity(); } catch (_) {}
+    return done(false, 'validation');
+  }
+  _autoSubmitDone.add(key);
+  // Human pacing: never in a tab the user cannot see, and a 5 s countdown the
+  // user can stop — with the Stop button or by touching the form themselves.
+  const go = await submitCountdown(pack);
+  if (!go) { _autoSubmitDone.delete(key); return done(false, 'cancelled_by_user'); }
+  if (isCaptcha() || captchaBlocksSubmit()) { _autoSubmitDone.delete(key); return done(false, 'captcha'); }
+  showOverlay('🚀 <b>Submitting your application' + (pack.company ? ' to ' + escapeHtml(pack.company) : '') + '…</b><br>' +
+              '<small>SpotApply marks it Submitted only when the site confirms.</small>', [], false);
+  noteSubmitAttempt('one_click');          // SUBMIT_ATTEMPTED + the confirmation watch
+  try { btn.scrollIntoView({ block: 'center' }); } catch (_) {}
+  btn.click();
+  return done(true, 'clicked');
+}
+
+const AUTO_SUBMIT_DWELL_SECONDS = 5;
+/** "Submitting to {company} in 5… [Stop]": resolves true when the countdown
+ * ran out, false when the user stopped it (button, or their own trusted click
+ * or keystroke in the page). Waits while the tab is hidden — a submission
+ * never happens in a tab the user is not looking at. */
+function submitCountdown(pack) {
+  return new Promise((resolve) => {
+    let left = AUTO_SUBMIT_DWELL_SECONDS;
+    let finished = false;
+    const finish = (ok) => {
+      if (finished) return;
+      finished = true;
+      clearInterval(tick);
+      document.removeEventListener('mousedown', onUser, true);
+      document.removeEventListener('keydown', onUser, true);
+      resolve(ok);
+    };
+    const onUser = (e) => {
+      if (!e.isTrusted) return;
+      const root = document.getElementById('hp-copilot-overlay');
+      if (root && e.composedPath && e.composedPath().includes(root)) return;   // the overlay's own Stop handles itself
+      finish(false);
+    };
+    const render = () => {
+      showOverlay('🚀 <b>Submitting your application' + (pack.company ? ' to ' + escapeHtml(pack.company) : '') +
+                  ' in ' + left + '…</b><br><small>Everything is filled. Click Stop, or anywhere in the form, to submit it yourself.</small>' +
+                  '<div style="margin-top:8px"><button data-hp-stop="1" style="background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer">Stop</button></div>',
+                  [], false);
+      const root = document.getElementById('hp-copilot-overlay');
+      const scope = (root && root.shadowRoot) || document;
+      const stop = scope.querySelector('[data-hp-stop="1"]');
+      if (stop) stop.addEventListener('click', () => finish(false));
+    };
+    document.addEventListener('mousedown', onUser, true);
+    document.addEventListener('keydown', onUser, true);
+    render();
+    const tick = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;   // hold while the tab is hidden
+      left -= 1;
+      if (left <= 0) { finish(true); return; }
+      render();
+    }, 1000);
+  });
+}
+
+/** A sign-in or create-account page: fill the account EMAIL (and a "confirm
+ * email" twin) from the profile, never a password. Returns true if it wrote. */
+function prefillAccountEmail(pack) {
+  const email = String(pack && pack.email || '').trim();
+  if (!email) return false;
+  let wrote = false;
+  const candidates = queryAllDeep('input[type="email"], input[autocomplete="email"], input[autocomplete="username"], ' +
+    'input[name*="email" i], input[id*="email" i], input[data-automation-id*="email" i], input[name*="username" i]')
+    .filter((el) => el.offsetParent !== null && el.type !== 'password' && !String(el.value || '').trim());
+  for (const el of candidates) {
+    try {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (setter && setter.set) setter.set.call(el, email); else el.value = email;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dataset.spotapplyFilled = 'true';
+      wrote = true;
+    } catch (_) {}
+  }
+  return wrote;
+}
+
+/** The field for an emailed one-time code, when the page is asking for one. */
+function verificationCodeField() {
+  const byAttr = queryAllDeep('input[autocomplete="one-time-code"], input[name*="otp" i], input[id*="otp" i], ' +
+                              'input[name*="verification" i], input[id*="verification" i], input[name*="passcode" i]')
+    .find((el) => el.offsetParent !== null);
+  if (byAttr) return byAttr;
+  return queryAllDeep('input:not([type="hidden"]):not([type="password"])').find((el) => {
+    if (el.offsetParent === null) return false;
+    const lbl = (labelText(el) || el.getAttribute('aria-label') || el.placeholder || '');
+    return /\b(verification|security|confirmation|one[- ]time|6[- ]digit)\b.*\bcode\b|\bcode\b.*\b(email|sent)\b/i.test(lbl);
+  }) || null;
+}
+
+/** A handoff to the human, once per page: the dashboard bell learns of it. */
+const _handoffReported = new Set();
+function reportHandoff(pack, event, meta) {
+  const key = event + '|' + location.href.split('#')[0];
+  if (_handoffReported.has(key)) return;
+  _handoffReported.add(key);
+  reportTelemetry(pack, event, Object.assign({ host: location.hostname }, meta || {}));
 }
 
 // Re-audit and re-render the status widget. Cheap (one querySelectorAll pass),
@@ -3206,6 +5330,12 @@ async function fillCurrentPage(pack) {
   // Step 2: Universal signal-based filler — catches anything platform handlers missed
   try {
     const universalCount = await fillUniversal(pack);
+    // Voluntary self-ID on custom dropdowns (Greenhouse's React selects,
+    // Workday listboxes): the synchronous writers only reach <select>/radio.
+    try {
+      const eeoCustom = await fillEEOCustomDropdowns(pack);
+      if (eeoCustom) console.log('[SpotApply] Answered', eeoCustom, 'self-identification dropdown(s) from your profile');
+    } catch (e) { console.warn('[SpotApply] EEO dropdowns:', e.message); }
     if (universalCount > 0) console.log('[SpotApply] Universal filler filled', universalCount, 'additional fields');
   } catch (e) {
     console.warn('[SpotApply] universal fill error:', e.message);
@@ -3227,6 +5357,19 @@ async function fillCurrentPage(pack) {
     answerScreeningRadios(pack);
   } catch (e) {
     console.warn('[SpotApply] screening radio error:', e.message);
+  }
+  // Same rules for Yes/No BUTTON pairs (Ashby has no radios for these).
+  try {
+    answerYesNoButtons(pack);
+  } catch (e) {
+    console.warn('[SpotApply] yes/no button error:', e.message);
+  }
+  // "How did you hear about us?" as radios or an option list: the answer the
+  // user saved in their profile, or nothing.
+  try {
+    await answerHowHeardChoices(pack);
+  } catch (e) {
+    console.warn('[SpotApply] how-heard choice error:', e.message);
   }
 
   // Step 4: Fill essay questions via AI
@@ -3273,13 +5416,27 @@ function auditPageFields(pack, platformFilled) {
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
     'textarea, select, button[data-automation-id="select-button"], button[aria-haspopup="listbox"]'
   ).filter((el) => {
+    // A captcha response box or a honeypot is not a question for anyone.
+    if (isAntiBotField(el)) return false;
     const proxied = el.type === 'file' || el.type === 'radio' || el.type === 'checkbox';
     return proxied ? shownVia(el) : el.offsetParent !== null;
   });
+  // Yes/No BUTTON pairs (Ashby) are questions too: missing from this tally,
+  // two required ones were blank while the widget counted three. Any input
+  // inside one of their fields belongs to the pair, not to a second question.
+  const ynGroups = yesNoButtonGroups(document).filter((g) => g.box.getClientRects().length);
+  const inYesNoField = (el) => ynGroups.some((g) => (g.entry || g.box).contains(el));
 
   let filled = 0, needUser = 0, skipped = 0, failed = 0;
   const needUserEls = [];
   const problems = [];
+  // Why a question was left for the user, when we know (shown in the widget).
+  const notes = [];
+  const noteWorkAuth = (question) => {
+    const msg = pack && pack.work_auth_note;
+    if (msg && /authoriz|eligible to work|right to work|legally/i.test(question || '') &&
+        !/sponsor/i.test(question || '') && !notes.includes(msg)) notes.push(msg);
+  };
   const seenRadioGroups = new Set();
   const nameOf = (el) => (labelText(el) || el.getAttribute('aria-label') || el.name || el.id || 'a field')
     .replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -3290,6 +5447,7 @@ function auditPageFields(pack, platformFilled) {
   };
 
   for (const el of allInputs) {
+    if ((el.type === 'radio' || el.type === 'checkbox') && inYesNoField(el)) continue;
     // File inputs: a file IN the input is not an upload. Ours count only once
     // the uploader acknowledged them (attachResume marks the outcome); a file
     // the user picked themselves is theirs and counts.
@@ -3315,6 +5473,7 @@ function auditPageFields(pack, platformFilled) {
       if (Array.from(group).some((g) => g.checked)) { skipped++; continue; }
       if (isFieldRequired(el)) {
         needUser++; needUserEls.push(el); highlightField(el, 'red');
+        noteWorkAuth(radioGroupQuestion(el));
       } else { skipped++; }
       continue;
     }
@@ -3354,9 +5513,27 @@ function auditPageFields(pack, platformFilled) {
       needUserEls.push(el);
       const isReq = isFieldRequired(el);
       highlightField(el, isReq ? 'red' : 'yellow');
+      if (isReq) noteWorkAuth(labelText(el));
       // Observe unfilled fields for cross-form learning
       observeField(el, pack);
     }
+  }
+
+  for (const g of ynGroups) {
+    if (yesNoChoice(g)) { filled++; highlightField(g.box, 'green'); continue; }
+    if (yesNoRequired(g)) {
+      needUser++; needUserEls.push(g.box); highlightField(g.box, 'red');
+      noteWorkAuth(g.question);
+    } else { skipped++; }
+  }
+
+  // A how-did-you-hear option list drawn as buttons or ARIA options (Ashby)
+  // is a question too; radio groups are already counted above.
+  for (const g of howHeardChoiceGroups(document, pack && pack.company)) {
+    if (g.kind === 'radio') continue;
+    if (g.options.some(_choiceOn)) { filled++; highlightField(g.box, 'green'); continue; }
+    needUser++; needUserEls.push(g.box);
+    highlightField(g.box, g.label && labelMarksRequired(g.label) ? 'red' : 'yellow');
   }
 
   // The résumé's own outcome survives every recount until it changes.
@@ -3366,7 +5543,7 @@ function auditPageFields(pack, platformFilled) {
     problems.push('Resume: ' + (_resumeStatus.message || 'could not be attached — attach it yourself'));
   }
 
-  return { filled, needUser, needUserEls, platformFilled, failed, problems };
+  return { filled, needUser, needUserEls, platformFilled, failed, problems, notes };
 }
 
 function isFieldRequired(el) {
@@ -3392,7 +5569,14 @@ function isFieldRequired(el) {
       }
     }
   } catch (e) {}
-  
+
+  // A label marked required by class or a CSS "*" (Ashby), and a required
+  // group around a radio.
+  try {
+    if (fieldLabelElements(el).some(labelMarksRequired)) return true;
+    if (el.closest && el.closest('[role="radiogroup"][aria-required="true"], [role="group"][aria-required="true"]')) return true;
+  } catch (e) {}
+
   return false;
 }
 
@@ -3408,14 +5592,14 @@ function highlightField(el, color) {
     el.style.borderColor = 'rgba(239,68,68,0.9)';
     el.dataset.spotapply = 'needs-fill-required';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   } else {
     el.style.boxShadow = '0 0 0 2px rgba(245,158,11,0.6)';
     el.style.borderColor = 'rgba(245,158,11,0.8)';
     el.dataset.spotapply = 'needs-fill';
     el.addEventListener('input', () => {
-      if (el.value.trim()) highlightField(el, 'green');
+      if (String(el.value || '').trim()) highlightField(el, 'green');
     }, { once: true });
   }
 }
@@ -3447,11 +5631,15 @@ function showStepOverlay(result, pack) {
 
   // "No fields found" + "All fields filled!" used to render together, which
   // read as a contradiction in one toast. Three distinct states now.
+  // "…then click Next" only where there IS a Next: on a single-page form
+  // (Ashby, 2026-10-09) the next step is the user's own review and Submit.
+  const multiStep = hasNextStepButton();
+  const nextStep = multiStep ? 'then click Next' : 'then review the whole form and submit it yourself';
   const instructions = nothingHere
-    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here — I'll pick up on the application form.</div>`
+    ? `<div style="font-size:11px;color:#94a3b8;margin-top:6px">Nothing to fill here. I'll pick up on the application form.</div>`
     : needUser > 0
-      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">yellow fields</span> above, then click Next.</div>`
-      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled — review, then click Next.</div>`;
+      ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Fill the <span style="color:#f59e0b;font-weight:600">highlighted fields</span> above, ${nextStep}.</div>`
+      : `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">All fields filled. Review them, ${nextStep}.</div>`;
 
   // The résumé line: which file, and what the site did with it.
   let resumeHtml = '';
@@ -3467,13 +5655,30 @@ function showStepOverlay(result, pack) {
   const probs = (result.problems || []).filter((p) => !/^Resume:/.test(p) || !rs).slice(0, 4);
   const probHtml = probs.length
     ? `<div style="font-size:11px;color:#fca5a5;margin-top:6px">${probs.map(esc).join('<br>')}</div>` : '';
+  const notes = (result.notes || []).slice(0, 2);
+  const noteHtml = notes.length
+    ? `<div style="font-size:11px;color:#c4b5fd;margin-top:6px">${notes.map(esc).join('<br>')}</div>` : '';
   // "Ready to review" means the form looks complete to US — never that the
   // employer accepted anything.
   const finalInstr = (!nothingHere && needUser === 0 && failed === 0)
-    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review — check every field, then continue.</div>`
+    ? `<div style="font-size:11px;color:#cbd5e1;margin-top:6px">Ready for your review. Check every field, ${multiStep ? 'then click Next' : 'then submit it yourself'}.</div>`
     : instructions;
 
-  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}`, [], true);
+  showOverlay(`${stepLabel}${statusHtml}${finalInstr}${resumeHtml}${probHtml}${noteHtml}`, [], true);
+}
+
+/** Does this page lead to another step (Next / Continue), or is it the whole form? */
+function hasNextStepButton() {
+  const NEXT = /^(next|continue|save (?:and|&) continue|save (?:and|&) next|next step|proceed)\b/i;
+  return queryAllDeep('button, input[type="submit"], input[type="button"], a[role="button"], [role="button"]')
+    .some((b) => {
+      const host = b.getRootNode && b.getRootNode().host;
+      if (host && host.id === 'hp-copilot-overlay') return false;
+      if (!b.getClientRects || !b.getClientRects().length) return false;
+      const t = String(b.textContent || b.value || (b.getAttribute && b.getAttribute('aria-label')) || '')
+        .replace(/\s+/g, ' ').trim();
+      return NEXT.test(t) || (b.getAttribute && /^(next|continue)/i.test(b.getAttribute('data-automation-id') || '') );
+    });
 }
 
 // ── Pause overlay (login / captcha) ──────────────────────────────────────────
@@ -3615,14 +5820,40 @@ function detectStepText() {
 // ── Login / CAPTCHA detection ─────────────────────────────────────────────────
 
 function isLoginWall() {
-  const body = document.body.innerText.toLowerCase();
-  const hasLoginForm = !!document.querySelector('input[type="password"]');
-  const hasLoginText = /sign in|log in|login|create an? account|register to apply/.test(body);
-  const noRealForm = !document.querySelector('input[type="text"], input[type="email"], textarea');
-  // Workday OAuth gateway pages (wday/authgwy) are login walls even without
-  // a visible password field — they redirect to SSO then back.
-  const isAuthGateway = /authgwy|auth-gateway|saml|sso/i.test(window.location.pathname);
-  return hasLoginForm || (hasLoginText && noRealForm) || isAuthGateway;
+  const shown = (el) => !!el && el.offsetParent !== null;
+  // 1. A VISIBLE password field is a sign-in form (a hidden one in a header
+  //    dropdown is not).
+  if (queryAllDeep('input[type="password"]').some(shown)) return true;
+  // 2. Workday OAuth gateway pages (wday/authgwy) are login walls even without
+  //    a visible password field — they redirect to SSO then back. By path
+  //    SEGMENT: the bare substring /sso/ matched ".../assistant-profeSSOr".
+  if (/(^|[\/_.-])(authgwy|auth-gateway|saml2?|sso)([\/_.?-]|$)/i.test(window.location.pathname)) return true;
+  // 3. An application form, or a job page's own Apply button, is not a wall.
+  if (queryAllDeep('input[type="text"], input[type="email"], input:not([type]), textarea')
+        .some((el) => shown(el) && !isAntiBotField(el))) return false;
+  if (pageHasApplyControl()) return false;
+  // 4. Sign-in wording on the page's CONTROLS and headings, as whole words —
+  //    never the job description. The whole body text was searched, so the
+  //    Horizon3 posting's "deSIGN INtegration schemas" read as "sign in" and the
+  //    Ashby job page was reported as a login wall (live test, 2026-10-09).
+  return queryAllDeep('button, a, [role="button"], h1, h2, h3, legend, label')
+    .filter(shown)
+    .some((el) => {
+      const t = String(el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+      return t.length <= 60 &&
+        /\b(sign[ -]?in|log[ -]?in|create an? account|register to apply)\b/i.test(t);
+    });
+}
+
+/** A visible Apply control: the page is a job posting, not a sign-in wall. */
+function pageHasApplyControl() {
+  return queryAllDeep("a, button, [role='button'], input[type='button'], input[type='submit']")
+    .some((el) => {
+      if (el.offsetParent === null) return false;
+      const t = String(el.textContent || el.value || el.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ').trim();
+      return t.length <= 60 && /\bapply\b/i.test(t) && !/\bwith (linkedin|indeed)\b/i.test(t);
+    });
 }
 
 function isCaptcha() {
@@ -3662,6 +5893,7 @@ function watchForPageAdvance(pack) {
     if (location.href !== _lastUrl) {
       _lastUrl = location.href;
       _resumeAttachedOnPage = null; // reset resume guard on new page
+      _nativeAutofillOnPage = null;
       clearInterval(urlPoll);
       if (_advanceObserver) { _advanceObserver.disconnect(); _advanceObserver = null; }
       clearHighlights();
@@ -3701,6 +5933,7 @@ function watchForPageAdvance(pack) {
         if (_fillingInProgress) return;
         if (location.href === _lastUrl) {
           _resumeAttachedOnPage = null;
+          _nativeAutofillOnPage = null;
           clearHighlights();
           removeOverlay();
           runCopilotStep();
@@ -3727,6 +5960,7 @@ function watchForPageAdvance(pack) {
         if (Date.now() - _lastFillTimestamp < 1500) return;
         if (location.href === _lastUrl) { // only if URL didn't change (handled above)
           _resumeAttachedOnPage = null; // new page section, allow resume again
+          _nativeAutofillOnPage = null;
           clearHighlights();
           removeOverlay();
           runCopilotStep();
@@ -3788,8 +6022,25 @@ function findAndClickApply(pack) {
 
   const labelOf = (el) => ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
 
-  // Workday "Start Your Application" chooser: prefer "Apply Manually" so we
-  // control the fill (avoid Workday's own resume parser / LinkedIn flows).
+  // The board's own "Autofill with Resume" option (Workday's chooser) comes
+  // first while native autofill is on: it fills the history sections we cannot
+  // and the next step feeds it the resume. "Apply Manually" was preferred
+  // before, which left every field to us. Never the LinkedIn/Indeed shortcuts.
+  if (_nativeAutofillEnabled && NATIVE_AUTOFILL_ATS.has(nativeAutofillAts())) {
+    const native = detectNativeAutofill();
+    if (native && native.kind === 'button') {
+      _nativeChooserPending = { ats: native.ats, ts: Date.now() };
+      _pressElement(native.element);
+      console.log('[SpotApply] Clicked the site\'s own resume autofill option (' + native.ats + ')');
+      showOverlay('⚡ Using the site\'s own resume autofill first…<br><small style="color:#94a3b8">Your SpotApply resume goes in next; anything it misses gets filled after. If a sign-in appears, log in — I\'ll resume.</small>', [], false);
+      watchForFormAppearance();
+      return true;
+    }
+  }
+
+  // Workday "Start Your Application" chooser: "Apply Manually" when its own
+  // autofill is off or not offered, so we control the fill (never the
+  // LinkedIn flow).
   const chooser = clickables.find(el => /apply\s*manually/i.test(labelOf(el)));
   if (chooser) {
     chooser.click();
@@ -4019,6 +6270,7 @@ function buildDiagnosticReport() {
     frameActive: typeof HP_FRAME_ACTIVE !== 'undefined' ? HP_FRAME_ACTIVE : null,
     fieldCount: fields.length,
     filledCount: fields.filter(f => f.filledBySpotApply).length,
+    nativeAutofill: nativeAutofillOutcome(),
     emptyRequired: fields.filter(f => f.required && !f.valueLen).map(f => f.signals.slice(0, 60)),
     fields,
   };
@@ -4312,7 +6564,7 @@ function isActionablePage() {
   console.log('[SpotApply] Email scanner activated on', _host, '· extension v1.1.1 (paginated scan)');
 
   // ── Job-related keyword filter ────────────────────────────────────────────
-  const _JOB_KEYWORDS = /application|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent/i;
+  const _JOB_KEYWORDS = /application|applied|applying|position|role|candidate|interview|offer|unfortunately|regret|selected|rejected|next steps|hiring|recruiter|talent|assessment|coding challenge|hackerrank|codility|phone screen|availability|thank you for your interest/i;
 
   function isJobRelated(subject, snippet) {
     return _JOB_KEYWORDS.test(subject || '') || _JOB_KEYWORDS.test(snippet || '');
@@ -4585,7 +6837,8 @@ function isActionablePage() {
   // Gmail only renders ~50 rows per page (virtualized list). To cover a full
   // date range we scrape the visible page, then click "Older" and repeat until
   // we pass the cutoff date or run out of pages.
-  async function scrapeGmailEmails(dayRange) {
+  async function scrapeGmailEmails(dayRange, selfEmail) {
+    selfEmail = String(selfEmail || '').toLowerCase();
     const results = [];
     const seen = new Set();
     const cutoff = Date.now() - (dayRange * 24 * 60 * 60 * 1000);
@@ -4606,8 +6859,15 @@ function isActionablePage() {
             || row.querySelector('.bog span');
           const subject = subjectEl?.textContent?.trim() || '';
 
-          const senderSpan = row.querySelector('.yW span[email]')
-            || row.querySelector('.zF');
+          // A thread the user replied to lists them first ("me"): take the
+          // first participant that is NOT the user, or the server would read
+          // "me" as a company and match it to any employer containing "me".
+          const spans = Array.from(row.querySelectorAll('.yW span[email]'));
+          const senderSpan = spans.find(sp => {
+            const e = (sp.getAttribute('email') || '').toLowerCase();
+            const nm = (sp.getAttribute('name') || sp.textContent || '').trim().toLowerCase();
+            return e && e !== selfEmail && nm !== 'me';
+          }) || spans[0] || row.querySelector('.zF');
           const senderEmail = senderSpan?.getAttribute('email') || '';
           const senderName = senderSpan?.getAttribute('name')
             || senderSpan?.textContent?.trim() || '';
@@ -4641,6 +6901,8 @@ function isActionablePage() {
           results.push({
             subject,
             sender: senderEmail || senderName,
+            sender_name: senderName,
+            thread_id: threadId,
             body: snippet,
             date: dateStr,
             company_guess: guessCompany(senderEmail, senderName),
@@ -4781,6 +7043,7 @@ function isActionablePage() {
         results.push({
           subject,
           sender: senderEmail || senderName,
+          sender_name: senderName,
           body: snippet,
           date: dateStr,
           company_guess: guessCompany(senderEmail, senderName),
@@ -4810,8 +7073,15 @@ function isActionablePage() {
 
   // ── Scan execution & POST to backend ──────────────────────────────────────
   async function executeScan(dayRange) {
+    // The pack first: the scraper needs the user's own address to skip "me".
+    const pack = await new Promise((resolve) => {
+      chromeCall(() => {
+        chrome.storage.local.get(['spotapply_copilot_pack', 'spotapply_fill_pack'],
+          (data) => resolve((data && (data.spotapply_copilot_pack || data.spotapply_fill_pack)) || null));
+      });
+    });
     const scraper = _isGmail ? scrapeGmailEmails : scrapeOutlookEmails;
-    const emails = await scraper(dayRange);
+    const emails = await scraper(dayRange, pack && pack.email);
     console.log(`[SpotApply] Scan complete: ${emails.length} job emails found`);
 
     if (emails.length === 0) {
@@ -4823,16 +7093,9 @@ function isActionablePage() {
       return;
     }
 
-    console.log('[SpotApply] executeScan: emails found > 0, getting storage...');
     // POST to backend
     return new Promise((resolve) => {
-      chromeCall(() => {
-        console.log('[SpotApply] executeScan: calling chrome.storage.local.get');
-        chrome.storage.local.get(
-          ['spotapply_copilot_pack', 'spotapply_fill_pack'],
-          async (data) => {
-            console.log('[SpotApply] executeScan: storage data received:', data);
-            const pack = data?.spotapply_copilot_pack || data?.spotapply_fill_pack;
+      (async () => {
             if (!pack || !packBase(pack)) {
               console.log('[SpotApply] executeScan: no active pack/connection found in storage.');
               showScannerToast(
@@ -4890,9 +7153,7 @@ function isActionablePage() {
               );
               resolve(false);
             }
-          }
-        );
-      });
+      })();
     });
   }
 

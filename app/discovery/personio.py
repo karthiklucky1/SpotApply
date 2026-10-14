@@ -36,6 +36,8 @@ class PersonioScraper:
 
     def fetch(self) -> List[RawJob]:
         url = f"https://{self.board_slug}.jobs.personio.de/xml"
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -101,5 +103,7 @@ class PersonioScraper:
                     geo=geo,
                 )
             )
+        # The XML feed is the whole board in one document (no paging).
+        self.fetch_complete = True
         log.info("Personio[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

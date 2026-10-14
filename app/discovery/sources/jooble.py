@@ -54,9 +54,11 @@ class JoobleSource:
                         )
                         if r.status_code == 403:
                             log.warning("Jooble: invalid API key or quota exceeded")
+                            self.last_error = "invalid API key or quota exceeded (HTTP 403)"
                             break
                         if r.status_code != 200:
                             log.warning("Jooble: HTTP %d for term '%s'", r.status_code, term)
+                            self.last_error = f"HTTP {r.status_code}"
                             continue
 
                         for item in r.json().get("jobs", []):
@@ -105,6 +107,7 @@ class JoobleSource:
 
         except Exception as e:
             log.warning("Jooble: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("JoobleSource: fetched %d jobs", len(jobs))
         return jobs

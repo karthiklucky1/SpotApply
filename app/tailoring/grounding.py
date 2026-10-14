@@ -9,6 +9,7 @@ from app.tailoring.evidence import (
     build_evidence,
     normalize_text,
     patch_hash,
+    summary_sentences,
 )
 
 log = logging.getLogger(__name__)
@@ -17,7 +18,25 @@ log = logging.getLogger(__name__)
 # the cache key, so bumping it invalidates every stored verdict at once without
 # touching a row — and NOT bumping it after a prompt change would serve answers
 # the current verifier never gave.
-VERIFIER_VERSION = "v2-batched-2026-09"
+# v3: summary sentences are verified too, under their own stricter rule.
+VERIFIER_VERSION = "v3-summary-2026-10"
+
+# The kind of a claim sent to the verifier. A SUMMARY sentence restates the
+# whole career, so it is judged against the whole master resume, clause by
+# clause, and "honest bridging" does not apply to it.
+KIND_BULLET = "bullet"
+KIND_SUMMARY = "summary"
+
+_SUMMARY_RULE = (
+    "4. SUMMARY CLAIMS (marked SUMMARY CLAIM) restate the candidate as a whole, so "
+    "judge them against the WHOLE master resume, clause by clause. Every activity, "
+    "responsibility, domain and outcome a summary claim asserts must be shown "
+    "somewhere in the master resume. One clause the master does not show (for "
+    "example 'translating API documentation into tested connectors' when no role "
+    "describes that work) makes the whole claim FABRICATED, even if the rest is "
+    "accurate. Rule 2 does not apply to summary claims; the job's own duties are "
+    "never evidence.\n\n"
+)
 
 
 def _verifier_version() -> str:
@@ -139,6 +158,12 @@ class GroundingResult:
     # checked gets delivered as verified; collapsing it into a failure would
     # block a résumé that may be perfectly fine.
     unverified: bool = False
+    # Summary sentences the master cannot back, same shape as flagged_bullets.
+    # Kept apart because the remedy differs: a summary sentence can simply come
+    # out (tailor.py removes it), a fabricated bullet costs a rebuild. Either
+    # one makes `passed` False here.
+    flagged_summary: Optional[List[Dict[str, Any]]] = None
+    summary_checked: int = 0    # changed summary sentences sent for a verdict
 
 class GroundingChecker:
     def __init__(self):
@@ -301,8 +326,12 @@ class GroundingChecker:
                     bullets.append(s)
         return bullets
 
-    def verify_with_llm(self, bullet: str, source_resume_md: str) -> bool:
+    def verify_with_llm(self, bullet: str, source_resume_md: str,
+                        kind: str = KIND_BULLET) -> bool:
         """Use the LLM to verify if a flagged bullet is supported by the master resume."""
+        summary_rule = ("\n" + _SUMMARY_RULE.replace("(marked SUMMARY CLAIM) ", "")
+                        .replace("Rule 2", "Guideline 2")
+                        if kind == KIND_SUMMARY else "")
         prompt = f"""You are a Fact-Checking Assistant for job applications.
 Your task is to determine whether the claim in the Tailored Bullet is supported by the Master Resume.
 
@@ -318,8 +347,7 @@ Analyze whether the Tailored Bullet represents a factual claim that is supported
 Guidelines:
 1. CORE CLAIMS & METRICS: The core metrics (e.g., "22% accuracy", "65% cycle reduction", "2,500+ requests per minute") and core professional experience responsibilities must match or be directly derived from the Master Resume.
 2. HONEST BRIDGING: If the Tailored Bullet introduces new technologies or tools (e.g. Triton, vLLM, CUDA) but frames them honestly as adjacent, under study, planned transition, or similar learning/bridging frameworks (e.g., "designed with plans to transition to...", "with adjacent study of...", "familiar with..."), this is SUPPORTED and should pass.
-3. FABRICATED CLAIMS: If the bullet claims direct, hands-on production experience, design, implementation, or deployment of a technology that the candidate does not have in their Master Resume (e.g., claiming they actively developed Triton services or built CUDA kernels if not in the Master Resume), it is FABRICATED.
-
+3. FABRICATED CLAIMS: If the bullet claims direct, hands-on production experience, design, implementation, or deployment of a technology that the candidate does not have in their Master Resume (e.g., claiming they actively developed Triton services or built CUDA kernels if not in the Master Resume), it is FABRICATED.{summary_rule}
 Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supported. No other text.
 """
         try:
@@ -345,14 +373,16 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         "under study, or planned ('with adjacent study of...', 'familiar "
         "with...') is SUPPORTED.\n"
         "3. FABRICATED: a claim of direct hands-on production experience with "
-        "something absent from the master resume is FABRICATED.\n\n"
+        "something absent from the master resume is FABRICATED.\n"
+        + _SUMMARY_RULE +
         "Answer with one line per claim, in order, formatted exactly as:\n"
         "<number>: SUPPORTED\n<number>: FABRICATED\n"
         "No other text."
     )
 
     def verify_batch(self, patches: List[Tuple[str, str]],
-                     source_resume_md: str) -> List[bool]:
+                     source_resume_md: str,
+                     kinds: Optional[List[str]] = None) -> List[bool]:
         """Verify several generated claims in ONE request.
 
         `patches` is a list of (claim, matched_source_line) pairs. The master
@@ -362,14 +392,27 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         total cost. Each claim still carries the specific source line it was
         derived from, so the model judges the pair and not the document.
 
+        ``kinds`` (parallel to ``patches``) marks summary sentences, which ride
+        in the SAME request under the stricter summary rule: no extra call.
+
         Returns one verdict per patch, in order. On any failure every verdict is
         False — an unanswered fact-check is not a pass.
         """
         if not patches:
             return []
+        kinds = list(kinds or [])
+
+        def _item(i: int, claim: str, src: str) -> str:
+            if i - 1 < len(kinds) and kinds[i - 1] == KIND_SUMMARY:
+                near = f" (closest line: {src})" if src else ""
+                return (f"{i}. SUMMARY CLAIM: {claim}\n"
+                        f"   SOURCE: the whole master resume{near}")
+            return (f"{i}. CLAIM: {claim}\n"
+                    f"   SOURCE: {src or '(no matching line in the master resume)'}")
+
         try:
             items = "\n\n".join(
-                f"{i}. CLAIM: {claim}\n   SOURCE: {src or '(no matching line in the master resume)'}"
+                _item(i, claim, src)
                 for i, (claim, src) in enumerate(patches, start=1)
             )
             prompt = (
@@ -478,6 +521,12 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
             return GroundingResult(passed=False, flagged_bullets=[], confidence_map={},
                                    unverified=True)
 
+        # The summary is checked too. It used to be skipped entirely (only
+        # Experience/Projects bullets were read), so a summary that wrote the
+        # job's duties up as the candidate's still reported "Grounded".
+        source_summary = summary_sentences(source_resume_md)
+        tailored_summary = summary_sentences(tailored_resume_md)
+
         if not source_bullets:
             # Don't fail open: with no comparable source bullets, every tailored
             # bullet is LLM-verified against the FULL master resume text instead
@@ -494,9 +543,19 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
                         "best_match_bullet": "",
                         "best_match_score": 0.0,
                     })
-            return GroundingResult(passed=not flagged_bullets,
+            known_summary = {normalize_text(s) for s in source_summary}
+            new_summary = [s for s in tailored_summary
+                           if normalize_text(s) not in known_summary]
+            flagged_summary = [
+                {"bullet": s, "best_match_bullet": "", "best_match_score": 0.0}
+                for s in new_summary
+                if not self.verify_with_llm(s, source_resume_md, kind=KIND_SUMMARY)
+            ]
+            return GroundingResult(passed=not flagged_bullets and not flagged_summary,
                                    flagged_bullets=flagged_bullets,
-                                   confidence_map=confidence_map)
+                                   confidence_map=confidence_map,
+                                   flagged_summary=flagged_summary,
+                                   summary_checked=len(new_summary))
 
         # ── Tier the work before spending anything ────────────────────────────
         # A claim the master already makes has not been generated, so there is
@@ -516,24 +575,36 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
             else:
                 changed.append(bullet)
 
-        if not changed:
+        # A summary sentence the master already says (in its own summary or as a
+        # line anywhere) was not generated. Every OTHER summary sentence needs a
+        # verdict: a summary is a synthesis, and a high similarity to one line
+        # says nothing about the clause it adds ("Experienced diagnosing
+        # integration failures and translating API documentation into tested
+        # connectors" sits close to a real integrations bullet).
+        known_summary = known | {normalize_text(s) for s in source_summary}
+        summary_changed = [s for s in tailored_summary
+                           if normalize_text(s) not in known_summary]
+        spans_total = len(tailored_bullets) + len(tailored_summary)
+
+        if not changed and not summary_changed:
             # L0 (identical) / L1 (reordered or re-selected): the words and the
             # facts are the master's own. Nothing to verify, nothing to charge.
             tier = "L0" if len(tailored_bullets) == len(source_bullets) else "L1"
             log.info("Grounding: %s — %d/%d spans unchanged, no verification needed",
-                     tier, len(tailored_bullets), len(tailored_bullets))
+                     tier, spans_total, spans_total)
             return GroundingResult(
                 passed=True, flagged_bullets=[], confidence_map=confidence_map,
-                tier=tier, spans_total=len(tailored_bullets), spans_changed=0,
-                spans_verified=0, llm_calls=0, cache_hits=0,
+                tier=tier, spans_total=spans_total, spans_changed=0,
+                spans_verified=0, llm_calls=0, cache_hits=0, flagged_summary=[],
             )
 
-        matches = self._match_sources(changed, source_bullets)
+        matches = self._match_sources(changed, source_bullets) if changed else []
         threshold = settings.grounding_similarity_threshold
 
         # Only a changed span that is EITHER unlike anything in the master OR a
         # near-copy carrying a metric its source does not have needs a verdict.
-        needs_verdict: List[Tuple[str, str, float]] = []
+        # Entries are (claim, matched source line, score, kind).
+        needs_verdict: List[Tuple[str, str, float, str]] = []
         for bullet, (best_bullet, score) in zip(changed, matches, strict=True):
             confidence_map[bullet] = score
             adds_metric = _adds_unbacked_metric(bullet, best_bullet)
@@ -541,28 +612,43 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
                 log.info("Grounding: span needs a verdict (%s, sim=%.3f): %s",
                          "below threshold" if score < threshold else "adds unbacked metric",
                          score, bullet[:120])
-                needs_verdict.append((bullet, best_bullet, score))
+                needs_verdict.append((bullet, best_bullet, score, KIND_BULLET))
 
+        if summary_changed:
+            summary_sources = list(dict.fromkeys(source_bullets + source_summary))
+            for sentence, (best, score) in zip(
+                    summary_changed, self._match_sources(summary_changed, summary_sources),
+                    strict=True):
+                log.info("Grounding: summary sentence needs a verdict (sim=%.3f): %s",
+                         score, sentence[:120])
+                needs_verdict.append((sentence, best, score, KIND_SUMMARY))
+
+        changed_total = len(changed) + len(summary_changed)
         tier = "L2" if len(needs_verdict) <= 3 else "L3"
         if not needs_verdict:
             log.info("Grounding: %s — %d changed spans, all close paraphrases of "
                      "their source, none required a verdict", tier, len(changed))
             return GroundingResult(
                 passed=True, flagged_bullets=[], confidence_map=confidence_map,
-                tier=tier, spans_total=len(tailored_bullets),
-                spans_changed=len(changed), spans_verified=0,
-                llm_calls=0, cache_hits=0,
+                tier=tier, spans_total=spans_total,
+                spans_changed=changed_total, spans_verified=0,
+                llm_calls=0, cache_hits=0, flagged_summary=[],
             )
 
         # ── Reuse before spending ─────────────────────────────────────────────
         from app.tailoring import verify_cache
         version = _verifier_version()
         span_ids = {s.normalized: s.span_id for s in evidence.spans}
+
+        def _source_key(src: str, kind: str) -> Optional[str]:
+            sid = span_ids.get(normalize_text(src))
+            # A summary verdict answers a different question (the stricter rule)
+            # about the same words, so it never shares a bullet's cache entry.
+            return f"summary:{sid or ''}" if kind == KIND_SUMMARY else sid
+
         keys = [
-            (evidence.evidence_id,
-             patch_hash(bullet, span_ids.get(normalize_text(src))),
-             version)
-            for bullet, src, _ in needs_verdict
+            (evidence.evidence_id, patch_hash(claim, _source_key(src, kind)), version)
+            for claim, src, _, kind in needs_verdict
         ]
         cached = verify_cache.lookup(keys) if use_cache else {}
 
@@ -583,7 +669,12 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         for start in range(0, len(pending), batch_max):
             chunk = pending[start:start + batch_max]
             pairs = [(needs_verdict[i][0], needs_verdict[i][1]) for i in chunk]
-            answers = self.verify_batch(pairs, source_resume_md)
+            kinds = [needs_verdict[i][3] for i in chunk]
+            # Summary sentences ride in the SAME request as the bullets.
+            if KIND_SUMMARY in kinds:
+                answers = self.verify_batch(pairs, source_resume_md, kinds=kinds)
+            else:
+                answers = self.verify_batch(pairs, source_resume_md)
             llm_calls += 1
             provider = getattr(self, "last_verifier_provider", None)
             for i, supported in zip(chunk, answers, strict=False):
@@ -592,25 +683,31 @@ Return exactly "SUPPORTED" if it is supported, or "FABRICATED" if it is not supp
         for provider, entries in fresh.items():
             verify_cache.store(entries, provider=provider)
 
-        flagged_bullets = [
-            {"bullet": bullet, "best_match_bullet": best_bullet, "best_match_score": score}
-            for i, (bullet, best_bullet, score) in enumerate(needs_verdict)
-            if not verdicts.get(i, False)
-        ]
+        def _flags(kind: str) -> List[Dict[str, Any]]:
+            return [
+                {"bullet": claim, "best_match_bullet": best, "best_match_score": score}
+                for i, (claim, best, score, k) in enumerate(needs_verdict)
+                if k == kind and not verdicts.get(i, False)
+            ]
+
+        flagged_bullets = _flags(KIND_BULLET)
+        flagged_summary = _flags(KIND_SUMMARY)
 
         log.info("Grounding: %s — %d/%d spans changed, %d verified "
-                 "(%d cache hits, %d LLM calls), %d flagged",
-                 tier, len(changed), len(tailored_bullets), len(needs_verdict),
-                 len(cached), llm_calls, len(flagged_bullets))
+                 "(%d cache hits, %d LLM calls), %d flagged, %d summary sentence(s) flagged",
+                 tier, changed_total, spans_total, len(needs_verdict),
+                 len(cached), llm_calls, len(flagged_bullets), len(flagged_summary))
 
         return GroundingResult(
-            passed=not flagged_bullets,
+            passed=not flagged_bullets and not flagged_summary,
             flagged_bullets=flagged_bullets,
             confidence_map=confidence_map,
             tier=tier,
-            spans_total=len(tailored_bullets),
-            spans_changed=len(changed),
+            spans_total=spans_total,
+            spans_changed=changed_total,
             spans_verified=len(needs_verdict),
             llm_calls=llm_calls,
             cache_hits=len(cached),
+            flagged_summary=flagged_summary,
+            summary_checked=len(summary_changed),
         )

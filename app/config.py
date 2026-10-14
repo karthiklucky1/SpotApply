@@ -153,6 +153,15 @@ class Settings(BaseSettings):
     # second real account fills with ITS OWN profile data.
     autofill_multi_user_enabled: bool = False  # AUTOFILL_MULTI_USER_ENABLED
     founder_user_id: str = ""                  # FOUNDER_USER_ID — Supabase user_id backing applicant_* defaults
+    # The extension's Chrome Web Store listing (approved 2026-10). Every
+    # install surface links HERE; the .zip from /api/extension/download is a
+    # developer fallback only. Two copies (Store + unpacked) both fill a form,
+    # so the install page tells .zip users to remove the old copy first.
+    # Edits under extension/ reach Store users only after a manifest version
+    # bump and a new Store review.
+    chrome_web_store_url: str = (
+        "https://chromewebstore.google.com/detail/acmmmmipgplcigghmcafkmjlenflbgcp"
+    )                                          # CHROME_WEB_STORE_URL
 
     # Matching
     min_match_score: float = 0.15          # lowered from 0.20 — cross-encoder floor
@@ -360,6 +369,42 @@ class Settings(BaseSettings):
     # only — jobs still deliver, they are just delivered unverified, which is
     # the same fail-open direction as every other inconclusive result.
     liveness_budget_seconds_per_cycle: float = 20.0  # LIVENESS_BUDGET_SECONDS_PER_CYCLE
+    # Postings already ON boards are re-checked after this long (the gate used
+    # to check once, at delivery, and never again — 2026-10-10). Per scoring
+    # cycle: at most this many GETs inside this many seconds, AFTER scoring (so
+    # it can never spend the cycle's scoring time), and never more than the
+    # platform daily cap (daily_counter: survives deploys and replicas).
+    # 13 users × ≤40 waiting postings, re-checked daily ≈ 500 GETs/day.
+    liveness_reverify_hours: int = 24                   # LIVENESS_REVERIFY_HOURS
+    liveness_reverify_per_cycle: int = 40               # LIVENESS_REVERIFY_PER_CYCLE (0 disables)
+    liveness_reverify_seconds_per_cycle: float = 15.0   # LIVENESS_REVERIFY_SECONDS_PER_CYCLE
+    liveness_reverify_daily_cap: int = 2000             # LIVENESS_REVERIFY_DAILY_CAP
+
+    # ── One-click submit (docs/AUTO_APPLY_RESEARCH.md §5; founder 2026-10-11) ──
+    # The extension presses an application form's own Submit only when the
+    # user's profile has one_click_submit ON, they clicked "Apply & Submit" for
+    # THAT application, the apply URL is on one of these login-free boards, and
+    # the page shows no CAPTCHA, no sign-in step and no unfilled required
+    # field. Account-walled ATSes (Workday, iCIMS, Taleo, SuccessFactors) and
+    # LinkedIn/Indeed (their terms) are never on this list.
+    one_click_submit_enabled: bool = True                 # ONE_CLICK_SUBMIT_ENABLED (kill switch)
+    one_click_submit_hosts: str = (                       # ONE_CLICK_SUBMIT_HOSTS, comma-separated
+        "greenhouse.io,lever.co,ashbyhq.com,smartrecruiters.com")
+    one_click_submit_daily_limit: int = 25                # ONE_CLICK_SUBMIT_DAILY_LIMIT per user
+    # Revocation list, checked BEFORE the allow-list: a board host that objects
+    # (a notice, a block, a rejected-after-click rate that says stop) leaves
+    # one-click the same day with an env change, no deploy. Exact host or
+    # suffix, comma-separated; "" = nothing revoked.
+    one_click_submit_host_blocklist: str = ""             # ONE_CLICK_SUBMIT_HOST_BLOCKLIST
+    # "This job is no longer available" (POST /application/{id}/unavailable).
+    # The reporter's own copy closes at once; the posting is RE-CHECKED for
+    # everyone else, forced past a LIVE verdict younger than
+    # liveness_recheck_hours, because the report contradicts it. A report is a
+    # server-side fetch a user can trigger, so it is bounded twice: per user per
+    # day (reserved in platform_counter; 0 = unlimited), and never more often
+    # than this many minutes per posting however many people report it.
+    liveness_reports_per_user_daily: int = 20       # LIVENESS_REPORTS_PER_USER_DAILY
+    liveness_report_min_recheck_minutes: int = 30   # LIVENESS_REPORT_MIN_RECHECK_MINUTES
     liveness_user_agent: str = (
         "SpotApply/1.0 (+https://app.spotapply.ai; verifying a posting is still open)"
     )
@@ -460,6 +505,11 @@ class Settings(BaseSettings):
     shortlist_strong_threshold: int = 70 # SHORTLIST_STRONG_THRESHOLD — default min-score filter on the board. Held EQUAL to shortlist_score_threshold: at a 70 qualified bar every shortlisted job is by definition a strong fit, so a stricter board default would hide rows we just paid to score. Must never be lower than the shortlist bar (test_settings_defaults).
     fresh_alert_min_score: int = 70      # FRESH_ALERT_MIN_SCORE — min fit (rerank or blended) to push a "Fresh match" notification. Kept level with shortlist_score_threshold: below it nothing is shortlisted, so a lower alert bar is dead config that can only ever push a job the board will not show.
     fresh_alert_daily_cap: int = 10      # FRESH_ALERT_DAILY_CAP — max fresh-match notifications per user per UTC day (lanes fire every few minutes; the per-pass cap alone allows dozens/day). 0 disables the cap.
+    # Earliness window (app/strategy/earliness.py): the hours after a posting's
+    # reference time during which the board says "apply today" and a receipt
+    # reads as early. 48 = the span in which ~41% of a posting's applications
+    # arrive (Dice/St. Louis Fed). Copy states the clock, never odds.
+    earliness_window_hours: int = 48          # EARLINESS_WINDOW_HOURS
     fresh_alert_max_posted_age_days: int = 30  # FRESH_ALERT_MAX_POSTED_AGE_DAYS — the POSTED-age (loose) half of the alert gate, matching scoring_/shortlist_max_posted_age_days. The alert's real trigger is the KNOWN age (fresh_alerts.FRESH_ALERT_MAX_AGE_HOURS = 24: we found it today); this exists ONLY to suppress evergreen/ancient reqs, exactly as app/common/freshness.py prescribes. Until Aug 2026 the alert gate was `posted_at or first_seen`, i.e. the single-bound expression that module exists to eliminate — so a posting discovered minutes ago whose ATS dated it 3 days back produced no alert at all, and production measured 0 alerts against 2 shortlists. Widening this does NOT mean more pushes: fresh_alert_daily_cap and MAX_ALERTS_PER_PASS still bound the volume, and the copy only claims "posted Xh ago / be one of the first" when the source date is itself inside the 24h window.
     default_intake_country: str = "United States"  # DEFAULT_INTAKE_COUNTRY — the country assumed when a profile has none. It MUST be the same value the Tier-1/Tier-2 prompt assumes (app/matching/reranker.py defaults the same way), because the two disagreeing is the expensive failure: a blank profile meant "no country gate" at intake while the scorer was still told "the candidate wants jobs in United States" and scored every foreign posting 0-30. We paid Tier-1 (and sometimes Claude) to reject postings our own free filter could have dropped — a measured 73% of the queue was drained below the gate. Set to "" ONLY if the prompt is changed to match; the gate and the prompt are one decision.
     lanes_enabled: bool = True           # LANES_ENABLED — set 0 on extra web replicas: every lane lock, LLM budget counter, and in-flight claim is process-local, so a second lane-running process silently DOUBLES scraping, LLM spend, and alerts. Exactly ONE process should run lanes.
@@ -705,6 +755,38 @@ class Settings(BaseSettings):
     # and retires the board on a 404 or at BOARD_DEACTIVATE_AFTER_FAILURES.
     pulse_failure_backoff_minutes: int = 15
     pulse_fast_path_score_cap: int = 10    # max brand-new jobs LLM-scored per tick via the fast path (kept small so the tick stays short; the rest are scored by the 5-min matching lane)
+    # ── Board absence: closing what a COMPLETE fetch no longer lists ──────────
+    # (app/discovery/board_absence.py). The full discovery pass was the only
+    # ghost-closer, and it rotates boards by last_seen ascending — which the
+    # pulse lane bumps on every poll — so pulse-watched boards were rarely or
+    # never ghost-closed: a closed Hasbro posting stayed open in the shared pool
+    # with copies on other users' boards (live test 2026-10-09), and Ashby has
+    # no per-posting endpoint at all, so for Ashby this is the only way a
+    # closure is ever seen. The pulse lane queues the listing of a changed board
+    # whose fetch was COMPLETE and, AFTER its consume loop, closes that exact
+    # board's absent shared rows (+ copies); an incomplete, failed, deferred,
+    # 429 or 403 fetch records nothing. Only board_absence.CLOSING_SOURCES
+    # close (Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio,
+    # Rippling, Breezy, Pinpoint, JOIN); Workday, Teamtailor, BambooHR and
+    # Workable never do and keep the full pass + 45-day retention.
+    # PULSE_GHOST_CLOSE_ENABLED=0 turns off the absence step only (no reads, no
+    # closes, no reopens, the census is recorded as before). It does NOT undo
+    # the adapters' stricter completeness flags or mark_ghost_jobs' board
+    # scoping — those only ever make the full pass close LESS — and no fetch
+    # costs more with it on (the Workday walk keeps its old two-page depth).
+    pulse_ghost_close_enabled: bool = True     # PULSE_GHOST_CLOSE_ENABLED
+    pulse_ghost_close_max_per_tick: int = 300  # PULSE_GHOST_CLOSE_MAX_PER_TICK — shared rows closed per tick across all boards; a board's overflow is carried to the next tick without re-polling it. Production (2026-10-09, read-only): open shared rows above the board's census on active Greenhouse/Lever/Ashby boards ≈ 12k on ~550 boards (+ up to 3 each on ~1k more), so the first pass drains in hours, not one tick
+    pulse_ghost_close_max_seconds: float = 10.0  # PULSE_GHOST_CLOSE_MAX_SECONDS — wall-clock slice per tick for the step (never past the tick deadline); listings it does not reach are carried to the next tick
+    # DOUBT GUARD — "delete nothing on any doubt". A complete fetch that would
+    # close MORE than this share of the board's open shared rows (and more than
+    # pulse_ghost_close_min_rows of them) closes NOTHING: that is what a board
+    # serving a partial list under a 200 looks like. A listing that shrank by
+    # more than this share against the board's census is held until it repeats
+    # on pulse_ghost_close_confirm_polls consecutive complete polls, and the
+    # census is not moved meanwhile. An empty listing never closes anything.
+    pulse_ghost_close_max_share: float = 0.5   # PULSE_GHOST_CLOSE_MAX_SHARE
+    pulse_ghost_close_min_rows: int = 3        # PULSE_GHOST_CLOSE_MIN_ROWS — "more than a few": a small board may lose all of these at once
+    pulse_ghost_close_confirm_polls: int = 3   # PULSE_GHOST_CLOSE_CONFIRM_POLLS
     # Fraction of each hot-lane cycle spent bootstrapping never-polled boards.
     # The rest goes to proven yielders + productive boards. Kept low so tens of
     # thousands of dead seeded slugs can't eat the budget (they 404 and get
@@ -754,7 +836,7 @@ class Settings(BaseSettings):
     verifier_temperature: float = 0.0    # VERIFIER_TEMPERATURE — grounding fact-check and any other verifier call. Zero, always: a sampled verdict means the same résumé passes one run and fails the next.
     doctor_verdict_max_tokens: int = 220 # DOCTOR_VERDICT_MAX_TOKENS — was 120, which truncated the recruiter verdict mid-sentence (stop_reason=max_tokens) on a two-sentence answer the user reads verbatim.
     doctor_min_human_score: int = 55     # DOCTOR_MIN_HUMAN_SCORE — the anti-fingerprint floor. The audit measured tailored résumés scoring 24-44/100 on our OWN "reads human" check that shipped reported as PASS, because the fingerprint penalty was folded into the same number as ATS coverage and cleared 65 anyway. Now a separate gate: below this the draft is rebuilt with the tells named, and if the rebuild still fails, the résumé is delivered but NOT reported as passing (style is not a fabrication, so it never blocks at ERROR). 55 ≈ at most one minor tell.
-    tailor_skip_coverage_pct: float = 0.80  # TAILOR_SKIP_COVERAGE_PCT — when the master résumé already matches at least this share of the JD's extracted phrases, skip the rewrite (L0) and ship the master. A full regeneration that cannot add anything honest is pure cost plus a fresh chance to fabricate: the audit measured one pairing at 72% master coverage where tailoring produced +0 phrases for $0.066 and a grounding failure. 0 disables the skip.
+    tailor_skip_coverage_pct: float = 0.0   # TAILOR_SKIP_COVERAGE_PCT — 0 (default since 2026-10-08): every tailor is a full rewrite + restructure for the job, the owner's first rule. Set it (e.g. 0.80) to skip the rewrite (L0) and ship the master when it already matches at least this share of the JD's extracted phrases. A full regeneration that cannot add anything honest is pure cost plus a fresh chance to fabricate: the audit measured one pairing at 72% master coverage where tailoring produced +0 phrases for $0.066 and a grounding failure. 0 disables the skip.
     grounding_verify_batch_max: int = 12 # GROUNDING_VERIFY_BATCH_MAX — max changed spans packed into ONE verifier request. Verification used to be one call per bullet, each re-sending the entire master résumé (1,423 input tokens for a 5-token answer); that was 64% of a tailor's bill. Spans are batched with only their own matched source evidence attached.
     join_page_size: int = 0              # JOIN_PAGE_SIZE — page size for join.com's public jobs API. 0 = discover it: the scraper walks a descending ladder on a 422 and memoizes the first size the API accepts (app/discovery/join.py). Production measured EVERY non-throttled join request returning 422 at pageSize=100, which is why every one of ~23.5K join boards reported "0 jobs". Set this once the probe has logged the real limit, then the probe never runs.
 
@@ -848,6 +930,14 @@ class Settings(BaseSettings):
     # live as the product host, so existing login/dashboard links keep working.
     canonical_host: str = "spotapply.ai"
     canonical_redirect_hosts: str = "www.spotapply.ai"
+
+    # The scheme+host every ABSOLUTE link the app hands out starts with
+    # (referral link, public profile link, Stripe return URLs, the
+    # extension's callback base). "" = derive it from the request, honouring
+    # X-Forwarded-Proto and never using http:// for a non-local host: behind
+    # Railway's TLS proxy request.base_url says http://, and the referral and
+    # profile links went out as http:// (live test 2026-10-09).
+    public_base_url: str = ""                 # PUBLIC_BASE_URL, e.g. https://app.spotapply.ai
 
 settings = Settings()
 

@@ -37,7 +37,7 @@ from typing import Optional, Tuple
 
 #: Bumped when the rules below change, so a cached verdict from the old rules
 #: is never served (it is part of the cache key).
-GATE_VERSION = 1
+GATE_VERSION = 2       # 2: keyword noise and the hiring company's name are not claims
 
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
@@ -59,17 +59,21 @@ class ExportVerdict:
         return not self.allowed
 
 
-def _basis(master: str, tailored: str, jd: str) -> str:
+def _basis(master: str, tailored: str, jd: str, company: str = "") -> str:
     h = hashlib.sha256()
-    for part in (str(GATE_VERSION), master or "", tailored or "", jd or ""):
+    for part in (str(GATE_VERSION), master or "", tailored or "", jd or "", company or ""):
         h.update(part.encode("utf-8", "ignore"))
         h.update(b"\x00")
     return h.hexdigest()[:32]
 
 
 def evaluate(*, grounding_rejected: bool, grounding_reason: str,
-             master: str, tailored: str, jd: str) -> ExportVerdict:
-    """The verdict for one draft. Pure apart from the content-keyed cache."""
+             master: str, tailored: str, jd: str, company: str = "") -> ExportVerdict:
+    """The verdict for one draft. Pure apart from the content-keyed cache.
+
+    ``company`` is the hiring company, the same value the tailor's own review
+    used, so a draft (or its summary) that names the employer is never read as
+    claiming the employer as a skill."""
     if grounding_rejected:
         return ExportVerdict(
             False, "grounding_rejected",
@@ -86,7 +90,7 @@ def evaluate(*, grounding_rejected: bool, grounding_reason: str,
         # draft against the same inputs at generation time.
         return ExportVerdict(True, "ok", "")
 
-    key = _basis(master, tailored, jd)
+    key = _basis(master, tailored, jd, company)
     now = time.time()
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
@@ -94,7 +98,7 @@ def evaluate(*, grounding_rejected: bool, grounding_reason: str,
             return hit[1]
 
     from app.tailoring.requirements import review as build_review
-    rep = build_review(master, tailored, jd)
+    rep = build_review(master, tailored, jd, company=company)
     claims = tuple(rep.unconfirmed_claims)
     if claims:
         verdict = ExportVerdict(

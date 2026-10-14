@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Apply — Voluntary self-identification (EEO fixture)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; }
+  label { display: block; margin-top: 1rem; font-weight: 600; }
+  select, input { width: 100%; padding: 6px; }
+  .field { margin-bottom: 8px; }
+  /* react-select look-alike */
+  .select__control { border: 1px solid #999; border-radius: 4px; padding: 4px; display: flex; cursor: pointer; }
+  .select__value-container { flex: 1; }
+  .select__placeholder { color: #888; }
+  .select__input { border: 0; outline: 0; width: 100%; }
+  .select__menu { border: 1px solid #999; margin-top: 2px; }
+  .select__option { padding: 6px; cursor: pointer; }
+  .select__option:hover { background: #eef; }
+</style></head>
+<body>
+<h1>Apply for this job</h1>
+<form id="application-form">
+  <div class="field">
+    <label for="first_name">First Name</label>
+    <input id="first_name" name="job_application[first_name]" type="text">
+  </div>
+  <div class="field">
+    <label for="email">Email</label>
+    <input id="email" name="job_application[email]" type="email">
+  </div>
+
+  <h2>Voluntary Self-Identification</h2>
+  <p>Completion is voluntary and will not affect your opportunity for employment.</p>
+
+  <!-- Greenhouse (new job board) asks this as its own Yes/No BEFORE Race, and
+       reveals the Race dropdown only after "No". -->
+  <div class="field">
+    <label for="hispanic">Are you Hispanic/Latino?</label>
+    <select id="hispanic" name="job_application[hispanic_ethnicity]" onchange="document.getElementById('race-field').style.display = this.value === 'No' ? '' : 'none'">
+      <option value="">Please select</option>
+      <option>Yes</option>
+      <option>No</option>
+      <option>Decline To Self Identify</option>
+    </select>
+  </div>
+  <div class="field" id="race-field" style="display:none">
+    <label for="race">Race</label>
+    <select id="race" name="job_application[race]">
+      <option value="">Please select</option>
+      <option>American Indian or Alaskan Native</option>
+      <option>Asian (Not Hispanic or Latino)</option>
+      <option>Black or African American (Not Hispanic or Latino)</option>
+      <option>White (Not Hispanic or Latino)</option>
+      <option>Native Hawaiian or Other Pacific Islander</option>
+      <option>Two or More Races (Not Hispanic or Latino)</option>
+      <option>Decline To Self Identify</option>
+    </select>
+  </div>
+
+  <!-- Wording that no substring of the profile's answer matches. -->
+  <div class="field">
+    <label for="disability">Disability Status</label>
+    <select id="disability" name="job_application[disability_status]">
+      <option value="">Please select</option>
+      <option>Yes, I have a disability, or have had one in the past</option>
+      <option>No, I do not have a disability and have not had one in the past</option>
+      <option>I do not want to answer</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="veteran">Veteran Status</label>
+    <select id="veteran" name="job_application[veteran_status]">
+      <option value="">Please select</option>
+      <option>I identify as one or more of the classifications of a protected veteran</option>
+      <option>I am not a protected veteran</option>
+      <option>I decline to self-identify</option>
+    </select>
+  </div>
+
+  <!-- A React-select style custom dropdown: no <select> anywhere. -->
+  <div class="field" id="gender-field">
+    <label id="gender-label" for="gender-input">Gender</label>
+    <div class="select__control" id="gender-control">
+      <div class="select__value-container">
+        <div class="select__placeholder" id="gender-display">Select...</div>
+        <input id="gender-input" class="select__input" role="combobox" aria-labelledby="gender-label"
+               aria-expanded="false" aria-autocomplete="list" autocomplete="off">
+      </div>
+    </div>
+    <div class="select__menu" id="gender-menu" style="display:none">
+      <div role="listbox">
+        <div class="select__option" role="option">Male</div>
+        <div class="select__option" role="option">Female</div>
+        <div class="select__option" role="option">Non-binary</div>
+        <div class="select__option" role="option">Decline To Self Identify</div>
+      </div>
+    </div>
+    <input type="hidden" id="gender-value" name="job_application[gender]" value="">
+  </div>
+
+  <!-- A custom dropdown that is NOT a protected question must never be touched. -->
+  <div class="field" id="source-field">
+    <label id="source-label" for="source-input">How did you hear about us?</label>
+    <div class="select__control" id="source-control">
+      <div class="select__value-container">
+        <div class="select__placeholder" id="source-display">Select...</div>
+        <input id="source-input" class="select__input" role="combobox" aria-labelledby="source-label" autocomplete="off">
+      </div>
+    </div>
+    <div class="select__menu" id="source-menu" style="display:none">
+      <div role="listbox">
+        <div class="select__option" role="option">LinkedIn</div>
+        <div class="select__option" role="option">Referral</div>
+      </div>
+    </div>
+    <input type="hidden" id="source-value" value="">
+  </div>
+
+  <button type="submit">Submit Application</button>
+</form>
+<script>
+  // Minimal react-select behaviour: mousedown/click on the control opens the
+  // menu; clicking an option writes the display + hidden value and closes it.
+  for (const name of ['gender', 'source']) {
+    const control = document.getElementById(name + '-control');
+    const menu = document.getElementById(name + '-menu');
+    const open = () => { menu.style.display = ''; document.getElementById(name + '-input').setAttribute('aria-expanded', 'true'); };
+    const close = () => { menu.style.display = 'none'; document.getElementById(name + '-input').setAttribute('aria-expanded', 'false'); };
+    control.addEventListener('mousedown', open);
+    control.addEventListener('click', open);
+    document.getElementById(name + '-input').addEventListener('focus', open);
+    menu.querySelectorAll('[role="option"]').forEach(opt => {
+      opt.addEventListener('click', () => {
+        document.getElementById(name + '-display').textContent = opt.textContent;
+        document.getElementById(name + '-display').classList.remove('select__placeholder');
+        document.getElementById(name + '-value').value = opt.textContent;
+        close();
+      });
+    });
+  }
+</script>
+</body></html>

@@ -60,9 +60,11 @@ class ReedSource:
                         )
                         if r.status_code == 401:
                             log.warning("Reed: invalid API key")
+                            self.last_error = "invalid API key (HTTP 401)"
                             break
                         if r.status_code != 200:
                             log.warning("Reed: HTTP %d for term '%s'", r.status_code, term)
+                            self.last_error = f"HTTP {r.status_code}"
                             continue
 
                         for item in r.json().get("results", []):
@@ -108,6 +110,7 @@ class ReedSource:
 
         except Exception as e:
             log.warning("Reed: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("ReedSource: fetched %d jobs", len(jobs))
         return jobs

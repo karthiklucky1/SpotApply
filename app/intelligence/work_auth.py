@@ -13,7 +13,9 @@ answering it. That protects the user from offer rescission / falsification.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -392,6 +394,205 @@ def classify_question(label: str) -> str:
     if any(h in lab for h in _AUTH_NOW_HINTS):
         return "auth_now"
     return "other"
+
+
+# ── The scorer's work-auth factor, held to the profile (2026-10-09) ──────────
+# The fit report's "Work auth" tile is the LLM's own note, stored when the job
+# was scored. Live test: an F-1 OPT user whose profile says they will need H-1B
+# sponsorship read "Work auth 100% · F-1 OPT, no sponsorship needed" (scored
+# 2026-08-07, before the visa status decided sponsorship), and a fresh score
+# read "Work auth 10% · F-1 OPT; posting silent on sponsorship" while the
+# rubric says a silent posting scores HIGH. Both are the model disagreeing
+# with facts we hold, so both are corrected deterministically: when a job is
+# scored (reranker) and again when the report is read (stored rows).
+
+#: The note claims the candidate needs no sponsorship. Candidate-side wording
+#: only: "no sponsorship offered" is the POSTING refusing, not this claim.
+_NO_SPONSOR_CLAIM_RE = re.compile(
+    r"\bno\s+(?:visa\s+)?sponsorship\s+(?:is\s+)?(?:needed|required|necessary)\b"
+    r"|\bno\s+need\s+(?:for|of)\s+(?:visa\s+)?sponsorship\b"
+    r"|(?:\bnot|n't|\bnever)\s+(?:need|require)(?:s|d)?\s+(?:any\s+|a\s+)?(?:visa\s+)?sponsor"
+    r"|\bsponsorship\s+(?:is\s+)?not\s+(?:needed|required|necessary)\b"
+    r"|\bfully\s+authori[sz]ed\b",
+    re.IGNORECASE)
+
+#: The note itself says the posting does not address sponsorship.
+_POSTING_SILENT_RE = re.compile(
+    r"\bsilent\b|\bdoes(?:\s+not|n't)\s+mention\b|\bno\s+mention\b"
+    r"|\bnot\s+(?:mentioned|stated|addressed)\b",
+    re.IGNORECASE)
+
+#: Any restriction a low score could legitimately rest on. A note naming one
+#: is never lifted, whatever else it says. Clearance and government work are
+#: restrictions too: "sponsorship not mentioned; TS/SCI with poly needed" and
+#: "silent on visas; federal contract role" were lifted to 85 "posting silent
+#: on it" (review 2026-10-09: 381 finals in 30 days would have been).
+_RESTRICTION_RE = re.compile(
+    r"citizen|clearance|green\s*card|permanent\s+resident|\bu\.?\s?s\.?\s+persons?\b|itar"
+    r"|ts\s*/\s*sci|top\s+secret|\bsecret\b|polygraph|\bpoly\b|public\s+trust"
+    r"|federal|government|\bgov(?:t|'t)?\b|defen[cs]e|\bdod\b|export[-\s]+control"
+    r"|refus|unable|will\s+not|won't|cannot|can't|no\s+(?:visa\s+)?sponsorship"
+    r"|without\s+(?:visa\s+)?sponsorship|not\s+(?:offer|provide)|does\s+not\s+sponsor",
+    re.IGNORECASE)
+
+#: Whether the POSTING's own text touches citizenship, clearance or U.S.-person
+#: status. `find_refusal` is about sponsorship and misses all of these ("must be
+#: U.S. citizens", "U.S. Citizenship is required", "Active TS/SCI clearance",
+#: "obtain and maintain a Secret clearance"), so a posting that names one is
+#: not silent, whatever the note says.
+#:
+#: Deliberately CONSERVATIVE (review round 4): ANY mention counts, negated or
+#: not. Three rounds of reading negation ("is not required", "no clearance
+#: needed", "need not be") each failed one way or the other: a clearance
+#: negation cancelled a citizenship requirement in the same sentence ("Only
+#: United States citizens may apply, no clearance needed" was lifted to 85),
+#: and a "status" exception dropped "U.S. citizenship status is required". So
+#: "No U.S. citizenship or clearance required" also blocks the lift. That is
+#: the safe direction: a hit only leaves the score the model gave, while a miss
+#: lifts a citizens-only role to 85 for a student who cannot take it.
+#:
+#: The only text removed first is boilerplate that names no requirement:
+#: `_USCIS_RE` (E-Verify, which STEM OPT asks of an employer, is "a program of
+#: U.S. Citizenship and Immigration Services"; reading it as a requirement kept
+#: a silent posting at 10) and, inside an EEO clause, `_EEO_CITIZENSHIP_RE`.
+_US = r"(?:u\.?\s?s\.?|united\s+states)"
+_POSTING_RESTRICTION_RE = re.compile(
+    r"\b(?:non-?)?citizen\w*"
+    r"|\bclearances?\b|\bts\s*/\s*sci\b|\btop\s+secret\b|\bpolygraph\b|\bpublic\s+trust\b"
+    r"|\b(?:active|interim)\s+secret\b|\bsecret\s+(?:is\s+)?required\b"
+    rf"|\b{_US}\s+persons?\b|\bitar\b|\bexport[-\s]+control"
+    r"|\bgreen\s*cards?\b|\bpermanent\s+residen\w*",
+    re.IGNORECASE)
+
+#: The agency that runs E-Verify, a name and not a requirement.
+_USCIS_RE = re.compile(
+    rf"\b(?:{_US}\s+)?citizenship\s+(?:and|&)\s+immigration\s+services?\b", re.IGNORECASE)
+#: An EEO / anti-discrimination clause: "without regard to ... citizenship
+#: status", "we do not discriminate on the basis of ... citizenship".
+_EEO_MARKER_RE = re.compile(
+    r"\bregardless\s+of\b|\bwithout\s+regard\s+to\b|\bon\s+the\s+basis\s+of\b|\bbased\s+on\b"
+    r"|discriminat|\bequal\s+opportunity\b|\bprotected\b",
+    re.IGNORECASE)
+#: ...unless the same sentence states a requirement. "based on" and
+#: "protected" also occur in real ones ("U.S. citizenship is required based on
+#: the contract", "U.S. citizenship required to access protected data"), and
+#: removing the term there would lift exactly the role this guard exists for.
+_REQUIREMENT_WORD_RE = re.compile(r"\brequir|\bmust\b|\bmandatory\b|\bonly\b|\beligib",
+                                  re.IGNORECASE)
+_EEO_CITIZENSHIP_RE = re.compile(rf"\b(?:{_US}\s+)?citizenship(?:\s+status)?\b", re.IGNORECASE)
+#: Sentence ends, but not the dots of an abbreviation: "U.S. citizens" is one
+#: sentence (a `.` after a one-letter word never ends one).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<!\b[A-Za-z])[.!?](?=\s|$)|[;\n\r•·|]+")
+
+
+def _without_boilerplate(sentence: str) -> str:
+    """``sentence`` minus the USCIS name and, in an EEO clause that states no
+    requirement, its "(U.S.) citizenship (status)"."""
+    sentence = _USCIS_RE.sub(" ", sentence)
+    if _EEO_MARKER_RE.search(sentence) and not _REQUIREMENT_WORD_RE.search(sentence):
+        sentence = _EEO_CITIZENSHIP_RE.sub(" ", sentence)
+    return sentence
+
+
+def posting_restriction(text: str) -> Optional[str]:
+    """The first sentence of ``text`` that mentions citizenship, a clearance or
+    U.S.-person status once EEO / E-Verify boilerplate is removed, or None.
+
+    No negation exception: "No U.S. citizenship or clearance required" counts
+    too (see `_POSTING_RESTRICTION_RE`). The caller only uses this to decide
+    that a posting is NOT silent, so a hit keeps the model's own score."""
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        if _POSTING_RESTRICTION_RE.search(_without_boilerplate(sentence)):
+            return " ".join(sentence.split())[:200]
+    return None
+
+#: Same number card_match uses for "needs sponsorship; posting silent — assumed
+#: possible": a good fit, not a perfect one.
+SILENT_POSTING_WORK_AUTH = 85.0
+REFUSING_POSTING_WORK_AUTH = 10.0
+
+
+def _needs_text(framing: WorkAuthFraming) -> str:
+    """What the profile says, in the tile's few words."""
+    if framing.authorized_now:
+        return f"{framing.basis}: authorized now, will need sponsorship later"
+    return "Will need visa sponsorship"
+
+
+#: Where a corrected entry keeps the scorer's OWN verdict. The correction runs
+#: at parse time, before the row is stored, so without these the model's note
+#: was gone for good; with them every later read re-derives from the model's
+#: words under the CURRENT rules (a rule fixed later also fixes rows stored
+#: under the old one), and the function is idempotent.
+MODEL_SCORE_KEY = "model_score"
+MODEL_NOTE_KEY = "model_note"
+
+
+def reconcile_work_auth_factor(factor, profile,
+                               posting_refuses: Optional[bool] = None,
+                               posting_text: Optional[str] = None):
+    """The work_auth breakdown entry, made to agree with the user's profile.
+
+    ``factor`` is ``{"score": 0-100, "note": str}``; ``posting_refuses`` is
+    whether the posting explicitly refuses sponsorship (None = not known);
+    ``posting_text`` is the posting's description (None = not supplied).
+    Only a user who needs sponsorship (now or later, `assess_profile`) is
+    touched, and only where the stored entry contradicts a fact we hold:
+
+      * it says no sponsorship is needed      -> the profile's truth, and at
+        most 85 (silent posting) or 10 (refusing posting);
+      * the posting refuses and it is high    -> at most 10;
+      * it says the posting is silent, names no restriction, and the posting
+        TEXT was read and neither refuses sponsorship nor mentions
+        citizenship, a clearance or U.S.-person status at all (negated or
+        not, `posting_restriction`), and it is a blocker-low -> 85, as the
+        rubric requires.
+
+    A changed entry carries the model's own score and note beside the
+    correction (``model_score`` / ``model_note``); the judgement always starts
+    from those. Never raises; anything it cannot read is returned unchanged.
+    """
+    if not isinstance(factor, dict) or profile is None:
+        return factor
+    has_model = MODEL_SCORE_KEY in factor or MODEL_NOTE_KEY in factor
+    # The model's verdict: the stored one, or the one an earlier pass kept.
+    original = {k: v for k, v in factor.items() if k not in (MODEL_SCORE_KEY, MODEL_NOTE_KEY)}
+    if has_model:
+        original["score"] = factor.get(MODEL_SCORE_KEY, factor.get("score"))
+        original["note"] = factor.get(MODEL_NOTE_KEY, factor.get("note"))
+    try:
+        framing = assess_profile(profile)
+        if not framing.needs_future_sponsorship:
+            return original if has_model else factor
+        score = float(original.get("score"))
+    except Exception:
+        return factor
+    note = str(original.get("note") or "")
+    # A posting that mentions citizenship or a clearance (even to waive it) is
+    # not silent, whatever the note says.
+    restricted = posting_restriction(posting_text) is not None if posting_text else False
+
+    def _corrected(new_score, new_note):
+        out = dict(original)
+        out["score"], out["note"] = new_score, new_note
+        out[MODEL_SCORE_KEY], out[MODEL_NOTE_KEY] = original.get("score"), original.get("note")
+        return out
+
+    if _NO_SPONSOR_CLAIM_RE.search(note):
+        if posting_refuses:
+            return _corrected(round(min(score, REFUSING_POSTING_WORK_AUTH)),
+                              f"{_needs_text(framing)}; posting refuses sponsorship")
+        return _corrected(round(min(score, SILENT_POSTING_WORK_AUTH)), _needs_text(framing) + (
+            "; posting silent on it" if (posting_refuses is False and not restricted) else ""))
+    if posting_refuses and score > 15:
+        return _corrected(round(REFUSING_POSTING_WORK_AUTH),
+                          f"{_needs_text(framing)}; posting refuses sponsorship")
+    if (posting_refuses is False and (posting_text or "").strip() and not restricted
+            and score <= 15
+            and _POSTING_SILENT_RE.search(note) and not _RESTRICTION_RE.search(note)):
+        return _corrected(round(SILENT_POSTING_WORK_AUTH),
+                          f"{_needs_text(framing)}; posting silent on it")
+    return original if has_model else factor
 
 
 def answer_for(label: str, framing: WorkAuthFraming) -> tuple[str, bool]:

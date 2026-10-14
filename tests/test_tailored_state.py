@@ -149,8 +149,12 @@ def test_board_macros_branch_on_tailored_at_not_the_document_paths():
     """The template is where the bug was visible, so guard it there too."""
     from pathlib import Path
 
-    html = Path(__file__).resolve().parent.parent / "app" / "templates" / "dashboard.html"
-    src = html.read_text()
+    # The board is one template SET since the macros moved out of
+    # dashboard.html (_board_macros.html renders the cards, _board_pane.html
+    # one pane) — the tri-state lives in the macros, the JS in the page.
+    tdir = Path(__file__).resolve().parent.parent / "app" / "templates"
+    src = "\n".join((tdir / name).read_text() for name in
+                    ("dashboard.html", "_board_macros.html", "_board_pane.html"))
     assert "app.tailored_resume_path or app.cover_letter_path" not in src, (
         "a board surface is back to deriving 'tailored' from the document "
         "paths, which are also written for drafts blocked at ERROR"

@@ -205,7 +205,11 @@ class _SchedulerHarness:
             h.sleeps.append(d)
             if len(h.sleeps) > h.cycles:
                 raise asyncio.CancelledError()
-            await real_sleep(0)
+            # A released worker is an OS thread that needs real time to
+            # return. Zero-time yields let hundreds of cycles pass in a few
+            # milliseconds on a loaded CPU, and the lane ran out of cycles
+            # before the thread finished (3 of 15 runs under load).
+            await real_sleep(0.001 if h.release.is_set() else 0)
 
         async def _wait(fs, timeout=None, **kw):
             if not state["forced_timeout"]:
@@ -258,8 +262,9 @@ def test_a_late_worker_does_not_corrupt_ownership(monkeypatch):
     """Once the abandoned Future finishes, the lane must resume — reaping the
     result rather than leaking the Future or double-counting the cycle."""
     # Generous cycle budget: this test is about what happens AFTER the late
-    # worker returns, so the harness must not cancel itself before then.
-    h = _SchedulerHarness(monkeypatch, cycles=400)
+    # worker returns, so the harness must not cancel itself before then
+    # (each cycle after the release costs 1ms of real time: ~5s of budget).
+    h = _SchedulerHarness(monkeypatch, cycles=5000)
 
     async def _go():
         task = asyncio.ensure_future(h.run())
@@ -267,10 +272,11 @@ def test_a_late_worker_does_not_corrupt_ownership(monkeypatch):
             await _REAL_SLEEP(0)
         assert h.entered == 1, "a second consumer started while tick #1 was stuck"
         h.release.set()                      # the late worker returns
-        for _ in range(400):
-            if h.entered >= 2:
-                break
-            await _REAL_SLEEP(0)
+        # Wait on the condition with a wall-clock deadline, not a count of
+        # zero-time yields: the worker is a thread the OS has to schedule.
+        deadline = time.monotonic() + 10
+        while h.entered < 2 and time.monotonic() < deadline:
+            await _REAL_SLEEP(0.001)
         task.cancel()
         try:
             await task

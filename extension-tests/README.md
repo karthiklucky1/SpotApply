@@ -38,6 +38,8 @@ with a stub backend serving the résumé so the attach path runs for real:
 | Recruitee | tabbed form whose application panel is hidden when auto-fill fires |
 | Ashby | essay prompt containing "company"; an autofill-from-résumé parser trap |
 | Screening | 6 Yes/No radios, an intl-tel widget that mangles the number, a lone dropzone |
+| How did you hear | select, Ashby-style option list, radios + "please specify", combobox, text: the profile's saved answer only, all left for the user when none is saved |
+| How did you hear, tied | the box after an "Other" pick only when it names Other, shares the question's container or appeared with the pick; "How did you learn Python?" and the next question stay blank; a listbox button's pick is never learned |
 
 Real bugs this file caught that static review missed:
 

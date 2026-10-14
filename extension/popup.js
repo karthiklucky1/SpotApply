@@ -57,6 +57,8 @@ function fillOutcomeMessage(res, lastError) {
   if (lastError || !res) return "Could not reach the form tab. Make sure the job form tab is active and open.";
   if (!res.ok) return "⚠️ Nothing was filled: " + (res.reason || "the fill was stopped.");
   if (res.state === "opening_form") return "Looking for the application form on this page…";
+  // A handoff: CAPTCHA, sign-in or an emailed code — the site's step, not ours.
+  if (res.paused) return "✋ " + (res.reason || "Waiting for you in the form tab.");
   const parts = [];
   if (typeof res.filled === "number") parts.push(`${res.filled} filled`);
   if (res.needUser) parts.push(`${res.needUser} need you`);

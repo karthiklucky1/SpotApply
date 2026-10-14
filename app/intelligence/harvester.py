@@ -59,6 +59,12 @@ def harvest_github(github_url: str) -> dict:
         with httpx.Client(timeout=15, headers=headers) as client:
             r = client.get(f"{_GH_API}/users/{username}/repos",
                            params={"sort": "pushed", "per_page": 10, "type": "owner"})
+            if r.status_code != 200:
+                # Rate limit, unknown user, private: a FAILED harvest, never an
+                # empty account — callers cache the failure instead of retrying
+                # on every read (skill_gap._github_evidence).
+                return {"ok": False, "reason": f"http_{r.status_code}", "username": username,
+                        "repos": [], "events": []}
             if r.status_code == 200:
                 for repo in r.json():
                     if repo.get("fork"):

@@ -20,6 +20,7 @@ from app.discovery.base import (
     EVIDENCE_TITLE_ONLY,
     GeoEvidence,
     RawJob,
+    listing_truncated,
 )
 from app.discovery.hiring_context import put
 
@@ -101,6 +102,14 @@ def _geo_of(j: dict, location: str) -> GeoEvidence | None:
                        work_mode=work_mode, work_mode_field=mode_field)
 
 
+def board_company_name(slug: str) -> str:
+    """The company name a board's postings carry: its token, words split on
+    "-"/"_", title case. The liveness gate reverses this to find the board of
+    a posting shown on the employer's own site (`delivery_gate`), so the two
+    must stay one function."""
+    return (slug or "").replace("-", " ").replace("_", " ").title()
+
+
 class GreenhouseScraper:
     name = "greenhouse"
 
@@ -110,6 +119,8 @@ class GreenhouseScraper:
     def fetch(self) -> List[RawJob]:
         url = f"{BASE}/{self.board_slug}/jobs?content=true"
         self.last_error = ""
+        # Complete only once the whole listing parsed (app/discovery/base.py).
+        self.fetch_complete = False
         try:
             r = httpx.get(url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
@@ -124,7 +135,8 @@ class GreenhouseScraper:
 
         payload = r.json()
         jobs: List[RawJob] = []
-        for j in payload.get("jobs", []):
+        listing = payload.get("jobs", [])
+        for j in listing:
             # Coerce to "" — a posting can carry {"location": {"name": null}},
             # and .get("name", "") returns None (the key exists), so .lower()
             # below would crash and take down the WHOLE board's fetch.
@@ -173,7 +185,7 @@ class GreenhouseScraper:
                 RawJob(
                     source="greenhouse",
                     external_id=str(j["id"]),
-                    company=self.board_slug.replace("-", " ").replace("_", " ").title(),
+                    company=board_company_name(self.board_slug),
                     title=j.get("title", ""),
                     location=location,
                     remote=remote,
@@ -185,5 +197,9 @@ class GreenhouseScraper:
                     geo=_geo_of(j, location),
                 )
             )
+        # One unpaginated response: whole when it carried the `jobs` list and
+        # its `meta.total` (when present) is not above what we read.
+        self.fetch_complete = ("jobs" in payload and isinstance(listing, list)
+                               and not listing_truncated(payload, len(listing)))
         log.info("Greenhouse[%s]: %d jobs", self.board_slug, len(jobs))
         return jobs

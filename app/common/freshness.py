@@ -148,16 +148,29 @@ def render_posting_ref():
 
 
 def is_fresh_expr(known_days: int, posted_days: int,
-                  now: Optional[datetime] = None, *, for_render: bool = False):
+                  now: Optional[datetime] = None, *, for_render: bool = False,
+                  index_friendly: bool = False):
     """SQL predicate: this job is still within BOTH freshness bounds.
 
     ``known_days <= 0`` or ``posted_days <= 0`` disables that leg.
+
+    ``index_friendly`` spells the known leg as :func:`known_on_or_after_expr`
+    (the same rows, provably) so ``ix_job_user_firstseen`` serves it as a
+    range. For COUNTS: the coalesce form made the owner's window counts walk
+    the posting-date index and heap-fetch every row to test ``first_seen`` —
+    2026-10-09, one account with 73k closed rows: the Ghost badge count took
+    11.1 s (Postgres cancelled it at 5 s, which emptied the whole Insights
+    panel) and the Pool count 1.1 s; this spelling answers them in 9 ms and
+    22 ms. Ordered PAGE queries keep the default so their ordered scan of
+    ``ix_job_user_fresh`` is untouched.
     """
     now = now or datetime.utcnow()
     post_ref = render_posting_ref() if for_render else posting_ref()
     clauses = []
     if known_days and known_days > 0:
-        clauses.append(known_ref() >= now - timedelta(days=known_days))
+        cutoff = now - timedelta(days=known_days)
+        clauses.append(known_on_or_after_expr(cutoff) if index_friendly
+                       else known_ref() >= cutoff)
     if posted_days and posted_days > 0:
         clauses.append(post_ref >= now - timedelta(days=posted_days))
     if not clauses:
@@ -174,11 +187,11 @@ def found_jobs_expr(now: Optional[datetime] = None):
     Jobs badge all count with it — they were three numbers (all-time pool,
     known-age-only window, both windows) and a new user saw 500 / 381 / 360 on
     one screen (2026-10-01). The caller adds ``is_closed == False`` and the
-    owner filter."""
+    owner filter. Only ever COUNTED, so the known leg is index-friendly."""
     from app.config import settings
     return is_fresh_expr(int(getattr(settings, "explorer_max_age_days", 0) or 0),
                          int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
-                         now, for_render=True)
+                         now, for_render=True, index_friendly=True)
 
 
 def is_fresh(job, known_days: int, posted_days: int,

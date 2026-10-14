@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html><head><title>Staff Engineer — Greenhouse-style application (submits)</title></head>
+<body>
+  <h1>Apply for Staff Engineer at HarnessCo</h1>
+  <!-- One-click submit fixture: every required field is one the pack fills, the
+       Submit control is Greenhouse's #submit_app, and a native submit lands on
+       thanks.html, whose wording the confirmation detector recognises. -->
+  <form id="application_form" action="/thanks.html" method="get">
+    <label for="first_name">First Name *</label>
+    <input type="text" id="first_name" name="first_name" required>
+
+    <label for="last_name">Last Name *</label>
+    <input type="text" id="last_name" name="last_name" required>
+
+    <label for="email">Email *</label>
+    <input type="email" id="email" name="email" required>
+
+    <label for="phone">Phone *</label>
+    <input type="tel" id="phone" name="phone" required>
+
+    <label for="resume">Resume/CV *</label>
+    <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx">
+    <span id="resume_filename"></span>
+
+    <label for="linkedin">LinkedIn Profile</label>
+    <input type="text" id="linkedin" name="linkedin">
+
+    <label for="sponsorship">Will you now or in the future require sponsorship? *</label>
+    <select id="sponsorship" name="sponsorship" required>
+      <option value="">Please select</option>
+      <option>Yes</option><option>No</option>
+    </select>
+
+    <input type="submit" id="submit_app" value="Submit Application">
+  </form>
+  <script>
+    // Greenhouse shows the chosen file's name beside the field; the extension
+    // treats that echo as the uploader's acknowledgement.
+    document.getElementById('resume').addEventListener('change', function (e) {
+      document.getElementById('resume_filename').textContent = e.target.files.length ? e.target.files[0].name : '';
+    });
+  </script>
+</body>
+</html>

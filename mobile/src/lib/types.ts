@@ -147,7 +147,9 @@ export interface VerifyResult {
 
 export interface StatsResponse {
   total_jobs: number;
-  closed_jobs: number;
+  // Closed jobs inside the All Jobs window (the Ghost Jobs badge). The
+  // all-history `closed_jobs` count was dropped from /api/stats (2026-10-09).
+  closed_jobs_recent: number | null;
   total_companies: number;
   applications: Record<string, number>;
   scores: {

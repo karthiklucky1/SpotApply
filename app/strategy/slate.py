@@ -76,7 +76,7 @@ SLATE_REPLACED_MARKER = "slate_replaced"
 class Placement:
     """What happened to one qualifying job."""
     created: bool
-    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | ineligible | unverified_location | duplicate
+    outcome: str            # placed | replaced | overflow | company_cap | below_cutoff | dead | exists | paused | ineligible | unverified_location | duplicate
     displaced_id: Optional[int] = None
     cutoff: Optional[float] = None
     # The eligibility decision this placement was made under, with the rule /
@@ -85,6 +85,12 @@ class Placement:
 
     def __bool__(self) -> bool:            # `if place(...)` reads naturally
         return self.created
+
+
+#: `place()` refused because the owner paused their own search. The score stays
+#: on the job and Resume's matching pass re-offers it (the re-shortlist backstop,
+#: pipeline._reshortlist_scored_jobs), so nothing bought before the Pause is lost.
+OUTCOME_PAUSED = "paused"
 
 
 def _day_start() -> datetime:
@@ -120,14 +126,43 @@ def todays_entries(session, user_id: Optional[str]) -> list[Application]:
                     and SLATE_REPLACED_MARKER in (a.notes or ""))]
 
 
+#: The slate's value of an entry whose verdict is being RE-JUDGED: its job's
+#: ``rerank_score`` was cleared to send it back through the scorer (a new resume,
+#: ``realign.rescore_board_for_new_resume``; a role change,
+#: ``realign.realign_pool_to_roles``) and the new score has not landed. It used
+#: to read as 0, so from the upload until the re-score every challenger beat
+#: the "weakest" entry by the margin and replaced it, and the job came back at
+#: 92 to find its application SKIPPED ("exists", never re-delivered). Unknown is
+#: not weak: above every real 0-100 verdict, so a pending entry is never the
+#: weakest and never the overflow floor (``place()`` reads both through
+#: ``_score_of``). With EVERY comparable entry pending the floor is this value
+#: and nothing overflows; the refused job keeps its score and the re-shortlist
+#: backstop offers it again once the verdicts are back. Finite on purpose: it
+#: can land in a placement event's ``cutoff`` and must stay valid JSON.
+AWAITING_RESCORE_VALUE = 1000.0
+
+
+def _awaiting_rescore(session, app: Application) -> bool:
+    """On the board, but its score was cleared for a re-judge not yet done."""
+    job = session.get(Job, app.job_id)
+    return job is not None and job.rerank_score is None
+
+
 def _score_of(session, app: Application) -> float:
     job = session.get(Job, app.job_id)
-    return float(job.rerank_score) if (job and job.rerank_score is not None) else 0.0
+    if job is None:                       # orphaned entry: nothing to protect
+        return 0.0
+    if job.rerank_score is None:
+        return AWAITING_RESCORE_VALUE
+    return float(job.rerank_score)
 
 
 def _replaceable(session, entries: list[Application]) -> list[Application]:
+    """SHORTLISTED, never opened, and holding a real verdict. An entry awaiting
+    its re-score is not evictable: we do not know yet that it is weaker."""
     return [a for a in entries
-            if a.status == ApplicationStatus.SHORTLISTED and a.viewed_at is None]
+            if a.status == ApplicationStatus.SHORTLISTED and a.viewed_at is None
+            and not _awaiting_rescore(session, a)]
 
 
 def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
@@ -135,6 +170,14 @@ def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
 
     The weakest REPLACEABLE entry when there is one; otherwise the weakest
     entry of any kind, which is what an overflow candidate is measured against.
+
+    None, too, while any of today's entries awaits its re-score. This value is
+    the Tier-1 spend gate (finals_budget.challenger_gate), and the pending
+    entries' own re-judgments pass through that same gate: a cutoff taken from
+    the entries still scored would price the board's re-score out for the rest
+    of the day. Falling back to the shortlist bar is what the gate did before
+    (a pending entry read as 0); what changed is that ``place()`` no longer
+    lets a challenger evict a pending entry or measure overflow against it.
     """
     from app.common.plan_limits import shortlist_daily_limit
     from app.db.init_db import get_session
@@ -142,6 +185,8 @@ def cutoff(user_id: Optional[str], session=None) -> Optional[float]:
     def _compute(s):
         entries = todays_entries(s, user_id)
         if len(entries) < shortlist_daily_limit(user_id):
+            return None
+        if any(_awaiting_rescore(s, a) for a in entries):
             return None
         pool = _replaceable(s, entries) or entries
         if not pool:
@@ -183,6 +228,18 @@ def place(session, job: Job, score: float, *, user_id: Optional[str],
     if session.exec(select(Application.id).where(Application.job_id == job.id)
                     .limit(1)).first() is not None:
         return _record(session, job, score, user_id, Placement(False, "exists"))
+
+    # ── A paused search places nothing ──────────────────────────────────────
+    # Every lane serves a user list read at the start of its pass, minutes
+    # before it writes: the matching lane's Phase 3, the global pass, the hot
+    # lane and the pulse fast path all reached here with scores bought before
+    # a Pause, and only the scoring lane asked again. ONE gate, in the one
+    # writer of a SHORTLISTED row, so no lane can miss it. Same shared reading
+    # the lanes' per-user steps use (compute_policy.paused_now: Pause drops
+    # its cache in this process). Nothing about the job changes here.
+    from app.common.compute_policy import paused_now
+    if paused_now(uid_arg):
+        return _record(session, job, score, user_id, Placement(False, OUTCOME_PAUSED))
 
     # ── Dead postings never reach a board ───────────────────────────────────
     # Cached read only: this runs with `session` open and the codebase never
@@ -358,34 +415,66 @@ def _norm_key(text: str) -> str:
     return _re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
 
+#: sha256 of an empty description: two postings with NO text are not the same
+#: text, so this hash never makes two rows one role.
+_EMPTY_TEXT_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def role_key(company, title) -> Optional[tuple]:
+    """(company, title) normalised, or None when either is blank (blank
+    companies are never grouped: aggregator rows often have none)."""
+    c, t = (company or "").strip().lower(), _norm_key(title)
+    return (c, t) if (c and t) else None
+
+
+def same_role(source_a, location_a, remote_a, hash_a,
+              source_b, location_b, remote_b, hash_b) -> bool:
+    """Two postings with the same company and normalised title: ONE role?
+
+    Another door (an aggregator and the ATS) -> yes. Within ONE source the same
+    title can be two real requisitions (another team, another city), so it
+    takes evidence that it is not:
+      * the same location (a repost);
+      * the same posting TEXT (``content_hash`` = sha256 of the description):
+        one role posted once per city (live test 2026-10-09: Miratech's "Full
+        Stack Java Engineer" as two SmartRecruiters rows, New York and Miami,
+        identical text, both on the board at 72 and 78);
+      * both remote: the city on a remote posting is not where the work is,
+        so it cannot tell two requisitions apart for the person applying.
+    """
+    sa, sb = getattr(source_a, "value", source_a), getattr(source_b, "value", source_b)
+    if sa != sb:
+        return True
+    if _norm_key(location_a) == _norm_key(location_b):
+        return True
+    if hash_a and hash_a == hash_b and hash_a != _EMPTY_TEXT_HASH:
+        return True
+    return bool(remote_a) and bool(remote_b)
+
+
 def _duplicate_on_record(session, job: Job, uid_arg: Optional[str]):
     """(Application, its job's source) for the user's active application to
-    the SAME role (same company, same title after normalisation), else
-    (None, None). Bounded: one indexed read of the
-    user's recent active applications at this company."""
+    the SAME role (same company, same title after normalisation, `same_role`),
+    else (None, None). Bounded: one indexed read of the user's recent active
+    applications at this company."""
     from datetime import timedelta
     from sqlalchemy import func
-    company = (job.company or "").strip()
-    title_key = _norm_key(job.title)
-    if not company or not title_key:
+    key = role_key(job.company, job.title)
+    if key is None:
         return None, None
-    loc_key = _norm_key(job.location)
-    q = (select(Application, Job.title, Job.source, Job.location)
+    company = (job.company or "").strip()
+    q = (select(Application, Job.title, Job.source, Job.location, Job.remote, Job.content_hash)
          .join(Job, Job.id == Application.job_id)
          .where(Application.status.in_(_ACTIVE_STATUSES),
                 Application.created_at >= datetime.utcnow() - timedelta(days=DUPLICATE_LOOKBACK_DAYS),
                 func.lower(Job.company) == company.lower(),
                 Application.job_id != job.id))
     q = q.where(Application.user_id == uid_arg) if uid_arg else q.where(Application.user_id.is_(None))
-    for app_row, title, source, location in session.exec(q.limit(50)).all():
-        if _norm_key(title) != title_key:
+    for app_row, title, source, location, remote, chash in session.exec(q.limit(50)).all():
+        if _norm_key(title) != key[1]:
             continue
-        # The same role arriving through ANOTHER door (an aggregator and the
-        # ATS) is a duplicate. Within ONE source, the same title is often two
-        # real requisitions (another team, another city), so only an identical
-        # location makes it a repost.
-        if getattr(source, "value", source) != getattr(job.source, "value", job.source) \
-                or _norm_key(location) == loc_key:
+        if same_role(source, location, remote, chash,
+                     job.source, job.location, job.remote, job.content_hash):
             return app_row, source
     return None, None
 

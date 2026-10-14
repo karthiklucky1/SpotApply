@@ -131,61 +131,17 @@ if _os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
-# ── Supabase session-refresh middleware ─────────────────────────────────────
-# When SUPABASE_URL is configured, every response gets a refreshed access
-# token in the X-Supabase-Token header so the frontend can keep the session
-# alive without the user having to re-login every hour.
+# ── Middleware imports ────────────────────────────────────────────────────────
+# (The Supabase session-refresh middleware that used to live here was removed on
+# 2026-10-10: it passed the ACCESS token to auth.refresh_session, which takes the
+# REFRESH token, so every call failed — and no client ever read the
+# X-Supabase-Token header it tried to set. The browser's supabase-js refreshes
+# the session itself. It cost one failing Auth round-trip per token.)
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
-_REFRESH_ATTEMPTED: dict = {}          # token -> monotonic ts of last refresh try
-_REFRESH_THROTTLE_SECONDS = 600        # at most one Auth API call per token / 10 min
-_REFRESH_MAP_MAX = 5000                # bound memory; evict oldest half when hit
-
-
-class SupabaseSessionMiddleware(BaseHTTPMiddleware):
-    """Rolls the Supabase session token forward.
-
-    Throttled + off-loop: this used to call the SYNC gotrue refresh endpoint on
-    the event loop after EVERY authenticated response — one blocking ~100-500ms
-    Auth round-trip per request serialized the whole app (the single hottest
-    scalability bug found in the production review). Tokens live ~1h, so one
-    refresh attempt per token per 10 minutes is plenty, and the call now runs
-    in the threadpool so the loop keeps serving other users."""
-    async def dispatch(self, request: StarletteRequest, call_next):
-        response = await call_next(request)
-        from app.config import settings
-        if not settings.use_supabase:
-            return response
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return response
-        token = auth_header.split(" ", 1)[1]
-        import time as _t
-        now = _t.monotonic()
-        last = _REFRESH_ATTEMPTED.get(token)
-        if last is not None and now - last < _REFRESH_THROTTLE_SECONDS:
-            return response
-        if len(_REFRESH_ATTEMPTED) > _REFRESH_MAP_MAX:
-            for k in list(_REFRESH_ATTEMPTED)[: _REFRESH_MAP_MAX // 2]:
-                _REFRESH_ATTEMPTED.pop(k, None)
-        _REFRESH_ATTEMPTED[token] = now
-        try:
-            import anyio
-
-            def _refresh():
-                from app.db.supabase_client import anon_client
-                sb = anon_client()
-                return sb.auth.refresh_session(token)
-
-            result = await anyio.to_thread.run_sync(_refresh)
-            if result and result.session:
-                response.headers["X-Supabase-Token"] = result.session.access_token
-        except Exception:
-            pass
-        return response
 
 class CanonicalHostMiddleware(BaseHTTPMiddleware):
     """301 apex/www traffic to the canonical host, preserving path + query.
@@ -206,6 +162,33 @@ class CanonicalHostMiddleware(BaseHTTPMiddleware):
             return RedirectResponse(url, status_code=301)
         return await call_next(request)
 
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _public_base_url(request) -> str:
+    """Scheme + host for every ABSOLUTE link we hand out, no trailing slash.
+
+    Behind Railway's TLS-terminating proxy ``request.base_url`` reports
+    ``http://`` (uvicorn trusts forwarded headers only from 127.0.0.1), so the
+    referral link and the public profile link went out as http:// (live test
+    2026-10-09). ``PUBLIC_BASE_URL`` wins when set; otherwise the request's own
+    host, upgraded to https:// when X-Forwarded-Proto says so or whenever the
+    host is not a local one. Local dev keeps http://127.0.0.1:8000.
+    """
+    configured = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    base = str(request.base_url).rstrip("/")
+    if not base.startswith("http://"):
+        return base
+    fwd = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    from urllib.parse import urlparse as _up
+    host = (_up(base).hostname or "").lower()
+    if fwd == "https" or host not in _LOCAL_HOSTS:
+        return "https://" + base[len("http://"):]
+    return base
+
 from fastapi.middleware.cors import CORSMiddleware
 
 # CORS Configuration
@@ -218,7 +201,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(SupabaseSessionMiddleware)
 app.add_middleware(CanonicalHostMiddleware)
 
 
@@ -296,15 +278,29 @@ class JourneyMiddleware(BaseHTTPMiddleware):
                     if uid:
                         outcome = (request.query_params.get("outcome") or "").lower() or None \
                             if name == "outcome_recorded" else None
-                        import anyio
-                        await anyio.to_thread.run_sync(
-                            lambda: record(uid if uid != "local" else None, name, outcome=outcome))
+                        # Fire-and-forget on the default (persistent) executor: the
+                        # response does not wait for the metric's DB write. It used
+                        # to — one more cross-region round-trip on every status click.
+                        import asyncio as _aio
+
+                        def _write(_uid=uid, _name=name, _outcome=outcome):
+                            try:
+                                record(_uid if _uid != "local" else None, _name, outcome=_outcome)
+                            except Exception as _e:
+                                log.debug("journey record failed: %s", _e)
+                        _aio.get_running_loop().run_in_executor(None, _write)
         except Exception as e:                    # a metric never fails a request
             log.debug("journey middleware: %s", e)
         return response
 
 
 app.add_middleware(JourneyMiddleware)
+
+# Compress every response over 2 KB. The dashboard HTML is 1-3 MB of mostly
+# repeated markup and is `no-store` (PrivateCacheMiddleware), so every load paid
+# the full transfer uncompressed. Added LAST = outermost, so it wraps everything.
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 
 # ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -337,9 +333,11 @@ def _get_user_id(request: Request) -> str | None:
             kind = _activity_kind(request)
             if kind is not None:
                 if kind == "meaningful":
-                    # An action can move the counts /api/stats caches.
+                    # An action can move the counts /api/stats caches, and a
+                    # skip/apply is exactly what the preference profile learns from.
                     from app.common import ttl_cache as _tc
                     _tc.invalidate(f"stats:{uid}")
+                    _tc.invalidate(f"pref:{uid if uid != 'local' else 'local'}")
                 _touch_last_active(uid, meaningful=(kind == "meaningful"),
                                    welcome=_may_welcome(request))
             return uid
@@ -362,6 +360,21 @@ _MEANINGFUL_GET_PREFIXES = ("/dashboard", "/api/fill-pack/")
 _MEANINGFUL_GET_SUFFIXES = ("/download-resume", "/details",
                             "/review", "/answer-pack")
 
+#: Writes a client makes ON ITS OWN — while a page loads, on a timer — rather
+#: than because a person did something. A write is meaningful by default, so a
+#: new automatic one silently re-opens the finding-7 hole: until 2026-10-08 the
+#: dashboard's load fired POST /api/verify/identity, every page view renewed
+#: the paid-AI window, and a return past the idle window started the first-hour
+#: refresh on a page view alone. Each entry says what fires it. Swept then:
+#: every other write in dashboard.html, extension/*.js and mobile/src is a
+#: click, a submit, or opening a job (guard: tests/test_dormancy.py).
+_PASSIVE_WRITE_PATHS = frozenset({
+    # dashboard.html loadTrustProfile(), once per page session on load: copies
+    # the email/phone-confirmed flags from the sign-in token and recomputes the
+    # trust score. Bookkeeping about the account, not a person using it.
+    "/api/verify/identity",
+})
+
 
 def _activity_kind(request) -> str | None:
     """'meaningful' | 'seen' | None for one authenticated request.
@@ -371,7 +384,8 @@ def _activity_kind(request) -> str | None:
     'seen' (navigating to the dashboard) only records that the person looked:
     it updates `last_active_at`, never the compute window — a page left open
     or reloaded is not someone asking for paid work. Everything else — polls,
-    notification fetches, token refreshes, every other GET — is None.
+    notification fetches, token refreshes, every other GET, and the writes a
+    page makes on its own (`_PASSIVE_WRITE_PATHS`) — is None.
     """
     try:
         method = (request.method or "GET").upper()
@@ -379,6 +393,8 @@ def _activity_kind(request) -> str | None:
     except Exception:
         return None
     if method in ("POST", "PUT", "PATCH", "DELETE"):
+        if path.rstrip("/") in _PASSIVE_WRITE_PATHS:
+            return None
         return "meaningful"
     if method != "GET":
         return None
@@ -413,10 +429,16 @@ _LAST_ACTIVE_STAMP_SECONDS = 900
 def _may_welcome(request) -> bool:
     """A return may start the first-hour refresh — except on the way OUT: a
     DELETE (or anything under /api/account) must never start a background
-    adoption that could write rows for an account being purged."""
+    adoption that could write rows for an account being purged. Nor the
+    search controls themselves: the stamp runs BEFORE the route body, so on
+    "Pause my search" the profile still reads as unpaused and the click that
+    asked us to stop would open a boost that adopts and scores (2026-10-08).
+    Resume restarts the search itself, AFTER clearing the pause (`resume_search`)."""
     try:
+        path = request.url.path or ""
         return (request.method or "").upper() != "DELETE" and \
-            not (request.url.path or "").startswith("/api/account")
+            not path.startswith("/api/account") and \
+            not path.startswith("/api/search/")
     except Exception:
         return False
 
@@ -438,23 +460,27 @@ def _touch_last_active(uid: str, meaningful: bool = False, welcome: bool = False
             prof = session.exec(
                 select(UserProfile).where(UserProfile.user_id == uid)
             ).first()
-            returning = False
+            welcome_now = False
             if prof:
                 prof.last_active_at = _now_dt.utcnow()
                 if meaningful:
+                    from app.common.compute_policy import is_paused
                     from app.strategy.welcome import returning_after_idle
                     # Only someone who already HAS roles can be welcomed back
                     # with jobs; a role-less account starts at resume upload.
-                    returning = welcome and bool((prof.target_roles or "").strip()) and \
-                        returning_after_idle(prof.last_meaningful_activity_at,
-                                             prof.last_active_at)
+                    # A paused search is not welcomed back by a click: only
+                    # "Resume search" starts work for them again.
+                    welcome_now = (welcome and not is_paused(prof)
+                                   and bool((prof.target_roles or "").strip())
+                                   and returning_after_idle(prof.last_meaningful_activity_at,
+                                                            prof.last_active_at))
                     prof.last_meaningful_activity_at = prof.last_active_at
                 session.add(prof)
                 session.commit()
         if meaningful:
             from app.common.compute_policy import forget
             forget(uid)
-            if returning:
+            if welcome_now:
                 from app.strategy.welcome import welcome_back
                 welcome_back(uid)
             from app.analytics.journey import record as _journey
@@ -578,6 +604,14 @@ def _notify_if_newly_dormant(profile) -> bool:
     """
     uid = getattr(profile, "user_id", None)
     if not uid or uid == "local":
+        return False
+    # Never for a search the user paused THEMSELVES: they just pressed the
+    # button and the board already says so. This notice is the idle/dormant
+    # one ("while you're away", "or open any job"), and both halves are false
+    # for an explicit pause, which only Resume clears. Live test 2026-10-09:
+    # the bell went 7 -> 8, 45 s after the Pause click.
+    from app.common.compute_policy import is_paused
+    if is_paused(profile):
         return False
     la = getattr(profile, "last_meaningful_activity_at", None)
     notified = getattr(profile, "dormancy_notified_at", None)
@@ -1332,8 +1366,14 @@ def _run_matching_lane(uids) -> None:
         deadline = _t.monotonic() + max(60.0, settings.matching_lane_interval_minutes * 60 * 0.8)
         log.info("Matching lane: scoring %d user(s)", len(uids))
         total = 0
+        from app.common.compute_policy import paused_now
         for uid in uids:
             _uid = uid if uid != "local" else None
+            # `uids` was read before this tick waited for the lock and served
+            # the users ahead: a pause since then stops adoption, matching and
+            # alerts for this user (compute_policy.paused_user_ids).
+            if paused_now(_uid):
+                continue
             _t0 = _t.monotonic()
             user_short = 0
             passes = 0
@@ -1395,12 +1435,17 @@ def _adopt_match_alert(user_ids) -> None:
     """Per-user tail of a global scrape: adopt matching shared-pool jobs
     (cheap DB copy), score them, dispatch fresh alerts. Caller holds the
     discovery lock (matching loads the model + job pool)."""
+    from app.common.compute_policy import paused_now
     from app.strategy.adoption import adopt_shared_jobs
     from app.strategy.fresh_alerts import dispatch_fresh_alerts
     import time as _t
     log.info("adopt/match: starting for %d user(s)", len(user_ids))
     for uid in user_ids:
         _uid = uid if uid != "local" else None
+        # The list predates the scrape (minutes, sometimes far longer) and the
+        # wait for the lock: a user who paused since gets nothing from it.
+        if paused_now(_uid):
+            continue
         _t0 = _t.monotonic()
         try:
             adopt_shared_jobs(_uid)
@@ -1535,6 +1580,11 @@ def _cleantext_filter(value):
 
 templates.env.filters["fromjson"] = _fromjson_filter
 templates.env.filters["cleantext"] = _cleantext_filter
+
+# A card's location: "" for blank and placeholder values ("na", "n/a", "none",
+# "null", "-", "tbd"), so no card reads "na · On-site" (app/common/geo.py).
+from app.common.geo import clean_location as _card_location  # noqa: E402
+templates.env.filters["cardloc"] = _card_location
 
 
 def _humanize_signal_filter(value):
@@ -1957,6 +2007,73 @@ def _urgency_of(job):
 templates.env.globals["urgency_of"] = _urgency_of
 
 
+def _earliness_of(app_row, job):
+    """Jinja global: the earliness receipt chip for a submitted application
+    ("Applied 3h 12m after posting"), or None (app/strategy/earliness.py)."""
+    try:
+        from app.strategy import earliness
+        return earliness.receipt(app_row, job)
+    except Exception:
+        return None
+
+
+def _early_window_of(job):
+    """Jinja global: is this posting still inside its early window (default 48h
+    from the ONE reference clock), and how many hours are left."""
+    try:
+        from app.strategy import earliness
+        return earliness.early_window(job)
+    except Exception:
+        return None
+
+
+templates.env.globals["earliness_of"] = _earliness_of
+templates.env.globals["early_window_of"] = _early_window_of
+
+
+def _early_stats_for(uid) -> dict | None:
+    """The dashboard render's copy of _early_stats: its own short session, so a
+    slow count can never hold the page's main session."""
+    if settings.use_supabase and not uid:
+        return None
+    owner = uid if uid != "local" else None
+    try:
+        with get_session() as session:
+            reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+            return _early_stats(session, owner, reads)
+    except Exception as e:
+        log.debug("early stats unavailable: %s", e)
+        return None
+
+
+def _early_stats(session, owner, reads=None) -> dict:
+    """'Early (inside 48h) on K of N applications this month' for the Submitted
+    pane: N = measured receipts (not email imports) in the last 30 days, K = those
+    inside the window. Bounded like every other board count; None = unknown."""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.strategy import earliness
+    window_min = earliness.window_hours() * 60
+    since = _dt.utcnow() - _td(days=30)
+    base = select(func.count(Application.id)).where(
+        Application.applied_after_min.is_not(None),
+        Application.apply_track != "email_import",
+        Application.submitted_at >= since,
+    )
+    if owner:
+        base = base.where(Application.user_id == owner)
+    early_q = base.where(Application.applied_after_min <= window_min)
+
+    def _count(q):
+        fn = lambda: int(_scalar(session.exec(q).first() or 0))  # noqa: E731
+        return reads.get(None, fn) if reads is not None else fn()
+
+    measured = _count(base)
+    early = _count(early_q) if measured else 0
+    return {"measured": measured, "early": early, "window_hours": earliness.window_hours()}
+# The ONE link to the extension's Chrome Web Store listing, for every page.
+templates.env.globals["chrome_web_store_url"] = settings.chrome_web_store_url
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 _ASSET_CACHE = "public, max-age=86400"
@@ -2259,8 +2376,30 @@ def _clean_seeded_role(raw: str) -> str:
 _MAX_LINKEDIN_PDF_BYTES = 10 * 1024 * 1024
 
 
+def _stamp_resume_upload(uid: str, sha: str) -> bool:
+    """Record the master resume now on file. True when it CHANGED (a new hash,
+    or the first one we have recorded). One short session; creates the profile
+    row only when there is none yet, as the profile extraction would."""
+    from app.db.models import UserProfile
+    from datetime import datetime as _dt
+    uid_arg = uid if (uid and uid != "local") else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == uid_arg) if uid_arg
+            else UserProfile.user_id.is_(None))).first()
+        if prof is None:
+            prof = UserProfile(user_id=uid_arg)
+        elif (prof.resume_sha256 or "") == sha:
+            return False                       # the same file again
+        prof.resume_sha256 = sha
+        prof.resume_uploaded_at = _dt.utcnow()
+        session.add(prof)
+        session.commit()
+    return True
+
+
 @app.post("/api/resume/upload")
-async def upload_resume(request: Request):
+async def upload_resume(request: Request, background_tasks: BackgroundTasks):
     """Upload resume file. Stores in Supabase Storage (production) or local disk (dev)."""
     uid = _require_user(request)
     form = await request.form()
@@ -2307,6 +2446,15 @@ async def upload_resume(request: Request):
                 path = f"{uid}/resume.{ext}"
                 sb.storage.from_("resume").upload(path, content, {"upsert": "true", "content-type": content_type})
                 public_url = sb.storage.from_("resume").get_public_url(path)
+                # ONE master résumé per user. An older upload under another
+                # extension (or the onboarding stub, resume.md) would otherwise
+                # stay in the folder and could be read instead of this file.
+                try:
+                    from app.matching.pipeline import RESUME_EXTENSIONS
+                    stale = [f"{uid}/resume.{e}" for e in RESUME_EXTENSIONS if e != ext]
+                    sb.storage.from_("resume").remove(stale)
+                except Exception as _rm:
+                    log.debug("stale resume objects not removed for %s: %s", uid, _rm)
                 return {"success": True, "url": public_url, "path": path}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Storage upload failed: {e}")
@@ -2327,6 +2475,19 @@ async def upload_resume(request: Request):
         invalidate_resume_cache(uid)
     except Exception:
         pass
+    # Record WHICH resume is on file. When the file actually changed, the fit
+    # reports on the board were written against the old one (live test: a
+    # report citing experience the current resume no longer has), so the
+    # recent shortlisted jobs are re-judged, bounded like a role realign.
+    try:
+        import hashlib as _hashlib
+        _sha = _hashlib.sha256(content).hexdigest()
+        if await anyio.to_thread.run_sync(_stamp_resume_upload, uid, _sha):
+            from app.strategy.realign import rescore_board_for_new_resume
+            background_tasks.add_task(rescore_board_for_new_resume,
+                                      uid if uid != "local" else None)
+    except Exception as _stamp_err:
+        log.warning("resume upload stamp skipped for %s: %s", uid, _stamp_err)
     # A résumé plus target roles is a scorable profile — record the
     # onboarding-complete moment (once) so new-user latency is measurable.
     await anyio.to_thread.run_sync(_record_profile_completed_once, uid)
@@ -2939,8 +3100,8 @@ def view_resume(request: Request) -> dict:
         try:
             from app.db.supabase_client import service_client
             sb = service_client()
-            files = sb.storage.from_("resume").list(uid)
-            names = [f.get("name", "") for f in (files or []) if f.get("name", "").startswith("resume.")]
+            from app.matching.pipeline import list_resume_objects
+            names = list_resume_objects(sb, uid) or []     # newest first
             if names:
                 signed = sb.storage.from_("resume").create_signed_url(f"{uid}/{names[0]}", 3600)
                 url = (signed or {}).get("signedURL") or (signed or {}).get("signedUrl")
@@ -3017,6 +3178,13 @@ def synthesize_resume(request: Request) -> dict:
         f"## Experience\n{profile.current_title or ''}\n"
     )
     from app.config import settings
+    # The stub exists to unblock matching for a profile WITHOUT a résumé. The
+    # onboarding form calls this on every save, so with a résumé already on
+    # file it wrote resume.md beside the user's PDF — and the fixed md-first
+    # read order then scored and tailored from a four-line stub.
+    if _user_has_resume(uid):
+        return {"success": True, "skipped": True,
+                "reason": "A resume is already on file; it was kept."}
     if settings.use_supabase and uid != "local":
         try:
             from app.db.supabase_client import service_client
@@ -3053,11 +3221,16 @@ def clear_jobs(request: Request) -> dict:
     deleted_apps = 0
     deleted_jobs = 0
     with get_session() as session:
+        from sqlmodel import delete as _sql_delete
+        from app.db.models import OutreachMessage
         aq = select(Application)
         jq = select(Job)
+        oq = _sql_delete(OutreachMessage)
         if _scoped:
             aq = aq.where(Application.user_id == uid)
             jq = jq.where(Job.user_id == uid)
+            oq = oq.where(OutreachMessage.user_id == uid)
+        session.exec(oq)        # Postgres cascades from application; SQLite does not
         for a in session.exec(aq).all():
             session.delete(a)
             deleted_apps += 1
@@ -3124,41 +3297,73 @@ def submit_job(payload: JobSubmitPayload, request: Request, bg: BackgroundTasks)
 
 
 @app.post("/api/jobs/{job_id}/verify")
-async def verify_job(job_id: int, request: Request) -> dict:
+def verify_job(job_id: int, request: Request) -> dict:
+    """Is the posting a user just opened still open? (dashboard: on opening a
+    job; mobile: "Check it's still open"). Returns ``active``, and when not,
+    ``closed_reason`` and ``removed`` — whether the user's application left
+    the board (the dashboard greys a card out only then).
+
+    The SAME evidence rules as delivery and the "no longer available" report
+    (app/strategy/delivery_gate.py), where this used to run its own HEAD check
+    inside an open DB session, never shared what it learned, and moved any
+    application short of SUBMITTED to Removed — TAILORED work and INTERVIEWING
+    candidates included:
+    - an ATS permalink (`_VERIFIABLE_SOURCES`): `verify_for_delivery(force=True)`
+      — GET + body, single-flighted, at most one fetch per posting per
+      LIVENESS_REPORT_MIN_RECHECK_MINUTES however many people open it, the
+      verdict shared; REMOVED/EXPIRED closes every copy (`close_dead_everywhere`).
+      A Greenhouse redirect to the board's own index is REMOVED, and a posting
+      the page cannot speak for (an employer-site `gh_jid` page, a redirect it
+      could not place) is asked of the ATS's own API (`delivery_gate._check`;
+      live test 2026-10-09: closed Hasbro and Accela postings read "open");
+    - any other link (aggregator, user-submitted): a 404/410 or a redirect to a
+      careers index closes THIS user's copy only (`close_own_copy`).
+    429/403/timeouts close nothing. No session is open during the fetch.
+    """
     uid = _require_user(request)  # 401 if unauthenticated — an absent uid must
     #                              not be able to bypass the ownership check below
+    from app.discovery.liveness import is_dead
+    from app.strategy import delivery_gate as _dg
     with get_session() as session:
-        job = session.get(Job, job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-        if uid != "local" and job.user_id != uid:
-            raise HTTPException(status_code=404, detail="Job not found")
-        
-        import asyncio as _aio
-        from app.discovery.verify import check_job_alive
-        alive, reason = await _aio.to_thread(check_job_alive, job.url)
-        is_dead = not alive
+        row = session.exec(select(Job.user_id, Job.source, Job.external_id, Job.url,
+                                  Job.is_closed, Job.closed_reason)
+                           .where(Job.id == job_id)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_user_id, source, external_id, url, closed, closed_reason = row
+    if uid != "local" and job_user_id != uid:
+        raise HTTPException(status_code=404, detail="Job not found")
 
+    def _closed_answer() -> dict:
+        with get_session() as session:
+            reason = session.exec(select(Job.closed_reason).where(Job.id == job_id)).first()
+            status = session.exec(select(Application.status)
+                                  .where(Application.job_id == job_id)).first()
+        return {"active": False, "closed_reason": reason or "Closed",
+                "removed": status is not None and _enum_val(status) == ApplicationStatus.SKIPPED.value}
 
-        if is_dead:
-            job.is_closed = True
-            job.closed_reason = f"Deactivated ({reason})"
-            session.add(job)
-            session.commit()
-            
-            # Deactivate any open application for this job
-            app_model = session.exec(
-                select(Application).where(Application.job_id == job.id)
-            ).first()
-            if app_model and app_model.status not in [ApplicationStatus.SUBMITTED, ApplicationStatus.REJECTED, ApplicationStatus.SKIPPED]:
-                app_model.status = ApplicationStatus.SKIPPED
-                app_model.notes = (app_model.notes or "") + f"\nJob marked closed during click verification: {reason}"
-                session.add(app_model)
-                session.commit()
-                
-            return {"active": False, "closed_reason": job.closed_reason}
-            
+    if closed:
+        return _closed_answer()        # already known — nothing to fetch
+    src = _enum_val(source)
+    if src in _dg._VERIFIABLE_SOURCES and url:
+        from app.discovery.job_identity import looks_unscoped
+        # A bare Workday/BambooHR/Teamtailor id is shared by other employers'
+        # postings: check THIS url, trust no verdict filed under that id.
+        if looks_unscoped(src, external_id):
+            state = _dg.check_url_now(url)
+        else:
+            state, _how = _dg.verify_for_delivery(source, external_id, url, force=True)
+        if not is_dead(state):
+            return {"active": True}
+        _dg.close_dead_everywhere(source, external_id, state,
+                                  found_by="when a user opened it", checked_url=url)
+        return _closed_answer()
+    from app.discovery.verify import check_job_alive
+    alive, why = check_job_alive(url)
+    if alive:
         return {"active": True}
+    _dg.close_own_copy(job_id, why or "link no longer works")
+    return _closed_answer()
 
 
 @app.get("/health")
@@ -3291,7 +3496,7 @@ def shortlist(request: Request):
             "id": j.id,
             "company": j.company,
             "title": j.title,
-            "location": j.location,
+            "location": _card_location(j.location),
             "url": j.url,
             "similarity": j.similarity_score,
             "rerank": j.rerank_score,
@@ -3379,30 +3584,37 @@ def _compute_stats(uid) -> dict:
                 q = q.where(Job.is_closed == False)  # noqa: E712
             return q
 
-        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed. This is
-        # the Pool stat card and `funnel.total_pool`, and the onboarding banner
-        # reads `total_jobs == 0` as "this user has nothing yet". The tab badges
-        # are a different question and get their own windowed counts.
+        # Total OPEN jobs — the WHOLE open pool, deliberately unwindowed:
+        # `funnel.total_pool`, and the onboarding banner reads
+        # `total_jobs == 0` as "this user has nothing yet". NOT the Pool tile:
+        # that is "jobs found" (freshness.found_jobs_expr, /api/pipeline/live),
+        # and writing this number into it made the tile jump 473 / 3.8k.
         total_jobs = _n(_mine(select(func.count(Job.id))))
-        closed_jobs = _n(_mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                               open_only=False))
 
         # Closed jobs INSIDE the explorer's window — fills the Ghost Jobs tab
         # badge at page load; built from the setting the tab's query defaults
-        # to, or the badge changes value the moment the tab opens.
+        # to, or the badge changes value the moment the tab opens. Built here,
+        # COUNTED LAST (below): a slow closed-history count must never cost
+        # the open-pool numbers the Insights panel shows.
+        #
+        # There is no all-history closed count any more (2026-10-09). Nothing
+        # displayed it, yet it was the second statement of every load: 73k
+        # closed rows on one account took ~5 s, and the windowed count after
+        # it (coalesce form, 11 s) hit the statement timeout — which marked
+        # the read degraded and skipped EVERY count below, so Insights said
+        # "No jobs yet" to a user with 473 jobs and the Ghost badge fell back
+        # to 73,171 before reading 3 once the tab opened.
         from app.common.freshness import is_fresh_expr as _fresh_expr
         _explorer_age = int(getattr(settings, "explorer_max_age_days", 0) or 0)
         _recent_filter = _fresh_expr(
             _explorer_age,
             int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
-            for_render=True,
+            for_render=True, index_friendly=True,
         ) if _explorer_age > 0 else None
+        _closed_q = _mine(select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
+                          open_only=False)
         if _recent_filter is not None:
-            closed_jobs_recent = _n(_mine(
-                select(func.count(Job.id)).where(Job.is_closed == True),  # noqa: E712
-                open_only=False).where(_recent_filter))
-        else:
-            closed_jobs_recent = closed_jobs
+            _closed_q = _closed_q.where(_recent_filter)
 
         # Everything below describes the CURRENT (open) pool. It counted every
         # row the account ever held — closed history included — which is what
@@ -3486,6 +3698,8 @@ def _compute_stats(uid) -> dict:
             total_validated_jobs = _n(select(func.coalesce(func.sum(CompanyRegistry.job_count), 0)))
         except Exception as re_:
             log.warning("stats: registry counts unavailable: %s", re_)
+        # Last: the one count that reads CLOSED (history) rows.
+        closed_jobs_recent = _n(_closed_q)
         degraded = reads.degraded
 
     def _minus(a, b):
@@ -3493,7 +3707,6 @@ def _compute_stats(uid) -> dict:
 
     return {
         "total_jobs": total_jobs,
-        "closed_jobs": closed_jobs,
         "closed_jobs_recent": closed_jobs_recent,
         "total_companies": total_companies,
         "funnel": {
@@ -3759,7 +3972,7 @@ def api_jobs(
             int(getattr(settings, "explorer_max_age_days", 0) or 0)
             if max_age_days is None else int(max_age_days)
         )
-        _age_filter = None
+        _age_filter = _age_count_filter = None
         if _effective_age > 0:
             from app.common.freshness import is_fresh_expr as _fresh_expr
             _age_filter = _fresh_expr(
@@ -3769,6 +3982,15 @@ def api_jobs(
             )
             if _age_filter is not None:
                 query = query.where(_age_filter)
+            # The SAME window for the two COUNTs, spelled so the first_seen
+            # index serves it (freshness.is_fresh_expr, index_friendly): the
+            # Ghost tab's count took 11 s on a 73k-closed-row account. The
+            # page query keeps the form its ordered index scan needs.
+            _age_count_filter = _fresh_expr(
+                _effective_age,
+                int(getattr(settings, "shortlist_max_posted_age_days", 0) or 0),
+                for_render=True, index_friendly=True,
+            )
 
         # Get total count (for pagination)
         count_query = select(func.count(Job.id)).where(Job.is_closed == is_closed_filter)
@@ -3804,8 +4026,8 @@ def api_jobs(
             )
         if _roles_cond is not None:
             count_query = count_query.where(_roles_cond)
-        if _age_filter is not None:
-            count_query = count_query.where(_age_filter)
+        if _age_count_filter is not None:
+            count_query = count_query.where(_age_count_filter)
         # Built here, EXECUTED after the page query below — see the note there.
 
         # Open-pool size INSIDE the caller's age window — the "All Jobs" tab
@@ -3825,8 +4047,8 @@ def api_jobs(
         open_q = select(func.count(Job.id)).where(Job.is_closed == False)  # noqa: E712
         if _uid_filter:
             open_q = open_q.where(Job.user_id == uid)
-        if _age_filter is not None:
-            open_q = open_q.where(_age_filter)
+        if _age_count_filter is not None:
+            open_q = open_q.where(_age_count_filter)
 
         # Apply pagination and sorting. "fresh" = newest posted first (the answer
         # to "where are the fresh jobs" — surfaces the just-posted roles that the
@@ -3928,7 +4150,7 @@ def api_jobs(
                 "source": jsource.value if jsource else "manual",
                 "company": jcompany,
                 "title": jtitle,
-                "location": jlocation,
+                "location": _card_location(jlocation),
                 "remote": jremote,
                 "url": jurl,
                 "posted": _posted.isoformat() if _posted else None,
@@ -3977,6 +4199,12 @@ def api_jobs(
             "jobs": jobs_list,
             "total": total,
             "total_open": total_open,
+            # True when total_open was counted over the All Jobs window
+            # (freshness.found_jobs_expr) — the number the Pool tile and the
+            # All Jobs badge show. A "New today" or all-time view is a
+            # different number and must not overwrite them.
+            "found_window": _effective_age == int(
+                getattr(settings, "explorer_max_age_days", 0) or 0),
             "page": page,
             "pages": pages,
             "limit": limit,
@@ -4017,6 +4245,10 @@ def _dashboard_load_options():
             Application.tailored_at,
             # Submitted cards swap the 👻 button for a "Marked ghosted" label.
             Application.response_type,
+            # The earliness receipt chip ("Applied 3h 12m after posting"): off
+            # this list the two columns defer, the lazy load runs after the
+            # session closed, and the chip silently vanishes.
+            Application.applied_after_min, Application.applied_ref,
         ),
         Load(Job).load_only(
             Job.company, Job.title, Job.location, Job.remote, Job.url, Job.source,
@@ -4029,6 +4261,9 @@ def _dashboard_load_options():
             Job.salary_text, Job.sponsorship_json, Job.is_cap_exempt,
             Job.rerank_score, Job.blended_score, Job.hire_probability_score,
             Job.ghost_score, Job.ghost_flags, Job.is_closed,
+            # 64 chars: what tells one role posted per city from two roles
+            # (slate.same_role), read by the board's same-role collapse.
+            Job.content_hash,
         ),
     )
 
@@ -4097,6 +4332,101 @@ class _BoundedReads:
             return default
 
 
+_BOARD_PANE_STAGES = ("submitted", "interviewing", "rejected", "skipped")
+_BOARD_PANE_LIMIT = 20          # rejected / skipped / default submitted page
+
+
+def _board_visible_clause():
+    """Aggregator-redirect ghosts never render on any pane."""
+    return Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
+
+
+def _board_stage_query(stage: str, owner: str | None, all_submitted: bool = False):
+    """The rows one secondary board pane lists. ONE definition, read by the
+    /dashboard render AND /api/board/pane: a card moved in place after a status
+    click must be drawn from the same rows a reload would show."""
+    q = select(Application, Job).join(Job).options(
+        *_dashboard_load_options()).where(_board_visible_clause())
+    if stage == "submitted":
+        q = q.where(Application.status == ApplicationStatus.SUBMITTED
+                    ).order_by(Application.submitted_at.desc())
+        if not all_submitted:
+            q = q.limit(_BOARD_PANE_LIMIT)
+    elif stage == "interviewing":     # uncapped: active interviews are few
+        q = q.where(Application.status.in_([
+            ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED,
+        ])).order_by(Application.updated_at.desc())
+    elif stage == "rejected":
+        q = q.where(Application.status == ApplicationStatus.REJECTED
+                    ).order_by(Application.updated_at.desc()).limit(_BOARD_PANE_LIMIT)
+    elif stage == "skipped":
+        q = q.where(Application.status == ApplicationStatus.SKIPPED
+                    ).order_by(Application.updated_at.desc()).limit(_BOARD_PANE_LIMIT)
+    else:
+        raise ValueError(f"unknown board stage {stage!r}")
+    if owner:
+        q = q.where(Application.user_id == owner)
+    return q
+
+
+def _board_submitted_count_query(owner: str | None):
+    q = select(func.count(Application.id)).join(Job).where(
+        Application.status == ApplicationStatus.SUBMITTED).where(_board_visible_clause())
+    if owner:
+        q = q.where(Application.user_id == owner)
+    return q
+
+
+def _board_visa_framing(owner: str | None):
+    """The work-authorization framing the card macros read (visa-fit panel)."""
+    try:
+        from app.intelligence.work_auth import assess_profile
+        from app.autofill.answer_pack import _get_or_create_profile
+        return assess_profile(_get_or_create_profile(user_id=owner))
+    except Exception as _e:
+        log.debug("visa framing unavailable: %s", _e)
+        return None
+
+
+@app.get("/api/board/pane")
+def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dict:
+    """ONE board pane, re-rendered — what a status click fetches instead of
+    reloading the page (2026-10-10). Every Mark Applied / Interview / Rejected /
+    Remove / No longer available used to end in `location.reload()`: a full
+    /dashboard render (p50 11-18 s that week) plus ~20 follow-up requests, for a
+    one-row change. The card now leaves its pane in the browser and the
+    DESTINATION pane is fetched from here when it is next looked at, drawn by
+    the same template include the full render uses (`_board_pane.html`)."""
+    uid = _require_user(request)
+    if stage not in _BOARD_PANE_STAGES:
+        raise HTTPException(status_code=400, detail=f"Unknown pane: {stage}")
+    owner = uid if uid != "local" else None
+    total_submitted = 0
+    with get_session() as session:
+        reads = _BoundedReads(session, settings.dashboard_query_timeout_seconds)
+        rows = reads.get([], lambda: list(session.exec(
+            _board_stage_query(stage, owner, all_submitted)).all()))
+        early_stats = None
+        if stage == "submitted":
+            total_submitted = reads.get(
+                len(rows), lambda: _scalar(session.exec(_board_submitted_count_query(owner)).first() or 0))
+            early_stats = _early_stats(session, owner, reads)
+        degraded = reads.degraded
+    from datetime import datetime as _dt
+    if stage == "submitted":
+        rows.sort(key=lambda x: x[0].submitted_at or x[0].updated_at or _dt.min, reverse=True)
+    else:
+        rows.sort(key=lambda x: x[0].updated_at or _dt.min, reverse=True)
+    html = templates.get_template("_board_pane.html").render(
+        request=request, stage=stage, rows=rows, visa_framing=_board_visa_framing(owner),
+        total_submitted_count=total_submitted, all_submitted=all_submitted,
+        one_click_submit=_one_click_setting(owner), early_stats=early_stats,
+    )
+    return {"stage": stage, "html": html, "count": len(rows),
+            "total": total_submitted if stage == "submitted" else len(rows),
+            "degraded": degraded}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, all_submitted: bool = False):
     """Kanban board UI for tracking application progress."""
@@ -4117,6 +4447,8 @@ def dashboard(request: Request, all_submitted: bool = False):
     manual_queue = []
     total_submitted_count = 0
     total_shortlisted_count = 0
+    total_rejected_count = 0
+    total_skipped_count = 0
     board_degraded = False
 
     if not (settings.use_supabase and not uid):
@@ -4171,83 +4503,52 @@ def dashboard(request: Request, all_submitted: bool = False):
             total_shortlisted_count = reads.get(
                 len(shortlisted), lambda: _scalar(session.exec(q_short_total).first() or 0))
 
-            # 2. Fetch Submitted (limit to 20 by default unless all_submitted=True)
-            q_sub = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.SUBMITTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.submitted_at.desc())
-            if _uid_filter:
-                q_sub = q_sub.where(Application.user_id == uid)
-
-            # Get total count of submitted for the UI toggle button
-            q_sub_count = select(func.count(Application.id)).join(Job).where(
-                Application.status == ApplicationStatus.SUBMITTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            )
-            if _uid_filter:
-                q_sub_count = q_sub_count.where(Application.user_id == uid)
-
-            if not all_submitted:
-                q_sub = q_sub.limit(20)
-            # Load the rows BEFORE the count, so a timed-out count can fall back
-            # to the number actually on the page instead of a bare 0.
-            submitted = reads.get([], lambda: list(session.exec(q_sub).all()))
+            # 2-5. The secondary panes — ONE query definition each, shared with
+            # GET /api/board/pane (which re-renders a single pane after an
+            # in-place status change). Rows load BEFORE the submitted count, so
+            # a timed-out count can fall back to what is on the page, never 0.
+            _owner = uid if _uid_filter else None
+            submitted = reads.get([], lambda: list(session.exec(
+                _board_stage_query("submitted", _owner, all_submitted)).all()))
             total_submitted_count = reads.get(
-                len(submitted), lambda: session.exec(q_sub_count).first() or 0)
+                len(submitted), lambda: session.exec(_board_submitted_count_query(_owner)).first() or 0)
+            interviewing = reads.get([], lambda: list(session.exec(
+                _board_stage_query("interviewing", _owner)).all()))
+            rejected = reads.get([], lambda: list(session.exec(
+                _board_stage_query("rejected", _owner)).all()))
+            skipped = reads.get([], lambda: list(session.exec(
+                _board_stage_query("skipped", _owner)).all()))
 
-            # 3. Fetch Interviewing (uncapped since active interviews are few)
-            q_int = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status.in_([ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFER, ApplicationStatus.ACCEPTED])
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc())
-            if _uid_filter:
-                q_int = q_int.where(Application.user_id == uid)
-            interviewing = reads.get([], lambda: list(session.exec(q_int).all()))
+            # The Rejected and Removed tabs count the STAGE, not the page: both
+            # lists stop at 20, and `skipped|length` held the Removed tab at 20
+            # for an account with 2,700 removed jobs (live test 2026-10-09).
+            # Same visibility filter as the lists; a count that did not finish
+            # falls back to what rendered, never 0.
+            def _stage_count(status):
+                q = select(func.count(Application.id)).join(Job).where(
+                    Application.status == status).where(_board_visible_clause())
+                return q.where(Application.user_id == uid) if _uid_filter else q
 
-            # 4. Fetch Rejected (limit to 20 by default)
-            q_rej = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.REJECTED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc()).limit(20)
-            if _uid_filter:
-                q_rej = q_rej.where(Application.user_id == uid)
-            rejected = reads.get([], lambda: list(session.exec(q_rej).all()))
-
-            # 5. Fetch Skipped (limit to 20)
-            q_skip = select(Application, Job).join(Job).options(
-                *_dashboard_load_options()
-            ).where(
-                Application.status == ApplicationStatus.SKIPPED
-            ).where(
-                Job.ghost_flags.is_(None) | ~Job.ghost_flags.contains("aggregator_redirect")
-            ).order_by(Application.updated_at.desc()).limit(20)
-            if _uid_filter:
-                q_skip = q_skip.where(Application.user_id == uid)
-            skipped = reads.get([], lambda: list(session.exec(q_skip).all()))
+            total_rejected_count = reads.get(len(rejected), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.REJECTED)).first() or 0))
+            total_skipped_count = reads.get(len(skipped), lambda: _scalar(
+                session.exec(_stage_count(ApplicationStatus.SKIPPED)).first() or 0))
             board_degraded = reads.degraded
 
     from datetime import datetime as _dt
 
     # Legal work-authorization framing for this user (drives the visa-fit panel
     # and the sponsorship-aware ranking boost below).
-    visa_framing = None
+    _owner_id = uid if uid and uid != "local" else None
+    visa_framing = _board_visa_framing(_owner_id)
+    _prof = None
     try:
-        from app.intelligence.work_auth import assess_profile
         from app.autofill.answer_pack import _get_or_create_profile
-        _prof = _get_or_create_profile(user_id=uid if uid and uid != "local" else None)
-        visa_framing = assess_profile(_prof)
+        _prof = _get_or_create_profile(user_id=_owner_id)
     except Exception as _e:
-        log.debug("visa framing unavailable: %s", _e)
+        log.debug("profile unavailable for first paint: %s", _e)
+    first_paint = _dashboard_first_paint(uid if ssr_authed else None,
+                                         _prof if ssr_authed else None)
 
     # For users who need sponsorship, float no-lottery (cap-exempt) and known
     # sponsors to the top — those are the jobs that can actually hire them.
@@ -4366,6 +4667,38 @@ def dashboard(request: Request, all_submitted: bool = False):
     # the true uncapped total (computed above); the template shows a "top N shown"
     # note when the render/per-company cap leaves rendered < total, so the number
     # and the cards never silently disagree.
+    #
+    # Before that cap: one role, one card. The slate refuses a second copy of a role at
+    # placement (slate.same_role), but rows placed before that rule, or by two
+    # lanes inside the same second, are already on the board: a plain
+    # SHORTLISTED copy of a role that is already shown is not rendered. A copy
+    # the user opened work on (tailored, filled) always renders.
+    def _collapse_same_role(items):
+        from app.strategy.slate import role_key, same_role
+        shown: dict = {}
+        # Invested rows claim the role first, then best-first sort order.
+        order = sorted(range(len(items)),
+                       key=lambda i: (items[i][0].status == ApplicationStatus.SHORTLISTED, i))
+        drop = set()
+        for i in order:
+            app_model, job_model = items[i]
+            key = role_key(job_model.company, job_model.title)
+            if key is None:
+                continue
+            if app_model.status == ApplicationStatus.SHORTLISTED and any(
+                    same_role(job_model.source, job_model.location, job_model.remote,
+                              job_model.content_hash, o.source, o.location, o.remote,
+                              o.content_hash)
+                    for o in shown.get(key, ())):
+                drop.add(i)
+                continue
+            shown.setdefault(key, []).append(job_model)
+        return [it for i, it in enumerate(items) if i not in drop]
+
+    try:
+        shortlisted = _collapse_same_role(shortlisted)
+    except Exception as _dup_err:          # never lose the board over a tidy-up
+        log.debug("same-role collapse skipped: %s", _dup_err)
     shortlisted = _cap_per_company(shortlisted)
     manual_queue = _cap_per_company(manual_queue)
 
@@ -4385,8 +4718,14 @@ def dashboard(request: Request, all_submitted: bool = False):
             "company_cap": settings.company_cap,
             "pro_price": __import__("app.billing", fromlist=["pro_price_usd"]).pro_price_usd(),
             "visa_framing": visa_framing,
+            # "Apply & Submit" on the cards instead of "Auto-Fill" (one-click submit ON).
+            "one_click_submit": (settings.one_click_submit_enabled
+                                 and bool(getattr(_prof, "one_click_submit", False))),
             "total_submitted_count": total_submitted_count,
+            "early_stats": _early_stats_for(uid),
             "total_shortlisted_count": total_shortlisted_count,
+            "total_rejected_count": total_rejected_count,
+            "total_skipped_count": total_skipped_count,
             "shortlist_strong_threshold": settings.shortlist_strong_threshold,
             # The bar the AI score is judged against. The board used to
             # hard-code 35 in its status copy, which stopped being the bar
@@ -4397,8 +4736,64 @@ def dashboard(request: Request, all_submitted: bool = False):
             "all_submitted": all_submitted,
             "supabase_url": settings.supabase_url,
             "supabase_anon_key": settings.supabase_anon_key,
+            "first_paint": first_paint,
         }
      )
+
+
+def _dashboard_first_paint(uid, prof) -> dict:
+    """What the header and the search notice can say at FIRST PAINT, from
+    what this request already holds — the profile row the page loaded anyway
+    and counts some other request already cached. Never a new query: the page
+    must not wait on a count to draw its header.
+
+    Before this the header read "? Profile", "Pool …" and "Checking boards…"
+    until three API calls came back (8 s on the owner's account), and a
+    PAUSED search showed "Checking boards…" and no notice for 15-18 s, until
+    /api/search/state answered."""
+    out = {"first_name": "", "initial": "", "pool": None, "search": None}
+    if prof is not None:
+        first = (getattr(prof, "first_name", "") or "").strip()
+        last = (getattr(prof, "last_name", "") or "").strip()
+        out["first_name"] = first
+        out["initial"] = (first[:1] or last[:1]).upper()
+        # The paused notice is the one state the server can state outright: an
+        # explicit pause is cleared only by Resume, so nothing about this
+        # page load can change it. (Idle/dormant depend on the activity stamp
+        # this very request writes, so those wait for /api/search/state.)
+        if getattr(prof, "search_paused_at", None) is not None:
+            try:
+                out["search"] = _search_state_payload(uid or "local", prof=prof)
+            except Exception as e:
+                log.debug("first paint: search state unavailable: %s", e)
+    if uid:
+        # The Pool tile's own cache (/api/pipeline/live, found_jobs_expr) —
+        # read, never computed here.
+        try:
+            from app.common import ttl_cache as _tc
+            pool = _tc.get(f"pool_count:{uid or 'local'}")
+            if isinstance(pool, int):
+                out["pool"] = pool
+                out["pool_text"] = _fmt_k(pool)        # the tile, as _fmtK writes it
+                out["pool_full"] = f"{pool:,}"        # the All Jobs badge
+        except Exception:
+            out["pool"] = None
+    return out
+
+
+def _fmt_k(n: int) -> str:
+    """dashboard.html's ``_fmtK``: 950 · 3.8k · 12k · 120k · 1.2M."""
+    import math
+
+    def _trim1(x: float) -> str:
+        r = math.floor(abs(x) * 10 + 0.5) / 10 * (1 if x >= 0 else -1)
+        return str(int(r)) if r == int(r) else f"{r:.1f}"
+    a = abs(n)
+    if a < 1000:
+        return str(n)
+    if a < 1_000_000:
+        return (_trim1(n / 1e3) if a < 100_000 else str(int(math.floor(n / 1e3 + 0.5)))) + "k"
+    return (_trim1(n / 1e6) if a < 100_000_000 else str(int(math.floor(n / 1e6 + 0.5)))) + "M"
 
 
 _PIPELINE_LIVE_TTL_SECONDS = 10
@@ -4510,7 +4905,7 @@ def _pipeline_live_uncached(uid) -> dict:
                     "app_id": app_id,
                     "title": j_title,
                     "company": j_company,
-                    "location": j_location,
+                    "location": _card_location(j_location),
                     "remote": bool(j_remote),
                     "score": round(j_rerank) if j_rerank is not None else None,
                     "track": apply_track,
@@ -4568,6 +4963,22 @@ def _rehydrate_tailored_file(local_path: str | None, uid: str | None) -> str | N
         return None
 
 
+_COVER_MARKER = "---COVER---"
+
+
+def _cover_body(text: str) -> str:
+    """The letter itself. ``tailor.py`` writes a metadata header (company, role,
+    posted date, URL) above a ``---COVER---`` marker so the .txt on disk is
+    self-describing — and every reader handed that header on: the extension
+    pasted "Company: … URL: … ---COVER---" into cover-letter fields and the
+    drawer showed it above the letter. One strip, for every reader."""
+    if not text:
+        return ""
+    if _COVER_MARKER in text:
+        return text.split(_COVER_MARKER, 1)[1].strip()
+    return text.strip()
+
+
 @app.get("/application/{application_id}/details")
 def application_details(application_id: int, request: Request) -> dict:
     """Return tailored resume + cover letter text for modal preview."""
@@ -4601,7 +5012,8 @@ def application_details(application_id: int, request: Request) -> dict:
     _verdict = _export_verdict(application_id, loaded={
         "rejected": application.status == ApplicationStatus.ERROR,
         "notes": application.notes or "", "path": application.tailored_resume_path,
-        "uid": application.user_id, "jd": (job.description or "") if job else ""})
+        "uid": application.user_id, "jd": (job.description or "") if job else "",
+        "company": (job.company or "") if job else ""})
     if _verdict.blocked:
         _reason = (_verdict.reason or "").strip() or \
             "This draft did not pass the grounding check."
@@ -4629,7 +5041,8 @@ def application_details(application_id: int, request: Request) -> dict:
 
         if application.cover_letter_path:
             try:
-                cover_text = Path(application.cover_letter_path).read_text(encoding="utf-8")
+                cover_text = _cover_body(
+                    Path(application.cover_letter_path).read_text(encoding="utf-8"))
             except Exception as e:
                 cover_text = f"(Could not read cover letter: {e})"
 
@@ -4649,11 +5062,12 @@ def application_details(application_id: int, request: Request) -> dict:
             if report_path.exists():
                 quality = _json.loads(report_path.read_text(encoding="utf-8"))
                 # Reports written before the verdict post-check still carry a
-                # false "future-dated" sentence or a dangling "2." — clean at
-                # read time too, so old drafts stop saying it.
+                # false "future-dated" sentence, a dangling "2." or a
+                # "1. Yes —" lead-in: clean at read time too, so old drafts
+                # stop saying it.
                 if isinstance(quality, dict) and quality.get("verdict"):
-                    from app.tailoring.doctor import drop_false_future_claims
-                    quality["verdict"] = drop_false_future_claims(quality["verdict"])
+                    from app.tailoring.doctor import clean_verdict
+                    quality["verdict"] = clean_verdict(quality["verdict"])
         except Exception:
             quality = None
 
@@ -4666,7 +5080,7 @@ def application_details(application_id: int, request: Request) -> dict:
     if resume_text and not _verdict.blocked and (job.description or "").strip():
         try:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
-            report = _ats_analyze(job.description, resume_text)
+            report = _ats_analyze(job.description, resume_text, company=job.company or "")
             ats = {
                 "matched": report.matched,
                 "missing": report.missing,
@@ -4708,12 +5122,19 @@ def application_match(application_id: int, request: Request) -> dict:
     """Why this job matched: overall score, plain-English reason, and the
     per-factor breakdown (skills / experience / location / work_auth)."""
     import json as _json
-    _require_owned_application(request, application_id)
+    from app.db.models import UserProfile
+    uid = _require_owned_application(request, application_id)
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
+        # The owner's profile: the report's notes are held to it below. One
+        # indexed read; no profile is created as a side effect.
+        _uid_arg = uid if (uid and uid != "local") else None
+        report_profile = session.exec(select(UserProfile).where(
+            (UserProfile.user_id == _uid_arg) if _uid_arg
+            else UserProfile.user_id.is_(None))).first()
     breakdown = {}
     if job and job.rerank_breakdown:
         try:
@@ -4722,6 +5143,31 @@ def application_match(application_id: int, request: Request) -> dict:
             breakdown = {}
 
     reason = (job.rerank_reasoning if job else "") or ""
+    # Stored verdicts predate today's rules: hold their notes to the profile
+    # the same way a fresh verdict is (reranker.reconcile_with_profile) — the
+    # visa status decides "needs sponsorship", and "candidate shows 0 years"
+    # is a years figure the resume never states (live test 2026-10-09).
+    try:
+        from app.matching.reranker import reconcile_with_profile as _reconcile
+        _head, _sep, _tail = reason.partition("\nConcerns:")
+        _concerns = [c.strip() for c in _tail.split(";") if c.strip()] if _sep else []
+        _, _head, _concerns, breakdown = _reconcile(
+            (0.0, _head, _concerns, breakdown if isinstance(breakdown, dict) else {}),
+            report_profile, (job.description if job else "") or "")
+        reason = _head + (("\nConcerns: " + "; ".join(_concerns)) if _concerns else "")
+    except Exception as _re_err:
+        log.debug("match report reconcile skipped for app %d: %s", application_id, _re_err)
+
+    # Scored against a resume the user has since replaced? The reasoning may
+    # cite experience that is no longer on it (live test: "trained 120M
+    # transformer" on a July score, after an August upload). Known only when
+    # BOTH times are known: the verdict's own clock, or, for rows from before
+    # that column, the delivery (a job is scored before it is placed).
+    resume_at = getattr(report_profile, "resume_uploaded_at", None)
+    verdict_at = (getattr(job, "scored_at", None) if job else None) or \
+        getattr(application, "created_at", None)
+    from_previous_resume = bool(job and job.rerank_score is not None and resume_at
+                                and verdict_at and verdict_at < resume_at)
     # Reconcile work-auth with Sponsorship Reality: if the employer is a verified
     # H-1B sponsor (strong public filing record), a "needs sponsorship" penalty
     # contradicts the data — lift the work_auth factor and drop the concern so the
@@ -4761,7 +5207,7 @@ def application_match(application_id: int, request: Request) -> dict:
             from app.tailoring.ats_keywords import analyze as _ats_analyze
             resume_text = _load_resume(user_id=_get_user_id(request))
             if resume_text:
-                rep = _ats_analyze(job.description, resume_text)
+                rep = _ats_analyze(job.description, resume_text, company=job.company or "")
                 skills = {
                     "matched": rep.matched,
                     "missing": rep.missing,
@@ -4816,11 +5262,15 @@ def application_match(application_id: int, request: Request) -> dict:
         "id": application_id,
         "company": job.company if job else "",
         "title": job.title if job else "",
-        "location": job.location if job else "",
+        "location": _card_location(job.location) if job else "",
         "remote": bool(job.remote) if job else False,
         "score": score,
         "reason": reason,
         "breakdown": breakdown,
+        # True when this verdict was written before the resume now on file
+        # was uploaded; the drawer says so above the reasoning.
+        "from_previous_resume": from_previous_resume,
+        "resume_uploaded_at": resume_at.isoformat() if (from_previous_resume and resume_at) else None,
         "skills": skills,
         "signals": signals,
         "hire_probability": hp,
@@ -5179,10 +5629,120 @@ def _authorized_now_for_pack(profile) -> Optional[bool]:
     return bool(fr.authorized_now)
 
 
+def _work_auth_note_for_pack(profile) -> str:
+    """Why the extension leaves "are you authorized to work?" for the user, in
+    one line it can show beside that question — "" when it can answer it.
+
+    Live test 2026-10-09: an F-1 OPT profile with no EAD end date left the
+    question blank with no explanation, which read as a fill failure."""
+    if profile is None or _authorized_now_for_pack(profile) is not None:
+        return ""
+    blob = ((getattr(profile, "work_authorization", "") or "") + " "
+            + (getattr(profile, "work_auth_status", "") or "") + " "
+            + (getattr(profile, "visa_status", "") or "")).strip()
+    if not blob:
+        return ("Add your work authorization in your SpotApply profile so this "
+                "question can be answered for you.")
+    try:
+        from app.intelligence.work_auth import assess_profile
+        validity = assess_profile(profile).validity
+    except Exception:
+        return ""
+    if validity == "unknown":
+        return ("Add your work authorization end date in your SpotApply profile so "
+                "this question can be answered for you.")
+    if validity == "expired":
+        return ("The work authorization end date in your profile has passed, so "
+                "this question is left for you.")
+    return ""
+
+
+def _one_click_hosts() -> list:
+    return [h.strip().lower() for h in (settings.one_click_submit_hosts or "").split(",") if h.strip()]
+
+
+def _one_click_blocklist() -> list:
+    return [h.strip().lower() for h in (settings.one_click_submit_host_blocklist or "").split(",") if h.strip()]
+
+
+def _host_allowed(url: str, hosts) -> bool:
+    """Exact host or a real subdomain of an allow-listed suffix (never a substring)."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return bool(host) and any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def _one_click_setting(owner) -> bool:
+    """Is one-click submit ON for this user: the profile flag AND the kill switch."""
+    if not settings.one_click_submit_enabled:
+        return False
+    try:
+        from app.autofill.answer_pack import _get_or_create_profile
+        prof = _get_or_create_profile(user_id=owner)
+        return bool(getattr(prof, "one_click_submit", False))
+    except Exception as e:
+        log.debug("one-click setting unavailable: %s", e)
+        return False
+
+
+def _one_click_decision(uid, profile, apply_url: str, job, requested: bool) -> dict:
+    """May the extension press Submit for THIS application?
+    (docs/AUTO_APPLY_RESEARCH.md §5; founder decision 2026-10-11.)
+
+    Decided here, once, so the extension never carries its own allow-list or
+    cap — it only obeys ``auto_submit``. Reasons, for telemetry and the UI:
+    not_requested · kill_switch · setting_off · aggregator_link · host_blocked ·
+    host_not_allowed · daily_cap · ok. A requested, allowed click RESERVES one
+    of the day's ``one_click_submit_daily_limit`` at once: the click is the
+    consent, and a cap on consents bounds the blast radius of a bad fill.
+    """
+    hosts = _one_click_hosts()
+    out = {"auto_submit": False, "auto_submit_reason": "not_requested", "auto_submit_hosts": hosts}
+    if not requested:
+        return out
+    if not settings.one_click_submit_enabled:
+        out["auto_submit_reason"] = "kill_switch"
+        return out
+    if not bool(getattr(profile, "one_click_submit", False)):
+        out["auto_submit_reason"] = "setting_off"
+        return out
+    flags = (getattr(job, "ghost_flags", "") or "") if job is not None else ""
+    if "aggregator_redirect" in flags:
+        out["auto_submit_reason"] = "aggregator_link"
+        return out
+    # The revocation list wins over the allow-list: a board that asked us to
+    # stop is off one-click the same day (env), whatever the allow-list says.
+    if _host_allowed(apply_url, _one_click_blocklist()):
+        out["auto_submit_reason"] = "host_blocked"
+        return out
+    if not _host_allowed(apply_url, hosts):
+        out["auto_submit_reason"] = "host_not_allowed"
+        return out
+    if uid and uid != "local":
+        with get_session() as session:
+            row = _get_or_create_usage(session, uid)
+            if row.one_click_submit_count >= max(0, int(settings.one_click_submit_daily_limit)):
+                out["auto_submit_reason"] = "daily_cap"
+                return out
+            row.one_click_submit_count += 1
+            session.add(row)
+            session.commit()
+    out["auto_submit"] = True
+    out["auto_submit_reason"] = "ok"
+    return out
+
+
 @app.get("/api/fill-pack/{application_id}")
 @_rate_limit("30/minute")
-def get_fill_pack(application_id: int, request: Request) -> dict:
-    """Returns all data the browser extension needs to fill a job application form."""
+def get_fill_pack(application_id: int, request: Request, submit: bool = False) -> dict:
+    """Returns all data the browser extension needs to fill a job application form.
+
+    ``submit=1`` is the dashboard's "Apply & Submit" click: the user's consent
+    to have THIS application submitted (one-click submit, _one_click_decision).
+    Without it the pack says auto_submit=false and the user clicks Submit."""
     from pathlib import Path as _P
     _require_owned_application(request, application_id)
     uid = _get_user_id(request)
@@ -5192,7 +5752,18 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
             raise HTTPException(status_code=404, detail="Application not found")
         job = session.get(Job, application.job_id)
         from app.db.models import UserProfile
-        profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first() if uid else None
+        # Resolve the profile EXACTLY as _get_or_create_profile and
+        # _autofill_resume_source do: a tenant by user_id; "local" (the SQLite
+        # dev tenant) = the one local row (its writers store NULL, older rows
+        # predate that); no uid in multi-tenant mode reads NOTHING. Matching
+        # the literal "local" found no row, so local mode filled with no
+        # profile at all (one-click submit, how-heard, EEO all read it).
+        if uid and uid != "local":
+            profile = session.exec(select(UserProfile).where(UserProfile.user_id == uid)).first()
+        elif uid == "local":
+            profile = session.exec(select(UserProfile)).first()
+        else:
+            profile = None
         needs_tailoring = not (application.tailored_resume_path and application.cover_letter_path)
         # "Original resume" in Settings promises that autofill never spends a
         # tailoring generation. The résumé route honoured it; this route still
@@ -5202,7 +5773,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         has_draft = bool(application.tailored_resume_path)
         _loaded = {"rejected": grounding_blocked, "notes": application.notes or "",
                    "path": application.tailored_resume_path, "uid": application.user_id,
-                   "jd": (job.description or "") if job else ""}
+                   "jd": (job.description or "") if job else "",
+                   "company": (job.company or "") if job else ""}
     # Draft text only leaves through the ONE export verdict (review, download,
     # details and attach read the same one). Re-tailoring is still gated on the
     # grounding status alone — an unconfirmed claim is fixed by the user.
@@ -5246,7 +5818,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
     if not export_blocked:
         if application.cover_letter_path:
             try:
-                cover_text = _P(application.cover_letter_path).read_text(encoding="utf-8")
+                cover_text = _cover_body(
+                    _P(application.cover_letter_path).read_text(encoding="utf-8"))
             except Exception:
                 pass
         if application.tailored_resume_path:
@@ -5263,6 +5836,7 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
                       (getattr(p, f, "") or "").strip() not in _EEO_LEGACY_DEFAULTS and
                       not (getattr(p, f, "") or "").lower().startswith("decline")
                       for f in ("gender", "ethnicity", "veteran_status", "disability_status"))
+    _ocs = _one_click_decision(uid, p, application.apply_url or (job.url if job else ""), job, submit)
     pack = {
         "app_id": application_id,
         "job_title": job.title if job else "",
@@ -5288,6 +5862,8 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # OPT whose EAD date has passed read "authorized" from the status text
         # alone and would have been answered Yes on employer forms.
         "authorized_now": _authorized_now_for_pack(p),
+        # Shown beside an authorization question left blank because of that.
+        "work_auth_note": _work_auth_note_for_pack(p),
         # Voluntary self-identification: only what the user chose; anything else
         # is sent as "decline" (never the old affirmative defaults).
         "gender": _eeo_answer(p.gender if p else "", _eeo_ok),
@@ -5331,12 +5907,23 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         # first, else these; a skill the résumé does not show at all is No.
         "skill_role_months": _skill_evidence_for_pack(uid, (p.key_skills if p else "") or "")["role"],
         "open_to_relocation": bool(getattr(p, "open_to_relocation", False)) if p else False,
+        # The user's saved answer to "How did you hear about this opportunity?":
+        # the ONLY source the extension answers that question from ("" = left
+        # for the user). Never a remembered answer and never a model's.
+        "how_heard_answer": (getattr(p, "how_heard_answer", "") if p else "") or "",
         # Which résumé /api/fill-pack/{id}/resume will hand back. The extension
         # does not branch on it — the server already resolved the choice — but
         # it makes the setting visible in the popup's diagnostics instead of
         # leaving "why did it attach that file?" unanswerable.
         "autofill_resume_source": (
             (getattr(p, "autofill_resume_source", "") if p else "") or "tailored"),
+        # One-click submit: decided HERE, once (_one_click_decision). The
+        # extension presses Submit only when auto_submit is true, and only on
+        # a host in auto_submit_hosts; it never carries its own allow-list.
+        "auto_submit": _ocs["auto_submit"],
+        "auto_submit_reason": _ocs["auto_submit_reason"],
+        "auto_submit_hosts": _ocs["auto_submit_hosts"],
+        "one_click_submit": bool(getattr(p, "one_click_submit", False)) if p else False,
     }
 
     # Add AI-generated essay answers
@@ -5349,21 +5936,11 @@ def get_fill_pack(application_id: int, request: Request) -> dict:
         pack["ai_answers"] = {}
 
     # Base URL + auth token so the extension can call back (save answers,
-    # fetch the tailored résumé, report submission).
-    # request.base_url keeps local dev on 127.0.0.1:8000, but behind the
-    # TLS-terminating proxy it reports http:// — and an http:// base makes every
-    # extension call either blocked as mixed content or redirected, and a
-    # cross-scheme redirect drops the Authorization header, so authed calls 401.
-    # Trust X-Forwarded-Proto, and never hand out http:// for a remote host.
-    _base = str(request.base_url).rstrip("/")
-    _fwd_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-    if _fwd_proto == "https" and _base.startswith("http://"):
-        _base = "https://" + _base[len("http://"):]
-    elif _base.startswith("http://"):
-        from urllib.parse import urlparse as _up
-        _host = _up(_base).hostname or ""
-        if _host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-            _base = "https://" + _base[len("http://"):]
+    # fetch the tailored résumé, report submission). An http:// base makes
+    # every extension call either blocked as mixed content or redirected, and
+    # a cross-scheme redirect drops the Authorization header, so authed calls
+    # 401 — hence the ONE helper every absolute link uses.
+    _base = _public_base_url(request)
     pack["spotapply_url"] = _base
     # Legacy alias: extensions installed before the rename read hirepath_url.
     # Installs update independently of deploys, so keep sending both.
@@ -5460,8 +6037,8 @@ def _base_resume_bytes(uid: str | None):
         if settings.use_supabase and uid and uid != "local":
             from app.db.supabase_client import service_client
             sb = service_client()
-            files = sb.storage.from_("resume").list(uid) or []
-            names = [f.get("name", "") for f in files if (f.get("name") or "").startswith("resume.")]
+            from app.matching.pipeline import list_resume_objects
+            names = list_resume_objects(sb, uid) or []     # newest first
             if not names:
                 return None
             name = names[0]
@@ -5512,15 +6089,56 @@ def _autofill_resume_source(session, uid: str | None) -> str:
     return pref if pref in ("tailored", "original") else "tailored"
 
 
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _accept_allows(accept: str, ext: str, mime: str) -> bool:
+    """Does an upload field's ``accept="…"`` allow this file? No accept = anything.
+
+    The same reading as the extension's ``fileMatchesAccept`` (content.js)."""
+    tokens = [t.strip().lower() for t in (accept or "").split(",") if t.strip()]
+    if not tokens:
+        return True
+    ext, mime = ext.lower(), mime.lower()
+    for t in tokens:
+        if t.startswith("."):
+            if t == ext:
+                return True
+        elif t in ("*", "*/*"):
+            return True
+        elif t.endswith("/*"):
+            if mime.startswith(t[:-1]):
+                return True
+        elif t == mime:
+            return True
+    return False
+
+
 @app.get("/api/fill-pack/{application_id}/resume")
 @_rate_limit("15/minute")
-def get_tailored_resume(application_id: int, request: Request) -> dict:
-    """Return the résumé .docx as base64 so the extension can attach it to a
-    form's file input.
+def get_tailored_resume(application_id: int, request: Request, accept: str = "") -> dict:
+    """Return the résumé as base64 so the extension can attach it to a form's
+    file input.
 
     Which résumé depends on the user's ``autofill_resume_source`` preference:
     "tailored" (the default — the per-job rewrite, auto-tailoring first if none
     exists yet) or "original" (their uploaded master résumé, untouched).
+
+    Which FILE of the tailored résumé: the one-page PDF the tailor writes beside
+    the Word file (owner, 2026-10-09: the PDF is the delivered resume), unless
+    the upload field's ``accept`` rules PDF out, or no PDF exists — then the
+    .docx. Extension 1.0.1+ ALWAYS sends ``?accept=`` (the field's own value,
+    or ``*`` when it names none), so a request WITHOUT the parameter is the
+    1.0.0 Store build.
+
+    Known tradeoff for that old build, accepted by design: it cannot say what
+    the field takes, so it gets the PDF too. On the rare upload field whose
+    ``accept`` excludes PDF (e.g. ``.doc,.docx``) its own ``fileMatchesAccept``
+    then refuses the file and attaches nothing ("format not accepted", the
+    user attaches by hand), where before it attached the .docx. Serving the
+    .docx to every parameterless caller instead would undo the PDF for the
+    common case (fields that take PDF) on the build most users still run.
+    The miss ends when the Store update (1.0.1+) reaches them.
     """
     import base64
     from pathlib import Path as _P
@@ -5533,6 +6151,7 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         path = application.tailored_resume_path
         app_status = application.status
         app_notes = application.notes
+        owner_uid = application.user_id
         resume_source = _autofill_resume_source(session, uid)
 
     if resume_source == "original":
@@ -5620,14 +6239,17 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
             from app.tailoring.tailor import tailor_for_application
             resume_path, _ = tailor_for_application(application_id)
             path = str(resume_path)
-            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
             # The tailor may have parked the application at ERROR (grounding
             # failure) while still writing the file — re-check before serving.
+            # The credit is charged AFTER that check: a refused draft costs
+            # nothing on the settle path (_tailor_and_settle_owned) and used to
+            # cost one here, the route the extension actually attaches from.
             with get_session() as session:
                 application = session.get(Application, application_id)
                 if application and application.status == ApplicationStatus.ERROR:
                     app_notes = application.notes
                     return _grounding_blocked_response()
+            _increment_tailor(uid or "local")   # usage + spend ledger, one writer
         except HTTPException:
             raise
         except Exception as e:
@@ -5691,13 +6313,35 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
     if not p.exists():
         raise HTTPException(status_code=404, detail="Resume file not found")
 
-    data = p.read_bytes()
-    mime = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            if p.suffix == ".docx" else "application/octet-stream")
+    # The one-page PDF when the field takes one. It is rendered in the same run
+    # as the .docx from the same checked text (tailor.py), so the export verdict
+    # above covers it; a run that could not draw it deletes both the local and
+    # the stored copy, so an older PDF never stands in for this draft.
+    serve = p
+    if p.suffix.lower() == ".docx" and _accept_allows(accept, ".pdf", "application/pdf"):
+        pdf = p.with_suffix(".pdf")
+        if not pdf.exists():
+            _rehydrate_tailored_file(str(pdf), owner_uid)
+        try:
+            if pdf.exists() and pdf.stat().st_size > 0:
+                serve = pdf
+        except OSError:
+            serve = p
+        if serve is not p and "accept" not in request.query_params:
+            # The 1.0.0 Store build (no ?accept=): it gets the PDF even on a
+            # field that takes only Word (see the docstring). Logged so the
+            # remaining share of old builds is measurable.
+            log.info("resume: PDF served to an extension build that sends no accept= "
+                     "(pre-1.0.1) for app %d", application_id)
+    data = serve.read_bytes()
+    mime = {".pdf": "application/pdf", ".docx": _DOCX_MIME}.get(
+        serve.suffix.lower(), "application/octet-stream")
 
     # The filename is what the ATS displays next to the upload — always present
-    # a clean "First_Last_Resume.docx", never an internal/on-disk name.
-    display_name = p.name
+    # a clean "First_Last_Resume.pdf" (the owner's naming rule, the same
+    # helper the tailor names the file with), never an internal name.
+    display_name = serve.name
+    p = serve
     try:
         import re as _re
         uid = _get_user_id(request)
@@ -5706,9 +6350,14 @@ def get_tailored_resume(application_id: int, request: Request) -> dict:
         first = (getattr(prof, "first_name", "") or "").strip()
         last = (getattr(prof, "last_name", "") or "").strip()
         if first or last:
-            base = _re.sub(r"[^A-Za-z0-9]+", "_", f"{first} {last}").strip("_")
-            if base:
-                display_name = f"{base}_Resume{p.suffix or '.docx'}"
+            try:
+                from app.tailoring.render import document_filename
+                display_name = document_filename(first, last, "", kind="Resume",
+                                                 ext=(p.suffix or ".docx").lstrip("."))
+            except ImportError:
+                base = _re.sub(r"[^A-Za-z0-9]+", "_", f"{first} {last}").strip("_")
+                if base:
+                    display_name = f"{base}_Resume{p.suffix or '.docx'}"
     except Exception:
         pass
 
@@ -5763,7 +6412,66 @@ def extension_telemetry(request: Request, body: ExtensionTelemetryBody) -> dict:
             metadata_json=_json.dumps(meta),
         ))
         session.commit()
+    # "A human is needed in the open tab" reaches the dashboard bell too: a
+    # user who clicked Apply & Submit and switched tabs would otherwise never
+    # learn that the form is waiting on a CAPTCHA, a sign-in or an answer.
+    if event in _NEEDS_YOU_EVENTS and not (event == "auto_submit_blocked" and
+                                           (meta.get("reason") or "") == "cancelled_by_user"):
+        try:
+            _notify_needs_you(uid, event, body.app_id, job_id, meta)
+        except Exception as e:
+            log.debug("needs-you notification skipped: %s", e)
     return {"ok": True}
+
+
+_NEEDS_YOU_EVENTS = {
+    "captcha_needed": "needs you: solve the CAPTCHA in the open tab, then it continues.",
+    "login_needed": "needs you: sign in or create your account in the open tab (your email is filled in; passwords stay with Chrome).",
+    "verification_code_needed": "needs you: enter the verification code the site emailed you.",
+    "auto_submit_blocked": "was filled but NOT submitted: {reason}. Review the open tab and click Submit yourself.",
+}
+_OCS_BLOCK_TEXT = {
+    "fields_need_you": "some fields need your answer",
+    "captcha": "the site shows a CAPTCHA",
+    "login_wall": "the site asks you to sign in",
+    "no_submit_button": "no Submit button was found",
+    "submit_disabled": "the Submit button is disabled",
+    "validation": "the site rejected a field",
+    "host_not_allowed": "this site is not on the one-click list",
+    "different_page": "this page is not the job you approved",
+    "cancelled_by_user": "you stopped it",
+    "already_attempted": "it was already submitted from this tab",
+}
+
+
+def _notify_needs_you(uid, event: str, app_id, job_id, meta: dict) -> None:
+    """One dashboard notification per (application, event) in 15 minutes."""
+    from datetime import datetime, timedelta
+    from app.db.models import UserNotification
+    with get_session() as session:
+        company = ""
+        if job_id:
+            job = session.get(Job, job_id)
+            company = (job.company or "") if job else ""
+        who = company or (meta.get("host") or "The employer")
+        text = _NEEDS_YOU_EVENTS[event]
+        if "{reason}" in text:
+            text = text.format(reason=_OCS_BLOCK_TEXT.get(meta.get("reason") or "", meta.get("reason") or "it needs a look"))
+        link = f"/dashboard?app={app_id}" if app_id else "/dashboard"
+        message = f"{who} {text}"
+        recent = session.exec(
+            select(UserNotification.id).where(
+                UserNotification.user_id == (uid or "local"),
+                UserNotification.type == "needs_you",
+                UserNotification.link == link,
+                UserNotification.message == message,
+                UserNotification.created_at >= datetime.utcnow() - timedelta(minutes=15),
+            ).limit(1)).first()
+        if recent:
+            return
+        session.add(UserNotification(user_id=uid or "local", title="Your application needs you",
+                                     message=message, type="needs_you", link=link))
+        session.commit()
 
 
 class JobCheckBody(BaseModel):
@@ -5972,8 +6680,13 @@ def _compute_freshness_stats(user_id_arg: str | None) -> dict:
         # whose first_seen is re-stamped at adoption), 18,921 (same by
         # discovered_at) — shown side by side as if comparable. The shared
         # pool counts each posting once, across every lane, no duplication.
+        # count(*), not count(id): ix_job_user_firstseen holds both predicate
+        # columns, so Postgres answers from the index alone. count(id) made it
+        # visit ~21k heap rows (prod 2026-10-09: 4.9-11 s against this route's
+        # 5 s budget vs ~1.1 s index-only), so the number came back None and
+        # the header fell back to the user's OWN pool under this label.
         shared_new_24h = reads.get(None, lambda: _scalar(session.exec(
-            select(func.count(Job.id)).where(
+            select(func.count()).select_from(Job).where(
                 Job.user_id == SHARED_POOL_USER, Job.first_seen > day_ago)).one()))
 
         # 6. Global (shared-pool) runs count too — they feed this user via
@@ -6453,6 +7166,15 @@ def save_answer(request: Request, body: SaveAnswerBody) -> dict:
     answer = body.answer.strip()
     if not question or not answer:
         raise HTTPException(status_code=400, detail="question and answer required")
+    # A captcha field's value is a token, not an answer, and a model's reply
+    # ABOUT the question is not one either: neither is remembered (it would be
+    # served back into the next form). The applicant TYPED this, so only the
+    # forms a model alone writes ("I'd be happy to help, but…") are refused:
+    # "I am unable to start before January" is their answer and stays theirs.
+    # 200, so older extensions log nothing alarming.
+    from app.autofill import field_guards as _fg
+    if _fg.is_anti_bot_field(question) or _fg.is_model_only_reply(answer):
+        return {"ok": False, "skipped": "not_an_answer"}
     norm = question.lower().strip()
     user_id_arg = uid if uid != "local" else None
     with get_session() as session:
@@ -6487,10 +7209,14 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
     Lets the extension pre-fill fields on a NEW application using answers the
     user typed by hand on PREVIOUS applications. Pure cache lookup — free.
     """
+    from app.autofill import field_guards as _fg
     from app.db.models import AnswerMemory
     uid = _require_user(request)
     user_id_arg = uid if uid != "local" else None
-    labels = [l.strip() for l in (body.labels or []) if l and l.strip()]
+    # An anti-bot field (a captcha's hidden textarea) is never filled from
+    # memory, whatever an older build cached under its name.
+    labels = [l.strip() for l in (body.labels or [])
+              if l and l.strip() and not _fg.is_anti_bot_field(l)]
     if not labels:
         return {"answers": {}}
     # Map normalized label -> original label so we can return by the caller's key
@@ -6504,7 +7230,9 @@ def recall_answers(request: Request, body: RecallAnswersBody) -> dict:
             q = q.where(AnswerMemory.user_id == user_id_arg)
         for mem in session.exec(q).all():
             orig = norm_to_orig.get(mem.label_normalized)
-            if orig and mem.answer:
+            # These are answers the user typed: only a model's own form
+            # ("I'd be happy to help, but…") is withheld, never a real answer.
+            if orig and mem.answer and not _fg.is_model_only_reply(mem.answer):
                 answers[orig] = mem.answer
     return {"answers": answers}
 
@@ -6527,10 +7255,17 @@ def answer_question_endpoint(request: Request, body: AskQuestionBody) -> dict:
     if not question:
         raise HTTPException(status_code=400, detail="question required")
     _require_owned_application(request, body.app_id)
-    from app.autofill.answer_pack import answer_question
+    from app.autofill.answer_pack import answer_question_with_source
     user_id_arg = uid if uid != "local" else None
-    answer = answer_question(question, body.app_id, user_id=user_id_arg)
-    return {"answer": answer, "cached": bool(answer)}
+    # Refusals (a captcha field, a field NAME, a fact only the applicant holds,
+    # a model reply about the question) come back as "" — the extension then
+    # leaves the field for the user. Checked before the cache, so a reply an
+    # older build cached for such a key is never served again.
+    answer, source = answer_question_with_source(question, body.app_id, user_id=user_id_arg)
+    out = {"answer": answer, "cached": source == "cache", "source": source.split(":", 1)[0]}
+    if source.startswith("refused:"):
+        out["refused"] = source.split(":", 1)[1]
+    return out
 
 
 @app.get("/api/extension/download")
@@ -6568,6 +7303,16 @@ def extension_page(request: Request):
     return templates.TemplateResponse(request=request, name="extension.html", context={})
 
 
+#: Still before submission: the states "Submitted" may move an application out
+#: of, and the ones a "no longer available" report takes off the board.
+_PRE_SUBMIT_STATUSES = frozenset({
+    ApplicationStatus.DISCOVERED, ApplicationStatus.MATCHED,
+    ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
+    ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
+    ApplicationStatus.READY_TO_SUBMIT,
+})
+
+
 @app.post("/application/{application_id}/submit")
 def mark_as_submitted(application_id: int, request: Request) -> dict:
     from datetime import datetime
@@ -6575,24 +7320,26 @@ def mark_as_submitted(application_id: int, request: Request) -> dict:
     # Only pre-submit states may transition to SUBMITTED — a stray/duplicate
     # FORM_SUBMITTED from the extension must not resurrect a REJECTED/SKIPPED
     # row or re-stamp submitted_at on one that's already submitted.
-    _PRE_SUBMIT = {
-        ApplicationStatus.DISCOVERED, ApplicationStatus.MATCHED,
-        ApplicationStatus.SHORTLISTED, ApplicationStatus.TAILORED,
-        ApplicationStatus.AUTOFILLED, ApplicationStatus.AWAITING_USER,
-        ApplicationStatus.READY_TO_SUBMIT,
-    }
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
         if application.status == ApplicationStatus.SUBMITTED:
             return {"success": True, "application_id": application_id, "already": True}
-        if application.status not in _PRE_SUBMIT:
+        if application.status not in _PRE_SUBMIT_STATUSES:
             return {"success": False, "application_id": application_id,
                     "detail": f"Not marking submitted from status '{application.status.value}'."}
         application.status = ApplicationStatus.SUBMITTED
-        application.submitted_at = datetime.utcnow()
-        application.updated_at = datetime.utcnow()
+        _now = datetime.utcnow()
+        application.submitted_at = _now
+        application.updated_at = _now
+        # Earliness receipt: how long after the posting's reference clock this
+        # went in (app/strategy/earliness.py). Email imports never get one.
+        try:
+            from app.strategy import earliness as _earliness
+            _earliness.stamp(application, session.get(Job, application.job_id), _now)
+        except Exception as e:
+            log.debug("earliness stamp skipped for app %s: %s", application_id, e)
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}
@@ -6643,6 +7390,80 @@ def skip_application(application_id: int, request: Request) -> dict:
         session.add(application)
         session.commit()
     return {"success": True, "application_id": application_id}
+
+
+# "This job is no longer available" (owner, 2026-10-08: "so many jobs are
+# closed"). Asked when the user comes back from the employer's page, next to
+# "Did you submit?", and offered in the job view. Fixed reason keys only — no
+# free text reaches the funnel log.
+_UNAVAILABLE_REASONS = frozenset({"closed", "not_found", "other"})
+_REPORTED_CLOSED_REASON = "Reported no longer available by the user"
+
+
+def _enum_val(v) -> str:
+    return v.value if hasattr(v, "value") else str(v)
+
+
+@app.post("/application/{application_id}/unavailable")
+def report_unavailable(application_id: int, request: Request,
+                       background_tasks: BackgroundTasks,
+                       reason: str = "closed") -> dict:
+    """The user found the posting gone. Their OWN copy closes now; an
+    application still before submission moves to Removed with a "job closed"
+    note (a system skip — never learned as "not interested", unlike /skip);
+    a submitted-or-later one keeps its stage. Nobody else's board changes on
+    one person's word: a forced, rationed re-check of the posting is queued
+    (`delivery_gate.verify_reported`) and only a CONCLUSIVE REMOVED/EXPIRED
+    closes the other copies. Idempotent: a second report changes nothing."""
+    from datetime import datetime
+    from app.db.models import FunnelEvent
+    uid = _require_owned_application(request, application_id)
+    key = (reason or "").strip().lower()
+    if key not in _UNAVAILABLE_REASONS:
+        key = "other"
+    now = datetime.utcnow()
+    with get_session() as session:
+        application = session.get(Application, application_id)
+        if not application:
+            raise HTTPException(status_code=404, detail="Application not found")
+        job = session.get(Job, application.job_id) if application.job_id else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        status_before = application.status
+        if job.is_closed and job.closed_reason == _REPORTED_CLOSED_REASON:
+            return {"success": True, "application_id": application_id,
+                    "status": _enum_val(status_before), "already": True}
+        # ERROR: a tailor our checks blocked, still on the board — the
+        # posting is gone, so there is nothing left to rebuild for.
+        if status_before in _PRE_SUBMIT_STATUSES or status_before == ApplicationStatus.ERROR:
+            application.status = ApplicationStatus.SKIPPED
+            application.notes = ((application.notes or "")
+                                 + f"\nJob closed — reported no longer available on {now:%Y-%m-%d}.").strip()
+            application.updated_at = now
+            session.add(application)
+        job.is_closed = True
+        job.closed_reason = _REPORTED_CLOSED_REASON
+        session.add(job)
+        # Tied to the job, so it leaves with it on account deletion; the
+        # reason is a fixed key and the metadata names no person or URL.
+        session.add(FunnelEvent(
+            job_id=job.id, stage="user_report", passed=False,
+            reason=f"unavailable:{key}",
+            metadata_json=_json.dumps({"status_before": _enum_val(status_before)}),
+        ))
+        session.commit()
+        src, ext, url = job.source, job.external_id, job.url
+        status_after = _enum_val(application.status)
+    verification = "queued"
+    try:
+        from app.strategy.delivery_gate import verify_reported
+        background_tasks.add_task(verify_reported, src, ext, url, user_id=uid)
+    except Exception as e:                    # the report itself already stands
+        log.debug("unavailable report: re-check not queued: %s", e)
+        verification = "not_queued"
+    return {"success": True, "application_id": application_id,
+            "status": status_after, "removed": status_after == ApplicationStatus.SKIPPED.value,
+            "verification": verification}
 
 
 
@@ -6710,6 +7531,10 @@ def mark_outcome(application_id: int, request: Request, outcome: str) -> dict:
             application.status = status
         application.response_type = _RESPONSE_TYPES.get(key, application.response_type)
         application.updated_at = datetime.utcnow()
+        # The first employer response, if this is one. 'ghosted' is the absence
+        # of a response and never sets it; an earlier email signal wins.
+        if key in ("interviewing", "offer", "accepted", "rejected") and not application.first_response_at:
+            application.first_response_at = datetime.utcnow()
         application.notes = (application.notes or "") + f"\nOutcome '{outcome}' on {datetime.utcnow():%Y-%m-%d}."
         session.add(application)
         session.add(FunnelEvent(
@@ -6777,12 +7602,20 @@ def application_funnel(request: Request) -> dict:
     }
 
 
-def _discover_then_match(user_id) -> None:
+def _discover_then_match(user_id, *, automatic: bool = False) -> None:
     """Discover → rank, tracking staged status (discovering → ranking → done)
     in a DiscoveryRun row so the UI can show live progress + a final summary.
     Serialized with the fresh/hot lanes so only one heavy pass holds the model
-    + job pool in memory at a time (prevents the OOM crash). Both the 6h
-    scheduler and the manual Discover button route through here."""
+    + job pool in memory at a time (prevents the OOM crash). The manual
+    Discover button and the onboarding seed's thin-feed scrape route through
+    here.
+
+    ``automatic=True`` is the seed (adoption.seed_new_user): work done FOR the
+    user, which a Pause stops (compute_policy). The lock wait below can be
+    minutes (the global pass, hot lane and matching lane all hold it), so the
+    pause is asked again once the lock is ours and between the waves, and a
+    run stopped by it files no "Job Discovery Completed" notice. The manual
+    button passes nothing: that click is the user asking."""
     from app.common.discovery_lock import discovery_guard
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     with discovery_guard(label="full discovery") as ran:
@@ -6793,7 +7626,42 @@ def _discover_then_match(user_id) -> None:
             finish_discovery_run(rid, "error",
                                  error="Another discovery run is in progress — please wait for it to finish.")
             return
-        _discover_then_match_locked(user_id)
+        if automatic and _auto_discovery_paused(user_id):
+            return          # paused during the lock wait: no run row, no scrape
+        _discover_then_match_locked(user_id, automatic=automatic)
+
+
+def _auto_discovery_paused(user_id) -> bool:
+    """Has the user paused since the seed decided to scrape for them? One
+    indexed read (compute_policy.user_paused), fresh, not the lanes' cached set:
+    this runs a handful of times per scrape, not once per job."""
+    from app.common.compute_policy import user_paused
+    if user_paused(user_id):
+        log.info("Thin-feed discovery stopped: the search is paused")   # no user id in the line
+        return True
+    return False
+
+
+def _close_paused_run(run_id) -> None:
+    """End an automatic run the user paused, WITHOUT the bell notice that
+    finish_discovery_run files: it was work done for them, and they asked us
+    to stop. Status "cancelled" is the one the dashboard poller already drops."""
+    if not run_id:
+        return
+    from datetime import datetime
+
+    from app.db.models import DiscoveryRun
+    try:
+        with get_session() as session:
+            row = session.get(DiscoveryRun, run_id)
+            if row is not None:
+                row.status = "cancelled"
+                row.error = "Search paused"
+                row.finished_at = datetime.utcnow()
+                session.add(row)
+                session.commit()
+    except Exception as e:
+        log.warning("Could not close a paused discovery run: %s", e)
 
 
 def _internship_keywords(roles: list[str], prof) -> list[str]:
@@ -6824,9 +7692,24 @@ def _internship_keywords(roles: list[str], prof) -> list[str]:
     return out
 
 
-def _discover_then_match_locked(user_id) -> None:
+def _discover_then_match_locked(user_id, *, automatic: bool = False) -> None:
     from app.discovery.pipeline import create_discovery_run, finish_discovery_run
     run_id = create_discovery_run(user_id)
+
+    def _paused_stop() -> bool:
+        """Automatic runs only (see `_discover_then_match`): a Pause between
+        two steps ends the run there, closed with no notice."""
+        if automatic and _auto_discovery_paused(user_id):
+            _close_paused_run(run_id)
+            return True
+        return False
+
+    def _finish(status: str, **kw) -> None:
+        # Asked once more at the end: a Pause during the last wave still means
+        # no "Job Discovery Completed" (or "Failed") in the bell.
+        if not _paused_stop():
+            finish_discovery_run(run_id, status, **kw)
+
     # Tailor the keyword search to the user's saved Target Roles when set.
     roles = _get_target_roles(user_id) or None
     # Load the profile once for keyword augmentation (cap-exempt + internships +
@@ -6862,6 +7745,8 @@ def _discover_then_match_locked(user_id) -> None:
     first_ids: list[int] = []
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="fast")
+        if _paused_stop():
+            return
         first_ids = run_matching(user_id) or []
         try:
             from app.db.models import DiscoveryRun
@@ -6876,13 +7761,17 @@ def _discover_then_match_locked(user_id) -> None:
             log.debug("first_results status write failed: %s", _fe)
     except Exception as e:
         log.exception("Fast discovery wave failed: %s", e)
-        finish_discovery_run(run_id, "error", error=str(e))
+        _finish("error", error=str(e))
+        return
+    if _paused_stop():          # between the waves: no deep scrape into their pool
         return
     try:
         run_discovery(user_id, run_id=run_id, keywords=roles, phase="boards")
+        if _paused_stop():
+            return
         shortlisted = run_matching(user_id) or []
         total = len(set(first_ids) | set(shortlisted))
-        finish_discovery_run(run_id, "done", total_shortlisted=total)
+        _finish("done", total_shortlisted=total)
         try:
             from app.strategy.fresh_alerts import dispatch_fresh_alerts
             dispatch_fresh_alerts(user_id, list(set(first_ids) | set(shortlisted)))
@@ -6892,10 +7781,10 @@ def _discover_then_match_locked(user_id) -> None:
         log.exception("Deep discovery wave failed: %s", e)
         # First-wave results are already live — surface them rather than erroring out.
         if first_ids:
-            finish_discovery_run(run_id, "done", total_shortlisted=len(first_ids),
-                                 error=f"Company-board scan failed: {e}")
+            _finish("done", total_shortlisted=len(first_ids),
+                    error=f"Company-board scan failed: {e}")
         else:
-            finish_discovery_run(run_id, "error", error=str(e))
+            _finish("error", error=str(e))
 
 
 @app.post("/run/discovery")
@@ -7314,7 +8203,7 @@ def get_referral(request: Request) -> dict:
     from app.db.models import UserReferralReward
     with get_session() as session:
         reward = session.exec(select(UserReferralReward).where(UserReferralReward.user_id == uid)).first()
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     return {
         "code": code,
         "link": f"{base}/login?ref={code}" if code else "",
@@ -8482,6 +9371,176 @@ def admin_budget_diagnostic(request: Request, user_id: str = "") -> dict:
     return _budget_diagnostic(uid)
 
 
+@app.get("/api/admin/dead-jobs")
+def admin_dead_jobs(request: Request, days: int = 14) -> dict:
+    """Dead-after-delivery, per source (2026-10-10). Of the postings placed on
+    boards in the last ``days`` (funnel `placement` events), how many were
+    later found closed — by a board listing (absent), a re-check, or a user
+    report — and how many were never checked at all (aggregator links have no
+    permalink to check). Admin-only; counts only, no ids.
+
+    Bounded: one statement under its own timeout; a timed-out read answers
+    ``degraded: true`` with no sources, never zeros."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text as _text
+    _require_admin_user(request)
+    days = max(1, min(int(days or 14), 90))
+    cut = datetime.utcnow() - timedelta(days=days)
+    sql = _text("""
+        WITH pl AS (
+            SELECT fe.job_id AS job_id, fe.created_at AS placed_at
+            FROM funnel_events fe
+            WHERE fe.stage = 'placement' AND fe.passed = TRUE
+              AND fe.created_at >= :cut AND fe.job_id IS NOT NULL
+        ), j AS (
+            SELECT pl.placed_at AS placed_at, LOWER(CAST(jb.source AS TEXT)) AS src,
+                   jb.external_id AS external_id, jb.is_closed AS is_closed,
+                   jb.closed_reason AS closed_reason
+            FROM pl JOIN job jb ON jb.id = pl.job_id
+        )
+        SELECT j.src,
+               COUNT(*) AS placed,
+               SUM(CASE WHEN j.is_closed THEN 1 ELSE 0 END) AS closed_after,
+               SUM(CASE WHEN j.closed_reason LIKE 'Reported%' THEN 1 ELSE 0 END) AS reported,
+               SUM(CASE WHEN jl.state IN ('REMOVED', 'EXPIRED') AND jl.checked_at > j.placed_at
+                        THEN 1 ELSE 0 END) AS liveness_dead_after,
+               SUM(CASE WHEN jl.state IS NULL THEN 1 ELSE 0 END) AS never_checked
+        FROM j LEFT JOIN job_liveness jl
+               ON jl.source = j.src AND jl.external_id = j.external_id
+        GROUP BY j.src
+        ORDER BY placed DESC
+    """)
+    with get_session() as session:
+        reads = _BoundedReads(session, 15)
+        rows = reads.get(None, lambda: session.execute(sql, {"cut": cut}).all())
+        degraded = reads.degraded
+    if rows is None:
+        return {"days": days, "degraded": True, "sources": [], "total_placed": None,
+                "total_closed_after": None, "dead_after_delivery_rate": None}
+    sources = [{
+        "source": r[0], "placed": int(r[1] or 0), "closed_after": int(r[2] or 0),
+        "reported_by_users": int(r[3] or 0), "liveness_dead_after": int(r[4] or 0),
+        "never_checked": int(r[5] or 0),
+    } for r in rows]
+    placed = sum(x["placed"] for x in sources)
+    closed = sum(x["closed_after"] for x in sources)
+    return {"days": days, "degraded": degraded, "total_placed": placed, "total_closed_after": closed,
+            "dead_after_delivery_rate": (round(closed / placed, 4) if placed else None),
+            "sources": sources}
+
+
+@app.get("/api/admin/source-quality")
+def admin_source_quality(request: Request, days: int = 7) -> dict:
+    """Which boards are worth their cost (2026-10-10). Per source — by the real
+    producer, `coalesce(origin, source)` — over the last ``days``: postings
+    ingested into the shared pool, copies adopted into user pools, how many of
+    those a scorer reached (Claude final / Tier-1 only), how many aged out
+    unscored, ghost stamps, shortlists and applications. Admin-only, counts
+    only, cached 300 s (60 s when degraded), one bounded statement per panel —
+    a timed-out panel is ``null``, never 0.
+
+    Reads: the lifecycle columns (scored_at / prescored_at / expired_at), never
+    `rerank_score IS NOT NULL` (which also matches the expiry/ghost stamps —
+    CLAUDE.md, "rerank_score is overloaded")."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text as _text
+    from app.common import ttl_cache as _tc
+    _require_admin_user(request)
+    days = max(1, min(int(days or 7), 60))
+
+    def _compute():
+        cut = datetime.utcnow() - timedelta(days=days)
+        # Lowercased on BOTH sides: rows written before 2026-09-15 carry an
+        # uppercase origin, and WORKDAY/workday must be one bucket.
+        src_expr = "LOWER(COALESCE(sh.origin, CAST(sh.source AS TEXT)))"
+        pool_sql = _text(f"""
+            SELECT {src_expr} AS src,
+                   COUNT(*) AS ingested,
+                   SUM(CASE WHEN sh.is_closed THEN 1 ELSE 0 END) AS closed_now
+            FROM job sh
+            WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            GROUP BY {src_expr}
+        """)
+        copies_sql = _text(f"""
+            WITH sh AS (
+                SELECT {src_expr} AS src, sh.source AS source, sh.external_id AS external_id
+                FROM job sh
+                WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            )
+            SELECT sh.src,
+                   COUNT(*) AS copies,
+                   SUM(CASE WHEN c.scored_at IS NOT NULL THEN 1 ELSE 0 END) AS claude_scored,
+                   SUM(CASE WHEN c.prescored_at IS NOT NULL AND c.scored_at IS NULL THEN 1 ELSE 0 END) AS tier1_only,
+                   SUM(CASE WHEN c.expired_at IS NOT NULL THEN 1 ELSE 0 END) AS expired_unscored,
+                   SUM(CASE WHEN c.rerank_score = 5.0 THEN 1 ELSE 0 END) AS ghost
+            FROM sh JOIN job c ON c.source = sh.source AND c.external_id = sh.external_id
+                                 AND c.user_id <> :shared
+            GROUP BY sh.src
+        """)
+        apps_sql = _text(f"""
+            WITH sh AS (
+                SELECT {src_expr} AS src, sh.source AS source, sh.external_id AS external_id
+                FROM job sh
+                WHERE sh.user_id = :shared AND COALESCE(sh.first_seen, sh.discovered_at) >= :cut
+            )
+            SELECT sh.src,
+                   COUNT(*) AS shortlisted,
+                   SUM(CASE WHEN UPPER(CAST(a.status AS TEXT)) IN ('SUBMITTED', 'INTERVIEWING', 'OFFER', 'ACCEPTED', 'REJECTED')
+                            THEN 1 ELSE 0 END) AS applied
+            FROM sh JOIN job c ON c.source = sh.source AND c.external_id = sh.external_id
+                                 AND c.user_id <> :shared
+                    JOIN application a ON a.job_id = c.id
+            WHERE a.apply_track IS NULL OR a.apply_track <> 'email_import'
+            GROUP BY sh.src
+        """)
+        from app.discovery.pipeline import SHARED_POOL_USER
+        params = {"shared": SHARED_POOL_USER, "cut": cut}
+        panels = {}
+        degraded = False
+        with get_session() as session:
+            reads = _BoundedReads(session, 15)
+            for name, sql in (("pool", pool_sql), ("copies", copies_sql), ("apps", apps_sql)):
+                panels[name] = reads.get(None, lambda sql=sql: session.execute(sql, params).all())
+            degraded = reads.degraded
+        by_src: dict = {}
+
+        def _row(src):
+            return by_src.setdefault(src, {
+                "source": src, "ingested": None, "closed_now": None, "copies": None,
+                "claude_scored": None, "tier1_only": None, "expired_unscored": None,
+                "ghost": None, "shortlisted": None, "applied": None,
+            })
+        if panels["pool"] is not None:
+            for r in panels["pool"]:
+                row = _row(r[0] or "unknown")
+                row["ingested"], row["closed_now"] = int(r[1] or 0), int(r[2] or 0)
+        if panels["copies"] is not None:
+            for r in panels["copies"]:
+                row = _row(r[0] or "unknown")
+                row.update(copies=int(r[1] or 0), claude_scored=int(r[2] or 0), tier1_only=int(r[3] or 0),
+                           expired_unscored=int(r[4] or 0), ghost=int(r[5] or 0))
+        if panels["apps"] is not None:
+            for r in panels["apps"]:
+                row = _row(r[0] or "unknown")
+                row["shortlisted"], row["applied"] = int(r[1] or 0), int(r[2] or 0)
+        for row in by_src.values():
+            # Rates only where the denominator is real (≥30), else null.
+            c = row["copies"] or 0
+            row["shortlist_rate"] = round((row["shortlisted"] or 0) / c, 4) if c >= 30 and row["shortlisted"] is not None else None
+            row["ghost_rate"] = round((row["ghost"] or 0) / c, 4) if c >= 30 and row["ghost"] is not None else None
+            row["expired_unscored_rate"] = round((row["expired_unscored"] or 0) / c, 4) if c >= 30 and row["expired_unscored"] is not None else None
+        sources = sorted(by_src.values(), key=lambda r: -(r["ingested"] or 0))
+        return {"days": days, "degraded": degraded, "sources": sources,
+                "note": ("Rates are null below 30 copies. A source with ingested>0 and copies=0 "
+                         "matched nobody's roles/country; shortlisted/copies is the yield that "
+                         "decides which boards are worth their cost.")}
+
+    return _tc.get_or_compute(f"admin:source-quality:{days}",
+                              lambda v: 60 if v.get("degraded") else 300, _compute)
+
+
 # --- User Reviews APIs ---
 
 _REVIEW_MAX_CHARS = 2000
@@ -8770,7 +9829,7 @@ def billing_portal(request: Request) -> dict:
     from app.billing import create_portal_session, stripe_enabled
     if not stripe_enabled():
         raise HTTPException(status_code=503, detail="Card billing isn't live yet.")
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_portal_session(uid, base)
     except LookupError:
@@ -8813,7 +9872,7 @@ def billing_checkout(request: Request) -> dict:
         email = _get_user_email(request)
     except Exception:
         pass
-    base = str(request.base_url).rstrip("/")
+    base = _public_base_url(request)
     try:
         url = create_checkout_session(uid, email, base)
     except AlreadySubscribed:
@@ -9316,7 +10375,8 @@ def _require_server_autofill_allowed(uid: str | None) -> None:
     raise HTTPException(
         status_code=409,
         detail="Server-side autofill isn't enabled for your account. "
-               "Install the SpotApply browser extension to fill this form — "
+               "Add the SpotApply extension from the Chrome Web Store "
+               f"({settings.chrome_web_store_url}) to fill this form — "
                "it fills in your own browser and you stay in control of Submit.",
     )
 
@@ -9419,6 +10479,9 @@ _USERPROFILE_COLUMNS = [
     # from open_to_relocation (app/tailoring/relocation.py).
     ("relocation_resume_optin", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("one_click_submit", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("how_heard_answer", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("articulation_video_url", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -9555,6 +10618,9 @@ def get_profile(request: Request) -> dict:
         "open_to_relocation": bool(getattr(profile, "open_to_relocation", False)),
         "relocation_resume_optin": bool(getattr(profile, "relocation_resume_optin", False)),
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
+        "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
+        "one_click_submit": bool(getattr(profile, "one_click_submit", False)),
+        "how_heard_answer": getattr(profile, "how_heard_answer", "") or "",
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
         # Also edited by the form; missing here meant a save wiped them.
@@ -9563,6 +10629,10 @@ def get_profile(request: Request) -> dict:
         "opt_unemployment_days_used": int(getattr(profile, "opt_unemployment_days_used", 0) or 0),
         "stem_opt": bool(getattr(profile, "stem_opt", False)),
     }
+
+
+# The profile's "How did you hear about us?" answer (the input's maxlength too).
+HOW_HEARD_MAX_LEN = 100
 
 
 class ProfileUpdate(BaseModel):
@@ -9605,6 +10675,10 @@ class ProfileUpdate(BaseModel):
     open_to_relocation: Optional[bool] = None
     relocation_resume_optin: Optional[bool] = None
     resume_use_job_city: Optional[bool] = None
+    resume_title_from_jd: Optional[bool] = None
+    one_click_submit: Optional[bool] = None
+    # Typed into employer forms as written: one line, trimmed, bounded.
+    how_heard_answer: Optional[str] = None
     relocation_targets: Optional[str] = None
     relocation_timeline: Optional[str] = None
     articulation_video_url: Optional[str] = None
@@ -9626,6 +10700,16 @@ class ProfileUpdate(BaseModel):
         v = str(v).strip().lower()
         if v not in ("tailored", "original"):
             raise ValueError("autofill_resume_source must be 'tailored' or 'original'")
+        return v
+
+    @field_validator("how_heard_answer")
+    @classmethod
+    def _one_line_how_heard(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = " ".join(str(v).split())          # one line: no tabs or line breaks
+        if len(v) > HOW_HEARD_MAX_LEN:
+            raise ValueError(f"'How did you hear about us?' is limited to {HOW_HEARD_MAX_LEN} characters")
         return v
 
 
@@ -9837,12 +10921,14 @@ def _own_profile_query(uid: str):
     return select(UserProfile).where(UserProfile.user_id.is_(None))
 
 
-def _search_state_payload(uid: str) -> dict:
+def _search_state_payload(uid: str, prof=None) -> dict:
+    """``prof``: the caller's own profile row when it is already loaded (the
+    dashboard's first paint), so the answer costs no second read."""
     from app.common.compute_policy import (PAID_AI, QUEUE, dormant_after, idle_after,
                                            search_state)
-    from app.db.models import UserProfile
-    with get_session() as session:
-        prof = session.exec(_own_profile_query(uid)).first()
+    if prof is None:
+        with get_session() as session:
+            prof = session.exec(_own_profile_query(uid)).first()
     st = search_state(prof, paid=_user_paid_search_is_live)
     return {
         "state": st.state,
@@ -9869,13 +10955,32 @@ def welcome_status_api(request: Request) -> dict:
     target roles are more senior than their resume's years — which roles to
     add. While boosted, also the real jobs being checked and what was read
     from the resume. ONE user's rows, bounded; cached 4 s in the first ten
-    minutes of the window, 20 s after."""
+    minutes of the window, 20 s after.
+
+    A PAUSED search answers ``paused`` and no boost: nothing runs for them, so
+    the panel must never say "Checking jobs" or "Priority scoring" — whatever
+    a window (or another replica's) still holds."""
     uid = _require_user(request)
     from app.common import ttl_cache
+    from app.common.compute_policy import is_paused
     from app.strategy import welcome
 
     def _build() -> dict:
         user_arg = uid if uid != "local" else None
+        prof = None
+        try:
+            with get_session() as session:
+                prof = session.exec(_own_profile_query(uid)).first()
+        except Exception as e:
+            log.debug("welcome status: profile unavailable: %s", e)
+        if is_paused(prof):
+            tip = None
+            try:
+                tip = welcome.seniority_tip(prof, _get_target_roles(uid) or [])
+            except Exception as e:
+                log.debug("welcome role tip unavailable: %s", e)
+            return {"boost_active": False, "completed": False, "paused": True,
+                    "role_tip": tip}
         try:
             out = welcome.status(user_arg) if user_arg else {"boost_active": False}
         except Exception as e:      # a timed-out count: say so, never cache it
@@ -9883,8 +10988,6 @@ def welcome_status_api(request: Request) -> dict:
             return {"boost_active": welcome.is_boosted(user_arg), "degraded": True}
         tip = None
         try:
-            with get_session() as session:
-                prof = session.exec(_own_profile_query(uid)).first()
             roles = _get_target_roles(uid) or []
             tip = welcome.seniority_tip(prof, roles)
             if out.get("boost_active"):
@@ -9928,6 +11031,14 @@ def _set_search_pause(uid: str, paused: bool, reason: str = "") -> None:
         session.add(prof)
         session.commit()
     forget(uid)
+    # The first-hour window is work done FOR the user: a pause ends it (and
+    # with it priority, the 2x slice and the 14-day catch-up). Either way the
+    # panel's cached answer predates this click.
+    from app.common import ttl_cache as _tc
+    from app.strategy import welcome as _welcome
+    if paused:
+        _welcome.end(uid)
+    _tc.invalidate(f"welcome:{uid}")
 
 
 @app.post("/api/search/pause")
@@ -9940,13 +11051,34 @@ def pause_search(request: Request, body: Optional[SearchPauseRequest] = None) ->
 
 
 @app.post("/api/search/resume")
-def resume_search(request: Request) -> dict:
-    """Resume: clears a pause and counts as a meaningful action. The next lane
-    tick adopts a FRESH, bounded batch (adoption's age window + per-step cap,
-    the 5-day scoring window and the day's finals budget) — never the backlog."""
+def resume_search(request: Request, background_tasks: BackgroundTasks) -> dict:
+    """Resume: clears a pause and counts as a meaningful action, then RESTARTS
+    the search now — the onboarding seed (`adoption.seed_new_user`: the
+    first-hour window, adoption of the fresh window for the CURRENT roles,
+    matching, first results; a domain scrape if the feed is thin), in the
+    background, after the pause is cleared. Same budgets as any search; the
+    user is just served first.
+
+    Not "only when it looks like a return": while paused, a role change or a
+    new resume is saved but seeds nothing (PAUSED allows nothing), and any
+    click before Resume overwrites the activity a return is judged by. Both
+    left a user who had just fixed their roles with nothing until the next
+    global pass, up to hours later (review, 2026-10-08). Since page loads stopped
+    counting as activity, this button is also how most idle users come back."""
     uid = _require_user(request)
     _set_search_pause(uid, False)
+    background_tasks.add_task(_restart_search, uid if uid != "local" else None)
     return _search_state_payload(uid)
+
+
+def _restart_search(user_id: Optional[str]) -> None:
+    """Resume's background half. Never raises: Resume has already succeeded,
+    and the scheduled lanes remain the backstop if this cannot run."""
+    try:
+        from app.strategy.adoption import seed_new_user
+        seed_new_user(user_id)
+    except Exception as e:
+        log.warning("resume: search restart failed (lanes will pick it up): %s", e)
 
 
 class RecruiterRegister(BaseModel):
@@ -10355,7 +11487,7 @@ def rate_intro(intro_id: int, request: Request, body: dict) -> dict:
 
 
 @app.post("/api/verify/identity")
-def verify_identity(request: Request) -> dict:
+def verify_identity(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Sync email/phone verification status from Supabase Auth (email is
     confirmed at signup via the magic link). Sets the flags that feed the
     Identity trust dimension, then recomputes the Trust Profile."""
@@ -10393,8 +11525,11 @@ def verify_identity(request: Request) -> dict:
         session.add(profile)
         session.commit()
 
+    # The Trust Profile recompute makes up to two GitHub API calls and a storage
+    # listing (measured 0.9-4.6 s per call in production). The flags above are
+    # the answer; the recompute runs after the response is sent.
     from app.intelligence.trust_service import compute_and_store
-    compute_and_store(user_id_arg)
+    background_tasks.add_task(compute_and_store, user_id_arg)
     return {"email_verified": email_ok, "phone_verified": phone_ok}
 
 
@@ -10429,7 +11564,7 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
                 evidence = _json.loads(profile.trust_evidence)
             except (ValueError, TypeError):
                 evidence = {}
-        base = str(request.base_url).rstrip("/")
+        base = _public_base_url(request)
         # Momentum — first vs latest snapshot, so candidates see growth.
         from app.db.models import TrustHistory
         hist = session.exec(
@@ -11461,12 +12596,229 @@ def get_referral_drafts(application_id: int, request: Request) -> dict:
     uid = _get_user_id(request)
     from app.intelligence.referral import generate_referral_drafts
     try:
-        return generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
+        data = generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         log.exception("Referral draft generation failed for app %d: %s", application_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+    # The kit: subjects, one-click compose links, LinkedIn people searches, the
+    # people the posting itself names, and what the user already sent.
+    try:
+        data["kit"] = _outreach_kit(application_id, data)
+    except Exception as e:
+        log.warning("outreach kit skipped for app %d: %s", application_id, e)
+    data["sent"] = _outreach_rows(application_id, uid)
+    return data
+
+
+def _outreach_kit(application_id: int, data: dict) -> dict:
+    from app.discovery.hiring_context import load_context
+    from app.intelligence import outreach as _o
+    with get_session() as session:
+        row = session.exec(
+            select(Job.source, Job.external_id, Job.url, Job.company, Job.title,
+                   Job.corporate_insights)
+            .join(Application, Application.job_id == Job.id)
+            .where(Application.id == application_id)).first()
+    if row is None:
+        return _o.build_kit(data.get("drafts") or [], company=data.get("company") or "",
+                            role=data.get("title") or "")
+    source, external_id, job_url, company, title, insights = row
+    source_v = source.value if hasattr(source, "value") else str(source)
+    fields: dict = {}
+    try:
+        ctx = load_context([(source_v, external_id)]).get((source_v, external_id)) or {}
+        evidence = ctx.get("evidence") or {}
+        for key in ("recruiter_name", "reporting_manager_name", "reporting_title",
+                    "posting_creator_name", "contact_email"):
+            if ctx.get(key):
+                meta = evidence.get(key) or {}
+                fields[key] = {"value": ctx.get(key), "quote": meta.get("quote") or ""}
+    except Exception as e:
+        log.debug("hiring context unavailable for outreach kit (app %d): %s", application_id, e)
+    reporting = (fields.get("reporting_title") or {}).get("value") or ""
+    if not reporting:
+        try:
+            reporting = (_json.loads(insights or "{}").get("reporting_to") or "").strip()
+        except (ValueError, TypeError, AttributeError):
+            reporting = ""
+    return _o.build_kit(data.get("drafts") or [], company=company or "", role=title or "",
+                        job_url=job_url or "", context_fields=fields, reporting_title=reporting)
+
+
+def _outreach_row_dict(r) -> dict:
+    return {
+        "id": r.id, "application_id": r.application_id, "channel": r.channel, "kind": r.kind,
+        "recipient_label": r.recipient_label, "recipient_url": r.recipient_url,
+        "recipient_email": r.recipient_email, "subject": r.subject, "body": r.body,
+        "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+        "replied_at": r.replied_at.isoformat() if r.replied_at else None,
+        "reply_how": r.reply_how, "reply_subject": r.reply_subject,
+    }
+
+
+def _outreach_rows(application_id: int, uid) -> list:
+    from app.db.models import OutreachMessage
+    with get_session() as session:
+        q = select(OutreachMessage).where(OutreachMessage.application_id == application_id)
+        if uid and uid != "local":
+            q = q.where(OutreachMessage.user_id == uid)
+        rows = session.exec(q.order_by(OutreachMessage.id.desc())).all()
+        return [_outreach_row_dict(r) for r in rows]
+
+
+class OutreachSentPayload(BaseModel):
+    channel: str = "linkedin"           # "email" | "linkedin"
+    kind: str = ""
+    recipient_label: str = ""
+    recipient_url: Optional[str] = None
+    recipient_email: Optional[str] = None
+    subject: Optional[str] = None
+    body: str = ""
+
+
+@app.get("/application/{application_id}/outreach")
+def list_outreach(application_id: int, request: Request) -> dict:
+    """The outreach messages the user recorded for this application, newest first."""
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    return {"sent": _outreach_rows(application_id, uid)}
+
+
+@app.post("/application/{application_id}/outreach")
+@_rate_limit("30/minute")
+def record_outreach_sent(application_id: int, payload: OutreachSentPayload, request: Request) -> dict:
+    """The user sent a message themselves and says so. Recorded so the inbox
+    scan can report the reply; nothing is sent by this route."""
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage
+    from app.intelligence import outreach as _o
+    _require_owned_application(request, application_id)
+    uid = _get_user_id(request)
+    owner = uid if uid and uid != "local" else None
+    channel = "email" if (payload.channel or "").lower() == "email" else "linkedin"
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="An empty message cannot have been sent.")
+    recipient_email = (payload.recipient_email or "").strip().lower() or None
+    if recipient_email and "@" not in recipient_email:
+        recipient_email = None
+    now = _dt.utcnow()
+    with get_session() as session:
+        row = OutreachMessage(
+            user_id=owner, application_id=application_id, channel=channel,
+            kind=(payload.kind or "")[:40], recipient_label=(payload.recipient_label or "")[:160],
+            recipient_url=(payload.recipient_url or "")[:500] or None,
+            recipient_email=recipient_email[:200] if recipient_email else None,
+            subject=(payload.subject or "")[:300] or None,
+            subject_key=_o.subject_key(payload.subject or "") or None,
+            body=body[:4000], sent_at=now)
+        session.add(row)
+        app_obj = session.get(Application, application_id)
+        if app_obj:
+            who = f" to {row.recipient_label}" if row.recipient_label else ""
+            _note_once(app_obj, f"Outreach sent ({'email' if channel == 'email' else 'LinkedIn'}){who} on {now:%Y-%m-%d}.")
+            session.add(app_obj)
+        session.commit()
+        session.refresh(row)
+        return {"success": True, "sent": _outreach_row_dict(row)}
+
+
+class OutreachRepliedPayload(BaseModel):
+    replied: bool = True
+
+
+@app.post("/api/outreach/{outreach_id}/replied")
+def set_outreach_replied(outreach_id: int, payload: OutreachRepliedPayload, request: Request) -> dict:
+    """The user says a reply came (or undoes a wrong flag). The inbox scan sets
+    the same fields automatically with reply_how naming the evidence."""
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage
+    uid = _require_user(request)
+    with get_session() as session:
+        row = session.get(OutreachMessage, outreach_id)
+        if row is None or (uid != "local" and row.user_id != uid):
+            raise HTTPException(status_code=404, detail="Not found")
+        if payload.replied:
+            row.replied_at = row.replied_at or _dt.utcnow()
+            row.reply_how = "manual"
+        else:
+            row.replied_at = None
+            row.reply_how = None
+            row.reply_subject = None
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return {"success": True, "sent": _outreach_row_dict(row)}
+
+
+@app.delete("/api/outreach/{outreach_id}")
+def delete_outreach(outreach_id: int, request: Request) -> dict:
+    from app.db.models import OutreachMessage
+    uid = _require_user(request)
+    with get_session() as session:
+        row = session.get(OutreachMessage, outreach_id)
+        if row is None or (uid != "local" and row.user_id != uid):
+            raise HTTPException(status_code=404, detail="Not found")
+        session.delete(row)
+        session.commit()
+    return {"success": True}
+
+
+def _open_outreach(owner, uid_filter: bool) -> tuple[list, dict]:
+    """Sent messages still waiting for an answer (last 90 days), plus the
+    company each one's application is for — what match_reply needs."""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.db.models import OutreachMessage
+    since = _dt.utcnow() - _td(days=90)
+    with get_session() as session:
+        q = (select(OutreachMessage, Job.company)
+             .join(Application, Application.id == OutreachMessage.application_id)
+             .join(Job, Job.id == Application.job_id)
+             .where(OutreachMessage.sent_at.is_not(None), OutreachMessage.replied_at.is_(None),
+                    OutreachMessage.sent_at >= since))
+        if uid_filter:
+            q = q.where(OutreachMessage.user_id == owner)
+        pairs = session.exec(q).all()
+        rows = [r for r, _ in pairs]
+        company_of = {r.application_id: (c or "") for r, c in pairs}
+        for r in rows:
+            session.expunge(r)
+    return rows, company_of
+
+
+def _mark_outreach_replied(row_id: int, how: str, subject: str, owner) -> None:
+    from datetime import datetime as _dt
+    from app.db.models import OutreachMessage, UserNotification
+    now = _dt.utcnow()
+    with get_session() as session:
+        row = session.get(OutreachMessage, row_id)
+        if row is None or row.replied_at is not None:
+            return
+        row.replied_at = now
+        row.reply_how = how
+        row.reply_subject = (subject or "")[:300] or None
+        session.add(row)
+        app_obj = session.get(Application, row.application_id)
+        company = ""
+        if app_obj:
+            job = session.get(Job, app_obj.job_id)
+            company = (job.company if job else "") or ""
+            _note_once(app_obj, f"Reply to your outreach ({'email' if row.channel == 'email' else 'LinkedIn'}) "
+                                f"found in your inbox on {now:%Y-%m-%d}.")
+            session.add(app_obj)
+        try:
+            session.add(UserNotification(
+                user_id=owner or "local",
+                title="Someone replied to your outreach",
+                message=(f"{company}: {subject}".strip(": ") or "A reply to your outreach is in your inbox."),
+                type="outreach_reply",
+                link=f"/dashboard?app={row.application_id}",
+            ))
+        except Exception as e:
+            log.debug("outreach reply notification skipped: %s", e)
+        session.commit()
 
 
 @app.get("/application/{application_id}/connections")
@@ -11574,6 +12926,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                 "path": application.tailored_resume_path,
                 "uid": application.user_id,
                 "jd": (job.description or "") if job else None,
+                "company": (job.company or "") if job else None,
             }
     rejected, notes, path, uid = (loaded.get("rejected"), loaded.get("notes") or "",
                                   loaded.get("path"), loaded.get("uid"))
@@ -11595,11 +12948,16 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
 
     def _compute():
         jd = loaded.get("jd")
-        if jd is None:
+        # The hiring company feeds the same review the tailor ran, so every
+        # door judges the draft with the same inputs.
+        company = loaded.get("company")
+        if jd is None or company is None:
             with get_session() as session:
                 app_row = session.get(Application, application_id)
                 job = session.get(Job, app_row.job_id) if app_row else None
-                jd = (job.description or "") if job else ""
+                if jd is None:
+                    jd = (job.description or "") if job else ""
+                company = (job.company or "") if job else ""
         tailored = ""
         try:
             from app.autofill.answer_pack import _load_resume_text_from_path
@@ -11616,7 +12974,7 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
                           application_id, exc)
         try:
             return evaluate(grounding_rejected=False, grounding_reason="",
-                            master=master, tailored=tailored, jd=jd)
+                            master=master, tailored=tailored, jd=jd, company=company)
         except Exception as exc:
             # The check itself failing is not evidence the draft is clean — but
             # it is not evidence of a fabrication either, and grounding already
@@ -11630,9 +12988,11 @@ def _export_verdict(application_id: int, *, loaded: Optional[dict] = None):
 
 
 @app.get("/application/{application_id}/download-resume")
-def download_tailored_resume(application_id: int, request: Request):
-    """Serve the tailored DOCX resume file as a direct download."""
+def download_tailored_resume(application_id: int, request: Request, format: str = "docx"):
+    """Serve the tailored resume as a direct download: the Word file, or with
+    ``?format=pdf`` the one-page PDF written beside it (same name, same gates)."""
     _require_owned_application(request, application_id)
+    want_pdf = (format or "").lower() == "pdf"
     with get_session() as session:
         application = session.get(Application, application_id)
         if not application:
@@ -11663,17 +13023,24 @@ def download_tailored_resume(application_id: int, request: Request):
 
     import os
     from fastapi.responses import FileResponse
+    if want_pdf:
+        # The PDF sits beside the .docx under the same name (tailor.py).
+        path = os.path.splitext(path)[0] + ".pdf"
     # Re-fetch from durable storage if the ephemeral copy was wiped on deploy.
     if not os.path.exists(path):
         _rehydrate_tailored_file(path, owner_uid)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Resume file not found on disk")
+        raise HTTPException(
+            status_code=404,
+            detail=("No PDF for this resume yet. Rebuild it to get the one-page PDF."
+                    if want_pdf else "Resume file not found on disk"))
 
     filename = os.path.basename(path)
     _record_document_downloaded("resume", application_id, owner_uid)
     return FileResponse(
         path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=("application/pdf" if want_pdf else
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         filename=filename
     )
 
@@ -11706,7 +13073,7 @@ def application_pre_download_review(application_id: int, request: Request) -> di
         tailored_path = application.tailored_resume_path
         _loaded = {"rejected": application.status == ApplicationStatus.ERROR,
                    "notes": application.notes or "", "path": tailored_path,
-                   "uid": uid, "jd": jd}
+                   "uid": uid, "jd": jd, "company": job_company or ""}
 
     from app.matching.pipeline import _load_resume
     master = _load_resume(user_id=uid) or ""
@@ -11730,7 +13097,8 @@ def application_pre_download_review(application_id: int, request: Request) -> di
 
     from app.tailoring.requirements import review as build_review
     try:
-        rep = getattr(verdict, "review", None) or build_review(master, tailored, jd)
+        rep = getattr(verdict, "review", None) or build_review(
+            master, tailored, jd, company=job_company or "")
     except Exception as exc:
         log.exception("pre-download review failed for application %s", application_id)
         raise HTTPException(status_code=500,
@@ -12018,364 +13386,342 @@ def delete_account(request: Request):
 
 
 # ── Email sync (browser extension) ───────────────────────────────────────────
+# Classification, company extraction and application matching live in
+# app/intelligence/email_signals.py — pure functions, MEASURED against the
+# labelled corpus in tests/test_email_signals.py (legacy 69% kind / 31% company
+# on 64 emails → 95% / 97%). This route owns the writes only.
+
+from app.intelligence.email_signals import (  # noqa: E402  (kept importable from here)
+    ACKNOWLEDGMENT_KEYWORDS as _ACKNOWLEDGMENT_KEYWORDS,
+    POSITIVE_KEYWORDS as _POSITIVE_KEYWORDS,
+    REJECTION_KEYWORDS as _REJECTION_KEYWORDS,
+    SCHEDULING_HINTS as _SCHEDULING_HINTS,
+    STAGE_NOUNS as _STAGE_NOUNS,
+)
+
 
 class SyncEmailPayload(BaseModel):
-    emails: list  # List of dicts with keys: subject, sender, body, date, company_guess
+    # dicts: subject, sender (address, or the display name when the inbox showed
+    # none), sender_name?, body (the inbox PREVIEW SNIPPET — never a message
+    # body), date, company_guess? (older extensions), thread_id?
+    emails: list
     source: str = "inbox"  # "gmail" | "outlook"
     day_range: Optional[int] = None
 
 
-_REJECTION_KEYWORDS = [
-    'unfortunately', 'not moving forward', 'other candidates',
-    'other applicants', 'not selected', 'regret to inform',
-    'we regret', 'decided not to', 'will not be proceeding',
-    'not be proceeding', 'position has been filled', 'role has been filled',
-    'no longer under consideration', 'not be moving forward',
-    "won't be moving forward", 'will not be moving forward',
-    'decided to move forward with other', 'decided to proceed with other',
-    'pursue other candidates', 'not to move forward',
-    'after careful consideration', 'we have chosen', 'were not selected',
-    'wish you the best', 'wish you success', 'wish you well',
-    'not a match at this time', 'not be advancing', 'will not be advancing',
-    'unable to offer', 'not be extending', 'application was unsuccessful',
-    'were unsuccessful', 'thank you for your interest, however',
-    'not progressing', 'will not progress',
-    # Common post-interview rejection phrasings — these emails often mention
-    # the interview stage ("after your phone screen…"), so missing them here
-    # used to flip rejections into INTERVIEWING.
-    "won't proceed", 'will not proceed', "won't be proceeding",
-    'not continue with', "won't continue", 'unable to move forward',
-    'no longer being considered', 'not been selected', 'has not been selected',
-    'unsuccessful on this occasion', 'on this occasion',
-    'move forward with another candidate', 'proceed with another candidate',
-    'gone with another candidate', 'selected another candidate',
-    'chosen another candidate', 'offer the position to another',
-    'keep your resume on file', 'keep your cv on file',
-    'keep your application on file', 'encourage you to apply for future',
-    'apply to future openings', 'future opportunities that match',
-]
+_SYNC_EMAILS_MAX = 500          # one scan is at most ~40 Gmail pages of rows
 
-# Phrases that strongly indicate a real interview invite / scheduling request.
-# Keep these precise — loose words like bare 'interview' or 'next steps' cause
-# false positives on acknowledgment auto-replies that mention the job title or
-# describe a multi-step review process.
-_POSITIVE_KEYWORDS = [
-    'invitation to interview',
-    'schedule an interview',
-    'schedule a call',
-    'schedule a time',
-    'please schedule',
-    'book a time',
-    'set up a call',
-    'set up an interview',
-    'pleased to invite you',
-    'invite you to interview',
-    'move forward with your candidacy',
-    'move forward with your application and',
-    'selected for an interview',
-    'selected to interview',
-    'advance to the interview',
-    'advance to the next round',
-    'like to speak with you about the role',
-    'like to speak with you about this role',
-    'love to chat about the role',
-    'share your availability',
-    'your availability for',
-    'pick a time',
-    'choose a time that works',
-]
 
-# Interview-STAGE nouns — these appear in invites, but just as often in
-# post-interview rejections ("after your phone screen…") and in process
-# descriptions. Alone they prove nothing: they only count as an interview
-# signal when a scheduling hint appears in the same email.
-_STAGE_NOUNS = [
-    'phone screen',
-    'recruiter screen',
-    'video call',
-    'video interview',
-    'meet the team',
-    'next round',
-    'technical assessment',
-    'coding challenge',
-    'take-home assessment',
-    'technical interview',
-    'onsite interview',
-    'on-site interview',
-    'final round',
-]
+def _clean_email_title(subj: str, company: str) -> str:
+    """Best-effort job title from an email subject line."""
+    import re as _re
+    t = subj or ""
+    # Strip common boilerplate prefixes/suffixes
+    t = _re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", t)
+    t = _re.sub(r"(?i)\b(thank you for (applying|your application|your interest)( (to|in))?|"
+                r"your application( (for|to))?|application (received|update|status|next steps)|"
+                r"we received your application|application to|application for)\b", "", t)
+    if company:
+        t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
+    t = _re.sub(r"[\-–—|@:]+", " ", t)
+    t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
+    # If nothing meaningful survived, fall back to the company name.
+    if len(t) < 3:
+        return f"Application — {company}" if company else "Application (from email)"
+    return t[:120]
 
-_SCHEDULING_HINTS = [
-    'schedule', 'calendly', 'book a', 'set up a', 'availability',
-    'pick a time', 'choose a time', 'invite', 'invitation',
-]
 
-# Phrases that mark an email as an acknowledgment / under-review auto-reply.
-# If any of these appear, we suppress a false-positive interview signal so that
-# plain confirmation emails do not flip the card to INTERVIEWING.
-_ACKNOWLEDGMENT_KEYWORDS = [
-    'thank you for applying',
-    'thank you for your application',
-    'we have received your application',
-    'we received your application',
-    'your application has been received',
-    'application is currently under review',
-    'application is under review',
-    'currently under review',
-    'profile is currently under review',
-    'profile is under review',
-    'under consideration',
-    'our team will review',
-    'our recruiting team will',
-    'will be in touch',
-    'will reach out',
-    'will contact you',
-    'will get back to you',
-    'if your experience matches',
-    'if selected for',
-    'if you are selected',
-    'reviewing applications',
-    'reviewing all applications',
-    'application has been submitted',
-    'application was submitted',
-    'confirmation of your application',
-    'application confirmation',
-]
+def _note_once(app_obj, text: str) -> bool:
+    """Append ``text`` to the application's notes unless an equivalent line is
+    there already (re-syncing the same inbox must not stack notes)."""
+    key = text.split(" on ")[0][:48]
+    if key and key in (app_obj.notes or ""):
+        return False
+    app_obj.notes = ((app_obj.notes or "") + "\n" + text).strip()
+    return True
+
+
+def _queue_rejection_analysis(bg, app_id: int, job_id: int, email_body: str, uid) -> None:
+    """The rejection post-mortem (RejectionAnalyzer) runs after the response."""
+    def _run():
+        try:
+            from app.tailoring.analyzer import RejectionAnalyzer
+            import json as _json
+            with get_session() as s:
+                a = s.get(Application, app_id)
+                j = s.get(Job, job_id) if job_id else None
+                jd = (j.description or "") if j else ""
+                tailored_path = a.tailored_resume_path if a else None
+            resume_text = ""
+            try:
+                from app.autofill.answer_pack import _load_resume_text_from_path
+                resume_text = _load_resume_text_from_path(tailored_path) if tailored_path else ""
+            except Exception:
+                resume_text = ""
+            if not resume_text:
+                try:
+                    from app.matching.pipeline import _load_resume
+                    resume_text = _load_resume(user_id=uid)
+                except Exception:
+                    resume_text = ""
+            result = RejectionAnalyzer().analyze(jd, resume_text, email_body)
+            with get_session() as s:
+                a = s.get(Application, app_id)
+                if a:
+                    a.rejection_analysis = _json.dumps(result)
+                    s.add(a)
+                    s.commit()
+        except Exception as e:
+            log.debug("rejection analysis skipped for app %s: %s", app_id, e)
+    bg.add_task(_run)
+
+
+def _email_datetime(email: dict):
+    """The message's own date as a naive UTC datetime, or None when the inbox
+    gave none we can read (the caller then uses the sync time)."""
+    raw = (email or {}).get("date")
+    if not raw:
+        return None
+    from datetime import datetime as _dt, timezone as _tz
+    from email.utils import parsedate_to_datetime
+    for parse in (parsedate_to_datetime, lambda v: _dt.fromisoformat(str(v).replace("Z", "+00:00"))):
+        try:
+            dt = parse(str(raw).strip())
+        except Exception:
+            continue
+        if dt is None:
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_tz.utc).replace(tzinfo=None)
+        if dt > _dt.utcnow():
+            return None            # a future-dated header is not a response time
+        return dt
+    return None
+
+
+def _apply_email_signal(match, signal, email: dict, uid, bg, stats: dict) -> None:
+    """Move ONE matched application by what the email says. Only a confident
+    rejection / interview / offer changes the status; everything weaker is a
+    note the user sees on the card."""
+    from datetime import datetime
+    now = datetime.utcnow()
+    kind = signal.kind
+    with get_session() as session:
+        app_obj = session.get(Application, match.id)
+        if not app_obj:
+            return
+        changed = False
+        if kind == "rejection":
+            if signal.moves_status:
+                stats["rejections"] += 1
+                if app_obj.status != ApplicationStatus.REJECTED:
+                    app_obj.status = ApplicationStatus.REJECTED
+                    app_obj.updated_at = now
+                    _note_once(app_obj, f"Auto-detected rejection from email on {now:%Y-%m-%d}.")
+                    changed = True
+            else:
+                stats["uncertain"] += 1
+                cue = (signal.cues or ["wording"])[0]
+                changed = _note_once(app_obj, f"Possible rejection signal in an email on {now:%Y-%m-%d} "
+                                              f"(\"{cue}\") — not applied; mark it rejected if that is what it said.")
+        elif kind == "interview":
+            if signal.moves_status:
+                stats["interviews"] += 1
+                if app_obj.status == ApplicationStatus.SUBMITTED:
+                    app_obj.status = ApplicationStatus.INTERVIEWING
+                    app_obj.updated_at = now
+                    _note_once(app_obj, f"Auto-detected interview signal from email on {now:%Y-%m-%d}.")
+                    changed = True
+            else:
+                stats["uncertain"] += 1
+                changed = _note_once(app_obj, f"Possible interview signal in an email on {now:%Y-%m-%d} — not applied.")
+        elif kind == "offer":
+            stats["offers"] += 1
+            if signal.moves_status and app_obj.status in (ApplicationStatus.SUBMITTED, ApplicationStatus.INTERVIEWING):
+                app_obj.status = ApplicationStatus.OFFER
+                app_obj.updated_at = now
+                _note_once(app_obj, f"Auto-detected offer from email on {now:%Y-%m-%d}.")
+                changed = True
+        elif kind == "assessment":
+            stats["assessments"] += 1
+            changed = _note_once(app_obj, f"Assessment invitation received by email on {now:%Y-%m-%d}.")
+        # "ack": the employer confirmed receipt — nothing to change.
+        # A confident human response (or an assessment invitation) is the first
+        # employer response; an 'ack' auto-receipt and an uncertain cue are not.
+        if ((kind in ("rejection", "interview", "offer") and signal.moves_status) or kind == "assessment") \
+                and not app_obj.first_response_at:
+            app_obj.first_response_at = _email_datetime(email) or now
+            changed = True
+        if changed:
+            session.add(app_obj)
+            session.commit()
+        job_id = app_obj.job_id
+    if kind == "rejection" and signal.moves_status:
+        _queue_rejection_analysis(bg, match.id, job_id, str(email.get("body") or ""), uid)
+
+
+def _import_email_application(owner, uid_filter: bool, company: str, subject: str, snippet: str,
+                              signal, source: str, stats: dict) -> bool:
+    """A job email about an application made OUTSIDE SpotApply: track it so
+    nothing is lost. Keyed by (user, company, title) so a re-sync never
+    duplicates; an existing import only moves on a stronger signal."""
+    import hashlib as _hashlib
+    from datetime import datetime
+    now = datetime.utcnow()
+    title = _clean_email_title(subject, company)
+    ext_id = "email:" + _hashlib.sha1(
+        f"{(owner or 'local')}|{company.lower()}|{title.lower()}".encode()
+    ).hexdigest()[:20]
+    if signal.kind == "rejection" and signal.moves_status:
+        status = ApplicationStatus.REJECTED
+    elif signal.kind == "interview" and signal.moves_status:
+        status = ApplicationStatus.INTERVIEWING
+    elif signal.kind == "offer" and signal.moves_status:
+        status = ApplicationStatus.OFFER
+    else:
+        status = ApplicationStatus.SUBMITTED
+    with get_session() as session:
+        q = select(Job).where(Job.source == JobSource.MANUAL, Job.external_id == ext_id)
+        q = q.where((Job.user_id == owner) if uid_filter else (Job.user_id.is_(None) | (Job.user_id == "local")))
+        existing = session.exec(q).first()
+        if existing:
+            app_obj = session.exec(select(Application).where(Application.job_id == existing.id)).first()
+            if app_obj and status in (ApplicationStatus.REJECTED, ApplicationStatus.OFFER) and app_obj.status != status:
+                app_obj.status = status
+                app_obj.updated_at = now
+                session.add(app_obj)
+                session.commit()
+            elif app_obj and status == ApplicationStatus.INTERVIEWING and app_obj.status == ApplicationStatus.SUBMITTED:
+                app_obj.status = status
+                app_obj.updated_at = now
+                session.add(app_obj)
+                session.commit()
+            return False
+        job = Job(user_id=owner, source=JobSource.MANUAL, external_id=ext_id, company=company,
+                  title=title, url="", description=snippet or "")
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        session.add(Application(
+            user_id=owner, job_id=job.id, status=status, apply_track="email_import",
+            submitted_at=now, notes=f"Imported from {source} email on {now:%Y-%m-%d}.",
+        ))
+        session.commit()
+    if status == ApplicationStatus.REJECTED:
+        stats["rejections"] += 1
+    elif status == ApplicationStatus.INTERVIEWING:
+        stats["interviews"] += 1
+    elif status == ApplicationStatus.OFFER:
+        stats["offers"] += 1
+    elif signal.kind == "assessment":
+        stats["assessments"] += 1
+    return True
 
 
 @app.post("/api/sync-emails")
 @_rate_limit("10/minute")
 async def sync_emails(payload: SyncEmailPayload, request: Request, bg: BackgroundTasks) -> dict:
-    """Ingest emails from the browser extension, match to applications,
-    and auto-detect rejections / interview invitations."""
-    from datetime import datetime
+    """Ingest inbox rows from the browser extension: match each to one of the
+    user's applications and move its status on a CONFIDENT signal, import job
+    emails about applications made outside SpotApply, and drop the noise.
+
+    What changed on 2026-10-10, from production's 84 imported rows: the company
+    was the sender's DOMAIN, so Greenhouse / Workable / LinkedIn mailers were
+    filed as the employer in 50 of 50 sampled rows; job alerts, a sign-in link
+    and a promo were imported as applications; matching was a raw substring
+    over every application, SKIPPED included, first hit wins. Now the company
+    comes from the subject or display name for platform senders, noise is
+    skipped and counted, matching is by normalised name against non-SKIPPED
+    applications preferring the ones the user submitted, and a weak signal is
+    a note on the card, never a status change (email_signals.STATUS_CHANGE_CONFIDENCE).
+    """
+    from app.intelligence import email_signals as es
 
     uid = _require_user(request)
     _uid_filter = uid and uid != "local"
+    owner = uid if _uid_filter else None
 
-    # Load all user applications joined with their jobs
+    # Projected: the matcher reads five columns, never whole rows (DB egress rule).
     with get_session() as session:
-        q = select(Application, Job).join(Job)
+        q = select(Application.id, Application.status, Application.job_id, Application.submitted_at,
+                   Application.updated_at, Job.company, Job.title).join(
+            Job, Application.job_id == Job.id).where(Application.status != ApplicationStatus.SKIPPED)
         if _uid_filter:
             q = q.where(Application.user_id == uid)
         rows = session.exec(q).all()
+        user_email = None
+        try:
+            from app.db.models import UserProfile
+            user_email = session.exec(select(UserProfile.email).where(UserProfile.user_id == owner)).first()
+        except Exception:
+            user_email = None
+    candidates = [es.Candidate(id=r[0], status=r[1], company=r[5] or "", title=r[6] or "",
+                               submitted_at=r[3], updated_at=r[4]) for r in rows]
 
-    matched = 0
-    rejections = 0
-    interviews = 0
-    imported = 0
+    stats = {"processed": 0, "matched": 0, "imported": 0, "rejections": 0, "interviews": 0,
+             "assessments": 0, "offers": 0, "ignored": 0, "uncertain": 0, "outreach": 0,
+             "replies": 0}
     unmatched_list: list[dict] = []
-
-    def _email_status(is_rej: bool, is_int: bool) -> "ApplicationStatus":
-        if is_rej:
-            return ApplicationStatus.REJECTED
-        if is_int:
-            return ApplicationStatus.INTERVIEWING
-        return ApplicationStatus.SUBMITTED
-
-    def _clean_email_title(subj: str, company: str) -> str:
-        """Best-effort job title from an email subject line."""
-        import re as _re
-        t = subj or ""
-        # Strip common boilerplate prefixes/suffixes
-        t = _re.sub(r"(?i)^\s*(re|fwd?)\s*:\s*", "", t)
-        t = _re.sub(r"(?i)\b(thank you for (applying|your application|your interest)( (to|in))?|"
-                    r"your application( (for|to))?|application (received|update|status|next steps)|"
-                    r"we received your application|application to|application for)\b", "", t)
-        if company:
-            t = _re.sub(_re.escape(company), "", t, flags=_re.IGNORECASE)
-        t = _re.sub(r"[\-–—|@:]+", " ", t)
-        t = _re.sub(r"\s{2,}", " ", t).strip(" -–—|,.")
-        # If nothing meaningful survived, fall back to the company name.
-        if len(t) < 3:
-            return f"Application — {company}" if company else "Application (from email)"
-        return t[:120]
-
-    for email in payload.emails:
-        company_guess = (email.get("company_guess") or "").strip().lower()
-        body_lower = (email.get("body") or "").lower()
-        subject_lower = (email.get("subject") or "").lower()
-        combined_text = subject_lower + " " + body_lower
-
-        # ── Fuzzy match to an existing application ──────────────────────
-        matched_app = None
-        matched_job = None
-        if company_guess:
-            for app_row, job_row in rows:
-                if company_guess in (job_row.company or "").lower():
-                    matched_app = app_row
-                    matched_job = job_row
-                    break
-
-        # ── Detect rejection / positive signal ──────────────────────────
-        is_rejection = any(kw in combined_text for kw in _REJECTION_KEYWORDS)
-        # An acknowledgment email ("under review", "we received your application")
-        # suppresses a positive signal so confirmation auto-replies don't flip
-        # the card to INTERVIEWING incorrectly.
-        is_acknowledgment = any(kw in combined_text for kw in _ACKNOWLEDGMENT_KEYWORDS)
-        # Interview = an explicit invite/scheduling phrase, OR an interview-stage
-        # noun combined with a scheduling hint. A rejection ALWAYS wins — the
-        # classic failure was "we enjoyed the phone screen, but we won't
-        # proceed" landing in the Interviewing column.
-        _strong_invite = any(kw in combined_text for kw in _POSITIVE_KEYWORDS)
-        _stage_mention = any(kw in combined_text for kw in _STAGE_NOUNS)
-        _sched_hint = any(kw in combined_text for kw in _SCHEDULING_HINTS)
-        is_interview = (
-            not is_acknowledgment
-            and not is_rejection
-            and (_strong_invite or (_stage_mention and _sched_hint))
-        )
-
-        if matched_app and matched_job:
-            matched += 1
-
-            if is_rejection:
-                rejections += 1
-                with get_session() as session:
-                    app_obj = session.get(Application, matched_app.id)
-                    if app_obj:
-                        app_obj.status = ApplicationStatus.REJECTED
-                        app_obj.updated_at = datetime.utcnow()
-                        app_obj.notes = (
-                            (app_obj.notes or "")
-                            + f"\nAuto-detected rejection from email on {datetime.utcnow():%Y-%m-%d}."
-                        )
-                        session.add(app_obj)
-                        session.commit()
-
-                # Build resume text for background analysis
+    # Outreach the user marked as sent and nobody has answered yet: an email that
+    # answers one is flagged here, before the application matching, because a
+    # reply can read as anything (a recruiter's note, an interview invite) and
+    # must still count as the answer it is.
+    try:
+        from app.intelligence import outreach as _outreach
+        open_outreach, outreach_company = _open_outreach(owner, bool(_uid_filter))
+    except Exception as e:
+        log.debug("sync-emails: outreach lookup skipped: %s", e)
+        _outreach, open_outreach, outreach_company = None, [], {}
+    for email in list(payload.emails or [])[:_SYNC_EMAILS_MAX]:
+        if not isinstance(email, dict):
+            continue
+        stats["processed"] += 1
+        subject = str(email.get("subject") or "")
+        snippet = str(email.get("body") or "")
+        sender = str(email.get("sender") or "").strip()
+        sender_name = str(email.get("sender_name") or "").strip()
+        addr = sender if "@" in sender else ""
+        if not addr and not sender_name:
+            sender_name = sender                # older extensions: the display name when no address was shown
+        skind = es.sender_kind(addr, sender_name, user_email)
+        signal = es.classify(subject, snippet, skind)
+        if signal.is_noise:
+            stats["ignored"] += 1
+            continue
+        if open_outreach and skind not in ("ats", "job_board", "self"):
+            hit = _outreach.match_reply(email, open_outreach, company_of=outreach_company)
+            if hit:
+                hit_row, how = hit
                 try:
-                    from app.autofill.answer_pack import _load_resume_text_from_path
-                    resume_text = _load_resume_text_from_path(matched_app.tailored_resume_path)
-                except Exception:
-                    resume_text = ""
-                if not resume_text:
-                    try:
-                        from app.matching.pipeline import _load_resume
-                        resume_text = _load_resume(user_id=uid)
-                    except Exception:
-                        resume_text = ""
+                    _mark_outreach_replied(hit_row.id, how, subject, owner)
+                    stats["replies"] += 1
+                except Exception as e:
+                    log.warning("sync-emails: could not record outreach reply: %s", e)
+                open_outreach = [r for r in open_outreach if r.id != hit_row.id]
+        if signal.kind == "recruiter_outreach":
+            stats["outreach"] += 1              # a recruiter's note, not an application the user made
+            continue
+        company = es.extract_company(subject, addr, sender_name, user_email,
+                                     email.get("company_guess"), snippet)
+        title_hint = _clean_email_title(subject, company or "")
+        match = es.pick_application(company, title_hint, candidates) if company else None
+        if match:
+            stats["matched"] += 1
+            _apply_email_signal(match, signal, email, uid, bg, stats)
+            continue
+        if not company or signal.kind == "other":
+            # No employer, or nothing about an application: not a tracked application.
+            unmatched_list.append({"subject": subject, "sender": sender, "company_guess": company})
+            continue
+        try:
+            if _import_email_application(owner, bool(_uid_filter), company, subject, snippet,
+                                         signal, payload.source, stats):
+                stats["imported"] += 1
+        except Exception as e:
+            log.warning("sync-emails: failed to import email %r: %s", subject[:60], e)
+            unmatched_list.append({"subject": subject, "sender": sender, "company_guess": company})
 
-                def _run_analysis(app_id: int, jd: str, resume_md: str, email_body: str):
-                    from app.tailoring.analyzer import RejectionAnalyzer
-                    import json
-                    result = RejectionAnalyzer().analyze(jd, resume_md, email_body)
-                    with get_session() as s:
-                        a = s.get(Application, app_id)
-                        if a:
-                            a.rejection_analysis = json.dumps(result)
-                            s.add(a)
-                            s.commit()
-
-                bg.add_task(
-                    _run_analysis,
-                    matched_app.id,
-                    matched_job.description or "",
-                    resume_text,
-                    email.get("body") or "",
-                )
-
-            elif is_interview:
-                interviews += 1
-                with get_session() as session:
-                    app_obj = session.get(Application, matched_app.id)
-                    if app_obj and app_obj.status == ApplicationStatus.SUBMITTED:
-                        app_obj.status = ApplicationStatus.INTERVIEWING
-                        app_obj.updated_at = datetime.utcnow()
-                        app_obj.notes = (
-                            (app_obj.notes or "")
-                            + f"\nAuto-detected interview signal from email on {datetime.utcnow():%Y-%m-%d}."
-                        )
-                        session.add(app_obj)
-                        session.commit()
-        else:
-            # ── No existing application matched — import as a tracked one ────
-            # These are real job-related emails (rejections, acknowledgements,
-            # interview invites) for jobs the user applied to OUTSIDE SpotApply.
-            # We surface them in the dashboard tracker so nothing is lost.
-            raw_company = (email.get("company_guess") or "").strip()
-            if not raw_company:
-                unmatched_list.append({
-                    "subject": email.get("subject"),
-                    "sender": email.get("sender"),
-                    "company_guess": email.get("company_guess"),
-                })
-                continue
-
-            import hashlib as _hashlib
-            title = _clean_email_title(email.get("subject") or "", raw_company)
-            ext_id = "email:" + _hashlib.sha1(
-                f"{(uid or 'local')}|{raw_company.lower()}|{title.lower()}".encode()
-            ).hexdigest()[:20]
-
-            try:
-                with get_session() as session:
-                    existing = session.exec(
-                        select(Job).where(
-                            Job.source == JobSource.MANUAL,
-                            Job.external_id == ext_id,
-                        ).where(
-                            (Job.user_id == uid) if _uid_filter else (Job.user_id.is_(None) | (Job.user_id == "local"))
-                        )
-                    ).first()
-
-                    if existing:
-                        # Already imported — only upgrade status on a stronger signal.
-                        app_obj = session.exec(
-                            select(Application).where(Application.job_id == existing.id)
-                        ).first()
-                        if app_obj and is_rejection and app_obj.status != ApplicationStatus.REJECTED:
-                            app_obj.status = ApplicationStatus.REJECTED
-                            app_obj.updated_at = datetime.utcnow()
-                            session.add(app_obj)
-                            session.commit()
-                        continue
-
-                    job = Job(
-                        user_id=uid if _uid_filter else None,
-                        source=JobSource.MANUAL,
-                        external_id=ext_id,
-                        company=raw_company,
-                        title=title,
-                        url="",
-                        description=email.get("body") or "",
-                    )
-                    session.add(job)
-                    session.commit()
-                    session.refresh(job)
-
-                    app_obj = Application(
-                        user_id=uid if _uid_filter else None,
-                        job_id=job.id,
-                        status=_email_status(is_rejection, is_interview),
-                        apply_track="email_import",
-                        submitted_at=datetime.utcnow(),
-                        notes=f"Imported from {payload.source} email on {datetime.utcnow():%Y-%m-%d}.",
-                    )
-                    session.add(app_obj)
-                    session.commit()
-                imported += 1
-                if is_rejection:
-                    rejections += 1
-                elif is_interview:
-                    interviews += 1
-            except Exception as e:
-                log.warning("sync-emails: failed to import email %r: %s", title, e)
-                unmatched_list.append({
-                    "subject": email.get("subject"),
-                    "sender": email.get("sender"),
-                    "company_guess": email.get("company_guess"),
-                })
-
-    return {
-        "success": True,
-        "processed": len(payload.emails),
-        "matched": matched,
-        "imported": imported,
-        "rejections": rejections,
-        "interviews": interviews,
-        "unmatched": len(unmatched_list),
-    }
+    return {"success": True, **stats, "unmatched": len(unmatched_list)}
 
 
 # ── CSV export ───────────────────────────────────────────────────────────────

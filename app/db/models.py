@@ -5,7 +5,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, UniqueConstraint, desc
 from sqlmodel import Field, SQLModel
 
 
@@ -88,6 +88,11 @@ class Job(SQLModel, table=True):
         Index("ix_job_user_company_title", "user_id", "company", "title"),
         # Adoption/retention/analytics filter the shared pool by recency.
         Index("ix_job_user_discovered", "user_id", "discovered_at"),
+        # The index-friendly window COUNTS (freshness.is_fresh_expr(...,
+        # index_friendly=True): Pool / All Jobs badge, the Ghost badge, the
+        # /api/jobs totals) and the shared pool's "new in 24h". Same DDL as
+        # production's (user_id, first_seen DESC); see init_db._PERF_INDEXES.
+        Index("ix_job_user_firstseen", "user_id", desc("first_seen")),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     # Multi-tenant: Supabase user UUID. NULL = legacy single-user SQLite row.
@@ -235,6 +240,17 @@ class Application(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     submitted_at: Optional[datetime] = None
+    # Earliness receipt (app/strategy/earliness.py, 2026-10-11): minutes between
+    # the posting's reference clock — the EARLIER of a trusted ATS publish date
+    # and when we first saw it — and the user's submit; `applied_ref` names the
+    # clock ('posted' | 'found'). NULL = unmeasured (email imports, rows that
+    # predate the column); never backfilled or guessed.
+    applied_after_min: Optional[int] = None
+    applied_ref: Optional[str] = None
+    # First employer response: a confident email signal (rejection / interview /
+    # offer / assessment) or a recorded outcome. First write wins; 'ghosted'
+    # never sets it, so NULL on an old application means silence.
+    first_response_at: Optional[datetime] = None
     notes: Optional[str] = None
     # "autofill" = Greenhouse/Lever/Ashby (bot fills the form)
     # "manual"   = LinkedIn/Indeed/etc. (bot preps materials, human applies)
@@ -386,6 +402,12 @@ class UserProfile(SQLModel, table=True):
     # When SpotApply first started searching for this user (their first welcome
     # window). Read by /api/admin/first-hour: time to first / fifth match.
     feed_started_at: Optional[datetime] = None
+    # The master resume now on file: when it was uploaded, and a hash of the
+    # file. A fit report scored before this time is labelled as scored against
+    # the PREVIOUS resume, and a changed hash re-judges what is on the board
+    # (strategy/realign.rescore_board_for_new_resume). NULL = not known.
+    resume_uploaded_at: Optional[datetime] = None
+    resume_sha256: Optional[str] = None
     disability_status: str = "Decline to self-identify"
     # Free-text bio used to generate essay answers
     professional_summary: str = ""
@@ -459,6 +481,23 @@ class UserProfile(SQLModel, table=True):
     # "Open to relocation to …" line; application-form address fields keep
     # the real location.
     resume_use_job_city: bool = False
+    # The owner's rule (2026-10-08), opt-in: the title line under the name on
+    # a tailored resume is the JOB POSTING's title ("Backend Engineer"). Off:
+    # the title the user's own resume gives. Never changes a held job title.
+    resume_title_from_jd: bool = False
+    # The user's own answer to "How did you hear about this opportunity?" on
+    # application forms (owner, 2026-10-09). The extension answers that
+    # question ONLY from this, never from memory or a model; "" = the user
+    # answers it on each form.
+    how_heard_answer: str = ""
+    # One-click submit (founder decision 2026-10-11, docs/AUTO_APPLY_RESEARCH.md
+    # §5): with this ON the board's Auto-Fill button reads "Apply & Submit",
+    # and the click on it is the user's approval of THAT application. The
+    # extension then presses the form's own Submit, only on the server's
+    # allow-listed login-free boards, only when every required field is
+    # filled, never past a CAPTCHA or a sign-in step. OFF: the user clicks
+    # Submit on the form, as before.
+    one_click_submit: bool = False
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR
@@ -488,7 +527,8 @@ class UserProfile(SQLModel, table=True):
     # the old polling-based `last_active_at` is deliberately NOT copied in.
     last_meaningful_activity_at: Optional[datetime] = None
     # Set when the user pauses their own search (or it is paused for them);
-    # NULL = not paused. Cleared by "Resume search" or any meaningful action.
+    # NULL = not paused. Cleared ONLY by "Resume search" (POST
+    # /api/search/resume) — any other action leaves an explicit pause alone.
     search_paused_at: Optional[datetime] = None
     pause_reason: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -620,6 +660,9 @@ class UserUsage(SQLModel, table=True):
     # two together are the marginal-yield signal that opens the burst zone.
     finals_count: int = Field(default=0)          # Tier-2 finals paid for today
     finals_hits: int = Field(default=0)           # of those, how many cleared the bar
+    # "Apply & Submit" clicks today (one-click submit). Reserved when the
+    # fill-pack is requested with submit=1; bounded by ONE_CLICK_SUBMIT_DAILY_LIMIT.
+    one_click_submit_count: int = Field(default=0)
 
 
 class FunnelEvent(SQLModel, table=True):
@@ -813,6 +856,41 @@ class UserNotification(SQLModel, table=True):
     read: bool = Field(default=False, index=True)
     link: Optional[str] = None                # clickable link in the UI
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OutreachMessage(SQLModel, table=True):
+    """One outreach message the user SENT THEMSELVES (email or LinkedIn note)
+    about one application, and whether anyone answered.
+
+    SpotApply drafts the words and builds the compose/search links
+    (intelligence/outreach.py); the user clicks "Mark as sent" after sending
+    from their own account — nothing is sent for them. The inbox scan
+    (`/api/sync-emails`) then closes the loop: an email whose subject is the
+    one we drafted, or from the address it went to, or from a person at the
+    company's domain after it went out, stamps `replied_at`.
+
+    Owned by `user_id`; `application_id` cascades with the application so a
+    cleared or re-pointed board leaves no orphan. Guard: `test_outreach`.
+    """
+    __tablename__ = "outreach_messages"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    application_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("application.id", ondelete="CASCADE"), nullable=False, index=True))
+    channel: str = Field(default="linkedin", index=True)      # "email" | "linkedin"
+    kind: str = ""                              # the draft type it came from
+    recipient_label: str = ""                   # what the user typed: a name, "Recruiter", …
+    recipient_url: Optional[str] = None         # a profile the user pasted (never guessed)
+    recipient_email: Optional[str] = None
+    subject: Optional[str] = None
+    subject_key: Optional[str] = Field(default=None, index=True)   # outreach.subject_key
+    body: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    sent_at: Optional[datetime] = Field(default=None, index=True)
+    replied_at: Optional[datetime] = None
+    reply_subject: Optional[str] = None
+    reply_how: Optional[str] = None             # email_subject | email_sender | email_domain | manual
 
 
 class LlmSpend(SQLModel, table=True):

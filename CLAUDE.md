@@ -7,7 +7,12 @@
 
 AI job-application copilot (app.spotapply.ai). Discovers tech roles from ATS APIs/feeds, scores each
 against the user's résumé via a cascade, tailors résumé+cover letter (grounded), and
-auto-fills forms. **The human always reviews and clicks Submit** — never auto-submit.
+auto-fills forms. **Submit is always the human's click**: on the form by default, or
+— with `UserProfile.one_click_submit` ON (founder 2026-10-11) — the dashboard's
+"Apply & Submit" click approves THAT application and the extension presses the
+form's Submit (`_one_click_decision`: allow-listed login-free boards only, daily
+cap, every required field filled, never past a CAPTCHA or sign-in). Never
+unattended, never a CAPTCHA solved or evaded, never a password stored.
 
 Multi-tenant web app (grew from a single-user agent). Public README has the full story;
 this file is the working map for editing the code.
@@ -245,6 +250,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (turns raw signal tokens like `fresh_posting_4d` → "Posted 4 days ago").
 - **Dashboard** is one big `templates/dashboard.html` (HTML + inline `<script>`). Modals
   toggle via `style.display` (not the `hidden` class — inline `display` overrides it).
+  The desktop sidebar collapses to an icon rail (`html.sb-collapsed`, set in
+  `<head>` before paint from `hp_sb_collapsed`); everything beside it reads
+  `--sb-w`, never a literal 190px (guard: `test_sidebar_collapse`).
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
   **Per-user aggregates are bounded AND cached** (`app/common/ttl_cache.py`):
   `/api/freshness-stats` (was 52s — it loaded every open row of a 65k pool to
@@ -525,7 +533,36 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   RATE_LIMITED, 403 = BLOCKED: an endpoint refusing to answer says nothing about
   the vacancy, and treating it as death would close live jobs whenever a board
   throttled the pulse lane. Free signal = absence from a COMPLETE board fetch;
-  an incomplete fetch records nothing. The gate runs LATE (`strategy/delivery_gate.py`):
+  an incomplete fetch records nothing. **The pulse lane closes on it**
+  (2026-10-10, `discovery/board_absence.py`, `PULSE_GHOST_CLOSE_ENABLED`, on):
+  the full pass rotates by `last_seen`, which the pulse bumps, so pulse-watched
+  boards were never ghost-closed (Ashby has no other signal). ONLY
+  `CLOSING_SOURCES` — ids platform-wide + edit-stable, URL names the board:
+  Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, Personio, Rippling,
+  Breezy, Pinpoint. Workday (multi-site reqs, moved paths), Teamtailor
+  (slug in the id), BambooHR (tenant ids), Workable (no board in the URL;
+  display names collide) and JOIN (offset pages of 5: an early-ended or
+  shifted walk still read complete) never close here: full pass + 45-day
+  retention. A
+  changed board's listing is queued only if its adapter DECLARED it whole
+  (`fetch_complete`, or `listing_complete` + `listed_ids`); AFTER the consume
+  loop, in a slice (`PULSE_GHOST_CLOSE_MAX_SECONDS`) and ONE session: one
+  aggregate per board (rows read only when something closes/reopens), scoped
+  source + company + URL board prefix + `first_seen` before the fetch STARTED;
+  closes via `_close_copies` in one transaction, job rows locked ascending
+  first (`slate.place`'s order), REMOVED as one ON CONFLICT upsert under a
+  SAVEPOINT. Doubt closes NOTHING: empty listing; >50% of open rows and >3
+  (decided by the count, memoised while no new listing could resolve it or
+  after a census timeout, ≤6 h — one census of a 21.7k-row board is ~11 s); a
+  listing that collapsed vs the census is held — census NOT moved — until
+  `PULSE_GHOST_CLOSE_CONFIRM_POLLS` (3) polls agree; census 0/none = no
+  closing. `PULSE_GHOST_CLOSE_MAX_PER_TICK`; only a board with pending absent
+  rows is CARRIED to the next tick (no re-poll, schedule untouched); reopening
+  never waits on the budget; under 1 s of slice left no board is judged, and
+  the statement ceiling shrinks to what is left. A later complete listing
+  REOPENS (`Removed from company` reasons) + records LIVE, TAILORED-or-later
+  copies included; a Removed application stays Removed.
+  Guard: `test_pulse_ghost_close`. The gate runs LATE (`strategy/delivery_gate.py`):
   `slate.place()` holds the cached in-session backstop, the scoring lane does the
   network refresh outside its session for candidates that already cleared the
   bar, single-flighted per posting and bounded by `CycleBudget`. Measured: ~55
@@ -533,7 +570,29 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   first version only refused, and one dead Workday req was re-nominated and
   re-refused 17 times in 7 hours. Aggregate counters only
   (`metrics_snapshot`, drained once per scoring cycle into one log line);
-  never a job id, external id or URL in a label.
+  never a job id, external id or URL in a label. **"No longer available"**
+  (`POST /application/{id}/unavailable`, 2026-10-08): the reporter's copy
+  closes now (pre-submit → SKIPPED with a "job closed" note — a system skip,
+  never the dismissal marker); one report never touches another board — it
+  queues `delivery_gate.verify_reported` (forced past a young LIVE verdict,
+  `LIVENESS_REPORTS_PER_USER_DAILY`, `LIVENESS_REPORT_MIN_RECHECK_MINUTES`,
+  verifiable sources only, checked BEFORE any cached verdict) and only
+  REMOVED/EXPIRED runs `close_dead_everywhere` (waiting copies incl. ERROR →
+  Removed; TAILORED+ only `is_closed`). A BARE workday/bamboohr/teamtailor id
+  (`job_identity.looks_unscoped`) is shared by other employers: fetch that
+  row's URL only (`check_url_now`, recorded nowhere) and close only
+  same-employer copies (`tenant_from_url`). Guard: `test_report_unavailable`. Opening a job
+  (`/api/jobs/{id}/verify`) uses the SAME rules — forced gate check, no
+  session across the fetch; an aggregator link closes only the opener's copy
+  (`close_own_copy`); it used to Remove TAILORED/INTERVIEWING work. Guard:
+  `test_click_verification`. A Greenhouse posting redirected to its board's
+  index (`?error=true`) is REMOVED; one the page can't speak for (employer-site
+  `gh_jid`, stored or redirected to from a hosted URL; token = the ONE registry
+  slug naming its company; any WRONG_PAGE) asks the ATS API: 200 LIVE, 404
+  REMOVED only if the board answers 200 (`delivery_gate._check`, guard:
+  `test_closed_posting_detection`). **Not a sweep:** the check guards NEW
+  deliveries (a refusal closes only the copy being placed); a copy already on
+  a board is re-checked only when someone opens or reports it.
 - **`source` is a routing bucket; `origin` is the truth.** Both HN sources write
   `source="indeed"`, RemoteOK writes `"remotive"`, SerpAPI discarded `via`.
   `Job.origin`/`origin_provider` record the real producer without moving rows
@@ -564,6 +623,50 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   not a hiring probability. Year-only dates are admitted as approximate, and only
   dates feeding a total can make a total approximate. Guards:
   `evidence_inventory`, `requirement_review`.
+- **A résumé arrives as PLAIN TEXT** (2026-10-10, `inventory.py`): PDF/DOCX uploads
+  are read back by pypdf/python-docx — no `#`, no `**` — and the inventory knew only
+  markdown: the founder's résumé rendered to PDF read ZERO roles (3/3 files).
+  `_bare_section` (exact canonical names, "EXPERIENCE"/"Skills:"/"E X P E R I E N C E";
+  never "Project Manager"), `_header_like` (a dated line that reads as a NAME, not a
+  sentence), title/employer taken from the 1–2 short lines above a date line, `###`
+  role sub-headings, and `_DEGREE_LINE_RE` (a degree is academic in any section).
+  `evidence._DATE_RANGE_RE` accepts year-only ranges ("2019 - 2022" was an EMPLOYER).
+  Tailor loop: every attempt is kept and `_best_attempt` ships the best SHIPPABLE
+  draft, not the last; a style-only Doctor failure (banned words, weak bullets)
+  ships TAILORED with `_quality_note` — ONLY fabrications, grounding and
+  `doctor_integrity` park a draft at ERROR (8 of 19 production ERRORs were style).
+  Cover readers strip the on-disk `---COVER---` header (`_cover_body`); the master
+  résumé is the NEWEST `resume.*` object (`pipeline.list_resume_objects`; upload
+  removes the other extensions; `/api/resume/synthesize` never overwrites one); the
+  extension route charges a credit only after the ERROR re-check. Guard:
+  `test_tailor_fixes`.
+- **The owner's resume rules** (2026-10-08, `tailoring/rules.py` + `render.py`):
+  every tailor is a FULL rewrite (L0 skip off) under `TAILOR_SYSTEM`; then
+  deterministic steps: em dashes scrubbed (date facts canonicalized in
+  evidence.py), the master's email restored, the title line = the posting's
+  title only with `UserProfile.resume_title_from_jd` (never a held title, a
+  number, or an unevidenced skill), location unchanged. Output: a ONE-page PDF
+  (fpdf2 pinned 2.8.x + bundled Carlito; `fit_one_page` tightens tiers with a
+  line spare for Word, then drops the least JD-relevant bullets, older role
+  first on ties, never a role line, one kept per run) + a matching DOCX,
+  generator metadata and template rsids scrubbed, named `First_Last_Resume` (no
+  company — owner). A LETTER, digit or currency sign Carlito can't draw
+  (`FitResult.undrawable`, e.g. a CJK name) ships Word only + a note; symbols
+  never do (LaTeX `∼`/`⋅` get stand-ins or drop; `_NO_GLYPH`, never a `?`
+  compare). `rules_checklist` lives in report.json, backend only
+  (owner). No "90+ on any ATS" promise: under 90% of the job keywords the
+  master HAS earns one rebuild. Guards: `test_resume_rules`, `test_resume_render`.
+- **Outreach kit** (2026-10-10, `intelligence/outreach.py`, `OutreachMessage`):
+  `referral.py` drafts the words (draft-only, Haiku upgrade now behind the SAME
+  breaker + budget, booked as kind="outreach"); the kit makes each draft one click
+  away from sent — a subject for email drafts, Gmail/Outlook/mailto compose links
+  with subject+body filled, LinkedIn people SEARCHES (never a guessed profile URL),
+  and the people the posting itself names (`hiring_context`, with evidence). "Mark
+  as sent" records `sent_at`; `/api/sync-emails` then calls `match_reply` BEFORE
+  application matching (subject under Re:/Fwd: prefixes > the recipient's address
+  > a PERSON at the company's domain after `sent_at`; robot mailboxes never) and
+  stamps `replied_at` + a card note + a notification; manual flag/unflag via
+  `/api/outreach/{id}/replied`. Nothing is ever sent for the user. Guard: `test_outreach`.
 - **Contact research is ON HOLD, and "no data" is not zero**
   (`intelligence/contact_research.py`, docs/RECRUITER_RESEARCH_READINESS.md):
   THREE features wear the word recruiter — `/recruiter` is an INBOUND portal
@@ -635,7 +738,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   grandfathered). Paid AI only while active or paid, checked when queued AND
   before each provider call (`reranker._paid_call_allowed`), plus atomic daily
   per-user/platform reservations. Kill switch `COMPUTE_POLICY_ENFORCED=0`.
-  Temporary Pro now defaults ON — it grants limits, never compute. Journey
+  Temporary Pro now defaults ON — it grants limits, never compute. An explicit
+  PAUSE is cleared ONLY by Resume, and work started outside the lanes asks
+  `compute_policy.user_paused`/`is_paused` (welcome begin/refresh, onboarding
+  seed, `/api/welcome/status` → `paused`); `_may_welcome` skips `/api/search/*`
+  because the stamp runs before the route body — clicking Pause opened a boost
+  that adopted and scored (2026-10-08, guard: `test_pause_stops_work`). Inside
+  a lane every per-user write re-asks `compute_policy.paused_now` (one cached
+  read for all users): a tick's user list is minutes old, and a pulse tick
+  routed 2 jobs into a pool 14 s after Pause (2026-10-09). Adoption and
+  `dispatch_fresh_alerts` refuse a paused user themselves. Journey
   metrics (`analytics/journey.py`) come from ACTION routes only, salted key.
   Dedup: same company + normalised title within 40 d is one role (`slate.py`).
   Checklist + evidence: `docs/AUDIT_2026_09_25_IMPLEMENTATION.md`.
@@ -646,7 +758,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   résumé DATES (`SkillEvidence.employment_months`; role length is `role_months`,
   an upper bound); ONE export verdict (`tailoring/export_gate.py`) for review,
   details, download and fill-pack; polling never counts as activity
-  (`_is_meaningful_request`), grace 1 day.
+  (`_is_meaningful_request`), grace 1 day — nor does a write a page fires on
+  its own (`_PASSIVE_WRITE_PATHS`: the dashboard's load-time
+  `/api/verify/identity` made every page view meaningful until 2026-10-08), so
+  "Resume search" is how idle users return: it clears the pause, then ALWAYS
+  re-runs `seed_new_user` in the background (a role change or resume saved
+  while paused seeds nothing until then) (guards: `test_dormancy`,
+  `test_pause_stops_work`).
 - **Students: ONE answer for "internships?" and "sponsorship?"** (2026-09-28,
   `app/common/tenant_prefs.py`): `wants_internships` (Looking for = internship
   or both, or the old switch) and `needs_sponsorship` (the VISA STATUS decides
@@ -703,7 +821,7 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   one account held 68k open rows; ~30 counts over them took sign-in to 17-32 s);
   batches paced. Guard: `test_dashboard_load`.
 - **Extension: sessions are per TAB, "Submitted" needs confirmation** (audit
-  2026-09-30, extension 1.4.0, published to the Store as 1.0.0): a session exists only in the tab SpotApply opened
+  2026-09-30; Store build 1.0.0, manifest 1.2.0 packaged 2026-10-12 for review — listing `acmmmmipgplcigghmcafkmjlenflbgcp`; `settings.chrome_web_store_url` is the ONE install link (Jinja global; the .zip is a developer fallback; an `extension/` edit reaches Store users only after a version bump + review; guard: `test_extension_store_link`): a session exists only in the tab SpotApply opened
   (or the popup's active tab) plus the tabs it opens — never a global pack any
   ATS page resumes; a new tab inherits only after a click on the bound page
   (`PAGE_CLICK`, 5 s) and a web first URL — Chrome 153 names the active tab
@@ -717,9 +835,24 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   from `degree_fields`; ONE work-auth interpreter, `authorized_now` (status + its end
   date) wins over the status text; any "without sponsorship" wording is left for the
   user unless citizen/green card; country from `residence_country` (never defaulted).
+  "How did you hear?" = `UserProfile.how_heard_answer` ONLY (select/radio/option
+  list/combobox/text, else "Other" + specify; never memory or AI; empty = the
+  user's; guard: `test_how_heard_answer`).
   Demographics are filled when the user saved them (`eeo_confirmed`) or opted in —
   never from recall/learning/AI. Uploads skip other-document fields, honour
   `accept`, count only when acknowledged; DO_FILL replies with the real outcome.
+  Captcha/honeypot/hidden fields are never filled, AI-asked or learned
+  (`canFillField` ↔ `autofill/field_guards.py`, refused BEFORE the AnswerMemory
+  cache; honeypot WORDING only when the whole label is the instruction, so
+  "LinkedIn (leave blank if none)" stays fillable). A MODEL reply about the
+  question is never returned/cached; text the USER typed is refused only in
+  model-only forms (`is_model_only_reply`). Ashby Yes/No buttons + location
+  autocompletes go through the same rules (region compared per comma
+  component, never a substring: "on" is in "London"). The resume route serves
+  the one-page PDF unless `?accept=` rules it out; 1.0.1+ ALWAYS sends it (`*`
+  if the field names none), so no parameter = the 1.0.0 Store build, which gets
+  the PDF and attaches nothing on a Word-only field (accepted tradeoff, logged)
+  (live test 2026-10-09; guards: `test_extension_fill_guards`, audit §11).
   **Setup after a resume upload**: review profile (what was read + what's missing)
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +
@@ -729,6 +862,32 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   still strips diacritics so employer forms that write "Résumé" are recognised.
 - **Compliance:** public ATS/feeds only, respect robots.txt; no LinkedIn/Indeed
   automation (discovery-only links). Tailoring must stay grounded in the real résumé.
+  **Auto-apply research** (2026-10-10/11, `docs/AUTO_APPLY_RESEARCH.md`): CAPTCHAs are
+  detected, paused on and never solved or evaded; accounts (Workday/iCIMS) are the
+  user's — the extension prefills the account email, leaves passwords to the browser
+  and names the emailed-code step; each handoff (`captcha_needed` / `login_needed` /
+  `verification_code_needed` / `auto_submit_blocked`) raises ONE "needs you"
+  notification. **One-click submit** (2026-10-11, founder decision) is the "Submit
+  from SpotApply" shape: `UserProfile.one_click_submit` OFF by default; the board's
+  "Apply & Submit" click approves ONE application; `_one_click_decision` (server.py)
+  alone says yes — kill switch, login-free allow-list `ONE_CLICK_SUBMIT_HOSTS`
+  (suffix match, never Workday/iCIMS/aggregators), 25/day reserved in `UserUsage` —
+  and `maybeAutoSubmit` (content.js) presses the form's OWN button only after the
+  fill + audit, never past a login wall, CAPTCHA, unanswered field or failed
+  validation; "Submitted" still needs the employer's confirmation. Guards:
+  `test_one_click_submit`, the one-click block of `test_extension_rules`, harness
+  OC1–OC8. The server agent's browser-fingerprint "stealth" script was removed;
+  `autofill_multi_user_enabled` stays founder-only.
+
+- **Earliness is ONE reference clock, and a receipt never flatters** (2026-10-11,
+  `app/strategy/earliness.py`, docs/EARLINESS_RECEIPT.md): `reference(job)` = the
+  EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)
+  and `first_seen`; an edit date can only make it later. `mark_as_submitted` stamps
+  `Application.applied_after_min`/`applied_ref` (never for email imports); the board
+  puts in-window rows (`data-early`) first; `first_response_at` is first-write-wins
+  and 'ghosted' never sets it. Copy states a clock, never odds — no "likely", no
+  "Nx" (`FORBIDDEN_WORDS`, guard: `test_earliness_receipt`). Baseline 2026-10-11:
+  13/22 SpotApply submissions inside 48h; `scripts/apply_latency_report.py`.
 
 - **Distilled scorer (shadow)** — `docs/DISTILLATION.md`: export LLM finals
   (`scripts/export_training_data.py`) → fine-tune cross-encoder on Colab

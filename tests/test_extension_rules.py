@@ -37,9 +37,23 @@ FUNCTIONS = [
     "yearsQuestionIsGeneric", "degreeSubjectAsked", "skillMonthsFor", "subjectMatchesTitles", "_countryIn",
     "_normCountry", "workAuthFacts", "interpretWorkAuthQuestion", "hostIs",
     "isTrustedATSHost", "fileMatchesAccept", "currentEmployer", "residenceCountry",
+    "eeoStated", "eeoCategory", "eeoPickOption", "eeoValueFor",
+    "nativeAutofillLabelMatches", "_normValue", "valuesEquivalent", "shouldOverwrite",
+    "isAntiBotField", "looksLikeFieldIdentifier", "looksLikeMetaReply",
+    "looksLikeModelOnlyReply", "parseLocation", "pickLocationSuggestion",
+    "isHowHeardQuestion", "howHeardAnswer", "_hhTokens", "_hhHas", "_hhIsOther",
+    "_hhIsPlaceholder", "pickHowHeardOption", "_selectHasChoice",
+    "_companyCore", "isHowHeardFillQuestion", "_saysSpecifyOther",
+    "autoSubmitAllowedHost", "escapeHtml", "samePosting",
 ]
 CONSTS = ["_DEMOGRAPHIC_RE", "_GENERIC_YEARS_WORDS", "_COUNTRY_WORDS", "ATS_SUFFIXES",
-          "_OTHER_DOC_RE"]
+          "AUTO_SUBMIT_BLOCK_TEXT",
+          "_OTHER_DOC_RE", "_EEO_DECLINE_RE", "_EEO_CATEGORIES", "_EEO_PLACEHOLDER_RE",
+          "_NATIVE_AUTOFILL_RE", "_NATIVE_AUTOFILL_IDENTITY", "NATIVE_AUTOFILL_ATS",
+          "_ANTI_BOT_RE", "_CAPTCHA_WIDGET_SEL", "_META_START_RE",
+          "_META_ANY_RE", "_META_MODEL_ONLY_RE", "US_STATES", "CA_PROVINCES",
+          "_HEAR_ABOUT_RE", "_HOW_HEARD_SYNONYMS", "_HH_ASKED", "_HOW_HEARD_FILL_RE",
+          "_SPECIFY_RE"]
 
 
 def _balanced(src: str, start: int, open_ch: str, close_ch: str) -> int:
@@ -75,7 +89,9 @@ def _const(src: str, name: str) -> str:
     return src[m.start():end] + ";"
 
 
-PRELUDE = "\n".join([_const(CONTENT, c) for c in CONSTS] +
+# content.js state the extracted functions read (eeoStated reads the live pack).
+PRELUDE = "\n".join(["let _copilotPack = null;"] +
+                    [_const(CONTENT, c) for c in CONSTS] +
                     [_function(CONTENT, f) for f in FUNCTIONS])
 
 
@@ -264,9 +280,26 @@ def test_the_forms_accepted_formats_are_respected():
     cases = [(".pdf", "resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
              (".pdf,.docx", "resume.docx", "", True),
              ("application/pdf", "resume.pdf", "application/pdf", True),
-             ("", "resume.docx", "", True)]
+             ("", "resume.docx", "", True),
+             # read as the server's _accept_allows reads them
+             ("*/*", "resume.pdf", "application/pdf", True),
+             ("*", "resume.pdf", "application/pdf", True)]
     out = run_js([[js, a, n, m] for a, n, m, _ in cases])
     assert out == [c[-1] for c in cases]
+    from app.api.server import _accept_allows
+    assert [_accept_allows(a, "." + n.rsplit(".", 1)[1], m) for a, n, m, _ in cases] == out
+
+
+def test_the_resume_request_always_says_what_the_field_takes():
+    """Review 2026-10-09: 1.0.1+ always sends ?accept= ("*" when the field
+    names nothing), so a request without it is the 1.0.0 Store build."""
+    body = _function(CONTENT, "attachResume")
+    assert "|| '*'" in body and "fetchResumeFile(pack, _accept)" in body
+    assert "(_accept ?" not in body, "the accept parameter must never be optional again"
+    # The download itself lives in the helper the native-autofill layer shares.
+    fetch = _function(CONTENT, "fetchResumeFile")
+    assert "/resume?accept=${encodeURIComponent(_acc)}" in fetch
+    assert "String(accept || '*')" in fetch and "(_acc ?" not in fetch
 
 
 def test_the_current_company_is_the_current_employer():
@@ -298,3 +331,659 @@ def test_every_write_path_respects_the_demographic_opt_out():
     the direct EEO writer was the only path that checked (audit 2026-09-30)."""
     for fn in ("recallFromMemory", "observeField", "fillEssayQuestions"):
         assert "isDemographicQuestion(" in _function(CONTENT, fn), fn
+
+
+# ── voluntary self-identification: the saved answer lands on the form ───────
+# Owner's report (2026-10-10): the self-identification given in the profile was
+# not filled. Two causes, both pinned here: a CONFIRMED "Decline to
+# self-identify" counted as "no answer", and options were matched by substring,
+# so "I decline to self-identify" / "I don't wish to answer" never matched and
+# "Male" could land on "Female".
+
+GH_GENDER = ["Please select", "Male", "Female", "Decline To Self Identify"]
+GH_RACE = ["Please select", "American Indian or Alaskan Native", "Asian (Not Hispanic or Latino)",
+           "Black or African American (Not Hispanic or Latino)", "Hispanic or Latino",
+           "White (Not Hispanic or Latino)", "Native Hawaiian or Other Pacific Islander",
+           "Two or More Races (Not Hispanic or Latino)", "Decline To Self Identify"]
+GH_VETERAN = ["Please select", "I identify as one or more of the classifications of a protected veteran",
+              "I am not a protected veteran", "I decline to self-identify"]
+GH_DISABILITY = ["Please select", "Yes, I have a disability, or have had one in the past",
+                 "No, I do not have a disability and have not had one in the past", "I do not want to answer"]
+
+
+@pytest.mark.parametrize("kind,value,options,want", [
+    ("gender", "Male", GH_GENDER, 1),
+    ("gender", "Female", GH_GENDER, 2),
+    ("gender", "Male", ["Female", "Male"], 1),                       # never a substring match
+    ("gender", "Decline to self-identify", GH_GENDER, 3),
+    ("gender", "Decline to self-identify", ["Select", "Man", "Woman", "I don't wish to answer"], 3),
+    ("gender", "Decline to self-identify", ["Select", "Male", "Female", "Prefer not to say"], 3),
+    ("gender", "Non-binary", ["Select", "Male", "Female", "Non-Binary", "Decline"], 3),
+    ("ethnicity", "Asian", GH_RACE, 2),                                # not "Hispanic" via the qualifier
+    ("ethnicity", "Hispanic or Latino", GH_RACE, 4),
+    ("ethnicity", "White", GH_RACE, 5),
+    ("ethnicity", "Black or African American", GH_RACE, 3),
+    ("ethnicity", "Two or more races", GH_RACE, 7),
+    ("ethnicity", "Decline to self-identify", GH_RACE, 8),
+    ("veteran", "I am not a protected veteran", GH_VETERAN, 2),
+    ("veteran", "I identify as one or more of the classifications of a protected veteran", GH_VETERAN, 1),
+    ("veteran", "Decline to self-identify", GH_VETERAN, 3),
+    ("veteran", "I am not a protected veteran", ["Select", "Yes", "No", "Decline"], 2),
+    ("disability", "No, I do not have a disability, or history/record of having a disability", GH_DISABILITY, 2),
+    ("disability", "Yes, I have a disability (or previously had a disability)", GH_DISABILITY, 1),
+    ("disability", "Decline to self-identify", GH_DISABILITY, 3),
+    ("hispanic", "No", ["Please select", "Yes", "No", "Decline To Self Identify"], 2),
+    ("hispanic", "Yes", ["Please select", "Yes", "No", "Decline To Self Identify"], 1),
+    ("hispanic", "Decline to self-identify", ["Please select", "Yes", "No", "Decline To Self Identify"], 3),
+    # Unknown wording on either side: nothing is guessed.
+    ("gender", "Agender", GH_GENDER, -1),
+    ("ethnicity", "Asian", ["Please select", "Group A", "Group B"], -1),
+])
+def test_the_saved_answer_lands_on_the_matching_option(kind, value, options, want):
+    assert run_js([["eeoPickOption", kind, value, options]])[0] == want
+
+
+@pytest.mark.parametrize("ethnicity,want", [
+    ("Asian", "No"), ("White (Not Hispanic or Latino)", "No"), ("Hispanic or Latino", "Yes"),
+    ("Decline to self-identify", "Decline to self-identify"), ("", ""),
+])
+def test_greenhouses_hispanic_question_is_derived_from_the_ethnicity_answer(ethnicity, want):
+    assert run_js([["eeoValueFor", {"ethnicity": ethnicity}, "hispanic"]])[0] == want
+
+
+def test_a_confirmed_decline_is_a_stated_answer():
+    # The pack the extension holds decides consent — eeo_confirmed, not the wording.
+    confirmed = run_js([["(p => (_copilotPack = p, true))", {"eeo_confirmed": True}],
+                        ["eeoStated", "Decline to self-identify"], ["eeoStated", "Male"], ["eeoStated", ""]])
+    assert confirmed[1:] == [True, True, False]
+    unconfirmed = run_js([["(p => (_copilotPack = p, true))", {"eeo_confirmed": False, "gender": "Male"}],
+                          ["eeoStated", "Male"], ["eeoStated", "Decline to self-identify"]])
+    assert unconfirmed[1:] == [False, False]
+    assert run_js([["eeoStated", "Male"]])[0] is False      # no pack at all
+
+
+def test_the_custom_dropdown_pass_respects_the_opt_out():
+    body = _function(CONTENT, "fillEEOCustomDropdowns")
+    assert "_eeoAutofillEnabled" in body and "eeoStated(" in body and "eeoKindOf(" in body
+
+
+# ── the board's own autofill-from-resume goes first ─────────────────────────
+# Founder's ask (2026-10-10): some boards fill the application from the
+# uploaded resume themselves — use that whenever it is offered, then fill only
+# what it left empty or got wrong. Two pure rules carry the behaviour: which
+# wording IS such a widget (a plain "Upload resume" is not), and what may be
+# written over a value the board's parser produced.
+
+@pytest.mark.parametrize("text,want", [
+    ("Autofill with Resume", True),                                    # Workday's option
+    ("Autofill application from resume", True),                        # Ashby's card
+    ("Autofill from your resume", True),
+    ("Upload your resume and we'll autofill the form for you.", True),
+    ("We'll parse your CV to prefill the form", True),
+    ("Parse resume", True),
+    ("Résumé parsing", True),                                          # decomposed accent too
+    ("Resume * Drag and drop, or upload a file — we'll autofill the form from it.", True),
+    # Ordinary uploads, however they are worded, are NOT native autofill.
+    ("Upload resume", False), ("Resume/CV *", False), ("Attach resume/CV", False), ("Résumé *", False),
+    ("Drop your resume here or select a file", False),
+    ("Upload a resume to automatically fill in the fields below.", False),   # no fill-from verb
+    ("Cover letter", False), ("Import from LinkedIn", False),
+    # An "autofill" with no resume in the same sentence is Chrome's, or a note.
+    ("Autofill", False), ("Please fill in your resume details", False),
+    ("We'll autofill the form from it. Résumé *", False),              # sentence-bounded on purpose
+    ("", False),
+])
+def test_native_autofill_wording_is_recognised(text, want):
+    assert run_js([["nativeAutofillLabelMatches", text]])[0] is want
+
+
+@pytest.mark.parametrize("kind,current,wanted,want", [
+    # Empty: filled. Nothing to write: never.
+    ("email", "", "a@b.co", True), ("title", "", "Engineer", True), ("email", "x@y.z", "", False),
+    # Already the same thing, in the board's own formatting: kept.
+    ("email", "A@B.CO", "a@b.co", False),
+    ("phone", "(415) 555-0199", "+1 415 555 0199", False),
+    ("linkedin", "https://www.linkedin.com/in/x/", "https://linkedin.com/in/x", False),
+    ("first_name", "Alexandra", "ALEXANDRA ", False),
+    ("full_name", "Alexandra  Nguyen", "Alexandra Nguyen", False),
+    ("location", "San Francisco", "San Francisco, CA", False),          # coarser grain, same place
+    # A DIFFERENT value: corrected only for the applicant's identity.
+    ("email", "old@b.co", "a@b.co", True),
+    ("phone", "415-555-0100", "+1 415 555 0199", True),
+    ("linkedin", "linkedin.com/in/old", "https://linkedin.com/in/x", True),
+    ("last_name", "Nguyen-Smith", "Nguyen", True),
+    ("location", "Austin, TX", "San Francisco, CA", True),
+    # ...never for what the parser read elsewhere — the applicant reviews it.
+    ("company", "Globali20", "Globali20 India", False),
+    ("title", "Staff Engineer", "ML Engineer", False),
+    (None, "Acme", "Beta", False),
+])
+def test_only_empty_or_conflicting_identity_is_written_over_the_boards_autofill(kind, current, wanted, want):
+    assert run_js([["shouldOverwrite", kind, current, wanted]])[0] is want
+
+
+def test_native_autofill_runs_first_only_on_trusted_boards_and_never_submits():
+    step = _function(CONTENT, "runCopilotStep")
+    assert step.index("runNativeAutofill(") < step.index("fillCurrentPage("), "the board's autofill must run BEFORE our fill"
+    run = _function(CONTENT, "runNativeAutofill")
+    assert "_nativeAutofillEnabled" in run and "NATIVE_AUTOFILL_ATS.has(" in run, "kill switch + per-board gate"
+    assert run.index("_nativeAutofillEnabled") < run.index("detectNativeAutofill("), "a disabled switch means no detection at all"
+    # The only thing it ever clicks is the autofill option it detected.
+    assert re.findall(r"_pressElement\(([^)]*)\)", run) == ["widget.element"]
+    detect = _function(CONTENT, "detectNativeAutofill")
+    assert "submit" not in detect.lower() and "next" not in detect.lower()
+    # The one source of the rule, at every writer that could meet a parsed value.
+    assert "shouldOverwrite(" in _function(CONTENT, "fillInput")
+    assert "shouldOverwrite('phone'" in _function(CONTENT, "fillPhoneField")
+    assert "_nativePrefillActive" in _function(CONTENT, "fillWorkdayExperienceAndEducation"), \
+        "history sections the board built must be left alone"
+    assert "detectNativeAutofill(" in _function(CONTENT, "findAndClickApply"), "the chooser prefers the board's autofill option"
+    assert "native_autofill" in _function(CONTENT, "summarizeStep"), "the DO_FILL reply carries the outcome"
+    assert run_js([["(() => [...NATIVE_AUTOFILL_ATS].sort())"]])[0] == ["ashby", "greenhouse", "lever", "smartrecruiters", "workday"]
+
+
+def test_the_native_autofill_switch_defaults_on():
+    # An absent key is ON (installs predating the setting), an explicit false is OFF.
+    assert "chrome.storage.local.get(['spotapply_native_autofill']" in CONTENT
+    assert "!(d && d.spotapply_native_autofill === false)" in CONTENT
+    assert "changes.spotapply_native_autofill.newValue !== false" in CONTENT
+
+
+# ── live test 2026-10-09: fields nobody fills, replies nobody types ──────────
+
+def _fake_el(attrs=None, label="", in_widget=False):
+    """Just enough of an element for isAntiBotField."""
+    return {"attrs": attrs or {}, "label": label, "in_widget": in_widget}
+
+
+_EL_JS = """(spec) => isAntiBotField({
+    getAttribute: (k) => (k in spec.attrs ? spec.attrs[k] : null),
+    id: spec.attrs.id || '',
+    closest: () => (spec.in_widget ? {} : null),
+    labels: spec.label ? [{ textContent: spec.label }] : [],
+})"""
+
+
+@pytest.mark.parametrize("spec,want", [
+    (_fake_el({"name": "g-recaptcha-response", "id": "g-recaptcha-response",
+               "class": "g-recaptcha-response"}), True),          # the live-test field
+    (_fake_el({"name": "h-captcha-response"}), True),
+    (_fake_el({"name": "cf-turnstile-response"}), True),
+    (_fake_el({"name": "website", "class": "honeypot-field"}), True),
+    (_fake_el({"name": "comments_extra"}, label="Leave this field blank"), True),
+    (_fake_el({"name": "comments_extra"}, label="\n  Leave this\n  field blank *\n"), True),
+    (_fake_el({"name": "hp_email", "id": "hp2", "placeholder": "Please leave this field empty."}), True),
+    (_fake_el({"name": "extra"}, label="If you are human, leave this field blank"), True),
+    (_fake_el({"name": "token"}, in_widget=True), True),            # inside .g-recaptcha
+    (_fake_el({"name": "why_acme", "id": "why"}, label="Why Acme?"), False),
+    (_fake_el({"name": "_systemfield_name"}, label="Name"), False),
+    # Review 2026-10-09: a REAL field that says when to leave it blank is the
+    # applicant's to fill (the 1.0.0 build filled these; the looser pattern
+    # stopped them).
+    (_fake_el({"name": "linkedin"}, label="LinkedIn Profile (leave blank if none)"), False),
+    (_fake_el({"name": "github"}, label="GitHub URL - leave empty if you don't have one"), False),
+    (_fake_el({"name": "referrer", "placeholder": "Leave blank if you were not referred"}), False),
+    (_fake_el({"name": "preferred"}, label="Preferred first name - leave empty if same as legal name"), False),
+    (_fake_el({"name": "ref"}, label="If you have no referral code, leave this field blank."), False),
+    # Review 2026-10-09: "human" is the honeypot's address only as the whole
+    # address, never as the start of a real question.
+    (_fake_el({"name": "hris"}, label="If you are a Human Resources professional, "
+                                      "which HRIS platforms have you used?"), False),
+    (_fake_el({"name": "design"}, label="If you are human-centered, describe your design process"), False),
+    (_fake_el({"name": "extra"}, label="If you're a human please leave this empty"), True),
+    (_fake_el({"name": "extra", "placeholder": "If you are a human, do not fill this in"}), True),
+])
+def test_anti_bot_fields_are_never_fill_targets(spec, want):
+    assert run_js([[_EL_JS, spec]])[0] is want
+
+
+def test_every_ai_and_memory_path_skips_anti_bot_and_hidden_fields():
+    """The essay path asked the AI about a hidden captcha textarea; recall and
+    learning must not touch one either, and fillInput refuses it outright."""
+    assert "canFillField(ta)" in _function(CONTENT, "fillEssayQuestions")
+    assert "looksLikeFieldIdentifier(q)" in _function(CONTENT, "fillEssayQuestions")
+    assert "looksLikeMetaReply(answer)" in _function(CONTENT, "fillEssayQuestions")
+    # A remembered answer may be the user's own words: only the model-only
+    # forms drop it (review 2026-10-09).
+    assert "looksLikeModelOnlyReply(answer)" in _function(CONTENT, "fillEssayQuestions")
+    assert "canFillField(el)" in _function(CONTENT, "recallFromMemory")
+    for fn in ("observeField", "observeAnswer", "fillInput"):
+        assert "isAntiBotField(" in _function(CONTENT, fn), fn
+
+
+@pytest.mark.parametrize("text,want", [
+    ("g-recaptcha-response", True), ("question_68444493", True), ("_systemfield_name", True),
+    ("why are you interested in this role?", False), ("comments", False), ("", False),
+])
+def test_a_field_name_is_not_a_question(text, want):
+    assert run_js([["looksLikeFieldIdentifier", text]])[0] is want
+
+
+_META = [
+    "I'd be happy to help, but I notice the essay question appears incomplete or unclear. "
+    "\"g-recaptcha-response\" looks like a technical parameter.",
+    "It seems like the question is missing. Please provide the actual question.",
+    "SKIP",
+    "This doesn't look like an essay question; it is a form field name.",
+]
+_REAL = [
+    "I notice patterns in messy data quickly, which is why integration work suits me.",
+    "I can't wait to build connectors that security teams rely on every day.",
+    "Over three years I built ETL pipelines and REST integrations in Python.",
+    # review 2026-10-09: plausible answers the first patterns refused
+    "I am unable to start before January 2027 because of my notice period.",
+    "I'm not able to relocate, but I am happy to work remotely from Ohio.",
+    "For me, choosing a team is a question of mission alignment.",
+    "I tuned every technical parameter of our Kafka pipeline.",
+    "As an AI engineer, I built retrieval systems for support teams.",
+]
+# Only a model writes these; text a user typed is refused for these alone.
+_MODEL_ONLY = [_META[0], "As an AI language model, I cannot know that.",
+               "The question appears to be incomplete.",
+               "It seems like the question is missing. Please provide the actual question."]
+# Meta for a model, but a person might type them: never refused as user text.
+_USER_MAY_TYPE = ["SKIP", "This doesn't look like an essay question; it is a form field name.",
+                  "I'm sorry, but I can't answer that without more context."]
+
+
+def test_meta_replies_read_the_same_in_the_extension_and_the_server():
+    """The extension's copy of the pattern must agree with app/autofill/field_guards."""
+    from app.autofill.field_guards import looks_like_meta_reply
+    out = run_js([["looksLikeMetaReply", t] for t in _META + _REAL])
+    assert out == [True] * len(_META) + [False] * len(_REAL)
+    assert [looks_like_meta_reply(t) for t in _META + _REAL] == out
+
+
+def test_model_only_replies_read_the_same_in_the_extension_and_the_server():
+    from app.autofill.field_guards import is_model_only_reply
+    texts = _MODEL_ONLY + _USER_MAY_TYPE + _REAL
+    out = run_js([["looksLikeModelOnlyReply", t] for t in texts])
+    assert out == [True] * len(_MODEL_ONLY) + [False] * (len(_USER_MAY_TYPE) + len(_REAL))
+    assert [is_model_only_reply(t) for t in texts] == out
+
+
+def test_anti_bot_patterns_agree_with_the_server():
+    from app.autofill.field_guards import _ANTI_BOT_RE as PY_RE
+    js_body = _const(CONTENT, "_ANTI_BOT_RE").split("= /", 1)[1].rsplit("/i;", 1)[0]
+    assert js_body == PY_RE.pattern, "keep content.js _ANTI_BOT_RE identical to field_guards.py"
+
+
+def _opts(*texts):
+    return [{"textContent": t} for t in texts]
+
+
+@pytest.mark.parametrize("options,pack,want", [
+    # the profile's state decides between two Cincinnatis
+    (_opts("Cincinnati, Iowa, United States", "Cincinnati, Ohio, United States"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, Ohio, United States"),
+    (_opts("Cincinnati, IA, USA", "Cincinnati, OH, USA"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, OH, USA"),
+    # no suggestion for the city: nothing is picked
+    (_opts("Columbus, Ohio, United States"), {"location": "Cincinnati, OH"}, None),
+    # two Springfields and no state: the user picks
+    (_opts("Springfield, Illinois", "Springfield, Missouri"), {"location": "Springfield"}, None),
+    (_opts("Toronto, Ontario, Canada"), {"location": "Toronto"}, "Toronto, Ontario, Canada"),
+    # a city name inside another word is not the city
+    (_opts("Pittsburgh, Pennsylvania"), {"location": "Burgh, PA"}, None),
+    # review 2026-10-09: the region is a whole comma component, never a
+    # substring ("on" is inside "London" and "Toronto"; "Virginia" is inside
+    # "West Virginia"), and a short code never matches lowercase text
+    (_opts("London, England, United Kingdom", "London, Ontario, Canada", "London, Kentucky, United States"),
+     {"location": "London, ON"}, "London, Ontario, Canada"),
+    (_opts("London, England, United Kingdom", "London, Kentucky, United States"),
+     {"location": "London, ON"}, None),
+    (_opts("London, England, United Kingdom"), {"location": "London, ON"}, None),    # another country
+    (_opts("London, England, United Kingdom", "London, ON, Canada"),
+     {"location": "London, ON"}, "London, ON, Canada"),
+    (_opts("Toronto, Ohio, United States", "Toronto, Ontario, Canada"),
+     {"location": "Toronto, ON"}, "Toronto, Ontario, Canada"),
+    (_opts("Toronto, Ohio, United States"), {"location": "Toronto, ON"}, None),      # another state
+    (_opts("Bluefield, West Virginia, United States", "Bluefield, Virginia, United States"),
+     {"location": "Bluefield, VA"}, "Bluefield, Virginia, United States"),
+    (_opts("Bluefield, West Virginia, United States"), {"location": "Bluefield, VA"}, None),
+    (_opts("Kansas City, Arkansas, United States", "Kansas City, Kansas, United States"),
+     {"location": "Kansas City, Kansas"}, "Kansas City, Kansas, United States"),
+    (_opts("Portland, Maine, United States", "Portland, Oregon, United States"),
+     {"location": "Portland, OR"}, "Portland, Oregon, United States"),
+    (_opts("Vancouver, Washington, United States", "Vancouver, British Columbia, Canada"),
+     {"location": "Vancouver, BC"}, "Vancouver, British Columbia, Canada"),
+    # "Columbus" is not "Columbus Grove"
+    (_opts("Columbus Grove, Ohio, United States", "Columbus, Ohio, United States"),
+     {"location": "Columbus, OH"}, "Columbus, Ohio, United States"),
+    # a ZIP beside the code is still the code
+    (_opts("Cincinnati, IA 52538", "Cincinnati, OH 45202"),
+     {"location": "Cincinnati, OH"}, "Cincinnati, OH 45202"),
+    # a country in the region slot is the country
+    (_opts("London, England, United Kingdom", "London, Ontario, Canada"),
+     {"location": "London, UK"}, "London, England, United Kingdom"),
+    (_opts("London, Ontario, Canada"), {"location": "London, UK"}, None),
+    # review 2026-10-09: the exact-city test reads the CITY slot only. "New
+    # York" is also the state, so any component made every place in New York
+    # state an exact hit and the largest US job location came back empty.
+    (_opts("New York, New York, United States", "New York Mills, New York, United States",
+           "New York Mills, Minnesota, United States", "West New York, New Jersey, United States"),
+     {"location": "New York, NY"}, "New York, New York, United States"),
+    (_opts("New York, NY, USA", "Manhattan, New York, NY, USA"),
+     {"location": "New York, NY"}, "New York, NY, USA"),
+    (_opts("Quebec City, Quebec, Canada", "Quebec, Quebec, Canada"),
+     {"location": "Quebec, QC"}, "Quebec, Quebec, Canada"),
+    # a US state is never read as a country ("New Mexico" is not Mexico)
+    (_opts("Santa Fe, New Mexico, United States"),
+     {"location": "Santa Fe", "residence_country": "United States"}, "Santa Fe, New Mexico, United States"),
+    (_opts("Las Cruces, New Mexico, United States"),
+     {"location": "Las Cruces", "residence_country": "US"}, "Las Cruces, New Mexico, United States"),
+    (_opts("Santa Fe, New Mexico, United States", "Santa Fe, Santa Fe Province, Argentina"),
+     {"location": "Santa Fe", "residence_country": "United States"}, "Santa Fe, New Mexico, United States"),
+    # ...while a real other country still stops the pick
+    (_opts("Monterrey, Nuevo Leon, Mexico"),
+     {"location": "Monterrey", "residence_country": "United States"}, None),
+])
+def test_location_suggestion_is_the_profiles_place(options, pack, want):
+    js = "(o, p) => { const r = pickLocationSuggestion(o, p); return r ? r.textContent : null; }"
+    assert run_js([[js, options, pack]])[0] == want
+
+
+# ── "How did you hear about this opportunity?" (owner, 2026-10-09) ───────────
+# Answered ONLY from the answer the user saved in their profile. An int below
+# is the index of the option picked (nothing to specify); a dict carries the
+# "please specify" text; None leaves the question for the applicant.
+
+_CHOICES = ["Select...", "LinkedIn", "Company Website / Careers Page", "Indeed", "Other"]
+
+
+@pytest.mark.parametrize("options,saved,want", [
+    # the option that IS the saved answer, whatever its case
+    (["Select...", "LinkedIn", "Company website", "Indeed", "Other"], "company WEBSITE", 2),
+    (_CHOICES, "LinkedIn", 1),
+    # containing it, or contained in it (whole words)
+    (_CHOICES, "Company website", 2),
+    (["Online job board", "Employee referral", "Other"], "Job board", 0),
+    (["Online job board", "Employee referral", "Other"], "Referral", 1),
+    (["LinkedIn", "Indeed", "Glassdoor"], "I saw it on LinkedIn", 0),
+    # a synonym: the same source in other words
+    (["LinkedIn", "Careers page", "Employee referral", "Other"], "Company website", 1),
+    (["Job site (Indeed, Glassdoor)", "LinkedIn", "Other"], "Job board", 0),
+    (["Referred by an employee", "LinkedIn"], "Referral", 0),
+    # nothing fits: "Other", with the saved text for its "please specify" box
+    (["LinkedIn", "Indeed", "Other (please specify)"], "Podcast",
+     {"index": 2, "specify": "Podcast"}),
+    (["LinkedIn", "Other"], "Other: a podcast", {"index": 1, "specify": "a podcast"}),
+    (["LinkedIn", "Other"], "Other", 1),
+    # nothing fits and there is no "Other": the applicant answers
+    (["LinkedIn", "Indeed"], "Podcast", None),
+    # never a broader or narrower source: "Job board" is not "Indeed"
+    (["Indeed", "Glassdoor", "LinkedIn"], "Job board", None),
+    (["Indeed", "Glassdoor", "LinkedIn", "Other"], "Job board", {"index": 3, "specify": "Job board"}),
+    # two candidates at one step: the applicant picks
+    (["LinkedIn job post", "LinkedIn recruiter message", "Other"], "LinkedIn", None),
+    # whole words: "Other" is not inside "Another", "In" is not "Indeed"
+    (["Another job site", "LinkedIn"], "Other", None),
+    (["Indeed", "LinkedIn"], "In", None),
+    # a placeholder is never a choice
+    (["Select an option", "-", "LinkedIn"], "Select an option", None),
+    # nothing saved: the applicant answers it
+    (_CHOICES, "", None),
+    (_CHOICES, "   ", None),
+])
+def test_how_heard_picks_only_what_the_saved_answer_says(options, saved, want):
+    got = run_js([["pickHowHeardOption", options, saved]])[0]
+    if isinstance(want, int):
+        want = {"index": want, "specify": ""}
+    assert got == want
+
+
+def _opt(value, text, preselected=False):
+    return {"value": value, "text": text, "defaultSelected": preselected}
+
+
+@pytest.mark.parametrize("options,selected,want", [
+    ([_opt("", "Select..."), _opt("li", "LinkedIn")], 0, False),          # the placeholder
+    ([_opt("li", "LinkedIn"), _opt("site", "Company website")], 0, False),  # shown, never chosen
+    ([_opt("li", "LinkedIn", True), _opt("site", "Company website")], 0, True),   # the page chose it
+    ([_opt("", "Select..."), _opt("li", "LinkedIn")], 1, True),
+])
+def test_a_select_already_answered_is_never_changed(options, selected, want):
+    """Only an unanswered how-did-you-hear select is filled; a select showing
+    its first option only because nothing is selected is unanswered."""
+    js = "(opts, i) => _selectHasChoice({ options: opts, selectedIndex: i })"
+    assert run_js([[js, options, selected]])[0] is want
+
+
+@pytest.mark.parametrize("label", [
+    "How did you hear about this opportunity?", "How did you first learn about Acme?",
+    "Where did you see this job posted?", "Referral source", "How did you find out about us? *",
+    "Why are you interested in this role?", "Source code repository URL", "LinkedIn profile",
+])
+def test_how_heard_questions_read_the_same_in_the_extension_and_the_server(label):
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    assert run_js([["isHowHeardQuestion", label]])[0] is bool(PY_RE.search(label))
+
+
+@pytest.mark.parametrize("label,company,want", [
+    # how the applicant came to THIS job, role, position, posting, us or the company
+    ("How did you hear about this opportunity?", "", True),
+    ("How did you hear about the role?", "", True),
+    ("Where did you hear about this position? Tell us a little more.", "", True),
+    ("How did you hear about us? (LinkedIn, company website, etc.)", "", True),
+    ("Where did you see this job posted?", "", True),
+    ("How did you find out about us? *", "", True),
+    ("How did you find out about this position?", "", True),
+    ("How did you find this job?", "", True),
+    ("Where did you learn about the opening?", "", True),
+    ("How did you first learn about our company?", "", True),
+    ("How did you first learn about Acme?", "Acme", True),
+    ("How did you first learn about Acme?", "Acme, Inc.", True),
+    ("How did you find The Home Depot?", "The Home Depot", True),
+    # a referral / lead / application source field
+    ("Referral source", "", True), ("Lead source", "", True), ("Application source", "", True),
+    # the rest of the refusal list is the applicant's to answer (review 2026-10-09)
+    ("How did you learn Python?", "Acme", False),
+    ("How did you learn to code?", "Acme", False),
+    ("Where did you learn to program?", "Acme", False),
+    ("How did you find your current role?", "Acme", False),
+    ("How did you find your most recent role?", "Acme", False),
+    ("How did you learn about Python?", "Acme", False),
+    ("How did you find the interview process?", "Acme", False),
+    # another company's name is not this one
+    ("How did you first learn about Acme?", "HarnessCo", False),
+    ("How did you first learn about Acme?", "", False),
+    # never wider than the refusal list
+    ("Why are you interested in this role?", "Acme", False),
+    ("LinkedIn profile", "Acme", False),
+])
+def test_the_saved_answer_fills_only_how_they_came_to_this_job(label, company, want):
+    got, refused = run_js([["isHowHeardFillQuestion", label, company],
+                           ["isHowHeardQuestion", label]])
+    assert got is want
+    # Every question the saved answer fills is one no model or memory answers.
+    if got:
+        assert refused is True
+
+
+@pytest.mark.parametrize("label", [
+    "How did you learn Python?", "How did you learn to code?",
+    "Where did you learn to program?", "How did you find your current role?",
+])
+def test_the_refusal_list_still_holds_what_the_saved_answer_does_not_fill(label):
+    """Left blank, and still never written by a model or from memory."""
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    assert run_js([["isHowHeardQuestion", label]])[0] is True
+    assert PY_RE.search(label)
+
+
+@pytest.mark.parametrize("text,want", [
+    # its own words name the Other choice, or only ask to specify
+    ("If other, please specify", True), ("If Other, please specify *", True),
+    ("Other (please specify)", True), ("Other - please specify:", True),
+    ("Please specify other", True), ("Specify other source", True), ("Other source", True),
+    ("Please specify", True), ("Please specify:", True), ("Specify *", True), ("Other", True),
+    ("If you selected Other, where?", True),
+    # the next question on the page
+    ("Please describe why you want to work at Acme", False),
+    ("Please explain any gaps in your employment history", False),
+    ("Please list your certifications", False),
+    ("Please tell us about yourself", False),
+    ("Other comments", False), ("Other information you'd like to share", False),
+    ("Other languages spoken (please specify)", False),
+    ("Please specify your pronouns", False),
+    ("Tell us more", False), ("", False),
+])
+def test_a_specify_box_names_the_other_choice(text, want):
+    assert run_js([["_saysSpecifyOther", text]])[0] is want
+
+
+def test_the_other_box_is_tied_to_the_choice_and_never_learned():
+    """The box after an "Other" pick takes the saved answer only when its own
+    words name Other, it sits in the question's container, or the pick revealed
+    it; and nothing the extension wrote is ever POSTed to save-answer."""
+    find = _function(CONTENT, "_howHeardSpecifyField")
+    assert "_isSpecifyField(c)" in find and "shownBefore.has(c)" in find
+    assert "_inQuestionContainer(c, own)" in find
+    for fn in ("answerHowHeardField", "fillHowHeardDropdown", "answerHowHeardChoices"):
+        body = _function(CONTENT, fn)
+        # The fields on screen are taken BEFORE the pick, to see what it revealed.
+        assert body.index("_shownFields()") < body.index("fillHowHeardSpecify("), fn
+    assert "isHowHeardFillQuestion(" in _function(CONTENT, "fillUniversal")
+    assert "isHowHeardFillQuestion(" in _function(CONTENT, "howHeardChoiceGroups")
+    # Learning never takes the extension's own write, nor a how-heard box.
+    for fn in ("observeField", "observeAnswer"):
+        body = _function(CONTENT, fn)
+        assert "_holdsOurWrite(" in body and "spotapplyHowHeard" in body, fn
+    assert "spotapplyHowHeard = 'true'" in _function(CONTENT, "fillHowHeardSpecify")
+    # The dropdown click learner steps aside for how-heard, like demographics,
+    # before anything is logged or POSTed.
+    start = CONTENT.index("// Learn custom dropdown selections")
+    learner = CONTENT[start:CONTENT.index("}, { capture: true, passive: true });", start)]
+    assert learner.index("isHowHeardQuestion(label)") < learner.index("Learning dropdown field")
+    assert learner.index("isHowHeardQuestion(label)") < learner.index("apiFetch(")
+
+
+def test_how_heard_pattern_agrees_with_the_server():
+    from app.autofill.field_guards import _HEAR_ABOUT_RE as PY_RE
+    js_body = _const(CONTENT, "_HEAR_ABOUT_RE").split("= /", 1)[1].rsplit("/i;", 1)[0]
+    assert js_body == PY_RE.pattern, "keep content.js _HEAR_ABOUT_RE identical to field_guards.py"
+
+
+def test_the_saved_answer_is_the_only_source():
+    """The pack's profile answer, one line; nothing else stands in for it."""
+    assert run_js([["howHeardAnswer", {"how_heard_answer": "  Company \n website "}],
+                   ["howHeardAnswer", {}],
+                   ["howHeardAnswer", {"ai_answers": {"how did you hear about us?": "LinkedIn"}}]]) \
+        == ["Company website", "", ""]
+    # Every path that could write one from elsewhere steps aside for it: the
+    # AI essay path, memory recall and learning, and the platform fillers
+    # whose LinkedIn / website rules matched "How did you hear? (LinkedIn,
+    # company website...)". fillUniversal asks the saved answer first.
+    for fn in ("fillEssayQuestions", "recallFromMemory", "observeField", "fillGreenhouse",
+               "fillAshby", "fillGeneric", "fillAvature"):
+        assert "isHowHeardQuestion(" in _function(CONTENT, fn), fn
+    uni = _function(CONTENT, "fillUniversal")
+    assert uni.index("answerHowHeardField(inp, pack)") < uni.index("pack.first_name")
+    assert "answerHowHeardChoices(pack)" in _function(CONTENT, "fillCurrentPage")
+    for fn in ("answerHowHeardField", "answerHowHeardChoices"):
+        body = _function(CONTENT, fn)
+        assert "howHeardAnswer(pack)" in body and "answer-question" not in body, fn
+    # Nothing saved = left for the applicant, before any write.
+    assert "if (!saved) return 0;" in _function(CONTENT, "answerHowHeardChoices")
+    assert "if (!saved) { _lastWriteSkippedEmpty = true; return false; }" in \
+        _function(CONTENT, "answerHowHeardField")
+
+
+# ── one-click submit (2026-10-11): the server decides, the extension obeys ───
+
+@pytest.mark.parametrize("host,hosts,want", [
+    ("boards.greenhouse.io", ["greenhouse.io"], True),
+    ("greenhouse.io", ["greenhouse.io"], True),
+    ("jobs.lever.co", ["greenhouse.io", "lever.co"], True),
+    ("jobs.ashbyhq.com", ["Greenhouse.io", "AshbyHQ.com"], True),      # case-insensitive
+    ("notgreenhouse.io", ["greenhouse.io"], False),                    # a suffix, not a substring
+    ("greenhouse.io.phish.test", ["greenhouse.io"], False),
+    ("acme.wd5.myworkdayjobs.com", ["greenhouse.io", "lever.co"], False),
+    ("boards.greenhouse.io", [], False),
+    ("boards.greenhouse.io", None, False),                             # no list from the server = never
+    ("boards.greenhouse.io", "greenhouse.io", False),                  # a bare string is not a list
+])
+def test_one_click_hosts_match_by_suffix_from_the_servers_list(host, hosts, want):
+    assert run_js([["autoSubmitAllowedHost", host, hosts]])[0] is want
+
+
+def test_the_extension_carries_no_one_click_list_or_cap_of_its_own():
+    """The allow-list and the daily cap live in the server's fill-pack verdict
+    (server._one_click_decision); content.js only reads pack.auto_submit*."""
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    assert "pack.auto_submit_hosts" in fn
+    assert "ONE_CLICK" not in CONTENT.upper().replace("ONE-CLICK", "") or "ONE_CLICK_HOSTS" not in CONTENT
+    assert "auto_submit_hosts" not in BACKGROUND
+    step = _function(CONTENT, "runCopilotStep")
+    assert "pack.auto_submit)" in step and "maybeAutoSubmit(" in step, "only an approved pack reaches the gate"
+
+
+def test_one_click_refuses_before_it_presses_anything():
+    """Login wall, CAPTCHA and an unfinished field audit all stop it BEFORE the
+    Submit control is even looked for; the press is the form's own button,
+    announced as an ATTEMPT (noteSubmitAttempt) — "Submitted" still needs the
+    employer's confirmation."""
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    order = [fn.index(s) for s in ("autoSubmitAllowedHost(", "isLoginWall()", "isCaptcha() || captchaBlocksSubmit()",
+                                   "fields_need_you", "findSubmitControl()", "submitCountdown(pack)",
+                                   "noteSubmitAttempt('one_click')", "btn.click()")]
+    assert order == sorted(order), order
+    # The page-level isCaptcha() answers false whenever a form is present, so
+    # the gate also asks the form-aware check — and asks AGAIN after the dwell.
+    assert fn.count("captchaBlocksSubmit()") >= 2
+    dwell = _function(CONTENT, "submitCountdown")
+    assert "visibilityState !== 'visible'" in dwell, "never in a tab the user cannot see"
+    assert "isTrusted" in dwell and "'keydown'" in dwell and "'mousedown'" in dwell, "the user's own touch cancels"
+    assert "cancelled_by_user" in fn
+    assert _const(CONTENT, "AUTO_SUBMIT_DWELL_SECONDS").strip().rstrip(";").endswith("= 5")
+    assert "form.checkValidity" in fn, "a form the browser would reject is never pressed"
+    assert "requestSubmit" not in fn and ".submit()" not in fn, "only the visible button, never a programmatic submit"
+    find = _function(CONTENT, "findSubmitControl")
+    assert "isLoginForm(" in find, "a sign-in form's button is never the one"
+    negative = re.search(r"const NEGATIVE = /(.*?)/i;", find).group(1)
+    for word in ("sign ?in", "log ?in", "create account", "register", "cancel", "back", "save", "draft",
+                 "delete", "remove", "withdraw"):
+        assert word in negative, word
+    assert "formLooksLikeApplication(" in find, "the typed submit must sit in an application form"
+    watch = _function(CONTENT, "watchForConfirmation")
+    for handoff in ("verification_code_needed", "captcha_needed"):
+        assert handoff in watch, "a code step or a challenge AFTER the press is a handoff, never a retry"
+    assert "noteSubmitAttempt(" not in watch and ".click()" not in watch
+
+
+def test_overlay_text_is_escaped_and_every_block_reason_has_words():
+    assert run_js([["escapeHtml", "<b onclick=\"x\">Tom & Jerry's</b>"]])[0] == \
+        "&lt;b onclick=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/b&gt;"
+    assert run_js([["escapeHtml", None]])[0] == ""
+    text = _const(CONTENT, "AUTO_SUBMIT_BLOCK_TEXT")
+    fn = _function(CONTENT, "maybeAutoSubmit")
+    for reason in re.findall(r"done\(false, '([a-z_]+)'", fn):
+        assert f"{reason}:" in text, f"no user-facing words for {reason}"
+
+
+@pytest.mark.parametrize("apply_url,page_url,want", [
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/acme/jobs/123#app", True),
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/acme/jobs/123?gh_src=x", True),
+    ("https://jobs.lever.co/acme/9f1", "https://jobs.lever.co/acme/9f1/apply", True),
+    ("https://jobs.ashbyhq.com/acme/77", "https://jobs.ashbyhq.com/Acme/77/application", True),  # case-insensitive slug
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://boards.greenhouse.io/other/jobs/9", False),  # another employer
+    ("https://boards.greenhouse.io/acme/jobs/123", "https://careers.acme.com/apply?gh_jid=123", False),  # employer-hosted copy
+    ("https://jobs.lever.co/acme/9f1", "https://jobs.ashbyhq.com/acme/9f1", False),
+    ("", "https://boards.greenhouse.io/acme/jobs/123", False),
+    ("not a url", "https://boards.greenhouse.io/acme/jobs/123", False),
+])
+def test_one_click_presses_only_on_the_approved_postings_own_page(apply_url, page_url, want):
+    assert run_js([["samePosting", apply_url, page_url]])[0] is want
+
+
+def test_the_clicks_approval_survives_the_packs_refresh_but_not_a_refusal():
+    """fillForm re-fetches /api/fill-pack/{id} (a plain GET → "not_requested")
+    before filling; the dashboard's ?submit=1 verdict must carry over, while a
+    real refusal from the refreshed server (kill switch, setting off) wins."""
+    fn = _function(CONTENT, "fillForm")
+    carry = fn[fn.index("fresh.auto_submit_reason === 'not_requested'"):]
+    assert "fillPack.auto_submit === true" in fn
+    assert "String(fillPack.app_id) === String(fresh.app_id)" in fn, "never another application's approval"
+    assert "fresh.auto_submit = true" in carry
+    gate = _function(CONTENT, "maybeAutoSubmit")
+    assert gate.index("autoSubmitAllowedHost(") < gate.index("samePosting(pack.apply_url") < gate.index("isLoginWall()")

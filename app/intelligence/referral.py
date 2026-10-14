@@ -294,10 +294,15 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
     })
 
     # Try to upgrade the drafts with the LLM (cheap Haiku). Non-fatal on failure.
+    # Same breaker and platform budget as the lanes (CLAUDE.md: nothing may call
+    # a provider the lanes already know is down), and the call is booked in the
+    # spend ledger under kind="outreach" with its real usage.
     try:
         from app.config import settings
         from app.common.llm import shared_anthropic
-        if settings.anthropic_api_key:
+        from app.matching.reranker import llm_budget_exhausted, provider_available
+        if (settings.anthropic_api_key and provider_available("anthropic")
+                and not llm_budget_exhausted()):
             client = shared_anthropic()
             # Length and structure here are not taste — they come from 4M+
             # measured outreach messages: LinkedIn notes under 400 characters
@@ -334,6 +339,13 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
                 model=settings.cover_letter_model, max_tokens=1200,
                 messages=[{"role": "user", "content": prompt}],
             )
+            try:
+                from app.analytics.spend import record_llm_spend
+                record_llm_spend(user_id, "outreach", provider="anthropic",
+                                 model=settings.cover_letter_model,
+                                 usage=getattr(resp, "usage", None))
+            except Exception as _le:
+                log.debug("outreach spend not recorded: %s", _le)
             import json, re
             raw = resp.content[0].text.strip()
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -360,6 +372,6 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
         "application_id": application_id,
         "company": company,
         "title": role,
-        "note": "Drafts only — review, personalize the recipient, and send from your own account. JobAgent never sends these for you.",
+        "note": "Drafts only: review, personalize the recipient, and send from your own account. SpotApply never sends these for you.",
         "drafts": drafts,
     }

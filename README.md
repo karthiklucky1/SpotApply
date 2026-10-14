@@ -6,8 +6,12 @@ tailored résumés and cover letters (fact-checked against your real experience)
 auto-fills application forms in your browser, and keeps you in control of the final
 **Submit**.
 
-> **You always click Submit.** SpotApply prepares and fills — it never silently fires
-> off applications on your behalf. *The machine prepares, the human decides.*
+> **Submit is always your click.** By default you press Submit on the form; with the
+> optional One-click submit setting, your "Apply & Submit" click on the dashboard
+> approves that one application and the extension presses the form's Submit for you,
+> only on login-free boards, only with every required field filled, never past a
+> CAPTCHA or a sign-in. Nothing is ever fired off unattended. *The machine prepares,
+> the human decides.*
 
 It began as a single-user personal job agent and has grown into a multi-tenant web app
 with accounts, per-user matching, a freshness engine, a browser extension, and a
@@ -198,9 +202,12 @@ Configure via `.env` (see `.env.example` for the full list):
 ## Browser extension
 
 `extension/` is a Manifest-V3 Chrome extension that fills application forms in your own
-browser — you keep the session, and you control Submit. Load it unpacked via
-`chrome://extensions` → Developer Mode → "Load unpacked" → select `extension/`, or
-visit **/extension** in the app for guided install.
+browser — you keep the session, and you control Submit. Install it from the
+[Chrome Web Store](https://chromewebstore.google.com/detail/acmmmmipgplcigghmcafkmjlenflbgcp)
+(or visit **/extension** in the app). Developers testing an unreleased build: remove the
+Store copy first (two copies both fill), then `chrome://extensions` → Developer Mode →
+"Load unpacked" → select `extension/`. Changes under `extension/` reach Store users only
+after a manifest version bump and a new Store review.
 
 ---
 

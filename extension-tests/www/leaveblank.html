@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Apply (leave-blank wording test form)</title></head>
+<body>
+  <h1>Apply for Senior Engineer</h1>
+  <!-- Review 2026-10-09: real, visible fields that say when to leave them
+       blank are the applicant's to fill; only the off-page honeypot is not. -->
+  <form id="lb-app">
+    <div><label for="lb-fn">First name *</label><input id="lb-fn" name="first_name" required></div>
+    <div><label for="lb-ln">Last name *</label><input id="lb-ln" name="last_name" required></div>
+    <div><label for="lb-em">Email *</label><input id="lb-em" type="email" name="email" required></div>
+    <div><label for="lb-li">LinkedIn profile (leave blank if none)</label><input id="lb-li" name="linkedin"></div>
+    <div><label for="lb-gh">GitHub URL - leave empty if you don't have one</label><input id="lb-gh" name="github"></div>
+    <div style="position:absolute;left:-9999px;top:0"><label for="lb-hp">Leave this field blank</label>
+      <input id="lb-hp" name="website" tabindex="-1" autocomplete="off"></div>
+    <div><label for="lb-cv">Resume *</label><input id="lb-cv" type="file" name="resume"></div>
+    <button type="submit">Submit application</button>
+  </form>
+</body></html>

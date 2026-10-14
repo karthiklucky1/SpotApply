@@ -86,12 +86,15 @@ class AdzunaSource:
                         )
                         if r.status_code == 401:
                             log.warning("Adzuna: invalid credentials")
+                            self.last_error = "invalid API credentials (HTTP 401)"
                             break
                         if r.status_code == 429:
                             log.warning("Adzuna: daily quota hit")
+                            self.last_error = "daily quota reached (HTTP 429)"
                             break
                         if r.status_code != 200:
                             log.warning("Adzuna: HTTP %d for term '%s'", r.status_code, term)
+                            self.last_error = f"HTTP {r.status_code}"
                             continue
 
                         for item in r.json().get("results", []):
@@ -138,6 +141,7 @@ class AdzunaSource:
 
         except Exception as e:
             log.warning("Adzuna: fetch failed: %s", e)
+            self.last_error = f"{type(e).__name__}: {str(e)[:120]}"
 
         log.info("AdzunaSource: fetched %d jobs", len(jobs))
         return jobs

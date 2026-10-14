@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -60,10 +61,20 @@ def _displace_weaker_shortlisted(session, job: Job, score: float, active) -> boo
     margin. Only ever displaces untouched shortlist entries — anything the user
     or agent has acted on (TAILORED and beyond) keeps its slot. Returns True
     when a slot was freed. The displaced job keeps its (SKIPPED) application
-    row, so the re-shortlist backstop can never bounce it straight back."""
+    row, so the re-shortlist backstop can never bounce it straight back.
+
+    A holder whose score was cleared for a re-judge (a new resume, a role
+    change: ``slate._awaiting_rescore``, the slate's one definition) is not a
+    candidate: unknown is not weak. It read as 0, so after an upload any
+    same-company job over the bar evicted a pending 92 ("65 vs 0"), and the 92
+    came back re-scored to a SKIPPED application. With only pending holders
+    nothing is freed; the refused job keeps its score and the re-shortlist
+    backstop offers it again once the verdicts are back."""
     from app.config import settings as _cap_settings
+    from app.strategy.slate import _awaiting_rescore
     margin = max(0, _cap_settings.company_cap_displace_margin)
-    candidates = [a for a in active if a.status == ApplicationStatus.SHORTLISTED]
+    candidates = [a for a in active if a.status == ApplicationStatus.SHORTLISTED
+                  and not _awaiting_rescore(session, a)]
     if not candidates:
         return False
 
@@ -232,30 +243,74 @@ def _load_resume_file(user_id: str | None = None) -> str:
     return p.read_text(encoding="utf-8")
 
 
+RESUME_EXTENSIONS = ("pdf", "docx", "txt", "md")
+_RESUME_OBJECT_RE = re.compile(r"^resume\.(?:pdf|docx|txt|md)$", re.IGNORECASE)
+
+
+def list_resume_objects(sb, user_id: str) -> list[str] | None:
+    """The ``resume.<ext>`` object names in a user's Storage folder, NEWEST
+    first (by ``updated_at``/``created_at``; ties broken pdf > docx > txt > md).
+    ``None`` means the listing itself failed — "no résumé" and "could not look"
+    are different answers and the callers treat them differently.
+
+    Why newest: onboarding writes a profile stub as ``resume.md``
+    (``/api/resume/synthesize``) and the upload route writes ``resume.<ext of
+    the file>``, so one folder can hold both. Reading by a FIXED extension
+    order (md first) made the stub win over a PDF uploaded minutes later — for
+    scoring, tailoring and the extension's "original resume" alike — and
+    nothing the user did could change it short of re-uploading as markdown.
+    """
+    try:
+        files = sb.storage.from_("resume").list(user_id) or []
+    except Exception as e:
+        log.debug("resume listing failed for %s: %s", user_id, e)
+        return None
+    ranked: list[tuple[str, int, str]] = []
+    for f in files:
+        name = str((f.get("name") if isinstance(f, dict) else getattr(f, "name", "")) or "")
+        if not _RESUME_OBJECT_RE.match(name):
+            continue
+        stamp = ""
+        if isinstance(f, dict):
+            stamp = str(f.get("updated_at") or f.get("created_at") or "")
+        ext = name.rsplit(".", 1)[-1].lower()
+        ranked.append((stamp, -RESUME_EXTENSIONS.index(ext), name))
+    ranked.sort(reverse=True)
+    return [name for _, _, name in ranked]
+
+
+def resume_text_from_bytes(name: str, data: bytes) -> str:
+    """Plain text from an uploaded résumé file, by extension."""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext == "docx":
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if ext == "pdf":
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    return data.decode("utf-8", errors="ignore")
+
+
 def _fetch_resume_from_storage(user_id: str) -> str:
     """The actual Storage download + parse (uncached; callers go through
     _load_resume_file). Raises when no résumé exists — a MISS is never cached,
     so a user who uploads seconds later isn't stuck behind a negative entry."""
-    for ext in ("md", "txt", "pdf", "docx"):
+    from app.db.supabase_client import service_client
+    sb = service_client()
+    names = list_resume_objects(sb, user_id)
+    if names is None:
+        # The listing is unavailable: fall back to trying each name, newest
+        # kind first, rather than reporting a résumé the user has as missing.
+        names = [f"resume.{ext}" for ext in RESUME_EXTENSIONS]
+    for name in names:
         try:
-            from app.db.supabase_client import service_client
-            sb = service_client()
-            path = f"{user_id}/resume.{ext}"
-            data = sb.storage.from_("resume").download(path)
+            data = sb.storage.from_("resume").download(f"{user_id}/{name}")
             if data:
-                if ext in ("md", "txt"):
-                    return data.decode("utf-8", errors="ignore")
-                # For PDF/DOCX, extract text
-                if ext == "docx":
-                    import io
-                    from docx import Document
-                    doc = Document(io.BytesIO(data))
-                    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-                if ext == "pdf":
-                    import io
-                    from pypdf import PdfReader
-                    reader = PdfReader(io.BytesIO(data))
-                    return "\n".join((page.extract_text() or "") for page in reader.pages)
+                return resume_text_from_bytes(name, data)
         except Exception:
             continue
     raise ValueError("No resume found. Please upload your resume in the Profile page first.")
@@ -462,6 +517,11 @@ def _reshortlist_scored_jobs(user_id: str | None, today_count: int) -> tuple[Lis
                     log.info("Re-shortlist: slate full and '%s' (%d) is below the "
                              "cutoff (%.0f) — stopping.", job.title,
                              job.rerank_score, res.cutoff or 0.0)
+                    break
+                if res.outcome == _slate.OUTCOME_PAUSED:
+                    # Paused since this pass began: the slate refuses every one
+                    # of them, so stop instead of recording up to 500 refusals.
+                    # Resume's pass re-offers the same list.
                     break
                 continue
             shortlisted.append(job.id)
@@ -1048,7 +1108,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
                             today_count += 1
 
                             # Create notification for high-fit matched jobs
-                            if score >= 75:
+                            # (never into the bell of a user who paused their
+                            # search since this pass began).
+                            from app.common.compute_policy import paused_now
+                            if score >= 75 and not paused_now(user_id):
                                 try:
                                     from app.db.models import UserNotification
                                     notif = UserNotification(
