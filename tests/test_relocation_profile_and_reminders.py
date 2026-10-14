@@ -92,6 +92,9 @@ def test_tailor_uses_the_job_city_only_when_chosen_and_verified():
 
 
 def test_profile_offers_three_location_choices():
-    for label in ("Keep my current location", "Keep my location + add", "Use the job's city as my location"):
+    # The middle option's label was shortened to fit a phone (2026-10-14); the
+    # help text under the select carries the exact line it adds.
+    for label in ("Keep my current location", "Keep mine + add a relocation line", "Use the job's city as my location"):
         assert label in DASH
+    assert 'The relocation line adds "Open to relocation to [job city]"' in DASH
     assert '"resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),' in SERVER

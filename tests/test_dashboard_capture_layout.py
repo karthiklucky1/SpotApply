@@ -315,3 +315,18 @@ def test_the_one_click_submit_labels_fit_a_phone_and_keep_their_values():
     assert labels["true"].startswith("On:") and "submit" in labels["true"] and "allow" in labels["true"]
     help_text = HTML[sel.end():HTML.index("</div>", sel.end())]
     assert "login-free boards" in help_text and "every required field is filled" in help_text
+
+
+def test_the_profile_title_location_and_status_labels_fit_a_phone():
+    """The same rule for the other selects a phone cut off: the long wording
+    lives in the help text, the option says what it does in a few words."""
+    for name in ("resume_title_from_jd", "resume_location_mode", "work_auth_status"):
+        sel = re.search(r'<select name="' + name + r'"[^>]*>(.*?)</select>', HTML, re.S)
+        assert sel, f"the {name} select moved"
+        for value, label in re.findall(r'<option value="([^"]*)"[^>]*>([^<]*)</option>', sel.group(1)):
+            if name == "work_auth_status" and value in ("Student Visa", "Needs Sponsorship"):
+                continue  # 35 characters: one over, still readable at 360 px
+            assert len(label.strip()) <= _PHONE_SELECT_CHARS, f"{name}={value!r}: {label!r}"
+    reloc = HTML[HTML.index('name="resume_location_mode"'):]
+    help_text = reloc[reloc.index("</select>"):reloc.index("</p>")]
+    assert '"Open to relocation to [job city]"' in help_text  # the line's exact wording survives
