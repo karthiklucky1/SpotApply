@@ -288,6 +288,115 @@ def test_a_preferred_shortfall_is_not_a_genuine_gap(rep):
     assert terraform and "not a blocker" in terraform[0]
 
 
+# ── a preferred SKILL the resume lacks is not a genuine gap either ───────────
+#
+# 2026-10-14: "Experience with Docker and AWS is a plus." put Docker and AWS
+# under "Genuine gaps". The preference scoping above only ever ran for a
+# requirement with a years phrase; the sweep for skills "not present anywhere
+# on the resume" filed every phrase as a gap, whatever the posting called it.
+
+_PLAIN_MASTER = """## Experience
+**Software Engineer** | Northwind Labs | Jan 2022 - Present | Remote
+- Built Python services with FastAPI and Postgres.
+## Skills
+Python, FastAPI, Postgres
+"""
+
+
+def _gap_skills(r) -> set:
+    return {g.split(":")[0].strip().lower() for g in r.gaps
+            if g.endswith("not present anywhere on the resume.")}
+
+
+def _preferred_skills(r) -> set:
+    return {q.split(":")[0].strip().lower() for q in r.questions
+            if "lists this as preferred, not required" in q
+            and "not present anywhere on the resume" in q}
+
+
+@pytest.mark.parametrize("line,skills", [
+    ("Experience with Docker and AWS is a plus.", {"docker", "aws"}),
+    ("Bonus: Kubernetes experience.", {"kubernetes"}),
+    ("Nice to have: Terraform.", {"terraform"}),
+    ("Kafka preferred.", {"kafka"}),
+    ("Kafka preferred", {"kafka"}),                       # no full stop
+    ("Bonus points if you have worked with Kafka.", {"kafka"}),
+    ("Preferred qualifications: Terraform and Kubernetes.", {"terraform", "kubernetes"}),
+])
+def test_a_preferred_skill_the_resume_lacks_is_not_a_genuine_gap(line, skills):
+    jd = f"3+ years of experience with Python required.\n{line}\n"
+    r = review(_PLAIN_MASTER, _PLAIN_MASTER, jd)
+    assert not (_gap_skills(r) & skills), f"{line!r} filed as a genuine gap: {r.gaps}"
+    assert skills <= _preferred_skills(r), f"{line!r} not reported as preferred: {r.questions}"
+    assert "not a blocker on its own" in " ".join(r.questions)
+
+
+@pytest.mark.parametrize("jd", [
+    # Neighbouring sentences on one line.
+    "Experience with Docker is a plus. Experience with Kafka is required.",
+    # Neighbouring lines, the preferred one first and written without a full stop:
+    # a short bare line used to read as a section LABEL, making every line below
+    # it preferred.
+    "Docker preferred\nExperience with Kafka at scale.",
+    # A list whose middle bullet carries the preference.
+    "Requirements:\n- Kafka event streaming\n- Docker (nice to have)\n- Kafka Streams\n",
+])
+def test_a_required_skill_next_to_a_preferred_one_stays_required(jd):
+    r = review(_PLAIN_MASTER, _PLAIN_MASTER, jd)
+    assert "kafka" in _gap_skills(r), f"the required skill lost its gap: {r.gaps}"
+    assert "docker" not in _gap_skills(r)
+    assert "docker" in _preferred_skills(r)
+
+
+def test_one_required_mention_outweighs_a_preferred_one():
+    """Listed as a plus in one place and required in another, it is required."""
+    jd = "Kafka is a plus.\nYou must have production Kafka experience.\n"
+    r = review(_PLAIN_MASTER, _PLAIN_MASTER, jd)
+    assert "kafka" in _gap_skills(r)
+    assert "kafka" not in _preferred_skills(r)
+
+
+def test_a_preferred_heading_covers_skills_with_no_years_phrase():
+    jd = ("## Requirements\n- Experience with Kafka.\n\n"
+          "Nice-to-haves:\n- Terraform\n- Kubernetes\n")
+    r = review(_PLAIN_MASTER, _PLAIN_MASTER, jd)
+    assert "kafka" in _gap_skills(r)
+    assert not (_gap_skills(r) & {"terraform", "kubernetes"})
+    assert {"terraform", "kubernetes"} <= _preferred_skills(r)
+
+
+def test_a_preferred_skill_is_still_in_the_plan_and_still_checked_in_the_draft():
+    """Preferred or not, the resume does not evidence it: it belongs in the
+    improvement plan, and a draft that claims it is still caught."""
+    jd = "3+ years of experience with Python required.\nExperience with Docker is a plus.\n"
+    r = review(_PLAIN_MASTER, _PLAIN_MASTER, jd)
+    assert any(p.lower().startswith("docker") for p in r.improvement_plan)
+    leaky = _PLAIN_MASTER.replace("- Built Python", "- Containerised everything with Docker.\n- Built Python")
+    assert "docker" in [c.lower() for c in review(_PLAIN_MASTER, leaky, jd).unconfirmed_claims]
+
+
+@pytest.mark.parametrize("text,required", [
+    ("Preferred qualifications: 3+ years of Go.", False),
+    ("Bonus points if you have 2+ years of Rust.", False),
+    ("Qualifications: 3+ years of Go.", True),
+    ("You have 3+ years of Go.", True),
+])
+def test_wording_that_frames_a_preference_is_not_a_required_marker(text, required):
+    """"Preferred qualifications" contains "qualifications" and "if you have"
+    contains "you have" — both required markers, both outranking the preference."""
+    assert parse_requirements(text)[0].required is required
+
+
+def test_a_bare_preferred_line_does_not_make_the_lines_below_it_preferred():
+    reqs = parse_requirements("AWS preferred\n3 years of Python.\n")
+    assert reqs and reqs[0].required is True
+
+
+def test_a_bare_preferred_label_still_opens_a_preferred_section():
+    reqs = parse_requirements("Nice to have\n- 2+ years of Terraform\n")
+    assert reqs and reqs[0].required is False
+
+
 def test_the_open_questions_are_ones_only_the_candidate_can_answer(rep):
     blob = " ".join(rep.questions).lower()
     assert "internship experience is" in blob
