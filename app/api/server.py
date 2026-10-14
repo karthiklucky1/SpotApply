@@ -11629,8 +11629,39 @@ def application_sponsorship(application_id: int, request: Request) -> dict:
         profile = session.exec(
             select(UserProfile).where(UserProfile.user_id == uid)
         ).first() if uid else None
+        if profile is None and uid == "local":
+            # Single-user local mode (no Supabase, so no other tenant exists)
+            # stores its profile with user_id NULL — `answer_pack.
+            # _get_or_create_profile(None)`, which every other route uses.
+            profile = session.exec(
+                select(UserProfile).where(UserProfile.user_id.is_(None))).first()
     company = (job.company if job else "") or ""
-    out = {"company": company, "h1b": None, "assessment": None, "vendor": None}
+    out = {"company": company, "h1b": None, "assessment": None, "vendor": None,
+           "candidate": None}
+    # Whether THIS USER needs sponsorship at all. The card used to advise a U.S.
+    # citizen that "many employers still sponsor case-by-case, so it's worth a
+    # quick ask" (2026-10-14). The ONE answer decides (`tenant_prefs.
+    # needs_sponsorship` = `work_auth.assess_profile`), and "no sponsorship
+    # needed" is said only when the user SAVED a status that establishes it and
+    # the authorisation is live: a blank profile, or an expired/undated one,
+    # keeps the posting-side card — not knowing is not evidence.
+    try:
+        from app.common.tenant_prefs import needs_sponsorship as _needs_sponsorship
+        from app.intelligence.work_auth import assess_profile as _assess_wa
+        from app.intelligence.work_auth import status_on_file as _status_on_file
+        if _status_on_file(profile):
+            if _needs_sponsorship(profile):
+                out["candidate"] = {"needs_sponsorship": True}
+            else:
+                fr = _assess_wa(profile)
+                if fr.authorized_now and fr.validity in ("not_applicable", "current"):
+                    out["candidate"] = {
+                        "needs_sponsorship": False,
+                        "basis": fr.basis,
+                        "summary": (fr.headline or "").lstrip("✅").strip(),
+                    }
+    except Exception as e:
+        log.debug("sponsorship need for the user unavailable: %s", e)
     # Who is actually hiring you. A staffing-vendor posting is legitimate but is
     # a different transaction than applying direct, and for an F-1 user a
     # client-site placement collides with the I-983 training requirement.

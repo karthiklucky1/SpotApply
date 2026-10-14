@@ -54,6 +54,17 @@ def _blob(profile) -> str:
     return f" {wa} {vs} {ws} ".lower()
 
 
+def status_on_file(profile) -> bool:
+    """Has the user SAVED a work-authorization status at all?
+
+    `assess_profile` falls back to "Authorized to work" when nothing is saved,
+    which is the right default for a FILTER (nothing is hidden from someone who
+    has not told us yet) and the wrong basis for a STATEMENT to them: not
+    knowing someone's status is not evidence that they need no sponsorship.
+    """
+    return profile is not None and bool(_blob(profile).strip())
+
+
 # Statuses whose authorisation is DATED: the document carries an end date, so
 # the status alone does not establish that work is authorised today.
 _DATED_STATUSES = ("opt", "stem opt", "stem-opt", "f-1", "f1", "ead", "h-1b",
