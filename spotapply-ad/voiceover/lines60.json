@@ -1,0 +1,11 @@
+[
+ {"id":"w_problem",  "tts":"Another job search. More tabs. Another form, asking for the same details.", "caption":"Another job search. More tabs. Another form, asking for the same details."},
+ {"id":"w_intro",    "tts":"Meet Spot Apply. Upload your résumé once, and choose the roles and places you want.", "caption":"Meet SpotApply. Upload your resume once, and choose the roles and places you want."},
+ {"id":"w_find",     "tts":"It finds fresh roles that fit, and shows you exactly why: skills, experience, location.", "caption":"It finds fresh roles that fit, and shows you exactly why: skills, experience, location."},
+ {"id":"w_sponsor",  "tts":"If you need sponsorship, it shows what the posting says. Always check with the employer.", "caption":"If you need sponsorship, it shows what the posting says. Always check with the employer."},
+ {"id":"w_tailor",   "tts":"It tailors your résumé and cover letter from what you've actually done. Your degree, employers and dates stay locked.", "caption":"It tailors your resume and cover letter from what you've actually done. Your degree, employers and dates stay locked."},
+ {"id":"w_apply",    "tts":"It fills the form in your browser. You review every answer, and click submit. Or approve it with one click, if you turn that on.", "caption":"It fills the form in your browser. You review every answer, and click Submit. Or approve it with one click, if you turn that on."},
+ {"id":"w_track",    "tts":"Track every application, see how early you applied, and follow up with a ready-made email.", "caption":"Track every application, see how early you applied, and follow up with a ready-made email."},
+ {"id":"w_recap",    "tts":"Find. Understand. Prepare. Review. Track.", "caption":"Find. Understand. Prepare. Review. Track.", "speed": 0.92},
+ {"id":"w_cta",      "tts":"Your experience. Less busywork. Start free with Spot Apply.", "caption":"Your experience. Less busywork. Start free with SpotApply."}
+]

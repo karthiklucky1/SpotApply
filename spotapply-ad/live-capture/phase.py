@@ -3,6 +3,8 @@
     phase.py untailored   hero application = SHORTLISTED, no documents (board + match report)
     phase.py tailored     hero application = TAILORED, documents linked (studio / review)
     phase.py oneclick on|off   UserProfile.one_click_submit
+    phase.py submitted        hero role SUBMITTED, receipt stamped
+    phase.py needs_sponsorship | citizen   work authorization for the sponsorship capture
 """
 import json
 import os
@@ -58,6 +60,15 @@ with get_session() as s:
         earliness.stamp(a, job, now=a.submitted_at)
         print("receipt", a.applied_after_min, a.applied_ref)
         s.add(a)
+    elif cmd in ("needs_sponsorship", "citizen"):
+        # One capture for the explainer's sponsorship chapter uses a profile
+        # that NEEDS sponsorship; "citizen" restores the demo candidate.
+        p = s.exec(select(UserProfile)).first()
+        if cmd == "needs_sponsorship":
+            p.work_authorization, p.work_auth_status, p.requires_sponsorship = "F-1 OPT", "F-1 OPT", True
+        else:
+            p.work_authorization, p.work_auth_status, p.requires_sponsorship = "Citizen", "Citizen", False
+        s.add(p)
     elif cmd == "oneclick":
         p = s.exec(select(UserProfile)).first()
         p.one_click_submit = (sys.argv[2] == "on")

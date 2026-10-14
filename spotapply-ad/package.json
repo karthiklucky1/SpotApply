@@ -33,6 +33,9 @@
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc",
     "captions": "node --no-warnings voiceover/make-srt.mjs",
-    "render:silent": "remotion render SpotApplySocial30 out/spotapply-social-30s-silent.mp4 --props={\"voiceover\":false} --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709"
+    "render:silent": "remotion render SpotApplySocial30 out/spotapply-social-30s-silent.mp4 --props={\"voiceover\":false} --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709",
+    "captions:60": "node --no-warnings voiceover/make-srt.mjs 60",
+    "render:60": "remotion render SpotApplyExplainer60 out/spotapply-explainer-60s.mp4 --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709",
+    "poster:60": "remotion still SpotApplyExplainer60 out/spotapply-explainer-60s-poster.png --frame=540 --image-format=png"
   }
 }

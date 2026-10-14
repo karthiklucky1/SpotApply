@@ -25,3 +25,5 @@ scratch/
 data/training/
 data/models/
 node_modules/
+# Agent worktrees (Claude Code isolation), never part of the repo.
+.claude/worktrees/

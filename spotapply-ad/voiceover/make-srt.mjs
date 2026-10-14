@@ -1,12 +1,19 @@
-// Writes out/spotapply-social-30s.srt from the SAME timeline the video uses
-// (src/timeline.ts) and the caption text in lines.json, so the captions can
-// never drift from the audio. Run: node voiceover/make-srt.mjs
+// Writes the SRT for a cut from the SAME timeline the video uses and the
+// caption text in its lines file, so captions can never drift from the audio.
+//   node voiceover/make-srt.mjs        -> out/spotapply-social-30s.srt
+//   node voiceover/make-srt.mjs 60     -> out/spotapply-explainer-60s.srt
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { SCENE_START, VOICEOVER } from "../src/timeline.ts";
+import { SCENE_START as START30, VOICEOVER as VO30 } from "../src/timeline.ts";
+import { START60, VOICEOVER60 } from "../src/w60/timeline60.ts";
 
 const FPS = 30;
-const lines = JSON.parse(readFileSync(new URL("./lines.json", import.meta.url), "utf8"));
-const caption = Object.fromEntries(lines.map((l) => [l.id, l.caption]));
+const cut60 = process.argv[2] === "60";
+const SCENE_START = cut60 ? START60 : START30;
+const VOICEOVER = cut60 ? VOICEOVER60 : VO30;
+const OUT = cut60 ? "spotapply-explainer-60s.srt" : "spotapply-social-30s.srt";
+const lines = JSON.parse(readFileSync(new URL(cut60 ? "./lines60.json" : "./lines.json", import.meta.url), "utf8"));
+// lines60.json ids carry a "w_" prefix (the audio file names).
+const caption = Object.fromEntries(lines.map((l) => [l.id.replace(/^w_/, ""), l.caption]));
 
 const ts = (frame) => {
   const ms = Math.round((frame / FPS) * 1000);
@@ -38,6 +45,16 @@ for (const v of VOICEOVER) {
     if (last && wrap(last + " " + s).length <= 2 && (last + " " + s).length <= 84) groups[groups.length - 1] = last + " " + s;
     else groups.push(s);
   }
+  // A sentence too long for two rows splits at the comma or colon nearest
+  // its middle.
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    if (wrap(g).length <= 2) continue;
+    const marks = [...g.matchAll(/[,:;]\s/g)].map((m) => m.index + 1);
+    if (!marks.length) continue;
+    const cut = marks.reduce((best, m) => (Math.abs(m - g.length / 2) < Math.abs(best - g.length / 2) ? m : best));
+    groups.splice(i, 1, g.slice(0, cut).trim(), g.slice(cut).trim());
+  }
   const total = groups.reduce((a, g) => a + g.length, 0);
   let at = start;
   groups.forEach((g, i) => {
@@ -49,5 +66,5 @@ for (const v of VOICEOVER) {
 
 const srt = cues.map((c, i) => `${i + 1}\n${ts(c.from)} --> ${ts(c.to)}\n${c.rows.join("\n")}\n`).join("\n");
 mkdirSync(new URL("../out/", import.meta.url), { recursive: true });
-writeFileSync(new URL("../out/spotapply-social-30s.srt", import.meta.url), srt);
+writeFileSync(new URL(`../out/${OUT}`, import.meta.url), srt);
 console.log(srt);
