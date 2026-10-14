@@ -30,12 +30,3 @@ export const typed = (
   const n = Math.floor(Math.max(0, frame - start) * charsPerFrame);
   return text.slice(0, Math.min(text.length, n));
 };
-
-/** A rectangle moving between two placements. */
-export type Rect = { x: number; y: number; w: number; h: number };
-export const lerpRect = (a: Rect, b: Rect, t: number): Rect => ({
-  x: lerp(a.x, b.x, t),
-  y: lerp(a.y, b.y, t),
-  w: lerp(a.w, b.w, t),
-  h: lerp(a.h, b.h, t),
-});

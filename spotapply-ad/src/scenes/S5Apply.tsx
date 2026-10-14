@@ -9,7 +9,7 @@ import { CheckBadge, CheckIcon, DocIcon, LockIcon } from "../components/Icons";
 import { Mark } from "../components/Logo";
 import { BASE_RESUME, CANDIDATE, JOB } from "../story";
 import { SCENES } from "../timeline";
-import { JobChip, ResumeDoc } from "./S4Tailor";
+import { JobChip, TailorScreenFinal } from "./S4Tailor";
 
 // 16-22s. SpotApply fills the employer's form in the browser and attaches
 // the tailored resume. Then the person reads it over and clicks Submit
@@ -318,6 +318,7 @@ export const ApplyScene: React.FC = () => {
   }
   const press = prog(frame, PRESS_AT, 4) - prog(frame, PRESS_AT + 4, 6);
   const ripple = prog(frame, PRESS_AT + 1, 16, ease.out);
+  const oneClick = prog(frame, 96, 12);
 
   return (
     <AbsoluteFill>
@@ -328,8 +329,7 @@ export const ApplyScene: React.FC = () => {
       ) : null}
 
       {fold < 1 ? (
-        <ResumeDoc
-          frame={999}
+        <TailorScreenFinal
           style={{
             opacity: 1 - prog(frame, 4, 10),
             scale: String(lerp(1, 0.4, fold)),
@@ -367,6 +367,41 @@ export const ApplyScene: React.FC = () => {
       ) : null}
 
       <Cursor x={cx} y={cy} opacity={enter} press={press} ripple={ripple} />
+
+      {/* The new opt-in path, stated the way the landing page states it: one
+          Apply & Submit click approves that one application. */}
+      <div
+        style={{
+          position: "absolute",
+          left: SAFE.x,
+          width: SAFE.width,
+          top: FORM.y + FORM.h + 16,
+          display: "flex",
+          justifyContent: "center",
+          opacity: oneClick,
+          translate: `0px ${(1 - oneClick) * 14}px`,
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "10px 22px",
+            borderRadius: 999,
+            background: COLORS.canvas,
+            border: `2px solid ${COLORS.accentLine}`,
+            fontFamily: FONTS.sans,
+            fontWeight: 600,
+            fontSize: 25,
+            color: COLORS.accent700,
+            whiteSpace: "nowrap",
+          }}
+        >
+          <Mark size={30} />
+          {COPY.oneClick}
+        </span>
+      </div>
 
       <Headline lines={COPY.fill} enterAt={4} exitAt={72} />
       <Headline lines={COPY.review} enterAt={82} exitAt={SCENES.apply - 9} />

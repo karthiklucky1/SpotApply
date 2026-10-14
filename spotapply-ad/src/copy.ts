@@ -7,7 +7,9 @@ export const COPY = {
   tailor: ["Your experience.", "Clearly presented."],
   fill: ["Less", "retyping."],
   review: ["Review.", "Then submit."],
-  track: ["Keep your search", "organized."],
+  early: ["See how early", "you applied."],
+  followUp: ["Follow up", "in a click."],
+  oneClick: "Optional one-click Apply & Submit: you approve each one",
   taglineA: "Your experience.",
   taglineB: "Less busywork.",
   cta: "Start free", // matches the live landing page CTA (landing.html)

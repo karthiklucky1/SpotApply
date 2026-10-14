@@ -1,21 +1,19 @@
-# Voiceover script: 30-second ad
+# Voiceover script: 30-second ad (v2)
 
-Not included in the rendered MP4. This is for a later human recording. Each
-line is timed to the scene it covers, so a take can be laid over the existing
-video without changing any picture.
+The rendered MP4 carries a synthetic narration of exactly these lines
+(Kokoro-82M, voice `af_heart`; see `voiceover/README.md`). To replace it with
+a human take, record the same lines to the same slots and drop the WAVs into
+`public/voiceover/` (ids below), then update `frames` in `src/timeline.ts`.
 
-| Time | Scene | Line |
+| Starts | Id | Line |
 |---|---|---|
-| 0.0–3.0 s | Hook | Still typing the same details into another application? |
-| 3.0–6.0 s | Reveal | Meet SpotApply. |
-| 6.0–11.0 s | Find + understand | Find roles that fit your experience. Understand the match. |
-| 11.0–16.0 s | Tailor | Tailor your resume using what you've actually done. |
-| 16.0–22.0 s | Fill, review, submit | Fill the form, review the details, and submit when you're ready. |
-| 22.0–25.0 s | Track | Keep your applications organized. |
-| 25.0–30.0 s | End card | Your experience. Less busywork. Start free with SpotApply. |
+| 0.07 s | `hook` | Still typing the same details into every application? |
+| 3.40 s | `reveal` | Meet SpotApply. |
+| 5.80 s | `find` | It finds fresh roles that fit your experience, and shows you why. |
+| 10.20 s | `tailor` | Then it tailors your resume, using only what you've actually done. |
+| 14.60 s | `apply` | It fills the form in your browser. You check it, and the final click is always yours. |
+| 20.40 s | `track` | Track every application, see how early you applied, and follow up in a click. |
+| 25.40 s | `cta` | Your experience. Less busywork. Start free with SpotApply. |
 
-About 50 words, under 2 words per second overall: a clear, unhurried delivery
-fits (the opening question is the one line that needs a brisker read). Keep
-the last line finished by about 29 s so the final second is quiet.
-
-Before recording, confirm the live site still offers **Start free**.
+68 words. The narration ends at 29.0 s so the last second is quiet.
+Before publishing, confirm the live site still offers **Start free**.

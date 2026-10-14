@@ -1,0 +1,10 @@
+# Everything the capture run generates stays local.
+venv/
+runroot/
+shots/
+logs/
+reqs.txt
+pip.log
+seed_state.json
+server.pid
+__pycache__/

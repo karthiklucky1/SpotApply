@@ -23,23 +23,10 @@ export const LockIcon: React.FC<IconProps> = ({ size, color, stroke = 2.2 }) => 
   </svg>
 );
 
-export const PinIcon: React.FC<IconProps> = ({ size, color, stroke = 2 }) => (
-  <svg {...base(size)}>
-    <path d="M12 21s-6.5-5.7-6.5-11a6.5 6.5 0 0 1 13 0c0 5.3-6.5 11-6.5 11Z" stroke={color} strokeWidth={stroke} strokeLinejoin="round" />
-    <circle cx="12" cy="10" r="2.3" stroke={color} strokeWidth={stroke} />
-  </svg>
-);
-
 export const DocIcon: React.FC<IconProps> = ({ size, color, stroke = 2 }) => (
   <svg {...base(size)}>
     <path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke={color} strokeWidth={stroke} strokeLinejoin="round" />
     <path d="M14 3v5h5M9 13h6M9 17h6" stroke={color} strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" />
-  </svg>
-);
-
-export const SparkIcon: React.FC<IconProps> = ({ size, color }) => (
-  <svg {...base(size)}>
-    <path d="M12 2.5c.6 4.9 2.6 6.9 7.5 7.5-4.9.6-6.9 2.6-7.5 7.5-.6-4.9-2.6-6.9-7.5-7.5 4.9-.6 6.9-2.6 7.5-7.5Z" fill={color} transform="translate(0 2)" />
   </svg>
 );
 

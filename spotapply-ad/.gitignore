@@ -7,3 +7,4 @@ dist
 out/*
 !out/spotapply-social-30s.mp4
 !out/spotapply-social-30s-poster.png
+!out/spotapply-social-30s.srt
