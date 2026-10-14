@@ -121,3 +121,139 @@ def test_referral_asks_follow_the_ats_mechanics():
     # A low-cost ask with concrete windows, not an open-ended one.
     assert "15 minutes" in by_type["referral_intro_call"]
     assert "Wednesday" in by_type["referral_intro_call"]
+
+
+# ── the GitHub note: a claim about a real company needs evidence ─────────────
+#
+# Observed 2026-10-14 with every outbound lookup refused: the built-in note
+# still told the recipient "I noticed your profile and also saw <company>'s
+# active open-source contributions on GitHub". The lookup had found nothing,
+# and even a hit is a NAME search for an org — nothing measured activity or
+# contributions, or that the org is the company's.
+
+_COMPANY_CLAIMS = ("open-source", "open source", "contributions", "active ")
+
+
+def _stub_generate(monkeypatch, repos, *, job_title="Backend Engineer",
+                   company="Northwind Traders", job_url="https://e.example/j/1",
+                   university="", needs_sponsorship=False):
+    """generate_referral_drafts with no network, no AI, and a stubbed lookup."""
+    from app.intelligence import referral as ref
+
+    class _P:
+        first_name, last_name = "Alex", "Rivera"
+        current_title, key_skills = "Engineer", "Python, Go"
+        work_authorization = "F-1 STEM OPT" if needs_sponsorship else "US Citizen"
+        ead_end_date = "2099-01-01" if needs_sponsorship else ""
+
+    _P.university = university
+
+    class _Job:
+        corporate_insights = None
+
+    _Job.title, _Job.company, _Job.url = job_title, company, job_url
+
+    class _App:
+        job_id = 1
+
+    class _Sess:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, model, _id):
+            return _App() if model.__name__ == "Application" else _Job()
+
+    from app.autofill import answer_pack as ap
+    from app.db import init_db
+    from app.intelligence import linkedin_xray as x
+    monkeypatch.setattr(init_db, "get_session", lambda *a, **k: _Sess())
+    monkeypatch.setattr(ap, "_get_or_create_profile", lambda **k: _P())
+    monkeypatch.setattr(ref, "get_company_github_repos", lambda c: list(repos))
+    monkeypatch.setattr(x, "find_champions", lambda *a, **k: {"ok": False, "people": []})
+    monkeypatch.setattr(__import__("app.config", fromlist=["settings"]).settings,
+                        "anthropic_api_key", "", raising=False)
+    return ref.generate_referral_drafts(1, user_id=None)
+
+
+def test_no_github_note_when_the_lookup_found_nothing(monkeypatch):
+    """A refused, failed or empty lookup is "we found nothing" — never a reason
+    to write about the company's open-source work."""
+    from app.intelligence.referral import _github_draft
+    assert _github_draft("Northwind Traders", "Backend Engineer", []) is None
+    assert _github_draft("Northwind Traders", "Backend Engineer", ["", "  "]) is None
+
+    out = _stub_generate(monkeypatch, [])
+    assert "github_outreach" not in {d["type"] for d in out["drafts"]}
+    for d in out["drafts"]:
+        text = f"{d.get('body', '')} {d.get('channel', '')} {d.get('label', '')}".lower()
+        for claim in _COMPANY_CLAIMS:
+            assert claim not in text, f"{d['type']} asserts {claim!r} with no evidence"
+
+
+def test_the_github_note_says_only_what_the_lookup_found(monkeypatch):
+    out = _stub_generate(monkeypatch, ["northwind-oss/ledger", "northwind-oss/cli"])
+    d = next(d for d in out["drafts"] if d["type"] == "github_outreach")
+    body = d["body"].lower()
+    assert "ledger" in body
+    for claim in _COMPANY_CLAIMS:
+        assert claim not in body, f"the note asserts {claim!r}, which nothing measured"
+    # The channel label no longer promises "open-source contributions" either.
+    assert "open-source" not in d["channel"].lower()
+    assert "https://github.com/northwind-oss/ledger" in d["channel"]
+    # A name match is not an identity: where we found it, and a check to make.
+    assert d["unverified"] is True
+    assert "northwind-oss/ledger" in d["verify_before_sending"]
+    assert "have not confirmed it belongs to Northwind Traders" in d["verify_before_sending"]
+    assert d["evidence"]["url"] == "https://github.com/northwind-oss/ledger"
+    assert d["evidence"]["repositories"] == ["northwind-oss/ledger", "northwind-oss/cli"]
+
+
+def test_the_github_lookup_reports_full_names_and_skips_forks(monkeypatch):
+    import httpx
+
+    from app.intelligence import referral as ref
+
+    class _R:
+        def __init__(self, code, payload):
+            self.status_code, self._payload = code, payload
+
+        def json(self):
+            return self._payload
+
+    def _get(url, **kw):
+        if "search/users" in url:
+            return _R(200, {"items": [{"login": "northwind-oss"}]})
+        return _R(200, [{"name": "linux", "full_name": "northwind-oss/linux", "fork": True},
+                        {"name": "ledger", "full_name": "northwind-oss/ledger", "fork": False}])
+
+    monkeypatch.setattr(httpx, "get", _get)
+    assert ref.get_company_github_repos("Northwind Traders") == ["northwind-oss/ledger"]
+
+    def _refused(url, **kw):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "get", _refused)
+    assert ref.get_company_github_repos("Northwind Traders") == []
+
+
+def test_an_ai_rewrite_changes_words_never_the_set_of_drafts():
+    """The model's copy replaced the list wholesale: it dropped the verify step
+    and could hand back a GitHub note for a company where nothing was found."""
+    from app.intelligence.referral import _merge_rewrites
+    built = [
+        {"type": "referral_request", "label": "L", "channel": "LinkedIn", "body": "orig"},
+        {"type": "university_alumni", "label": "A", "channel": "LinkedIn", "body": "orig alum",
+         "unverified": True, "verify_before_sending": "Confirm this person..."},
+    ]
+    rewrites = [
+        {"type": "referral_request", "body": "rewritten"},
+        {"type": "university_alumni", "body": "alum rewritten"},
+        {"type": "github_outreach", "body": "I saw your active open-source contributions"},
+    ]
+    merged = _merge_rewrites(built, rewrites)
+    assert [d["type"] for d in merged] == ["referral_request", "university_alumni"]
+    assert merged[0]["body"] == "rewritten"
+    assert merged[1]["body"] == "alum rewritten"
+    assert merged[1]["unverified"] is True
+    assert merged[1]["verify_before_sending"] == "Confirm this person..."
+    # A missing or empty rewrite keeps the built-in words.
+    assert _merge_rewrites(built, [{"type": "referral_request", "body": "  "}])[0]["body"] == "orig"

@@ -265,19 +265,13 @@ def run_demo_match(req: PublicDemoRequest) -> dict:
                 )
             })
             
-        # Add GitHub outreach card
-        import urllib.parse
-        search_url = f"https://github.com/search?q={urllib.parse.quote(job['company'])}&type=users"
-        drafts.append({
-            "type": "github_outreach",
-            "label": "GitHub outreach note",
-            "channel": f"LinkedIn message targeting open-source contributions. Search org: {search_url}",
-            "body": (
-                f"Hi {{name}}, I saw {job['company']}'s open-source contributions on GitHub. "
-                f"As a developer working with similar tech, I'd love to connect and follow your work."
-            )
-        })
-        
+        # No GitHub note. It used to tell the recipient "I saw {company}'s
+        # open-source contributions on GitHub" about every posting — real
+        # companies from the shared pool included — and the demo makes no GitHub
+        # lookup at all, so the claim never had evidence behind it. The signed-in
+        # kit writes one only when its lookup finds a repository
+        # (`referral._github_draft`); here there is never a finding.
+
         # Map findings to simple JSON structures
         findings_json = []
         for f in verdict.findings:

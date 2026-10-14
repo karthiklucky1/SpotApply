@@ -110,7 +110,15 @@ def _fallback_drafts(name: str, title: str, company: str, role: str,
 
 
 def get_company_github_repos(company: str) -> list[str]:
-    """Search for the company's GitHub organization and return up to 3 popular repos."""
+    """What a GitHub search for the company's organization actually FOUND: up
+    to 3 of its own (non-fork) public repositories as ``org/repo`` full names.
+
+    ``[]`` means "we found nothing" — no matching org, a refused or failed
+    request, an org with no public repos — and is never evidence that the
+    company does no open source. A hit is a NAME match from a search, not a
+    verified identity, which is why the draft built from it carries a verify
+    step (`_github_draft`).
+    """
     from app.config import settings
     import httpx
     import re
@@ -147,10 +155,88 @@ def get_company_github_repos(company: str) -> list[str]:
             timeout=5,
         )
         if r.status_code == 200:
-            return [repo["name"] for repo in r.json()]
+            # A fork under the org is someone else's project, not its work.
+            return [repo.get("full_name") or f"{slug}/{repo['name']}"
+                    for repo in r.json()
+                    if isinstance(repo, dict) and repo.get("name") and not repo.get("fork")]
     except Exception:
         pass
     return []
+
+
+def _github_draft(company: str, role: str, repos: list[str]) -> dict | None:
+    """The GitHub note — only when the lookup found something, saying only that.
+
+    It used to tell the recipient "I noticed your profile and also saw
+    {company}'s active open-source contributions on GitHub" whether or not the
+    lookup found anything: a refused or failed request returned ``[]`` and the
+    sentence went out anyway (seen 2026-10-14 with every outbound call
+    refused). Even a hit never established it — the lookup is a NAME search
+    for an org, and nothing measured activity or contributions. So:
+
+      * nothing found → no draft. The note's whole premise is common ground on
+        GitHub; with none there is nothing honest to say that the other
+        drafts do not already say.
+      * something found → the repository's name and nothing about the
+        company's open-source work, plus where we found it and a step to
+        confirm the org really is the company's before sending.
+
+    Guard: `test_referral`.
+    """
+    found = [r.strip() for r in (repos or []) if isinstance(r, str) and r.strip()]
+    if not found:
+        return None
+    full = found[0]
+    org, _, repo = full.rpartition("/")
+    repo = repo or full
+    where = f"https://github.com/{full}" if org else ""
+    if org:
+        verify = (f"We found “{full}” by searching GitHub for an organization named "
+                  f"like {company}, and have not confirmed it belongs to {company}. "
+                  f"Open {where} and check before you mention it.")
+    else:
+        verify = (f"We found the {repo} repository by searching GitHub for an "
+                  f"organization named like {company}, and have not confirmed it "
+                  f"belongs to {company}. Check before you mention it.")
+    return {
+        "type": "github_outreach",
+        "label": "GitHub outreach note",
+        "channel": "LinkedIn note to someone who works on a repository we found on GitHub",
+        "unverified": True,
+        "verify_before_sending": verify,
+        "evidence": {
+            "source": "github_org_search",
+            "query": company,
+            "organization": org,
+            "repositories": found[:3],
+            "url": where,
+        },
+        "body": (
+            f"Hi {{name}}, I'm exploring the {role} role at {company} and came across "
+            f"the {repo} repository on GitHub. Would you be open to connecting? I'd "
+            f"like to follow the work there."
+        ),
+    }
+
+
+def _merge_rewrites(drafts: list[dict], rewrites: list) -> list[dict]:
+    """Take only the BODY from an AI rewrite, per draft type.
+
+    Replacing the list wholesale (as this did) let the model's copy drop what
+    travels with a draft — `unverified`, `verify_before_sending`, `evidence`,
+    `suggested_contact` — and let it return a draft type we never built (a
+    GitHub note for a company where the lookup found nothing). The drafts we
+    built are the set; a rewrite can only change their words.
+    """
+    by_type: dict = {}
+    for r in rewrites or ():
+        if isinstance(r, dict) and r.get("type") and isinstance(r.get("body"), str):
+            by_type.setdefault(r["type"], r)
+    out = []
+    for d in drafts:
+        new = (by_type.get(d.get("type")) or {}).get("body", "").strip()
+        out.append({**d, "body": new} if new else d)
+    return out
 
 
 def generate_referral_drafts(application_id: int, user_id: str | None = None) -> dict:
@@ -275,23 +361,15 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
         )
         drafts.append(alum_draft)
 
-    # GitHub check
+    # GitHub check: a draft only when the lookup found something (`_github_draft`).
     repos = []
     try:
         repos = get_company_github_repos(company)
     except Exception:
         pass
-
-    drafts.append({
-        "type": "github_outreach",
-        "label": "GitHub outreach note",
-        "channel": "LinkedIn message targeting open-source contributions",
-        "body": (
-            f"Hi {{name}}, I noticed your profile and also saw {company}'s active open-source contributions on GitHub"
-            + (f", particularly the {repos[0]} repository." if repos else ".")
-            + " As a developer working with similar tech, I'd love to connect and follow your work."
-        )
-    })
+    gh_draft = _github_draft(company, role, repos)
+    if gh_draft:
+        drafts.append(gh_draft)
 
     # Try to upgrade the drafts with the LLM (cheap Haiku). Non-fatal on failure.
     # Same breaker and platform budget as the lanes (CLAUDE.md: nothing may call
@@ -328,7 +406,10 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
                 "select a specific live job, so the link is load-bearing.\n"
                 "- Keep the two concrete time windows where a draft offers them.\n"
                 "- Never claim a relationship or shared history that is not in the "
-                "candidate details below.\n\n"
+                "candidate details below.\n"
+                "- Never add a claim about the company (its open-source work, "
+                "products, news, culture) or about the recipient that the draft "
+                "does not already make.\n\n"
                 f"Candidate: {name or 'the candidate'}, {title or 'applicant'}. "
                 f"Skills: {skills or 'n/a'}. University: {uni or 'n/a'}. "
                 f"Role: {role} at {company}. "
@@ -352,7 +433,7 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             raw = re.sub(r"\s*```$", "", raw)
             parsed = json.loads(raw)
             if isinstance(parsed, list) and parsed and all("body" in d for d in parsed):
-                drafts = parsed
+                drafts = _merge_rewrites(drafts, parsed)
     except Exception as e:
         log.debug("referral LLM enrichment skipped: %s", e)
 
@@ -365,8 +446,12 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             d["channel"] = f"LinkedIn connection request to a fellow alum. Find them via: {search_url}"
         elif d.get("type") == "github_outreach":
             import urllib.parse
-            search_url = f"https://github.com/search?q={urllib.parse.quote(company)}&type=users"
-            d["channel"] = f"LinkedIn message targeting open-source contributions. Search org: {search_url}"
+            found = (d.get("evidence") or {}).get("url")
+            where = (f"Where we found it: {found}" if found else
+                     "Search GitHub: https://github.com/search?q="
+                     f"{urllib.parse.quote(company)}&type=users")
+            d["channel"] = ("LinkedIn note to someone who works on a repository we found "
+                            f"on GitHub. {where}")
 
     return {
         "application_id": application_id,
