@@ -8306,13 +8306,18 @@
                 const [evLabel, evClass] = _HC_EVIDENCE[f.evidence] || _HC_EVIDENCE.NONE;
                 const isCreator = (key === 'posting_creator_name');
                 const tip = (f.quote ? f.quote : (f.field ? ('Read from ' + f.field) : evLabel));
+                // The row wraps: on a phone label + value + evidence chip do not
+                // fit, and with all three on one line the value got ~40px and
+                // broke mid-word ("Platfor / m Enginee / ring"). The value keeps
+                // a 150px floor and breaks only at word boundaries; the chip
+                // moves under it when there is no room.
                 rows.push(
-                    '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--border);font-size:12.5px;" title="' + _esc(tip) + '">' +
-                      '<span style="width:118px;flex-shrink:0;font-weight:700;color:var(--muted-2);">' + _esc(label) + '</span>' +
-                      '<span style="flex:1;min-width:0;color:var(--ink-soft);font-weight:600;word-break:break-word;">' + _esc(f.value) +
+                    '<div class="hc-row" style="display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--border);font-size:12.5px;" title="' + _esc(tip) + '">' +
+                      '<span style="flex:0 0 118px;font-weight:700;color:var(--muted-2);">' + _esc(label) + '</span>' +
+                      '<span style="flex:1 1 150px;min-width:0;color:var(--ink-soft);font-weight:600;overflow-wrap:break-word;">' + _esc(f.value) +
                         (isCreator ? '<span style="font-weight:500;color:var(--muted-2);"> — created the posting, not confirmed as the manager</span>' : '') +
                       '</span>' +
-                      '<span class="jd-chip ' + evClass + '" style="flex-shrink:0;">' + _esc(evLabel) + '</span>' +
+                      '<span class="jd-chip ' + evClass + '" style="flex-shrink:0;margin-left:auto;">' + _esc(evLabel) + '</span>' +
                     '</div>');
             }
             if (!rows.length) return;

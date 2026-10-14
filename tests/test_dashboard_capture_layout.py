@@ -12,6 +12,8 @@ only the one screen it was seen on.
 4. Phone: the documents modal (View Documents) sat under the fixed menu
    button with the page's top bar showing around it, and its header buttons
    (Auto-fill Form, Download .docx, Download PDF, close) ran off the edge.
+5. Phone: "People & team" squeezed each value to ~40px between its label and
+   its evidence chip, so it broke mid-word ("Platfor / m Enginee / ring").
 """
 from __future__ import annotations
 
@@ -167,3 +169,23 @@ def test_the_documents_modal_header_wraps():
     assert re.search(r"#modal-actions \{ order: 2; flex: 1 1 100%;", css)
     # The documents themselves wrap rather than scrolling sideways.
     assert re.search(r"#tab-content-resume, #tab-content-cover \{ white-space: pre-wrap;", HTML)
+
+
+# ── 5. People & team values wrap at word boundaries ─────────────────────────
+
+def test_people_and_team_rows_wrap_instead_of_squeezing_the_value():
+    fn = _function("loadHiringContext")
+    row = re.search(r"'<div class=\"hc-row\" style=\"([^\"]*)\"", fn)
+    assert row, "the People & team row is no longer built in loadHiringContext"
+    assert "flex-wrap:wrap" in row.group(1)
+    spans = re.findall(r"'<span (?:class=\"[^\"]*\" )?style=\"([^\"]*)\">' \+ _esc\((label|f\.value|evLabel)\)", fn)
+    styles = {name: style for style, name in spans}
+    assert set(styles) == {"label", "f.value", "evLabel"}, styles
+    # The value has a floor, so the chip wraps under it rather than the value
+    # shrinking to a few letters a line...
+    assert re.search(r"flex:1 1 (1[2-9]\d|[2-9]\d\d)px", styles["f.value"]), styles["f.value"]
+    assert "min-width:0" in styles["f.value"]
+    # ...and breaks at word boundaries (word-break:break-word broke anywhere).
+    assert "overflow-wrap:break-word" in styles["f.value"]
+    assert "word-break" not in styles["f.value"]
+    assert "flex-shrink:0" in styles["evLabel"]
