@@ -894,6 +894,54 @@
     #jobModal .jd-head, #referralModal .jd-head, #connModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
         display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0; }
     #jobModal .jd-body, #referralModal .jd-body, #connModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
+    /* Phone: the job's title row cannot also hold Auto-Fill + Mark Applied.
+       They kept their full width, the title shrank to a word a line and the
+       buttons sat on top of it ("Senior Backend Eng…"). Logo, title and close
+       keep the first row; the actions take a row of their own and wrap. */
+    #jobModalTitle, #jobModalCompany { overflow-wrap: break-word; }
+    @media (max-width: 640px) {
+      #jobModal .jd-head { flex-wrap: wrap; row-gap: 10px; }
+      #jobModalHeaderActions { order: 3; flex: 1 1 100%; margin-right: 0; flex-wrap: wrap; }
+      #jobModalHeaderActions:empty { display: none; }
+    }
+    /* Tailoring Studio header: the title was a bare min-w-0 item beside a
+       shrink-0 pill row, so on a phone it got ~0px (the title vanished, the
+       subtitle went a word a line) and the pills ran off the right edge. The
+       title now claims the free space from a floor, the pills wrap, and on a
+       phone they take a row of their own under the title and the close. */
+    #ts-head { flex-wrap: wrap; row-gap: 8px; }
+    #ts-head-text { flex: 1 1 240px; }
+    #ts-pills { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+    #ts-pills:not(:has(> span:not(.hidden))) { display: none; }
+    #ts-close { flex-shrink: 0; }
+    @media (max-width: 767px) {
+      #ts-close { order: 1; }
+      #ts-pills { order: 2; flex: 1 1 100%; justify-content: flex-start; }
+      #ts-title { white-space: normal; }
+      #ts-actions { flex-wrap: wrap; }
+    }
+    /* Documents modal (#modal, openModal). It sat at z-50, under the phone's
+       fixed menu button (z-60), and .modal-backdrop had no CSS at all, so the
+       page's own top bar showed around it as if the modal were under the
+       bar. It is above the menu button now, on a real backdrop (openModal
+       closes the job drawer and the Studio first, so nothing it competes
+       with is higher). Its header wraps instead of pushing Download PDF and
+       the close button off the right edge, and the documents wrap their
+       long lines instead of scrolling sideways. */
+    #modal { z-index: 70; }
+    #modal.modal-backdrop { background: rgba(15,23,42,0.55);
+      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+    #modal > div { overflow: hidden; }  /* the scroll area's square corners poked past the rounded panel */
+    #modal-head { flex-wrap: wrap; gap: 12px; }
+    #modal-head-text { flex: 1 1 220px; min-width: 0; overflow-wrap: break-word; }
+    #modal-actions { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+    #modal-close { flex-shrink: 0; }
+    #tab-content-resume, #tab-content-cover { white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 640px) {
+      #modal-head { padding: 18px 16px 14px; }
+      #modal-close { order: 1; }
+      #modal-actions { order: 2; flex: 1 1 100%; justify-content: flex-start; gap: 8px; }
+    }
     #jobModalClose, #referralClose, #connClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; font-size: 18px;
         color: var(--muted); background: var(--surface-2); transition: all .15s ease; }
@@ -1518,9 +1566,13 @@
                    SAME height, actions pinned to the bottom — no ragged grid. */
                 #shortlisted-container, #submitted-container, #interviewing-container { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: stretch; }
                 @media (min-width: 1280px) { #shortlisted-container, #submitted-container, #interviewing-container { grid-template-columns: 1fr 1fr; } }
-                #shortlisted-container > #empty-shortlist-state,
-                #submitted-container > .text-center,
-                #interviewing-container > .text-center { grid-column: 1 / -1; }
+                /* Anything in these grids that is not a card (the "Apply today"
+                   divider, the month's earliness line, an empty state, "Show
+                   All") spans the whole row: in one cell it pushed the first
+                   card into the right column at >=1280px. */
+                #shortlisted-container > :not(.jobrow),
+                #submitted-container > :not(.jobrow),
+                #interviewing-container > :not(.jobrow) { grid-column: 1 / -1; }
                 #shortlisted-container .jobrow, #submitted-container .jobrow, #interviewing-container .jobrow { display: flex; flex-direction: column; height: 100%; }
                 #shortlisted-container .jr-flex, #submitted-container .jr-flex, #interviewing-container .jr-flex { flex: 1; display: flex; }
                 #shortlisted-container .jr-info, #submitted-container .jr-info, #interviewing-container .jr-info { display: flex; flex-direction: column; width: 100%; }
@@ -1637,24 +1689,24 @@
      </div>
    </div>
  </div> <!-- TAB 4: Registry View --> <div id="view-content-registry" class="hidden flex flex-col gap-5 w-full"> <!-- stat cards — even columns, no clipping --> <div class="grid grid-cols-3 lg:grid-cols-5 gap-5 w-full"> <div class="glass rounded-[24px] p-5 border border-slate-700/40 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Boards Seeded</span> <span class="text-3xl font-extrabold text-white mt-1" id="reg-stat-total">...</span> <span class="text-[10px] text-slate-600">Total ATS board configs · across SpotApply</span> </div> <div class="glass rounded-[24px] p-5 border border-indigo-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Active Crawlers</span> <span class="text-3xl font-extrabold text-indigo-400 mt-1" id="reg-stat-active">...</span> <span class="text-[10px] text-slate-600">Boards with live API responses · across SpotApply</span> </div> <div class="glass rounded-[24px] p-5 border border-emerald-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Jobs Verified</span> <span class="text-3xl font-extrabold text-emerald-400 mt-1" id="reg-stat-jobs">...</span> <span class="text-[10px] text-slate-600">Postings confirmed in ATS APIs · across SpotApply</span> </div> <div class="glass rounded-[24px] p-5 border border-amber-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Feed Freshness</span> <span class="text-3xl font-extrabold text-amber-400 mt-1" id="reg-stat-freshage">...</span> <span class="text-[10px] text-slate-600" id="reg-stat-freshage-sub">Median age of your scored feed</span> </div> <div class="glass rounded-[24px] p-5 border border-cyan-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Post → Detected</span> <span class="text-3xl font-extrabold text-cyan-400 mt-1" id="reg-stat-alertlat">...</span> <span class="text-[10px] text-slate-600" id="reg-stat-alertlat-sub">Median over all dated postings (7d)</span> </div> <div class="glass rounded-[24px] p-5 border border-rose-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">New Jobs (24h)</span> <span class="text-3xl font-extrabold text-rose-400 mt-1" id="reg-stat-new24">...</span> <span class="text-[10px] text-slate-600" id="reg-stat-new24-sub">New postings found in the last day</span> </div> <div class="glass rounded-[24px] p-5 border border-violet-500/20 flex flex-col gap-1"> <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Freshness Pulse</span> <span class="text-3xl font-extrabold text-violet-400 mt-1" id="reg-stat-hotlane">...</span> <span class="text-[10px] text-slate-600" id="reg-stat-hotlane-sub">Fast lane + hourly floor</span> </div> </div> <!-- My Companies watchlist (pulse fast lane) --> <div class="glass rounded-[24px] p-5 border border-amber-500/20"> <div class="flex items-center justify-between mb-1 flex-wrap gap-3"> <div> <h3 class="font-bold text-white text-sm">★ My Companies <span class="text-[10px] font-bold text-amber-400" id="wl-cadence"></span></h3> <p class="text-[11px] text-slate-500 mt-0.5">Companies you follow are checked every few minutes — their new posts alert you first. Other live boards aim for an hourly sweep; the Freshness Pulse card shows how well that is holding right now.</p> </div> <div class="flex gap-2 items-center"> <input id="wl-input" type="text" placeholder="Add a company…" class="text-xs px-3 py-2 rounded-xl bg-slate-800/60 border border-slate-700/60 text-white placeholder-slate-500 focus:outline-none" style="min-width:180px"> <button onclick="addWatchCompany()" class="text-xs font-bold px-4 py-2 rounded-xl" style="background:rgba(251,191,36,0.14);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;">Add</button> </div> </div> <div id="wl-chips" class="flex flex-wrap gap-2 mt-3"></div> </div> <!-- Source breakdown table --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <div class="flex items-center justify-between mb-4"> <h3 class="font-bold text-white text-sm">Job Sources</h3> <button onclick="startDiscovery()" class="text-xs font-bold px-4 py-2 rounded-xl" style="background:rgba(var(--sage-rgb),0.14);border:1px solid rgba(var(--sage-rgb),0.4);color:var(--sage-700);"> Discover
-                    </button> </div> <div class="overflow-x-auto"> <table class="w-full text-xs"> <thead> <tr class="text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-800/60"> <th class="text-left py-2 pr-4 font-bold">Source</th> <th class="text-left py-2 pr-4 font-bold">Type</th> <th class="text-right py-2 pr-4 font-bold">Jobs</th> <th class="text-center py-2 font-bold">Status</th> </tr> </thead> <tbody id="boards-source-table" class="divide-y divide-slate-800/30"> <tr class="text-slate-500"><td colspan="4" class="py-4 text-center text-[10px]">Loading sources…</td></tr> </tbody> </table> </div> </div> <!-- How it works --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <h3 class="font-bold text-white text-sm mb-3">How Board Crawling Works</h3> <div class="grid grid-cols-1 md:grid-cols-3 gap-4"> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm shrink-0">1</div> <div> <p class="text-white text-xs font-bold mb-0.5">ATS Direct</p> <p class="text-slate-500 text-[10px] leading-relaxed">Greenhouse, Lever, Ashby & Workday APIs are queried directly for companies in your registry — no middleman, freshest data.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center text-sm shrink-0">2</div> <div> <p class="text-white text-xs font-bold mb-0.5">Aggregators</p> <p class="text-slate-500 text-[10px] leading-relaxed">LinkedIn, Jooble, Reed, RemoteOK & SerpAPI are scraped every 6h and merged with deduplication across all sources.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-sm shrink-0">3</div> <div> <p class="text-white text-xs font-bold mb-0.5">AI Matching</p> <p class="text-slate-500 text-[10px] leading-relaxed">Discovered jobs are scored against your profile via BM25 → FAISS → cross-encoder → Claude LLM, then shortlisted by hire probability.</p> </div> </div> </div> </div> </div> <!-- ── Footer ──────────────────────────────────────────────────── --> <footer class="app-footer"> <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-[11px] text-slate-500"> <div class="flex items-center gap-2"> <span class="font-black text-sm" style="background:linear-gradient(135deg,#a5b4fc,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">SpotApply</span> <span class="text-slate-600">· Your AI job-search agent</span> </div> <div class="flex items-center gap-5 font-semibold"> <a onclick="openSettings('about')">About</a> <a onclick="openSettings('contact')">Contact</a> <a onclick="openSettings('privacy')">Privacy</a> <a onclick="openSettings('terms')">Terms</a> </div> <div class="text-slate-600"> <span id="footer-year"></span> SpotApply. All rights reserved.</div> </div> </footer> </div> <!-- Document Modal --> <div id="modal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 modal-backdrop" onclick="closeModal(event)"> <div class="glass rounded-[32px] w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl border-white/10" onclick="event.stopPropagation()"> <!-- Modal Header --> <div class="flex items-start justify-between p-6 border-b border-white/5"> <div> <div id="modal-status" class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 inline-block mb-3"></div> <h2 id="modal-title" class="text-lg font-bold text-white tracking-tight leading-snug"></h2> <p id="modal-company" class="text-xs font-semibold text-slate-400 mt-1"></p> </div> <div class="flex items-center gap-3 ml-4 shrink-0"> <button type="button" id="modal-submit-btn" onclick="submitFormFromModal()" class="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> ✓ Mark Applied
+                    </button> </div> <div class="overflow-x-auto"> <table class="w-full text-xs"> <thead> <tr class="text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-800/60"> <th class="text-left py-2 pr-4 font-bold">Source</th> <th class="text-left py-2 pr-4 font-bold">Type</th> <th class="text-right py-2 pr-4 font-bold">Jobs</th> <th class="text-center py-2 font-bold">Status</th> </tr> </thead> <tbody id="boards-source-table" class="divide-y divide-slate-800/30"> <tr class="text-slate-500"><td colspan="4" class="py-4 text-center text-[10px]">Loading sources…</td></tr> </tbody> </table> </div> </div> <!-- How it works --> <div class="glass rounded-[24px] p-5 border border-slate-700/40"> <h3 class="font-bold text-white text-sm mb-3">How Board Crawling Works</h3> <div class="grid grid-cols-1 md:grid-cols-3 gap-4"> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm shrink-0">1</div> <div> <p class="text-white text-xs font-bold mb-0.5">ATS Direct</p> <p class="text-slate-500 text-[10px] leading-relaxed">Greenhouse, Lever, Ashby & Workday APIs are queried directly for companies in your registry — no middleman, freshest data.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center text-sm shrink-0">2</div> <div> <p class="text-white text-xs font-bold mb-0.5">Aggregators</p> <p class="text-slate-500 text-[10px] leading-relaxed">LinkedIn, Jooble, Reed, RemoteOK & SerpAPI are scraped every 6h and merged with deduplication across all sources.</p> </div> </div> <div class="flex gap-3 items-start"> <div class="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center text-sm shrink-0">3</div> <div> <p class="text-white text-xs font-bold mb-0.5">AI Matching</p> <p class="text-slate-500 text-[10px] leading-relaxed">Discovered jobs are scored against your profile via BM25 → FAISS → cross-encoder → Claude LLM, then shortlisted by hire probability.</p> </div> </div> </div> </div> </div> <!-- ── Footer ──────────────────────────────────────────────────── --> <footer class="app-footer"> <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-[11px] text-slate-500"> <div class="flex items-center gap-2"> <span class="font-black text-sm" style="background:linear-gradient(135deg,#a5b4fc,#c4b5fd);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">SpotApply</span> <span class="text-slate-600">· Your AI job-search agent</span> </div> <div class="flex items-center gap-5 font-semibold"> <a onclick="openSettings('about')">About</a> <a onclick="openSettings('contact')">Contact</a> <a onclick="openSettings('privacy')">Privacy</a> <a onclick="openSettings('terms')">Terms</a> </div> <div class="text-slate-600"> <span id="footer-year"></span> SpotApply. All rights reserved.</div> </div> </footer> </div> <!-- Document Modal --> <div id="modal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 modal-backdrop" onclick="closeModal(event)"> <div class="glass rounded-[32px] w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl border-white/10" onclick="event.stopPropagation()"> <!-- Modal Header --> <div id="modal-head" class="flex items-start justify-between p-6 border-b border-white/5"> <div id="modal-head-text"> <div id="modal-status" class="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 inline-block mb-3"></div> <h2 id="modal-title" class="text-lg font-bold text-white tracking-tight leading-snug"></h2> <p id="modal-company" class="text-xs font-semibold text-slate-400 mt-1"></p> </div> <div id="modal-actions" class="flex items-center gap-3"> <button type="button" id="modal-submit-btn" onclick="submitFormFromModal()" class="text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> ✓ Mark Applied
                     </button> <button type="button" id="modal-verify-btn" onclick="verifyFormFromModal()" class="text-xs bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> Verify Form
                     </button> <button type="button" id="modal-autofill-btn" onclick="autofillFormFromModal()" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/20 px-4 py-2.5 rounded-full transition-colors font-bold hidden"> Auto-fill Form
-                    </button> <a id="modal-download-btn" href="#" class="text-xs bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 px-4 py-2.5 rounded-full transition-colors font-bold hidden" title="Download the tailored resume as a .docx">⬇ Download .docx</a> <a id="modal-download-pdf-btn" href="#" class="text-xs bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 px-4 py-2.5 rounded-full transition-colors font-bold hidden" title="Download the tailored resume as a one-page PDF">⬇ Download PDF</a> <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="predownload-review" class="hidden mb-5 bg-slate-950/60 border border-white/5 rounded-2xl p-5"></div> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Tailoring Studio: watch the resume being written, ATS keywords highlighted, score-checked -->
+                    </button> <a id="modal-download-btn" href="#" class="text-xs bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 px-4 py-2.5 rounded-full transition-colors font-bold hidden" title="Download the tailored resume as a .docx">⬇ Download .docx</a> <a id="modal-download-pdf-btn" href="#" class="text-xs bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 px-4 py-2.5 rounded-full transition-colors font-bold hidden" title="Download the tailored resume as a one-page PDF">⬇ Download PDF</a> </div> <button type="button" id="modal-close" onclick="closeModal()" aria-label="Close documents" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 transition-colors">×</button> </div> <!-- Tabs (Capsule Style) --> <div class="px-6 pt-4 pb-2"> <div class="inline-flex p-1 bg-slate-900/80 border border-slate-800/60 rounded-full gap-1 glass shadow-inner"> <button type="button" id="tab-resume" onclick="switchTab('resume')" class="bg-indigo-600 text-white text-xs font-semibold px-4 py-2 rounded-full transition-all"> Tailored Resume</button> <button type="button" id="tab-cover" onclick="switchTab('cover')" class="bg-transparent text-slate-400 hover:text-slate-200 text-xs font-semibold px-4 py-2 rounded-full transition-all font-sans font-medium"> Cover Letter</button> </div> </div> <!-- Scrollable Content --> <div class="flex-1 overflow-y-auto p-6 bg-slate-950/40"> <div id="loading" class="text-center py-10 text-slate-500 text-sm font-semibold">Loading documents…</div> <pre id="tab-content-resume" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto"></pre> <pre id="tab-content-cover" class="text-[11px] text-slate-300 leading-relaxed hidden bg-slate-950/60 border border-white/5 rounded-2xl p-5 overflow-x-auto font-sans"></pre> <div id="predownload-review" class="hidden mb-5 bg-slate-950/60 border border-white/5 rounded-2xl p-5"></div> <div id="rejection-analysis-container"></div> </div> </div> </div> <!-- Tailoring Studio: watch the resume being written, ATS keywords highlighted, score-checked -->
  <div id="tailor-studio" style="display:none; position:fixed; inset:0; z-index:120;">
    <div onclick="closeTailorStudio()" style="position:absolute; inset:0; background:rgba(2,6,23,0.8); backdrop-filter:blur(6px);"></div>
    <div class="glass" style="position:relative; max-width:1080px; margin:3vh auto; max-height:94vh; display:flex; flex-direction:column; border-radius:28px; border:1px solid rgba(99,102,241,0.25); overflow:hidden;">
-     <div class="flex items-center justify-between gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
-       <div class="min-w-0">
+     <div id="ts-head" class="flex items-center gap-3 px-6 pt-5 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
+       <div id="ts-head-text" class="min-w-0">
          <div class="text-sm font-black text-white truncate" id="ts-title">✍️ Tailoring…</div>
          <div class="text-[10px] text-slate-500 mt-0.5" id="ts-subtitle">Grounded in your real resume — nothing invented.</div>
        </div>
-       <div class="flex items-center gap-2 shrink-0">
+       <div id="ts-pills" class="flex items-center gap-2">
          <span id="ts-attempts" class="hidden text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full" style="background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)"></span>
          <span id="ts-score" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
          <span id="ts-coverage" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.3)"></span> <span id="ts-grounding" class="hidden text-[10px] font-black px-2.5 py-1 rounded-full"></span>
-         <button onclick="closeTailorStudio()" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
        </div>
+       <button type="button" id="ts-close" onclick="closeTailorStudio()" aria-label="Close the Tailoring Studio" class="text-slate-400 hover:text-white text-xl w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5">×</button>
      </div>
      <div id="ts-stages" class="px-6 py-3 text-[11px] font-bold text-indigo-300 flex items-center gap-2"><span class="animate-pulse">●</span><span id="ts-stage-text">Reading the job description…</span></div>
      <div class="px-6 pb-2 flex gap-1.5">
@@ -1671,7 +1723,7 @@
        <span id="ts-missing" style="color:var(--caution);font-weight:600"></span>
      </div>
      <div class="px-6 pb-3 hidden" id="ts-feedback"></div>
-     <div class="px-6 pb-5 flex gap-2">
+     <div id="ts-actions" class="px-6 pb-5 flex gap-2">
        <button type="button" id="ts-open-docs" class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl">📄 View Documents</button>
        <a id="ts-download-pdf" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Resume (PDF, 1 page)</a>
        <a id="ts-download" href="#" download class="jbtn jbtn-ghost text-[11px] py-2.5 px-5 rounded-xl" style="display:none">⬇ Word (.docx)</a>
@@ -1679,7 +1731,28 @@
      </div>
    </div>
  </div>
- <!-- Toast Alerts (z above EVERY overlay — job detail is z-90, email-sync/submit-confirm are z-9999; toasts fired inside those were invisible) --> <div id="toast-container" class="fixed bottom-5 right-5 flex flex-col gap-2" style="z-index:10010;"></div> <script> let currentTab = 'resume';
+ <!-- Toast Alerts (z above EVERY overlay — job detail is z-90, email-sync/submit-confirm are z-9999; toasts fired inside those were invisible) --> <div id="toast-container" class="fixed bottom-5 right-5 flex flex-col gap-2" style="z-index:10010;"></div> <script>
+        // ONE parser for every timestamp the server sends. They are UTC, but
+        // isoformat() of a naive datetime carries no offset, and new Date()
+        // reads "2026-10-13T20:48:00" as LOCAL time: in Chicago a note sent
+        // 24.5 hours ago read "Sent today". A date-time without Z or an
+        // offset is UTC; a date-only string already is. Invalid -> null.
+        function _serverTime(iso) {
+            if (iso == null || iso === '') return null;
+            if (iso instanceof Date) return isNaN(iso) ? null : iso;
+            let s = String(iso).trim();
+            if (/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(s) && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(s)) {
+                s = s.replace(' ', 'T') + 'Z';
+            }
+            const d = new Date(s);
+            return isNaN(d) ? null : d;
+        }
+        // Whole minutes since a server timestamp (never negative); null if unparseable.
+        function _minutesSince(iso) {
+            const d = _serverTime(iso);
+            return d ? Math.max(0, Math.round((Date.now() - d.getTime()) / 60000)) : null;
+        }
+        let currentTab = 'resume';
         let currentData = null;
         let currentAppId = null;
 
@@ -2042,9 +2115,8 @@
                         const pulse = f.pulse || {};
                         if (hotEl && pulse.enabled && pulse.last_tick_at) {
                             // Pulse lane: show live coverage (fast boards + floor health).
-                            const ts = /Z$|[+-]\d\d:\d\d$/.test(pulse.last_tick_at) ? pulse.last_tick_at : pulse.last_tick_at + 'Z';
-                            const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
-                            hotEl.textContent = mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
+                            const mins = _minutesSince(pulse.last_tick_at);
+                            hotEl.textContent = mins == null ? '—' : mins < 1 ? 'live' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`);
                             if (hotSub) {
                                 // Say which of two different worlds we are in: a handful
                                 // of boards briefly late (a backlog draining), or structural
@@ -2080,9 +2152,8 @@
                             }
                         } else if (hotEl) {
                             if (f.hot_lane_last_run) {
-                                const ts = /Z$|[+-]\d\d:\d\d$/.test(f.hot_lane_last_run) ? f.hot_lane_last_run : f.hot_lane_last_run + 'Z';
-                                const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
-                                hotEl.textContent = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+                                const mins = _minutesSince(f.hot_lane_last_run);
+                                hotEl.textContent = mins == null ? '—' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
                                 if (hotSub) hotSub.textContent = `${f.hot_lane_runs_24h || 0} runs · ${_fmtK(f.hot_lane_jobs_24h || 0)} fetched · +${_fmtK(f.hot_lane_inserted_24h || 0)} added (24h)`;
                             } else {
                                 hotEl.textContent = pulse.enabled ? 'starting…' : 'idle';
@@ -3252,9 +3323,9 @@
                     // Posting age + "New" (discovered <24h) — makes freshness visible per row.
                     const newBadge = j.is_new ? `<span class="text-[9px] bg-rose-500/15 text-rose-400 border border-rose-500/25 px-2 py-0.5 rounded-full font-black ml-1.5 uppercase shrink-0">🆕 New</span>` : '';
                     let ageHtml = '';
-                    if (j.posted) {
-                        const ts = /Z$|[+-]\d\d:\d\d$/.test(j.posted) ? j.posted : j.posted + 'Z';
-                        const h = Math.max(0, (Date.now() - new Date(ts).getTime()) / 3600000);
+                    const _posted = _serverTime(j.posted);
+                    if (_posted) {
+                        const h = Math.max(0, (Date.now() - _posted.getTime()) / 3600000);
                         const ageTxt = h < 1 ? 'just now' : (h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`);
                         // When the source gave us no publish date we are showing
                         // when WE found it, which is only an upper bound on the
@@ -5488,9 +5559,8 @@
                     const f = await r.json();
                     const pulse = f.pulse || {};
                     let sweep = null;
-                    if (pulse.last_tick_at) {
-                        const ts = /Z$|[+-]\d\d:\d\d$/.test(pulse.last_tick_at) ? pulse.last_tick_at : pulse.last_tick_at + 'Z';
-                        const mins = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 60000));
+                    const mins = _minutesSince(pulse.last_tick_at);
+                    if (mins != null) {
                         sweep = mins < 1 ? 'just now' : (mins < 60 ? mins + ' min ago' : Math.round(mins / 60) + 'h ago');
                     }
                     // The canonical pipeline number (shared pool, all lanes, no
@@ -6101,9 +6171,9 @@
                     div.className = `notif-card ${n.read ? 'read' : 'unread'}`;
                     
                     // created_at is UTC but serialized without a timezone marker —
-                    // append Z so it renders in the viewer's LOCAL timezone.
-                    const _iso = /Z|[+-]\d\d:\d\d$/.test(n.created_at) ? n.created_at : n.created_at + 'Z';
-                    const timeStr = new Date(_iso).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'});
+                    // _serverTime reads it as UTC so it renders in the viewer's LOCAL timezone.
+                    const _ct = _serverTime(n.created_at);
+                    const timeStr = _ct ? _ct.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'}) : '';
                     const typeIcon = ({ high_match: '🎯', fresh_job: '⚡', discovery_completed: '🔍',
                                         profile_suggestions: '💡', resume_suggestions: '📄',
                                         tailor_failed: '⚠️' })[n.type] || '🔔';
@@ -7209,7 +7279,7 @@
                     return;
                 }
                 list.innerHTML = data.entries.map(e => `
-                    <div class="rounded-2xl p-4" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">${e.source}</span> <div class="flex items-center gap-2"> <span class="text-[10px]" style="color:var(--muted-2);">${new Date(/Z|[+-]\d\d:\d\d$/.test(e.created_at) ? e.created_at : e.created_at + 'Z').toLocaleDateString()}</span> <button onclick="deleteMemory(${e.id})" title="Remove this entry" style="background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">&times;</button> </div> </div> ${_renderMemoryMarkdown(e.recommendations)}
+                    <div class="rounded-2xl p-4" style="background:var(--surface-2);border:1px solid var(--border);"> <div class="flex items-center justify-between mb-1.5"> <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style="background:var(--sage-tint);color:var(--sage-700);">${e.source}</span> <div class="flex items-center gap-2"> <span class="text-[10px]" style="color:var(--muted-2);">${(_serverTime(e.created_at) || {toLocaleDateString: () => ''}).toLocaleDateString()}</span> <button onclick="deleteMemory(${e.id})" title="Remove this entry" style="background:none;border:none;color:var(--muted-2);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">&times;</button> </div> </div> ${_renderMemoryMarkdown(e.recommendations)}
                     </div>`).join('');
             } catch (e) {
                 list.innerHTML = '<p class="text-rose-500 text-sm">Could not load your brief.</p>';
@@ -7673,9 +7743,13 @@
                         <!-- One-click submit (UserProfile.one_click_submit; docs/AUTO_APPLY_RESEARCH.md §5). -->
                         <div>
                           <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">One-click submit</label>
+                          {#- Labels stay short enough for a phone: a select shows only the
+                              chosen label, and the long one was cut off ("On: "Apply & Submit"
+                              fills and submits on boards th…"). The help text below carries
+                              the detail; the values are unchanged. -#}
                           <select name="one_click_submit" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
-                            <option value="false">Off: SpotApply fills the form, I click Submit</option>
-                            <option value="true">On: "Apply &amp; Submit" fills and submits on boards that allow it</option>
+                            <option value="false">Off: fill only, I click Submit</option>
+                            <option value="true">On: fill and submit where allowed</option>
                           </select>
                           <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Each Apply &amp; Submit click approves that one application. SpotApply submits only on login-free boards (Greenhouse, Lever, Ashby, SmartRecruiters), only when every required field is filled, and never past a CAPTCHA or a sign-in. Anything else stops and tells you. Up to 25 a day.</p>
                         </div>
@@ -8134,9 +8208,8 @@
             // cite experience the current resume no longer has: say so.
             let prevResumeHtml = '';
             if (d.from_previous_resume) {
-                const ru = d.resume_uploaded_at;
-                const rd = ru ? new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(ru) ? ru : ru + 'Z') : null;
-                const when = (rd && !isNaN(rd)) ? ` (your current one was uploaded ${_esc(rd.toLocaleDateString())})` : '';
+                const rd = _serverTime(d.resume_uploaded_at);
+                const when = rd ? ` (your current one was uploaded ${_esc(rd.toLocaleDateString())})` : '';
                 prevResumeHtml = `<div style="margin-bottom:10px;padding:8px 10px;border-radius:10px;border:1px solid #F0DFB8;background:rgba(240,223,184,0.25);font-size:12px;line-height:1.5;color:#92600A;">Scored against your previous resume${when}. Some details below may not match the resume you have now.</div>`;
             }
             const reasonHtml = `
@@ -8254,13 +8327,18 @@
                 const [evLabel, evClass] = _HC_EVIDENCE[f.evidence] || _HC_EVIDENCE.NONE;
                 const isCreator = (key === 'posting_creator_name');
                 const tip = (f.quote ? f.quote : (f.field ? ('Read from ' + f.field) : evLabel));
+                // The row wraps: on a phone label + value + evidence chip do not
+                // fit, and with all three on one line the value got ~40px and
+                // broke mid-word ("Platfor / m Enginee / ring"). The value keeps
+                // a 150px floor and breaks only at word boundaries; the chip
+                // moves under it when there is no room.
                 rows.push(
-                    '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--border);font-size:12.5px;" title="' + _esc(tip) + '">' +
-                      '<span style="width:118px;flex-shrink:0;font-weight:700;color:var(--muted-2);">' + _esc(label) + '</span>' +
-                      '<span style="flex:1;min-width:0;color:var(--ink-soft);font-weight:600;word-break:break-word;">' + _esc(f.value) +
+                    '<div class="hc-row" style="display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--border);font-size:12.5px;" title="' + _esc(tip) + '">' +
+                      '<span style="flex:0 0 118px;font-weight:700;color:var(--muted-2);">' + _esc(label) + '</span>' +
+                      '<span style="flex:1 1 150px;min-width:0;color:var(--ink-soft);font-weight:600;overflow-wrap:break-word;">' + _esc(f.value) +
                         (isCreator ? '<span style="font-weight:500;color:var(--muted-2);"> — created the posting, not confirmed as the manager</span>' : '') +
                       '</span>' +
-                      '<span class="jd-chip ' + evClass + '" style="flex-shrink:0;">' + _esc(evLabel) + '</span>' +
+                      '<span class="jd-chip ' + evClass + '" style="flex-shrink:0;margin-left:auto;">' + _esc(evLabel) + '</span>' +
                     '</div>');
             }
             if (!rows.length) return;
@@ -8614,7 +8692,7 @@
             html += `<div class="rounded-xl p-3 mb-3" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.35);"> <p class="text-[10.5px] font-black uppercase tracking-widest mb-1.5" style="color:var(--sage-700);">The posting names</p>`;
             kit.people.forEach(p => {
                 const who = [p.name, p.title].filter(Boolean).join(', ') || p.email || '';
-                html += `<div class="flex items-start justify-between gap-2 py-1"> <div class="min-w-0"> <p class="text-[12px] font-bold" style="color:var(--ink);">${_esc(p.label)}: ${_esc(who)}</p> ${p.evidence ? `<p class="text-[10.5px] italic" style="color:var(--muted);">“${_esc(p.evidence.slice(0, 160))}”</p>` : ''} </div> <div class="flex gap-1.5 shrink-0"> ${p.email ? `<a href="mailto:${_escUrl(p.email)}" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Email ↗</a>` : ''} <a href="${_escUrl(p.search_url)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Find on LinkedIn ↗</a> </div> </div>`;
+                html += `<div class="flex items-start justify-between gap-2 py-1"> <div class="min-w-0"> <p class="text-[12px] font-bold" style="color:var(--ink);overflow-wrap:anywhere;">${_esc(p.label)}: ${_esc(who)}</p> ${p.evidence ? `<p class="text-[10.5px] italic" style="color:var(--muted);overflow-wrap:anywhere;">“${_esc(p.evidence.slice(0, 160))}”</p>` : ''} </div> <div class="flex gap-1.5 shrink-0"> ${p.email ? `<a href="mailto:${_escUrl(p.email)}" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Email ↗</a>` : ''} <a href="${_escUrl(p.search_url)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10px] px-2.5 py-1">Find on LinkedIn ↗</a> </div> </div>`;
             });
             html += `</div>`;
         }
@@ -8629,8 +8707,8 @@
             html += `<div class="rounded-xl p-4 mb-3" id="outreach-draft-${i}" style="background:var(--surface-2);border:1px solid var(--border);">
                 <div class="flex items-center justify-between gap-2 mb-1"> <div class="flex items-center gap-2 min-w-0"> <p class="text-[11px] font-extrabold truncate" style="color:var(--sage-700);">${_esc(d.label || '')}</p> ${_outreachPill(isEmail ? 'Email' : 'LinkedIn', isEmail ? 'email' : 'linkedin')} </div> <span class="text-[10px] shrink-0" style="color:${over ? '#dc2626' : 'var(--muted-2)'};">${d.chars || 0} chars${over ? ' · over LinkedIn’s ' + (kit.linkedin_note_limit || 300) : ''}</span> </div>
                 ${isEmail && d.subject ? `<div class="flex items-center gap-2 mb-1.5"> <p class="text-[11.5px] font-bold flex-1 truncate" style="color:var(--ink);">Subject: ${_esc(d.subject)}</p> <button type="button" onclick="copyText(this.dataset.v, this)" data-v="${_esc(d.subject)}" class="text-[10px] text-slate-500 hover:text-slate-300 transition">Copy</button> </div>` : ''}
-                <p class="text-sm whitespace-pre-wrap leading-relaxed" style="color:var(--ink-soft);">${_esc(d.body || '')}</p>
-                ${d.verify_before_sending ? `<p class="text-[10.5px] mt-2 px-2.5 py-1.5 rounded-lg" style="background:rgba(245,158,11,.10);color:#92400e;">${_esc(d.verify_before_sending)}</p>` : ''}
+                <p class="text-sm whitespace-pre-wrap leading-relaxed" style="color:var(--ink-soft);overflow-wrap:anywhere;">${_esc(d.body || '')}</p>
+                ${d.verify_before_sending ? `<p class="text-[10.5px] mt-2 px-2.5 py-1.5 rounded-lg" style="background:rgba(245,158,11,.10);color:#92400e;overflow-wrap:anywhere;">${_esc(d.verify_before_sending)}</p>` : ''}
                 <div class="flex flex-wrap items-center gap-1.5 mt-3">
                     <button type="button" onclick="copyText(this.dataset.v, this)" data-v="${_esc(d.body || '')}" class="jbtn jbtn-apply text-[10.5px] px-3 py-1.5">Copy message</button>
                     ${isEmail ? `<a href="${_escUrl(links.gmail)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Gmail ↗</a> <a href="${_escUrl(links.outlook)}" target="_blank" rel="noopener noreferrer" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Outlook ↗</a> <a href="${_escUrl(links.mailto)}" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5">Mail app</a>`
@@ -8643,10 +8721,15 @@
         html += `<div id="outreach-sent-list">${renderOutreachSent(data.sent || [])}</div>`;
         body.innerHTML = html;
     }
+    // "today" / "yesterday" / "N days ago" by the viewer's CALENDAR, not by
+    // 24-hour blocks: 23:50 yesterday is "yesterday" at 00:10. The server's
+    // timestamps are UTC without an offset (_serverTime): parsing them as
+    // local time made a note sent 24.5 hours ago read "Sent today".
     function _agoLabel(iso) {
-        if (!iso) return '';
-        const d = new Date(iso); if (isNaN(d)) return '';
-        const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+        const d = _serverTime(iso); if (!d) return '';
+        const now = new Date(Date.now());
+        const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const days = Math.round((day(now) - day(d)) / 86400000);  // round: a DST day is 23 or 25 h
         return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
     }
     function renderOutreachSent(rows) {
@@ -9086,7 +9169,7 @@
         const rows = Array.from(container.querySelectorAll('.jobrow'));
         if (!rows.length) return;
         const num = (el, k) => parseFloat(el.dataset[k] || '0') || 0;
-        const posted = el => { const t = el.dataset.posted; return t ? (new Date(t).getTime() || 0) : 0; };
+        const posted = el => { const d = _serverTime(el.dataset.posted); return d ? d.getTime() : 0; };
         // Early window (data-early, set server-side from ONE reference clock —
         // app/strategy/earliness.py): in "Freshest" mode the postings still
         // inside their first 48h come first, best fit first, so the jobs whose
@@ -9108,7 +9191,9 @@
             const div = document.createElement('div');
             div.id = 'early-window-divider';
             div.setAttribute('role', 'note');
-            div.style.cssText = 'display:flex;align-items:center;gap:8px;margin:2px 4px 8px;font-size:11px;font-weight:800;color:#C2410C;';
+            // grid-column: the container is a two-column grid at >=1280px, and
+            // a divider in one cell pushed the first card into the right column.
+            div.style.cssText = 'grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:2px 4px 0;font-size:11px;font-weight:800;color:#C2410C;';
             div.innerHTML = '<span>⚡ Apply today — early window (' + nEarly + ')</span>' +
                 '<span style="font-weight:600;color:var(--muted,#94a3b8);">about 41% of a posting\'s applications arrive in its first 48 hours</span>';
             div.title = 'Postings still inside their first 48 hours, by fit. Dice.com job-board data via the St. Louis Fed: ~41% of applications to a posting arrive in the first 48 hours. A clock, not odds.';
