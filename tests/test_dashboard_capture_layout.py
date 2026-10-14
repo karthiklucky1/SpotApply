@@ -5,6 +5,8 @@ only the one screen it was seen on.
 
 1. Desktop: the "Apply today — early window" divider took ONE cell of the
    two-column shortlist grid, so the first card started in the right column.
+2. Phone: the job drawer's Auto-Fill / Mark Applied sat on top of the title
+   ("Senior Backend Eng…") and the company wrapped a word a line.
 """
 from __future__ import annotations
 
@@ -13,6 +15,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "app/templates/dashboard.html").read_text()
+
+
+def _phone_css(max_px: int = 640) -> str:
+    """Every `@media (max-width: N px)` block with N <= max_px, brace-balanced."""
+    out = []
+    for m in re.finditer(r"@media \(max-width: (\d+)px\) \{", HTML):
+        if int(m.group(1)) > max_px:
+            continue
+        depth = 0
+        for j in range(m.end() - 1, len(HTML)):
+            depth += {"{": 1, "}": -1}.get(HTML[j], 0)
+            if depth == 0:
+                out.append(HTML[m.end():j])
+                break
+    return "\n".join(out)
 
 
 def _function(name: str) -> str:
@@ -55,3 +72,17 @@ def test_the_early_window_divider_spans_the_row_itself():
     assert "grid-column:1 / -1" in css.group(1)
     # Its two phrases wrap on a phone instead of overflowing the row.
     assert "flex-wrap:wrap" in css.group(1)
+
+
+# ── 2. the job drawer's header stacks on a phone ────────────────────────────
+
+def test_the_drawer_header_actions_take_their_own_row_on_a_phone():
+    head = re.search(r'<div class="jd-head">(.*?)<div id="jobDrawerBody"', HTML, re.S).group(1)
+    # The actions live in the title row (renderJobDetail moves them there)...
+    assert 'id="jobModalHeaderActions"' in head and 'id="jobModalTitle"' in head
+    assert "headerActions.appendChild(autoFillBtn)" in _function("renderJobDetail")
+    # ...so on a phone the row wraps and the actions get a full-width row
+    # after the close button, instead of squeezing the title.
+    css = _phone_css()
+    assert re.search(r"#jobModal \.jd-head \{[^}]*flex-wrap: wrap", css)
+    assert re.search(r"#jobModalHeaderActions \{[^}]*order: 3;[^}]*flex: 1 1 100%;[^}]*flex-wrap: wrap", css)

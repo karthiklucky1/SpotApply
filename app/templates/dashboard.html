@@ -894,6 +894,16 @@
     #jobModal .jd-head, #referralModal .jd-head, #connModal .jd-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
         display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0; }
     #jobModal .jd-body, #referralModal .jd-body, #connModal .jd-body { padding: 20px 24px 26px; overflow-y: auto; flex: 1; }
+    /* Phone: the job's title row cannot also hold Auto-Fill + Mark Applied.
+       They kept their full width, the title shrank to a word a line and the
+       buttons sat on top of it ("Senior Backend Eng…"). Logo, title and close
+       keep the first row; the actions take a row of their own and wrap. */
+    #jobModalTitle, #jobModalCompany { overflow-wrap: break-word; }
+    @media (max-width: 640px) {
+      #jobModal .jd-head { flex-wrap: wrap; row-gap: 10px; }
+      #jobModalHeaderActions { order: 3; flex: 1 1 100%; margin-right: 0; flex-wrap: wrap; }
+      #jobModalHeaderActions:empty { display: none; }
+    }
     #jobModalClose, #referralClose, #connClose { width: 32px; height: 32px; border-radius: 9999px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; font-size: 18px;
         color: var(--muted); background: var(--surface-2); transition: all .15s ease; }
