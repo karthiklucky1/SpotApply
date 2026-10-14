@@ -7743,9 +7743,13 @@
                         <!-- One-click submit (UserProfile.one_click_submit; docs/AUTO_APPLY_RESEARCH.md §5). -->
                         <div>
                           <label class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">One-click submit</label>
+                          {#- Labels stay short enough for a phone: a select shows only the
+                              chosen label, and the long one was cut off ("On: "Apply & Submit"
+                              fills and submits on boards th…"). The help text below carries
+                              the detail; the values are unchanged. -#}
                           <select name="one_click_submit" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white">
-                            <option value="false">Off: SpotApply fills the form, I click Submit</option>
-                            <option value="true">On: "Apply &amp; Submit" fills and submits on boards that allow it</option>
+                            <option value="false">Off: fill only, I click Submit</option>
+                            <option value="true">On: fill and submit where allowed</option>
                           </select>
                           <p style="font-size:11px;color:var(--muted,#64748b);margin-top:6px;line-height:1.45">Each Apply &amp; Submit click approves that one application. SpotApply submits only on login-free boards (Greenhouse, Lever, Ashby, SmartRecruiters), only when every required field is filled, and never past a CAPTCHA or a sign-in. Anything else stops and tells you. Up to 25 a day.</p>
                         </div>

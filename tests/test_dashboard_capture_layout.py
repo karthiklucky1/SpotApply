@@ -19,6 +19,8 @@ only the one screen it was seen on.
    The server sends naive UTC ISO strings and `new Date()` reads those as
    LOCAL time (5 hours off in Chicago). Seven other call sites each carried
    their own "append Z" fix with three different regexes; _agoLabel had none.
+8. Phone: My Profile's "One-click submit" select showed its chosen label cut
+   off ("On: "Apply & Submit" fills and submits on boards th…").
 """
 from __future__ import annotations
 
@@ -289,3 +291,26 @@ def test_every_server_timestamp_is_parsed_by_the_one_helper():
     assert not stray, f"parse server timestamps with _serverTime(), not new Date(...): {stray}"
     for caller in ("_agoLabel", "sortShortlist", "loadNotifications"):
         assert "_serverTime(" in _function(caller), caller
+
+
+# ── 8. the one-click submit choice fits a phone ─────────────────────────────
+
+# A select shows only its chosen label. At 360px wide the profile form leaves
+# a select about 230px of text, ~32 characters at the form's 13.5px.
+_PHONE_SELECT_CHARS = 34
+
+
+def test_the_one_click_submit_labels_fit_a_phone_and_keep_their_values():
+    sel = re.search(r'<select name="one_click_submit"[^>]*>(.*?)</select>', HTML, re.S)
+    assert sel, "the one-click submit select moved"
+    options = re.findall(r'<option value="([^"]*)">([^<]*)</option>', sel.group(1))
+    assert [v for v, _ in options] == ["false", "true"]
+    labels = dict(options)
+    for value, label in options:
+        assert len(label) <= _PHONE_SELECT_CHARS, f"{value!r} label is {len(label)} chars: {label!r}"
+    # Same meaning: off fills only and the user submits; on also submits,
+    # only where the board allows it (the help text names which).
+    assert labels["false"].startswith("Off:") and "Submit" in labels["false"]
+    assert labels["true"].startswith("On:") and "submit" in labels["true"] and "allow" in labels["true"]
+    help_text = HTML[sel.end():HTML.index("</div>", sel.end())]
+    assert "login-free boards" in help_text and "every required field is filled" in help_text
