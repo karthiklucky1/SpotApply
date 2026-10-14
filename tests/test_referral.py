@@ -257,3 +257,103 @@ def test_an_ai_rewrite_changes_words_never_the_set_of_drafts():
     assert merged[1]["verify_before_sending"] == "Confirm this person..."
     # A missing or empty rewrite keeps the built-in words.
     assert _merge_rewrites(built, [{"type": "referral_request", "body": "  "}])[0]["body"] == "orig"
+
+
+# ── LinkedIn's 300-character note limit, met with no AI ──────────────────────
+#
+# Observed 2026-10-14 with no API keys: every built-in LinkedIn note ran 350-415
+# characters and the kit marked it in red "over LinkedIn's 300". The built-in
+# notes are what a user gets whenever the AI is unavailable, so they must fit on
+# their own — for the long titles, company names and ATS links real postings
+# have, not only for "Acme" and "Engineer".
+
+_WORKDAY_URL = ("https://northwindtraders.wd5.myworkdayjobs.com/en-US/Northwind_External_Careers"
+                "/job/Austin-TX/Senior-Staff-Software-Engineer--Distributed-Systems_R-2024-104857")
+_LONG_CASES = [
+    pytest.param("Senior Staff Software Engineer, Distributed Systems Infrastructure",
+                 "Northwind Traders Global Holdings Corporation", _WORKDAY_URL,
+                 "Massachusetts Institute of Technology", id="workday-link"),
+    pytest.param("Principal Machine Learning Engineer, Search Ranking and Recommendations (Remote, US)",
+                 "International Consolidated Logistics Group",
+                 "https://jobs.lever.co/consolidatedlogistics/8f1c2b3a-1234-4abc-9def-0123456789ab",
+                 "University of California, Los Angeles", id="lever-link"),
+    pytest.param("Registered Nurse, Cardiovascular Intensive Care Unit (CVICU) - Night Shift",
+                 "Cincinnati Children's Hospital Medical Center", "",
+                 "University of Cincinnati", id="no-link"),
+    pytest.param("Senior Backend Engineer", "Lumen Data",
+                 "https://boards.greenhouse.io/lumendata/jobs/4821093",
+                 "University of Cincinnati", id="short"),
+]
+_NOTE_TYPES = {"referral_request", "referral_intro_call", "referral_who_owns",
+               "visa_alumni", "university_alumni", "github_outreach"}
+
+
+@pytest.mark.parametrize("job_title,company,job_url,university", _LONG_CASES)
+def test_built_in_linkedin_notes_fit_linkedins_limit(monkeypatch, job_title, company,
+                                                     job_url, university):
+    from app.intelligence import outreach as o
+    out = _stub_generate(monkeypatch, ["northwind-oss/ledger-reconciliation-service"],
+                         job_title=job_title, company=company, job_url=job_url,
+                         university=university, needs_sponsorship=True)
+    kit = o.build_kit(out["drafts"], company=company, role=job_title, job_url=job_url)
+    notes = [d for d in kit["drafts"] if d["channel_kind"] == "linkedin"]
+    assert {d["type"] for d in notes} == _NOTE_TYPES, "every built-in LinkedIn note is checked"
+    for d in notes:
+        assert d["over_limit"] is False, f"{d['type']} is {d['chars']} chars: {d['body']}"
+        assert d["chars"] <= o.LINKEDIN_NOTE_LIMIT
+        # ...and still fits once the user types a real first name over the placeholder.
+        named = d["body"].replace("{name}", "Alexandra-Marie").replace("{Alumni Name}",
+                                                                       "Alexandra-Marie")
+        assert len(named) <= o.LINKEDIN_NOTE_LIMIT, d["type"]
+
+    by_type = {d["type"]: d["body"] for d in notes}
+    for t in ("referral_request", "referral_intro_call", "referral_who_owns"):
+        # A referrer must select a specific live job: the link when there is one,
+        # otherwise the role's own name — a shorter note never loses the job.
+        assert (job_url in by_type[t]) if job_url else (job_title in by_type[t]), t
+    assert "forward the req" in by_type["referral_request"].lower()
+    assert "15 minutes" in by_type["referral_intro_call"]
+    assert "Wednesday" in by_type["referral_intro_call"]
+    for body in by_type.values():
+        assert "resume" not in body.lower()
+
+
+def test_short_inputs_keep_the_full_wording():
+    """The ladder only trims what does not fit; a short posting gets the whole note."""
+    from app.intelligence.referral import _fallback_drafts
+    drafts = _fallback_drafts(name="Ada", title="", company="Globex", role="Data Engineer",
+                              skills="", selling="", needs_sponsorship=False, job_url="")
+    who = next(d["body"] for d in drafts if d["type"] == "referral_who_owns")
+    assert who == ("Hi {name}, quick question if you have a second — do you know who owns "
+                   "the Data Engineer req at Globex? Happy to take it from there myself.")
+
+
+def test_a_link_too_long_for_any_note_is_kept_and_flagged_not_dropped():
+    """The req link is load-bearing, so no rung drops it. A link longer than any
+    connection note can carry leaves the note over the limit — and the kit's
+    counter says so honestly rather than the draft quietly losing the job."""
+    from app.intelligence import outreach as o
+    from app.intelligence.referral import _fallback_drafts
+    url = "https://careers.example.com/jobs/" + "x" * 250
+    drafts = _fallback_drafts(name="", title="", company="Globex", role="Data Engineer",
+                              skills="", selling="", needs_sponsorship=False, job_url=url)
+    kit = o.build_kit(drafts, company="Globex", role="Data Engineer", job_url=url)
+    ask = next(d for d in kit["drafts"] if d["type"] == "referral_request")
+    assert url in ask["body"]
+    assert ask["over_limit"] is True
+
+
+def test_an_ai_rewrite_that_breaks_a_hard_rule_keeps_the_built_in_words():
+    from app.intelligence.referral import _merge_rewrites
+    url = "https://boards.example.com/globex/jobs/42"
+    built = [{"type": "referral_request", "channel": "LinkedIn / email to a connection",
+              "body": f"Hi {{name}}, would you forward the req? {url}"},
+             {"type": "hiring_manager", "channel": "LinkedIn DM / email to the hiring manager",
+              "body": "Hi {name}, a short email."}]
+    too_long = [{"type": "referral_request", "body": "Hi {name}, " + "a" * 300 + f" {url}"}]
+    assert _merge_rewrites(built, too_long)[0]["body"] == built[0]["body"]
+    lost_link = [{"type": "referral_request", "body": "Hi {name}, would you forward the req?"}]
+    assert _merge_rewrites(built, lost_link)[0]["body"] == built[0]["body"]
+    # An email has no note limit.
+    long_email = [{"type": "hiring_manager", "body": "Hi {name}, " + "word " * 120}]
+    assert _merge_rewrites(built, long_email)[1]["body"].startswith("Hi {name}, word")
