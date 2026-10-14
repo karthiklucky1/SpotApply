@@ -9,6 +9,9 @@ only the one screen it was seen on.
    ("Senior Backend Eng…") and the company wrapped a word a line.
 3. Phone: the Tailoring Studio's title got ~0px (it vanished; the subtitle
    went a word a line) and its pills ran off the right edge.
+4. Phone: the documents modal (View Documents) sat under the fixed menu
+   button with the page's top bar showing around it, and its header buttons
+   (Auto-fill Form, Download .docx, Download PDF, close) ran off the edge.
 """
 from __future__ import annotations
 
@@ -120,3 +123,47 @@ def test_on_a_phone_the_studio_pills_take_their_own_row():
     # The footer's four buttons wrap too instead of squeezing to three lines each.
     assert re.search(r"#ts-actions \{ flex-wrap: wrap; \}", css)
     assert 'id="ts-actions"' in HTML
+
+
+# ── 4. the documents modal is above the menu button and its header wraps ────
+
+def _css_z(selector_re: str) -> int:
+    """z-index of the first rule whose selector-and-brace matches `selector_re`."""
+    m = re.search(selector_re + r"[^}]*z-index: (\d+)", HTML)
+    assert m, selector_re
+    return int(m.group(1))
+
+
+def test_the_documents_modal_stacks_above_the_phone_menu_button():
+    menu = _css_z(r"#mobile-menu-btn \{")
+    modal = _css_z(r"#modal \{")
+    assert modal > menu, f"#modal z-index {modal} is under the fixed menu button ({menu})"
+    # ...and stays below what may open over it or above the page: the
+    # toast stack and the confirm dialog.
+    assert modal < 100
+    # A real backdrop: the class it carries had no CSS, so the page showed
+    # through as if the modal were part of it.
+    assert re.search(r'<div id="modal" class="[^"]*\bmodal-backdrop\b', HTML)
+    assert re.search(r"#modal\.modal-backdrop \{ background: rgba\(", HTML)
+    # openModal steps the job drawer (z-90) aside, so nothing it shares the
+    # screen with is higher.
+    assert "closeJobDrawer()" in _function("openModal")
+
+
+def test_the_documents_modal_header_wraps():
+    head = re.search(r'<div id="modal-head"(.*?)<!-- Tabs', HTML, re.S)
+    assert head, "the documents modal header moved — re-read this group"
+    head = head.group(0)
+    actions = re.search(r'<div id="modal-actions" class="([^"]*)"', head)
+    assert actions and "shrink-0" not in actions.group(1).split()
+    # The close button is outside the action row, so a phone keeps it beside
+    # the title while the actions wrap below.
+    action_html = head[actions.start():head.index('id="modal-close"')]
+    assert "closeModal()" not in action_html
+    assert re.search(r"#modal-head \{ flex-wrap: wrap;", HTML)
+    assert re.search(r"#modal-actions \{ flex-wrap: wrap;[^}]*min-width: 0;", HTML)
+    css = _phone_css()
+    assert re.search(r"#modal-close \{ order: 1; \}", css)
+    assert re.search(r"#modal-actions \{ order: 2; flex: 1 1 100%;", css)
+    # The documents themselves wrap rather than scrolling sideways.
+    assert re.search(r"#tab-content-resume, #tab-content-cover \{ white-space: pre-wrap;", HTML)
