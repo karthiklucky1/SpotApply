@@ -14,6 +14,7 @@ only the one screen it was seen on.
    (Auto-fill Form, Download .docx, Download PDF, close) ran off the edge.
 5. Phone: "People & team" squeezed each value to ~40px between its label and
    its evidence chip, so it broke mid-word ("Platfor / m Enginee / ring").
+6. Phone: the outreach drafts' job URLs ran past the right edge of the card.
 """
 from __future__ import annotations
 
@@ -189,3 +190,17 @@ def test_people_and_team_rows_wrap_instead_of_squeezing_the_value():
     assert "overflow-wrap:break-word" in styles["f.value"]
     assert "word-break" not in styles["f.value"]
     assert "flex-shrink:0" in styles["evLabel"]
+
+
+# ── 6. outreach text wraps long URLs inside its card ────────────────────────
+
+def test_outreach_free_text_breaks_long_urls():
+    fn = _function("renderOutreachKit")
+    # Every paragraph that prints text we did not write (the draft, the
+    # verify-before-sending note, a named person, a quoted snippet) can hold a
+    # URL or an address with no break opportunity; each must break it.
+    for expr in ("_esc(d.body || '')", "_esc(d.verify_before_sending)",
+                 "_esc(p.label)}: ${_esc(who)", "_esc(p.evidence.slice(0, 160))"):
+        i = fn.index(expr)
+        p_open = fn.rindex("<p ", 0, i)
+        assert "overflow-wrap:anywhere" in fn[p_open:i], expr
