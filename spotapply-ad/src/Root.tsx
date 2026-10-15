@@ -17,6 +17,7 @@ import { TOTAL60 } from "./w60/timeline60";
 import { CharacterSheet } from "./reel/dev/CharacterSheet";
 import { Reel60 } from "./reel/Reel60";
 import { REEL } from "./reel/timeline";
+import { Demo5 } from "./reel2/Demo5";
 
 const Hook = withBackground(HookScene);
 const Reveal = withBackground(RevealScene);
@@ -56,6 +57,10 @@ export const RemotionRoot: React.FC = () => {
         width={REEL.width}
         height={REEL.height}
       />
+      <Folder name="Reel-tests">
+        <Composition id="ReelTest-Photo" component={Demo5} defaultProps={{ withPhoto: true }} durationInFrames={150} fps={30} width={1080} height={1920} />
+        <Composition id="ReelTest-AppOnly" component={Demo5} defaultProps={{ withPhoto: false }} durationInFrames={150} fps={30} width={1080} height={1920} />
+      </Folder>
       <Folder name="Reel-dev">
         <Composition id="Reel-Character" component={CharacterSheet} durationInFrames={1} fps={30} width={1800} height={760} />
       </Folder>

@@ -14,3 +14,7 @@ out/*
 !out/spotapply-reel-60s.mp4
 !out/spotapply-reel-60s-poster.png
 !out/spotapply-reel-60s.srt
+
+# The person in the reel tests: the owner's own photo, kept out of git.
+/public/reel2/person.png
+/out/demo-*
