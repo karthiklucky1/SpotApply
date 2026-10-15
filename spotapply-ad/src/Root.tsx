@@ -14,6 +14,7 @@ import "./fonts";
 import { Explainer60 } from "./w60/Explainer60";
 import { W } from "./w60/layout";
 import { TOTAL60 } from "./w60/timeline60";
+import { CastSheet } from "./reel/dev/CastSheet";
 import { CharacterSheet } from "./reel/dev/CharacterSheet";
 import { Reel60 } from "./reel/Reel60";
 import { REEL } from "./reel/timeline";
@@ -63,6 +64,7 @@ export const RemotionRoot: React.FC = () => {
       </Folder>
       <Folder name="Reel-dev">
         <Composition id="Reel-Character" component={CharacterSheet} durationInFrames={1} fps={30} width={1800} height={760} />
+        <Composition id="Reel-Cast" component={CastSheet} durationInFrames={1} fps={30} width={1920} height={1400} />
       </Folder>
       <Folder name="Scenes">
         <Composition id="S1-Hook" component={Hook} durationInFrames={SCENES.hook} fps={VIDEO.fps} width={VIDEO.width} height={VIDEO.height} />

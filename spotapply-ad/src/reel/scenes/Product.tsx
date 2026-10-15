@@ -2,6 +2,7 @@ import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { prog } from "../../anim";
 import { COLORS } from "../../brand";
+import { CARD, STICKER } from "../layout";
 import { Reaction } from "../Reaction";
 import { DemoTag, Headline, Marker, ScreenCard, type Seg, Sticker, toCanvas, Track, trackAt } from "../ui";
 
@@ -70,7 +71,7 @@ export const FindScene: React.FC = () => {
       </ScreenCard>
       <SegMarker segs={FIND} i={1} rect={{ x: 80, y: 548, w: 830, h: 262 }} from={-20} to={64} seed={3} />
       <SegMarker segs={FIND} i={0} rect={{ x: 80, y: 548, w: 830, h: 262 }} from={86} to={128} seed={3} />
-      <Sticker text="from company career pages" at={100} outAt={186} x={110} y={1196} size={32} tone="ink" rotate={-3} />
+      <Sticker text="from company career pages" at={100} outAt={186} x={STICKER.x} y={STICKER.y} size={32} tone="ink" rotate={-3} />
       <Headline lines={["Find roles that fit", "*your background.*"]} at={6} />
       <Reaction at={14} outAt={192} beats={[[14, "curious"], [96, "impressed"]]} id="pip-find" />
       <DemoTag opacity={1} />
@@ -106,8 +107,8 @@ export const WhyScene: React.FC = () => (
     <SegMarker segs={WHY} i={0} rect={{ x: 50, y: 470, w: 920, h: 200 }} from={110} to={164} seed={5} />
     <SegMarker segs={WHY} i={1} rect={{ x: 70, y: 435, w: 930, h: 190 }} from={30} to={57} seed={7} pad={10} />
     <SegMarker segs={WHY} i={2} rect={{ x: 95, y: 648, w: 500, h: 122 }} from={18} to={79} seed={9} pad={16} />
-    <Sticker text="why it fits, in writing" at={120} outAt={160} x={110} y={1196} size={32} tone="ink" rotate={-3} />
-    <Sticker text="…and the gaps" at={GAP_AT + 22} x={110} y={1196} size={34} tone="sky" rotate={-3} />
+    <Sticker text="why it fits, in writing" at={120} outAt={160} x={STICKER.x} y={STICKER.y} size={32} tone="ink" rotate={-3} />
+    <Sticker text="…and the gaps" at={GAP_AT + 22} x={STICKER.x} y={STICKER.y} size={34} tone="sky" rotate={-3} />
     <Headline lines={["See why a job *fits.*"]} at={6} size={66} />
     <Reaction at={0} outAt={300} beats={[[0, "impressed"], [GAP_AT + 14, "sideeye"]]} id="pip-why" />
     <DemoTag opacity={1} />
@@ -133,10 +134,10 @@ export const TailorScene: React.FC = () => (
     <ScreenCard kind="laptop" label="app.spotapply.ai">
       <Track segs={TAILOR} />
     </ScreenCard>
-    <Sticker text="sped up" at={T_REVEAL} outAt={T_REVEAL + 36} x={890} y={600} size={30} tone="ink" rotate={4} anchor="right" />
+    <Sticker text="sped up" at={T_REVEAL} outAt={T_REVEAL + 36} x={CARD.x + CARD.w - 40} y={CARD.y + 112} size={30} tone="ink" rotate={4} anchor="right" />
     <SegMarker segs={TAILOR} i={2} rect={{ x: 40, y: 1100, w: 1380, h: 112 }} from={30} to={48} seed={11} pad={12} />
-    <Sticker text="degree, employer, dates: never altered" at={T_LOCKED + 30} outAt={T_COVER + 6} x={90} y={1196} size={30} tone="ink" rotate={-2} />
-    <Sticker text="+ the cover letter" at={T_COVER + 12} x={110} y={1196} size={34} tone="sky" rotate={-3} />
+    <Sticker text="degree, employer, dates: never altered" at={T_LOCKED + 30} outAt={T_COVER + 6} x={STICKER.x - 20} y={STICKER.y} size={30} tone="ink" rotate={-2} />
+    <Sticker text="+ the cover letter" at={T_COVER + 12} x={STICKER.x} y={STICKER.y} size={34} tone="sky" rotate={-3} />
     <Headline lines={["Your experience.", "*Tailored to the role.*"]} at={6} />
     <Reaction at={0} outAt={270} beats={[[0, "curious"], [T_REVEAL + 30, "impressed"], [T_COVER, "happy"]]} id="pip-tailor" />
     <DemoTag opacity={1} />
@@ -164,10 +165,10 @@ export const FillScene: React.FC = () => {
       <SegMarker segs={FILL} i={1} rect={{ x: 1330, y: 955, w: 640, h: 285 }} from={116} to={147} seed={13} pad={10} />
       <SegMarker segs={FILL} i={2} rect={{ x: 370, y: 915, w: 1180, h: 100 }} from={2} to={66} seed={15} pad={12} />
       <SegMarker segs={FILL} i={2} rect={{ x: 360, y: 1060, w: 400, h: 100 }} from={82} to={102} seed={17} pad={12} />
-      <Sticker text="the SpotApply extension" at={F_FORM + 14} outAt={F_FORM + 100} x={110} y={1196} size={32} tone="blue" rotate={-3} />
-      <Sticker text="“10 filled · 1 need you”" at={F_FORM + 118} outAt={F_REVIEW} x={110} y={1196} size={32} tone="ink" rotate={-2} />
-      <Sticker text="the one it left for you" at={F_REVIEW + 6} outAt={F_REVIEW + 76} x={110} y={1196} size={32} tone="sky" rotate={-3} />
-      <Sticker text="your click" at={F_REVIEW + 84} outAt={F_REVIEW + 97} x={410} y={1136} size={36} tone="ink" rotate={-3} />
+      <Sticker text="the SpotApply extension" at={F_FORM + 14} outAt={F_FORM + 100} x={STICKER.x} y={STICKER.y} size={32} tone="blue" rotate={-3} />
+      <Sticker text="“10 filled · 1 need you”" at={F_FORM + 118} outAt={F_REVIEW} x={STICKER.x} y={STICKER.y} size={32} tone="ink" rotate={-2} />
+      <Sticker text="the one it left for you" at={F_REVIEW + 6} outAt={F_REVIEW + 76} x={STICKER.x} y={STICKER.y} size={32} tone="sky" rotate={-3} />
+      <Sticker text="your click" at={F_REVIEW + 84} outAt={F_REVIEW + 97} x={430} y={STICKER.y - 88} size={36} tone="ink" rotate={-3} />
       <Headline lines={["Less typing.", "*More control.*"]} at={6} />
       <Reaction at={0} outAt={294} beats={[[0, "curious"], [F_FORM + 100, "impressed"], [F_REVIEW + 100, "relieved"]]} id="pip-fill" />
       <DemoTag opacity={1} />

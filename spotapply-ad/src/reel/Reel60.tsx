@@ -1,33 +1,75 @@
 import React from "react";
 import { Audio } from "@remotion/media";
-import { AbsoluteFill, getStaticFiles, interpolate, OffthreadVideo, Sequence, staticFile } from "remotion";
+import {
+  AbsoluteFill,
+  getStaticFiles,
+  interpolate,
+  OffthreadVideo,
+  Sequence,
+  staticFile,
+} from "remotion";
 import "../fonts";
 import { Captions } from "./Captions";
+import { CAST, type CastId, CastContext } from "./Character";
 import { EndScene, LessScene } from "./scenes/Close";
-import { HookScene, RetypeScene, RewriteScene, TabsScene } from "./scenes/Frustration";
+import {
+  HookScene,
+  RetypeScene,
+  RewriteScene,
+  TabsScene,
+} from "./scenes/Frustration";
 import { MeetScene } from "./scenes/Meet";
 import { FillScene, FindScene, TailorScene, WhyScene } from "./scenes/Product";
 import { type SceneId, SCENES, SFX, speaking, VOICEOVER } from "./timeline";
 import { DemoTag, Headline } from "./ui";
 
-export type Reel60Props = { readonly voiceover: boolean; readonly music: boolean };
+// `character` picks the illustrated job seeker (src/reel/Character.tsx CAST).
+export type Reel60Props = {
+  readonly voiceover: boolean;
+  readonly music: boolean;
+  readonly character?: CastId;
+};
 
 // Real b-roll can replace any illustrated moment: drop a vertical clip at
 // public/reel/broll/<scene>.mp4 (1080x1920, see README "Shoot your own b-roll")
 // and it plays under the same headline, captions and sound. Without one, the
 // illustration plays.
-const BROLL_TEXT: Partial<Record<SceneId, { lines: string[]; size?: number }>> = {
-  hook: { lines: ["Job hunting", "= a *full-time job*"] },
-  tabs: { lines: ["12 tabs open"], size: 70 },
-  rewrite: { lines: ["Rewriting the same resume.", "*Again.*"], size: 56 },
-  retype: { lines: ["Uploaded your resume?", "Now *type it again.*"], size: 60 },
-  less: { lines: ["Less time on *repetitive work.*", "More time on", "*meaningful applications.*"], size: 52 },
-};
+const BROLL_TEXT: Partial<Record<SceneId, { lines: string[]; size?: number }>> =
+  {
+    hook: { lines: ["Job hunting", "= a *full-time job*"] },
+    tabs: { lines: ["12 tabs open"], size: 70 },
+    rewrite: { lines: ["Rewriting the same resume.", "*Again.*"], size: 56 },
+    retype: {
+      lines: ["Uploaded your resume?", "Now *type it again.*"],
+      size: 60,
+    },
+    less: {
+      lines: [
+        "Less time on *repetitive work.*",
+        "More time on",
+        "*meaningful applications.*",
+      ],
+      size: 52,
+    },
+  };
 
-const BRoll: React.FC<{ readonly id: SceneId; readonly src: string }> = ({ id, src }) => (
+const BRoll: React.FC<{ readonly id: SceneId; readonly src: string }> = ({
+  id,
+  src,
+}) => (
   <AbsoluteFill style={{ background: "#08202F" }}>
-    <OffthreadVideo src={src} muted style={{ width: 1080, height: 1920, objectFit: "cover" }} />
-    {BROLL_TEXT[id] ? <Headline lines={BROLL_TEXT[id]!.lines} at={6} size={BROLL_TEXT[id]!.size} /> : null}
+    <OffthreadVideo
+      src={src}
+      muted
+      style={{ width: 1080, height: 1920, objectFit: "cover" }}
+    />
+    {BROLL_TEXT[id] ? (
+      <Headline
+        lines={BROLL_TEXT[id]!.lines}
+        at={6}
+        size={BROLL_TEXT[id]!.size}
+      />
+    ) : null}
     <DemoTag opacity={1} dark text="Dramatization" />
   </AbsoluteFill>
 );
@@ -57,34 +99,64 @@ const musicVolume = (f: number) => {
   return fadeIn * (base - (base - 0.1) * duck);
 };
 
-export const Reel60: React.FC<Reel60Props> = ({ voiceover, music }) => {
+export const Reel60: React.FC<Reel60Props> = ({
+  voiceover,
+  music,
+  character = "maya",
+}) => {
   const files = new Set(getStaticFiles().map((f) => f.name));
   return (
-    <AbsoluteFill style={{ background: "#08202F" }}>
-      {(Object.keys(SCENES) as SceneId[]).map((id) => {
-        const [from, len] = SCENES[id];
-        const broll = `reel/broll/${id}.mp4`;
-        const Comp = SCENE_COMPONENTS[id];
-        return (
-          <Sequence key={id} name={id} from={from} durationInFrames={len} premountFor={30}>
-            {files.has(broll) && BROLL_TEXT[id] ? <BRoll id={id} src={staticFile(broll)} /> : <Comp />}
-          </Sequence>
-        );
-      })}
-      <Captions />
-      {voiceover
-        ? VOICEOVER.map((v) => (
-            <Sequence key={v.id} name={`VO ${v.id}`} from={v.from} durationInFrames={v.frames} premountFor={30}>
-              <Audio src={staticFile(`reel/vo/${v.id}.wav`)} />
+    <CastContext.Provider value={CAST[character]}>
+      <AbsoluteFill style={{ background: "#08202F" }}>
+        {(Object.keys(SCENES) as SceneId[]).map((id) => {
+          const [from, len] = SCENES[id];
+          const broll = `reel/broll/${id}.mp4`;
+          const Comp = SCENE_COMPONENTS[id];
+          return (
+            <Sequence
+              key={id}
+              name={id}
+              from={from}
+              durationInFrames={len}
+              premountFor={30}
+            >
+              {files.has(broll) && BROLL_TEXT[id] ? (
+                <BRoll id={id} src={staticFile(broll)} />
+              ) : (
+                <Comp />
+              )}
             </Sequence>
-          ))
-        : null}
-      {music ? <Audio src={staticFile("reel/music.wav")} volume={musicVolume} /> : null}
-      {SFX.map((s, i) => (
-        <Sequence key={i} name={`SFX ${s.id}`} from={s.at} durationInFrames={60} premountFor={30}>
-          <Audio src={staticFile(`reel/sfx/${s.id}.wav`)} volume={s.gain} />
-        </Sequence>
-      ))}
-    </AbsoluteFill>
+          );
+        })}
+        <Captions />
+        {voiceover
+          ? VOICEOVER.map((v) => (
+              <Sequence
+                key={v.id}
+                name={`VO ${v.id}`}
+                from={v.from}
+                durationInFrames={v.frames}
+                premountFor={30}
+              >
+                <Audio src={staticFile(`reel/vo/${v.id}.wav`)} />
+              </Sequence>
+            ))
+          : null}
+        {music ? (
+          <Audio src={staticFile("reel/music.wav")} volume={musicVolume} />
+        ) : null}
+        {SFX.map((s, i) => (
+          <Sequence
+            key={i}
+            name={`SFX ${s.id}`}
+            from={s.at}
+            durationInFrames={60}
+            premountFor={30}
+          >
+            <Audio src={staticFile(`reel/sfx/${s.id}.wav`)} volume={s.gain} />
+          </Sequence>
+        ))}
+      </AbsoluteFill>
+    </CastContext.Provider>
   );
 };
