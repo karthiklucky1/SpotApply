@@ -507,6 +507,15 @@ class UserProfile(SQLModel, table=True):
     # user's first application through SpotApply). Set the moment it is shown,
     # so closing it or reviewing — either way — it is never asked again.
     review_prompted_at: Optional[datetime] = None
+    # Email notifications (app/common/notify_email.py). ON unless the user
+    # turns them off in Settings or follows an email's unsubscribe link (which
+    # also stamps email_unsubscribed_at). NULL on a row = on. The day counter
+    # caps how many we send (EMAIL_MAX_PER_USER_DAILY).
+    email_notifications: Optional[bool] = True
+    email_unsubscribed_at: Optional[datetime] = None
+    last_notification_email_at: Optional[datetime] = None
+    notification_email_day: str = ""          # UTC date the counter below belongs to
+    notification_emails_today: int = 0
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR
@@ -865,6 +874,11 @@ class UserNotification(SQLModel, table=True):
     read: bool = Field(default=False, index=True)
     link: Optional[str] = None                # clickable link in the UI
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Email delivery (app/common/notify_email.py): NULL = not decided yet;
+    # "sent" | "skipped" (off / unsubscribed / no confirmed address) | "failed".
+    # Only types in EMAIL_NOTIFICATION_TYPES are ever considered.
+    email_state: Optional[str] = None
+    emailed_at: Optional[datetime] = None
 
 
 class OutreachMessage(SQLModel, table=True):

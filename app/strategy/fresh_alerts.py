@@ -205,7 +205,7 @@ def dispatch_fresh_alerts(user_id: Optional[str], shortlisted_job_ids: List[int]
             if posted_trusted:
                 title = "⚡ Fresh match — be one of the first to apply"
                 msg = (f"{job.title} @ {job.company} — posted {_ago(ref_min)} ago, "
-                       f"fit {fit}. Early applicants win: tailor and apply now.")
+                       f"fit {fit}. Tailor and apply now.")
             else:
                 # No trustworthy posting date. Say what we know, and attribute
                 # the source's claim to the source instead of asserting it.

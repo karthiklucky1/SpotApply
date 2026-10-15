@@ -1,0 +1,27 @@
+{% extends "_public_base.html" %}
+{% block title %}Email settings — SpotApply{% endblock %}
+{% block description %}Turn SpotApply notification emails off.{% endblock %}
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">
+        {% if done %}You're unsubscribed{% elif valid %}Unsubscribe from emails{% else %}This link doesn't work{% endif %}
+    </h1>
+</div>
+
+<div class="prose-dark space-y-2">
+    {% if done %}
+    <p>You won't get any more notification emails from SpotApply. Your account, jobs and history are unchanged, and new matches still appear in your dashboard.</p>
+    <p>Changed your mind? Turn <strong>Email notifications</strong> back on in your dashboard settings.</p>
+    <p><a href="/dashboard">Open your dashboard</a></p>
+    {% elif valid %}
+    <p>Stop getting emails about new job matches and your search? Your account, jobs and history stay as they are, and new matches still appear in your dashboard.</p>
+    <form method="post" action="/email/unsubscribe?u={{ u|urlencode }}&amp;t={{ t|urlencode }}" class="mt-6">
+        <button type="submit" style="background:#BAE6FD;border:1px solid #7DD3FC;color:var(--ink);font-weight:700;padding:12px 20px;border-radius:12px;cursor:pointer;">Unsubscribe</button>
+    </form>
+    <p class="text-sm mt-6" style="color:var(--muted);">You can also choose this in your dashboard under Settings → Email notifications.</p>
+    {% else %}
+    <p>The link may have been copied incompletely. To turn emails off, sign in and use Settings → Email notifications, or email <a href="mailto:support@spotapply.ai">support@spotapply.ai</a> and we'll do it for you.</p>
+    <p><a href="/login">Sign in</a></p>
+    {% endif %}
+</div>
+{% endblock %}

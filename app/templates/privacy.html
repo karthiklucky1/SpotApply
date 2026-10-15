@@ -102,7 +102,7 @@
                 <li>To discover, rank, and match job listings to your profile.</li>
                 <li>To generate tailored resumes and cover letters for each application.</li>
                 <li>To auto-fill job application forms on your behalf.</li>
-                <li>To send you in-app notifications about new matches and your applications.</li>
+                <li>To send you notifications about new matches and your job search: in the app, and by email to your sign-in address unless you turn email notifications off (Settings → Email notifications, or the unsubscribe link in any of these emails). We send at most a few a day.</li>
                 <li>To maintain your application history and pipeline state.</li>
             </ul>
             <p>Your data is never sold, licensed, or shared with third parties for advertising purposes.</p>
@@ -118,6 +118,7 @@
                 <li><strong>OpenAI</strong> (US) — the cheap first-pass model that pre-screens jobs before Claude sees them, and a fallback for one fact-checking step. It receives an extract of your resume (about the first 4,000 characters) and the job title, company and description. Governed by OpenAI's API data policy. This runs on essentially every job we score for you, so in practice your resume text reaches both providers.</li>
                 <li><strong>Stripe</strong> (US) — payment processing. Payments are on hold while Pro features are free for everyone; when they are open, Stripe receives only what is needed to take a payment, and we never see or store your card details.</li>
                 <li><strong>Google Workspace</strong> (US) — sends our account emails, such as password-reset and sign-up confirmation messages, and receives mail sent to our @spotapply.ai addresses. It receives your email address and the message we send you.</li>
+                <li><strong>Resend</strong> (US) — delivers our notification emails (new job matches and updates about your search) while email notifications are on. It receives your email address and the content of each email.</li>
             </ul>
             <p>None of these providers is permitted to use your data to train their models under the API terms we use. We do not sell or license your data, and we do not share it for advertising.</p>
 

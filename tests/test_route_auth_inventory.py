@@ -56,6 +56,10 @@ PUBLIC_PATHS = {
     "/api/account", "/api/admin/whoami",
     # Clearing your own cookie needs no session to clear.
     "/auth/logout",
+    # The unsubscribe link in notification emails: authenticated by an HMAC of
+    # the user id instead of a session (tests/test_email_notifications.py), so
+    # it works logged out and only for the account it was sent to.
+    "/email/unsubscribe",
 }
 
 # Guard helpers that raise (401/403/404) rather than degrading to "no filter".

@@ -343,11 +343,6 @@ class Settings(BaseSettings):
     # counts over an 87k-row pool took sign-in to 17-32 s.
     stats_cache_seconds: int = 300             # STATS_CACHE_SECONDS
     stats_total_budget_seconds: int = 10       # STATS_TOTAL_BUDGET_SECONDS
-    # Outreach kit: drafts are kept per application this long, so reopening the
-    # panel is instant and shows the same words (each draft costs a SerpAPI
-    # search + an LLM call). A template-only set — the LLM rewrite was skipped —
-    # expires sooner so the better drafts arrive once the provider is back.
-    # "Regenerate" in the panel always drafts fresh. 0 = never reuse.
     # The company's postal address, printed in the legal pages and footers
     # (contact, DMCA agent, California §1789.3, CAN-SPAM for any marketing mail).
     business_address: str = "3227 Bishop Street, Unit 7, Cincinnati, OH 45220"   # BUSINESS_ADDRESS
@@ -357,8 +352,38 @@ class Settings(BaseSettings):
     # on — a subscription cannot be sold without its price beside the button.
     # The amount itself stays in PLAN_PRICES for when it is announced.
     pro_price_announced: bool = False                    # PRO_PRICE_ANNOUNCED
+    # Outreach kit: drafts are kept per application this long, so reopening the
+    # panel is instant and shows the same words (each draft costs a SerpAPI
+    # search + an LLM call). A template-only set — the LLM rewrite was skipped —
+    # expires sooner so the better drafts arrive once the provider is back.
+    # "Regenerate" in the panel always drafts fresh. 0 = never reuse.
     outreach_drafts_ttl_hours: float = 24.0             # OUTREACH_DRAFTS_TTL_HOURS
     outreach_drafts_template_ttl_hours: float = 1.0     # OUTREACH_DRAFTS_TEMPLATE_TTL_HOURS
+    # ── Email notifications (app/common/notify_email.py, 2026-10-15) ─────────
+    # In-app notifications only reached users who had the dashboard open: of
+    # 312 sent in the 30 days to 2026-10-15, 2 were ever read (225 fresh-job
+    # alerts → 1; 25 "your search is paused" → 0). The dispatcher batches a
+    # user's unread notifications of EMAIL_NOTIFICATION_TYPES into one email.
+    # Nothing is sent without RESEND_API_KEY; EMAIL_NOTIFICATIONS_ENABLED=0 is
+    # the kill switch. The recipient is the confirmed LOGIN email from Supabase
+    # Auth, never UserProfile.email (the applicant address read from a resume —
+    # it differed for 12 of 26 users). Every email has a one-click unsubscribe
+    # (signed link + List-Unsubscribe headers) and the postal address.
+    email_notifications_enabled: bool = True             # EMAIL_NOTIFICATIONS_ENABLED
+    resend_api_key: str = ""                             # RESEND_API_KEY (secret)
+    email_from: str = "SpotApply <alerts@spotapply.ai>"  # EMAIL_FROM — domain verified in Resend
+    email_reply_to: str = "support@spotapply.ai"         # EMAIL_REPLY_TO
+    # Signs unsubscribe links. Falls back to an HMAC of the service-role key;
+    # with neither set nothing is sent (an email without a working unsubscribe
+    # is never sent).
+    email_link_secret: str = ""                          # EMAIL_LINK_SECRET (secret)
+    email_notification_types: str = "fresh_job,high_match,feed_paused"   # EMAIL_NOTIFICATION_TYPES
+    email_dispatch_interval_minutes: int = 10            # EMAIL_DISPATCH_INTERVAL_MINUTES
+    email_max_per_user_daily: int = 3                    # EMAIL_MAX_PER_USER_DAILY
+    email_min_gap_minutes: int = 120                     # EMAIL_MIN_GAP_MINUTES between two emails to one user
+    email_max_age_hours: int = 12                        # EMAIL_MAX_AGE_HOURS — older notifications are never emailed
+    email_skip_if_active_minutes: int = 15               # EMAIL_SKIP_IF_ACTIVE_MINUTES — on the dashboard = sees the bell
+    email_platform_daily_cap: int = 90                   # EMAIL_PLATFORM_DAILY_CAP (Resend free plan: 100/day)
     # Capture hiring context (department / team / requisition / recruiter) from
     # fields the ATS responses ALREADY contain, plus deterministic extraction
     # from the full description. Zero extra HTTP requests and no LLM call, so

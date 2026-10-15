@@ -890,6 +890,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   so × or a review both end it on every device; never asked after a review exists.
   Guard: `test_review_prompt`. Guards: `test_billing`,
   `test_profile_visibility`, `test_avatar_upload`, `test_temporary_pro`.
+- **Email notifications** (2026-10-15, `app/common/notify_email.py`): the bell
+  only reached open dashboards (2 of 312 read in 30 days). `_email_notifications`
+  (lanes process only) batches a user's UNREAD `EMAIL_NOTIFICATION_TYPES` rows
+  (fresh_job, high_match, feed_paused; ≤`EMAIL_MAX_AGE_HOURS` old) into ONE email via
+  Resend — not while they're on the dashboard, ≤3/day, ≥2 h apart, platform cap in
+  `platform_counter`. Recipient = CONFIRMED Supabase Auth login email, never
+  `UserProfile.email` (resume address). Signed one-click unsubscribe
+  (`/email/unsubscribe`, GET shows, POST/RFC 8058 acts) + postal address in every
+  email; Settings switch `/api/email-notifications`. Nothing sends without
+  `RESEND_API_KEY`. Guard: `test_email_notifications`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

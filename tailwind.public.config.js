@@ -21,6 +21,7 @@ module.exports = {
     "./app/templates/refunds.html",
     "./app/templates/cookies.html",
     "./app/templates/404.html",
+    "./app/templates/email_unsubscribe.html",
     "./app/templates/extension.html",
     "./app/templates/recruiter.html",
     "./app/templates/messages.html",

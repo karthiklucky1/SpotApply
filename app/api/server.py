@@ -812,6 +812,7 @@ async def startup_event():
     # validated, and growing (daily validation, weekly YC harvest)
     asyncio.create_task(_registry_maintenance())
     asyncio.create_task(_billing_maintenance())  # test-mode warning + daily Stripe reconcile
+    asyncio.create_task(_email_notifications())  # the bell, delivered (app/common/notify_email.py)
     # Fresh lane — boards-only rescan every settings.fresh_lane_interval_hours
     # (default 2h) so new postings reach shortlists inside the first-24h window
     # where most interviews are won. Full discovery stays on the 6h scheduler.
@@ -1062,6 +1063,36 @@ async def _billing_maintenance():
             _log.exception("Billing maintenance error: %s", e)
         first = False
         await asyncio.sleep(max(1, hours) * 60 * 60)
+
+
+async def _email_notifications():
+    """Email each user their unread notifications every
+    ``email_dispatch_interval_minutes`` (app/common/notify_email.py). Lanes
+    process only, so two replicas never both send. Says once at boot when it
+    is not configured — an unset RESEND_API_KEY must not look like "no news".
+    No exception may end the loop."""
+    import asyncio
+    import logging
+    from app.config import settings
+    _log = logging.getLogger("email")
+    await asyncio.sleep(90)
+    from app.common.notify_email import dispatch_pending, is_configured
+    if not is_configured():
+        _log.warning("Email notifications are OFF: %s — notifications stay in the dashboard bell only.",
+                     "EMAIL_NOTIFICATIONS_ENABLED=0" if not settings.email_notifications_enabled
+                     else "RESEND_API_KEY (or a link-signing key) is not set")
+    while True:
+        try:
+            if is_configured():
+                out = await asyncio.to_thread(dispatch_pending)
+                if out.get("sent") or out.get("failed") or out.get("platform_capped"):
+                    _log.info("Email notifications: %s", out)
+        except Exception as e:
+            # The class and the message up to "[SQL": a DB error's bound
+            # parameters would put user ids in the log.
+            _log.error("Email notifications error: %s: %s", type(e).__name__,
+                       str(e).split("[SQL")[0].strip()[:200])
+        await asyncio.sleep(max(1, int(settings.email_dispatch_interval_minutes or 10)) * 60)
 
 
 async def _fresh_lane():
@@ -2327,6 +2358,38 @@ def refunds_page(request: Request):
 def cookies_page(request: Request):
     return templates.TemplateResponse(request=request, name="cookies.html",
                                       context={"current_year": _current_year()})
+
+
+def _unsubscribe_response(request: Request, *, valid: bool, done: bool, u: str, t: str):
+    resp = templates.TemplateResponse(
+        request=request, name="email_unsubscribe.html",
+        context={"valid": valid, "done": done, "u": u, "t": t, "current_year": _current_year()},
+        status_code=200 if valid else 400)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Robots-Tag"] = "noindex"
+    return resp
+
+
+@app.get("/email/unsubscribe", response_class=HTMLResponse)
+def email_unsubscribe_page(request: Request, u: str = "", t: str = ""):
+    """The link in every notification email (app/common/notify_email.py).
+    Public on purpose: it is signed — an HMAC of the user id — so it works with
+    no login and only for the account it was sent to. GET only SHOWS the
+    choice: mail scanners open links, and unsubscribing on GET would switch
+    people's emails off without them. The button POSTs."""
+    from app.common.notify_email import verify_unsubscribe
+    return _unsubscribe_response(request, valid=verify_unsubscribe(u, t), done=False, u=u, t=t)
+
+
+@app.post("/email/unsubscribe", response_class=HTMLResponse)
+def email_unsubscribe(request: Request, u: str = "", t: str = ""):
+    """Unsubscribe — the page's button, and the RFC 8058 one-click POST mail
+    clients send from their own Unsubscribe button. Signed like the GET."""
+    from app.common.notify_email import unsubscribe, verify_unsubscribe
+    if not verify_unsubscribe(u, t):
+        return _unsubscribe_response(request, valid=False, done=False, u="", t="")
+    unsubscribe(u)
+    return _unsubscribe_response(request, valid=True, done=True, u=u, t=t)
 
 
 # Paths a browser never navigates to: their 404s stay JSON for the code that
@@ -9683,6 +9746,42 @@ def review_prompt_seen(request: Request) -> dict:
             session.add(prof)
             session.commit()
     return {"ok": True}
+
+
+@app.get("/api/email-notifications")
+def email_notifications_state(request: Request) -> dict:
+    """Does this user get notification emails, and can the platform send any
+    right now (`available` is False until RESEND_API_KEY is set)."""
+    from app.common.notify_email import is_configured
+    from app.db.models import UserProfile
+    uid = _require_user(request)
+    owner = uid if uid != "local" else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
+    enabled = (prof is not None and prof.email_notifications is not False
+               and prof.email_unsubscribed_at is None)
+    return {"enabled": enabled, "available": is_configured()}
+
+
+@app.put("/api/email-notifications")
+def set_email_notifications(request: Request, payload: dict) -> dict:
+    """Settings switch. Turning it ON also clears an earlier unsubscribe."""
+    from app.db.models import UserProfile
+    uid = _require_user(request)
+    owner = uid if uid != "local" else None
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="'enabled' must be true or false")
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
+        if prof is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        prof.email_notifications = enabled
+        if enabled:
+            prof.email_unsubscribed_at = None
+        session.add(prof)
+        session.commit()
+    return {"enabled": enabled}
 
 
 @app.post("/api/reviews")
