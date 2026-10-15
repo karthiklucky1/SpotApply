@@ -11,12 +11,13 @@ export const SAFE = {
 } as const;
 
 // The product "screen card": a phone or laptop screen seen in close-up.
-// 960 x 954 (was 860 x 780; the owner asked for it bigger, and taller): the
+// 960 x 965 (was 860 x 780; the owner asked for it bigger, and taller): the
 // headline moves up and the captions tighten under it to make the room. The
-// card's right edge runs under the platforms' button column below y 860, so
-// nothing a viewer must read is framed into its last ~90 px.
-export const CARD = { x: 60, y: 446, w: 960, h: 954, bar: 58 } as const;
-export const CARD_VIEW = { w: CARD.w, h: CARD.h - CARD.bar } as const; // 960 x 896
+// card's last ~90 px on the right run under the platforms' button column
+// below y 860: the crops keep each scene's subject left of that, but long
+// lines of a recording can run under the buttons.
+export const CARD = { x: 60, y: 442, w: 960, h: 965, bar: 58 } as const;
+export const CARD_VIEW = { w: CARD.w, h: CARD.h - CARD.bar } as const; // 960 x 907
 
 // The reaction bubble rides the card's top-right corner (above the rail).
 export const PIP = { cx: 966, cy: CARD.y, r: 100 } as const;
@@ -25,8 +26,8 @@ export const PIP = { cx: 966, cy: CARD.y, r: 100 } as const;
 export const STICKER = { x: CARD.x + 40, y: CARD.y + CARD.h - 84 } as const;
 
 // Beat headline (top) and the word-by-word captions (under the card).
-export const HEADLINE = { x: 70, y: 236, maxW: 720 } as const;
-export const CAPTION = { cx: 520, y: 1404, maxW: 900, size: 62 } as const;
+export const HEADLINE = { x: 70, y: 232, maxW: 720 } as const;
+export const CAPTION = { cx: 520, y: 1411, maxW: 900, size: 60 } as const;
 
 // Source sizes of the recordings in public/reel/footage/ (device pixels).
 export const FOOTAGE = {

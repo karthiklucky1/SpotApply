@@ -134,8 +134,11 @@ and the SpotApply mark throughout.
 
 **Safe zones.** Reels and Shorts draw their own header, the
 like/comment/share column (right, from ~y 860) and the caption row (bottom,
-from ~y 1480) over the video. Headlines, the screen card, the captions and
-the end card stay inside x 70–930 and y 230–1470 (`src/reel/layout.ts`).
+from ~y 1480) over the video. Headlines, the captions and the end card stay
+inside x 70–930 and y 230–1470 (`src/reel/layout.ts`). The screen card is
+960 × 965 (x 60–1020, y 442–1407), enlarged at the owner's request: its last
+~90 px on the right pass under the button column below y 860, so long lines
+of the recordings can run under the buttons there.
 
 **What is real, and what isn't.**
 - The five recordings in `public/reel/footage/` are the app on this branch,

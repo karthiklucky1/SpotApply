@@ -123,7 +123,7 @@ const TAILOR: Seg[] = [
   // y ~975: the lines under the resume pane start there, and a crop that
   // reaches them slices their first words off.
   { src: "desk_tailor", from: 3.0, frames: 102, cam: [[0, { x: 220, y: 252, w: 772 }], [102, { x: 226, y: 252, w: 764 }]] },
-  { src: "desk_tailor", from: 9.75, frames: 48, cam: [[0, { x: 20, y: 173, w: 1120 }], [8, { x: 20, y: 173, w: 1120 }], [32, { x: 20, y: 226, w: 1420 }]] },
+  { src: "desk_tailor", from: 9.75, frames: 48, cam: [[0, { x: 20, y: 173, w: 1120 }], [8, { x: 20, y: 173, w: 1120 }], [32, { x: 20, y: 218, w: 1420 }]] },
   { src: "desk_tailor", from: 13.6, frames: 72, cam: [[0, { x: 30, y: 180, w: 1150 }]] },
 ];
 const T_REVEAL = segStart(TAILOR, 1);
@@ -150,9 +150,9 @@ export const TailorScene: React.FC = () => (
 const FILL: Seg[] = [
   // The dashboard crop starts under the page's top bar (the recording cuts
   // through its first row).
-  { src: "desk_dashboard_fill", from: 1.3, frames: 30, cam: [[0, { x: 430, y: 110, w: 950 }]] },
-  { src: "desk_extension", from: 1.0, frames: 147, cam: [[0, { x: 314, y: 0, w: 1370 }], [92, { x: 314, y: 0, w: 1370 }], [114, { x: 1000, y: 346, w: 1000 }]] },
-  { src: "desk_extension", from: 12.55, frames: 117, cam: [[0, { x: 300, y: 67, w: 1300 }], [96, { x: 300, y: 67, w: 1300 }], [108, { x: 300, y: 0, w: 1300 }]] },
+  { src: "desk_dashboard_fill", from: 1.3, frames: 30, cam: [[0, { x: 433, y: 110, w: 944 }]] },
+  { src: "desk_extension", from: 1.0, frames: 147, cam: [[0, { x: 322, y: 0, w: 1354 }], [92, { x: 322, y: 0, w: 1354 }], [114, { x: 1000, y: 335, w: 1000 }]] },
+  { src: "desk_extension", from: 12.55, frames: 117, cam: [[0, { x: 300, y: 52, w: 1300 }], [96, { x: 300, y: 52, w: 1300 }], [108, { x: 300, y: 0, w: 1300 }]] },
 ];
 const F_FORM = segStart(FILL, 1);
 const F_REVIEW = segStart(FILL, 2);
