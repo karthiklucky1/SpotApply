@@ -69,8 +69,9 @@ export const FindScene: React.FC = () => {
       <ScreenCard kind="phone" label="app.spotapply.ai" enter={prog(frame, 0, 12)}>
         <Track segs={FIND} />
       </ScreenCard>
-      <SegMarker segs={FIND} i={1} rect={{ x: 80, y: 548, w: 830, h: 262 }} from={-20} to={64} seed={3} />
-      <SegMarker segs={FIND} i={0} rect={{ x: 80, y: 548, w: 830, h: 262 }} from={86} to={128} seed={3} />
+      {/* The loop rides high enough that its arc clears the "94% · STRONG MATCH" pill. */}
+      <SegMarker segs={FIND} i={1} rect={{ x: 70, y: 516, w: 850, h: 296 }} from={-20} to={64} seed={3} />
+      <SegMarker segs={FIND} i={0} rect={{ x: 70, y: 516, w: 850, h: 296 }} from={86} to={128} seed={3} />
       <Sticker text="from company career pages" at={100} outAt={186} x={STICKER.x} y={STICKER.y} size={32} tone="ink" rotate={-3} />
       <Headline lines={["Find roles that fit", "*your background.*"]} at={6} />
       <Reaction at={14} outAt={192} beats={[[14, "curious"], [96, "impressed"]]} id="pip-find" />
@@ -118,10 +119,11 @@ export const WhyScene: React.FC = () => (
 // ── tailor: the Tailoring Studio ────────────────────────────────────────────
 const TAILOR: Seg[] = [
   { src: "desk_tailor", from: 1.25, frames: 48, cam: [[0, { x: 20, y: 60, w: 900 }]] },
-  // Close-ups stop at the bottom of the resume pane (y ~990): the lines under
-  // it start at the modal's left padding, and a tighter crop slices them.
-  { src: "desk_tailor", from: 3.0, frames: 102, cam: [[0, { x: 240, y: 190, w: 990 }], [102, { x: 250, y: 190, w: 980 }]] },
-  { src: "desk_tailor", from: 9.75, frames: 48, cam: [[0, { x: 240, y: 190, w: 990 }], [8, { x: 240, y: 190, w: 990 }], [32, { x: 20, y: 368, w: 1420 }]] },
+  // Crops that start right of the modal's left padding (x ~50) stop above
+  // y ~975: the lines under the resume pane start there, and a crop that
+  // reaches them slices their first words off.
+  { src: "desk_tailor", from: 3.0, frames: 102, cam: [[0, { x: 220, y: 252, w: 772 }], [102, { x: 226, y: 252, w: 764 }]] },
+  { src: "desk_tailor", from: 9.75, frames: 48, cam: [[0, { x: 20, y: 173, w: 1120 }], [8, { x: 20, y: 173, w: 1120 }], [32, { x: 20, y: 226, w: 1420 }]] },
   { src: "desk_tailor", from: 13.6, frames: 72, cam: [[0, { x: 30, y: 180, w: 1150 }]] },
 ];
 const T_REVEAL = segStart(TAILOR, 1);
@@ -146,9 +148,11 @@ export const TailorScene: React.FC = () => (
 
 // ── fill: the extension fills, the person reviews and submits ───────────────
 const FILL: Seg[] = [
-  { src: "desk_dashboard_fill", from: 1.3, frames: 30, cam: [[0, { x: 420, y: 60, w: 1100 }]] },
-  { src: "desk_extension", from: 1.0, frames: 147, cam: [[0, { x: 300, y: 0, w: 1400 }], [92, { x: 300, y: 0, w: 1400 }], [114, { x: 1000, y: 420, w: 1000 }]] },
-  { src: "desk_extension", from: 12.55, frames: 117, cam: [[0, { x: 300, y: 189, w: 1300 }], [96, { x: 300, y: 189, w: 1300 }], [108, { x: 300, y: 0, w: 1300 }]] },
+  // The dashboard crop starts under the page's top bar (the recording cuts
+  // through its first row).
+  { src: "desk_dashboard_fill", from: 1.3, frames: 30, cam: [[0, { x: 430, y: 110, w: 950 }]] },
+  { src: "desk_extension", from: 1.0, frames: 147, cam: [[0, { x: 314, y: 0, w: 1370 }], [92, { x: 314, y: 0, w: 1370 }], [114, { x: 1000, y: 346, w: 1000 }]] },
+  { src: "desk_extension", from: 12.55, frames: 117, cam: [[0, { x: 300, y: 67, w: 1300 }], [96, { x: 300, y: 67, w: 1300 }], [108, { x: 300, y: 0, w: 1300 }]] },
 ];
 const F_FORM = segStart(FILL, 1);
 const F_REVIEW = segStart(FILL, 2);

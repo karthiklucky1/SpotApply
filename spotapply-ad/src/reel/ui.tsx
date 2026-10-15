@@ -34,13 +34,24 @@ export type Seg = {
   cam: readonly Key[]; // frames relative to the segment's start
 };
 
+/** The camera kept inside its recording: a crop never runs past the
+ *  footage's edges, whatever the card's shape (zooms in if it must). */
+export const fit = (f: Focus, src: FootageId): Focus => {
+  const [sw, sh] = FOOTAGE[src];
+  const k = CARD_VIEW.h / CARD_VIEW.w; // visible source height per source width
+  const w = Math.min(f.w, sw, sh / k);
+  const x = Math.max(0, Math.min(f.x + (f.w - w) / 2, sw - w));
+  const y = Math.max(0, Math.min(f.y, sh - w * k));
+  return { x, y, w };
+};
+
 export const trackAt = (segs: readonly Seg[], frame: number) => {
   let at = 0;
   for (let i = 0; i < segs.length; i++) {
     const s = segs[i];
     if (frame < at + s.frames || i === segs.length - 1) {
       const local = frame - at;
-      return { i, seg: s, local, start: at, focus: cam(local, s.cam) };
+      return { i, seg: s, local, start: at, focus: fit(cam(local, s.cam), s.src) };
     }
     at += s.frames;
   }
@@ -58,7 +69,7 @@ export const toCanvas = (focus: Focus, r: { x: number; y: number; w: number; h: 
 const SegVideo: React.FC<{ readonly seg: Seg }> = ({ seg }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const f = cam(frame, seg.cam);
+  const f = fit(cam(frame, seg.cam), seg.src);
   const [sw, sh] = FOOTAGE[seg.src];
   const s = CARD_VIEW.w / f.w;
   const video = (
