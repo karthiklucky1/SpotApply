@@ -1,0 +1,15 @@
+{
+ "name": "phone_match",
+ "fps": 30,
+ "frames": 545,
+ "seconds": 18.167,
+ "source_frames": 189,
+ "marks": {
+  "shortlist": 2.57,
+  "tap_lumen": 4.573,
+  "drawer": 4.87,
+  "report": 7.517,
+  "fit": 11.461,
+  "keywords": 15.427
+ }
+}

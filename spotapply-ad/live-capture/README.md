@@ -16,6 +16,26 @@ kill "$(cat server.pid)"
 ./publish.sh                    # copy the screens both videos use into ../public/live{,60}/
 ```
 
+The vertical reel uses screen RECORDINGS rather than screenshots:
+
+```bash
+./restart.sh && . ./env.sh
+./venv/bin/python record_reel.py       # phone: board -> match report, the gap; laptop: Tailoring Studio
+./venv/bin/python record_extension.py  # laptop: dashboard Auto-Fill -> the real extension fills a form
+kill "$(cat server.pid)"
+./publish_reel.sh                      # -> ../public/reel/footage/ (mp4 + marks .json)
+```
+
+`screencast.py` records Chromium's own compositor frames (CDP
+Page.startScreencast, JPEG q92, at device resolution) and rebuilds a
+constant-rate 30 fps H.264 file, holding a frame whenever the page did not
+change. Two things it needs: `--force-device-scale-factor` (without it the
+frames arrive at CSS size), and, for the extension's tabs, a viewport matching
+the 641 px content area headless Chromium gives them. The touch ripple and
+the desktop pointer are DOM drawn by the script for its own pointer
+(`TOUCH_JS`, `CURSOR_JS`). Each script names its capture-time
+interventions in its docstring.
+
 `capture.py` takes step names to re-shoot only part of it, e.g.
 `capture.py match tailor` (`board match tailor submitted outreach settings
 landing oneclick`).

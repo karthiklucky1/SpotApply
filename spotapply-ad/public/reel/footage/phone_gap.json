@@ -1,0 +1,12 @@
+{
+ "name": "phone_gap",
+ "fps": 30,
+ "frames": 210,
+ "seconds": 7.0,
+ "source_frames": 48,
+ "marks": {
+  "tap_meridian": 1.127,
+  "drawer": 1.311,
+  "keywords": 3.681
+ }
+}

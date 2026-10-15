@@ -36,3 +36,28 @@ Same voice and pipeline; ids are `w_<id>` in `public/voiceover/`, placement in
 | 53.33 s | `w_cta` | Your experience. Less busywork. Start free with SpotApply. |
 
 127 words. The narration ends at 57.0 s, inside the end card's 5.7-second hold.
+
+# Voiceover script: 60-second vertical reel
+
+Same voice, read a touch quicker (speed 1.06), normalized to -14 LUFS per
+clip for Reels / Shorts. Ids are `r_<id>` in `public/reel/vo/`, placement in
+`src/reel/vo-placement.json`, text in `voiceover/lines_reel.json`, word
+timings in `src/reel/words.json` (forced alignment: `voiceover/align_reel.py`).
+
+| Starts | Id | Line |
+|---|---|---|
+| 0.27 s | `r_hook` | Job hunting already feels like a full-time job. |
+| 3.50 s | `r_tabs` | Twelve tabs open. |
+| 5.20 s | `r_rewrite` | Rewriting the same resume. Again. |
+| 8.00 s | `r_retype` | Then you upload it… and type it all in anyway. |
+| 12.10 s | `r_meet` | So, meet SpotApply. |
+| 14.70 s | `r_find` | It checks company career pages, and finds roles that fit your background. |
+| 21.13 s | `r_why` | Tap one, and see why it fits: the skills you match, |
+| 28.77 s | `r_gaps` | and the gaps. |
+| 31.20 s | `r_tailor` | Then it tailors your resume and cover letter to the role, using your real experience. |
+| 41.13 s | `r_fill` | On the job's form, the extension fills the fields it supports. |
+| 46.67 s | `r_review` | You check every answer. You click Submit. |
+| 49.80 s | `r_less` | Less time on repetitive work. More time on meaningful applications. |
+| 54.40 s | `r_cta` | Make your next application count. |
+
+103 words. The narration ends at 56.1 s, inside the end card's hold.

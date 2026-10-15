@@ -1,0 +1,15 @@
+{
+ "name": "desk_tailor",
+ "fps": 30,
+ "frames": 698,
+ "seconds": 23.267,
+ "source_frames": 594,
+ "marks": {
+  "stages": 0.213,
+  "reveal": 2.965,
+  "revealed": 7.767,
+  "top": 9.699,
+  "cover_click": 13.899,
+  "cover_done": 18.711
+ }
+}

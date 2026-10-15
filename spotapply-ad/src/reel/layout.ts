@@ -1,0 +1,32 @@
+// Vertical layout for Reels / Shorts. The platforms draw their own UI over the
+// video: a header across the top (~200 px), the like/comment/share column on
+// the right below ~y 860, and the caption + account row across the bottom
+// (from ~y 1480). Everything a viewer must read stays inside these lines.
+export const SAFE = {
+  left: 70,
+  right: 930, // nothing essential right of this below RIGHT_RAIL_FROM
+  rightRailFrom: 860,
+  top: 230,
+  bottom: 1470,
+} as const;
+
+// The product "screen card": a phone or laptop screen seen in close-up.
+export const CARD = { x: 70, y: 500, w: 860, h: 780, bar: 58 } as const;
+export const CARD_VIEW = { w: CARD.w, h: CARD.h - CARD.bar } as const; // 860 x 722
+
+// The reaction bubble rides the card's top-right corner (above the rail).
+export const PIP = { cx: 906, cy: 500, r: 104 } as const;
+
+// Beat headline (top) and the word-by-word captions (under the card).
+export const HEADLINE = { x: 70, y: 262, maxW: 720 } as const;
+export const CAPTION = { cx: 500, y: 1306, maxW: 840, size: 70 } as const;
+
+// Source sizes of the recordings in public/reel/footage/ (device pixels).
+export const FOOTAGE = {
+  phone_match: [1076, 2330],
+  phone_gap: [1076, 2330],
+  desk_tailor: [2000, 1560],
+  desk_dashboard_fill: [2000, 1002],
+  desk_extension: [2000, 1280],
+} as const;
+export type FootageId = keyof typeof FOOTAGE;

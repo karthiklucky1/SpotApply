@@ -1,9 +1,9 @@
-# SpotApply — 30-second social ad + 60-second explainer
+# SpotApply — social ad, explainer and vertical reel
 
-A Remotion (React + TypeScript) project that renders two videos for
+A Remotion (React + TypeScript) project that renders three videos for
 SpotApply, **"Your experience. Less busywork."**: a 30-second vertical ad
-(below) and a [60-second widescreen explainer](#the-60-second-explainer)
-with its own layout.
+(below), a [60-second widescreen explainer](#the-60-second-explainer) and a
+[60-second vertical reel for Instagram Reels and YouTube Shorts](#the-60-second-vertical-reel-reels--shorts).
 
 | | |
 |---|---|
@@ -31,6 +31,9 @@ npm run poster        # → out/spotapply-social-30s-poster.png
 npm run render:60     # → out/spotapply-explainer-60s.mp4
 npm run captions:60   # → out/spotapply-explainer-60s.srt
 npm run poster:60     # → out/spotapply-explainer-60s-poster.png
+npm run render:reel   # → out/spotapply-reel-60s.mp4
+npm run captions:reel # → out/spotapply-reel-60s.srt
+npm run poster:reel   # → out/spotapply-reel-60s-poster.png
 npm run lint          # eslint + tsc
 ```
 
@@ -99,6 +102,84 @@ is a US citizen (her card reads "No sponsorship needed"), so the card is shot
 with an F-1 OPT profile and the scene says "Shown for a candidate who needs
 sponsorship". It is a research signal, never a promise.
 
+## The 60-second vertical reel (Reels / Shorts)
+
+| | |
+|---|---|
+| Output | `out/spotapply-reel-60s.mp4` (composition `SpotApplyReel60`, `src/reel/`) |
+| Format | 1080×1920, 30 fps, 1800 frames, 60.0 s, H.264 High, yuv420p, BT.709 |
+| Audio | Voiceover + an original synthesized instrumental + subtle sound effects, AAC 48 kHz. Measured: -15.0 LUFS integrated, -0.9 dBFS true peak; between lines the music sits ~8 dB under the voice, and it ducks further while anyone speaks. |
+| Captions | Burned in, word by word, from a forced alignment of the narration (`voiceover/align_reel.py`); also `out/spotapply-reel-60s.srt` |
+| Poster | `out/spotapply-reel-60s-poster.png` (frame 760: the match report) |
+
+Same flow as the other cuts, told as social content: relatable illustrated
+moments with quick reaction cuts, then **real screen recordings** of the app
+and the Chrome extension in a phone or laptop "screen card", a reaction bubble
+in its corner, sticker headlines and big word-by-word captions. Brand colours
+and the SpotApply mark throughout.
+
+| Time | Scene | On screen | Voiceover |
+|---|---|---|---|
+| 0–3.4 s | hook (illustrated) | 1:47 AM at the desk, tired. **"Job hunting = a full-time job" (unpaid)** | "Job hunting already feels like a full-time job." |
+| 3.4–5.1 s | tabs (illustrated) | The tab strip fills to twelve tabs. **"12 tabs open"** | "Twelve tabs open." |
+| 5.1–7.8 s | rewrite (illustrated) | Resume.pdf … Resume_FINAL_final.pdf … Resume_use_THIS_one.pdf, then a cringe cut. | "Rewriting the same resume. Again." |
+| 7.8–11.8 s | retype (illustrated) | A form shows the resume as uploaded, then asks for the work history by hand. **"Uploaded your resume? Now type it again."** Deadpan stare. | "Then you upload it… and type it all in anyway." |
+| 11.8–14.4 s | meet | The drop: brand-blue burst, the wordmark, a phone with the real dashboard. | "So, meet SpotApply." |
+| 14.4–20.8 s | find (**LIVE**, phone) | The board scrolls to the "Apply today" Lumen Data card (94% strong match, found on the company's Greenhouse board). **"Find roles that fit your background."** | "It checks company career pages, and finds roles that fit your background." |
+| 20.8–30.8 s | why (**LIVE**, phone) | The match report (94, why it matched, fit breakdown), then a second demo job's keyword match: **missing django · redis · tracking**. **"See why a job fits."** | "Tap one, and see why it fits: the skills you match, and the gaps." |
+| 30.8–39.8 s | tailor (**LIVE**, laptop) | The Tailoring Studio while it works, the resume typing in (labelled **"sped up"**), "Locked to your resume", the cover letter. **"Your experience. Tailored to the role."** | "Then it tailors your resume and cover letter to the role, using your real experience." |
+| 39.8–49.6 s | fill (**LIVE**, laptop) | Auto-Fill on the dashboard; the real extension fills the employer's form ("✅ 10 filled · ⚠️ 1 need you … submit it yourself"); the person types the one answer it left, clicks Submit; the employer's thank-you page. **"Less typing. More control."** | "On the job's form, the extension fills the fields it supports. You check every answer. You click Submit." |
+| 49.6–54 s | less (illustrated) | The same desk in the morning. **"Less time on repetitive work. More time on meaningful applications."** | (the same words) |
+| 54–60 s | end card | **"Make your next application count."** · **SpotApply • spotapply.ai** · *Follow SpotApply*. Lands by 54.8 s, then holds perfectly still. | "Make your next application count." |
+
+**Safe zones.** Reels and Shorts draw their own header, the
+like/comment/share column (right, from ~y 860) and the caption row (bottom,
+from ~y 1480) over the video. Headlines, the screen card, the captions and
+the end card stay inside x 70–930 and y 230–1470 (`src/reel/layout.ts`).
+
+**What is real, and what isn't.**
+- The five recordings in `public/reel/footage/` are the app on this branch,
+  run locally on the fictional demo account, recorded frame by frame from
+  Chromium (`live-capture/record_reel.py`, `record_extension.py`): no
+  mock-ups of SpotApply's UI. A *freeze* holds one recorded frame so a screen
+  can be read; the only time cut (the studio's wait for the model) says
+  "sped up".
+- The extension is the repo's real MV3 build, driven from the dashboard's
+  real Auto-Fill button with the server's real fill pack and tailored resume.
+  Only the employer is invented: there is no Lumen Data, and its application
+  form is a plain page served locally. Nothing is submitted anywhere.
+- Capture-time interventions, each named in its script: the studio is opened
+  with the page's own functions (a real run needs an LLM); desktop takes turn
+  off CSS backdrop blur (recording speed only); the extension take gives the
+  local dashboard a placeholder session token, because the extension attaches
+  the resume only for a signed-in dashboard and local mode has no sign-in.
+- The person is a drawn character, never a photo, and every illustrated
+  moment is tagged **Illustration**; product scenes are tagged **Demo data**.
+- The gaps are the app's own keyword match for a second demo posting (it asks
+  for Redis and Django; Maya's resume has neither). "Tracking" is the
+  matcher's literal phrase from that posting.
+- Not shown: a phone push notification (match alerts arrive on the
+  dashboard bell, not as pushes), interview or offer outcomes, prices,
+  testimonials, counts of users.
+
+### Shoot your own b-roll (optional)
+
+Real faces beat drawings on Reels. Drop a vertical clip at
+`public/reel/broll/<scene>.mp4` (1080×1920, 30 fps, at least the scene's
+length) and it replaces that scene's illustration, keeping the headline,
+captions, sound and a **Dramatization** tag. Re-render to see it.
+
+| File | Length | Shot |
+|---|---|---|
+| `hook.mp4` | 3.4 s | Night, a desk lamp, someone slumped at a laptop, face lit by the screen. Slow push in. |
+| `tabs.mp4` | 1.7 s | Over the shoulder: a browser filling with tabs (use made-up companies). |
+| `rewrite.mp4` | 2.7 s | Close on the screen: a folder of resume_final_v2... files; end on a wince. |
+| `retype.mp4` | 4.0 s | Typing work history into a form, then a slow deadpan look into the lens. |
+| `less.mp4` | 4.4 s | The same desk by day: coffee, a relaxed smile, laptop open. |
+
+Keep real employers' names, logos and any real personal data off screen,
+and get a release from anyone who appears.
+
 ## Product truth
 
 The live site is blocked from the build environment, so "live" means the
@@ -143,14 +224,17 @@ src/
   timeline.ts     scene lengths + where each voiceover line starts
   SocialAd30.tsx  main composition: background, scenes, demo label, voiceover
   w60/            the 60-second explainer: layout, timeline60, components, W1Problem … W9Cta
+  reel/           the vertical reel: timeline, layout, ui, Character, Room, Captions, scenes/, words.json
   components/     Screen (live captures + focus rings), Headline, Logo, BluePath, Cursor, ...
   scenes/         S1Hook … S7Cta
 public/
   live/           the five phone captures the 30-second ad uses
   live60/         the eight desktop captures the explainer uses
+  reel/           the reel's recordings (footage/), narration (vo/), music.wav and sfx/
   voiceover/      the narration clips: seven for the ad, nine (w_*) for the explainer (-16 LUFS, 48 kHz mono)
   fonts/, brand/  Outfit + Instrument Serif (OFL) and the SpotApply mark
-voiceover/        lines.json, synthesis + ASR-check scripts, SRT builder, provenance
+voiceover/        lines*.json, synthesis, alignment + ASR-check scripts, SRT builders, provenance
+audio/            the reel's original music and sound effects (synthesized; README)
 live-capture/     run the app locally on fictional data and re-shoot the screens
 ```
 
@@ -163,7 +247,9 @@ live-capture/     run the app locally on fictional data and re-shoot the screens
 | Outfit, Instrument Serif | `@fontsource/*` (npm) | SIL Open Font License 1.1 (`public/fonts/`) |
 | SpotApply mark | `app/static/favicon.svg`, redrawn in `Logo.tsx` | SpotApply's own brand asset |
 | Icons, illustrated UI, cursor | Drawn in code | Original |
-| Music / SFX | none | — |
+| Reel music and SFX (`public/reel/`) | Synthesized from scratch by `audio/make_music.py`, `audio/make_sfx.py` | Original; no samples or stock audio |
+| Reel character and rooms | Drawn in code (`src/reel/Character.tsx`, `Room.tsx`) | Original illustration |
+| Music / SFX in the 30 s and 60 s cuts | none | — |
 
 **Remotion licence:** Remotion is free for individuals and companies of up to
 three people; larger for-profit organisations need a company licence

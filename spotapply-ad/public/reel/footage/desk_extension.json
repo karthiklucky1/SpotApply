@@ -1,0 +1,17 @@
+{
+ "name": "desk_extension",
+ "fps": 30,
+ "frames": 578,
+ "seconds": 19.267,
+ "source_frames": 202,
+ "marks": {
+  "opened": 0.234,
+  "filling": 1.334,
+  "filled": 4.207,
+  "review_scroll": 7.939,
+  "type_heard": 12.6,
+  "typed": 14.662,
+  "submit": 15.647,
+  "thanks": 15.752
+ }
+}

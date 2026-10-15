@@ -1,0 +1,15 @@
+[
+ {"id":"r_hook",    "tts":"Job hunting already feels like a full-time job.", "caption":"Job hunting already feels like a full-time job."},
+ {"id":"r_tabs",    "tts":"Twelve tabs open.", "caption":"Twelve tabs open."},
+ {"id":"r_rewrite", "tts":"Rewriting the same résumé. Again.", "caption":"Rewriting the same resume. Again."},
+ {"id":"r_retype",  "tts":"Then you upload it... and type it all in anyway.", "caption":"Then you upload it… and type it all in anyway."},
+ {"id":"r_meet",    "tts":"So, meet Spot Apply.", "caption":"So, meet SpotApply."},
+ {"id":"r_find",    "tts":"It checks company career pages, and finds roles that fit your background.", "caption":"It checks company career pages, and finds roles that fit your background."},
+ {"id":"r_why",     "tts":"Tap one, and see why it fits: the skills you match,", "caption":"Tap one, and see why it fits: the skills you match,"},
+ {"id":"r_gaps",    "tts":"and the gaps.", "caption":"and the gaps."},
+ {"id":"r_tailor",  "tts":"Then it tailors your résumé and cover letter to the role, using your real experience.", "caption":"Then it tailors your resume and cover letter to the role, using your real experience."},
+ {"id":"r_fill",    "tts":"On the job's form, the extension fills the fields it supports.", "caption":"On the job's form, the extension fills the fields it supports."},
+ {"id":"r_review",  "tts":"You check every answer. You click submit.", "caption":"You check every answer. You click Submit."},
+ {"id":"r_less",    "tts":"Less time on repetitive work. More time on meaningful applications.", "caption":"Less time on repetitive work. More time on meaningful applications."},
+ {"id":"r_cta",     "tts":"Make your next application count.", "caption":"Make your next application count."}
+]

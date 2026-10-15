@@ -14,6 +14,9 @@ import "./fonts";
 import { Explainer60 } from "./w60/Explainer60";
 import { W } from "./w60/layout";
 import { TOTAL60 } from "./w60/timeline60";
+import { CharacterSheet } from "./reel/dev/CharacterSheet";
+import { Reel60 } from "./reel/Reel60";
+import { REEL } from "./reel/timeline";
 
 const Hook = withBackground(HookScene);
 const Reveal = withBackground(RevealScene);
@@ -44,6 +47,18 @@ export const RemotionRoot: React.FC = () => {
         width={W.width}
         height={W.height}
       />
+      <Composition
+        id="SpotApplyReel60"
+        component={Reel60}
+        defaultProps={{ voiceover: true, music: true }}
+        durationInFrames={REEL.frames}
+        fps={REEL.fps}
+        width={REEL.width}
+        height={REEL.height}
+      />
+      <Folder name="Reel-dev">
+        <Composition id="Reel-Character" component={CharacterSheet} durationInFrames={1} fps={30} width={1800} height={760} />
+      </Folder>
       <Folder name="Scenes">
         <Composition id="S1-Hook" component={Hook} durationInFrames={SCENES.hook} fps={VIDEO.fps} width={VIDEO.width} height={VIDEO.height} />
         <Composition id="S2-Reveal" component={Reveal} durationInFrames={SCENES.reveal} fps={VIDEO.fps} width={VIDEO.width} height={VIDEO.height} />

@@ -36,6 +36,9 @@
     "render:silent": "remotion render SpotApplySocial30 out/spotapply-social-30s-silent.mp4 --props={\"voiceover\":false} --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709",
     "captions:60": "node --no-warnings voiceover/make-srt.mjs 60",
     "render:60": "remotion render SpotApplyExplainer60 out/spotapply-explainer-60s.mp4 --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709",
-    "poster:60": "remotion still SpotApplyExplainer60 out/spotapply-explainer-60s-poster.png --frame=540 --image-format=png"
+    "poster:60": "remotion still SpotApplyExplainer60 out/spotapply-explainer-60s-poster.png --frame=540 --image-format=png",
+    "render:reel": "remotion render SpotApplyReel60 out/spotapply-reel-60s.mp4 --codec=h264 --crf=16 --x264-preset=slow --image-format=png --color-space=bt709",
+    "captions:reel": "node --no-warnings voiceover/make-srt-reel.mjs",
+    "poster:reel": "remotion still SpotApplyReel60 out/spotapply-reel-60s-poster.png --frame=760 --image-format=png"
   }
 }
