@@ -351,6 +351,7 @@ class Settings(BaseSettings):
     # The company's postal address, printed in the legal pages and footers
     # (contact, DMCA agent, California §1789.3, CAN-SPAM for any marketing mail).
     business_address: str = "3227 Bishop Street, Unit 7, Cincinnati, OH 45220"   # BUSINESS_ADDRESS
+    business_phone: str = "(513) 400-3765"              # BUSINESS_PHONE (shown; links as tel:)
     # Pro's price is NOT announced yet (founder, 2026-10-15): every surface says
     # "coming soon" instead of an amount, and nothing can be bought until this is
     # on — a subscription cannot be sold without its price beside the button.

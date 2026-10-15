@@ -503,6 +503,10 @@ class UserProfile(SQLModel, table=True):
     # returns the user. It used to be on for everyone with no choice — name,
     # work authorisation, sponsorship need and salary were public by default.
     public_profile: bool = False
+    # When the one-time "how was it?" review request was shown (after the
+    # user's first application through SpotApply). Set the moment it is shown,
+    # so closing it or reviewing — either way — it is never asked again.
+    review_prompted_at: Optional[datetime] = None
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

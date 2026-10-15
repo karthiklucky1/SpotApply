@@ -378,6 +378,10 @@ _PASSIVE_WRITE_PATHS = frozenset({
     # the email/phone-confirmed flags from the sign-in token and recomputes the
     # trust score. Bookkeeping about the account, not a person using it.
     "/api/verify/identity",
+    # dashboard.html maybeAskForReview(), at most once per account ever: records
+    # that the one-time review request was shown. A popup appearing is not a
+    # person using the product.
+    "/api/review-prompt/seen",
 })
 
 
@@ -2101,6 +2105,10 @@ templates.env.globals["price_announced"] = _price_announced
 templates.env.globals["price_coming_soon"] = "Pricing coming soon"
 # The company's postal address, for the legal pages and footers.
 templates.env.globals["business_address"] = settings.business_address
+# The company's phone number, shown as a tap-to-call link (tel:+1XXXXXXXXXX).
+templates.env.globals["business_phone"] = settings.business_phone
+templates.env.globals["business_phone_tel"] = "+1" + "".join(
+    c for c in settings.business_phone if c.isdigit())[-10:]
 
 
 # ── Public / marketing pages ─────────────────────────────────────────────────
@@ -9634,6 +9642,47 @@ def _sanitize_review_text(raw: str) -> str:
     text = _re.sub(r"<[^>]*>", "", raw or "")          # drop any complete tags
     text = text.replace("<", "").replace(">", "")       # neutralize stray brackets
     return text.strip()[:_REVIEW_MAX_CHARS]
+
+
+@app.get("/api/review-prompt")
+def review_prompt_state(request: Request) -> dict:
+    """Should the dashboard ask this user for a review now? Yes exactly once:
+    after their first application submitted through SpotApply (an imported
+    email application doesn't count), if they were never asked and have never
+    written one."""
+    from app.db.models import UserProfile, UserReview
+    uid = _require_user(request)
+    owner = uid if uid != "local" else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
+        if prof is None or prof.review_prompted_at is not None:
+            return {"show": False}
+        if session.exec(select(UserReview.id).where(UserReview.user_id == uid).limit(1)).first():
+            return {"show": False}
+        applied = session.exec(
+            select(Application.id).where(
+                Application.user_id == owner,
+                Application.submitted_at.is_not(None),
+                Application.apply_track != "email_import",
+            ).limit(1)
+        ).first()
+        return {"show": applied is not None}
+
+
+@app.post("/api/review-prompt/seen")
+def review_prompt_seen(request: Request) -> dict:
+    """The review request was shown: never show it again (first write wins)."""
+    from datetime import datetime as _dt
+    from app.db.models import UserProfile
+    uid = _require_user(request)
+    owner = uid if uid != "local" else None
+    with get_session() as session:
+        prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
+        if prof is not None and prof.review_prompted_at is None:
+            prof.review_prompted_at = _dt.utcnow()
+            session.add(prof)
+            session.commit()
+    return {"ok": True}
 
 
 @app.post("/api/reviews")

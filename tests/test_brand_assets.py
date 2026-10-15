@@ -398,3 +398,5 @@ def test_the_company_postal_address_is_printed(path):
     assert settings.business_address == "3227 Bishop Street, Unit 7, Cincinnati, OH 45220"
     html = TestClient(app).get(path).text
     assert "3227 Bishop Street, Unit 7, Cincinnati, OH 45220" in html, path
+    # The phone number sits beside it as a tap-to-call link.
+    assert '<a href="tel:+15134003765"' in html and "(513) 400-3765" in html, path

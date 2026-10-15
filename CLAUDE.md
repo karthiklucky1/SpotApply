@@ -882,8 +882,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`PRO_PRICE_ANNOUNCED`, default off, founder 2026-10-15 — set from early users'
   numbers and reviews): every surface says "coming soon", `/api/billing/options`
   returns no amount, and `purchase_available()` + checkout refuse until it is on.
-  `BUSINESS_ADDRESS` (Jinja `business_address`) prints the postal address on the
-  legal pages and footers. Guards: `test_billing`,
+  `BUSINESS_ADDRESS` / `BUSINESS_PHONE` (Jinja `business_address`, `business_phone`,
+  `business_phone_tel`) print the postal address and a tap-to-call number on the
+  legal pages and footers. **One review request, ever** (`UserProfile.review_prompted_at`):
+  after the first application through SpotApply (email imports excluded) the dashboard
+  asks once; `/api/review-prompt/seen` is stamped the moment it shows (a passive write),
+  so × or a review both end it on every device; never asked after a review exists.
+  Guard: `test_review_prompt`. Guards: `test_billing`,
   `test_profile_visibility`, `test_avatar_upload`, `test_temporary_pro`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
