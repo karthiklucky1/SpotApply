@@ -192,6 +192,11 @@ def test_the_terms_date_moved_only_with_a_real_revision():
         assert section in html
     assert "not enrolled in a paid plan" in html
     assert "never solve or bypass a CAPTCHA" in html
+    # The same October revision states automatic renewal beside the price, the
+    # refund policy, the copyright (DMCA) process and the 18+ rule.
+    assert "Pro renews automatically." in html and "{{ renewal_terms() }}" in html
+    assert 'href="/refunds"' in html and "Copyright complaints (DMCA)" in html
+    assert "at least 18 years old" in html
 
 
 @pytest.mark.parametrize("page", ["landing.html", "pricing.html"])
@@ -278,13 +283,23 @@ def test_every_referenced_shot_is_actually_served(client):
         assert r.status_code == 200 and r.content, f"{path} -> {r.status_code}"
 
 
-@pytest.mark.parametrize("page", ["pricing.html", "privacy.html", "terms.html"])
-def test_public_pages_preconnect_to_the_font_origins_they_block_on(page):
-    """The Google Fonts stylesheet is render-blocking and third-party; without a
-    preconnect the TLS handshake only started after the HTML was parsed."""
-    html = (ROOT / "app" / "templates" / page).read_text()
-    for origin in ("https://fonts.googleapis.com", "https://fonts.gstatic.com"):
-        assert f'rel="preconnect" href="{origin}"' in html, f"{page} lacks {origin}"
+def test_fonts_are_self_hosted_so_a_page_view_sends_nothing_to_google():
+    """Google Fonts loaded from Google's servers hand every visitor's IP address
+    to Google before any consent (LG München I, 3 O 17493/20, Jan 2022: damages
+    to a single visitor). The fonts are OFL-licensed and served from our own
+    origin; the licence travels with them."""
+    import re
+    css = (ROOT / "app" / "static" / "vendor" / "fonts" / "fonts.css").read_text()
+    for tmpl in sorted((ROOT / "app" / "templates").glob("*.html")):
+        html = tmpl.read_text()
+        assert "fonts.googleapis.com" not in html and "fonts.gstatic.com" not in html, tmpl.name
+    files = re.findall(r"url\(/static/vendor/fonts/([\w.-]+\.woff2)\)", css)
+    assert len(files) >= 20
+    for f in files:
+        assert (ROOT / "app" / "static" / "vendor" / "fonts" / f).stat().st_size > 1000, f
+    for fam in ("outfit", "jetbrains-mono", "instrument-serif"):
+        lic = (ROOT / "app" / "static" / "vendor" / "fonts" / f"LICENSE-{fam}.txt").read_text()
+        assert "SIL OPEN FONT LICENSE" in lic.upper()
 
 
 @pytest.mark.parametrize("page", ["pricing.html", "privacy.html", "terms.html", "auth.html"])

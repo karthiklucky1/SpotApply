@@ -4,19 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SpotApply — Apply only where you actually fit</title>
-<meta name="description" content="SpotApply watches 50,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored resume for the ones worth your time.">
+<meta name="description" content="SpotApply watches 45,000+ company career boards, scores every role against your real experience, and prepares a grounded tailored resume for the ones worth your time.">
 <link rel="canonical" href="https://app.spotapply.ai/">
 <meta property="og:title" content="SpotApply — Apply only where you actually fit">
-<meta property="og:description" content="Continuous discovery across 50,000+ company boards and 27 ATS providers and job feeds, honest match scoring, and tailored resumes grounded in your real experience.">
+<meta property="og:description" content="Continuous discovery across 45,000+ company boards and 27 ATS providers and job feeds, honest match scoring, and tailored resumes grounded in your real experience.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://app.spotapply.ai/">
 <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
 <link rel="stylesheet" href="/static/tailwind-landing.css">
 <link rel="stylesheet" href="/static/vendor/aos.css">
 <style>
@@ -436,7 +434,7 @@
         <div class="grid lg:grid-cols-12" style="gap:40px;align-items:end;">
             <div class="lg:col-span-5">
                 <div class="num" id="fr-boards"
-                     style="font-size:clamp(48px,5.4vw,64px);font-weight:800;color:var(--ink);line-height:1;letter-spacing:-0.04em;">50,000+</div>
+                     style="font-size:clamp(48px,5.4vw,64px);font-weight:800;color:var(--ink);line-height:1;letter-spacing:-0.04em;">45,000+</div>
                 <div class="body" style="font-size:15px;margin-top:10px;">
                     Company career boards, polled on a rolling schedule
                 </div>
@@ -451,7 +449,8 @@
                     <span class="num" id="fr-latency" style="font-weight:600;color:var(--ink-soft);"></span>
                     minutes — median from a posting going live on a company board to your alert, measured over the
                     last seven days on boards that publish a true posting date (Greenhouse, Lever, Ashby,
-                    SmartRecruiters, Workable). About 41% of a posting's applications arrive in its first 48 hours.
+                    SmartRecruiters, Workable). About 41% of a posting's applications arrive in its first 48 hours
+                    (Davis &amp; Samaniego de la Parra, Dice.com application data, Federal Reserve Bank of St. Louis).
                 </p>
             </div>
 
@@ -595,8 +594,9 @@
                 </div>
 
                 <p class="blocked" style="margin-top:32px;">
-                    A claim your resume cannot support is blocked before delivery. It is not
-                    softened, and it does not ship with a warning attached.
+                    A claim our check finds your resume cannot support is blocked before
+                    delivery. It is not softened, and it does not ship with a warning attached.
+                    No automated check is perfect, so read every document before you send it.
                 </p>
             </div>
 
@@ -638,8 +638,9 @@
             <h2 class="h2">Filled in your browser. Submitted by you.</h2>
             <p class="lede" style="margin-top:20px;">
                 SpotApply prepares the application and fills the form in your own browser.
-                You read every field before it goes anywhere. Nothing is ever sent on your
-                behalf, and there is no setting that changes that.
+                You read every field before it goes anywhere, and nothing is submitted until
+                you approve it: you click Submit on the form yourself or, if you turn on
+                One-click submit, your Apply &amp; Submit click approves that one application.
             </p>
         </div>
 
@@ -820,7 +821,7 @@
                     job feeds and aggregators, including Remotive, RemoteOK, The Muse,
                     WeWorkRemotely, Arbeitnow, Jobicy, Adzuna, Reed, Jooble, Hacker
                     News Who&#39;s Hiring, Y&nbsp;Combinator, Google Jobs and LinkedIn.
-                    27 providers in total, across more than 50,000 company boards,
+                    27 providers in total, across more than 45,000 company boards,
                     each polled on its own rolling schedule.
                 </p>
             </details>
@@ -883,17 +884,22 @@
 <footer style="border-top:1px solid var(--border);padding:40px 0;">
     <div class="wrap flex flex-col sm:flex-row" style="align-items:center;justify-content:space-between;gap:18px;">
         <div style="display:flex;align-items:center;gap:10px;">
+            <a href="/" aria-label="SpotApply home" style="display:flex;align-items:center;gap:10px;text-decoration:none;">
             <span class="mark" style="width:24px;height:24px;border-radius:7px;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </span>
             <span style="font-weight:700;font-size:14.5px;color:var(--ink);">SpotApply</span>
-            <span style="font-size:13px;color:var(--muted);margin-left:6px;">© {{ current_year }} SpotApply LLC</span>
+            </a>
+            <span style="font-size:13px;color:var(--muted);margin-left:6px;">© {{ current_year }} SpotApply LLC · Cincinnati, Ohio</span>
         </div>
         <div style="display:flex;align-items:center;gap:24px;font-size:14px;flex-wrap:wrap;justify-content:center;">
             <a href="#how-it-works" style="color:var(--muted);text-decoration:none;">How it works</a>
             <a href="/pricing" style="color:var(--muted);text-decoration:none;">Pricing</a>
             <a href="/privacy" style="color:var(--muted);text-decoration:none;">Privacy</a>
             <a href="/terms" style="color:var(--muted);text-decoration:none;">Terms</a>
+            <a href="/refunds" style="color:var(--muted);text-decoration:none;">Refunds</a>
+            <a href="/cookies" style="color:var(--muted);text-decoration:none;">Cookies</a>
+            <a href="mailto:support@spotapply.ai" style="color:var(--muted);text-decoration:none;">support@spotapply.ai</a>
             <a href="/login" style="color:var(--muted);text-decoration:none;">Sign in</a>
         </div>
     </div>
@@ -907,13 +913,27 @@
         if (!menu || !btn) return;
         var open = menu.classList.toggle('hidden') === false;
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
     }
+
+    // Escape closes the open menu and returns focus to its button.
+    document.addEventListener('keydown', function (e) {
+        var menu = document.getElementById('mobile-nav-menu');
+        var btn = document.getElementById('mobile-nav-btn');
+        if (e.key === 'Escape' && menu && btn && !menu.classList.contains('hidden')) {
+            menu.classList.add('hidden');
+            btn.setAttribute('aria-expanded', 'false');
+            btn.setAttribute('aria-label', 'Open menu');
+            btn.focus();
+        }
+    });
 
     // Close the mobile menu after following an in-page link.
     document.getElementById('mobile-nav-menu').addEventListener('click', function (e) {
         if (e.target.tagName === 'A') {
             document.getElementById('mobile-nav-menu').classList.add('hidden');
             document.getElementById('mobile-nav-btn').setAttribute('aria-expanded', 'false');
+            document.getElementById('mobile-nav-btn').setAttribute('aria-label', 'Open menu');
         }
     });
 
@@ -1115,7 +1135,7 @@
             var jobs = document.getElementById('fr-jobs');
             var line = document.getElementById('freshness-line');
             // A tiny count is worse than no count — a dev database or a quiet
-            // window would put "6 new postings" under a 50,000-board claim.
+            // window would put "6 new postings" under a 45,000-board claim.
             if (jobs && line && f.jobs_tracked_7d >= 500) {
                 jobs.textContent = Number(f.jobs_tracked_7d).toLocaleString();
                 line.classList.remove('hidden');
@@ -1131,5 +1151,6 @@
         })
         .catch(function () { /* the stat row stands on its own */ });
 </script>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

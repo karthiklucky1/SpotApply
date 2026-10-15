@@ -121,6 +121,17 @@ def pro_price_usd() -> int:
     return int(PLAN_PRICES[PlanTier.PRO])
 
 
+def renewal_terms_text() -> str:
+    """The ONE wording of Pro's automatic-renewal terms, shown beside every
+    button that starts a subscription (pricing page, the dashboard's upgrade
+    screen, Stripe Checkout) and in the Terms. Price, frequency, that it renews
+    until cancelled, how to cancel and what cancelling does."""
+    return (f"Pro is ${pro_price_usd()} per month and renews automatically every month "
+            f"until you cancel. Cancel anytime online in your dashboard under Plans & Pricing "
+            f"→ Manage or cancel subscription; "
+            f"you keep Pro until the end of the month you paid for and are not charged again.")
+
+
 def payment_options() -> dict:
     """What the UI shows on the upgrade screen. Never includes secrets.
 
@@ -275,6 +286,47 @@ def _stripe():
     return stripe
 
 
+def cancel_for_account_deletion(user_id: str) -> str:
+    """Stop billing BEFORE an account's rows are deleted.
+
+    `DELETE /api/account` used to purge the user_subscription row and leave the
+    Stripe subscription running: the card kept being charged every month, and
+    with the row gone the user could not even reach the billing portal to
+    cancel it. Returns:
+
+      "none"       nothing to cancel (no Stripe subscription, or already ended)
+      "cancelled"  Stripe cancelled it now; no further charges
+      "failed"     could not confirm cancellation — the caller must NOT delete
+                   anything, or the subscription would be orphaned and billing
+    """
+    with get_session() as session:
+        row = session.exec(
+            select(UserSubscription).where(UserSubscription.user_id == user_id)
+        ).first()
+        sub_id = row.stripe_subscription_id if row else None
+    if not sub_id:
+        return "none"
+    if not stripe_enabled():
+        # A subscription id with Stripe unconfigured means we cannot talk to the
+        # account that may still be billing it; refuse rather than orphan it.
+        log.error("Account deletion: user %s has subscription %s but Stripe is not "
+                  "configured", user_id, sub_id)
+        return "failed"
+    try:
+        stripe = _stripe()
+        sub = stripe.Subscription.retrieve(sub_id)
+        status = (sub.get("status") if hasattr(sub, "get") else getattr(sub, "status", "")) or ""
+        if status in ("canceled", "incomplete_expired"):
+            return "none"
+        stripe.Subscription.cancel(sub_id)
+        log.info("Account deletion: cancelled Stripe subscription %s for %s", sub_id, user_id)
+        return "cancelled"
+    except Exception as e:
+        log.error("Account deletion: could not cancel subscription %s for %s: %s",
+                  sub_id, user_id, type(e).__name__)
+        return "failed"
+
+
 class AlreadySubscribed(Exception):
     """This user already has a live Stripe subscription — send them to the
     portal, do not sell them a second one."""
@@ -323,6 +375,10 @@ def create_checkout_session(user_id: str, email: Optional[str], base_url: str) -
         cancel_url=f"{base_url}/pricing",
         client_reference_id=user_id,
         allow_promotion_codes=True,
+        # The renewal terms sit on the payment page itself, directly above
+        # Stripe's Subscribe button: an automatic renewal must be disclosed
+        # clearly and next to the consent (California Bus. & Prof. Code §17602).
+        custom_text={"submit": {"message": renewal_terms_text()}},
     )
     # Reuse the Stripe customer we already know about, so a returning user
     # (lapsed, then upgrading again) keeps one customer record with one card

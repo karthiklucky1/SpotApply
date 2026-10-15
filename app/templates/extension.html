@@ -4,29 +4,51 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Add SpotApply to Chrome</title>
-  <link rel="icon" href="/static/icon-192.svg" type="image/svg+xml">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <meta name="description" content="Install the SpotApply extension from the Chrome Web Store. It fills job application forms on Greenhouse, Lever, Ashby, Workday and other job sites, and you review each form before it is submitted.">
+  <link rel="canonical" href="https://app.spotapply.ai/extension">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://app.spotapply.ai/extension">
+  <meta property="og:title" content="Add SpotApply to Chrome">
+  <meta property="og:description" content="Install the SpotApply extension from the Chrome Web Store. It fills job application forms on Greenhouse, Lever, Ashby, Workday and other job sites, and you review each form before it is submitted.">
+  <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
   <style>
     :root {
       --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
       --ink: #0C2A3E; --ink-soft: #21455C; --muted: #6E675C; --border: #DCEAF6;
-      --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+      --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-800: #0F6E66; --sage-tint: #E0F2FE;
     }
     body { background: var(--canvas); color: var(--ink); font-family: 'Outfit', sans-serif; }
     .gradient-text { background: linear-gradient(135deg, var(--sage) 0%, var(--sage-700) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     .glass { background: var(--surface); border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(46,42,36,0.06); }
-    .step-num { width:32px; height:32px; border-radius:50%; background:linear-gradient(135deg,var(--sage-600),var(--sage-700)); display:flex; align-items:center; justify-content:center; font-weight:900; font-size:14px; color:white; flex-shrink:0; }
+    .step-num { width:32px; height:32px; border-radius:50%; background:linear-gradient(135deg,var(--sage-700),var(--sage-800)); display:flex; align-items:center; justify-content:center; font-weight:900; font-size:14px; color:white; flex-shrink:0; }
+    .legal a { color: inherit; text-decoration: underline; }
+    a:focus-visible, summary:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; border-radius: 6px; }
   </style>
+  <!-- Compiled Tailwind (npm run build:css:public), AFTER the page's own styles:
+       the Play CDN it replaces appended its sheet to the end of <head>, so
+       utilities like border-amber-300 kept winning over .glass. -->
+  <link rel="stylesheet" href="/static/tailwind-public.css">
 </head>
 <body class="min-h-screen text-[var(--ink)] flex flex-col items-center justify-center px-4 py-16">
 
   <div class="max-w-lg w-full">
+    <div class="flex justify-center mb-8">
+      <a href="/" aria-label="SpotApply home" class="inline-flex items-center gap-2">
+        <span class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="font-black text-base text-[var(--ink)]">SpotApply</span>
+      </a>
+    </div>
+
     <!-- Header -->
     <div class="text-center mb-12">
-      <div class="w-16 h-16 rounded-2xl mx-auto mb-5 flex items-center justify-center text-3xl" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">🧩</div>
+      <div class="w-16 h-16 rounded-2xl mx-auto mb-5 flex items-center justify-center text-3xl" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));" aria-hidden="true">🧩</div>
       <h1 class="text-3xl font-black gradient-text mb-2">SpotApply Extension</h1>
       <p class="text-[var(--muted)] text-sm">Auto-fill job forms in your browser — Greenhouse, Lever, Ashby, Workday and more. You review every field and click Submit yourself. On LinkedIn and Indeed, those sites fill your details from your own account, so SpotApply only tracks the application there.</p>
     </div>
@@ -68,17 +90,17 @@
     <!-- Moving from the old .zip install -->
     <div class="glass rounded-3xl p-6 mb-8" style="border-color:rgba(217,119,6,.35);">
       <p class="font-bold text-[var(--ink)] text-sm">Installed the .zip version before?</p>
-      <p class="text-[var(--muted)] text-xs mt-1">Remove that copy first: open <code class="text-[var(--sage-700)]">chrome://extensions</code> and click <strong class="text-[var(--ink)]">Remove</strong> on the old SpotApply. With two copies, both would open and fill the same form. The Web Store version updates itself from now on.</p>
+      <p class="text-[var(--muted)] text-xs mt-1">Remove that copy first: open <code class="text-[var(--sage-800)]">chrome://extensions</code> and click <strong class="text-[var(--ink)]">Remove</strong> on the old SpotApply. With two copies, both would open and fill the same form. The Web Store version updates itself from now on.</p>
     </div>
 
     <!-- How to use -->
     <div class="glass rounded-3xl p-7 mb-8">
       <h2 class="font-bold text-[var(--ink)] mb-5 text-sm uppercase tracking-wider">How to use</h2>
       <div class="space-y-3 text-sm text-[var(--ink-soft)]">
-        <div class="flex items-center gap-3"><span class="text-lg">1️⃣</span> Open your SpotApply dashboard and pick a job</div>
-        <div class="flex items-center gap-3"><span class="text-lg">2️⃣</span> Click <strong class="text-[var(--sage-700)]">Auto-Fill &amp; Apply</strong>. The application form opens in a new tab and fills itself</div>
-        <div class="flex items-center gap-3"><span class="text-lg">3️⃣</span> If a form isn't filled, click the SpotApply icon in your toolbar, then <strong class="text-[var(--ink)]">⚡ Fill This Form Now</strong></div>
-        <div class="flex items-center gap-3"><span class="text-lg">4️⃣</span> Review every field, then click Submit yourself (or turn on One-click submit in Settings and your Apply &amp; Submit click does it on boards that allow it)</div>
+        <div class="flex items-start gap-3"><span class="text-lg">1️⃣</span> <span>Open your SpotApply dashboard and pick a job</span></div>
+        <div class="flex items-start gap-3"><span class="text-lg">2️⃣</span> <span>Click <strong class="text-[var(--sage-800)]">Auto-Fill &amp; Apply</strong>. The application form opens in a new tab and fills itself</span></div>
+        <div class="flex items-start gap-3"><span class="text-lg">3️⃣</span> <span>If a form isn't filled, click the SpotApply icon in your toolbar, then <strong class="text-[var(--ink)]">⚡ Fill This Form Now</strong></span></div>
+        <div class="flex items-start gap-3"><span class="text-lg">4️⃣</span> <span>Review every field, then click Submit yourself (or turn on One-click submit in Settings and your Apply &amp; Submit click does it on boards that allow it)</span></div>
       </div>
     </div>
 
@@ -87,16 +109,21 @@
       <summary class="font-bold text-[var(--ink)] text-sm cursor-pointer">Developer install (unpacked)</summary>
       <p class="text-[var(--muted)] text-xs mt-3">Only for testing a build that isn't on the Chrome Web Store yet. Remove the Web Store copy first.</p>
       <ol class="text-[var(--muted)] text-xs mt-3 space-y-2 list-decimal list-inside">
-        <li><a href="/api/extension/download" class="text-[var(--sage-700)] font-bold">Download the .zip</a> and unzip it.</li>
-        <li>Open <code class="text-[var(--sage-700)]">chrome://extensions</code> and turn on <strong class="text-[var(--ink)]">Developer mode</strong>.</li>
+        <li><a href="/api/extension/download" class="text-[var(--sage-800)] font-bold">Download the .zip</a> and unzip it.</li>
+        <li>Open <code class="text-[var(--sage-800)]">chrome://extensions</code> and turn on <strong class="text-[var(--ink)]">Developer mode</strong>.</li>
         <li>Click <strong class="text-[var(--ink)]">Load unpacked</strong> and pick the unzipped folder.</li>
       </ol>
     </details>
 
     <div class="text-center">
-      <a href="/dashboard" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] text-sm font-bold transition">← Back to Dashboard</a>
+      <a href="/dashboard" class="text-[var(--sage-800)] hover:underline text-sm font-bold transition">← Back to Dashboard</a>
     </div>
+
+    <footer class="legal mt-10 text-center text-[11px] leading-relaxed text-[var(--muted)]">
+      © {{ current_year_now() }} SpotApply LLC · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/cookies">Cookies</a>
+    </footer>
   </div>
 
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

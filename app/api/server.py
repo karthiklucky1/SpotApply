@@ -63,6 +63,11 @@ if settings.sentry_dsn:
             environment=settings.sentry_environment,
             traces_sample_rate=settings.sentry_traces_sample_rate,
             send_default_pii=False,
+            # Error reports must never carry user content: stack-frame locals and
+            # request bodies would include resume text, profile fields (work
+            # authorisation, self-identification) and email snippets.
+            include_local_variables=False,
+            max_request_body_size="never",
         )
         logging.getLogger(__name__).info("Sentry error tracking initialized (env=%s)",
                                           settings.sentry_environment)
@@ -2074,6 +2079,17 @@ def _early_stats(session, owner, reads=None) -> dict:
 templates.env.globals["chrome_web_store_url"] = settings.chrome_web_store_url
 
 
+def _renewal_terms() -> str:
+    from app.billing import renewal_terms_text
+    return renewal_terms_text()
+
+
+# Pro's automatic-renewal terms, rendered next to every subscribe button.
+templates.env.globals["renewal_terms"] = _renewal_terms
+# Footers on pages whose routes pass no context: the year the page is served.
+templates.env.globals["current_year_now"] = lambda: _current_year()
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 _ASSET_CACHE = "public, max-age=86400"
@@ -2267,12 +2283,57 @@ def pricing_page(request: Request):
 
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy_page(request: Request):
-    return templates.TemplateResponse(request=request, name="privacy.html", context={})
+    return templates.TemplateResponse(request=request, name="privacy.html",
+                                      context={"current_year": _current_year()})
 
 
 @app.get("/terms", response_class=HTMLResponse)
 def terms_page(request: Request):
-    return templates.TemplateResponse(request=request, name="terms.html", context={})
+    return templates.TemplateResponse(request=request, name="terms.html",
+                                      context={"current_year": _current_year()})
+
+
+@app.get("/refunds", response_class=HTMLResponse)
+def refunds_page(request: Request):
+    from app.billing import pro_price_usd, temporary_pro_active
+    return templates.TemplateResponse(request=request, name="refunds.html",
+                                      context={"pro_price": pro_price_usd(),
+                                               "temporary_pro": temporary_pro_active(),
+                                               "current_year": _current_year()})
+
+
+@app.get("/cookies", response_class=HTMLResponse)
+def cookies_page(request: Request):
+    return templates.TemplateResponse(request=request, name="cookies.html",
+                                      context={"current_year": _current_year()})
+
+
+# Paths a browser never navigates to: their 404s stay JSON for the code that
+# calls them (dashboard fetches, the extension, the mobile app).
+_JSON_404_PREFIXES = ("/api/", "/application/", "/run/", "/static/", "/admin/")
+
+
+def _wants_html_404(request: Request) -> bool:
+    if request.method != "GET":
+        return False
+    if request.url.path.startswith(_JSON_404_PREFIXES):
+        return False
+    return "text/html" in (request.headers.get("accept") or "")
+
+
+from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def _http_exception_page(request: Request, exc: _StarletteHTTPException):
+    """A person who follows a dead link gets a page with a way back, not
+    `{"detail":"Not Found"}`. Everything else keeps FastAPI's own response."""
+    from fastapi.exception_handlers import http_exception_handler
+    if exc.status_code == 404 and _wants_html_404(request):
+        return templates.TemplateResponse(request=request, name="404.html",
+                                          context={"current_year": _current_year()},
+                                          status_code=404)
+    return await http_exception_handler(request, exc)
 
 
 @app.post("/api/public/demo-match")
@@ -9576,7 +9637,10 @@ def submit_user_review(request: Request, payload: dict) -> dict:
         if profile and profile.first_name:
             name = profile.first_name
             
-    rating = int(payload.get("rating", 5))
+    try:
+        rating = int(payload.get("rating"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Please choose a star rating")
     content = _sanitize_review_text(str(payload.get("content", "")))
 
     if not content:
@@ -9590,7 +9654,9 @@ def submit_user_review(request: Request, payload: dict) -> dict:
         user_name=name,
         rating=rating,
         content=content,
-        is_public=True,       # Auto-publish by default
+        # Published only with the reviewer's explicit consent (an unticked
+        # checkbox in the form). It used to auto-publish with their first name.
+        is_public=payload.get("public") is True,
         is_featured=False,    # Admin can feature it later
     )
     
@@ -10484,6 +10550,7 @@ _USERPROFILE_COLUMNS = [
     ("resume_use_job_city", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("resume_title_from_jd", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("one_click_submit", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
+    ("public_profile", "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE"),
     ("how_heard_answer", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_targets", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("relocation_timeline", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
@@ -10623,6 +10690,7 @@ def get_profile(request: Request) -> dict:
         "resume_use_job_city": bool(getattr(profile, "resume_use_job_city", False)),
         "resume_title_from_jd": bool(getattr(profile, "resume_title_from_jd", False)),
         "one_click_submit": bool(getattr(profile, "one_click_submit", False)),
+        "public_profile": bool(getattr(profile, "public_profile", False)),
         "how_heard_answer": getattr(profile, "how_heard_answer", "") or "",
         "relocation_targets": getattr(profile, "relocation_targets", "") or "",
         "relocation_timeline": getattr(profile, "relocation_timeline", "") or "",
@@ -10680,6 +10748,7 @@ class ProfileUpdate(BaseModel):
     resume_use_job_city: Optional[bool] = None
     resume_title_from_jd: Optional[bool] = None
     one_click_submit: Optional[bool] = None
+    public_profile: Optional[bool] = None
     # Typed into employer forms as written: one line, trimmed, bounded.
     how_heard_answer: Optional[str] = None
     relocation_targets: Optional[str] = None
@@ -11226,6 +11295,8 @@ def recruiter_search(request: Request, body: dict) -> dict:
         candidates = session.exec(
             select(UserProfile).where(
                 UserProfile.trust_tier != "",
+                # Only people who chose to be found (Settings → Public profile).
+                UserProfile.public_profile == True,  # noqa: E712
                 UserProfile.account_type != "recruiter",
                 UserProfile.user_id != user_id_arg,
             )
@@ -11586,7 +11657,9 @@ def get_trust_profile(request: Request, recompute: bool = False) -> dict:
                            ("identity", "technical", "consistency", "activity", "completeness")
                            if k in evidence],
             "public_handle": handle,
-            "share_url": f"{base}/u/{handle}" if handle else None,
+            "public_profile": bool(getattr(profile, "public_profile", False)),
+            "share_url": (f"{base}/u/{handle}"
+                          if handle and getattr(profile, "public_profile", False) else None),
             "momentum": momentum,
             "risk_flags": _trust_risk_flags(profile, evidence),
         }
@@ -11602,7 +11675,8 @@ def _ensure_public_handle(profile, session) -> Optional[str]:
                    f"{profile.first_name}-{profile.last_name}".lower()).strip("-") or "user"
     base = base[:24]
     for _ in range(6):
-        cand = f"{base}-{secrets.token_hex(2)}"
+        # 40 random bits: a 4-hex suffix (65,536 per name) could be enumerated.
+        cand = f"{base}-{secrets.token_hex(5)}"
         exists = session.exec(
             select(UserProfile).where(UserProfile.public_handle == cand)
         ).first()
@@ -11690,7 +11764,9 @@ def public_trust_profile(handle: str, request: Request):
         profile = session.exec(
             select(UserProfile).where(UserProfile.public_handle == handle)
         ).first()
-        if not profile:
+        # A profile its owner has not made public does not exist to the world —
+        # same answer as an unknown handle, so a handle can't be probed.
+        if not profile or not bool(getattr(profile, "public_profile", False)):
             raise HTTPException(status_code=404, detail="Profile not found")
         evidence = {}
         if profile.trust_evidence:
@@ -12544,6 +12620,27 @@ def get_avatar(request: Request) -> dict:
     return {"url": None}
 
 
+def _clean_avatar(content: bytes) -> bytes:
+    """Decode an uploaded photo and re-encode it as a plain JPEG.
+
+    Proves the bytes are an image (the extension and Content-Type are the
+    client's word), keeps the visible orientation, and drops everything else a
+    camera writes — EXIF, GPS location, device serials. The dashboard happened
+    to re-encode in the browser; a direct API upload kept all of it.
+    Raises ValueError for anything that is not a usable image."""
+    import io
+    from PIL import Image, ImageOps
+    with Image.open(io.BytesIO(content)) as im:
+        if im.width * im.height > 40_000_000:          # decompression-bomb guard
+            raise ValueError("image too large")
+        im = ImageOps.exif_transpose(im)
+        im = im.convert("RGB")
+        im.thumbnail((1024, 1024))
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=88, optimize=True)
+    return out.getvalue()
+
+
 @app.post("/api/profile/avatar")
 async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
     """Upload a profile photo and store in Supabase storage (avatars bucket)."""
@@ -12557,9 +12654,16 @@ async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
     content = await file.read()
     if len(content) > 3 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large — max 3 MB")
+    try:
+        content = _clean_avatar(content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="That file isn't an image we can use. Try a JPG or PNG.")
+    # Always stored as a JPEG now; the older extensions are removed below.
+    stale = [e for e in ("jpeg", "png", "webp", "gif") if e != "jpg"]
+    ext = "jpg"
 
     if settings.use_supabase and uid and uid != "local":
-        mime = file.content_type or "image/jpeg"
+        mime = "image/jpeg"
 
         def _upload() -> dict:
             # Storage HTTP round-trips — threadpool, not the event loop.
@@ -12576,12 +12680,16 @@ async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
                     except Exception:
                         pass
                     sb.storage.from_("avatars").upload(path, content, {"content-type": mime})
+                try:
+                    sb.storage.from_("avatars").remove([f"{uid}/avatar.{e}" for e in stale])
+                except Exception:
+                    pass
                 signed = sb.storage.from_("avatars").create_signed_url(path, 3600)
                 url = (signed or {}).get("signedURL") or (signed or {}).get("signedUrl")
                 return {"url": url}
             except Exception as exc:
                 log.exception("Avatar upload failed: %s", exc)
-                raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+                raise HTTPException(status_code=500, detail="Upload failed — please try again.")
 
         import anyio
         return await anyio.to_thread.run_sync(_upload)
@@ -13398,6 +13506,21 @@ def delete_account(request: Request):
                 "message": ("Account deletion is temporarily unavailable — nothing was "
                             "deleted. Please try again in a few minutes, or email "
                             "privacy@spotapply.ai."),
+            })
+
+    # Billing stops FIRST. Purging the subscription row while Stripe keeps the
+    # subscription would go on charging the card of an account that no longer
+    # exists, with no portal left to cancel from — so if Stripe cannot confirm
+    # the cancellation, nothing is deleted.
+    if uid != "local":
+        from app.billing import cancel_for_account_deletion
+        if cancel_for_account_deletion(uid) == "failed":
+            return JSONResponse(status_code=503, content={
+                "success": False, "deleted": False,
+                "message": ("We couldn't cancel your Pro subscription just now, so nothing "
+                            "was deleted and you have not been charged anything extra. "
+                            "Please try again in a few minutes, or email "
+                            "support@spotapply.ai and we will close it for you."),
             })
 
     deleted: dict[str, int] = {}

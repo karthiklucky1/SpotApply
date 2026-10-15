@@ -9,8 +9,6 @@
          rendered as a bare URL with no card, and with no canonical the
          trailing-slash and query-string variants of one page can split
          indexing between them. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="canonical" href="https://app.spotapply.ai/pricing">
     <meta property="og:title" content="Pricing — SpotApply">
     <meta property="og:description" content="One plan. Start free, and see exactly what Pro's daily limits are before you pay.">
@@ -24,7 +22,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/static/tailwind-public.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
     <style>
         :root {
             --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
@@ -35,7 +33,7 @@
         .accent-text { background: linear-gradient(135deg, var(--sage) 0%, var(--sage-600) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         .glass { background: rgba(252,250,245,0.92); backdrop-filter: blur(12px); border: 1px solid var(--border); }
         .btn-primary { background: var(--sage); color: white; font-weight: 800; transition: all 0.2s ease; }
-        .btn-primary:hover { background: var(--sage-600); transform: translateY(-1px); }
+        .btn-primary:hover { background: #0F6E66; transform: translateY(-1px); }
         .plan-card { background: var(--surface); border: 1px solid var(--border); border-radius: 24px; transition: border-color 0.2s; box-shadow: 0 1px 3px rgba(46,42,36,0.04), 0 4px 16px rgba(46,42,36,0.06); }
         .plan-card.featured { background: var(--sage-tint); border-color: rgba(47,180,166,0.35); }
         .check { color: var(--sage); }
@@ -73,7 +71,7 @@
                  page cannot advertise a price the checkout route is refusing.
                  No end date: inventing one is a promise nobody has made. -->
             <div class="max-w-2xl mx-auto mb-5 rounded-2xl p-4" style="background:var(--sage-tint);border:1px solid var(--sage);">
-                <p class="text-base font-black" style="color:var(--sage);">{{ temporary_pro_notice }}</p>
+                <p class="text-base font-black" style="color:#005A93;">{{ temporary_pro_notice }}</p>
                 <p class="text-sm mt-1" style="color:var(--ink-soft);">Payments are on hold. Every account is on Pro
                 limits right now — there is nothing to buy, nothing to cancel, and nothing
                 will be charged or started automatically when this ends.</p>
@@ -107,9 +105,8 @@
 
             <!-- Pro — featured -->
             <div class="plan-card featured p-7 flex flex-col relative">
-                <div class="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-black text-white" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">Most popular</div>
                 <div class="mb-6">
-                    <div class="text-xs font-black uppercase tracking-widest mb-3" style="color:var(--sage-700);">Pro</div>
+                    <div class="text-xs font-black uppercase tracking-widest mb-3" style="color:#0F6E66;">Pro</div>
                     <div class="text-5xl font-black" style="color:var(--ink);">${{ pro_price }}</div>
                     <div class="text-sm mt-1" style="color:var(--muted);">per month · billed monthly · cancel any time</div>
                 </div>
@@ -120,16 +117,15 @@
                      auto-fill is genuinely unlimited. Change both places together. -->
                 <ul class="space-y-3 text-sm flex-1 mb-8">
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>35</strong> tailored resumes &amp; cover letters / day</li>
-                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>Unlimited</strong> auto-fills — you always click Submit</li>
+                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg><strong>Unlimited</strong> auto-fills — you approve every submit</li>
                     <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Everything in Free, with higher daily caps — up to 35 qualified jobs a day on your board</li>
-                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Priority matching queue</li>
-                    <li class="flex items-center gap-2"><svg class="w-4 h-4 check shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>Full analytics &amp; funnel insights</li>
                 </ul>
                 {% if temporary_pro %}
                 <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Sign up — these features are free right now</a>
                 <p class="text-xs text-center mt-2" style="color:var(--muted);">No card, no charge.</p>
                 {% else %}
                 <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Start Pro — ${{ pro_price }}/mo</a>
+                <p class="text-xs text-center mt-2 leading-relaxed" style="color:var(--muted);">{{ renewal_terms() }} <a href="/refunds" class="underline" style="color:var(--muted);">Refund Policy</a></p>
                 {% endif %}
             </div>
 
@@ -175,14 +171,18 @@
 
 <footer class="py-10 px-4" style="border-top:1px solid var(--border);">
     <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-        <span class="font-black text-sm accent-text">© {{ current_year }} SpotApply LLC</span>
-        <div class="flex items-center gap-6 text-sm" style="color:var(--muted);">
+        <span class="font-bold text-sm" style="color:var(--ink-soft);">© {{ current_year }} SpotApply LLC · Cincinnati, Ohio</span>
+        <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm" style="color:var(--muted);">
             <a href="/" class="transition-colors hover:underline" style="color:var(--muted);">Home</a>
             <a href="/privacy" class="transition-colors hover:underline" style="color:var(--muted);">Privacy</a>
             <a href="/terms" class="transition-colors hover:underline" style="color:var(--muted);">Terms</a>
+            <a href="/refunds" class="transition-colors hover:underline" style="color:var(--muted);">Refunds</a>
+            <a href="/cookies" class="transition-colors hover:underline" style="color:var(--muted);">Cookies</a>
+            <a href="mailto:support@spotapply.ai" class="transition-colors hover:underline" style="color:var(--muted);">support@spotapply.ai</a>
         </div>
     </div>
 </footer>
 
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

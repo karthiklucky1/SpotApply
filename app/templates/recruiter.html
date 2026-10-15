@@ -4,14 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SpotApply for Recruiters — Verified Talent</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <meta name="description" content="SpotApply's recruiter portal: paste a job description to search candidates whose profiles are verified with evidence, then request an introduction that the candidate chooses whether to accept.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
   <style>
     :root {
         --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
         --ink: #0C2A3E; --ink-soft: #21455C; --muted: #6E675C; --border: #DCEAF6;
-        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-800: #0F6E66; --sage-tint: #E0F2FE;
     }
     body {
         font-family: 'Outfit', sans-serif;
@@ -66,13 +68,25 @@
     .t-ink { color: var(--ink); }
     .t-soft { color: var(--ink-soft); }
     .t-muted { color: var(--muted); }
-    .t-sage { color: var(--sage-700); }
+    .t-sage { color: var(--sage-800); }
     .hov-sage:hover { border-color: var(--sage); }
-    .chip-sage { background: var(--sage-tint); color: var(--sage-700); border-color: rgba(47,180,166,0.35); }
+    .chip-sage { background: var(--sage-tint); color: var(--sage-800); border-color: rgba(47,180,166,0.35); }
+    .legal a { color: inherit; text-decoration: underline; }
+    a:focus-visible, button:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; }
   </style>
+  <!-- Compiled Tailwind (npm run build:css:public), AFTER the page's own styles:
+       the Play CDN it replaces appended its sheet to the end of <head>, so
+       utilities like border-amber-300 kept winning over .glass. -->
+  <link rel="stylesheet" href="/static/tailwind-public.css">
 </head>
 <body class="min-h-screen pb-12">
   <div class="max-w-4xl mx-auto px-5 py-10 relative z-10">
+    <a href="/" aria-label="SpotApply home" class="inline-flex items-center gap-2 mb-6">
+      <span class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="font-black text-base t-ink">SpotApply</span>
+    </a>
     <div class="flex items-center justify-between mb-2">
       <h1 class="text-3xl font-black gradient-text">SpotApply for Recruiters</h1>
       <a href="/messages" class="text-sm font-bold text-emerald-700 hover:text-emerald-800 transition flex items-center gap-1.5 px-4 py-2 rounded-full border border-emerald-200 bg-emerald-50 hover:bg-emerald-100">💬 Messages</a>
@@ -91,26 +105,30 @@
           <span id="verify-badge" class="text-[11px] font-black px-3.5 py-1 rounded-full transition-all duration-300" style="background:var(--surface-2);color:var(--muted);border:1px solid var(--border);">Unverified</span>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <input id="r-name" class="inp" placeholder="Full name" />
-          <input id="r-title" class="inp" placeholder="Title (e.g. Senior Recruiter)" />
-          <input id="r-email" class="inp" placeholder="Work email (corporate)" />
-          <input id="r-company" class="inp" placeholder="Company name" />
-          <input id="r-domain" class="inp" placeholder="Company domain (acme.com)" />
-          <input id="r-spec" class="inp" placeholder="Specialties (Python, ML, ...)" />
+          <input id="r-name" class="inp" placeholder="Full name" aria-label="Full name" autocomplete="name" />
+          <input id="r-title" class="inp" placeholder="Title (e.g. Senior Recruiter)" aria-label="Job title" autocomplete="organization-title" />
+          <input id="r-email" type="email" class="inp" placeholder="Work email (corporate)" aria-label="Work email" autocomplete="email" />
+          <input id="r-company" class="inp" placeholder="Company name" aria-label="Company name" autocomplete="organization" />
+          <input id="r-domain" class="inp" placeholder="Company domain (acme.com)" aria-label="Company domain" />
+          <input id="r-spec" class="inp" placeholder="Specialties (Python, ML, ...)" aria-label="Specialties" />
         </div>
-        <button onclick="registerRecruiter()" class="mt-4 text-xs font-black uppercase tracking-wider text-white rounded-xl px-6 py-3 transition hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg hover:shadow-teal-500/20" style="background:var(--sage-700);">Save & verify</button>
-        <p id="verify-notes" class="text-[11px] t-muted mt-3"></p>
+        <button type="button" onclick="registerRecruiter()" class="mt-4 text-xs font-black uppercase tracking-wider text-white rounded-xl px-6 py-3 transition hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg hover:shadow-teal-500/20" style="background:var(--sage-700);">Save & verify</button>
+        <p id="verify-notes" class="text-[11px] t-muted mt-3" aria-live="polite"></p>
       </div>
 
       <!-- Reverse search -->
       <div class="glass p-6">
         <h2 class="text-xs font-black uppercase tracking-widest t-sage mb-4">🔎 Reverse Search — paste a job description</h2>
-        <textarea id="jd" rows="5" class="inp" placeholder="Paste the role / job description here..."></textarea>
-        <button onclick="searchCandidates()" class="mt-4 text-xs font-black uppercase tracking-wider text-white rounded-xl px-6 py-3 transition hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg hover:shadow-teal-500/20" style="background:var(--sage-700);">Find verified candidates</button>
+        <textarea id="jd" rows="5" class="inp" placeholder="Paste the role / job description here..." aria-label="Job description"></textarea>
+        <button type="button" onclick="searchCandidates()" class="mt-4 text-xs font-black uppercase tracking-wider text-white rounded-xl px-6 py-3 transition hover:scale-[1.02] active:scale-[0.98] shadow-md hover:shadow-lg hover:shadow-teal-500/20" style="background:var(--sage-700);">Find verified candidates</button>
       </div>
 
-      <div id="results" class="space-y-4"></div>
+      <div id="results" class="space-y-4" aria-live="polite"></div>
     </div>
+
+    <footer class="legal mt-12 text-center text-[11px] leading-relaxed t-muted">
+      © {{ current_year_now() }} SpotApply LLC · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/cookies">Cookies</a>
+    </footer>
   </div>
 
 <script>
@@ -161,7 +179,7 @@
           <div class="text-[11px] t-muted mt-2 font-mono">${esc((c.skills||[]).join(' · '))}</div>
         </div>
         <div class="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          ${c.share_url ? `<a href="${esc(c.share_url)}" target="_blank" class="text-xs font-bold text-emerald-700 hover:text-emerald-800 hover:underline transition">View Profile ↗</a>` : ''}
+          ${c.share_url ? `<a href="${esc(c.share_url)}" target="_blank" rel="noopener" class="text-xs font-bold text-emerald-700 hover:text-emerald-800 hover:underline transition">View Profile ↗</a>` : ''}
           <button onclick='requestIntro("${esc(c.candidate_user_id)}", this)' class="text-xs font-bold text-white rounded-xl px-4 py-2 hover:scale-[1.02] active:scale-[0.98] transition shadow" style="background:var(--sage-700);">Request Intro</button>
         </div>
       </div>`).join('');
@@ -174,5 +192,6 @@
     else { btn.textContent = 'Failed'; btn.disabled = false; }
   }
 </script>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

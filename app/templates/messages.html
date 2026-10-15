@@ -4,14 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Messages · SpotApply</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <meta name="description" content="Your SpotApply messages: conversations with recruiters after an introduction has been accepted.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
   <style>
     :root {
         --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
         --ink: #0C2A3E; --ink-soft: #21455C; --muted: #6E675C; --border: #DCEAF6;
-        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-800: #0F6E66; --sage-tint: #E0F2FE;
     }
     body {
         font-family: 'Outfit', sans-serif;
@@ -118,10 +120,21 @@
     ::-webkit-scrollbar-thumb:hover {
         background: rgba(46, 42, 36, 0.25);
     }
+    a:focus-visible, button:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; }
+    .star-btn { background: none; border: 0; padding: 0 2px; line-height: 1; cursor: pointer; color: #d97706; border-radius: 4px; }
   </style>
+  <!-- Compiled Tailwind (npm run build:css:public), AFTER the page's own styles,
+       where the Play CDN it replaces put its sheet. -->
+  <link rel="stylesheet" href="/static/tailwind-public.css">
 </head>
 <body class="min-h-screen">
   <div class="max-w-5xl mx-auto px-5 py-10 relative z-10">
+    <a href="/" aria-label="SpotApply home" class="inline-flex items-center gap-2 mb-6">
+      <span class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="font-black text-base t-ink">SpotApply</span>
+    </a>
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-3xl font-black gradient-text">Messages</h1>
       <a href="/dashboard" class="text-xs font-bold t-muted hov-ink transition flex items-center gap-1.5 px-4 py-2 rounded-full border" style="border-color:var(--border);background:var(--surface);">✕ Back to Dashboard</a>
@@ -145,13 +158,13 @@
         <div id="thread" class="hidden flex-1 flex flex-col overflow-y-auto mb-4 pr-1" style="max-height:420px;"></div>
         
         <div id="composer" class="hidden flex gap-3 mt-auto">
-          <input id="msg-input" class="inp" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMsg()" />
-          <button onclick="sendMsg()" class="text-xs font-black uppercase tracking-wider text-white rounded-xl px-5 transition hover:scale-[1.02] active:scale-[0.98] shadow-md" style="background:var(--sage-700);">Send</button>
+          <input id="msg-input" class="inp" placeholder="Type a message..." aria-label="Message" onkeydown="if(event.key==='Enter')sendMsg()" />
+          <button type="button" onclick="sendMsg()" class="text-xs font-black uppercase tracking-wider text-white rounded-xl px-5 transition hover:scale-[1.02] active:scale-[0.98] shadow-md" style="background:var(--sage-700);">Send</button>
         </div>
 
         <div id="rate-row" class="hidden mt-3 pt-3 border-t text-xs t-muted flex items-center gap-2" style="border-color:var(--border);">
-          <span>Rate this contact:</span>
-          <span id="stars" class="flex gap-1 text-base"></span>
+          <span id="rate-label">Rate this contact:</span>
+          <span id="stars" class="flex gap-1 text-base" role="group" aria-labelledby="rate-label"></span>
         </div>
       </div>
     </div>
@@ -173,19 +186,19 @@
     const list = document.getElementById('convo-list');
     if (!d.conversations.length) { list.innerHTML = '<div class="glass p-5 t-muted text-sm text-center">No accepted introductions yet.</div>'; return; }
     list.innerHTML = d.conversations.map(c => `
-      <div class="convo-card p-4 cursor-pointer" id="convo-${c.intro_id}" onclick="openThread(${c.intro_id})">
-        <div class="font-extrabold t-ink text-sm flex items-center gap-1.5">👤 ${String(c.with==null?'':c.with).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}</div>
-        <div class="text-[11px] t-muted truncate mt-1 font-mono">${(c.job_context||'').replace(/</g,'&lt;')}</div>
-      </div>`).join('');
+      <button type="button" class="convo-card p-4 cursor-pointer block w-full text-left" id="convo-${c.intro_id}" onclick="openThread(${c.intro_id})">
+        <span class="font-extrabold t-ink text-sm flex items-center gap-1.5"><span aria-hidden="true">👤</span> ${String(c.with==null?'':c.with).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}</span>
+        <span class="block text-[11px] t-muted truncate mt-1 font-mono">${(c.job_context||'').replace(/</g,'&lt;')}</span>
+      </button>`).join('');
   }
 
   async function openThread(introId) {
     currentIntro = introId;
     
     // Manage active state classes
-    if (activeCard) activeCard.classList.remove('active');
+    if (activeCard) { activeCard.classList.remove('active'); activeCard.removeAttribute('aria-current'); }
     activeCard = document.getElementById(`convo-${introId}`);
-    if (activeCard) activeCard.classList.add('active');
+    if (activeCard) { activeCard.classList.add('active'); activeCard.setAttribute('aria-current', 'true'); }
 
     document.getElementById('thread-empty').classList.add('hidden');
     document.getElementById('thread').classList.remove('hidden');
@@ -215,7 +228,7 @@
 
   function renderStars() {
     document.getElementById('stars').innerHTML = [1,2,3,4,5].map(n =>
-      `<span style="cursor:pointer;color:#d97706;" onclick="rate(${n})" class="hover:scale-125 transition inline-block">★</span>`).join('');
+      `<button type="button" class="star-btn hover:scale-125 transition inline-block" onclick="rate(${n})" aria-label="Rate ${n} out of 5">★</button>`).join('');
   }
 
   async function rate(stars) {
@@ -225,5 +238,6 @@
 
   setInterval(() => { if (currentIntro) refreshThread(); }, 8000);
 </script>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

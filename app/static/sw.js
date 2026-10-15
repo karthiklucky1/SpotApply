@@ -1,5 +1,8 @@
 // SpotApply Service Worker — offline shell + asset cache
-const CACHE = 'spotapply-v1';
+// v2 (2026-10): cache our own static files only — never an HTML page, so a
+// signed-in page (dashboard, application views) can never outlive sign-out in
+// the browser's cache. Bumping the name deletes the v1 cache on activate.
+const CACHE = 'spotapply-v2';
 const SHELL = ['/login', '/'];
 
 self.addEventListener('install', e => {
@@ -26,8 +29,8 @@ self.addEventListener('fetch', e => {
   e.respondWith(
     fetch(e.request)
       .then(res => {
-        // Cache HTML pages and static assets
-        if (res.ok && (e.request.destination === 'document' || e.request.url.includes('/static/'))) {
+        // Cache our static assets only (styles, scripts, fonts, icons)
+        if (res.ok && new URL(e.request.url).pathname.startsWith('/static/')) {
           const clone = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }

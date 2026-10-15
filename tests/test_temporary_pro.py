@@ -323,15 +323,23 @@ def test_the_public_pages_are_rendered_from_the_server_flag():
 
 
 def test_the_dashboard_closes_its_purchase_path_before_calling_stripe():
+    """Every "Plans & Pricing" entry opens the plans panel (price, renewal terms,
+    Upgrade, Manage or cancel) — never a direct checkout POST — and rendering
+    that panel removes the buy button while Pro is free for everyone."""
     from pathlib import Path
     dash = Path(__file__).resolve().parents[1] / "app" / "templates" / "dashboard.html"
     html = dash.read_text()
-    flow = html[html.index("async function openPricingFlow"):]
+    flow = html[html.index("function openPricingFlow"):]
     flow = flow[:flow.index("function openSettings")]
-    # The temporary-Pro test must come before the checkout POST, or every click
-    # fires a request that 503s.
-    assert "temporary_pro" in flow
-    assert flow.index("temporary_pro") < flow.index("/api/billing/checkout")
+    assert "/api/billing/checkout" not in flow and "openSettings('pricing')" in flow
+    doc = html[html.index("function showSettingsDoc"):]
+    doc = doc[:doc.index("function enableNotifications")]
+    assert "applyTemporaryProToPlans()" in doc and "openComingSoonModal" not in doc
+    gate = html[html.index("async function applyTemporaryProToPlans"):]
+    gate = gate[:gate.index("function openPricingFlow")]
+    assert "temp.active" in gate and "buy.remove()" in gate
+    # The renewal terms sit under the Upgrade button.
+    assert "{{ renewal_terms() }}" in html[html.index('id="pro-checkout-btn"'):][:600]
 
 
 def test_the_dashboard_plan_card_matches_plan_limits():

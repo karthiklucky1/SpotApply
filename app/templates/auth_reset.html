@@ -4,14 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotApply — Reset Password</title>
+    <meta name="description" content="Choose a new password for your SpotApply account using the reset link from your email.">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
     <style>
         :root {
             --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
             --ink: #0C2A3E; --ink-soft: #21455C; --muted: #5B7186; --border: #DCEAF6;
-            --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+            --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-800: #0F6E66; --sage-tint: #E0F2FE;
         }
         * { box-sizing: border-box; }
         body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; }
@@ -25,34 +27,45 @@
         .hp-input { width: 100%; background: var(--surface-2); border: 1.5px solid var(--border); border-radius: 12px; padding: 12px 16px; font-size: 14px; color: var(--ink); font-family: 'Outfit', sans-serif; outline: none; transition: border-color 0.15s; }
         .hp-input:focus { border-color: var(--sage); }
         .hp-btn-primary { width: 100%; background: var(--sage); color: white; font-weight: 700; font-size: 14px; padding: 13px; border-radius: 12px; border: none; cursor: pointer; transition: background 0.15s; font-family: 'Outfit', sans-serif; }
-        .hp-btn-primary:hover { background: var(--sage-600); }
+        .hp-btn-primary:hover { background: var(--sage-800); }
         .hp-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
         label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
         #msg { display: none; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+        .text-link { color: var(--sage-800); font-weight: 700; }
+        .brand-link { display: block; width: 52px; margin: 0 auto 12px; border-radius: 16px; }
+        .legal a { color: var(--sage-800); text-decoration: underline; }
+        /* Keyboard focus: a solid ring, not a border colour change alone. */
+        .hp-input:focus-visible,
+        .hp-btn-primary:focus-visible,
+        .brand-link:focus-visible,
+        .text-link:focus-visible,
+        .legal a:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; }
     </style>
 </head>
 <body>
 <div style="width:100%;max-width:420px;position:relative;z-index:1;">
     <div style="text-align:center;margin-bottom:28px;">
-        <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,var(--sage),var(--sage-700));margin:0 auto 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(47,180,166,0.3);">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </div>
+        <a href="/" class="brand-link" aria-label="SpotApply home">
+            <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,var(--sage),var(--sage-700));display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(47,180,166,0.3);">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+        </a>
         <h1 style="font-size:24px;font-weight:800;color:var(--ink);margin:0;">Choose a new password</h1>
         <p style="font-size:13px;color:var(--muted);margin:4px 0 0;">Enter a new password for your account.</p>
     </div>
 
     <div class="hp-card" style="padding:28px;">
-        <div id="msg"></div>
+        <div id="msg" role="status" aria-live="polite"></div>
 
         <!-- Shown only once we have a valid recovery session -->
-        <form id="reset-form" onsubmit="handleReset(event)" style="display:none;flex-direction:column;gap:14px;">
+        <form id="reset-form" onsubmit="event.preventDefault(); if (window.handleReset) window.handleReset(event)" style="display:none;flex-direction:column;gap:14px;">
             <div>
-                <label>New password</label>
-                <input type="password" id="new-password" required placeholder="Min 8 characters" class="hp-input" minlength="8" />
+                <label for="new-password">New password</label>
+                <input type="password" id="new-password" required autocomplete="new-password" placeholder="Min 8 characters" class="hp-input" minlength="8" />
             </div>
             <div>
-                <label>Confirm password</label>
-                <input type="password" id="confirm-password" required placeholder="Re-enter password" class="hp-input" minlength="8" />
+                <label for="confirm-password">Confirm password</label>
+                <input type="password" id="confirm-password" required autocomplete="new-password" placeholder="Re-enter password" class="hp-input" minlength="8" />
             </div>
             <button type="submit" id="btn-reset" class="hp-btn-primary" style="margin-top:4px;">Update password</button>
         </form>
@@ -64,12 +77,15 @@
     </div>
 
     <p style="text-align:center;font-size:12px;color:var(--muted);margin-top:18px;">
-        <a href="/login" style="color:var(--sage-700);text-decoration:none;font-weight:700;">← Back to sign in</a>
+        <a href="/login" class="text-link" style="text-decoration:none;">← Back to sign in</a>
     </p>
+    <footer class="legal" style="text-align:center;font-size:11px;line-height:1.6;color:var(--muted);margin-top:14px;">
+        © {{ current_year_now() }} SpotApply LLC · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/cookies">Cookies</a>
+    </footer>
 </div>
 
 <script type="module">
-    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+    import { createClient } from '/static/vendor/supabase-js-2.117.2.esm.js'
     const sb = createClient('{{ supabase_url }}', '{{ supabase_anon_key }}')
 
     function showMsg(text, type = 'error') {
@@ -79,7 +95,7 @@
         if (type === 'error') {
             el.style.cssText = 'display:block;background:#FEE2E2;color:#991B1B;border:1px solid #FECACA;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;'
         } else {
-            el.style.cssText = 'display:block;background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(47,180,166,0.3);padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;'
+            el.style.cssText = 'display:block;background:var(--sage-tint);color:var(--sage-800);border:1px solid rgba(47,180,166,0.3);padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;'
         }
     }
 
@@ -104,7 +120,7 @@
             document.getElementById('reset-form').style.display = 'flex'
         } else {
             document.getElementById('reset-pending').innerHTML =
-                'This reset link is invalid or has expired.<br><a href="/login" style="color:var(--sage-700);font-weight:700;">Request a new one</a>'
+                'This reset link is invalid or has expired.<br><a href="/login" class="text-link">Request a new one</a>'
         }
     }, 2500)
 
@@ -125,5 +141,6 @@
         setTimeout(() => { window.location.href = '/login' }, 1500)
     }
 </script>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

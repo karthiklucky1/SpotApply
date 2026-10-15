@@ -1,0 +1,45 @@
+{% extends "_public_base.html" %}
+{% block title %}Refund Policy — SpotApply{% endblock %}
+{% block description %}How SpotApply billing, cancellation and refunds work: Pro is billed monthly, renews until you cancel, and can be cancelled online at any time.{% endblock %}
+{% block canonical %}<link rel="canonical" href="https://app.spotapply.ai/refunds">{% endblock %}
+{% block content %}
+<div class="mb-10">
+    <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Refund Policy</h1>
+    <p class="text-sm" style="color:var(--muted);">Last updated: October 2026</p>
+</div>
+
+<div class="prose-dark space-y-2">
+    {% if temporary_pro %}
+    <p class="rounded-xl px-4 py-3" style="background:var(--sage-tint);border:1px solid var(--border);"><strong>Right now nothing is charged.</strong> Pro features are temporarily available to everyone at no cost and we are not taking payments. You are not enrolled in a paid plan when this ends; you would have to choose Pro yourself.</p>
+    {% endif %}
+
+    <p>This policy explains how paying for SpotApply works, how to cancel, and when we give money back. It is part of our <a href="/terms">Terms of Service</a>. The service is provided by SpotApply LLC, an Ohio limited liability company.</p>
+
+    <h2>1. What you pay</h2>
+    <ul>
+        <li><strong>Free plan:</strong> $0. No card is needed and nothing is ever charged.</li>
+        <li><strong>Pro plan:</strong> ${{ pro_price }} per month, charged in advance at the start of each monthly period through our payment processor, Stripe. Applicable sales tax, if any, is shown before you pay.</li>
+        <li>There are no setup fees, no per-application fees and no other charges. The price on the <a href="/pricing">Pricing page</a> is the full price.</li>
+    </ul>
+
+    <h2>2. Automatic renewal</h2>
+    <p>Pro is a subscription. <strong>It renews automatically every month and charges the same card until you cancel.</strong> We show these terms next to the subscribe button and on the payment page before you pay. Every charge and invoice is listed on your billing page (see below).</p>
+
+    <h2>3. How to cancel</h2>
+    <p>You can cancel online at any time, without contacting us: open your dashboard, choose <strong>Plans &amp; Pricing</strong>, then <strong>Manage or cancel subscription</strong>. This opens Stripe's billing page, where cancelling takes one click.</p>
+    <p>When you cancel, you keep Pro until the end of the month you already paid for and you are not charged again. After that your account returns to the Free plan; your jobs, documents and history are kept.</p>
+
+    <h2>4. When we refund</h2>
+    <ul>
+        <li><strong>Charges made in error.</strong> If you were charged twice, charged after you cancelled, or charged a different amount from the price shown, we refund that charge in full.</li>
+        <li><strong>Your legal rights.</strong> Where the law where you live gives you a right to cancel and get your money back — for example the 14-day cooling-off period for consumers in the European Union, the EEA and the United Kingdom — we honour it.</li>
+        <li><strong>Part-used months.</strong> Apart from the cases above, we do not refund the unused part of a month after you cancel; instead you keep Pro until that month ends. If something went wrong for you, write to us anyway — we read every request.</li>
+    </ul>
+
+    <h2>5. How to ask for a refund</h2>
+    <p>Email <a href="mailto:support@spotapply.ai">support@spotapply.ai</a> from the email address on your account, with the date and amount of the charge. We reply within 5 business days. Approved refunds go back to the card or account you paid with; your bank usually shows them within 5–10 business days.</p>
+
+    <h2>6. Contact</h2>
+    <p>SpotApply LLC, Cincinnati, Ohio, United States · <a href="mailto:support@spotapply.ai">support@spotapply.ai</a></p>
+</div>
+{% endblock %}

@@ -8,8 +8,7 @@
          rendered as a bare URL with no card, and with no canonical the
          trailing-slash and query-string variants of one page can split
          indexing between them. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <meta name="description" content="What SpotApply collects, how it is used, who processes it, and how to download or delete it.">
     <link rel="canonical" href="https://app.spotapply.ai/privacy">
     <meta property="og:title" content="Privacy Policy — SpotApply">
     <meta property="og:description" content="What SpotApply collects, how it is used, who processes it, and how to delete it.">
@@ -23,7 +22,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/static/tailwind-public.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
     <style>
         :root {
             --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
@@ -37,7 +36,7 @@
         .prose-dark p, .prose-dark li { color: var(--ink-soft); line-height: 1.75; font-size: 0.9375rem; }
         .prose-dark ul { list-style: disc; padding-left: 1.5rem; margin-top: 0.5rem; }
         .prose-dark li { margin-bottom: 0.35rem; }
-        .prose-dark a { color: var(--sage-700); text-decoration: underline; }
+        .prose-dark a { color: #0F6E66; text-decoration: underline; }
         .prose-dark strong { color: var(--ink); }
     </style>
 </head>
@@ -87,11 +86,15 @@
                     the answer depends on something we do not hold, the product asks you to
                     confirm rather than answering for you. You can clear any of these fields
                     from your profile at any time.</li>
-                <li><strong>Usage data:</strong> API request logs, pipeline run timestamps, and error events used for debugging and improving the service.</li>
+                <li><strong>Usage data and security logs:</strong> API request logs, pipeline run timestamps and error events used for debugging and improving the service. When a request is refused — for example a failed sign-in or too many requests — our servers also log the IP address and browser type to protect accounts from abuse; these logs are kept by our hosting provider for a limited period.</li>
                 <li><strong>Activity data:</strong> the time of your last meaningful action in the app (for example uploading a resume, opening or tailoring a job, or pressing Resume). Background polling by an open tab does not count. We use it only to decide whether to keep running your automatic job search: after a period with no activity it pauses, and you can resume it at any time.</li>
-                <li><strong>Product analytics:</strong> whether you reached steps such as signing up, uploading a resume or downloading a document, recorded under a one-way coded identifier instead of your name, email or user ID. We use these counts in aggregate to see where people get stuck. They contain no resume text, job text or work-authorisation data.</li>
-                <li><strong>Email content (only if you turn on Email Sync):</strong> when you enable Email Sync in the browser extension, it reads job-related messages from the webmail page you have open and sends the sender, subject, date and message body to SpotApply. We use them to detect employer replies, rejections and interview invitations, and to add applications you made outside SpotApply. Message bodies we cannot match to a known application are stored with that application record. Email Sync is off unless you enable it, and turning it off stops any further reading.</li>
-                <li><strong>Your LinkedIn profile (only if you import it):</strong> on your own LinkedIn profile page, the browser extension shows an Import button. When you click it, the extension reads the profile text already shown in that tab and sends it to SpotApply, where we add your work history, education and skills to your profile. You can paste the text or upload LinkedIn's PDF export instead. The extension never logs in to LinkedIn, never visits other people's profiles and reads nothing until you click Import.</li>
+                <li><strong>Product analytics:</strong> whether you reached steps such as signing up or uploading a resume, recorded under a one-way coded identifier instead of your name or email. A few operational records (for example that a document was downloaded, that your profile was completed, or why a job was or was not placed on your board) are stored with your account ID so we can investigate problems. None of them contains resume text, job text or work-authorisation data, and we use them only in aggregate or to fix your account.</li>
+                <li><strong>Job emails (only when you click Sync Job Emails):</strong> on Gmail or Outlook in your browser, the SpotApply extension shows a "Sync Job Emails" button. Nothing is read until you click it. When you do, it reads the messages listed in your inbox — sender, subject, date and the short preview text — and sends job-related ones to SpotApply. We use them to detect employer replies, rejections and interview invitations and to add applications you made outside SpotApply; a message we cannot match to an application is saved as a new application record with that preview. We never connect to your mailbox account and never read full messages.</li>
+                <li><strong>Your LinkedIn profile (only if you import it):</strong> on a LinkedIn profile page the extension shows an Import button, meant for your own profile. When you click it, the extension reads the profile text already shown in that tab and sends it to SpotApply, where we add the work history, education and skills to your profile. You can paste the text or upload LinkedIn's PDF export instead. The extension never logs in to LinkedIn, never opens or visits profiles itself and reads nothing until you click Import.</li>
+                <li><strong>Voluntary self-identification (only if you enter it):</strong> gender, race/ethnicity, veteran status and disability status, which some employers ask about. Each field defaults to "Decline to self-identify". We use what you save only to answer the same voluntary questions on application forms you fill with SpotApply, never for matching or scoring, and you can clear it at any time.</li>
+                <li><strong>Public profile (only if you turn it on):</strong> your profile is private by default. If you switch on "Public profile", a shareable page and our recruiter search show your name, title, city, skills, availability, work authorisation, whether you need sponsorship, salary range and LinkedIn/GitHub links — never your email or phone. Switch it off and the page and search listing disappear.</li>
+                <li><strong>Reviews:</strong> if you write a review, we store it. It is shown publicly, with your first name only, if you tick the box that allows it.</li>
+                <li><strong>On your device:</strong> the browser extension keeps your sign-in token, the application you are filling and your extension settings in Chrome's extension storage on your computer. See our <a href="/cookies">Cookie Policy</a> for what the website stores in your browser.</li>
             </ul>
 
             <h2>2. How we use your data</h2>
@@ -136,7 +139,10 @@
             <p>We retain your data for as long as your account is active. If you delete your account, all data is permanently removed within 30 days.</p>
 
             <h2>8. Cookies</h2>
-            <p>SpotApply does not use tracking cookies. Authentication tokens are stored in your browser's localStorage and in a strictly-necessary session cookie (<code>sb_token</code>) — both are used only to maintain your session, never for tracking or advertising.</p>
+            <p>SpotApply uses no tracking, analytics or advertising cookies. We use one strictly necessary cookie (<code>sb_token</code>) and browser storage to keep you signed in and remember your settings, and our pages load no third-party trackers, fonts or scripts. The full list is in our <a href="/cookies">Cookie Policy</a>.</p>
+
+            <h2 id="children">8a. Children</h2>
+            <p>SpotApply is for adults looking for work. You must be at least 18 to create an account, and we do not knowingly collect personal data from anyone under 18 (or under 13, the age covered by the U.S. Children's Online Privacy Protection Act). If you believe someone under 18 has given us personal data, email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a> and we will delete it.</p>
 
             <h2>9. Changes to this policy</h2>
             <p>We may update this Privacy Policy from time to time. We will notify you via email or an in-app notice for material changes.</p>
@@ -145,12 +151,17 @@
             <p>SpotApply LLC, an Ohio limited liability company based in Cincinnati, Ohio, United States, is the data controller for the personal data described in this policy. For any privacy question, or to exercise the rights in section 6, email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a> and we will respond within 30 days.</p>
         </div>
 
-        <div class="mt-12 pt-8 flex gap-6 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
-            <a href="/terms" class="hover:underline" style="color:var(--muted);">Terms of Service</a>
+        <div class="mt-12 pt-8 flex flex-wrap gap-x-6 gap-y-2 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
             <a href="/" class="hover:underline" style="color:var(--muted);">Home</a>
+            <a href="/terms" class="hover:underline" style="color:var(--muted);">Terms of Service</a>
+            <a href="/refunds" class="hover:underline" style="color:var(--muted);">Refund Policy</a>
+            <a href="/cookies" class="hover:underline" style="color:var(--muted);">Cookie Policy</a>
+            <a href="mailto:support@spotapply.ai" class="hover:underline" style="color:var(--muted);">support@spotapply.ai</a>
         </div>
+        <p class="mt-4 text-sm" style="color:var(--muted);">&copy; {{ current_year }} SpotApply LLC · Cincinnati, Ohio, United States</p>
     </div>
 </main>
 
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

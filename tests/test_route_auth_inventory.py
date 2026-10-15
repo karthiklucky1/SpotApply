@@ -34,7 +34,7 @@ from app.api import server
 # reviewable decision that this endpoint is safe to serve to the whole internet.
 PUBLIC_PATHS = {
     # Marketing / legal pages, crawler files, static assets, liveness probe.
-    "/", "/login", "/pricing", "/privacy", "/terms", "/extension",
+    "/", "/login", "/pricing", "/privacy", "/terms", "/refunds", "/cookies", "/extension",
     "/auth/callback", "/auth/reset",
     "/robots.txt", "/sitemap.xml", "/favicon.ico", "/api/favicon", "/favicon.svg",
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",

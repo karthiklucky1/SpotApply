@@ -47,8 +47,12 @@ After editing classes in either run `npm run build` — never hand-edit the outp
 (the dashboard's hand-compiled file went stale and silently dropped JS-built
 badge classes). tests/test_landing_assets.py guards both;
 `.claude/hooks/build-tailwind.sh` rebuilds the affected one automatically.
-pricing/privacy/terms/auth share `tailwind-public.css` (`build:css:public`,
-2026-09-26); extension, messages, recruiter, public_profile stay on the Play CDN.
+pricing/privacy/terms/auth, refunds/cookies/404 (`_public_base.html`) and
+extension/messages/recruiter/public_profile share `tailwind-public.css`
+(`build:css:public`). **No page loads a third-party origin** (2026-10-15): fonts
+(`static/vendor/fonts`, OFL), supabase-js 2.117.2, Chart.js 4.5.1, Cropper 1.6.2
+are vendored at exact versions with their licences — a Google Fonts load leaks
+every visitor's IP (LG München 2022). Guards: `test_brand_assets`, `test_public_pages_quality`.
 
 ## File structure
 ```
@@ -861,6 +865,21 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   → target roles → search (`extract-profile?defer_search=1`; saving roles seeds).
   Guards: `test_extension_rules` (Node runs the real functions) +
   `extension-tests/test_extension_audit.py` (CI job `extension`).
+- **Compliance pages and consents** (2026-10-15): `/terms` (18+, renewal, DMCA §9b,
+  CA §1789.3 notice), `/privacy`, `/refunds`, `/cookies`; HTML 404 for browsers only
+  (`_wants_html_404`; API paths keep JSON). `billing.renewal_terms_text()` is the ONE
+  auto-renewal wording — Jinja `renewal_terms()` beside every subscribe button and
+  Stripe Checkout `custom_text` (Cal. B&P §17602). `DELETE /api/account` cancels the
+  Stripe subscription FIRST and deletes nothing if Stripe can't confirm
+  (`cancel_for_account_deletion`). Signup needs an unticked 18+/terms box (email and
+  Google). `UserProfile.public_profile` (default OFF) gates `/u/<handle>` (404) AND
+  recruiter search; reviews publish only with the reviewer's tick; avatars are
+  re-encoded server-side (`_clean_avatar`, EXIF/GPS gone). The cookie notice
+  (`static/cookie-notice.js`) is a notice, not a fake choice — everything stored is
+  essential; an optional cookie needs a real opt-in first. Unsupported claims are
+  removed, not softened: "45,000+" boards (47,618 active on 2026-10-15), no "Most
+  popular", no Pro features the code doesn't give. Guards: `test_billing`,
+  `test_profile_visibility`, `test_avatar_upload`, `test_temporary_pro`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.

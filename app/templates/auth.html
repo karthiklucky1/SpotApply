@@ -4,10 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotApply — Sign In</title>
+    <meta name="description" content="Sign in to SpotApply, or create an account to get job matches for your resume, a tailored resume for each role and help filling in applications.">
+    <link rel="canonical" href="https://app.spotapply.ai/login">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://app.spotapply.ai/login">
+    <meta property="og:title" content="Sign in to SpotApply">
+    <meta property="og:description" content="Sign in to SpotApply, or create an account to get job matches for your resume, a tailored resume for each role and help filling in applications.">
+    <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
+    <meta name="twitter:card" content="summary_large_image">
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="stylesheet" href="/static/tailwind-public.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
     <style>
         :root {
             --canvas:    #F5FAFF;
@@ -20,6 +29,7 @@
             --sage:      #0077C2;
             --sage-600:  #1F9C8F;
             --sage-700:  #16847A;
+            --sage-800:  #0F6E66;   /* text/links on light backgrounds + white-text hovers (6.1:1 with white) */
             --sage-tint: #E0F2FE;
         }
         * { box-sizing: border-box; }
@@ -86,7 +96,7 @@
             font-family: 'Outfit', sans-serif;
         }
         .hp-btn-primary:hover {
-            background: var(--sage-600);
+            background: var(--sage-800);
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(47,180,166,0.22);
         }
@@ -129,6 +139,26 @@
         }
         label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
         #msg { display: none; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+        .hp-link-btn { background: none; border: none; cursor: pointer; font-family: 'Outfit', sans-serif; font-size: 11px; font-weight: 700; color: var(--sage-800); padding: 0; border-radius: 4px; }
+        .brand-link { display: inline-block; text-decoration: none; color: inherit; border-radius: 16px; }
+        .legal a { color: var(--sage-800); text-decoration: underline; }
+        /* Keyboard focus: a solid ring, not the faint 15% glow alone. */
+        .hp-input:focus-visible,
+        .hp-btn-primary:focus-visible,
+        .hp-btn-google:focus-visible,
+        .tab-pill:focus-visible,
+        .hp-link-btn:focus-visible,
+        .brand-link:focus-visible,
+        #signup-consent:focus-visible,
+        .hp-card a:focus-visible,
+        .legal a:focus-visible {
+            outline: 3px solid var(--sage);
+            outline-offset: 2px;
+        }
+        .name-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        @media (max-width: 359px) {
+            .name-grid { grid-template-columns: 1fr; }
+        }
 
         /* Showcase Preview Animation Keyframes */
         @keyframes laserSweep {
@@ -148,12 +178,19 @@
             height: 100%;
             transition: opacity 0.4s ease;
         }
+        /* Carousel dots are real buttons: a 22x24 hit area around a 6px dot. */
         .sim-dot {
+            width: 22px; height: 24px; padding: 0; border: 0; background: transparent;
+            cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+            border-radius: 6px;
+        }
+        .sim-dot::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%; background: #475569;
             transition: background 0.25s, transform 0.2s;
         }
-        .sim-dot:hover {
-            transform: scale(1.3);
-        }
+        .sim-dot.active::before { background: var(--sage); transform: scale(1.2); }
+        .sim-dot:hover::before { transform: scale(1.3); }
+        .sim-dot:focus-visible { outline: 2px solid #FFFFFF; outline-offset: -2px; }
     </style>
 </head>
 <body style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px 40px;position:relative;background:var(--canvas);">
@@ -162,9 +199,14 @@
 
     <!-- Left Column (Product Showcase Simulation) - Hidden on mobile/tablet -->
     <div class="hidden lg:flex" style="flex: 1; flex-direction: column; width: 50%; max-width: 440px; select-none;">
+        <!-- An ILLUSTRATIVE demo: the recruiter, company and scores are made up
+             (a real employer beside an invented person reads as an endorsement). -->
         <div style="text-align:left; margin-bottom: 24px;">
-            <h2 style="font-size: 32px; font-weight: 800; color: var(--ink); line-height: 1.2;">SpotApply AI Engine</h2>
-            <p style="font-size: 14px; color: var(--muted); margin-top: 6px;">Watch the agent scan, match, and position your applications in real-time.</p>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <h2 style="font-size: 32px; font-weight: 800; color: var(--ink); line-height: 1.2;">SpotApply AI Engine</h2>
+                <span style="font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft); background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:3px 10px;">Example</span>
+            </div>
+            <p style="font-size: 14px; color: var(--muted); margin-top: 6px;">An example of how SpotApply scans a resume, scores a match and drafts an outreach note. The people, company and scores shown are illustrative.</p>
         </div>
         <!-- Browser Frame -->
         <div class="glass" style="width: 100%; height: 320px; border-radius: 20px; overflow: hidden; display: flex; flex-direction: column; border: 1.5px solid var(--border); box-shadow: 0 10px 30px rgba(0,0,0,0.06); background: #0b0f19;">
@@ -177,7 +219,7 @@
                     <span style="width: 8px; height: 8px; border-radius: 50%; background: #0077C2;"></span>
                 </div>
                 <!-- Bar -->
-                <div style="flex: 1; height: 20px; background: #1f2937; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #9ca3af; font-family: monospace;">spotapply.ai/simulation</div>
+                <div style="flex: 1; height: 20px; background: #1f2937; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #9ca3af; font-family: monospace;">Example: illustrative demo, not real data</div>
             </div>
             <!-- Browser Canvas -->
             <div id="sim-canvas" style="flex: 1; position: relative; overflow: hidden; padding: 20px; color: #e2e8f0; display: flex; align-items: center; justify-content: center;">
@@ -235,7 +277,7 @@
                         <div style="width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, var(--sage), var(--sage-700)); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; color: #fff;">SJ</div>
                         <div style="text-align: left;">
                             <div style="font-size: 12px; font-weight: bold; color: #fff;">Sarah Jenkins</div>
-                            <div style="font-size: 9px; color: #94a3b8;">Engineering Recruiting Lead at Stripe · 1st</div>
+                            <div style="font-size: 9px; color: #94a3b8;">Engineering Recruiting Lead at Northwind Labs · 1st</div>
                         </div>
                     </div>
                     <!-- Textarea mockup -->
@@ -245,10 +287,10 @@
                 </div>
             </div>
             <!-- Dots indicator -->
-            <div style="height: 32px; display: flex; align-items: center; justify-content: center; gap: 6px; border-top: 1px solid #1e293b; background: #0b0f19; flex-shrink: 0;">
-                <span class="sim-dot active" onclick="gotoSim(0)" style="width: 6px; height: 6px; border-radius: 50%; background: var(--sage); cursor: pointer; transition: background 0.2s;"></span>
-                <span class="sim-dot" onclick="gotoSim(1)" style="width: 6px; height: 6px; border-radius: 50%; background: #475569; cursor: pointer; transition: background 0.2s;"></span>
-                <span class="sim-dot" onclick="gotoSim(2)" style="width: 6px; height: 6px; border-radius: 50%; background: #475569; cursor: pointer; transition: background 0.2s;"></span>
+            <div role="group" aria-label="Example demo steps" style="height: 32px; display: flex; align-items: center; justify-content: center; gap: 2px; border-top: 1px solid #1e293b; background: #0b0f19; flex-shrink: 0;">
+                <button type="button" class="sim-dot active" onclick="pickSim(0)" aria-label="Show example step 1: resume scan" aria-current="true"></button>
+                <button type="button" class="sim-dot" onclick="pickSim(1)" aria-label="Show example step 2: match score"></button>
+                <button type="button" class="sim-dot" onclick="pickSim(2)" aria-label="Show example step 3: outreach draft"></button>
             </div>
         </div>
     </div>
@@ -257,13 +299,15 @@
     <div style="width:100%; max-width:420px; display:flex; flex-direction:column; align-items:stretch;">
         <!-- Logo -->
         <div style="text-align:center;margin-bottom:28px;">
-            <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,var(--sage),var(--sage-700));margin:0 auto 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(47,180,166,0.3);">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                    <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    <circle cx="8" cy="12" r="1.5" fill="rgba(255,255,255,0.85)"/>
-                </svg>
-            </div>
-            <h1 style="font-size:28px;font-weight:800;color:var(--ink);margin:0;">SpotApply</h1>
+            <a href="/" class="brand-link" aria-label="SpotApply home">
+                <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,var(--sage),var(--sage-700));margin:0 auto 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(47,180,166,0.3);">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="8" cy="12" r="1.5" fill="rgba(255,255,255,0.85)"/>
+                    </svg>
+                </div>
+                <h1 style="font-size:28px;font-weight:800;color:var(--ink);margin:0;">SpotApply</h1>
+            </a>
             <p style="font-size:13px;color:var(--muted);margin:4px 0 0;">AI-powered job application engine</p>
         </div>
 
@@ -274,49 +318,59 @@
             <div style="display:flex;position:relative;background:var(--surface-2);border-radius:24px;padding:4px;margin-bottom:22px;z-index:1;user-select:none;">
                 <!-- Sliding Indicator -->
                 <div id="tab-indicator" style="position:absolute;top:4px;bottom:4px;left:4px;width:calc(50% - 4px);background:var(--sage);border-radius:20px;transition:transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);z-index:0;box-shadow:0 2px 8px rgba(47,180,166,0.25);"></div>
-                <button id="tab-signin" onclick="switchTab('signin')" class="tab-pill" style="position:relative;z-index:1;color:white;">Sign In</button>
-                <button id="tab-signup" onclick="switchTab('signup')" class="tab-pill" style="position:relative;z-index:1;color:var(--muted);">Sign Up</button>
+                <!-- switchTab is defined in the classic script below the card, so
+                     these work before (and without) the Supabase module. -->
+                <button type="button" id="tab-signin" onclick="switchTab('signin')" aria-pressed="true" aria-controls="form-signin" class="tab-pill" style="position:relative;z-index:1;color:white;">Sign In</button>
+                <button type="button" id="tab-signup" onclick="switchTab('signup')" aria-pressed="false" aria-controls="form-signup" class="tab-pill" style="position:relative;z-index:1;color:var(--muted);">Sign Up</button>
             </div>
 
             <!-- Message -->
-            <div id="msg"></div>
+            <div id="msg" role="status" aria-live="polite"></div>
 
-            <!-- Sign In form -->
-            <form id="form-signin" onsubmit="handleSignIn(event)" novalidate style="display:flex;flex-direction:column;gap:14px;">
+            <!-- Sign In form. preventDefault runs FIRST, so a form submitted
+                 before the module has loaded never reloads the page. -->
+            <form id="form-signin" onsubmit="event.preventDefault(); authCall('handleSignIn', event)" novalidate style="display:flex;flex-direction:column;gap:14px;">
                 <div>
-                    <label>Email</label>
-                    <input type="email" id="signin-email" required placeholder="you@example.com" class="hp-input" />
+                    <label for="signin-email">Email</label>
+                    <input type="email" id="signin-email" required autocomplete="email" placeholder="you@example.com" class="hp-input" />
                 </div>
                 <div>
                     <div style="display:flex;align-items:center;justify-content:space-between;">
-                        <label style="margin-bottom:0;">Password</label>
-                        <button type="button" id="btn-forgot" onclick="handleForgot()" style="background:none;border:none;cursor:pointer;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;color:var(--sage-700);padding:0;">Forgot?</button>
+                        <label for="signin-password" style="margin-bottom:0;">Password</label>
+                        <button type="button" id="btn-forgot" onclick="authCall('handleForgot')" class="hp-link-btn">Forgot?</button>
                     </div>
-                    <input type="password" id="signin-password" required placeholder="••••••••" class="hp-input" style="margin-top:6px;" />
+                    <input type="password" id="signin-password" required autocomplete="current-password" placeholder="••••••••" class="hp-input" style="margin-top:6px;" />
                 </div>
                 <button type="submit" id="btn-signin" class="hp-btn-primary" style="margin-top:4px;">Sign In</button>
             </form>
 
             <!-- Sign Up form -->
-            <form id="form-signup" onsubmit="handleSignUp(event)" novalidate style="display:none;flex-direction:column;gap:14px;">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <form id="form-signup" onsubmit="event.preventDefault(); authCall('handleSignUp', event)" novalidate style="display:none;flex-direction:column;gap:14px;">
+                <div class="name-grid">
                     <div>
-                        <label>First Name</label>
-                        <input type="text" id="signup-firstname" required placeholder="John" class="hp-input" />
+                        <label for="signup-firstname">First Name</label>
+                        <input type="text" id="signup-firstname" required autocomplete="given-name" placeholder="John" class="hp-input" />
                     </div>
                     <div>
-                        <label>Last Name</label>
-                        <input type="text" id="signup-lastname" required placeholder="Doe" class="hp-input" />
+                        <label for="signup-lastname">Last Name</label>
+                        <input type="text" id="signup-lastname" required autocomplete="family-name" placeholder="Doe" class="hp-input" />
                     </div>
                 </div>
                 <div>
-                    <label>Email</label>
-                    <input type="email" id="signup-email" required placeholder="you@example.com" class="hp-input" />
+                    <label for="signup-email">Email</label>
+                    <input type="email" id="signup-email" required autocomplete="email" placeholder="you@example.com" class="hp-input" />
                 </div>
                 <div>
-                    <label>Password</label>
-                    <input type="password" id="signup-password" required placeholder="Min 8 characters" class="hp-input" />
+                    <label for="signup-password">Password</label>
+                    <input type="password" id="signup-password" required autocomplete="new-password" placeholder="Min 8 characters" class="hp-input" />
                 </div>
+                <!-- Age + terms consent. Unticked by default and required for both
+                     email sign-up and "Continue with Google" on this tab: the
+                     Terms require 18+, and nothing else asked. -->
+                <label for="signup-consent" style="display:flex;align-items:flex-start;gap:10px;font-size:12.5px;line-height:1.45;color:var(--ink-soft);text-transform:none;letter-spacing:0;font-weight:500;cursor:pointer;">
+                    <input type="checkbox" id="signup-consent" required style="margin-top:2px;width:16px;height:16px;flex-shrink:0;accent-color:var(--sage);" />
+                    <span>I am 18 or older and I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--sage);text-decoration:underline;">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener" style="color:var(--sage);text-decoration:underline;">Privacy Policy</a>.</span>
+                </label>
                 <button type="submit" id="btn-signup" class="hp-btn-primary" style="margin-top:4px;">Create Account</button>
             </form>
 
@@ -328,8 +382,8 @@
             </div>
 
             <!-- Google -->
-            <button onclick="handleGoogle()" class="hp-btn-google">
-                <svg width="18" height="18" viewBox="0 0 24 24">
+            <button type="button" onclick="authCall('handleGoogle')" class="hp-btn-google">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
                     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                     <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
                     <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
@@ -339,9 +393,10 @@
             </button>
         </div>
 
-        <p style="text-align:center;font-size:11px;color:var(--muted);margin-top:18px;">
-            By signing up you agree to our <a href="/terms" style="color:var(--sage);text-decoration:none;">terms of service</a>
-        </p>
+        <footer class="legal" style="text-align:center;font-size:11px;line-height:1.6;color:var(--muted);margin-top:18px;">
+            <p style="margin:0;">SpotApply is for adults (18+). By creating an account or continuing with Google you agree to our <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>
+            <p style="margin:6px 0 0;">© {{ current_year_now() }} SpotApply LLC · <a href="/refunds">Refund Policy</a> · <a href="/cookies">Cookie Policy</a></p>
+        </footer>
     </div>
 </div>
 
@@ -349,58 +404,75 @@
     // Capture a referral code (?ref=CODE) so it can be claimed after signup.
     (function(){ try { var r = new URLSearchParams(location.search).get('ref'); if (r) localStorage.setItem('ja_ref', r.trim()); } catch(e){} })();
 </script>
+<script>
+    // Tabs, messages and the Sign Up deep link are plain DOM code in a CLASSIC
+    // script that runs as soon as the card above is parsed. They used to live
+    // in the module below, defined only after `await sb.auth.getSession()`,
+    // while the deep link ran on DOMContentLoaded, which a module's top-level
+    // await does not hold back: every "Start free" link (/login?mode=signup)
+    // landed on Sign In with "window.switchTab is not a function".
+    (function () {
+        function byId(id) { return document.getElementById(id); }
+
+        window.showMsg = function (text, type) {
+            var el = byId('msg');
+            if (!el) return;
+            el.textContent = text;
+            if ((type || 'error') === 'error') {
+                el.style.cssText = 'display:block;background:#FEE2E2;color:#991B1B;border:1px solid #FECACA;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;';
+            } else {
+                el.style.cssText = 'display:block;background:var(--sage-tint);color:var(--sage-800);border:1px solid rgba(47,180,166,0.3);padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;';
+            }
+        };
+
+        window.switchTab = function (tab) {
+            var signup = tab === 'signup';
+            byId('form-signin').style.display = signup ? 'none' : 'flex';
+            byId('form-signup').style.display = signup ? 'flex' : 'none';
+            byId('tab-indicator').style.transform = signup ? 'translateX(100%)' : 'translateX(0)';
+            byId('tab-signin').style.color = signup ? 'var(--muted)' : 'white';
+            byId('tab-signup').style.color = signup ? 'white' : 'var(--muted)';
+            byId('tab-signin').setAttribute('aria-pressed', String(!signup));
+            byId('tab-signup').setAttribute('aria-pressed', String(signup));
+            byId('msg').style.display = 'none';
+        };
+
+        // Every form and button calls the module's handlers through here, so a
+        // click before the module has loaded (or after it failed to) neither
+        // throws nor submits the form natively.
+        window.authCall = function (name, ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            var fn = window[name];
+            if (typeof fn === 'function') return fn(ev);
+            window.showMsg(document.readyState === 'complete'
+                ? 'Sign-in could not load. Check your connection and refresh the page.'
+                : 'Sign-in is still loading. Please try again in a moment.');
+        };
+
+        var wantsSignup = false, savedResume = false;
+        try {
+            wantsSignup = new URLSearchParams(location.search).get('mode') === 'signup'
+                || location.hash === '#signup';
+        } catch (e) {}
+        try { savedResume = !!localStorage.getItem('hp_temp_resume'); } catch (e) {}
+        if (wantsSignup || savedResume) window.switchTab('signup');
+        if (savedResume) {
+            window.showMsg('✨ Resume & target role saved! Create your account to instantly import them and view your matches.', 'info');
+        }
+    })();
+</script>
 <script type="module">
-    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm'
+    import { createClient } from '/static/vendor/supabase-js-2.117.2.esm.js'
 
     const SUPABASE_URL = '{{ supabase_url }}'
     const SUPABASE_ANON_KEY = '{{ supabase_anon_key }}'
     const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    const showMsg = (text, type = 'error') => window.showMsg(text, type)
 
     const setTokenCookie = (t) => {
         const secure = location.protocol === 'https:' ? '; Secure' : '';
         document.cookie = 'sb_token=' + t + '; path=/; max-age=3600; SameSite=Lax' + secure;
     };
-
-    // If already logged in, skip to dashboard
-    const { data: { session } } = await sb.auth.getSession()
-    if (session) {
-        localStorage.setItem('sb_token', session.access_token)
-        setTokenCookie(session.access_token)
-        window.location.href = '/dashboard'
-    }
-
-    function showMsg(text, type = 'error') {
-        const el = document.getElementById('msg')
-        el.textContent = text
-        el.style.display = 'block'
-        if (type === 'error') {
-            el.style.cssText = 'display:block;background:#FEE2E2;color:#991B1B;border:1px solid #FECACA;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;';
-        } else {
-            el.style.cssText = 'display:block;background:var(--sage-tint);color:var(--sage-700);border:1px solid rgba(47,180,166,0.3);padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;';
-        }
-    }
-
-    window.switchTab = (tab) => {
-        const signinForm = document.getElementById('form-signin')
-        const signupForm = document.getElementById('form-signup')
-        const tabSignin = document.getElementById('tab-signin')
-        const tabSignup = document.getElementById('tab-signup')
-        const indicator = document.getElementById('tab-indicator')
-        
-        signinForm.style.display = tab === 'signin' ? 'flex' : 'none'
-        signupForm.style.display = tab === 'signup' ? 'flex' : 'none'
-        
-        if (tab === 'signin') {
-            indicator.style.transform = 'translateX(0)';
-            tabSignin.style.color = 'white';
-            tabSignup.style.color = 'var(--muted)';
-        } else {
-            indicator.style.transform = 'translateX(100%)';
-            tabSignin.style.color = 'var(--muted)';
-            tabSignup.style.color = 'white';
-        }
-        document.getElementById('msg').style.display = 'none'
-    }
 
     // Clear error styling on input
     document.querySelectorAll('.hp-input').forEach(inp => {
@@ -463,6 +535,10 @@
             showMsg('Please fill out all fields.');
             return;
         }
+        if (!document.getElementById('signup-consent').checked) {
+            showMsg('Please confirm you are 18 or older and agree to the Terms of Service and Privacy Policy.');
+            return;
+        }
         
         const emailVal = emailEl.value.trim();
         const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -487,7 +563,9 @@
             email: emailVal,
             password: passVal,
             options: {
-                data: { first_name: firstName, last_name: lastName },
+                data: { first_name: firstName, last_name: lastName,
+                        age_confirmed_18: true, terms_accepted_at: new Date().toISOString(),
+                        terms_version: '2026-10' },
                 emailRedirectTo: window.location.origin + '/auth/callback'
             }
         })
@@ -563,10 +641,27 @@
     }
 
     window.handleGoogle = async () => {
+        // On the Sign Up tab a new account is being made: same consent as the form.
+        const signupOpen = document.getElementById('form-signup').style.display !== 'none';
+        const consent = document.getElementById('signup-consent');
+        if (signupOpen && consent && !consent.checked) {
+            showMsg('Please confirm you are 18 or older and agree to the Terms of Service and Privacy Policy.');
+            consent.focus();
+            return;
+        }
         await sb.auth.signInWithOAuth({
             provider: 'google',
             options: { redirectTo: window.location.origin + '/auth/callback' }
         })
+    }
+
+    // If already logged in, skip to dashboard. Last, so the handlers above
+    // exist while this await is pending.
+    const { data: { session } } = await sb.auth.getSession()
+    if (session) {
+        localStorage.setItem('sb_token', session.access_token)
+        setTokenCookie(session.access_token)
+        window.location.href = '/dashboard'
     }
 </script>
 <script>
@@ -592,15 +687,9 @@
         // Update dots
         const dots = document.querySelectorAll('.sim-dot');
         dots.forEach((dot, idx) => {
-            if (idx === index) {
-                dot.style.background = 'var(--sage)';
-                dot.style.transform = 'scale(1.2)';
-                dot.classList.add('active');
-            } else {
-                dot.style.background = '#475569';
-                dot.style.transform = 'scale(1)';
-                dot.classList.remove('active');
-            }
+            dot.classList.toggle('active', idx === index);
+            if (idx === index) dot.setAttribute('aria-current', 'true');
+            else dot.removeAttribute('aria-current');
         });
 
         // Show active slide
@@ -654,7 +743,7 @@
         if (!textEl) return;
         textEl.textContent = '';
         
-        const text = "Hi Sarah! I noticed the Software Engineer opening at Stripe. I'd love to ask about your experience with the matching agent engine, and see if my background matches what you are looking for. Thanks!";
+        const text = "Hi Sarah! I noticed the Software Engineer opening at Northwind Labs. I'd love to ask about your experience with the matching agent engine, and see if my background matches what you are looking for. Thanks!";
         let charIndex = 0;
         
         function typeChar() {
@@ -675,24 +764,22 @@
         }, 6000);
     }
 
+    // A dot the visitor chose (mouse or keyboard) stops the auto-advance, so
+    // the step they picked isn't swapped out from under them 6 s later.
+    window.pickSim = (index) => {
+        if (simInterval) { clearInterval(simInterval); simInterval = null; }
+        window.gotoSim(index);
+    };
+
+    // The Sign Up deep link and the saved-resume prompt now run in the
+    // classic script above the module (no DOMContentLoaded race).
     document.addEventListener('DOMContentLoaded', () => {
         if (document.getElementById('slide-scan')) {
             window.gotoSim(0);
             startSimLoop();
         }
-        // Deep-link the Sign Up tab: every acquisition CTA ("Get started
-        // free") used to land on the Sign In form for an account that
-        // doesn't exist yet.
-        if (new URLSearchParams(location.search).get('mode') === 'signup' || location.hash === '#signup') {
-            window.switchTab('signup');
-        }
-        if (localStorage.getItem('hp_temp_resume')) {
-            setTimeout(() => {
-                window.switchTab('signup');
-                showMsg('✨ Resume & target role saved! Create your account to instantly import them and view your matches.', 'info');
-            }, 100);
-        }
     });
 </script>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

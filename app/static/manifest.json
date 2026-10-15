@@ -1,7 +1,7 @@
 {
   "name": "SpotApply — AI Job Agent",
   "short_name": "SpotApply",
-  "description": "AI-powered job search automation. Discover, rank, and auto-apply across 1000+ boards.",
+  "description": "SpotApply finds new jobs that fit your resume, tailors your resume for each one, and fills the application for you to review and submit.",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#070b14",

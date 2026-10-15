@@ -84,6 +84,15 @@ def fake_stripe(monkeypatch):
                 raise LookupError(f"No such subscription: {sub_id}")
             return state["subscriptions"][sub_id]
 
+        @staticmethod
+        def cancel(sub_id, **kw):
+            state.setdefault("cancelled", []).append(sub_id)
+            if state.get("cancel_fails"):
+                raise RuntimeError("stripe unreachable")
+            state["subscriptions"][sub_id] = {**state["subscriptions"].get(sub_id, {}),
+                                              "status": "canceled"}
+            return state["subscriptions"][sub_id]
+
     mod.Webhook = Webhook
     mod.Subscription = Subscription
     monkeypatch.setitem(sys.modules, "stripe", mod)
@@ -1302,3 +1311,53 @@ def test_grandfathered_users_are_counted_by_the_same_rule_that_grants_them_pro(m
     assert server._is_grandfathered(_MP + "early") is True
     assert server._is_grandfathered(_MP + "late") is False
     assert server._get_user_plan(_MP + "subscribed") == PlanTier.PRO, "row wins"
+
+
+# ── account deletion stops billing first ─────────────────────────────────────
+
+def _subscribe(uid: str, sub_id: str | None, plan=PlanTier.PRO):
+    with get_session() as s:
+        s.add(UserSubscription(user_id=uid, plan=plan, stripe_customer_id="cus_x",
+                               stripe_subscription_id=sub_id))
+        s.commit()
+
+
+def test_deleting_an_account_cancels_its_live_subscription(fake_stripe):
+    _subscribe(_UID, "sub_live")
+    fake_stripe["subscriptions"]["sub_live"] = {"status": "active"}
+    assert billing.cancel_for_account_deletion(_UID) == "cancelled"
+    assert fake_stripe["cancelled"] == ["sub_live"]
+
+
+def test_nothing_to_cancel_without_a_subscription_or_when_it_already_ended(fake_stripe):
+    assert billing.cancel_for_account_deletion(_UID) == "none"            # no row at all
+    _subscribe(_UID, "sub_done", plan=PlanTier.FREE)
+    fake_stripe["subscriptions"]["sub_done"] = {"status": "canceled"}
+    assert billing.cancel_for_account_deletion(_UID) == "none"
+    assert "cancelled" not in fake_stripe
+
+
+def test_an_unconfirmed_cancellation_is_a_failure_never_a_success(fake_stripe, monkeypatch):
+    _subscribe(_UID, "sub_live")
+    fake_stripe["subscriptions"]["sub_live"] = {"status": "active"}
+    fake_stripe["cancel_fails"] = True
+    assert billing.cancel_for_account_deletion(_UID) == "failed"
+    # Stripe unconfigured while a subscription id exists: cannot confirm either.
+    monkeypatch.setattr(settings, "stripe_secret_key", "", raising=False)
+    assert billing.cancel_for_account_deletion(_UID) == "failed"
+
+
+def test_the_delete_route_deletes_nothing_when_billing_cannot_be_stopped(fake_stripe, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.api import server
+    import app.common.account_purge as purge
+    _subscribe(_UID, "sub_live")
+    fake_stripe["subscriptions"]["sub_live"] = {"status": "active"}
+    fake_stripe["cancel_fails"] = True
+    purged = []
+    monkeypatch.setattr(server, "_require_user", lambda request: _UID)
+    monkeypatch.setattr(purge, "purge_user_data", lambda uid: purged.append(uid) or {})
+    r = TestClient(server.app).delete("/api/account")
+    assert r.status_code == 503 and r.json()["deleted"] is False
+    assert purged == []
+    assert _plan_of(_UID) == PlanTier.PRO                 # the row that links the subscription survives

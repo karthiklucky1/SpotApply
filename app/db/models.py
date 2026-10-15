@@ -498,6 +498,11 @@ class UserProfile(SQLModel, table=True):
     # filled, never past a CAPTCHA or a sign-in step. OFF: the user clicks
     # Submit on the form, as before.
     one_click_submit: bool = False
+    # Public profile + recruiter visibility (2026-10): OFF until the user turns
+    # it on. While off, /u/<handle> answers 404 and recruiter search never
+    # returns the user. It used to be on for everyone with no choice — name,
+    # work authorisation, sponsorship need and salary were public by default.
+    public_profile: bool = False
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

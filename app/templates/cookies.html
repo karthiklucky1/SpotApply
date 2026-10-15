@@ -1,0 +1,45 @@
+{% extends "_public_base.html" %}
+{% block title %}Cookie Policy — SpotApply{% endblock %}
+{% block description %}The cookie and browser storage SpotApply uses: only what keeps you signed in and remembers your settings. No tracking or advertising cookies.{% endblock %}
+{% block canonical %}<link rel="canonical" href="https://app.spotapply.ai/cookies">{% endblock %}
+{% block content %}
+<div class="mb-10">
+    <h1 class="text-4xl font-black mb-2" style="color:var(--ink);">Cookie Policy</h1>
+    <p class="text-sm" style="color:var(--muted);">Last updated: October 2026</p>
+</div>
+
+<div class="prose-dark space-y-2">
+    <p><strong>Short version:</strong> SpotApply uses one cookie and some browser storage, all of it needed to keep you signed in and to remember choices you make. We use <strong>no analytics, advertising or tracking cookies</strong>, no third-party cookies, and no session-recording tools. Because everything listed here is strictly necessary for the service you ask for, there is nothing to switch off — the notice you see on your first visit tells you this and links here.</p>
+
+    <h2>1. The cookie we set</h2>
+    <table>
+        <thead><tr><th>Name</th><th>What it does</th><th>How long</th></tr></thead>
+        <tbody>
+            <tr><td><code>sb_token</code></td><td>Your sign-in session, so pages you open while signed in know it is you. Sent only to app.spotapply.ai, only over HTTPS.</td><td>1 hour (renewed while you use the app); removed when you sign out</td></tr>
+        </tbody>
+    </table>
+
+    <h2>2. Browser storage we use</h2>
+    <p>Your browser's local storage keeps these on your own device. They are not sent to anyone else.</p>
+    <table>
+        <thead><tr><th>What</th><th>Why</th></tr></thead>
+        <tbody>
+            <tr><td>Sign-in session (<code>sb-…-auth-token</code>, <code>sb_token</code>, <code>sb_refresh</code>)</td><td>Keeps you signed in between visits. Set by our sign-in provider, Supabase.</td></tr>
+            <tr><td>Your settings (<code>hp_theme</code>, <code>hp_sb_collapsed</code>, <code>hp_shortlist_sort</code>, <code>hp_shortlist_minscore</code>, <code>hp_open_tab</code>)</td><td>Remembers the theme, sidebar, sort order and filters you chose.</td></tr>
+            <tr><td>Things you dismissed or finished (<code>hp_tour_v1_done</code>, <code>hp_onboarding_dismissed</code>, <code>hp_welcome_done_closed</code>, <code>hp_ext_dismissed</code>, <code>hp_ext_installed</code>, <code>sa_cookie_notice_v1</code>)</td><td>So we don't show you the same tip, tour or notice again.</td></tr>
+            <tr><td>Short-lived page state (<code>pending_toast</code>, <code>hp_highlight_app</code>, <code>hp_reloaded_for_auth</code>, <code>hp_auto_reload_ts</code>, <code>hp_identity_synced_at</code>, <code>jb_post_discover</code>, <code>hp_temp_role</code>, <code>hp_temp_resume</code>)</td><td>Carries a message or a choice from one page to the next, or stops a page reloading twice.</td></tr>
+            <tr><td>Referral code (<code>ja_ref</code>)</td><td>If you arrive through a friend's referral link, keeps their code until you sign up so the referral can be credited.</td></tr>
+            <tr><td>App files cache (service worker)</td><td>Keeps copies of our own stylesheets, icons and scripts so pages load faster. Contains no personal data.</td></tr>
+        </tbody>
+    </table>
+
+    <h2>3. Third parties</h2>
+    <p>No third party sets cookies through our website. Our fonts and page assets are served from our own servers. Payments happen on Stripe's own checkout page, which has its own cookie policy; signing in with Google takes you to Google's page, which has its own.</p>
+
+    <h2>4. Your choices</h2>
+    <p>You can delete cookies and site data at any time in your browser's settings. If you do, you will be signed out and your on-device settings will reset. If we ever want to add an optional cookie, such as analytics, we will ask for your permission first and update this page.</p>
+
+    <h2>5. Contact</h2>
+    <p>Questions? Email <a href="mailto:privacy@spotapply.ai">privacy@spotapply.ai</a>. See also our <a href="/privacy">Privacy Policy</a>.</p>
+</div>
+{% endblock %}

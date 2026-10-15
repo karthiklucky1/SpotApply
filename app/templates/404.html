@@ -1,0 +1,15 @@
+{% extends "_public_base.html" %}
+{% block title %}Page not found — SpotApply{% endblock %}
+{% block description %}This page does not exist. Go back to SpotApply's home page, pricing or your dashboard.{% endblock %}
+{% block content %}
+<div class="text-center py-10">
+    <p class="text-sm font-bold uppercase tracking-widest" style="color:var(--muted);">Error 404</p>
+    <h1 class="text-4xl font-black mt-2 mb-3" style="color:var(--ink);">We couldn't find that page</h1>
+    <p class="text-base mb-8" style="color:var(--ink-soft);">The link may be old, or the address may have a typo.</p>
+    <div class="flex flex-wrap justify-center gap-3">
+        <a href="/" class="px-5 py-3 rounded-xl text-sm font-bold text-white" style="background:var(--sage);">Go to the home page</a>
+        <a href="/dashboard" class="px-5 py-3 rounded-xl text-sm font-bold" style="background:var(--surface);border:1px solid var(--border);color:var(--ink);">Open your dashboard</a>
+        <a href="/pricing" class="px-5 py-3 rounded-xl text-sm font-bold" style="background:var(--surface);border:1px solid var(--border);color:var(--ink);">See pricing</a>
+    </div>
+</div>
+{% endblock %}

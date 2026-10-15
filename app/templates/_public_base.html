@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+{# Shared shell for the plain public pages added in October 2026 (refund and
+   cookie policies, the 404 page). Same look as privacy.html / terms.html, which
+   predate it and stay standalone. Classes here are compiled into
+   tailwind-public.css (tailwind.public.config.js scans this file). #}
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SpotApply{% endblock %}</title>
+    <meta name="description" content="{% block description %}SpotApply finds new jobs that fit your resume, tailors your resume for each one, and fills the application for you to review and submit.{% endblock %}">
+    {% block canonical %}{% endblock %}
+    <meta property="og:title" content="{{ self.title() }}">
+    <meta property="og:description" content="{{ self.description() }}">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="https://app.spotapply.ai/static/og-card.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link rel="stylesheet" href="/static/tailwind-public.css">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
+    <style>
+        :root {
+            --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
+            --ink: #0C2A3E; --ink-soft: #21455C; --muted: #4A6075; --border: #DCEAF6;
+            --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+            --link: #0F6E66;
+        }
+        body { font-family: 'Outfit', sans-serif; background: var(--canvas); color: var(--ink); }
+        .accent-text { background: linear-gradient(135deg, var(--sage) 0%, var(--sage-600) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .glass { background: rgba(252,250,245,0.92); backdrop-filter: blur(12px); border: 1px solid var(--border); }
+        .prose-dark h2 { font-size: 1.25rem; font-weight: 800; color: var(--ink); margin-top: 2rem; margin-bottom: 0.75rem; }
+        .prose-dark p, .prose-dark li, .prose-dark td, .prose-dark th { color: var(--ink-soft); line-height: 1.75; font-size: 0.9375rem; }
+        .prose-dark ul { list-style: disc; padding-left: 1.5rem; margin-top: 0.5rem; }
+        .prose-dark li { margin-bottom: 0.35rem; }
+        .prose-dark a { color: var(--link); text-decoration: underline; }
+        .prose-dark strong { color: var(--ink); }
+        .prose-dark code { font-size: 0.85em; background: var(--surface-2); padding: 0.05rem 0.3rem; border-radius: 0.3rem; overflow-wrap: anywhere; }
+        .prose-dark table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; }
+        .prose-dark th { text-align: left; font-weight: 800; color: var(--ink); }
+        .prose-dark th, .prose-dark td { border-top: 1px solid var(--border); padding: 0.5rem 0.75rem 0.5rem 0; vertical-align: top; }
+        a:focus-visible, button:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; border-radius: 0.375rem; }
+        .skip-link { position: absolute; left: -9999px; top: 0.5rem; z-index: 100; background: var(--surface); color: var(--ink); padding: 0.5rem 0.9rem; border-radius: 0.5rem; font-weight: 700; }
+        .skip-link:focus { left: 0.5rem; }
+    </style>
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to content</a>
+
+<nav class="fixed top-0 left-0 right-0 z-50 glass" style="border-bottom:1px solid var(--border);" aria-label="Main">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <a href="/" class="flex items-center gap-3" aria-label="SpotApply home">
+            <div class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <span class="font-black text-lg accent-text">SpotApply</span>
+        </a>
+        <div class="flex items-center gap-5">
+            <a href="/pricing" class="text-sm font-bold" style="color:var(--ink-soft);">Pricing</a>
+            <a href="/login" class="text-sm font-bold" style="color:var(--ink-soft);">Sign in</a>
+        </div>
+    </div>
+</nav>
+
+<main id="main" class="pt-28 pb-20 px-4">
+    <div class="max-w-2xl mx-auto">
+        {% block content %}{% endblock %}
+
+        <footer class="mt-12 pt-8 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
+            <div class="flex flex-wrap gap-x-6 gap-y-2">
+                <a href="/" class="hover:underline" style="color:var(--muted);">Home</a>
+                <a href="/terms" class="hover:underline" style="color:var(--muted);">Terms of Service</a>
+                <a href="/privacy" class="hover:underline" style="color:var(--muted);">Privacy Policy</a>
+                <a href="/refunds" class="hover:underline" style="color:var(--muted);">Refund Policy</a>
+                <a href="/cookies" class="hover:underline" style="color:var(--muted);">Cookie Policy</a>
+                <a href="mailto:support@spotapply.ai" class="hover:underline" style="color:var(--muted);">support@spotapply.ai</a>
+            </div>
+            <p class="mt-4">&copy; {{ current_year }} SpotApply LLC · Cincinnati, Ohio, United States</p>
+        </footer>
+    </div>
+</main>
+
+<script src="/static/cookie-notice.js" defer></script>
+</body>
+</html>

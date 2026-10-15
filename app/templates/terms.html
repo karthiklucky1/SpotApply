@@ -8,8 +8,7 @@
          rendered as a bare URL with no card, and with no canonical the
          trailing-slash and query-string variants of one page can split
          indexing between them. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <meta name="description" content="The terms for using SpotApply: accounts, plans and automatic renewal, AI-generated documents, copyright complaints and disputes.">
     <link rel="canonical" href="https://app.spotapply.ai/terms">
     <meta property="og:title" content="Terms of Service — SpotApply">
     <meta property="og:description" content="The terms that apply to using SpotApply.">
@@ -23,7 +22,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/static/tailwind-public.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
     <style>
         :root {
             --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
@@ -37,7 +36,7 @@
         .prose-dark p, .prose-dark li { color: var(--ink-soft); line-height: 1.75; font-size: 0.9375rem; }
         .prose-dark ul { list-style: disc; padding-left: 1.5rem; margin-top: 0.5rem; }
         .prose-dark li { margin-bottom: 0.35rem; }
-        .prose-dark a { color: var(--sage-700); text-decoration: underline; }
+        .prose-dark a { color: #0F6E66; text-decoration: underline; }
         .prose-dark strong { color: var(--ink); }
     </style>
 </head>
@@ -74,7 +73,7 @@
 
             <h2>3. Your responsibilities</h2>
             <ul>
-                <li>You must be at least 18 years old to use the Service.</li>
+                <li>You must be at least 18 years old to use the Service. We do not knowingly collect personal data from anyone under 18; if we learn an account belongs to someone under 18, we delete it.</li>
                 <li>You are responsible for the accuracy of your profile and resume data.</li>
                 <li>You must review every application before approving submission. SpotApply submits nothing without your explicit approval: either you click Submit on the employer's form, or, with One-click submit turned on, your click on <strong>Apply &amp; Submit</strong> for that application is your approval (see section 4).</li>
                 <li>You agree not to misuse the Service to submit false, misleading, or fraudulent applications.</li>
@@ -92,8 +91,9 @@
             <h2>5. AI-generated documents</h2>
             <p>Tailored resumes and cover letters are written by AI models from your own resume and the job posting. We check each draft against your master resume and withhold a draft that states experience your resume does not show, but no automated check is perfect. <strong>Read every document before you send it</strong> — you are responsible for what you submit.</p>
 
-            <h2>6. Plans and payments</h2>
-            <p>SpotApply offers a Free plan with daily limits and a paid Pro plan at the price shown on the Pricing page. Paid plans are billed monthly through Stripe and can be cancelled at any time from the billing portal; cancellation takes effect at the end of the paid period.</p>
+            <h2 id="plans">6. Plans and payments</h2>
+            <p>SpotApply offers a Free plan with daily limits and a paid Pro plan at the price shown on the <a href="/pricing">Pricing page</a>, billed monthly in advance through Stripe. There are no other fees.</p>
+            <p><strong>Pro renews automatically.</strong> {{ renewal_terms() }} We show these terms next to the subscribe button and on the payment page before you pay. Refunds are covered by our <a href="/refunds">Refund Policy</a>.</p>
             <p>While we show a notice that Pro features are temporarily available to everyone, every account receives Pro limits at no charge. Nothing is charged during that time, and you are not enrolled in a paid plan when it ends. Limits and features may change as the Service develops.</p>
 
             <h2>7. Automatic job search</h2>
@@ -105,6 +105,12 @@
             <h2>9. Intellectual property</h2>
             <p>You retain all rights to your resume, profile data, and any documents you upload. By using the Service, you grant SpotApply LLC a limited, non-exclusive license to process and store that content solely to provide the Service to you. The license ends when you delete the content or your account.</p>
             <p>The Service itself — its software, interfaces and branding — remains the property of SpotApply LLC.</p>
+
+            <h2 id="acceptable-use">9a. Content you post</h2>
+            <p>Only upload content you have the right to use — for example a profile photo of yourself and your own resume. Do not upload anything that infringes someone else's copyright or other rights, or that is unlawful, abusive or misleading. We may remove such content and suspend accounts that repeatedly post it.</p>
+
+            <h2 id="copyright">9b. Copyright complaints (DMCA)</h2>
+            <p>If you believe content on SpotApply infringes your copyright, send a notice to our designated agent at <a href="mailto:legal@spotapply.ai">legal@spotapply.ai</a> (subject line "DMCA notice"), or by mail to SpotApply LLC, Attn: Copyright Agent, Cincinnati, Ohio, United States. Include: (1) your physical or electronic signature; (2) the work you say is infringed; (3) the material you want removed and where it is (a link is best); (4) your name, address, telephone number and email; (5) a statement that you have a good-faith belief the use is not authorised by the copyright owner, its agent or the law; and (6) a statement, under penalty of perjury, that the notice is accurate and that you are the owner or authorised to act for the owner. We remove material that is the subject of a valid notice and terminate the accounts of repeat infringers. If your content was removed and you believe that was a mistake, you can send a counter-notice to the same address.</p>
 
             <h2>10. Service availability</h2>
             <p>We strive for high availability but do not guarantee uninterrupted service. Scheduled maintenance, third-party outages, or unexpected failures may cause temporary downtime.</p>
@@ -121,7 +127,7 @@
             <p>You agree to indemnify and hold harmless SpotApply LLC and its members, officers, employees and agents from any claim, loss, liability or expense (including reasonable attorneys' fees) arising out of your misuse of the Service, your violation of these Terms or of a third-party platform's terms, or the content of any application you choose to submit.</p>
 
             <h2>14. Termination</h2>
-            <p>You may delete your account at any time from Settings. We reserve the right to suspend or terminate accounts that violate these Terms or are used for fraudulent purposes. Sections 9 and 11 through 15 continue to apply after your account ends.</p>
+            <p>You may delete your account at any time from Settings → "Delete my account". We reserve the right to suspend or terminate accounts that violate these Terms or are used for fraudulent purposes. Sections 9 and 11 through 15 continue to apply after your account ends.</p>
 
             <h2>15. Governing law and disputes</h2>
             <p>These Terms are governed by the laws of the State of Ohio, United States, without regard to its conflict-of-laws rules. Any dispute arising out of or relating to these Terms or the Service must be brought exclusively in the state or federal courts located in Hamilton County, Ohio, and you consent to the personal jurisdiction of those courts.</p>
@@ -131,16 +137,22 @@
             <p>We may update these Terms from time to time. Continued use of the Service after changes constitutes acceptance of the new Terms. We will notify you of material changes via email.</p>
 
             <h2>17. Contact</h2>
-            <p>Questions about these Terms? Email <a href="mailto:legal@spotapply.ai">legal@spotapply.ai</a>, or write to SpotApply LLC, Cincinnati, Ohio, United States.</p>
+            <p>Questions about these Terms? Email <a href="mailto:legal@spotapply.ai">legal@spotapply.ai</a>; for help with your account or billing, email <a href="mailto:support@spotapply.ai">support@spotapply.ai</a>. You can also write to SpotApply LLC, Cincinnati, Ohio, United States.</p>
+            <p><strong>Notice for California users:</strong> under California Civil Code §1789.3, you may report complaints to the Complaint Assistance Unit of the Division of Consumer Services of the California Department of Consumer Affairs by mail at 1625 North Market Blvd., Suite N 112, Sacramento, CA 95834, or by telephone at <a href="tel:+18009525210">(800) 952-5210</a>.</p>
 
         </div>
 
-        <div class="mt-12 pt-8 flex gap-6 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
-            <a href="/privacy" class="hover:underline" style="color:var(--muted);">Privacy Policy</a>
+        <div class="mt-12 pt-8 flex flex-wrap gap-x-6 gap-y-2 text-sm" style="border-top:1px solid var(--border);color:var(--muted);">
             <a href="/" class="hover:underline" style="color:var(--muted);">Home</a>
+            <a href="/privacy" class="hover:underline" style="color:var(--muted);">Privacy Policy</a>
+            <a href="/refunds" class="hover:underline" style="color:var(--muted);">Refund Policy</a>
+            <a href="/cookies" class="hover:underline" style="color:var(--muted);">Cookie Policy</a>
+            <a href="mailto:support@spotapply.ai" class="hover:underline" style="color:var(--muted);">support@spotapply.ai</a>
         </div>
+        <p class="mt-4 text-sm" style="color:var(--muted);">&copy; {{ current_year }} SpotApply LLC · Cincinnati, Ohio, United States</p>
     </div>
 </main>
 
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>

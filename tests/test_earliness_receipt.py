@@ -114,10 +114,13 @@ def test_every_earliness_and_urgency_string_states_a_clock_never_odds():
 def test_the_hot_tier_cannot_be_lit_by_an_edit_date():
     """A posting we have held for a week whose Greenhouse `updated_at` moved
     this morning is NOT in the early window."""
-    job = _job("greenhouse", NOW - timedelta(hours=2), NOW - timedelta(days=7))
+    # urgency.assess reads the real clock, so these jobs are dated from it — a
+    # fixed NOW turned this test red a few days after it was written.
+    now = datetime.utcnow()
+    job = _job("greenhouse", now - timedelta(hours=2), now - timedelta(days=7))
     a = urgency.assess(job)
     assert "Early window" not in a.label and a.tone != "hot"
-    fresh = _job("greenhouse", NOW - timedelta(hours=5), NOW - timedelta(hours=4))
+    fresh = _job("greenhouse", now - timedelta(hours=5), now - timedelta(hours=4))
     a = urgency.assess(fresh)
     assert a.label.startswith("⚡ Early window") and "h left" in a.label and a.tone == "hot"
 

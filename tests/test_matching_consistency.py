@@ -868,5 +868,12 @@ def test_the_referral_and_profile_links_are_https(clean, monkeypatch):
     client = TestClient(server.app, base_url="http://app.spotapply.ai")
     ref = client.get("/api/referral").json()
     assert ref["link"].startswith("https://app.spotapply.ai/login?ref="), ref["link"]
+    # A private profile (the default) has no share link at all.
+    assert client.get("/api/trust").json()["share_url"] is None
+    with get_session() as s:
+        p = s.exec(select(UserProfile).where(UserProfile.user_id == UID)).one()
+        p.public_profile = True
+        s.add(p)
+        s.commit()
     trust = client.get("/api/trust").json()
     assert trust["share_url"].startswith("https://app.spotapply.ai/u/"), trust["share_url"]

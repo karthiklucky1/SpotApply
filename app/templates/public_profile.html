@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
   <title>{{ name }} — Verified Profile · SpotApply</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <meta name="description" content="{{ name }}'s professional profile on SpotApply: work readiness, skills and the evidence behind each verified item.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link href="/static/vendor/fonts/fonts.css" rel="stylesheet">
   <style>
     :root {
         --canvas: #F5FAFF; --surface: #FFFFFF; --surface-2: #EAF4FD;
         --ink: #0C2A3E; --ink-soft: #21455C; --muted: #6E675C; --border: #DCEAF6;
-        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-tint: #E0F2FE;
+        --sage: #0077C2; --sage-600: #1F9C8F; --sage-700: #16847A; --sage-800: #0F6E66; --sage-tint: #E0F2FE;
     }
     body {
         font-family: 'Outfit', sans-serif;
@@ -40,8 +42,9 @@
         border: 1px solid var(--border);
         border-radius: 20px;
     }
-    .star { color:#16847A; }
-    .star-empty { color:#D9D3C6; }
+    .star { color:#0F6E66; }
+    /* 3.4:1 on the --surface-2 card (#D9D3C6 was 1.5:1, invisible on white). */
+    .star-empty { color:#7A8496; }
     .wm { position:fixed; bottom:14px; right:16px; font-size:10px; color:var(--muted); font-weight: 600; tracking-wide; }
     .gradient-text {
         background: linear-gradient(135deg, var(--sage) 0%, var(--sage-600) 40%, var(--sage-700) 100%);
@@ -49,17 +52,28 @@
         -webkit-text-fill-color: transparent;
         background-clip: text;
     }
+    a:focus-visible { outline: 3px solid var(--sage); outline-offset: 2px; border-radius: 6px; }
   </style>
+  <!-- Compiled Tailwind (npm run build:css:public), AFTER the page's own styles,
+       where the Play CDN it replaces put its sheet. -->
+  <link rel="stylesheet" href="/static/tailwind-public.css">
 </head>
 <body class="min-h-screen pb-16">
   <div class="max-w-3xl mx-auto px-5 py-10 relative z-10 space-y-6">
+
+    <a href="/" aria-label="SpotApply home" class="inline-flex items-center gap-2">
+      <span class="w-8 h-8 rounded-xl flex items-center justify-center" style="background:linear-gradient(135deg,var(--sage),var(--sage-700));">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 12h8M12 8l4 4-4 4" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="font-black text-base text-[var(--ink)]">SpotApply</span>
+    </a>
 
     <!-- Header Card -->
     <div class="glass p-6 border border-[var(--border)] shadow-[0_1px_3px_rgba(46,42,36,0.06)]">
       <div class="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 class="text-3xl font-black text-[var(--ink)] leading-tight">{{ name }}</h1>
-          {% if title %}<p class="text-[var(--sage-700)] font-bold mt-1 text-sm">{{ title }}</p>{% endif %}
+          {% if title %}<p class="text-[var(--sage-800)] font-bold mt-1 text-sm">{{ title }}</p>{% endif %}
           <p class="text-[var(--muted)] text-xs mt-1.5 flex flex-wrap gap-x-2 gap-y-1">
             {% if city %}<span>📍 {{ city }}</span>{% endif %}
             {% if city and (years_experience or work_auth) %}<span class="text-[var(--muted)]">•</span>{% endif %}
@@ -70,22 +84,22 @@
         </div>
         {% if tier %}
         <span class="text-xs font-black uppercase tracking-wider px-4 py-2 rounded-xl"
-              style="background:var(--sage-tint); color:#16847A; border:1px solid rgba(47,180,166,0.35); box-shadow: 0 1px 3px rgba(46,42,36,0.06);">
+              style="background:var(--sage-tint); color:#0F6E66; border:1px solid rgba(47,180,166,0.35); box-shadow: 0 1px 3px rgba(46,42,36,0.06);">
           ✓ {{ tier }}
         </span>
         {% endif %}
       </div>
       {% if summary %}<p class="text-[var(--ink-soft)] text-sm leading-relaxed mt-4 pt-4 border-t border-[var(--border)]">{{ summary }}</p>{% endif %}
       <div class="flex gap-4 mt-4 text-xs font-bold">
-        {% if github_url %}<a href="{{ github_url }}" target="_blank" rel="noopener" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] hover:underline transition">GitHub ↗</a>{% endif %}
-        {% if linkedin_url %}<a href="{{ linkedin_url }}" target="_blank" rel="noopener" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] hover:underline transition">LinkedIn ↗</a>{% endif %}
-        {% if portfolio_url %}<a href="{{ portfolio_url }}" target="_blank" rel="noopener" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] hover:underline transition">Portfolio ↗</a>{% endif %}
+        {% if github_url %}<a href="{{ github_url }}" target="_blank" rel="noopener" class="text-[var(--sage-800)] hover:underline transition">GitHub ↗</a>{% endif %}
+        {% if linkedin_url %}<a href="{{ linkedin_url }}" target="_blank" rel="noopener" class="text-[var(--sage-800)] hover:underline transition">LinkedIn ↗</a>{% endif %}
+        {% if portfolio_url %}<a href="{{ portfolio_url }}" target="_blank" rel="noopener" class="text-[var(--sage-800)] hover:underline transition">Portfolio ↗</a>{% endif %}
       </div>
     </div>
 
     <!-- Work Readiness Passport -->
     <div class="glass p-6 border border-[var(--border)] shadow-[0_1px_3px_rgba(46,42,36,0.06)]">
-      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-700)] mb-4">✅ Work Readiness</h2>
+      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-800)] mb-4">✅ Work Readiness</h2>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {% if availability %}<div><span class="text-[var(--muted)] text-xs font-bold uppercase tracking-wider">Availability</span><br><span class="text-[var(--ink)] font-semibold mt-0.5 inline-block">{{ availability }}</span></div>{% endif %}
         {% if work_auth %}<div><span class="text-[var(--muted)] text-xs font-bold uppercase tracking-wider">Work authorization</span><br><span class="text-[var(--ink)] font-semibold mt-0.5 inline-block">{{ work_auth }}</span></div>{% endif %}
@@ -99,7 +113,7 @@
     <!-- Articulation video (optional booster) -->
     {% if articulation_video_url %}
     <div class="glass p-6 border border-[var(--border)] shadow-[0_1px_3px_rgba(46,42,36,0.06)]">
-      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-700)] mb-2">🎥 Articulation Proof</h2>
+      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-800)] mb-2">🎥 Articulation Proof</h2>
       <p class="text-[12px] text-[var(--muted)] mb-3">Candidate explaining their own code — verified human, not a proxy.</p>
       <a href="{{ articulation_video_url }}" target="_blank" rel="noopener" class="inline-block text-xs font-black uppercase tracking-wider text-white px-5 py-2.5 rounded-xl transition hover:scale-[1.02] active:scale-[0.98]" style="background:var(--sage-700);">Watch 2-min walkthrough ↗</a>
     </div>
@@ -108,20 +122,20 @@
     <!-- Trust dimensions with evidence -->
     {% if dimensions %}
     <div class="glass p-6 border border-[var(--border)] shadow-[0_1px_3px_rgba(46,42,36,0.06)] space-y-4">
-      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-700)]">🛡️ Trust Profile — verified with evidence</h2>
+      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-800)]">🛡️ Trust Profile — verified with evidence</h2>
       {% for d in dimensions %}
       <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] hover:bg-[var(--sage-tint)] transition">
         <div class="flex items-center justify-between">
           <span class="font-extrabold text-[var(--ink)] text-sm">{{ d.label }}</span>
-          <span class="text-sm tracking-widest font-mono">
-            {% for i in range(5) %}{% if i < d.stars %}<span class="star">★</span>{% else %}<span class="star-empty">★</span>{% endif %}{% endfor %}
+          <span class="text-sm tracking-widest font-mono" role="img" aria-label="{{ d.stars }} out of 5">
+            {% for i in range(5) %}{% if i < d.stars %}<span class="star" aria-hidden="true">★</span>{% else %}<span class="star-empty" aria-hidden="true">★</span>{% endif %}{% endfor %}
           </span>
         </div>
         {% if d.evidence %}
         <ul class="mt-2.5 space-y-1 pl-1">
           {% for e in d.evidence %}
           <li class="text-[12px] text-[var(--ink-soft)] flex items-start gap-2">
-            <span class="text-[var(--sage-700)] font-bold">✓</span><span>{{ e }}</span>
+            <span class="text-[var(--sage-800)] font-bold">✓</span><span>{{ e }}</span>
           </li>
           {% endfor %}
         </ul>
@@ -134,10 +148,10 @@
     <!-- Skills -->
     {% if skills %}
     <div class="glass p-6 border border-[var(--border)] shadow-[0_1px_3px_rgba(46,42,36,0.06)]">
-      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-700)] mb-3">Skills</h2>
+      <h2 class="text-xs font-black uppercase tracking-widest text-[var(--sage-800)] mb-3">Skills</h2>
       <div class="flex flex-wrap gap-2">
         {% for s in skills %}
-        <span class="text-xs font-semibold px-3.5 py-1.5 rounded-xl bg-[var(--sage-tint)] text-[var(--sage-700)] border border-[rgba(47,180,166,0.3)]">{{ s }}</span>
+        <span class="text-xs font-semibold px-3.5 py-1.5 rounded-xl bg-[var(--sage-tint)] text-[var(--sage-800)] border border-[rgba(47,180,166,0.3)]">{{ s }}</span>
         {% endfor %}
       </div>
     </div>
@@ -162,9 +176,10 @@
     {% endif %}
 
     <p class="text-center text-[var(--muted)] text-xs mt-10">
-      Verified professional profile · <a href="/" class="text-[var(--sage-700)] hover:text-[var(--sage-600)] font-bold hover:underline transition">SpotApply</a>
+      Verified professional profile · <a href="/" aria-label="SpotApply home" class="text-[var(--sage-800)] font-bold hover:underline transition">SpotApply</a>
     </p>
   </div>
   <div class="wm">app.spotapply.ai/u/{{ handle }}</div>
+<script src="/static/cookie-notice.js" defer></script>
 </body>
 </html>
