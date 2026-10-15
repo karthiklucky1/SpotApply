@@ -24,14 +24,17 @@ class UrgencyAssessment:
     tone: str       # 'hot' | 'fresh' | 'normal'
 
 
-def _age_days(dt) -> int | None:
-    """Whole days since ``dt`` (UTC, tolerant of tz-aware/naive)."""
+def _age_days(dt, now: datetime | None = None) -> int | None:
+    """Whole days from ``dt`` to ``now`` (default: the current UTC time;
+    tolerant of tz-aware/naive)."""
     if not dt:
         return None
     try:
         if getattr(dt, "tzinfo", None) is not None:
             dt = dt.replace(tzinfo=None)
-        return (datetime.utcnow() - dt).days
+        if getattr(now, "tzinfo", None) is not None:
+            now = now.replace(tzinfo=None)
+        return ((now or datetime.utcnow()) - dt).days
     except Exception:
         return None
 
@@ -49,8 +52,11 @@ def _span_days(a, b) -> int | None:
         return None
 
 
-def assess(job) -> UrgencyAssessment:
-    """Score how time-sensitive / high-opportunity this posting is."""
+def assess(job, now: datetime | None = None) -> UrgencyAssessment:
+    """Score how time-sensitive / high-opportunity this posting is.
+
+    Ages are measured to ``now`` (default: the current UTC time); tests pin it
+    so the early window does not drift with the wall clock."""
     if bool(getattr(job, "is_closed", False)):
         return UrgencyAssessment(0, "", "", "normal")
 
@@ -58,7 +64,7 @@ def assess(job) -> UrgencyAssessment:
     posted, ref_kind = earliness.reference(job)
     if posted is None:
         posted = getattr(job, "discovered_at", None)
-    age = _age_days(posted)
+    age = _age_days(posted, now)
     open_span = _span_days(getattr(job, "first_seen", None), getattr(job, "last_seen", None))
     ghost = getattr(job, "ghost_score", 0) or 0
 
@@ -66,7 +72,7 @@ def assess(job) -> UrgencyAssessment:
     # left are shown so "apply today" is a measured statement, not a mood. A
     # board with no trustworthy publish date says the clock started when WE
     # found the posting, and attributes nothing to the board.
-    window = earliness.early_window(job)
+    window = earliness.early_window(job, now)
     if window["in_window"]:
         left = window["hours_left"]
         since = ("Posted" if ref_kind == "posted"

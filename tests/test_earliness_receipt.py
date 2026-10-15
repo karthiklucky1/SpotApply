@@ -99,7 +99,7 @@ def test_every_earliness_and_urgency_string_states_a_clock_never_odds():
                 _job("workday", None, NOW - timedelta(hours=2)),
                 _job("greenhouse", NOW - timedelta(days=4), NOW - timedelta(days=4)),
                 _job("greenhouse", NOW - timedelta(days=40), NOW - timedelta(days=40))):
-        a = urgency.assess(job)
+        a = urgency.assess(job, now=NOW)
         strings += [a.label, a.reason]
     for text in strings:
         assert earliness.copy_is_honest(text), text
@@ -115,11 +115,14 @@ def test_the_hot_tier_cannot_be_lit_by_an_edit_date():
     """A posting we have held for a week whose Greenhouse `updated_at` moved
     this morning is NOT in the early window."""
     job = _job("greenhouse", NOW - timedelta(hours=2), NOW - timedelta(days=7))
-    a = urgency.assess(job)
+    a = urgency.assess(job, now=NOW)
     assert "Early window" not in a.label and a.tone != "hot"
     fresh = _job("greenhouse", NOW - timedelta(hours=5), NOW - timedelta(hours=4))
-    a = urgency.assess(fresh)
+    a = urgency.assess(fresh, now=NOW)
     assert a.label.startswith("⚡ Early window") and "h left" in a.label and a.tone == "hot"
+    real_now = datetime.utcnow()                     # no `now` = the real clock (production)
+    live = _job("greenhouse", real_now - timedelta(hours=5), real_now - timedelta(hours=4))
+    assert urgency.assess(live).label.startswith("⚡ Early window")
 
 
 # ── the routes: stamping and the first response ──────────────────────────────
