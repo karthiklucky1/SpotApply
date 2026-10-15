@@ -484,15 +484,17 @@ def test_payment_options_never_leak_a_secret(monkeypatch):
 
 # ── one price, stated once ───────────────────────────────────────────────────
 
-def test_pro_is_one_hundred_dollars_a_month_and_every_surface_reads_it():
+def test_pro_is_one_hundred_dollars_a_month_and_every_surface_reads_it(monkeypatch):
     """PLAN_PRICES[PRO] is the single source; the pricing page, the dashboard
     plans modal, the upsell strings and /api/billing/options all render from
-    it. A literal "$10" anywhere is the old price leaking back."""
+    it. A literal "$10" anywhere is the old price leaking back. (Once the price
+    is announced — see the next test for the "coming soon" state.)"""
     import pathlib
     from fastapi.testclient import TestClient
     from app.api.server import app
     from app.db.models import PLAN_PRICES
 
+    monkeypatch.setattr(settings, "pro_price_announced", True, raising=False)
     assert PLAN_PRICES[PlanTier.PRO] == 100
     assert billing.pro_price_usd() == 100
     assert billing.payment_options()["price_monthly_usd"] == 100
@@ -513,11 +515,55 @@ def test_limit_messages_quote_the_real_price(monkeypatch):
     """The 429 detail the dashboard shows when a Free user hits a cap."""
     from app.api import server as srv
     from app.db.models import PLAN_LIMITS
+    monkeypatch.setattr(settings, "pro_price_announced", True, raising=False)
     monkeypatch.setattr(srv, "_get_user_plan", lambda uid: PlanTier.FREE)
     monkeypatch.setattr(srv, "_get_week_autofill_count",
                         lambda session, uid: PLAN_LIMITS[PlanTier.FREE]["autofill_weekly"])
     ok, msg, info = srv._check_autofill_limit(_UID)
     assert not ok and "$100/mo" in msg and "$10/" not in msg
+    # Before the price is announced the same message names no amount.
+    monkeypatch.setattr(settings, "pro_price_announced", False, raising=False)
+    ok, msg, info = srv._check_autofill_limit(_UID)
+    assert not ok and "$" not in msg and "coming soon" in msg
+
+
+def test_until_the_price_is_announced_no_surface_shows_an_amount(monkeypatch):
+    """Founder, 2026-10-15: no price anywhere until it is decided from early
+    users' numbers and reviews — every surface says "coming soon", and nothing
+    can be bought (a subscription needs its price beside the button)."""
+    import pathlib
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    monkeypatch.setattr(settings, "pro_price_announced", False, raising=False)
+    assert billing.price_announced() is False
+    assert billing.payment_options()["price_monthly_usd"] is None
+    assert billing.payment_options()["purchase_available"] is False
+    assert "$" not in billing.renewal_terms_text()
+    client = TestClient(app)
+    for path in ("/", "/pricing", "/refunds", "/terms"):
+        html = client.get(path).text
+        # (The Terms' liability cap, "ONE HUNDRED U.S. DOLLARS ($100)", is not a price.)
+        html = html.replace("ONE HUNDRED U.S. DOLLARS ($100)", "")
+        assert "$100" not in html and "100/mo" not in html and "per month" not in html.replace(
+            "charged monthly", ""), path
+    assert "Coming soon" in client.get("/pricing").text
+    assert "Coming soon" in client.get("/").text
+    tpl = (pathlib.Path(__file__).resolve().parents[1] / "app" / "templates" / "dashboard.html").read_text()
+    card = tpl[tpl.index("<p class=\"font-black text-white text-sm\">Pro</p>"):][:1500]
+    assert "{% if price_announced() %}" in card and "Coming soon" in card
+    assert "Upgrade to Pro (${{ pro_price }}" not in tpl
+
+
+def test_checkout_is_refused_until_the_price_is_announced(monkeypatch):
+    import inspect
+    import app.api.server as server
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_x", raising=False)
+    monkeypatch.setattr(settings, "stripe_price_id_pro", "price_x", raising=False)
+    monkeypatch.setattr(billing, "temporary_pro_active", lambda: False)
+    monkeypatch.setattr(settings, "pro_price_announced", False, raising=False)
+    assert billing.purchase_available() is False
+    src = inspect.getsource(server.billing_checkout)
+    assert src.index("price_announced()") < src.index("create_checkout_session(")
 
 
 # ── cancel any time: the Stripe Customer Portal ──────────────────────────────

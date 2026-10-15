@@ -121,14 +121,38 @@ def pro_price_usd() -> int:
     return int(PLAN_PRICES[PlanTier.PRO])
 
 
+def price_announced() -> bool:
+    """Has Pro's price been announced? Until it has (PRO_PRICE_ANNOUNCED), every
+    surface says "coming soon" instead of an amount and nothing is for sale."""
+    return bool(settings.pro_price_announced)
+
+
+#: What every surface says instead of an amount while the price is unannounced.
+PRICE_COMING_SOON = "Pricing coming soon"
+
+
+def pro_price_phrase() -> str:
+    """"$100/mo" once announced; "pricing coming soon" until then."""
+    return f"${pro_price_usd()}/mo" if price_announced() else "pricing coming soon"
+
+
 def renewal_terms_text() -> str:
     """The ONE wording of Pro's automatic-renewal terms, shown beside every
     button that starts a subscription (pricing page, the dashboard's upgrade
     screen, Stripe Checkout) and in the Terms. Price, frequency, that it renews
-    until cancelled, how to cancel and what cancelling does."""
+    until cancelled, how to cancel and what cancelling does. Before the price
+    is announced it names no amount and says nothing can be bought yet."""
+    cancel = ("Cancel anytime online in your dashboard under Plans & Pricing "
+              "→ Manage or cancel subscription; ")
+    if not price_announced():
+        return ("Pro will be a monthly subscription that renews automatically every month "
+                "until you cancel. Its price has not been set yet: it will be shown next to "
+                "the subscribe button and on the payment page before anyone can pay, and no "
+                "one is moved onto a paid plan automatically. " + cancel +
+                "you will keep Pro until the end of the month you paid for and are not "
+                "charged again.")
     return (f"Pro is ${pro_price_usd()} per month and renews automatically every month "
-            f"until you cancel. Cancel anytime online in your dashboard under Plans & Pricing "
-            f"→ Manage or cancel subscription; "
+            f"until you cancel. " + cancel +
             f"you keep Pro until the end of the month you paid for and are not charged again.")
 
 
@@ -143,7 +167,9 @@ def payment_options() -> dict:
     temp = temporary_pro_status()
     buyable = purchase_available()
     return {
-        "price_monthly_usd": pro_price_usd(),
+        # No amount leaves the server before the price is announced.
+        "price_monthly_usd": pro_price_usd() if price_announced() else None,
+        "price_announced": price_announced(),
         "stripe_enabled": stripe_enabled(),
         "stripe_live": stripe_live_mode(),
         # Paid paths are OFF while temporary Pro is on — including the manual
@@ -201,8 +227,12 @@ def purchase_available() -> bool:
     features they already have is not an upsell, it is a false sale, and hiding
     the button is not enough — `billing_checkout` refuses on this too, so a
     direct POST cannot open a Checkout session either.
+
+    Also False until the price is announced (`price_announced`): a subscription
+    must show its price beside the button that starts it, so an unannounced
+    price means there is nothing to buy.
     """
-    return stripe_enabled() and not temporary_pro_active()
+    return stripe_enabled() and not temporary_pro_active() and price_announced()
 
 
 def temporary_pro_status() -> dict:

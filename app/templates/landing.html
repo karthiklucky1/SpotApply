@@ -753,7 +753,7 @@
                  only: both stylesheets are compiled and committed, so a new class
                  here would ship unstyled until someone runs `npm run build`. -->
             <p class="body" style="margin-top:18px;padding:14px 18px;border-radius:14px;background:#ECFDF5;border:1px solid #047857;color:#065F46;font-weight:700;">
-                {{ temporary_pro_notice }} The price below is what Pro will cost when paid plans reopen.
+                {{ temporary_pro_notice }} {% if price_announced() %}The price below is what Pro will cost when paid plans reopen.{% else %}Pro pricing is coming soon.{% endif %}
             </p>
             {% endif %}
         </div>
@@ -763,11 +763,15 @@
             <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;">
                 <div>
                     <div class="h3">SpotApply Pro</div>
-                    <div class="body" style="font-size:14px;margin-top:4px;">Everything, billed monthly.</div>
+                    <div class="body" style="font-size:14px;margin-top:4px;">{% if price_announced() %}Everything, billed monthly.{% else %}Everything, one monthly plan. Price to be announced.{% endif %}</div>
                 </div>
                 <div style="display:flex;align-items:baseline;gap:4px;">
+                    {% if price_announced() %}
                     <span class="num" style="font-size:44px;font-weight:800;color:var(--ink);letter-spacing:-0.03em;">${{ pro_price }}</span>
                     <span class="body" style="font-size:15px;">/month</span>
+                    {% else %}
+                    <span style="font-size:30px;font-weight:800;color:var(--ink);letter-spacing:-0.02em;">Coming soon</span>
+                    {% endif %}
                 </div>
             </div>
 
@@ -890,7 +894,7 @@
             </span>
             <span style="font-weight:700;font-size:14.5px;color:var(--ink);">SpotApply</span>
             </a>
-            <span style="font-size:13px;color:var(--muted);margin-left:6px;">© {{ current_year }} SpotApply LLC · Cincinnati, Ohio</span>
+            <span style="font-size:13px;color:var(--muted);margin-left:6px;">© {{ current_year }} SpotApply LLC · {{ business_address }}</span>
         </div>
         <div style="display:flex;align-items:center;gap:24px;font-size:14px;flex-wrap:wrap;justify-content:center;">
             <a href="#how-it-works" style="color:var(--muted);text-decoration:none;">How it works</a>

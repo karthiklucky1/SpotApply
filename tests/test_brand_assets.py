@@ -384,3 +384,17 @@ def test_the_footers_carry_the_company_name(client):
         r = client.get(path)
         assert r.status_code == 200
         assert "SpotApply LLC" in r.text, f"{path} footer does not name the company"
+
+
+@pytest.mark.parametrize("path", ["/", "/pricing", "/privacy", "/terms", "/refunds", "/cookies"])
+def test_the_company_postal_address_is_printed(path):
+    """The legal pages and footers carry the company's postal address — the
+    contact and DMCA agent address in the Terms, the data controller in the
+    Privacy Policy, California's §1789.3 disclosure, and CAN-SPAM for any mail
+    that links here. One setting (BUSINESS_ADDRESS) feeds every page."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app
+    from app.config import settings
+    assert settings.business_address == "3227 Bishop Street, Unit 7, Cincinnati, OH 45220"
+    html = TestClient(app).get(path).text
+    assert "3227 Bishop Street, Unit 7, Cincinnati, OH 45220" in html, path

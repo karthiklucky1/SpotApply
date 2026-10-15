@@ -252,9 +252,10 @@ scoping, and funnel analytics.
 ## Pricing
 
 Two plans, stated the same everywhere in the app: **Free** (5 tailored
-resumes/day, 2 auto-fills/week, full discovery + scoring) and **Pro — $100/month, billed monthly, cancel any time**
-(no caps). While Stripe is not configured the app runs in pre-revenue mode and
-every account gets Pro for free.
+resumes/day, 2 auto-fills/week, full discovery + scoring) and **Pro** (35 tailored
+resumes/day, unlimited auto-fills; billed monthly, cancel any time). **Pro pricing is
+coming soon**: every account currently has Pro limits for free, and no price is shown
+or charged until `PRO_PRICE_ANNOUNCED` is turned on.
 
 ## Product research
 

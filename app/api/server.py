@@ -2090,6 +2090,19 @@ templates.env.globals["renewal_terms"] = _renewal_terms
 templates.env.globals["current_year_now"] = lambda: _current_year()
 
 
+def _price_announced() -> bool:
+    from app.billing import price_announced
+    return price_announced()
+
+
+# Pro's price is shown only once announced; until then every page says
+# "Pricing coming soon" (billing.PRICE_COMING_SOON).
+templates.env.globals["price_announced"] = _price_announced
+templates.env.globals["price_coming_soon"] = "Pricing coming soon"
+# The company's postal address, for the legal pages and footers.
+templates.env.globals["business_address"] = settings.business_address
+
+
 # ── Public / marketing pages ─────────────────────────────────────────────────
 
 _ASSET_CACHE = "public, max-age=86400"
@@ -9919,8 +9932,8 @@ def billing_checkout(request: Request) -> dict:
     if not uid:
         raise HTTPException(status_code=401, detail="Sign in to upgrade.")
     from app.billing import (AlreadySubscribed, TEMPORARY_PRO_NOTICE,
-                             create_checkout_session, stripe_enabled,
-                             temporary_pro_active)
+                             create_checkout_session, price_announced,
+                             stripe_enabled, temporary_pro_active)
     # SERVER-SIDE, not just a hidden button. While Pro features are free to
     # everyone there is nothing to sell, and opening a Checkout session would
     # charge $100/month for what this account already has. A direct POST from a
@@ -9931,6 +9944,13 @@ def billing_checkout(request: Request) -> dict:
             detail=(f"{TEMPORARY_PRO_NOTICE} There is nothing to buy right now — "
                     f"your account already has Pro limits, and no payment will be "
                     f"taken or started."))
+    # No price announced = nothing for sale: a subscription can't be sold
+    # without its price shown beside the button.
+    if not price_announced():
+        raise HTTPException(
+            status_code=503,
+            detail="Pro pricing is coming soon. Nothing can be bought yet, and no "
+                   "payment will be taken or started.")
     if not stripe_enabled():
         raise HTTPException(
             status_code=503,
@@ -10116,7 +10136,9 @@ def _limit_upsell(plan, benefit: str) -> str:
     the checkout route is refusing."""
     if str(getattr(plan, "value", plan)).lower() == "pro":
         return " This is the Pro limit."
-    from app.billing import pro_price_usd
+    from app.billing import price_announced, pro_price_usd
+    if not price_announced():
+        return f" Upgrade to Pro {benefit} — pricing coming soon."
     return f" Upgrade to Pro (${pro_price_usd()}/mo) {benefit}."
 
 
@@ -10128,11 +10150,10 @@ def _check_autofill_limit(uid: str) -> tuple[bool, str, dict]:
     weekly_limit = limits["autofill_weekly"]
     if weekly_limit is None:
         return True, "", {"plan": plan, "weekly_limit": None}
-    from app.billing import pro_price_usd
     if weekly_limit == 0:
         return False, (
-            "Auto-fill is not available on the Free plan. "
-            f"Upgrade to Pro (${pro_price_usd()}/mo) for unlimited auto-fills."
+            "Auto-fill is not available on the Free plan."
+            f"{_limit_upsell(plan, 'for unlimited auto-fills')}"
         ), {"plan": plan, "weekly_limit": 0}
     with get_session() as session:
         used = _get_week_autofill_count(session, uid)

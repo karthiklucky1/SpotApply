@@ -878,7 +878,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   (`static/cookie-notice.js`) is a notice, not a fake choice — everything stored is
   essential; an optional cookie needs a real opt-in first. Unsupported claims are
   removed, not softened: "45,000+" boards (47,618 active on 2026-10-15), no "Most
-  popular", no Pro features the code doesn't give. Guards: `test_billing`,
+  popular", no Pro features the code doesn't give. **Pro's price is unannounced**
+  (`PRO_PRICE_ANNOUNCED`, default off, founder 2026-10-15 — set from early users'
+  numbers and reviews): every surface says "coming soon", `/api/billing/options`
+  returns no amount, and `purchase_available()` + checkout refuse until it is on.
+  `BUSINESS_ADDRESS` (Jinja `business_address`) prints the postal address on the
+  legal pages and footers. Guards: `test_billing`,
   `test_profile_visibility`, `test_avatar_upload`, `test_temporary_pro`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code

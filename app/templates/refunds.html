@@ -18,7 +18,11 @@
     <h2>1. What you pay</h2>
     <ul>
         <li><strong>Free plan:</strong> $0. No card is needed and nothing is ever charged.</li>
+        {% if price_announced() %}
         <li><strong>Pro plan:</strong> ${{ pro_price }} per month, charged in advance at the start of each monthly period through our payment processor, Stripe. Applicable sales tax, if any, is shown before you pay.</li>
+        {% else %}
+        <li><strong>Pro plan:</strong> pricing coming soon. When it is announced, Pro will be charged monthly in advance through our payment processor, Stripe, and the price and any sales tax will be shown before you pay. Until then nothing can be bought and nobody is charged.</li>
+        {% endif %}
         <li>There are no setup fees, no per-application fees and no other charges. The price on the <a href="/pricing">Pricing page</a> is the full price.</li>
     </ul>
 
@@ -40,6 +44,6 @@
     <p>Email <a href="mailto:support@spotapply.ai">support@spotapply.ai</a> from the email address on your account, with the date and amount of the charge. We reply within 5 business days. Approved refunds go back to the card or account you paid with; your bank usually shows them within 5–10 business days.</p>
 
     <h2>6. Contact</h2>
-    <p>SpotApply LLC, Cincinnati, Ohio, United States · <a href="mailto:support@spotapply.ai">support@spotapply.ai</a></p>
+    <p>SpotApply LLC, {{ business_address }}, United States · <a href="mailto:support@spotapply.ai">support@spotapply.ai</a></p>
 </div>
 {% endblock %}

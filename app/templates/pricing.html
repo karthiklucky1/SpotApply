@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pricing — SpotApply</title>
-    <meta name="description" content="{% if temporary_pro %}Pro features are temporarily available to everyone — no card required. Here is what plans will cost when paid plans reopen.{% else %}Simple, transparent pricing. Start free and upgrade as your job search scales.{% endif %}">
+    <meta name="description" content="{% if temporary_pro %}Pro features are temporarily available to everyone — no card required. Pro pricing is coming soon.{% else %}Simple, transparent pricing. Start free and upgrade as your job search scales.{% endif %}">
     <!-- Social + canonical. These three pages had neither: a shared link
          rendered as a bare URL with no card, and with no canonical the
          trailing-slash and query-string variants of one page can split
@@ -76,10 +76,15 @@
                 limits right now — there is nothing to buy, nothing to cancel, and nothing
                 will be charged or started automatically when this ends.</p>
             </div>
+            {% if price_announced() %}
             <p class="text-lg" style="color:var(--muted);">The prices below are what Pro
             will cost when paid plans reopen.</p>
             {% else %}
-            <p class="text-lg" style="color:var(--muted);">Free to start. ${{ pro_price }}/month for everything. One plan, billed monthly, cancel any time.</p>
+            <p class="text-lg" style="color:var(--muted);">Pro pricing is coming soon. We will set it
+            with feedback from our first users and announce it before anyone can pay.</p>
+            {% endif %}
+            {% else %}
+            <p class="text-lg" style="color:var(--muted);">Free to start. {% if price_announced() %}${{ pro_price }}/month for everything. One plan, billed monthly, cancel any time.{% else %}Pro pricing is coming soon.{% endif %}</p>
             {% endif %}
         </div>
 
@@ -107,8 +112,13 @@
             <div class="plan-card featured p-7 flex flex-col relative">
                 <div class="mb-6">
                     <div class="text-xs font-black uppercase tracking-widest mb-3" style="color:#0F6E66;">Pro</div>
+                    {% if price_announced() %}
                     <div class="text-5xl font-black" style="color:var(--ink);">${{ pro_price }}</div>
                     <div class="text-sm mt-1" style="color:var(--muted);">per month · billed monthly · cancel any time</div>
+                    {% else %}
+                    <div class="text-4xl font-black" style="color:var(--ink);">Coming soon</div>
+                    <div class="text-sm mt-1" style="color:var(--muted);">Price to be announced · monthly plan · cancel any time</div>
+                    {% endif %}
                 </div>
                 <!-- Numbers here mirror PLAN_LIMITS[PlanTier.PRO] in app/db/models.py
                      (tailor_daily 35, shortlist_daily 35, autofill_weekly None =
@@ -123,9 +133,12 @@
                 {% if temporary_pro %}
                 <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Sign up — these features are free right now</a>
                 <p class="text-xs text-center mt-2" style="color:var(--muted);">No card, no charge.</p>
-                {% else %}
+                {% elif price_announced() %}
                 <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Start Pro — ${{ pro_price }}/mo</a>
                 <p class="text-xs text-center mt-2 leading-relaxed" style="color:var(--muted);">{{ renewal_terms() }} <a href="/refunds" class="underline" style="color:var(--muted);">Refund Policy</a></p>
+                {% else %}
+                <a href="/login?mode=signup" class="btn-primary block text-center text-white py-3 rounded-xl text-sm font-black">Sign up free</a>
+                <p class="text-xs text-center mt-2" style="color:var(--muted);">Pro pricing is coming soon. No card needed.</p>
                 {% endif %}
             </div>
 
@@ -171,7 +184,7 @@
 
 <footer class="py-10 px-4" style="border-top:1px solid var(--border);">
     <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-        <span class="font-bold text-sm" style="color:var(--ink-soft);">© {{ current_year }} SpotApply LLC · Cincinnati, Ohio</span>
+        <span class="font-bold text-sm" style="color:var(--ink-soft);">© {{ current_year }} SpotApply LLC · {{ business_address }}</span>
         <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm" style="color:var(--muted);">
             <a href="/" class="transition-colors hover:underline" style="color:var(--muted);">Home</a>
             <a href="/privacy" class="transition-colors hover:underline" style="color:var(--muted);">Privacy</a>

@@ -186,8 +186,12 @@ def test_purchase_is_unavailable_while_temporary_pro_is_on(temp_pro):
     assert billing.purchase_available() is False
 
 
-def test_purchase_returns_when_the_flag_goes_off(no_temp_pro):
+def test_purchase_returns_when_the_flag_goes_off(no_temp_pro, monkeypatch):
+    monkeypatch.setattr(settings, "pro_price_announced", True, raising=False)
     assert billing.purchase_available() is True
+    # …but only once the price is announced: nothing is sold without it.
+    monkeypatch.setattr(settings, "pro_price_announced", False, raising=False)
+    assert billing.purchase_available() is False
 
 
 def test_payment_options_closes_every_paid_path(temp_pro, monkeypatch):
@@ -203,6 +207,7 @@ def test_payment_options_closes_every_paid_path(temp_pro, monkeypatch):
 
 
 def test_payment_options_reopens_when_the_flag_goes_off(no_temp_pro, monkeypatch):
+    monkeypatch.setattr(settings, "pro_price_announced", True, raising=False)
     monkeypatch.setattr(settings, "payment_bank_details", "IBAN 123", raising=False)
     opts = billing.payment_options()
     assert opts["purchase_available"] is True

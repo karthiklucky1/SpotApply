@@ -348,6 +348,14 @@ class Settings(BaseSettings):
     # search + an LLM call). A template-only set — the LLM rewrite was skipped —
     # expires sooner so the better drafts arrive once the provider is back.
     # "Regenerate" in the panel always drafts fresh. 0 = never reuse.
+    # The company's postal address, printed in the legal pages and footers
+    # (contact, DMCA agent, California §1789.3, CAN-SPAM for any marketing mail).
+    business_address: str = "3227 Bishop Street, Unit 7, Cincinnati, OH 45220"   # BUSINESS_ADDRESS
+    # Pro's price is NOT announced yet (founder, 2026-10-15): every surface says
+    # "coming soon" instead of an amount, and nothing can be bought until this is
+    # on — a subscription cannot be sold without its price beside the button.
+    # The amount itself stays in PLAN_PRICES for when it is announced.
+    pro_price_announced: bool = False                    # PRO_PRICE_ANNOUNCED
     outreach_drafts_ttl_hours: float = 24.0             # OUTREACH_DRAFTS_TTL_HOURS
     outreach_drafts_template_ttl_hours: float = 1.0     # OUTREACH_DRAFTS_TEMPLATE_TTL_HOURS
     # Capture hiring context (department / team / requisition / recruiter) from
