@@ -3222,15 +3222,18 @@ def clear_jobs(request: Request) -> dict:
     deleted_jobs = 0
     with get_session() as session:
         from sqlmodel import delete as _sql_delete
-        from app.db.models import OutreachMessage
+        from app.db.models import OutreachDraftSet, OutreachMessage
         aq = select(Application)
         jq = select(Job)
         oq = _sql_delete(OutreachMessage)
+        dq = _sql_delete(OutreachDraftSet)
         if _scoped:
             aq = aq.where(Application.user_id == uid)
             jq = jq.where(Job.user_id == uid)
             oq = oq.where(OutreachMessage.user_id == uid)
+            dq = dq.where(OutreachDraftSet.user_id == uid)
         session.exec(oq)        # Postgres cascades from application; SQLite does not
+        session.exec(dq)
         for a in session.exec(aq).all():
             session.delete(a)
             deleted_apps += 1
@@ -12589,19 +12592,30 @@ async def upload_avatar(request: Request, file: UploadFile = File(...)) -> dict:
 
 @app.get("/application/{application_id}/referral")
 @_rate_limit("20/minute")
-def get_referral_drafts(application_id: int, request: Request) -> dict:
+def get_referral_drafts(application_id: int, request: Request, refresh: bool = False) -> dict:
     """Draft referral / hiring-manager / visa-alumni outreach for one application.
-    Drafts only — the user sends them. Strictly scoped to the owning user."""
+    Drafts only — the user sends them. Strictly scoped to the owning user.
+
+    The last drafts are reused while fresh (`OutreachDraftSet`): drafting is a
+    SerpAPI search, GitHub lookups and an LLM call, and reopening the panel
+    redid all of it — seconds of waiting, a new bill and different words each
+    time. ``refresh=1`` (the panel's "Regenerate") always drafts anew."""
     _require_owned_application(request, application_id)
     uid = _get_user_id(request)
-    from app.intelligence.referral import generate_referral_drafts
-    try:
-        data = generate_referral_drafts(application_id, user_id=uid if uid != "local" else None)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        log.exception("Referral draft generation failed for app %d: %s", application_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    owner = uid if uid != "local" else None
+    data = None if refresh else _saved_outreach_drafts(application_id, owner)
+    if data is None:
+        from app.intelligence.referral import generate_referral_drafts
+        try:
+            data = generate_referral_drafts(application_id, user_id=owner)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            log.exception("Referral draft generation failed for app %d: %s", application_id, e)
+            raise HTTPException(status_code=500, detail=str(e))
+        generated_at = _save_outreach_drafts(application_id, owner, data)
+        data["generated_at"] = generated_at.isoformat() + "Z"
+        data["reused"] = False
     # The kit: subjects, one-click compose links, LinkedIn people searches, the
     # people the posting itself names, and what the user already sent.
     try:
@@ -12610,6 +12624,70 @@ def get_referral_drafts(application_id: int, request: Request) -> dict:
         log.warning("outreach kit skipped for app %d: %s", application_id, e)
     data["sent"] = _outreach_rows(application_id, uid)
     return data
+
+
+def _saved_outreach_drafts(application_id: int, owner) -> Optional[dict]:
+    """The drafts last generated for this application, or None when there are
+    none, they have expired, or they were drafted for a different posting.
+    A failed read is a miss, never an error: the route can always draft."""
+    from datetime import datetime as _dt, timedelta as _td
+    from app.config import settings
+    from app.db.models import OutreachDraftSet
+    try:
+        with get_session() as session:
+            q = (select(OutreachDraftSet, Application.job_id)
+                 .join(Application, Application.id == OutreachDraftSet.application_id)
+                 .where(OutreachDraftSet.application_id == application_id))
+            if owner:
+                q = q.where(OutreachDraftSet.user_id == owner)
+            hit = session.exec(q.order_by(OutreachDraftSet.id.desc())).first()
+            if hit is None:
+                return None
+            saved, job_id = hit
+            created_at, payload = saved.created_at, saved.payload
+            hours = (settings.outreach_drafts_ttl_hours if saved.drafted_with_ai
+                     else settings.outreach_drafts_template_ttl_hours)
+            same_job = saved.job_id == job_id
+    except Exception as e:
+        log.debug("saved outreach drafts unreadable for app %d: %s", application_id, e)
+        return None
+    if not same_job or not hours or hours <= 0 or created_at is None:
+        return None
+    if created_at < _dt.utcnow() - _td(hours=float(hours)):
+        return None
+    try:
+        data = _json.loads(payload or "")
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or not data.get("drafts"):
+        return None
+    data["generated_at"] = created_at.isoformat() + "Z"
+    data["reused"] = True
+    return data
+
+
+def _save_outreach_drafts(application_id: int, owner, data: dict):
+    """Keep these drafts as the application's ONE saved set (replacing any
+    older one). Best-effort: a failed write only means the next open drafts
+    again. Returns the timestamp the set is saved under."""
+    from datetime import datetime as _dt
+    from sqlmodel import delete as _sql_delete
+    from app.db.models import OutreachDraftSet
+    now = _dt.utcnow()
+    try:
+        with get_session() as session:
+            job_id = session.exec(
+                select(Application.job_id).where(Application.id == application_id)).first()
+            session.exec(_sql_delete(OutreachDraftSet)
+                         .where(OutreachDraftSet.application_id == application_id))
+            session.add(OutreachDraftSet(
+                user_id=owner, application_id=application_id, job_id=job_id,
+                payload=_json.dumps(data, default=str),
+                drafted_with_ai=bool(data.get("drafted_with_ai")), created_at=now))
+            session.commit()
+    except Exception as e:
+        log.warning("outreach drafts not saved for app %d: %s", application_id, e)
+    return now
 
 
 def _outreach_kit(application_id: int, data: dict) -> dict:

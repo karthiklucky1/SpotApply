@@ -214,8 +214,10 @@ def seeded():
         s.refresh(app_row)
         ids = (job.id, app_row.id)
     yield ids
+    from app.db.models import OutreachDraftSet
     with get_session() as s:
         s.exec(delete(OutreachMessage).where(OutreachMessage.application_id == ids[1]))
+        s.exec(delete(OutreachDraftSet).where(OutreachDraftSet.application_id == ids[1]))
         s.exec(delete(UserNotification).where(UserNotification.type == "outreach_reply",
                                               UserNotification.message.like(f"{_COMPANY}%")))
         s.exec(delete(Application).where(Application.job_id == ids[0]))
@@ -264,6 +266,109 @@ def test_the_referral_route_returns_the_kit_and_what_was_sent(client, seeded, mo
     assert kit["drafts"][1]["links"]["gmail"].startswith("https://mail.google.com/")
     assert kit["searches"][0]["url"].startswith("https://www.linkedin.com/search/results/people/")
     assert data["sent"] == []
+
+
+def _counting_drafts(monkeypatch, *, ai=True):
+    """Patch the drafter with one that counts its calls and numbers its words,
+    so a reused set is told apart from a fresh one by the body alone."""
+    import app.intelligence.referral as referral
+    calls = []
+
+    def fake(application_id, user_id=None):
+        calls.append(application_id)
+        out = _draft_fixture(application_id, user_id)
+        out["drafts"][0]["body"] = f"Hi {{name}}, draft number {len(calls)}."
+        out["drafted_with_ai"] = ai
+        return out
+
+    monkeypatch.setattr(referral, "generate_referral_drafts", fake)
+    return calls
+
+
+def _age_saved_set(app_id, hours):
+    from app.db.init_db import get_session
+    from app.db.models import OutreachDraftSet
+    with get_session() as s:
+        row = s.exec(select(OutreachDraftSet).where(OutreachDraftSet.application_id == app_id)).one()
+        row.created_at = datetime.utcnow() - timedelta(hours=hours)
+        s.add(row)
+        s.commit()
+
+
+def test_reopening_the_kit_reuses_the_drafts_instead_of_paying_again(client, seeded, monkeypatch):
+    _, app_id = seeded
+    calls = _counting_drafts(monkeypatch)
+    first = client.get(f"/application/{app_id}/referral").json()
+    again = client.get(f"/application/{app_id}/referral").json()
+    assert len(calls) == 1                                   # drafted once
+    assert first["reused"] is False and again["reused"] is True
+    assert again["drafts"][0]["body"] == first["drafts"][0]["body"] == "Hi {name}, draft number 1."
+    assert again["generated_at"] == first["generated_at"] and first["generated_at"].endswith("Z")
+    # The kit and the sent list are rebuilt on every open, never frozen with the words.
+    assert again["kit"]["drafts"][1]["links"]["gmail"].startswith("https://mail.google.com/")
+    client.post(f"/application/{app_id}/outreach", json={"channel": "linkedin", "body": "Hi there"})
+    assert len(client.get(f"/application/{app_id}/referral").json()["sent"]) == 1
+    assert len(calls) == 1
+
+
+def test_regenerate_always_drafts_anew_and_replaces_the_saved_set(client, seeded, monkeypatch):
+    from app.db.init_db import get_session
+    from app.db.models import OutreachDraftSet
+    _, app_id = seeded
+    calls = _counting_drafts(monkeypatch)
+    client.get(f"/application/{app_id}/referral")
+    fresh = client.get(f"/application/{app_id}/referral?refresh=1").json()
+    assert len(calls) == 2 and fresh["reused"] is False
+    assert fresh["drafts"][0]["body"] == "Hi {name}, draft number 2."
+    # The new set is the one kept — one row per application.
+    assert client.get(f"/application/{app_id}/referral").json()["drafts"][0]["body"] == "Hi {name}, draft number 2."
+    with get_session() as s:
+        assert len(s.exec(select(OutreachDraftSet).where(OutreachDraftSet.application_id == app_id)).all()) == 1
+
+
+def test_saved_drafts_expire_and_a_template_only_set_expires_sooner(client, seeded, monkeypatch):
+    from app.config import settings
+    _, app_id = seeded
+    monkeypatch.setattr(settings, "outreach_drafts_ttl_hours", 24.0)
+    monkeypatch.setattr(settings, "outreach_drafts_template_ttl_hours", 1.0)
+    calls = _counting_drafts(monkeypatch, ai=True)
+    client.get(f"/application/{app_id}/referral")
+    _age_saved_set(app_id, 23)
+    assert client.get(f"/application/{app_id}/referral").json()["reused"] is True
+    _age_saved_set(app_id, 25)
+    assert client.get(f"/application/{app_id}/referral").json()["reused"] is False
+    assert len(calls) == 2
+    # The LLM rewrite was skipped: the plain templates are kept for an hour only,
+    # so the better drafts arrive once the provider is back.
+    calls = _counting_drafts(monkeypatch, ai=False)
+    client.get(f"/application/{app_id}/referral?refresh=1")
+    _age_saved_set(app_id, 2)
+    assert client.get(f"/application/{app_id}/referral").json()["reused"] is False
+    assert len(calls) == 2
+
+
+def test_saved_drafts_are_never_served_for_another_posting_or_tenant(client, seeded, monkeypatch):
+    from app.api import server
+    from app.db.init_db import get_session
+    from app.db.models import OutreachDraftSet
+    job_id, app_id = seeded
+    calls = _counting_drafts(monkeypatch)
+    client.get(f"/application/{app_id}/referral")
+    with get_session() as s:
+        row = s.exec(select(OutreachDraftSet).where(OutreachDraftSet.application_id == app_id)).one()
+        row.job_id = job_id + 100000                         # drafted for some other posting
+        s.add(row)
+        s.commit()
+    assert client.get(f"/application/{app_id}/referral").json()["reused"] is False
+    assert len(calls) == 2
+    # Saved under one tenant, read as another: a miss.
+    with get_session() as s:
+        row = s.exec(select(OutreachDraftSet).where(OutreachDraftSet.application_id == app_id)).one()
+        row.user_id = _PREFIX + "owner"
+        s.add(row)
+        s.commit()
+    assert server._saved_outreach_drafts(app_id, _PREFIX + "intruder") is None
+    assert server._saved_outreach_drafts(app_id, _PREFIX + "owner")["reused"] is True
 
 
 def test_marking_a_message_sent_records_it_and_notes_the_card(client, seeded):
@@ -371,6 +476,30 @@ def test_the_table_cascades_with_the_application():
     fks = list(t.foreign_keys)
     assert [fk.target_fullname for fk in fks] == ["application.id"]
     assert fks[0].ondelete == "CASCADE"
+
+
+def test_the_draft_table_cascades_with_the_application():
+    from sqlmodel import SQLModel
+    t = SQLModel.metadata.tables["outreach_draft_sets"]
+    assert "user_id" in t.columns                       # the schema-driven purge finds it
+    fks = list(t.foreign_keys)
+    assert [fk.target_fullname for fk in fks] == ["application.id"]
+    assert fks[0].ondelete == "CASCADE"
+
+
+def test_the_panel_reuses_the_kit_it_has_and_offers_regenerate():
+    from pathlib import Path
+    html = Path(__file__).resolve().parents[1] / "app" / "templates" / "dashboard.html"
+    src = html.read_text()
+    i = src.index("async function openReferral(appId, regenerate)")
+    block = src[i:i + 2500]
+    # A reopen paints the kept kit without asking the server to draft again…
+    assert "!regenerate && _outreachKits[appId]" in block
+    assert block.index("renderOutreachKit(appId, kept)") < block.index("/referral")
+    # …and only Regenerate asks for a fresh set.
+    assert "?refresh=1" in block
+    r = src.index("function renderOutreachKit")
+    assert "openReferral(${appId}, true)" in src[r:r + 2000] and "Regenerate" in src[r:r + 2000]
 
 
 def test_user_facing_copy_says_resume_and_never_sends_for_the_user():

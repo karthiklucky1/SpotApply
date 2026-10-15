@@ -893,6 +893,31 @@ class OutreachMessage(SQLModel, table=True):
     reply_how: Optional[str] = None             # email_subject | email_sender | email_domain | manual
 
 
+class OutreachDraftSet(SQLModel, table=True):
+    """The outreach drafts last generated for one application, so reopening
+    the kit shows the SAME words at once instead of paying for them again.
+
+    Drafting is a SerpAPI search, two GitHub lookups and an LLM rewrite —
+    seconds of wall time, a search credit and a metered call — and the route
+    used to redo all of it on every open, so the text also changed under a
+    user who closed the panel meaning to come back and copy it. One row per
+    application (the writer replaces it); `job_id` is checked on read so a
+    row can never be served for a different posting. `drafted_with_ai` lets a
+    template-only set (LLM skipped: breaker, budget, no key) expire sooner.
+    Owned by `user_id`; cascades with the application. Guard: `test_outreach`.
+    """
+    __tablename__ = "outreach_draft_sets"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    application_id: int = Field(sa_column=Column(
+        Integer, ForeignKey("application.id", ondelete="CASCADE"), nullable=False, index=True))
+    job_id: Optional[int] = None
+    payload: str = ""                           # JSON of generate_referral_drafts' result
+    drafted_with_ai: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class LlmSpend(SQLModel, table=True):
     """Per-user, per-day, per-kind, per-(provider, model) LLM spend ledger.
 

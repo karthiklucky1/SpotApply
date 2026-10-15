@@ -343,6 +343,13 @@ class Settings(BaseSettings):
     # counts over an 87k-row pool took sign-in to 17-32 s.
     stats_cache_seconds: int = 300             # STATS_CACHE_SECONDS
     stats_total_budget_seconds: int = 10       # STATS_TOTAL_BUDGET_SECONDS
+    # Outreach kit: drafts are kept per application this long, so reopening the
+    # panel is instant and shows the same words (each draft costs a SerpAPI
+    # search + an LLM call). A template-only set — the LLM rewrite was skipped —
+    # expires sooner so the better drafts arrive once the provider is back.
+    # "Regenerate" in the panel always drafts fresh. 0 = never reuse.
+    outreach_drafts_ttl_hours: float = 24.0             # OUTREACH_DRAFTS_TTL_HOURS
+    outreach_drafts_template_ttl_hours: float = 1.0     # OUTREACH_DRAFTS_TEMPLATE_TTL_HOURS
     # Capture hiring context (department / team / requisition / recruiter) from
     # fields the ATS responses ALREADY contain, plus deterministic extraction
     # from the full description. Zero extra HTTP requests and no LLM call, so

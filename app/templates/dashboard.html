@@ -8575,20 +8575,58 @@
     // Outlook / the mail app with subject and body filled in, a LinkedIn note
     // opens the people search that finds the recipient. "Mark as sent" records
     // it so the inbox scan can report the reply (/api/sync-emails).
+    // Drafts are kept: reopening shows the same ones at once (the server keeps
+    // them too, so a reload is quick). Only "Regenerate" drafts new ones.
     let _outreachKit = null;
-    async function openReferral(appId) {
+    const _outreachKits = {};      // appId -> last /referral response
+    let _outreachSeq = 0;          // a slow response never paints over a newer panel
+    async function openReferral(appId, regenerate) {
         if (typeof closeJobDrawer === 'function') closeJobDrawer();
         const ov = document.getElementById('referralOverlay');
         const body = document.getElementById('referralBody');
         ov.classList.add('open'); document.body.style.overflow = 'hidden';
-        body.innerHTML = '<p class="text-center py-8 text-sm" style="color:var(--muted);">Drafting your outreach…</p>';
+        const seq = ++_outreachSeq;
+        const kept = !regenerate && _outreachKits[appId];
+        if (kept) {
+            _outreachKit = { appId, data: kept };
+            renderOutreachKit(appId, kept);
+            refreshOutreachSent(appId, seq);
+            return;
+        }
+        body.innerHTML = `<p class="text-center py-8 text-sm" style="color:var(--muted);">${regenerate ? 'Writing new drafts…' : 'Drafting your outreach…'}</p>`;
         try {
-            const res = await fetch(`/application/${appId}/referral`, { headers: authHeaders() });
+            const res = await fetch(`/application/${appId}/referral${regenerate ? '?refresh=1' : ''}`, { headers: authHeaders() });
+            if (seq !== _outreachSeq) return;
             if (!res.ok) { body.innerHTML = `<p class="text-rose-500 text-sm py-6 text-center">Couldn't draft outreach (${res.status}).</p>`; return; }
             const data = await res.json();
+            if (seq !== _outreachSeq) return;
+            _outreachKits[appId] = data;
             _outreachKit = { appId, data };
             renderOutreachKit(appId, data);
-        } catch (e) { body.innerHTML = '<p class="text-rose-500 text-sm py-6 text-center">Network error.</p>'; }
+        } catch (e) { if (seq === _outreachSeq) body.innerHTML = '<p class="text-rose-500 text-sm py-6 text-center">Network error.</p>'; }
+    }
+    // A kept kit's drafts are still right, but a reply may have been found by
+    // the inbox scan since — re-read only the (cheap) sent list.
+    async function refreshOutreachSent(appId, seq) {
+        try {
+            const res = await fetch(`/application/${appId}/outreach`, { headers: authHeaders() });
+            if (!res.ok) return;
+            const sent = (await res.json()).sent || [];
+            const data = _outreachKits[appId];
+            if (!data) return;
+            data.sent = sent;
+            const el = document.getElementById('outreach-sent-list');
+            if (seq === _outreachSeq && el) el.innerHTML = renderOutreachSent(sent);
+        } catch (e) { /* the list on screen is still the last one we had */ }
+    }
+    function _draftedAgo(iso) {
+        if (!iso) return '';
+        const t = new Date(iso).getTime(); if (isNaN(t)) return '';
+        const mins = Math.floor((Date.now() - t) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins} min ago`;
+        const hours = Math.floor(mins / 60);
+        return hours < 24 ? `${hours} h ago` : _agoLabel(iso);
     }
     function _outreachPill(text, tone) {
         const bg = tone === 'email' ? 'rgba(99,102,241,.12)' : tone === 'linkedin' ? 'rgba(10,102,194,.12)' : 'rgba(16,185,129,.12)';
@@ -8599,6 +8637,8 @@
         const body = document.getElementById('referralBody');
         const kit = data.kit || { drafts: data.drafts || [], people: [], searches: [] };
         let html = `<p class="text-[11px] mb-3 px-3 py-2 rounded-xl" style="background:rgba(245,158,11,.10);color:#92400e;">${_esc(data.note || '')}</p>`;
+        const drafted = _draftedAgo(data.generated_at);
+        html += `<div class="flex items-center justify-between gap-2 mb-3"> <p class="text-[10.5px]" style="color:var(--muted);">${drafted ? 'Drafted ' + _esc(drafted) : ''}</p> <button type="button" onclick="openReferral(${appId}, true)" class="jbtn jbtn-ghost text-[10.5px] px-3 py-1.5" title="Write a new set of drafts (takes a few seconds)">Regenerate</button> </div>`;
         if ((kit.people || []).length) {
             html += `<div class="rounded-xl p-3 mb-3" style="background:var(--sage-tint);border:1px solid rgba(var(--sage-rgb),.35);"> <p class="text-[10.5px] font-black uppercase tracking-widest mb-1.5" style="color:var(--sage-700);">The posting names</p>`;
             kit.people.forEach(p => {

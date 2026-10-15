@@ -294,6 +294,7 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
     })
 
     # Try to upgrade the drafts with the LLM (cheap Haiku). Non-fatal on failure.
+    drafted_with_ai = False
     # Same breaker and platform budget as the lanes (CLAUDE.md: nothing may call
     # a provider the lanes already know is down), and the call is booked in the
     # spend ledger under kind="outreach" with its real usage.
@@ -353,6 +354,7 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
             parsed = json.loads(raw)
             if isinstance(parsed, list) and parsed and all("body" in d for d in parsed):
                 drafts = parsed
+                drafted_with_ai = True
     except Exception as e:
         log.debug("referral LLM enrichment skipped: %s", e)
 
@@ -374,4 +376,5 @@ def _generate_referral_drafts(application_id: int, user_id: str | None = None) -
         "title": role,
         "note": "Drafts only: review, personalize the recipient, and send from your own account. SpotApply never sends these for you.",
         "drafts": drafts,
+        "drafted_with_ai": drafted_with_ai,
     }

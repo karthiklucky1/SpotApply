@@ -666,7 +666,11 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   application matching (subject under Re:/Fwd: prefixes > the recipient's address
   > a PERSON at the company's domain after `sent_at`; robot mailboxes never) and
   stamps `replied_at` + a card note + a notification; manual flag/unflag via
-  `/api/outreach/{id}/replied`. Nothing is ever sent for the user. Guard: `test_outreach`.
+  `/api/outreach/{id}/replied`. Nothing is ever sent for the user. Drafts are KEPT
+  (`OutreachDraftSet`, one per application, `job_id`-checked): reopening reuses them
+  for `OUTREACH_DRAFTS_TTL_HOURS` (24; a template-only set 1) — every open used to redo
+  SerpAPI + GitHub + the LLM, a new bill and new words; `?refresh=1` ("Regenerate")
+  drafts anew. Guard: `test_outreach`.
 - **Contact research is ON HOLD, and "no data" is not zero**
   (`intelligence/contact_research.py`, docs/RECRUITER_RESEARCH_READINESS.md):
   THREE features wear the word recruiter — `/recruiter` is an INBOUND portal
