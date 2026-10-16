@@ -373,6 +373,33 @@ def test_settings_routes_require_a_user():
         assert "_require_user(request)" in inspect.getsource(fn)
 
 
+# ── owner test email ────────────────────────────────────────────────────────
+
+def test_owner_test_email_goes_only_to_the_owners_own_address(monkeypatch):
+    from fastapi import HTTPException
+    from app.common import daily_counter
+    sent = []
+    monkeypatch.setattr(ne, "send_email", lambda to, subject, h, t, headers=None: sent.append((to, subject, headers)) or "id")
+    monkeypatch.setattr(daily_counter, "reserve", lambda name, cap: True)
+    monkeypatch.setattr(server, "_get_user_id", lambda request: A)
+    c = TestClient(server.app)
+
+    def not_admin(request):
+        raise HTTPException(status_code=403, detail="Admin access only.")
+    monkeypatch.setattr(server, "_require_admin_user", not_admin)
+    assert c.post("/api/admin/email-test").status_code == 403 and sent == []
+
+    monkeypatch.setattr(server, "_require_admin_user", lambda request: "owner@example.com")
+    r = c.post("/api/admin/email-test")
+    assert r.status_code == 200 and r.json() == {"sent": True, "to": "owner@example.com"}
+    assert sent[0][0] == "owner@example.com" and sent[0][1].startswith("[Test] ")
+    assert sent[0][2]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+    assert _states(A) == []                    # no notification written or marked
+
+    monkeypatch.setattr(settings, "resend_api_key", "")
+    assert c.post("/api/admin/email-test").status_code == 503
+
+
 # ── wiring ──────────────────────────────────────────────────────────────────
 
 def test_the_dispatcher_runs_only_in_the_lanes_process():

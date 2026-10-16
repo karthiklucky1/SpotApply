@@ -8597,7 +8597,7 @@ def admin_delete_coupon(coupon_id: int, request: Request) -> dict:
 
 # ── Owner-only admin dashboard ────────────────────────────────────────────────
 _ADMIN_HTML = """<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>JobAgent · Admin</title><style>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>SpotApply · Admin</title><style>
 :root{--canvas:#F4F1EA;--surface:#FCFAF5;--surface-2:#EFEADF;--ink:#2E2A24;--muted:#8C857A;--border:#E6E0D3;--sage:#2FB4A6;--sage-700:#16847A}
 *{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:var(--canvas);color:var(--ink);margin:0;padding:28px}
 h1{font-size:20px;margin:0 0 2px}.sub{color:var(--muted);font-size:13px;margin:0 0 22px}
@@ -8619,7 +8619,7 @@ button.btn-red{background:#ef4444}button.btn-red:hover{background:#b91c1c}
 button.btn-sm{font-size:11px;padding:4px 10px}
 #coupon-msg{font-size:13px;margin-top:6px}
 </style></head><body>
-<h1>📊 JobAgent — Owner Dashboard</h1><p class=sub>Live metrics. Owner-only.</p>
+<h1>📊 SpotApply — Owner Dashboard</h1><p class=sub>Live metrics. Owner-only.</p>
 <div id=err></div>
 <div class=grid id=kpis></div>
 
@@ -8648,8 +8648,21 @@ button.btn-sm{font-size:11px;padding:4px 10px}
 </div>
 
 <div class=card><h2>👥 Top referrers</h2><table id=reftbl><thead><tr><th>User</th><th>Email</th><th>Code</th><th>Referrals</th><th>Reward</th></tr></thead><tbody></tbody></table></div>
+
+<div class=card><h2>✉️ Email notifications</h2>
+<p style="font-size:13px;margin:0 0 10px">Sends ONE sample alert email to your own sign-in address, so you can check it arrives (and isn't in spam) before a real match does.</p>
+<button class=btn id=email-test-btn onclick=sendTestEmail()>Send me a test email</button>
+<p id=email-test-msg style="font-size:13px;margin-top:8px"></p></div>
 <script>
 function H(){const t=localStorage.getItem('sb_token');return t?{'Authorization':'Bearer '+t,'Content-Type':'application/json'}:{'Content-Type':'application/json'}}
+async function sendTestEmail(){
+  const b=document.getElementById('email-test-btn'),m=document.getElementById('email-test-msg');
+  b.disabled=true;m.textContent='Sending…';
+  try{const r=await fetch('/api/admin/email-test',{method:'POST',headers:H()});const d=await r.json().catch(()=>({}));
+    m.textContent=r.ok?('Sent to '+d.to+'. Check your inbox (and spam).'):('Not sent: '+(d.detail||('error '+r.status)));}
+  catch(e){m.textContent='Not sent: network error';}
+  b.disabled=false;
+}
 async function load(){
   try{
     const m=await fetch('/api/admin/metrics',{headers:H()});
@@ -8770,6 +8783,37 @@ def _require_admin_user(request: Request) -> str:
 
 def _scalar(v) -> int:
     return int(v if not isinstance(v, (list, tuple)) else v[0])
+
+
+@app.post("/api/admin/email-test")
+def admin_email_test(request: Request) -> dict:
+    """Send the signed-in OWNER one sample notification email at their own
+    login address, so delivery (and the spam folder) can be checked before a
+    real alert fires. Writes no notification and marks nothing; it does take
+    one unit of the platform's daily email allowance."""
+    from app.common import daily_counter
+    from app.common import notify_email as ne
+    email = _require_admin_user(request)
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Sign in with your owner account to send a test.")
+    if not ne.is_configured():
+        raise HTTPException(status_code=503, detail="Email is not configured: RESEND_API_KEY is not set.")
+    uid = _get_user_id(request) or ""
+    unsub = ne.unsubscribe_url(uid) if uid else None
+    if not unsub:
+        raise HTTPException(status_code=400, detail="Could not build an unsubscribe link for this account.")
+    if not daily_counter.reserve(ne.PLATFORM_COUNTER, settings.email_platform_daily_cap):
+        raise HTTPException(status_code=429, detail="Today's email allowance is used up.")
+    items = [{"type": "fresh_job", "title": "Test email: this is what an alert looks like",
+              "message": "Sample Role @ SpotApply — a test from the owner dashboard, not a real job.",
+              "link": "/dashboard"}]
+    subject, html_body, text_body = ne.compose(items, unsub)
+    try:
+        ne.send_email(email, "[Test] " + subject, html_body, text_body,
+                      ne.list_unsubscribe_headers(unsub))
+    except ne.EmailSendError as e:
+        raise HTTPException(status_code=502, detail=f"The email provider refused it ({e}).")
+    return {"sent": True, "to": email}
 
 
 @app.post("/api/admin/recruiter/verify")
