@@ -107,7 +107,7 @@ def test_share_card_and_canonical(page, path):
     html = _html(page)
     assert f'<link rel="canonical" href="https://app.spotapply.ai{path}">' in html
     for tag in ('property="og:title"', 'property="og:description"',
-                'property="og:image" content="https://app.spotapply.ai/static/og-card.png"',
+                'property="og:image" content="https://app.spotapply.ai/static/og-card.png?v=2"',
                 'name="twitter:card" content="summary_large_image"'):
         assert tag in html, f"{page} is missing {tag}"
     assert (ROOT / "app" / "static" / "og-card.png").exists()

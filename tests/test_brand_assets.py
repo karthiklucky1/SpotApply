@@ -244,6 +244,39 @@ def test_the_share_image_each_page_points_at_is_actually_served(client, path):
     assert served.status_code == 200 and served.content
 
 
+OG_CARD_VERSION = "2"
+
+
+def test_the_share_card_is_drawn_from_the_current_brand():
+    """The hand-made card outlived the brand: it was still GREEN, spelled
+    "résumé" and claimed "1,000+ company boards" when Reddit put it in front of
+    the launch post (2026-10-16). It is now drawn by scripts/build_og_card.py
+    from the site's own palette and claims — regenerate it, never hand-edit."""
+    import struct
+    from scripts.build_og_card import ACCENT, card_html
+    png = (STATIC / "og-card.png").read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24]) == (1200, 630)    # the size every network crops to
+    assert len(png) < 400_000
+    html = card_html()
+    assert "résumé" not in html.lower() and "resume" in html  # founder's spelling rule
+    assert "45,000+" in html and "1,000+ company" not in html
+    assert ACCENT == "#0077C2" and ACCENT in html
+    for old_green in ("#2FB4A6", "#16847A", "#1F9C8F"):
+        assert old_green not in html
+
+
+def test_every_page_points_at_the_same_versioned_share_card():
+    """Networks cache a preview image by URL. A changed picture under the old
+    URL keeps showing the old one, so the URL carries ?v= and every page must
+    move together when it is bumped."""
+    import re
+    urls = set()
+    for page in ROOT.joinpath("app", "templates").glob("*.html"):
+        urls |= set(re.findall(r'(?:og|twitter):image" content="([^"]+)"', page.read_text()))
+    assert urls == {f"https://app.spotapply.ai/static/og-card.png?v={OG_CARD_VERSION}"}
+
+
 # ── page weight ──────────────────────────────────────────────────────────────
 
 def test_every_landing_screenshot_has_a_webp_beside_it():
