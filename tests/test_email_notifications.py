@@ -278,6 +278,10 @@ def test_every_email_can_be_unsubscribed_in_one_click_and_names_the_company():
     for body in (mail.text, mail.html):
         assert "SpotApply LLC" in body and "3227 Bishop Street" in body
         assert "Email settings" in body
+    # The logo is the PNG app icon on our own host (email clients drop SVG).
+    assert '<img src="https://app.spotapply.ai/static/apple-touch-icon.png"' in mail.html
+    assert 'alt="SpotApply"' in mail.html
+    assert (ROOT / "app" / "static" / "apple-touch-icon.png").is_file()
 
 
 def test_notification_text_is_escaped_and_links_stay_on_our_site():

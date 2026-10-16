@@ -65,6 +65,10 @@ def base_url() -> str:
     return (settings.public_base_url or "").rstrip("/") or DEFAULT_BASE_URL
 
 
+def logo_url() -> str:
+    return base_url() + "/static/apple-touch-icon.png"
+
+
 def _link_key() -> Optional[bytes]:
     secret = (settings.email_link_secret or "").strip()
     if secret:
@@ -217,7 +221,13 @@ def compose(items: list[dict], unsub_url: str) -> tuple[str, str, str]:
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
         'style="max-width:560px;background:#FFFFFF;border:1px solid #DCEAF6;border-radius:16px;">'
         '<tr><td style="padding:24px 24px 8px;">'
-        '<div style="font-weight:800;font-size:18px;color:#0077C2;">SpotApply</div>'
+        # The app icon as a PNG on our own host: email clients do not render
+        # SVG, and an image served from anywhere else would be a third party.
+        '<table role="presentation" cellpadding="0" cellspacing="0"><tr>'
+        f'<td style="padding-right:10px;"><img src="{esc(logo_url())}" width="36" height="36" alt="SpotApply" '
+        'style="display:block;border:0;border-radius:9px;"></td>'
+        '<td style="font-weight:800;font-size:18px;color:#0077C2;">SpotApply</td>'
+        '</tr></table>'
         f'<h1 style="font-size:20px;color:#0C2A3E;margin:12px 0 4px;">{esc(subject)}</h1>'
         '</td></tr>'
         f'<tr><td style="padding:0 24px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows_html}</table>{more_html}</td></tr>'
