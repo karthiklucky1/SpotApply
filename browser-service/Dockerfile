@@ -9,7 +9,7 @@
 # browsers are keyed to that exact library version; if pip installs a different
 # one, Playwright rejects the pre-baked Chromium at launch with "Executable
 # doesn't exist … run playwright install". Bump both together or neither.
-FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 
 WORKDIR /svc
 

@@ -100,8 +100,8 @@ body. Unprotected, it is an SSRF proxy into your private network.
 
 ### Version pinning
 
-`playwright==1.55.0` in `requirements.txt` and the
-`mcr.microsoft.com/playwright/python:v1.55.0-noble` base image tag **must move
+`playwright==1.64.1` in `requirements.txt` and the
+`mcr.microsoft.com/playwright/python:v1.64.1-noble` base image tag **must move
 together**. The image bakes browser builds keyed to that exact library version;
 a floating `>=` resolves to whatever is newest at build time and then rejects
 the pre-baked Chromium with *"Executable doesn't exist … run playwright
@@ -110,8 +110,9 @@ to work around on hosts with a system Chromium.
 
 The API surface used here (`launch`, `new_context`, `goto`, `evaluate`,
 `is_connected`, `set_default_timeout`) is stable across 1.4x–1.6x, so bumping
-both lines is normally a no-op. Verified against 1.61.0 locally and pinned to
-1.55.0 for the image.
+both lines is normally a no-op. Moved 1.55.0 → 1.64.1 on 2026-10-22 for the
+Chromium security fixes in between: this service loads arbitrary third-party
+job pages, so its browser is the one most exposed to a renderer exploit.
 
 ## Deploying on Railway
 

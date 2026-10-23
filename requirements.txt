@@ -1,12 +1,21 @@
+# SECURITY FLOORS, 2026-10-22. Every `>=` below sits at or above the release
+# that fixed the last published advisory for that package (pip-audit against
+# the floors, not just against latest). A floor is what an older cached image
+# or a resolver backtrack is allowed to fall to — when one moves, it is because
+# the old floor shipped a known hole, not to chase new features.
+
 # Core
 fastapi>=0.110
+starlette>=1.3.1         # via fastapi; <1.3.1 ignores max_fields/max_part_size on
+                         # urlencoded forms (CVE-2026-54283) — unauthenticated DoS
 uvicorn[standard]>=0.27
-jinja2>=3.1              # server.py's Jinja2Templates renders EVERY page. FastAPI
+jinja2>=3.1.6            # server.py's Jinja2Templates renders EVERY page. FastAPI
                          # does not pull it in, and it was undeclared — production
                          # only worked because torch happens to depend on it. Trim
                          # the ML stack (as CI does deliberately) and the app fails
                          # to import at startup.
-python-multipart>=0.0.9
+python-multipart>=0.0.31 # <0.0.31: negative Content-Length reads the whole body
+                         # into memory (CVE-2026-53540)
 # UPPER BOUND, 2026-09-25. sqlmodel 0.0.45 began rejecting naive datetimes at
 # write time ("Datetime values must have timezone information"), and every
 # model in app/db/models.py defaults its timestamps to datetime.utcnow().
@@ -18,14 +27,16 @@ python-multipart>=0.0.9
 # unpinned transitive upgrade; raise this bound in that change, not before.
 sqlmodel>=0.0.16,<0.0.45
 pydantic-settings>=2.2
-python-dotenv>=1.0
+python-dotenv>=1.2.2
 apscheduler>=3.10
 pyyaml>=6.0
 
 # Database
 supabase>=2.4.0          # Supabase Python client (auth + storage + realtime)
 psycopg2-binary>=2.9     # PostgreSQL driver for SQLAlchemy/SQLModel
-python-jose[cryptography]>=3.3  # JWT verification for Supabase auth tokens
+# python-jose REMOVED 2026-10-22: never imported (verify_jwt asks Supabase Auth
+# via get_user), yet it carried an unfixed HS256 forgery advisory
+# (CVE-2026-85394) and pulled in ecdsa (Minerva timing, no fix planned).
 
 # ML / matching
 sentence-transformers>=2.5
@@ -40,10 +51,11 @@ openai>=1.12.0
 
 # Document handling
 python-docx>=1.1
-pypdf>=4.0
-Pillow>=10.0  # profile photos re-encoded server-side (server._clean_avatar); also needed by fpdf2
+pypdf>=6.21.1  # parses every uploaded resume; 6.21.1 fixes CVE-2026-113786
+Pillow>=13.0.0  # profile photos re-encoded server-side (server._clean_avatar); also needed by fpdf2.
+                # 13.0.0 fixes ~35 decoder CVEs (TIFF/GIF/BMP/PDF) — this is the upload path
 fpdf2>=2.8.9,<2.9  # one-page resume PDF (app/tailoring/render.py); layout matches its width rounding
-fonttools>=4.34   # glyph widths for that layout; fpdf2 depends on it too
+fonttools>=4.60.2 # glyph widths for that layout; fpdf2 depends on it too
 openpyxl>=3.1  # sponsor-register uploads (Canada LMIA etc. ship as .xlsx)
 
 # Web scraping / automation
@@ -55,7 +67,7 @@ feedparser>=6.0  # for RSS feeds
 slowapi>=0.1.9          # Rate limiting for FastAPI
 
 # Dev
-pytest>=8.0
+pytest>=9.0.3
 pytest-socket>=0.7      # CI runs with --disable-socket: a test that reaches the
                         # network is a hard failure, not a flake that surfaces
                         # only when a scraper target is down
@@ -63,5 +75,5 @@ ruff>=0.3
 tiktoken>=0.6.0
 
 # Observability (optional; dormant until SENTRY_DSN set)
-sentry-sdk[fastapi]>=2.0
+sentry-sdk[fastapi]>=2.8.0
 stripe>=11.0.0  # billing: checkout + webhooks (only used when STRIPE_* env vars are set)
