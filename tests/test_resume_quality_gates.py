@@ -134,6 +134,34 @@ def test_models_that_reject_sampling_are_sent_nothing():
         assert supports_sampling(model) is True, model
 
 
+def test_an_api_version_that_rejects_sampling_is_sent_none(monkeypatch):
+    """API version 2026-10-21 (anthropic 2.x's default) answers ANY temperature
+    with a 400, on every model. Production ran that way from 2026-10-24: every
+    tailor, cover letter and grounding check failed on Claude and fell back to
+    OpenAI. Whatever the SDK, the helper must never send what the API rejects."""
+    from app.common import llm
+    monkeypatch.setattr(llm, "_sdk_api_version", lambda: "2026-10-21")
+    assert llm.api_accepts_sampling() is False
+    for model in ("claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-6"):
+        assert llm.supports_sampling(model) is False, model
+        assert llm.sampling(model, 0.2) == {}, model
+    monkeypatch.setattr(llm, "_sdk_api_version", lambda: "2023-06-01")
+    assert llm.sampling("claude-haiku-4-5-20251001", 0.2) == {"extra_body": {"temperature": 0.2}}
+
+
+def test_the_installed_sdk_still_talks_to_an_api_version_that_takes_a_temperature():
+    """requirements.txt bounds anthropic below 2.0 so the pinned temperatures
+    keep meaning something. If this fails, the SDK moved to API version
+    2026-10-21: the pins are now silently dropped (see the test above), so
+    decide deliberately — accept default sampling for tailoring and the
+    verifier, or keep the bound — rather than let a rebuild decide."""
+    from app.common.llm import _sdk_api_version, api_accepts_sampling
+    assert api_accepts_sampling(), (
+        f"anthropic SDK sends API version {_sdk_api_version()}, which rejects "
+        f"temperature on every model — tailoring/verifier determinism is gone"
+    )
+
+
 def test_the_configured_models_actually_accept_the_pinned_temperature():
     """The settings and the helper have to agree, or the pin is decorative."""
     from app.common.llm import sampling

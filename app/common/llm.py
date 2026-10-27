@@ -61,9 +61,33 @@ _NO_SAMPLING = (
     "opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-5", "mythos-5",
 )
 
+# The API version that removed sampling parameters for EVERY model, not just
+# the families above. The SDK picks the version (anthropic 2.x sends this one
+# by default), so an unbounded requirement turned it on at a rebuild: from
+# 2026-10-24 every tailor, cover letter and grounding check 400'd with
+# "temperature: Extra inputs are not permitted" and fell back to OpenAI.
+_SAMPLING_REMOVED_IN = "2026-10-21"
+
+
+def _sdk_api_version() -> str:
+    """The `anthropic-version` the installed SDK sends by default ("" if unknown)."""
+    try:
+        from anthropic._constants import ANTHROPIC_API_VERSION
+        return str(ANTHROPIC_API_VERSION)
+    except ImportError:                       # no SDK, or one that moved the constant
+        return ""
+
+
+def api_accepts_sampling() -> bool:
+    """False once the SDK talks to an API version that rejects sampling outright."""
+    version = _sdk_api_version()
+    return not version or version < _SAMPLING_REMOVED_IN
+
 
 def supports_sampling(model: str) -> bool:
     """True when this model still accepts a temperature on the wire."""
+    if not api_accepts_sampling():
+        return False
     m = (model or "").lower()
     return not any(fam in m for fam in _NO_SAMPLING)
 

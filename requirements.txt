@@ -46,7 +46,18 @@ torch>=2.2  # Apple Silicon: install via official channel for MPS
 rank-bm25>=0.2.2
 
 # LLM
-anthropic>=0.25
+# UPPER BOUND, 2026-10-27. anthropic 2.0 moved the SDK to API version
+# 2026-10-21, which rejects temperature/top_p/top_k with a 400 on EVERY model.
+# The unbounded floor let the 2026-10-24 rebuild pick up 2.3.0, and from then
+# on every tailor, cover letter and grounding check 400'd on Claude
+# ("temperature: Extra inputs are not permitted") and fell back to OpenAI —
+# scoring kept working only because it never pins a temperature. The pinned
+# temperatures are deliberate (tailoring 0.2, verifier 0.0: a sampled verdict
+# passes one run and fails the next), so dropping them is a product decision
+# with no replacement setting on Haiku 4.5, not something to absorb from a
+# transitive upgrade. Raise this bound in that change (app/common/llm.py
+# sampling(), tests/test_resume_quality_gates.py), not before.
+anthropic>=1.0,<2
 openai>=1.12.0
 
 # Document handling

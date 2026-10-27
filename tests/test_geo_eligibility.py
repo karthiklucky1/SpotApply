@@ -800,6 +800,29 @@ def test_a_due_row_nobody_is_waiting_on_cannot_starve_a_held_posting(monkeypatch
     assert gv.verify_pending(budget=gv.Budget(seconds=60, items=3))["pending_examined"] == 1
 
 
+@pytest.mark.compute_policy
+def test_a_copy_held_only_for_a_dormant_user_is_not_waiting():
+    """Production 2026-10-24/25: every user holding unknown copies was dormant,
+    so no lane scored any of those queues — and the sweep still spent its whole
+    400-call day resolving them. A held copy counts only while its owner's
+    search may use paid AI; a posting held for an active user AND a dormant one
+    still counts, and the dormant-only row is deferred, not attempted."""
+    from app.common import compute_policy
+    now = datetime.utcnow()
+    _profile(U1, last_meaningful_activity_at=now - timedelta(days=5))     # dormant
+    _profile(U2, last_meaningful_activity_at=now)                         # active
+    _held_posting("dormantonly", users=(U1,))
+    _held_posting("activeheld", users=(U2,))
+    _held_posting("bothheld", users=(U1, U2))
+    compute_policy.reset_state()
+    picked = {r.external_id for r in gv._pending_rows(500)}
+    assert _P + "activeheld" in picked and _P + "bothheld" in picked
+    assert _P + "dormantonly" not in picked, "nobody is waiting on a dormant user's queue"
+    row = _geo_row("dormantonly", "teamtailor")
+    assert row.attempts == 0, "not an attempt: nothing was fetched or asked"
+    assert row.next_attempt_at > now + timedelta(hours=1), "pushed one retry interval out"
+
+
 def test_changed_location_evidence_invalidates_the_cached_decision():
     _profile(U1)
     # Starts in the user's own area so the FIRST decision is eligible — the

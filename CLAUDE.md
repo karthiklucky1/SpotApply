@@ -959,6 +959,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
 - Branch per the session's assigned feature branch; commit + push when done.
 - CI installs requirements MINUS the ML stack, so the app must import from its
   DECLARED deps (jinja2 was missing; prod only worked because torch pulls it in).
+  `anthropic` is bounded `<2`: 2.x sends API version 2026-10-21, which 400s ANY
+  `temperature` — the 10-24 rebuild picked it up and every tailor/grounding call
+  fell back to OpenAI. `llm.sampling()` sends none on such a version; lifting
+  the bound is a decision (guard: `test_resume_quality_gates`).
   Suite runs twice — normal + reversed file order — with `--disable-socket`; skips
   capped at 8.
 - **Guard tests fail on a whole CLASS of mistake** — read the one that covers what

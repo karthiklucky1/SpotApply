@@ -1444,22 +1444,39 @@ def _held_keys(session, rows) -> set:
     """Which of these geography rows still have an open, unscored copy that a
     user is waiting on. Job.source stores the enum NAME ("GREENHOUSE") and the
     geography row the value ("greenhouse"), so this cannot be one SQL join —
-    it is one chunked indexed lookup on Job.external_id per page."""
+    it is one chunked indexed lookup on Job.external_id per page.
+
+    "Waiting" means the owner's queue is actually being scored: a held copy in
+    a dormant, idle or paused user's pool is resolved for nobody, because no
+    lane scores that queue until they come back (compute_policy: paid AI only
+    while active or paid). Production 2026-10-24/25: every user holding copies
+    was dormant and the sweep still spent the whole 400-call day on them. A
+    returning user's copies count again from the next sweep (the row is due
+    again within one retry interval, and `mark_held` makes new copies due at
+    once)."""
     from sqlalchemy import or_
     from sqlmodel import select
+    from app.common.compute_policy import paid_ai_allowed
     from app.db.models import Job
     from app.discovery.pipeline import SHARED_POOL_USER
 
     ext_ids = [r.external_id for r in rows]
     live: set = set()
+    waiting: dict = {}                       # owner -> paid AI allowed, one read each
     for start in range(0, len(ext_ids), 300):
         chunk = ext_ids[start:start + 300]
-        for src, ext in session.exec(
-                select(Job.source, Job.external_id).where(
+        for src, ext, owner in session.exec(
+                select(Job.source, Job.external_id, Job.user_id).where(
                     Job.external_id.in_(chunk), Job.eligibility == UNKNOWN,
                     Job.rerank_score.is_(None), Job.is_closed == False,  # noqa: E712
                     or_(Job.user_id.is_(None), Job.user_id != SHARED_POOL_USER))).all():
-            live.add((src.value if hasattr(src, "value") else str(src), ext))
+            key = (src.value if hasattr(src, "value") else str(src), ext)
+            if key in live:
+                continue
+            if owner not in waiting:
+                waiting[owner] = paid_ai_allowed(owner)
+            if waiting[owner]:
+                live.add(key)
     return live
 
 

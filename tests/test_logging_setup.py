@@ -37,6 +37,22 @@ def test_setup_is_idempotent():
     assert len(ours) == 1, "re-running must not stack duplicate handlers"
 
 
+def test_only_errors_go_to_stderr(capsys):
+    """Railway tags every stderr line as an error. With everything on stderr,
+    INFO heartbeats buried the real failures (2026-10-26: every tailor 400'd
+    on Claude for hours, unnoticed in an "error" stream of routine lines)."""
+    _drop_our_handlers()
+    setup_logging()
+    log = logging.getLogger("split_stream_probe")
+    log.info("routine heartbeat")
+    log.warning("a board returned 429")
+    log.error("tailor failed")
+    out, err = capsys.readouterr()
+    assert "routine heartbeat" in out and "a board returned 429" in out
+    assert "routine heartbeat" not in err and "a board returned 429" not in err
+    assert "tailor failed" in err and "tailor failed" not in out
+
+
 def test_noisy_libraries_pinned_to_warning():
     setup_logging()
     for noisy in ("httpx", "sentence_transformers", "faiss", "uvicorn.access"):

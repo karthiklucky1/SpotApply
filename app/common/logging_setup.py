@@ -13,12 +13,32 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 # Chatty dependencies pinned to WARNING so lane diagnostics aren't buried.
 _NOISY = ("httpx", "httpcore", "urllib3", "sentence_transformers",
           "faiss", "asyncio", "uvicorn.access", "hpack", "openai")
 
 _HANDLER_MARKER = "_hirepath"
+
+
+class _SplitStreamHandler(logging.StreamHandler):
+    """stdout below ERROR, stderr from ERROR up.
+
+    Railway tags EVERY stderr line as severity "error", and a plain
+    StreamHandler writes everything to stderr — so every INFO heartbeat read
+    as an error and the dashboard's error filter returned thousands of lines a
+    minute, which is how the tailoring 400s of 2026-10-26 sat unnoticed among
+    them. The stream is chosen per record inside ``emit``, which
+    ``Handler.handle`` runs under the handler's lock, and looked up at emit time
+    so a replaced ``sys.stdout`` (pytest capture) is honoured."""
+
+    def __init__(self) -> None:
+        super().__init__(sys.stdout)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.stream = sys.stderr if record.levelno >= logging.ERROR else sys.stdout
+        super().emit(record)
 
 
 def setup_logging(level: int | None = None) -> None:
@@ -29,7 +49,7 @@ def setup_logging(level: int | None = None) -> None:
         level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
     root = logging.getLogger()
     if not any(getattr(h, _HANDLER_MARKER, False) for h in root.handlers):
-        handler = logging.StreamHandler()
+        handler = _SplitStreamHandler()
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         setattr(handler, _HANDLER_MARKER, True)  # marker: don't double-add on re-import
         root.addHandler(handler)
