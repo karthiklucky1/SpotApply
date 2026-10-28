@@ -671,9 +671,16 @@ def dispatch_digests(now: Optional[datetime] = None, *,
             UserProfile.email_digest_hour, UserProfile.email_timezone,
             UserProfile.preferred_country, UserProfile.last_digest_day, UserProfile.last_digest_at)
     with get_session() as session:
+        from sqlalchemy import or_
+        daily = UserProfile.email_frequency == FREQ_DAILY
+        if frequency_of(None) == FREQ_DAILY:
+            daily = or_(daily, UserProfile.email_frequency.is_(None))
         q = (select(*cols)
              .where(UserProfile.user_id.is_not(None), UserProfile.user_id != "local",
-                    UserProfile.email_unsubscribed_at.is_(None)))
+                    UserProfile.email_unsubscribed_at.is_(None),
+                    or_(UserProfile.email_notifications.is_(None),
+                        UserProfile.email_notifications == True),  # noqa: E712
+                    daily))
         if only_users is not None:
             q = q.where(UserProfile.user_id.in_(list(only_users)))
         profiles = [SimpleNamespace(**{c.key: v for c, v in zip(cols, row)})
@@ -715,15 +722,25 @@ def dispatch_digests(now: Optional[datetime] = None, *,
             stats["platform_capped"] = True
             break
         subject, html_body, text_body = compose_digest(jobs, total, unsub, now)
+        # The day is recorded BEFORE the send: one attempt a day, never a retry
+        # storm. Stamping after it meant a failed write re-sent the same digest
+        # every pass for the rest of the window.
+        try:
+            _stamp_digest(uid, day, now)
+        except Exception as e:
+            log.warning("Daily digest: could not record the day (%s) — deferred", type(e).__name__)
+            stats["deferred"] += 1
+            continue
         try:
             send(to, subject, html_body, text_body, list_unsubscribe_headers(unsub))
         except Exception as e:
             log.warning("Daily digest: send failed: %s", str(e)[:200])
-            _stamp_digest(uid, day, now)     # one attempt a day, never a retry storm
             stats["failed"] += 1
             continue
-        _stamp_digest(uid, day, now)
-        _count_sent(uid, now)
+        try:
+            _count_sent(uid, now)
+        except Exception as e:                # the email went out; the counter is advisory
+            log.warning("Daily digest: send counter not updated (%s)", type(e).__name__)
         stats["sent"] += 1
     return stats
 

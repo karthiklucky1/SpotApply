@@ -229,6 +229,31 @@ def test_job_text_is_escaped_and_links_stay_on_our_site():
     assert 'href="https://app.spotapply.ai/dashboard?fresh_job=' in html
 
 
+def test_the_day_is_recorded_before_the_send_so_a_failed_write_never_resends(monkeypatch):
+    _match(A, 80)
+
+    def broken(*a, **k):
+        raise RuntimeError("statement timeout")
+    monkeypatch.setattr(ne, "_stamp_digest", broken)
+    out = Outbox()
+    stats = _run(out, users=[A])
+    assert out.sent == [] and stats["deferred"] == 1
+    monkeypatch.undo()
+
+
+def test_a_failed_send_is_not_retried_the_same_day():
+    _match(A, 80)
+
+    def refuse(*a, **k):
+        raise ne.EmailSendError("resend 500")
+    stats = ne.dispatch_digests(now=NY_MORNING, send=refuse, lookup=lambda uid: "x@example.com",
+                                reserve=lambda: True, only_users=[A])
+    assert stats["failed"] == 1 and _get_profile(A).last_digest_day == "2026-10-28"
+    out = Outbox()
+    _run(out, now=NY_MORNING + timedelta(minutes=10), users=[A])
+    assert out.sent == []
+
+
 def test_nothing_without_a_configured_sender(monkeypatch):
     monkeypatch.setattr(settings, "resend_api_key", "")
     _match(A, 80)

@@ -90,7 +90,7 @@ def _job(jid):
 def test_turning_on_relocation_releases_a_held_boston_job(user):
     jid = _held("boston", BOSTON_NO_MODE)
     _relocate(True)
-    stats = geo_verify.redecide_user_copies(UID)
+    stats = geo_verify.redecide_user_copies(UID, force=True)
     assert stats["released"] == 1
     j = _job(jid)
     assert j.eligibility == ELIGIBLE and j.rerank_score is None   # in the queue now
@@ -102,7 +102,7 @@ def test_a_location_stamped_job_rejoins_the_queue(user):
                 score=geo_verify.INELIGIBLE_STAMP_SCORE,
                 reasoning=geo_verify.INELIGIBLE_REASON_PREFIX + "Onsite in Dallas, TX")
     _relocate(True)
-    geo_verify.redecide_user_copies(UID)
+    geo_verify.redecide_user_copies(UID, force=True)
     j = _job(jid)
     assert j.eligibility == ELIGIBLE
     assert j.rerank_score is None and j.rerank_reasoning is None and j.scored_at is None
@@ -112,7 +112,7 @@ def test_a_job_that_still_fails_is_stamped_and_another_country_stays_out(user):
     boston = _held("boston2", BOSTON_NO_MODE)
     berlin = _held("berlin", BERLIN_ONSITE)
     _relocate(True, targets="Chicago, IL")          # will move, but only to Chicago
-    geo_verify.redecide_user_copies(UID)
+    geo_verify.redecide_user_copies(UID, force=True)
     # Boston, no work mode: not a relocation target and not home — still held.
     assert _job(boston).eligibility == UNKNOWN
     b = _job(berlin)
@@ -127,7 +127,7 @@ def test_scored_delivered_and_pre_rollout_copies_are_left_alone(user):
         s.add(Application(job_id=delivered, user_id=UID, status="shortlisted"))
         s.commit()
     _relocate(True)
-    stats = geo_verify.redecide_user_copies(UID)
+    stats = geo_verify.redecide_user_copies(UID, force=True)
     assert _job(scored).rerank_score == 82.0          # the release path owns scored jobs
     assert _job(delivered).eligibility == UNKNOWN     # on a board: its verdict is kept
     assert _job(legacy).eligibility == UNKNOWN and stats["no_geography"] == 1
@@ -137,8 +137,27 @@ def test_an_unreadable_profile_decides_nothing(user, monkeypatch):
     jid = _held("noprefs", BOSTON_NO_MODE)
     import app.common.tenant_prefs as tp
     monkeypatch.setattr(tp, "geo_prefs_for_user", lambda uid: None)
-    assert geo_verify.redecide_user_copies(UID)["examined"] == 0
+    assert geo_verify.redecide_user_copies(UID, force=True)["examined"] == 0
     assert _job(jid).eligibility == UNKNOWN
+
+
+def test_newest_first_one_run_at_a_time_and_not_twice_a_minute(user):
+    """The setup saves the profile and then the roles seconds apart; both
+    re-decide. One run per user at a time, none again inside a minute unless a
+    location edit forces it, and the newest copies are the ones read."""
+    old = _held("old", BOSTON_NO_MODE)
+    new = _held("new", BOSTON_NO_MODE)
+    _relocate(True)
+    assert geo_verify.redecide_user_copies(UID, limit=1, force=True)["released"] == 1
+    assert _job(new).eligibility == ELIGIBLE and _job(old).eligibility == UNKNOWN
+    assert geo_verify.redecide_user_copies(UID).get("skipped") == 1          # inside the minute
+    with geo_verify._redecide_lock:
+        geo_verify._redecide_running.add(UID)
+    try:
+        assert geo_verify.redecide_user_copies(UID, force=True).get("skipped") == 1
+    finally:
+        with geo_verify._redecide_lock:
+            geo_verify._redecide_running.discard(UID)
 
 
 def test_the_profile_save_and_the_role_save_both_re_decide():
@@ -146,5 +165,6 @@ def test_the_profile_save_and_the_role_save_both_re_decide():
     from app.strategy import adoption
     upd = inspect.getsource(server.update_profile)
     assert "redecide_user_copies" in upd and "_LOCATION_PREF_FIELDS" in upd
+    assert '"force": True' in upd
     seed = inspect.getsource(adoption.seed_new_user)
     assert seed.index("redecide_user_copies") < seed.index("adopt_and_match(user_id)")
