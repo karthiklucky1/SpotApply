@@ -12,7 +12,7 @@
                     {% endfor %}
 {% elif stage == 'submitted' %}{#- Earliness this month: a measured clock over the user's own receipts
                     (app/strategy/earliness.py), shown only when something was measured. -#}
-                    {% if early_stats and early_stats.measured %}
+                    {% if early_window_ui() and early_stats and early_stats.measured %}
                     <div id="early-month-line" style="display:flex;align-items:center;gap:8px;margin:0 4px 10px;font-size:11.5px;font-weight:700;color:var(--muted,#94a3b8);" title="Counted from the receipt on each application you submitted through SpotApply in the last 30 days. About 41% of a posting's applications arrive in its first 48 hours (Dice.com data via the St. Louis Fed). A clock, not odds.">
                         <span style="color:#C2410C;">⚡ Early (inside {{ early_stats.window_hours }}h) on {{ early_stats.early }} of {{ early_stats.measured }}</span>
                         <span>application{{ '' if early_stats.measured == 1 else 's' }} this month</span>

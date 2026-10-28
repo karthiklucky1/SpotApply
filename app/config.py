@@ -384,6 +384,17 @@ class Settings(BaseSettings):
     email_max_age_hours: int = 12                        # EMAIL_MAX_AGE_HOURS — older notifications are never emailed
     email_skip_if_active_minutes: int = 15               # EMAIL_SKIP_IF_ACTIVE_MINUTES — on the dashboard = sees the bell
     email_platform_daily_cap: int = 90                   # EMAIL_PLATFORM_DAILY_CAP (Resend free plan: 100/day)
+    # Daily digest (founder, 2026-10-28): instead of an email per new match, ONE
+    # email a day at the user's chosen LOCAL hour with their best new shortlisted
+    # jobs. "daily" is the default; "instant" keeps the per-match emails above.
+    # Users pick in Settings → Email notifications; the hour is local to the
+    # browser's time zone (UserProfile.email_timezone, else the country's).
+    email_default_frequency: str = "daily"               # EMAIL_DEFAULT_FREQUENCY — daily | instant
+    email_digest_default_hour: int = 9                   # EMAIL_DIGEST_DEFAULT_HOUR — local hour (9 = morning)
+    email_digest_max_jobs: int = 10                      # EMAIL_DIGEST_MAX_JOBS
+    # Sent from the chosen hour until this many hours after it; outside the
+    # window the day is skipped rather than mailed at midnight.
+    email_digest_window_hours: int = 6                   # EMAIL_DIGEST_WINDOW_HOURS
     # Capture hiring context (department / team / requisition / recruiter) from
     # fields the ATS responses ALREADY contain, plus deterministic extraction
     # from the full description. Zero extra HTTP requests and no LLM call, so
@@ -551,6 +562,13 @@ class Settings(BaseSettings):
     # reads as early. 48 = the span in which ~41% of a posting's applications
     # arrive (Dice/St. Louis Fed). Copy states the clock, never odds.
     earliness_window_hours: int = 48          # EARLINESS_WINDOW_HOURS
+    # The early-window UI on the board — the "⚡ Apply today — early window"
+    # group at the top of the shortlist, the Submitted pane's "Early on K of N"
+    # line and the "Applied Nh after posting" chip. OFF by founder decision
+    # (2026-10-28: the shortlist group read as an odd card beside a job, and
+    # "Freshest" should mean newest first). The receipts are still STAMPED
+    # (mark_as_submitted), so turning this back on shows them all.
+    early_window_ui: bool = False             # EARLY_WINDOW_UI
     fresh_alert_max_posted_age_days: int = 30  # FRESH_ALERT_MAX_POSTED_AGE_DAYS — the POSTED-age (loose) half of the alert gate, matching scoring_/shortlist_max_posted_age_days. The alert's real trigger is the KNOWN age (fresh_alerts.FRESH_ALERT_MAX_AGE_HOURS = 24: we found it today); this exists ONLY to suppress evergreen/ancient reqs, exactly as app/common/freshness.py prescribes. Until Aug 2026 the alert gate was `posted_at or first_seen`, i.e. the single-bound expression that module exists to eliminate — so a posting discovered minutes ago whose ATS dated it 3 days back produced no alert at all, and production measured 0 alerts against 2 shortlists. Widening this does NOT mean more pushes: fresh_alert_daily_cap and MAX_ALERTS_PER_PASS still bound the volume, and the copy only claims "posted Xh ago / be one of the first" when the source date is itself inside the 24h window.
     default_intake_country: str = "United States"  # DEFAULT_INTAKE_COUNTRY — the country assumed when a profile has none. It MUST be the same value the Tier-1/Tier-2 prompt assumes (app/matching/reranker.py defaults the same way), because the two disagreeing is the expensive failure: a blank profile meant "no country gate" at intake while the scorer was still told "the candidate wants jobs in United States" and scored every foreign posting 0-30. We paid Tier-1 (and sometimes Claude) to reject postings our own free filter could have dropped — a measured 73% of the queue was drained below the gate. Set to "" ONLY if the prompt is changed to match; the gate and the prompt are one decision.
     lanes_enabled: bool = True           # LANES_ENABLED — set 0 on extra web replicas: every lane lock, LLM budget counter, and in-flight claim is process-local, so a second lane-running process silently DOUBLES scraping, LLM spend, and alerts. Exactly ONE process should run lanes.

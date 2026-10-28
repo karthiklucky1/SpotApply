@@ -516,6 +516,14 @@ class UserProfile(SQLModel, table=True):
     last_notification_email_at: Optional[datetime] = None
     notification_email_day: str = ""          # UTC date the counter below belongs to
     notification_emails_today: int = 0
+    # Daily digest (2026-10-28): "daily" = one email a day at email_digest_hour
+    # (LOCAL to email_timezone) with the best new shortlisted jobs; "instant" =
+    # an email per batch of new matches. NULL = settings.email_default_frequency.
+    email_frequency: Optional[str] = None
+    email_digest_hour: Optional[int] = None   # 0-23 local; NULL = EMAIL_DIGEST_DEFAULT_HOUR
+    email_timezone: str = ""                  # IANA name from the browser, e.g. "America/New_York"
+    last_digest_day: str = ""                 # LOCAL date of the last digest sent
+    last_digest_at: Optional[datetime] = None
     relocation_targets: str = ""        # approved US cities/states, or "nationwide"
     relocation_timeline: str = ""       # e.g. "within 4 weeks" — shown as written
     # Articulation proof (optional booster) — short video explaining own real PR

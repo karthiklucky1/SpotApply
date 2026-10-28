@@ -225,16 +225,43 @@ def test_email_dates_are_read_as_utc_and_a_future_header_is_ignored():
 
 # ── the surfaces ─────────────────────────────────────────────────────────────
 
-def test_the_board_puts_the_early_window_first_and_the_card_shows_the_receipt():
+def test_the_early_window_ui_is_off_by_default_and_comes_back_whole():
+    """Founder, 2026-10-28: the "Apply today — early window" group read as an
+    odd card beside a job, and "Freshest" should mean newest first. The UI is
+    behind EARLY_WINDOW_UI (off); the receipts are still stamped, so turning it
+    on restores the group, the month line and the receipt chip together."""
+    assert type(settings).model_fields["early_window_ui"].default is False
     macros = (ROOT / "app" / "templates" / "_board_macros.html").read_text()
-    assert 'data-early="1"' in macros and "early_window_of(job)" in macros
-    assert "earliness_of(app, job)" in macros
+    assert 'data-early="1"' in macros
+    assert "early_window_of(job) if (early_window_ui() and" in macros
+    assert "earliness_of(app, job) if early_window_ui() else none" in macros
     dash = (ROOT / "app" / "templates" / "dashboard.html").read_text()
     fn = dash[dash.index("function sortShortlist"):]
     fn = fn[:fn.index("function _initShortlistSort")]
     assert "dataset.early === '1'" in fn and "early-window-divider" in fn
+    # When it is on, the line spans the 2-column grid instead of taking a card's cell.
+    assert "grid-column:1/-1" in fn
     pane = (ROOT / "app" / "templates" / "_board_pane.html").read_text()
-    assert "early_stats.measured" in pane and "early-month-line" in pane
+    assert "early_window_ui() and early_stats and early_stats.measured" in pane
+    assert "early-month-line" in pane
+    # Nothing is read for it while it is off.
+    assert server._early_stats_for("anyone") is None
+
+
+def test_the_card_renders_without_the_early_window_while_it_is_off(monkeypatch):
+    monkeypatch.setattr(settings, "early_window_ui", False)
+    tpl = server.templates.env.from_string(
+        '{% from "_board_macros.html" import jobrow with context %}{{ jobrow(app, job) }}')
+    # Unsaved model rows: every attribute the macro reads exists.
+    job = Job(id=1, user_id="earl-render", source=JobSource.GREENHOUSE, external_id="earl-render",
+              company="Acme", title="Engineer", url="https://x/j", description="d",
+              location="Remote", remote=True, rerank_score=80,
+              posted_at=datetime.utcnow(), first_seen=datetime.utcnow())
+    app_row = Application(id=7, job_id=1, user_id="earl-render",
+                          status=ApplicationStatus.SHORTLISTED, apply_track="autofill")
+    html = tpl.render(app=app_row, job=job, one_click_submit=False, visa_framing=None)
+    assert 'data-early="1"' not in html
+    assert "Auto-Fill &amp; Apply" in html and "&amp;amp;" not in html
 
 
 def test_the_landing_speed_line_is_measured_and_hidden_under_its_floor():
@@ -246,7 +273,8 @@ def test_the_landing_speed_line_is_measured_and_hidden_under_its_floor():
         assert bad not in landing[landing.index('id="latency-line"'):landing.index('id="latency-line"') + 900]
 
 
-def test_the_submitted_pane_renders_the_monthly_line_only_when_measured(client, seeded):
+def test_the_submitted_pane_renders_the_monthly_line_only_when_measured(client, seeded, monkeypatch):
+    monkeypatch.setattr(settings, "early_window_ui", True)     # off by default since 2026-10-28
     client.post(f"/application/{seeded['trusted']}/submit")
     r = client.get("/api/board/pane", params={"stage": "submitted"})
     assert r.status_code == 200, r.text

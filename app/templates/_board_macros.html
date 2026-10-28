@@ -119,7 +119,7 @@
             {% set post_date = job.posted_at or job.discovered_at %}
             {#- Early window (app/strategy/earliness.py): the ONE reference clock says whether
                 this posting is still inside the first 48h; sortShortlist puts those first. -#}
-            {% set _ew = early_window_of(job) if (stage == 'shortlist' and app.apply_track != 'email_import') else none %}
+            {% set _ew = early_window_of(job) if (early_window_ui() and stage == 'shortlist' and app.apply_track != 'email_import') else none %}
             <div class="jobrow glass rounded-[22px] relative cursor-pointer overflow-hidden" data-app-id="{{ app.id }}" data-job-id="{{ app.job_id }}" data-job-url="{{ (app.apply_url or job.url)|e }}" data-job-title="{{ job.title|e }}" data-company="{{ job.company|e }}" data-source="{{ job.source.value|e }}"{% if score is not none %} data-score="{{ score }}"{% endif %} data-priority="{{ job.blended_score if job.blended_score is not none else (score if score is not none else 0) }}" data-posted="{{ post_date.isoformat() if post_date else '' }}"{% if _ew and _ew.in_window %} data-early="1" data-early-left="{{ _ew.hours_left }}"{% endif %} onclick="openJobDrawer(this)">
                 {% if stage == 'shortlist' %}<button type="button" onclick="event.stopPropagation(); removeApplication({{ app.id }}, this)" class="jr-remove" aria-label="Remove from shortlist" title="Not interested — remove">&times;</button>{% endif %}
                 {#- Score bar on top (replaces the right-side circle panel AND the
@@ -138,7 +138,7 @@
                             <span class="jr-badge jr-badge-status">{{ app.status.value|capitalize }}</span>
                             {% if app.apply_track == 'email_import' %}<span class="jr-badge jr-badge-hot" title="Detected from your inbox — applied outside SpotApply">From email</span>{% else %}<span class="jr-badge jr-badge-good" title="Applied through SpotApply">✓ Via SpotApply</span>{% endif %}
                             {#- Earliness receipt: a measured clock ("Applied 3h 12m after posting"), never odds. -#}
-                            {% set _er = earliness_of(app, job) %}{% if _er %}<span class="jr-badge {{ 'jr-badge-good' if _er.early else 'jr-badge-status' }}" title="{{ _er.detail|e }}">{{ '⚡ ' if _er.early else '' }}{{ _er.label }}</span>{% endif %}
+                            {% set _er = earliness_of(app, job) if early_window_ui() else none %}{% if _er %}<span class="jr-badge {{ 'jr-badge-good' if _er.early else 'jr-badge-status' }}" title="{{ _er.detail|e }}">{{ '⚡ ' if _er.early else '' }}{{ _er.label }}</span>{% endif %}
                         </div>
                         {% endif %}
                         <div class="jr-title-row">
@@ -171,7 +171,7 @@
                             <button type="button" data-app-id="{{ app.id }}" data-role="view-docs" onclick="openModal(+this.dataset.appId)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4" title="Read or download your tailored resume and cover letter">📄 View Documents</button>
                             <button type="button" data-app-id="{{ app.id }}" data-tailor-again="1" onclick="tailorJob(+this.dataset.appId, this)" class="jbtn jbtn-ghost text-[11px] py-2.5 px-4" title="Already tailored — regenerate for this job">↻ Tailor Again</button>
                             {% endif %}
-                            <button type="button" data-app-id="{{ app.id }}" data-company="{{ (job.company if job else '')|e }}" {% if one_click_submit %}data-submit="1"{% endif %} onclick="fillWithExtension(+this.dataset.appId, this)" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="{{ 'Opens the job form, fills every field and submits it (it stops and asks you if anything needs a human)' if one_click_submit else 'Opens the job form in your browser and fills every field — you review, then submit' }}">{{ 'Apply &amp; Submit' if one_click_submit else 'Auto-Fill &amp; Apply' }}</button>
+                            <button type="button" data-app-id="{{ app.id }}" data-company="{{ (job.company if job else '')|e }}" {% if one_click_submit %}data-submit="1"{% endif %} onclick="fillWithExtension(+this.dataset.appId, this)" class="jbtn jbtn-apply text-[11.5px] py-2.5 px-5" title="{{ 'Opens the job form, fills every field and submits it (it stops and asks you if anything needs a human)' if one_click_submit else 'Opens the job form in your browser and fills every field — you review, then submit' }}">{{ 'Apply & Submit' if one_click_submit else 'Auto-Fill & Apply' }}</button>
                             <button type="button" data-app-id="{{ app.id }}" onclick="markSubmitted(+this.dataset.appId, this)" class="jbtn jbtn-done text-[11.5px] py-2.5 px-4">✓ Mark Applied</button>
                             {% elif stage == 'submitted' %}
                             <button type="button" data-app-id="{{ app.id }}" onclick="markOutcome(+this.dataset.appId,'interviewing')" class="jbtn text-[11px] py-2.5 px-4" style="background:rgba(99,102,241,0.10);color:#5B5BD6;border:1px solid rgba(99,102,241,0.30);">Interview</button>

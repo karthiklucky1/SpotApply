@@ -16,6 +16,9 @@ jinja2>=3.1.6            # server.py's Jinja2Templates renders EVERY page. FastA
                          # to import at startup.
 python-multipart>=0.0.31 # <0.0.31: negative Content-Length reads the whole body
                          # into memory (CVE-2026-53540)
+tzdata>=2024.1           # IANA zones for zoneinfo: the daily digest email goes out
+                         # at the user's LOCAL hour (app/common/notify_email.py),
+                         # and python:3.11-slim ships no /usr/share/zoneinfo.
 # UPPER BOUND, 2026-09-25. sqlmodel 0.0.45 began rejecting naive datetimes at
 # write time ("Datetime values must have timezone information"), and every
 # model in app/db/models.py defaults its timestamps to datetime.utcnow().

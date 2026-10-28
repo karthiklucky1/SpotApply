@@ -234,3 +234,14 @@ def test_the_country_is_read_only_from_what_the_location_states(tmp_path):
 def test_the_profile_route_accepts_both_fields():
     from app.api.server import ProfileUpdate
     assert {"preferred_country", "remote_ok"} <= set(ProfileUpdate.model_fields)
+
+
+# ── 6. All Jobs opens on its table (owner, 2026-10-28) ──────────────────────
+# The first-hour panel and the extension banner sat between the tab bar and
+# EVERY tab, so "All Jobs" opened a screen above its table.
+
+def test_the_first_hour_panel_and_extension_banner_are_pipeline_only():
+    wrap = HTML[HTML.index('<div id="pipeline-only-banners">'):HTML.index("<!-- /#pipeline-only-banners -->")]
+    assert 'id="welcome-panel"' in wrap and 'id="ext-install-banner"' in wrap
+    body = _function("switchViewTab")
+    assert "pipeline-only-banners" in body and "tab === 'kanban' ? '' : 'none'" in body

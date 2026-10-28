@@ -177,6 +177,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   domains, not every real title. TAILORED-and-beyond untouched; parks reverse on
   the way back (`[roles-realign]`, and a parked job is ALWAYS requeued when
   on-role again or its marker score would strand it). Cap: `REALIGN_MAX_RESCORE`.
+  **Picking roles** (2026-10-28, `common/role_catalog.py`): the roles box is a
+  typeahead over real titles + their family neighbours (`/api/target-roles/suggest`,
+  same `_ROLE_FAMILIES`/alias tables as the gate), beside grouped suggestions WITH
+  reasons (resume titles, skill → role, similar to picked, field-popular; no
+  Senior/Staff under 3 years). A lower-case role is stored title-cased. Guard:
+  `test_target_roles_suggest`.
 - **Role families** (`discovery/title_filter.py` `_ROLE_FAMILIES`): the alias table
   is directional and missed neighbours — "Software Developer" expanded to only
   {software developer, software} ("developer" is generic), so Backend/Frontend/SDE
@@ -257,6 +263,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   The desktop sidebar collapses to an icon rail (`html.sb-collapsed`, set in
   `<head>` before paint from `hp_sb_collapsed`); everything beside it reads
   `--sb-w`, never a literal 190px (guard: `test_sidebar_collapse`).
+  The first-hour panel + extension banner sit in `#pipeline-only-banners`, which
+  `switchViewTab` hides off the Pipeline (All Jobs opened a screen above its table).
+  The setup (`openProfileReview`, `openRolesModal({onboarding})`) is full pages at
+  1200px, two columns, sticky actions.
   After editing, validate: parse Jinja + `node --check` the touched `<script>` block.
   **Per-user aggregates are bounded AND cached** (`app/common/ttl_cache.py`):
   `/api/freshness-stats` (was 52s — it loaded every open row of a 65k pool to
@@ -466,7 +476,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   next stale touch, never re-derived. `GEO_VERIFY_LLM_DAILY_CAP` is RESERVED
   per call in `platform_counter` (`app/common/daily_counter.py`; 0 = no
   calls) — the in-process counter reset on every deploy and was per replica. Guards:
-  `test_geo_eligibility`, `test_geo_review_followup`.
+  `test_geo_eligibility`, `test_geo_review_followup`. **A location-pref edit
+  re-decides** (2026-10-28): `geo_verify.redecide_user_copies` (update_profile, in
+  a thread; and every `seed_new_user`) re-decides the user's open, undelivered,
+  UNSCORED held/stamped copies from `JobGeography` + the NEW prefs — before, only
+  new evidence did, and Boston jobs sat "Location pending" 22 days after "Open to
+  relocating" was ticked. Guard: `test_location_pref_redecide`.
 - **Copying a posting must not make it younger**: `RawJob.first_seen` is carried
   by the COPIERS (adoption, per-user routes) and `_build_job` honours it. Before
   that, a 3-week-old shared row entered a user's pool stamped `first_seen=now` —
@@ -783,6 +798,10 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `realign.realign_job_type` (re-opens fresh type-only rejections, takes
   unopened wrong-type jobs off the board). Form answers for dated statuses stay
   the user's (`_sponsorship_answer_for_pack`). Guard: `test_student_options`.
+  `ead_end_date` must be plausible (`work_auth.plausible_end_date`: 2 years back to
+  7 ahead; ProfileUpdate refuses others, forms blank them) and the OPT clock needs
+  one — it used to start from the status alone and read a 2002 date as "expired
+  8,966 days ago". Guard: `test_opt_clock_dates`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list
@@ -899,7 +918,13 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `UserProfile.email` (resume address). Signed one-click unsubscribe
   (`/email/unsubscribe`, GET shows, POST/RFC 8058 acts) + postal address in every
   email; Settings switch `/api/email-notifications`. Nothing sends without
-  `RESEND_API_KEY`. Guard: `test_email_notifications`.
+  `RESEND_API_KEY`. Guard: `test_email_notifications`. **Daily digest is the
+  default** (2026-10-28, `EMAIL_DEFAULT_FREQUENCY`): `dispatch_digests` sends ONE
+  email a day at the user's LOCAL `email_digest_hour` (9/12/18; `email_timezone`
+  from the browser, else the country's; `tzdata` pinned for slim images) with ≤10
+  best NEW shortlisted jobs since the last digest; none = no email. Daily users'
+  fresh_job/high_match rows are marked `digest`; feed_paused still goes at once.
+  "Every new match" (`instant`) and Off remain. Guard: `test_daily_digest`.
 - **Spelling: "resume", never "résumé"** in anything a user sees (UI, messages,
   emails, extension, mobile) — the founder's rule (2026-09-26). Matching code
   still strips diacritics so employer forms that write "Résumé" are recognised.
@@ -927,7 +952,9 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   EARLIER of a trusted publish date (greenhouse/lever/ashby/smartrecruiters/workable)
   and `first_seen`; an edit date can only make it later. `mark_as_submitted` stamps
   `Application.applied_after_min`/`applied_ref` (never for email imports); the board
-  puts in-window rows (`data-early`) first; `first_response_at` is first-write-wins
+  puts in-window rows (`data-early`) first — **all early-window UI is OFF since
+  2026-10-28** (`EARLY_WINDOW_UI`, founder: "Freshest" = newest first; receipts
+  still stamped, so on restores it whole); `first_response_at` is first-write-wins
   and 'ghosted' never sets it. Copy states a clock, never odds — no "likely", no
   "Nx" (`FORBIDDEN_WORDS`, guard: `test_earliness_receipt`). Baseline 2026-10-11:
   13/22 SpotApply submissions inside 48h; `scripts/apply_latency_report.py`.
