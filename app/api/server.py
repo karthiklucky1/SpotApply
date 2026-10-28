@@ -11230,7 +11230,7 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
                     import threading
                     from app.discovery.geo_verify import redecide_user_copies
                     threading.Thread(target=redecide_user_copies, args=(user_id_arg,),
-                                     daemon=True).start()
+                                     kwargs={"force": True}, daemon=True).start()
                 except Exception as _rd:
                     log.debug("held-copy re-decision not started: %s", _rd)
             if any(getattr(db_profile, f, None) != _before_type[f] for f in _JOB_TYPE_PREF_FIELDS):

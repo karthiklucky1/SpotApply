@@ -850,13 +850,19 @@ def redecide_copies(source: str, external_id: str, geo: Geography,
     return changed
 
 
-#: Upper bound on the copies one preference change re-decides. Held and
-#: location-stamped copies are a slice of an open pool; the oldest beyond this
-#: are past the scoring window anyway.
+#: Upper bound on the copies one preference change re-decides, NEWEST first:
+#: the oldest beyond this are past the scoring window anyway.
 REDECIDE_USER_MAX_ROWS = 3000
+#: The setup saves the profile and then the roles seconds apart, and both
+#: re-decide: one run per user at a time, and none again within this window.
+_REDECIDE_MIN_GAP_S = 60.0
+_redecide_lock = threading.Lock()
+_redecide_running: set = set()
+_redecide_last: Dict[str, float] = {}
 
 
-def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_ROWS) -> dict:
+def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_ROWS,
+                          force: bool = False) -> dict:
     """One user's location preferences changed: re-decide THEIR open,
     undelivered, UNSCORED copies that a location verdict holds (unknown) or
     stamped out (ineligible, `INELIGIBLE_STAMP_SCORE`), from each posting's
@@ -871,8 +877,29 @@ def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_
     A copy that becomes eligible or unknown leaves the stamp (rerank_score back
     to NULL) and rejoins the queue; one that becomes ineligible is stamped as
     intake would. Copies with no geography row (pre-rollout) are left as they
-    are. Pure DB + `decide()` — no network, no LLM. Never raises.
+    are. Pure DB + `decide()` — no network, no LLM. Never raises. Single-
+    flight per user, and skipped within a minute of the last run unless
+    ``force`` (a profile edit that changed location preferences forces it).
     """
+    stats = {"examined": 0, "released": 0, "still_held": 0, "stamped": 0, "no_geography": 0}
+    key = user_id or "local"
+    with _redecide_lock:
+        last = _redecide_last.get(key, 0.0)
+        if key in _redecide_running or (not force and time.monotonic() - last < _REDECIDE_MIN_GAP_S):
+            stats["skipped"] = 1
+            return stats
+        _redecide_running.add(key)
+    try:
+        return _redecide_user_copies(user_id, limit, stats)
+    finally:
+        with _redecide_lock:
+            _redecide_running.discard(key)
+            _redecide_last[key] = time.monotonic()
+            if len(_redecide_last) > 5000:
+                _redecide_last.clear()
+
+
+def _redecide_user_copies(user_id: Optional[str], limit: int, stats: dict) -> dict:
     from sqlalchemy import and_, or_
     from sqlalchemy.orm import load_only
     from sqlmodel import select
@@ -880,7 +907,6 @@ def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_
     from app.db.init_db import get_session
     from app.db.models import Application, Job
 
-    stats = {"examined": 0, "released": 0, "still_held": 0, "stamped": 0, "no_geography": 0}
     prefs = geo_prefs_for_user(user_id)
     if prefs is None:
         return stats            # unreadable profile: decide nothing (see geo_prefs_for_user)
@@ -903,7 +929,7 @@ def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_
                                 Job.rerank_reasoning.like(INELIGIBLE_REASON_PREFIX + "%"))),
                        Job.id.notin_(select(Application.job_id)
                                      .where(app_owner, Application.job_id.is_not(None))))
-                .order_by(Job.id)
+                .order_by(Job.id.desc())
                 .limit(max(1, int(limit)))
             ).all()
             geos = load_geographies(
