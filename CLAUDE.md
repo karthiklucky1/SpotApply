@@ -798,6 +798,15 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `realign.realign_job_type` (re-opens fresh type-only rejections, takes
   unopened wrong-type jobs off the board). Form answers for dated statuses stay
   the user's (`_sponsorship_answer_for_pack`). Guard: `test_student_options`.
+  **A posting that rules the user out never reaches the board** (2026-10-28):
+  `sponsorship_text.find_refusal` keeps "U.S."/"i.e." inside a sentence and reads
+  required citizenship/clearance + "not eligible for / will not hire … who need
+  sponsorship" (400 real postings: 32 → 110 refusals, none lost); and
+  `reranker.reconcile_with_profile` caps the overall at `BLOCKER_OVERALL_CAP` (25)
+  when the POSTING refuses a user who needs sponsorship — the model scored a
+  citizens+clearance job work_auth 10, overall 72. The model's own low factor never
+  caps. The Tier-2 prompt states home city, relocation and today's date. Guard:
+  `test_match_quality_blockers`.
   `ead_end_date` must be plausible (`work_auth.plausible_end_date`: 2 years back to
   7 ahead; ProfileUpdate refuses others, forms blank them) and the OPT clock needs
   one — it used to start from the status alone and read a 2002 date as "expired

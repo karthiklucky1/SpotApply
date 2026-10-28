@@ -89,18 +89,81 @@ _CANCELLER_SOURCES = [
     # "we will sponsor" / "we can sponsor" — note this cannot match "will not
     # sponsor" or "cannot sponsor", which are themselves refusal phrases.
     r"\b(will|can|do)\s+sponsor\b",
-    # "eligible for visa sponsorship"
-    r"\beligible\s+for\s+(visa\s+)?sponsorship\b",
+    # "eligible for visa sponsorship" — but never "NOT (be) eligible for…",
+    # which is a refusal (it used to veto itself through this line).
+    r"(?<!not\s)(?<!not\sbe\s)\beligible\s+for\s+(visa\s+)?sponsorship\b",
+    # A citizenship or clearance line that is a preference, or waived:
+    # "Active Secret clearance preferred", "No clearance required".
+    r"\b(clearance|citizen\w*)\b[^.]{0,40}\b(preferred|a\s+plus|nice[\s-]to[\s-]have|desired"
+    r"|desirable|bonus|helpful|not\s+required|not\s+necessary)\b",
+    r"\b(preferred|a\s+plus|nice[\s-]to[\s-]have|bonus)\b[^.]{0,30}\b(clearance|citizen\w*)\b",
+    r"\b(no|not|without)\s+(\w+\s+){0,2}(clearance|citizenship)\s+(is\s+)?(required|needed|necessary)\b",
     # "you do not need to be a US citizen or permanent resident"
     r"\b(do not|does not|don't|doesn't)\s+(need|have)\s+to\s+be\b",
 ]
 _CANCELLERS = [re.compile(p, re.IGNORECASE) for p in _CANCELLER_SOURCES]
 
+# Refusals and requirements no fixed phrase can spell — each is a REQUIREMENT
+# or a REFUSAL construction, never a mere mention ("citizenship status" in EEO
+# boilerplate matches none of them). Added 2026-10-28 after two delivered jobs
+# for an F-1 OPT user: "U.S. Citizenship with eligibility for DoD Secret
+# clearance" and "does not intend to hire … candidates who will require
+# sponsorship now OR in the future (i.e. F-1 visa holders)". A U.S. security
+# clearance itself requires U.S. citizenship, so a required one is a refusal
+# for anyone who needs sponsorship.
+_REFUSAL_PATTERN_SOURCES = [
+    ("not eligible for sponsorship",
+     r"\b(?:not\s+(?:be\s+)?eligible|ineligible)\s+for\s+(?:visa\s+|employment\s+|immigration\s+)?sponsorship\b"),
+    ("sponsorship not available",
+     r"\bsponsorship\s+(?:is|are|will|can|would)\s*not\s+(?:be\s+)?(?:available|offered|provided|possible|supported)\b"),
+    ("sponsorship not available", r"\bsponsorship\s+(?:is\s+)?unavailable\b"),
+    ("unable to offer sponsorship",
+     r"\b(?:unable|not\s+able|not\s+in\s+a\s+position)\s+to\s+(?:offer|provide|support)\s+(?:\w+\s+){0,2}sponsorship\b"),
+    ("will not hire candidates who need sponsorship",
+     r"\b(?:does|do|will|would)\s+not\s+(?:intend\s+to\s+|be\s+able\s+to\s+)?(?:hire|consider|accept|employ)\b[^.]{0,100}\bsponsorship\b"),
+    ("candidates needing sponsorship not considered",
+     r"\b(?:requir\w*|need\w*)\s+(?:\w+\s+){0,2}sponsorship\b[^.]{0,80}"
+     r"\b(?:will\s+not|won't|cannot|can't|are\s+not|is\s+not)\s+(?:be\s+)?(?:considered|eligible)\b"),
+    ("without requiring sponsorship",
+     r"\bwithout\s+(?:requiring|needing|the\s+need\s+(?:of|for)|need\s+of)\s+(?:\w+\s+){0,2}sponsorship\b"),
+    ("must be a US citizen",
+     r"\bmust\s+(?:be|hold|possess|have)\s+(?:a\s+|an\s+)?(?:us|united\s+states)\s+citizen"),
+    # Not the employer-wide line "…required for all positions with a government
+    # clearance": that describes OTHER roles; this one's own clearance line, if
+    # it has one, is caught below.
+    ("US citizenship required",
+     r"\b(?:us|united\s+states)\s+citizenship\s+(?:is\s+)?(?:required|mandatory|needed|a\s+requirement)\b"
+     r"(?!\s+for\s+(?:all\s+|any\s+|certain\s+)?(?:positions|roles|jobs)\s+(?:with|that|requiring|which))"),
+    # "requires" — never "may/might/can/could require" (a hedge, not a rule).
+    ("requires US citizenship",
+     r"(?<!may\s)(?<!might\s)(?<!can\s)(?<!could\s)\b(?:requires?|requiring)\s+(?:\w+\s+){0,2}"
+     r"(?:us|united\s+states)\s+citizenship\b"),
+    # A requirements bullet that IS the line: "U.S. Citizenship with …".
+    ("US citizenship requirement",
+     r"^(?:us|united\s+states)\s+citizenship\b(?!\s+(?:status|and\s+immigration|is\s+not|not\b))"
+     r"(?![^.]{0,40}\bfor\s+(?:all\s+|any\s+|certain\s+)?(?:positions|roles|jobs)\s+(?:with|that|requiring|which))"),
+    # Not "only US citizens AND lawfully authorized non-US citizens".
+    ("US citizens only",
+     r"\b(?:only\s+(?:us|united\s+states)\s+citizens(?!\s+(?:and|or)\b)"
+     r"|(?:us|united\s+states)\s+citizens\s+only)\b"),
+    ("active security clearance",
+     r"\b(?:active|current)\s+(?:dod\s+)?(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+    ("ability to obtain a security clearance",
+     r"\b(?:ability|able|eligib\w*|willing\w*)\s+to\s+(?:obtain|acquire|get)\s+(?:and\s+maintain\s+)?(?:an?\s+)?"
+     r"(?:dod\s+|us\s+|federal\s+|government\s+)?(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+    ("eligibility for a security clearance",
+     r"\beligib\w*\s+(?:for|to\s+obtain)\s+(?:an?\s+)?(?:dod\s+|us\s+|federal\s+)?"
+     r"(?:secret|top\s+secret|ts/sci|ts|security)\s+(?:security\s+)?clearance\b"),
+    ("security clearance required",
+     r"\b(?:secret|top\s+secret|ts/sci|security)\s+clearance\s+(?:is\s+)?(?:required|mandatory|needed)\b"),
+]
+
 # Word-boundary matchers, built once. `\b` on both ends stops "no sponsorship"
 # matching inside a longer token and keeps the phrase list readable as plain
 # text rather than as regex source.
 _PHRASE_RES = [(p, re.compile(r"\b" + re.escape(p) + r"\b", re.IGNORECASE))
-               for p in NO_SPONSORSHIP_HARD]
+               for p in NO_SPONSORSHIP_HARD] + \
+              [(label, re.compile(src, re.IGNORECASE)) for label, src in _REFUSAL_PATTERN_SOURCES]
 
 # Sentence-ish boundaries. Postings are as often bullet lists with newlines as
 # they are prose, so newlines, bullets and pipes end a "sentence" too.
@@ -113,8 +176,20 @@ class Refusal(NamedTuple):
     sentence: str
 
 
+# Abbreviations whose periods are not sentence ends: split on them and "Must
+# be a U.S. citizen" became "Must be a U", "S", "citizen" — no phrase could
+# ever match the most common way U.S. postings state the requirement.
+_ABBREVIATIONS = [(re.compile(r"\bU\.\s?S\.\s?A\.", re.IGNORECASE), "USA"),
+                  (re.compile(r"\bU\.\s?S\.", re.IGNORECASE), "US"),
+                  (re.compile(r"\bi\.e\.", re.IGNORECASE), "ie"),
+                  (re.compile(r"\be\.g\.", re.IGNORECASE), "eg")]
+
+
 def _sentences(text: str) -> List[str]:
-    return [s.strip() for s in _SENT_SPLIT.split(text or "") if s.strip()]
+    text = text or ""
+    for rx, repl in _ABBREVIATIONS:
+        text = rx.sub(repl, text)
+    return [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
 
 
 def find_refusal(text: str) -> Optional[Refusal]:

@@ -563,16 +563,38 @@ def _profile_system_prompt(profile) -> str:
         auth_rule = (f"- WORK AUTHORIZATION: candidate is '{work_auth}' and does NOT need sponsorship. "
                      f"work_auth should be high unless the role requires a clearance/citizenship the candidate lacks.")
 
+    # Where they live and whether they will move — the same facts the
+    # eligibility gate decided on. Without them the model wrote "candidate
+    # location unclear" / "candidate seeks remote" and marked down on-site US
+    # roles for a user who had said they would relocate (2026-10-28).
+    home = (getattr(profile, "location", "") or "").strip()
+    targets = (getattr(profile, "relocation_targets", "") or "").strip()
+    if bool(getattr(profile, "open_to_relocation", False)):
+        where = (f"to {targets}" if targets and targets.lower() != "nationwide"
+                 else f"anywhere in {country}")
+        move = (f" Open to relocating {where}: an on-site or hybrid role there is as good as a "
+                f"remote one — score location high.")
+    else:
+        move = " Not open to relocating: an on-site or hybrid role far from home scores location low."
     loc_rule = (f"- LOCATION & COUNTRY: the candidate wants jobs in {country}"
                 f"{' plus fully-remote roles open to ' + country + ' (or truly global remote)' if remote_ok else ''}. "
+                f"{'Lives in ' + home + '.' if home else 'Home city not stated.'}{move} "
                 f"If the job is located in a DIFFERENT country than {country} — including a REMOTE role "
                 f"anchored to another country or region (e.g. 'Remote, EU only'), which still requires "
                 f"work authorization there — set location 0-15 (hard blocker). "
-                f"In-country roles score location high; same-country or global remote scores location high.")
+                f"In-country roles score location high; same-country or global remote scores location high. "
+                f"A 'Location check' line in the job is the verified decision for this candidate — never "
+                f"contradict it.")
+    # Resume dates run up to now; without today's date the model read a 2026
+    # end date as "roles dated in the future".
+    from datetime import date as _date
+    today = _date.today().isoformat()
 
     return f"""You evaluate how well a candidate fits a job. {_JSON_CONTRACT}
 
 {_SCORE_BANDS}
+
+Today's date is {today}; resume dates up to today are past or current, never future.
 
 Candidate profile:
 - Target roles: {roles}
@@ -914,12 +936,25 @@ def tidy_years_claims(text: str) -> str:
     return _ZERO_YEARS_RE.sub(_sub, text)
 
 
+#: The contract's "a factor <=15 from an explicit blocker caps the overall at
+#: 25" — the same number card_match.BLOCKER_OVERALL_CAP enforces.
+BLOCKER_OVERALL_CAP = 25.0
+
+
 def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
                            description: str = "") -> Tuple[float, str, List[str], dict]:
     """Hold a parsed verdict to facts we already hold, before it is stored:
     the work_auth factor to the user's visa status (work_auth.py) and years
-    figures to what the resume can show. The overall score is never changed.
-    Never raises."""
+    figures to what the resume can show. Never raises.
+
+    The overall score changes in ONE case: the posting itself refuses this
+    user (`find_refusal`: no sponsorship, U.S. citizens only, a required
+    security clearance) and the user needs sponsorship. Then it is capped at
+    BLOCKER_OVERALL_CAP, as the JSON contract promised and the model did not
+    deliver: on 2026-10-28 a posting requiring "U.S. Citizenship with
+    eligibility for DoD Secret clearance" came back work_auth 10, overall 72,
+    and reached an F-1 OPT user's board. The model's own judgement never
+    causes the cap — only the posting's words do."""
     score, reason, concerns, breakdown = result
     try:
         reason = tidy_years_claims(reason)
@@ -928,15 +963,24 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
             breakdown = {k: (dict(v, note=tidy_years_claims(str(v["note"])))
                              if isinstance(v, dict) and v.get("note") else v)
                          for k, v in breakdown.items()}
-            if profile is not None and isinstance(breakdown.get("work_auth"), dict):
-                from app.common.sponsorship_text import find_refusal
+        if profile is not None and (description or "").strip():
+            from app.common.sponsorship_text import find_refusal
+            from app.common.tenant_prefs import needs_sponsorship
+            refusal = find_refusal(description)
+            if isinstance(breakdown, dict) and isinstance(breakdown.get("work_auth"), dict):
                 from app.intelligence.work_auth import reconcile_work_auth_factor
-                # No posting text = not known, which is never "silent".
-                refuses = (find_refusal(description) is not None) if (description or "").strip() \
-                    else None
                 breakdown["work_auth"] = reconcile_work_auth_factor(
-                    breakdown["work_auth"], profile, posting_refuses=refuses,
-                    posting_text=description or "")
+                    breakdown["work_auth"], profile, posting_refuses=refusal is not None,
+                    posting_text=description)
+            if refusal is not None and score > BLOCKER_OVERALL_CAP and needs_sponsorship(profile):
+                score = BLOCKER_OVERALL_CAP
+                concerns = [f'Posting rules this out: "{refusal.sentence[:90]}"'] + list(concerns)[:2]
+        elif profile is not None and isinstance(breakdown, dict) \
+                and isinstance(breakdown.get("work_auth"), dict):
+            # No posting text = not known, which is never "silent".
+            from app.intelligence.work_auth import reconcile_work_auth_factor
+            breakdown["work_auth"] = reconcile_work_auth_factor(
+                breakdown["work_auth"], profile, posting_refuses=None, posting_text="")
     except Exception as e:                       # a tidy-up never costs a paid verdict
         log.debug("verdict reconcile skipped: %s", e)
     return score, reason, concerns, breakdown
@@ -1458,7 +1502,8 @@ class Reranker:
                     _register_final_call(self._user_id)
                     result = self._calibrate(backend_name, _parse_response(call.text))
                     # The notes the report shows must agree with the profile
-                    # (visa status) before they are stored; score unchanged.
+                    # (visa status) before they are stored; the score changes
+                    # only when the posting itself refuses this user.
                     result = reconcile_with_profile(result, self._profile,
                                                     getattr(job, "description", "") or "")
                     # The verdict feeds the adaptive budget's marginal-yield
