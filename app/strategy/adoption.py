@@ -652,6 +652,14 @@ def seed_new_user(user_id: str | None) -> int:
     # An explicit save (roles, or a widened search) may re-run the first
     # results even inside the same window: the user just changed what to find.
     _welcome_mod._FIRST_DONE.pop(user_id, None)
+    # Jobs a location verdict held under EARLIER preferences (the setup's
+    # "Open to relocating" is saved just before the roles) are decided again
+    # from the current ones, so they join the queue the first results read.
+    try:
+        from app.discovery.geo_verify import redecide_user_copies
+        redecide_user_copies(user_id)
+    except Exception as e:
+        log.debug("onboarding: held-copy re-decision skipped for %s: %s", user_id or "local", e)
     adopted = adopt_and_match(user_id)
 
     if not settings.onboarding_active_discovery or settings.onboarding_min_jobs <= 0:

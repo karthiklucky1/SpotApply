@@ -46,6 +46,9 @@ def _configured(monkeypatch):
     monkeypatch.setattr(settings, "email_min_gap_minutes", 120)
     monkeypatch.setattr(settings, "email_max_age_hours", 12)
     monkeypatch.setattr(settings, "email_skip_if_active_minutes", 15)
+    # This file covers the per-match path ("Every new match, as found"); the
+    # daily digest — the default since 2026-10-28 — is test_daily_digest.py.
+    monkeypatch.setattr(settings, "email_default_frequency", "instant")
     with get_session() as s:
         for uid in USERS:
             s.add(UserProfile(user_id=uid, email=f"resume-{uid}@example.com"))
@@ -362,7 +365,8 @@ def test_a_provider_error_never_puts_the_address_in_the_log(monkeypatch):
 def test_settings_switch_turns_emails_off_and_back_on(monkeypatch):
     monkeypatch.setattr(server, "_require_user", lambda request: A)
     c = TestClient(server.app)
-    assert c.get("/api/email-notifications").json() == {"enabled": True, "available": True}
+    state = c.get("/api/email-notifications").json()
+    assert state["enabled"] is True and state["available"] is True
     assert c.put("/api/email-notifications", json={"enabled": False}).json() == {"enabled": False}
     assert c.get("/api/email-notifications").json()["enabled"] is False
     _profile(A, email_unsubscribed_at=datetime.utcnow())
@@ -414,7 +418,7 @@ def test_the_dispatcher_runs_only_in_the_lanes_process():
 
 
 def test_dashboard_has_the_switch_and_privacy_names_the_provider():
-    assert 'onclick="toggleEmailNotifications()"' in DASH and 'id="email-notif-state"' in DASH
+    assert 'onchange="setEmailNotifications(this.value)"' in DASH and 'id="email-notif-state"' in DASH
     assert "settings') === 'notifications'" in DASH
     assert "JobAgent — discovery complete" not in DASH
     assert "<strong>Resend</strong>" in PRIVACY and "unsubscribe link" in PRIVACY

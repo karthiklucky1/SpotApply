@@ -71,6 +71,27 @@ def _parse_end(raw: str):
     return None
 
 
+#: An authorisation end date this far in the past or future is not the user's
+#: current card — it is a slip of the date picker (a 2002 date reached a live
+#: profile and the OPT clock read "EAD expired 8,966 days ago"). Two years back
+#: still shows a card that ran out; seven forward covers a six-year H-1B.
+EAD_MAX_PAST_DAYS = 730
+EAD_MAX_FUTURE_DAYS = 7 * 365
+
+
+def plausible_end_date(raw: str):
+    """The saved end date as a `date` when it can be the user's real one, else
+    None (empty, unreadable, or outside the window above)."""
+    from datetime import date
+    end = _parse_end((raw or "").strip())
+    if end is None:
+        return None
+    days = (end - date.today()).days
+    if days < -EAD_MAX_PAST_DAYS or days > EAD_MAX_FUTURE_DAYS:
+        return None
+    return end
+
+
 def _validity(profile) -> tuple[str, str]:
     """('current'|'expired'|'unknown', the date as stored).
 

@@ -850,6 +850,115 @@ def redecide_copies(source: str, external_id: str, geo: Geography,
     return changed
 
 
+#: Upper bound on the copies one preference change re-decides. Held and
+#: location-stamped copies are a slice of an open pool; the oldest beyond this
+#: are past the scoring window anyway.
+REDECIDE_USER_MAX_ROWS = 3000
+
+
+def redecide_user_copies(user_id: Optional[str], limit: int = REDECIDE_USER_MAX_ROWS) -> dict:
+    """One user's location preferences changed: re-decide THEIR open,
+    undelivered, UNSCORED copies that a location verdict holds (unknown) or
+    stamped out (ineligible, `INELIGIBLE_STAMP_SCORE`), from each posting's
+    stored geography and the user's NEW preferences.
+
+    Before this, only `redecide_copies` (the posting's EVIDENCE changed) and
+    the scoring backstop (scored copies, `server._release_location_stamps`)
+    re-decided anything. A held copy waited on geo verification alone, so
+    turning on "Open to relocating" left a Boston posting in "Location
+    pending" for 22 days for a user who would move there (2026-10-28).
+
+    A copy that becomes eligible or unknown leaves the stamp (rerank_score back
+    to NULL) and rejoins the queue; one that becomes ineligible is stamped as
+    intake would. Copies with no geography row (pre-rollout) are left as they
+    are. Pure DB + `decide()` — no network, no LLM. Never raises.
+    """
+    from sqlalchemy import and_, or_
+    from sqlalchemy.orm import load_only
+    from sqlmodel import select
+    from app.common.tenant_prefs import geo_prefs_for_user
+    from app.db.init_db import get_session
+    from app.db.models import Application, Job
+
+    stats = {"examined": 0, "released": 0, "still_held": 0, "stamped": 0, "no_geography": 0}
+    prefs = geo_prefs_for_user(user_id)
+    if prefs is None:
+        return stats            # unreadable profile: decide nothing (see geo_prefs_for_user)
+    now = datetime.utcnow()
+    held_again: List[tuple] = []
+    try:
+        with get_session() as session:
+            owner = (Job.user_id == user_id) if user_id else Job.user_id.is_(None)
+            app_owner = (Application.user_id == user_id) if user_id else Application.user_id.is_(None)
+            rows = session.exec(
+                select(Job)
+                .options(load_only(Job.id, Job.source, Job.external_id, Job.eligibility,
+                                   Job.eligibility_reason, Job.rerank_score,
+                                   Job.rerank_reasoning, Job.scored_at))
+                .where(owner,
+                       Job.is_closed == False,  # noqa: E712
+                       Job.eligibility.in_((UNKNOWN, INELIGIBLE)),
+                       or_(Job.rerank_score.is_(None),
+                           and_(Job.rerank_score == INELIGIBLE_STAMP_SCORE,
+                                Job.rerank_reasoning.like(INELIGIBLE_REASON_PREFIX + "%"))),
+                       Job.id.notin_(select(Application.job_id)
+                                     .where(app_owner, Application.job_id.is_not(None))))
+                .order_by(Job.id)
+                .limit(max(1, int(limit)))
+            ).all()
+            geos = load_geographies(
+                (j.source.value if hasattr(j.source, "value") else str(j.source), j.external_id)
+                for j in rows if j.external_id)
+            changed = 0
+            for job in rows:
+                stats["examined"] += 1
+                src = job.source.value if hasattr(job.source, "value") else str(job.source)
+                geo = geos.get((src, str(job.external_id or "")))
+                if geo is None:
+                    stats["no_geography"] += 1
+                    continue
+                d = decide(geo, prefs)
+                stamped = (job.rerank_score == INELIGIBLE_STAMP_SCORE
+                           and (job.rerank_reasoning or "").startswith(INELIGIBLE_REASON_PREFIX))
+                if d.status == INELIGIBLE:
+                    if job.eligibility != INELIGIBLE or job.eligibility_reason != d.reason[:200]:
+                        stamp_ineligible(job, d, now)
+                        session.add(job)
+                        changed += 1
+                        stats["stamped"] += 1
+                    continue
+                if job.eligibility == d.status and job.eligibility_reason == d.reason[:200] \
+                        and not stamped:
+                    if d.status == UNKNOWN:
+                        stats["still_held"] += 1
+                    continue
+                job.eligibility = d.status
+                job.eligibility_reason = d.reason[:200]
+                if stamped:
+                    # Back into the queue: the stamp was the location verdict,
+                    # never a fit score.
+                    job.rerank_score = None
+                    job.rerank_reasoning = None
+                    job.scored_at = None
+                session.add(job)
+                changed += 1
+                if d.status == ELIGIBLE:
+                    stats["released"] += 1
+                else:
+                    stats["still_held"] += 1
+                    held_again.append((src, str(job.external_id)))
+            if changed:
+                session.commit()
+    except Exception as e:
+        log.warning("re-deciding held copies after a profile change failed: %s", e)
+        return stats
+    if held_again:
+        mark_held(held_again)       # still unknown: let verification retry them now
+    if stats["released"] or stats["stamped"]:
+        log.info("Location prefs changed: %s", stats)
+    return stats
+
+
 def current_decision(session, source, external_id: str, user_id: Optional[str]):
     """The verdict for ONE copy, decided NOW from the posting's current
     geography, the user's current preferences and the current rules.

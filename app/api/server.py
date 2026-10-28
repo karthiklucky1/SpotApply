@@ -1076,7 +1076,7 @@ async def _email_notifications():
     from app.config import settings
     _log = logging.getLogger("email")
     await asyncio.sleep(90)
-    from app.common.notify_email import dispatch_pending, is_configured
+    from app.common.notify_email import dispatch_digests, dispatch_pending, is_configured
     if not is_configured():
         _log.warning("Email notifications are OFF: %s — notifications stay in the dashboard bell only.",
                      "EMAIL_NOTIFICATIONS_ENABLED=0" if not settings.email_notifications_enabled
@@ -1087,6 +1087,11 @@ async def _email_notifications():
                 out = await asyncio.to_thread(dispatch_pending)
                 if out.get("sent") or out.get("failed") or out.get("platform_capped"):
                     _log.info("Email notifications: %s", out)
+                # The once-a-day digest (the default): its own pass, so a
+                # failure in one never stops the other.
+                dig = await asyncio.to_thread(dispatch_digests)
+                if dig.get("sent") or dig.get("failed") or dig.get("platform_capped"):
+                    _log.info("Daily digest: %s", dig)
         except Exception as e:
             # The class and the message up to "[SQL": a DB error's bound
             # parameters would put user ids in the log.
@@ -2069,12 +2074,15 @@ def _early_window_of(job):
 
 templates.env.globals["earliness_of"] = _earliness_of
 templates.env.globals["early_window_of"] = _early_window_of
+# Read per render (not copied at import) so a test or an env flip takes effect.
+templates.env.globals["early_window_ui"] = lambda: bool(settings.early_window_ui)
 
 
 def _early_stats_for(uid) -> dict | None:
     """The dashboard render's copy of _early_stats: its own short session, so a
-    slow count can never hold the page's main session."""
-    if settings.use_supabase and not uid:
+    slow count can never hold the page's main session. Nothing is read while
+    the early-window UI is off (settings.early_window_ui)."""
+    if not settings.early_window_ui or (settings.use_supabase and not uid):
         return None
     owner = uid if uid != "local" else None
     try:
@@ -4558,7 +4566,8 @@ def board_pane(request: Request, stage: str, all_submitted: bool = False) -> dic
         if stage == "submitted":
             total_submitted = reads.get(
                 len(rows), lambda: _scalar(session.exec(_board_submitted_count_query(owner)).first() or 0))
-            early_stats = _early_stats(session, owner, reads)
+            if settings.early_window_ui:
+                early_stats = _early_stats(session, owner, reads)
         degraded = reads.degraded
     from datetime import datetime as _dt
     if stage == "submitted":
@@ -7167,23 +7176,24 @@ _XRAY_TTL_S = 300
 
 def _opt_clock_payload(profile) -> Optional[dict]:
     """OPT countdown for F-1 users: EAD runway + unemployment-day budget.
-    Facts only, from the user's own dates — never legal advice."""
+    Facts only, from the user's own dates — never legal advice.
+
+    Only from a date the USER saved, and only a plausible one
+    (`work_auth.plausible_end_date`). It used to start for anyone whose status
+    read "OPT" — "90 unemployment days left" from a default of 0 days used —
+    and a 2002 date slipped in by the date picker read "EAD expired 8,966 days
+    ago". No usable date = no clock; the X-Ray card asks for the dates."""
     try:
         if not profile:
             return None
-        auth = ((getattr(profile, "work_authorization", "") or "") + " " +
-                (getattr(profile, "visa_status", "") or "")).lower()
-        ead = (getattr(profile, "ead_end_date", "") or "").strip()
-        if "opt" not in auth and not ead:
-            return None
         from datetime import date
+        from app.intelligence.work_auth import plausible_end_date
+        end = plausible_end_date(getattr(profile, "ead_end_date", "") or "")
+        if end is None:
+            return None
+        ead = end.isoformat()
         today = date.today()
-        days_to_ead = None
-        if ead:
-            try:
-                days_to_ead = (date.fromisoformat(ead) - today).days
-            except ValueError:
-                days_to_ead = None
+        days_to_ead = (end - today).days
         budget = 150 if bool(getattr(profile, "stem_opt", False)) else 90
         used = max(0, int(getattr(profile, "opt_unemployment_days_used", 0) or 0))
         days_left = max(0, budget - used)
@@ -9794,9 +9804,10 @@ def review_prompt_seen(request: Request) -> dict:
 
 @app.get("/api/email-notifications")
 def email_notifications_state(request: Request) -> dict:
-    """Does this user get notification emails, and can the platform send any
-    right now (`available` is False until RESEND_API_KEY is set)."""
-    from app.common.notify_email import is_configured
+    """Does this user get notification emails, how often (daily digest at a
+    local hour, or every new match), and can the platform send any right now
+    (`available` is False until RESEND_API_KEY is set)."""
+    from app.common import notify_email as ne
     from app.db.models import UserProfile
     uid = _require_user(request)
     owner = uid if uid != "local" else None
@@ -9804,28 +9815,55 @@ def email_notifications_state(request: Request) -> dict:
         prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
     enabled = (prof is not None and prof.email_notifications is not False
                and prof.email_unsubscribed_at is None)
-    return {"enabled": enabled, "available": is_configured()}
+    return {"enabled": enabled, "available": ne.is_configured(),
+            "frequency": ne.frequency_of(prof), "digest_hour": ne.digest_hour_of(prof),
+            "timezone": (getattr(prof, "email_timezone", "") or "") if prof else "",
+            "digest_hours": {str(h): label for h, label in ne.DIGEST_HOURS.items()}}
 
 
 @app.put("/api/email-notifications")
 def set_email_notifications(request: Request, payload: dict) -> dict:
-    """Settings switch. Turning it ON also clears an earlier unsubscribe."""
+    """Settings: on/off (turning it ON also clears an earlier unsubscribe),
+    `frequency` "daily" | "instant", `digest_hour` 0-23 local, and the
+    browser's `timezone`. Every field is optional; each is validated."""
+    from app.common import notify_email as ne
     from app.db.models import UserProfile
     uid = _require_user(request)
     owner = uid if uid != "local" else None
     enabled = payload.get("enabled")
-    if not isinstance(enabled, bool):
+    if enabled is not None and not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="'enabled' must be true or false")
+    freq = payload.get("frequency")
+    if freq is not None and freq not in ne.FREQUENCIES:
+        raise HTTPException(status_code=400, detail="'frequency' must be 'daily' or 'instant'")
+    hour = payload.get("digest_hour")
+    if hour is not None and (isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23):
+        raise HTTPException(status_code=400, detail="'digest_hour' must be an hour from 0 to 23")
+    tz = payload.get("timezone")
+    if tz is not None:
+        tz = ne.valid_timezone(tz)          # an unknown zone is ignored, never stored
+    if enabled is None and freq is None and hour is None and not tz:
+        raise HTTPException(status_code=400, detail="Nothing to change")
     with get_session() as session:
         prof = session.exec(select(UserProfile).where(UserProfile.user_id == owner)).first()
         if prof is None:
             raise HTTPException(status_code=404, detail="Profile not found")
-        prof.email_notifications = enabled
-        if enabled:
-            prof.email_unsubscribed_at = None
+        if enabled is not None:
+            prof.email_notifications = enabled
+            if enabled:
+                prof.email_unsubscribed_at = None
+        if freq is not None:
+            prof.email_frequency = freq
+        if hour is not None:
+            prof.email_digest_hour = hour
+        if tz:
+            prof.email_timezone = tz
         session.add(prof)
         session.commit()
-    return {"enabled": enabled}
+        out = {"enabled": prof.email_notifications is not False and prof.email_unsubscribed_at is None}
+        if freq is not None or hour is not None or tz:
+            out.update(frequency=ne.frequency_of(prof), digest_hour=ne.digest_hour_of(prof))
+    return out
 
 
 @app.post("/api/reviews")
@@ -10971,6 +11009,9 @@ class ProfileUpdate(BaseModel):
     ead_end_date: Optional[str] = None
     opt_unemployment_days_used: Optional[int] = None
     stem_opt: Optional[bool] = None
+    # The browser's IANA time zone, sent by the setup so the daily digest email
+    # lands at the user's local hour. An unknown zone is dropped, never stored.
+    email_timezone: Optional[str] = None
     # "tailored" | "original" — which résumé the extension attaches. Validated
     # rather than free text: the value is read as a branch in
     # get_tailored_resume, and anything unrecognised there would silently mean
@@ -10986,6 +11027,32 @@ class ProfileUpdate(BaseModel):
         if v not in ("tailored", "original"):
             raise ValueError("autofill_resume_source must be 'tailored' or 'original'")
         return v
+
+    @field_validator("email_timezone")
+    @classmethod
+    def _known_timezone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from app.common.notify_email import valid_timezone
+        return valid_timezone(v)          # None = leave the stored zone alone
+
+    @field_validator("ead_end_date")
+    @classmethod
+    def _plausible_ead(cls, v: Optional[str]) -> Optional[str]:
+        """Blank clears it; otherwise a real date near today, stored as ISO.
+        A 2002 date from the picker reached a live profile and drove the OPT
+        clock and the work-authorisation answers on forms."""
+        if v is None:
+            return v
+        v = str(v).strip()
+        if not v:
+            return ""
+        from app.intelligence.work_auth import plausible_end_date
+        end = plausible_end_date(v)
+        if end is None:
+            raise ValueError("Authorization end date must be your real card date "
+                             "(within 2 years ago to 7 years ahead) — or leave it blank")
+        return end.isoformat()
 
     @field_validator("how_heard_answer")
     @classmethod
@@ -11156,6 +11223,16 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
             session.commit()
             if any(getattr(db_profile, f, None) != _before[f] for f in _LOCATION_PREF_FIELDS):
                 _release_location_stamps(user_id_arg)
+                # The UNSCORED copies a verdict held ("Location pending") or
+                # stamped out are decided again from the new preferences —
+                # in the background, a few thousand rows at most.
+                try:
+                    import threading
+                    from app.discovery.geo_verify import redecide_user_copies
+                    threading.Thread(target=redecide_user_copies, args=(user_id_arg,),
+                                     daemon=True).start()
+                except Exception as _rd:
+                    log.debug("held-copy re-decision not started: %s", _rd)
             if any(getattr(db_profile, f, None) != _before_type[f] for f in _JOB_TYPE_PREF_FIELDS):
                 # "Looking for" changed: re-open type-only rejections and take
                 # unopened jobs of the wrong type off the board. Never fails
@@ -12196,11 +12273,37 @@ def get_target_roles(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
     roles = [r.strip() for r in (profile.target_roles or "").split(",") if r.strip()]
+    from app.common import role_catalog
     return {
         "roles": roles,
         "suggestions": [s for s in _suggest_roles(profile) if s not in roles],
+        # The roles page's grouped suggestions, each with its reason.
+        "groups": role_catalog.suggest(
+            profile, roles, popular=_department_keywords(profile) + _ROLE_SUGGESTION_POOL),
         "has_resume": _user_has_resume(uid),
     }
+
+
+@app.get("/api/target-roles/suggest")
+@_rate_limit("240/minute")  # one call per pause in typing; pure string work, no LLM
+def suggest_target_roles(request: Request, q: str = "", roles: str = "") -> dict:
+    """Typeahead and grouped suggestions for the roles page
+    (app/common/role_catalog.py). With ``q``: real titles matching what the
+    user is typing, then its neighbours ("python developer" → Backend
+    Engineer, Software Engineer). Without: groups read from the resume, roles
+    similar to the ones already picked (``roles``, comma-separated, the
+    unsaved chips) and common titles in the user's field — each with why."""
+    from app.autofill.answer_pack import _get_or_create_profile
+    from app.common import role_catalog
+    uid = _require_user(request)
+    chosen = [r.strip() for r in (roles or "").split(",") if r.strip()][:12]
+    q = (q or "").strip()[:80]
+    if q:
+        return {"matches": role_catalog.complete(q, limit=8, exclude=chosen),
+                "typed": role_catalog.canonical(q)}
+    profile = _get_or_create_profile(user_id=uid if uid != "local" else None)
+    popular = _department_keywords(profile) + _ROLE_SUGGESTION_POOL
+    return {"groups": role_catalog.suggest(profile, chosen, popular=popular)}
 
 
 class TargetRolesUpdate(BaseModel):
@@ -12220,11 +12323,16 @@ def update_target_roles(request: Request, body: TargetRolesUpdate,
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_id_arg = uid if uid != "local" else None
 
-    # Clean + dedupe (case-insensitive), preserve order, cap the list.
+    # Clean + dedupe (case-insensitive), preserve order, cap the list. A role
+    # typed all lower-case is stored in title case ("python developer" →
+    # "Python Developer"); matching is case-insensitive either way.
+    from app.common.role_catalog import canonical as _canonical_role
     cleaned: list[str] = []
     seen: set[str] = set()
     for r in (body.roles or []):
         r = (r or "").strip()
+        if r and r == r.lower():
+            r = _canonical_role(r)
         if r and r.lower() not in seen:
             seen.add(r.lower())
             cleaned.append(r)
