@@ -198,7 +198,7 @@ class Tailor:
         ats_block = ""
         try:
             from app.tailoring.ats_keywords import analyze as ats_analyze
-            from app.tailoring.ats_keywords import skill_phrases
+            from app.tailoring.ats_keywords import tailor_targets
             ats = ats_analyze(job.description or "", master_resume_md,
                               company=getattr(job, "company", "") or "")
             # Only phrases naming something a person can HAVE. The ranked list is
@@ -208,7 +208,7 @@ class Tailor:
             # "using the EXACT phrasing" is how a JD responsibility line ends up
             # in someone's employment history — the very fabrication grounding
             # then has to catch and charge a rebuild for.
-            targets = skill_phrases(ats.missing)
+            targets = tailor_targets(ats.missing)
             if targets:
                 ats_block = (
                     "\n\nATS PRIORITY PHRASES: these exact terms appear in the JD but are "
@@ -219,7 +219,7 @@ class Tailor:
                     "experience with one of them, LEAVE IT OUT: a missing keyword costs a "
                     "search hit, an invented one costs the interview:\n"
                     + "\n".join(f"  - {p}" for p in targets)
-                    + f"\n(Already covered: {', '.join(skill_phrases(ats.matched)[:8])})"
+                    + f"\n(Already covered: {', '.join(tailor_targets(ats.matched)[:8])})"
                 )
         except Exception as e:
             log.warning("ATS keyword analysis failed (continuing without it): %s", e)
