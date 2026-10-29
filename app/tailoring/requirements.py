@@ -66,7 +66,10 @@ _REQ_RE = re.compile(
 )
 
 _PREFERRED_RE = re.compile(
-    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]have|a plus|plus\b|bonus|"
+    # "plus" alone is a CONNECTOR in "a master's degree plus two (2) years" —
+    # read as "a plus", it took the master's path out of a degree ladder. Only
+    # "a plus" and a "Plus:" label mean preferred.
+    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]have|a plus|plus\s*:|bonus|"
     r"desirable|desired|ideally|ideal candidate|would be great|advantage|"
     r"good to have|not required)\b", re.I)
 _REQUIRED_RE = re.compile(
@@ -300,7 +303,12 @@ _DEGREE_WORDS = (r"bachelor['’]?s?|b\.?s\.?c?|b\.a\.|master['’]?s?|m\.?s\.?c
                  r"high school(?:\s+diploma)?|ged")
 #: A rung of a degree ladder: "MS with 6+ years", "8 years with a bachelor's",
 #: "or 6 years and an advanced degree".
-_RUNG_BEFORE_RE = re.compile(rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?[^.;\n\d]{{0,20}}$", re.I)
+#: The long form needs the connector: "A master's degree or higher in a stated
+#: field plus two (2) years" is a rung; "Bachelor's degree in Computer Science.
+#: 5 years …" is not (and a full stop already ends the window).
+_RUNG_BEFORE_RE = re.compile(
+    rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?(?:[^.;\n\d]{{0,20}}"
+    rf"|[^.;\n\d]{{0,80}}\b(?:plus|with|and)(?:\s+a\s+minimum\s+of|\s+at\s+least)?\s*)$", re.I)
 _RUNG_AFTER_RE = re.compile(
     rf"^[^.;\n\d]{{0,45}}?\b(?:with|and|plus|for)\s+(?:an?\s+|the\s+)?(?P<deg>{_DEGREE_WORDS})", re.I)
 #: The no-degree path, which a candidate holding a degree is not on.
@@ -342,6 +350,12 @@ _LEADS_WITH_YEARS_RE = re.compile(
 _NOT_EXPERIENCE_BEFORE_RE = re.compile(r"\b(?:after|every|within|for the first)\s*$", re.I)
 _NOT_EXPERIENCE_AFTER_RE = re.compile(r"^\s*(?:of\s+(?:service|age|tenure)|old\b|thereafter\b|warranty\b)", re.I)
 _ALT_WINDOW = 160
+#: How far either side of a number its requirement wording is read. A real
+#: sentence is shorter; a posting stored as one line is not, and reading the
+#: whole of it once per number was quadratic.
+_SCOPE_CHARS = 400
+_SCOPE_END_RE = re.compile(r"[,(]")
+_WITH_RE = re.compile(r"\bwith\b", re.I)
 #: Nothing asks for more; a bigger number is the employer's age.
 _MAX_REQUIRED_YEARS = 25
 
@@ -388,15 +402,19 @@ def _years_of(m: re.Match) -> Optional[float]:
     return qty
 
 
-def _rung(text: str, m: re.Match) -> Optional[Tuple[float, Optional[int]]]:
-    """(years, degree level) when this quantity is a rung of a degree ladder."""
+def _rung(text: str, m: re.Match, offset: int = 0) -> Optional[Tuple[float, Optional[int]]]:
+    """(years, degree level) when this quantity is a rung of a degree ladder.
+    ``offset`` = where the text ``m`` was matched in starts inside ``text``: a
+    clause-level match read against the whole posting looked at the wrong
+    words, so a rung was found only when the two happened to line up."""
     years = _years_of(m)
     if years is None:
         return None
-    after = _RUNG_AFTER_RE.search(text[m.end():m.end() + 70])
+    start, end = m.start() + offset, m.end() + offset
+    after = _RUNG_AFTER_RE.search(text[end:end + 70])
     if after:
         return years, _rung_level(after.group("deg"))
-    before = _RUNG_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
+    before = _RUNG_BEFORE_RE.search(text[max(0, start - 110):start])
     if before:
         return years, _rung_level(before.group(0).split()[0])
     return None
@@ -413,15 +431,35 @@ def _no_degree_rungs(text: str) -> set:
     considered in lieu of a completed degree" sat just past the window."""
     # Keyed by where the NUMBER starts: a match may begin at the whitespace
     # before it on the whole text and at the digit on a clause.
+    from bisect import bisect_left, bisect_right
     spans = [(m.start("qty"), m.end()) for m in _REQ_RE.finditer(text)]
+    if not spans:
+        return set()
+    # Regex matches never overlap, so in start order their ends ascend too.
+    starts = [sp[0] for sp in spans]
+    ends = [sp[1] for sp in spans]
+    breaks = [m.start() for m in _LINE_BREAK_RE.finditer(text)]
+
+    def unbroken(a: int, b: int) -> bool:          # no line break in text[a:b]
+        return bisect_left(breaks, a) == bisect_left(breaks, b)
+
+    # Binary search, not a scan per phrase: on one long line the old version
+    # rescanned every number and the text between it and every phrase — 2 s
+    # for 50 KB and minutes for an adversarial posting (review 2026-10-29).
+    # Only the nearest span on each side can share the phrase's line.
     owned = set()
     for ph in _NO_DEGREE_PATH_RE.finditer(text):
-        inside = [s for s in spans if s[0] < ph.end() and s[1] > ph.start()]
-        before = [s for s in spans if s[1] <= ph.start()
-                  and not _LINE_BREAK_RE.search(text, s[1], ph.start())]
-        after = [s for s in spans if s[0] >= ph.end()
-                 and not _LINE_BREAK_RE.search(text, ph.end(), s[0])]
-        pick = (inside or before[-1:] or after[:1] or [None])[0]
+        a, b = ph.start(), ph.end()
+        first_after_a = bisect_right(ends, a)        # first span ending after the phrase starts
+        first_from_b = bisect_left(starts, b)        # first span starting at/after its end
+        if first_after_a < first_from_b:
+            pick = spans[first_after_a]              # overlaps the phrase
+        elif first_after_a > 0 and unbroken(ends[first_after_a - 1], a):
+            pick = spans[first_after_a - 1]          # the number before it, same line
+        elif first_from_b < len(spans) and unbroken(b, starts[first_from_b]):
+            pick = spans[first_from_b]               # the number after it, same line
+        else:
+            pick = None
         if pick:
             owned.add(pick[0])
     return owned
@@ -485,12 +523,24 @@ def minimum_years_required(jd_text: str, *,
     has_degree = degree_level is not None and degree_level >= 1
     no_degree = _no_degree_rungs(text) if has_degree else set()
     best: Optional[Tuple[float, str]] = None
+    # Degree level -> the requirement on that PATH. A ladder ("high school +
+    # 8 / associate + 6 / bachelor's + 4 / master's + 2") is alternatives: the
+    # candidate takes the cheapest path their degree opens, so paths combine by
+    # MIN below, never by MAX with everything else — that read a city posting
+    # whose master's path was 2 years as "requires 8" for a master's holder
+    # with 4 (production 2026-10-29).
+    paths: dict = {}
     cursor = 0
     for clause, heading_pref in _clauses(text):
         at = text.find(clause, cursor)
         if at < 0:
             continue
         cursor = at + len(clause)
+        # Once per clause, and every per-number test below reads a bounded
+        # window: on a posting stored as one 50 KB line ("one clause"), slicing
+        # and re-scanning the whole clause for each of its numbers took 8 s,
+        # per candidate, in the rule filter (review 2026-10-29).
+        tail = _TAIL_PREFERENCE_RE.search(clause)
         for m in _REQ_RE.finditer(clause):
             years = _years_of(m)
             if years is None:
@@ -498,15 +548,15 @@ def minimum_years_required(jd_text: str, *,
             # A preference after a comma qualifies what follows it: in "8+
             # years of full-stack development, preferably in high-growth
             # companies" the companies are preferred, not the years.
-            comma = re.search(r"[,(]", clause[m.end():])
-            scope = clause[:m.end() + (comma.start() if comma else len(clause))]
-            tail = _TAIL_PREFERENCE_RE.search(clause)
+            comma = _SCOPE_END_RE.search(clause, m.end(), m.end() + _SCOPE_CHARS)
+            scope = clause[max(0, m.start() - _SCOPE_CHARS):
+                           comma.start() if comma else m.end() + _SCOPE_CHARS]
             if _REQUIRED_RE.search(scope):
                 required = True
             elif _PREFERRED_RE.search(scope):
                 required = False
             elif tail and tail.start() > m.end() \
-                    and not re.search(r"\bwith\b", clause[m.end():tail.start()], re.I):
+                    and not _WITH_RE.search(clause, m.end(), tail.start()):
                 required = False
             else:
                 required = heading_pref if heading_pref is not None else True
@@ -516,22 +566,32 @@ def minimum_years_required(jd_text: str, *,
             if _COMPANY_HISTORY_RE.search(text[max(0, p0 - 40):p0]):
                 continue
             # An experience requirement, not a benefit, a warranty or a timeline.
-            if _NOT_EXPERIENCE_BEFORE_RE.search(clause[:m.start()]) \
-                    or _NOT_EXPERIENCE_AFTER_RE.search(clause[m.end():]):
+            if _NOT_EXPERIENCE_BEFORE_RE.search(clause[max(0, m.start() - 40):m.start()]) \
+                    or _NOT_EXPERIENCE_AFTER_RE.search(clause[m.end():m.end() + 40]):
                 continue
             if not (_EXPERIENCE_NEAR_RE.search(text[max(0, p0 - 20):p1 + 80])
-                    or _LEADS_WITH_YEARS_RE.match(clause[:m.start()])):
+                    or (m.start() <= 80 and _LEADS_WITH_YEARS_RE.match(clause[:m.start()]))):
                 continue
             # The no-degree path (see `_no_degree_rungs`) is not this candidate's.
             if at + m.start("qty") in no_degree:
                 continue
-            own = _rung(text, m)
+            own = _rung(text, m, at)
             if own is not None and own[1] is not None and degree_level is not None \
                     and own[1] > degree_level:
                 continue                  # the PhD rung of a ladder is not this candidate's
             years = _smallest_alternative(text, p0, p1, years, degree_level, no_degree)
+            wording = " ".join(clause.split())[:160]
+            if own is not None and own[1] is not None:
+                held = paths.get(own[1])
+                if held is None or years > held[0]:
+                    paths[own[1]] = (years, wording)      # one path may state two things
+                continue
             if best is None or years > best[0]:
-                best = (years, " ".join(clause.split())[:160])
+                best = (years, wording)
+    if paths:
+        path = min(paths.values(), key=lambda p: p[0])
+        if best is None or path[0] > best[0]:
+            best = path
     return best
 
 

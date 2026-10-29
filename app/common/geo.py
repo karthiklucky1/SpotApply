@@ -401,7 +401,12 @@ _REGION_MEMBERS = {
     "latam": {"brazil", "mexico", "argentina", "chile", "colombia", "peru",
               "costa rica", "uruguay", "ecuador", "bolivia", "paraguay", "venezuela",
               "guatemala", "panama", "dominican republic", "el salvador", "honduras"},
+    # "Remote: North America - East", "Remote in AMER": without these a US
+    # user's remote posting read "no stated country or region" and was HELD
+    # until it expired (production 2026-10-29).
+    "namer": {"united states", "canada", "mexico"},
 }
+_REGION_MEMBERS["amer"] = _REGION_MEMBERS["namer"] | _REGION_MEMBERS["latam"]
 _REGION_RES = {
     region: _compile(tokens)
     for region, tokens in {
@@ -415,10 +420,13 @@ _REGION_RES = {
         "emea": ["emea"],
         "apac": ["apac", "asia-pacific", "asia pacific"],
         "latam": ["latam", "latin america"],
+        "namer": ["north america", "north american", "namer"],
+        "amer": ["amer", "americas"],
     }.items()
 }
-# Most specific first: "EU only" should win over the looser "europe" anchor.
-_REGION_ORDER = ("eu", "emea", "apac", "latam", "europe")
+# Most specific first: "EU only" should win over the looser "europe" anchor,
+# "North America" over the "Americas".
+_REGION_ORDER = ("eu", "emea", "apac", "latam", "namer", "amer", "europe")
 
 
 # ISO-3166 alpha-2 codes → the canonical names above. Structured ATS fields

@@ -1246,7 +1246,7 @@ def lever_geo(j: dict) -> GeoEvidence:
 
 
 def page_evidence(url: str, source: str, timeout: Optional[float] = None,
-                  description: str = "") -> PageEvidence:
+                  description: str = "", sites: Optional[List[str]] = None) -> PageEvidence:
     """Step B for one posting. Never raises; a failure is `how="error:…"` and
     inconclusive — it establishes nothing and closes nothing.
 
@@ -1260,6 +1260,28 @@ def page_evidence(url: str, source: str, timeout: Optional[float] = None,
     """
     timeout = float(settings.geo_verify_fetch_timeout_seconds if timeout is None else timeout)
     src = source.value if hasattr(source, "value") else str(source)
+    if src == "adzuna":
+        # No fetch needed: an Adzuna link is on its market's host (adzuna.com =
+        # US), a structured fact of the result. Rows stored before the adapter
+        # read `location.area` have nothing else, and their snippet descriptions
+        # name no place, so step C had nothing to read either — they were held
+        # until they expired. Derived WITH the description, like every probe.
+        from app.discovery.sources.adzuna import market_from_url
+        market = market_from_url(url)
+        if market:
+            # The SITES the row already holds go in with the market: the
+            # market settles the country, not the city, and a probe without
+            # them wrote sites=[] — re-deciding an on-site Atlanta job as
+            # eligible for someone staying in Boston (review 2026-10-29).
+            probe = RawJob(source=src, external_id="", company="", title="", location="",
+                           remote=False, url=url, description=description or "",
+                           geo=GeoEvidence(country=market, country_field="redirect_url host",
+                                           sites=list(sites or []), sites_field="stored sites"))
+            geo = derive(probe)
+            if geo.resolved or geo.status == CONFLICT:
+                geo.evidence_source, geo.evidence_field = "source_market", "redirect_url host"
+                _bump("resolved_source_market" if geo.resolved else "conflict_source_market")
+                return PageEvidence(geo=geo, how="source_market", field="redirect_url host")
     if not settings.geo_verify_fetch_enabled:
         return PageEvidence(how="skipped:disabled")
     host = (urlparse(url or "").hostname or "").lower()
@@ -1619,7 +1641,97 @@ def _held_keys(session, rows) -> set:
     return live
 
 
-def _pending_rows(limit: int) -> list:
+_WAITING_WINDOW_DAYS = 14      # the widest window any queue scores (welcome catch-up)
+
+
+#: The owner the next sweep's waiting-first read starts from, so a slow or
+#: failing pool does not always go first (same rotation as the expiry sweep).
+_WAITING_RESUME: list = []
+
+
+def _waiting_rows(session, want: int, now: datetime, max_attempts: int,
+                  owners: Optional[list] = None, deadline: Optional[float] = None) -> list:
+    """Due geography rows for the copies users are WAITING on: open, unscored,
+    held (eligibility unknown) copies in a queue that is being scored, newest
+    first, one owner at a time in turn so one large pool cannot take the whole
+    sweep. Read through ix_job_unscored (user_id, first_seen) per owner.
+
+    ``owners`` is the scoring cycle's own list (already compute-gated); without
+    it the owners are looked up here. Bounded like the expiry sweep: every
+    statement under the expiry ceiling, each owner in its own savepoint (one
+    cancelled read skips that owner, not the step), the starting owner rotated,
+    and no owner started past the cycle deadline. The index holds neither
+    eligibility nor is_closed, so a pool with few held copies is read to the
+    end of its 14-day window — cheap today, but never unbounded."""
+    from sqlalchemy import or_
+    from sqlmodel import select
+    from app.common.compute_policy import paid_ai_allowed
+    from app.db.models import Job, JobGeography
+    from app.strategy.scoring_lane import _arm_statement_timeout
+
+    if owners is None:
+        from app.strategy.scoring_lane import _scorable_user_ids
+        owners = [o for o in _scorable_user_ids() if paid_ai_allowed(o)]
+    owners = list(owners)
+    if not owners:
+        return []
+    if _WAITING_RESUME and _WAITING_RESUME[0] in owners:
+        i = owners.index(_WAITING_RESUME[0])
+        owners = owners[i:] + owners[:i]
+    _WAITING_RESUME[:] = [owners[1 % len(owners)]]
+    _arm_statement_timeout(session, int(settings.scoring_expiry_statement_timeout_seconds or 0))
+    cutoff = now - timedelta(days=_WAITING_WINDOW_DAYS)
+    per_owner = max(want, 10)
+    queues = []
+    for owner in owners:
+        if deadline and time.monotonic() >= deadline - 5:
+            _bump("waiting_first_deadline")
+            break
+        q = (select(Job.source, Job.external_id)
+             .where(Job.user_id.is_(None) if owner is None else Job.user_id == owner,
+                    Job.rerank_score.is_(None), Job.first_seen >= cutoff,
+                    Job.eligibility == UNKNOWN, Job.is_closed == False)  # noqa: E712
+             .order_by(Job.first_seen.desc()).limit(per_owner))
+        try:
+            with session.begin_nested():
+                found = session.exec(q).all()
+        except Exception as e:
+            log.debug("geo verification: one owner's waiting read failed: %s", e)
+            _bump("waiting_first_owner_failed")
+            continue
+        queues.append([((src.value if hasattr(src, "value") else str(src)), ext)
+                       for src, ext in found])
+    keys: list = []
+    seen: set = set()
+    for i in range(per_owner):                      # round-robin, newest first
+        for queue in queues:
+            if i < len(queue) and queue[i] not in seen:
+                seen.add(queue[i])
+                keys.append(queue[i])
+    # Most due; a few are mid-backoff or resolved. Four per slot is plenty, and
+    # reading every owner's 25 full geography rows to keep 25 was egress.
+    keys = keys[:4 * want]
+    if not keys:
+        return []
+    rank = {k: n for n, k in enumerate(keys)}
+    rows: list = []
+    ext_ids = sorted({ext for _, ext in keys})
+    for start in range(0, len(ext_ids), 300):
+        q = (select(JobGeography)
+             .where(JobGeography.external_id.in_(ext_ids[start:start + 300]),
+                    or_(JobGeography.status != RESOLVED, JobGeography.work_mode.is_(None)),
+                    or_(JobGeography.next_attempt_at.is_(None), JobGeography.next_attempt_at <= now)))
+        if max_attempts > 0:
+            q = q.where(JobGeography.attempts < max_attempts)
+        rows.extend(r for r in session.exec(q).all() if (r.source, r.external_id) in rank)
+    rows.sort(key=lambda r: rank[(r.source, r.external_id)])
+    if rows:
+        _bump("waiting_first_selected", min(len(rows), want))
+    return rows[:want]
+
+
+def _pending_rows(limit: int, owners: Optional[list] = None,
+                  deadline: Optional[float] = None) -> list:
     """Unresolved geography rows whose retry is due AND that still have an open,
     unscored, held copy somewhere — up to `limit` of them.
 
@@ -1641,6 +1753,26 @@ def _pending_rows(limit: int) -> list:
     out: list = []
     stale_ids: list = []
     with get_session() as session:
+        # Start from the WAITING side. The due window below is ordered by
+        # next_attempt_at, and production held ~435k due rows (330k of them with
+        # no next_attempt_at, which sorts LAST), so a copy a user was waiting on
+        # queued behind ~100k postings nobody holds and its five-day window
+        # closed first: 1,751 Workday and 590 Greenhouse copies were held
+        # "Location pending" on 2026-10-29 while every sweep reported
+        # deferred_no_held_copy=1000. The held copies themselves are few and
+        # sit on an index (ix_job_unscored), so they are read first, newest
+        # first, round-robin across owners; the old scan only fills what is left.
+        try:
+            out = _waiting_rows(session, want, now, max_attempts, owners=owners, deadline=deadline)
+        except Exception as e:
+            log.debug("geo verification: waiting-first lookup failed (%s); scanning", e)
+            session.rollback()
+            out = []
+        chosen = {r.id for r in out}
+        if len(out) >= want:
+            for r in out:
+                session.expunge(r)
+            return out
         # Unresolved rows, PLUS rows whose country is resolved but which state
         # no work mode. The second group is what gives an
         # `eligibility.work_mode_unresolved` hold a way out: without it such a
@@ -1664,8 +1796,9 @@ def _pending_rows(limit: int) -> list:
             live = _held_keys(session, rows)
             for r in rows:
                 if (r.source, r.external_id) in live:
-                    if len(out) < want:
+                    if len(out) < want and r.id not in chosen:
                         out.append(r)
+                        chosen.add(r.id)
                 else:
                     stale_ids.append(r.id)
             if len(out) >= want or len(rows) < _PENDING_PAGE:
@@ -1844,7 +1977,11 @@ def verify_one(row) -> Tuple[Optional[Geography], str]:
         return None, "not_claimed"
     started = time.monotonic()
     url, description = _posting_text(row.source, row.external_id)
-    page = page_evidence(url, row.source, description=description)
+    try:
+        stored_sites = [x for x in json.loads(row.sites_json or "[]") if isinstance(x, str)]
+    except (TypeError, ValueError):
+        stored_sites = []
+    page = page_evidence(url, row.source, description=description, sites=stored_sites)
     if page.geo is not None:
         ms = int((time.monotonic() - started) * 1000)
         geo = _record_attempt(row.id, page.geo, step="page",
@@ -1882,7 +2019,8 @@ def verify_one(row) -> Tuple[Optional[Geography], str]:
     return geo, llm.how
 
 
-def verify_pending(deadline: Optional[float] = None, budget: Optional[Budget] = None) -> dict:
+def verify_pending(deadline: Optional[float] = None, budget: Optional[Budget] = None,
+                   owners: Optional[list] = None) -> dict:
     """The sweep. Bounded by `Budget` (count, seconds, cycle deadline). Every
     resolved posting re-decides all of its copies; an unresolved one is put
     back with exponential backoff. Returns the counters it moved."""
@@ -1891,7 +2029,7 @@ def verify_pending(deadline: Optional[float] = None, budget: Optional[Budget] = 
         return stats
     budget = budget or Budget(deadline=deadline)
     try:
-        rows = _pending_rows(budget.items)
+        rows = _pending_rows(budget.items, owners=owners, deadline=budget.deadline)
     except Exception as e:
         log.warning("geo verification: pending lookup failed: %s", e)
         return stats

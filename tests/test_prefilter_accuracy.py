@@ -88,6 +88,14 @@ def _job(title="Software Engineer", desc="Build APIs in Python.", **kw):
      "years of experience may be considered in lieu of a completed degree.", 3),
     ("4–6 years in analytics or data analysis, with regulated industry experience preferred.", 4),
     ("Minimum eight years of progressively responsible experience administering systems", 8),
+    # Production 2026-10-29 (a city IT posting): equivalency lines, one per degree. The
+    # high-school path is not a master's holder's; theirs is 2, the primary 4 stands.
+    ("Education: Bachelor's degree or higher in computer science.\nExperience:\nFour (4) years' "
+     "experience in Object-Oriented Programming and/or relational database.\nEquivalencies:\n"
+     "High school diploma or GED plus eight (8) years of the required experience will meet the "
+     "requirements.\nAn associate degree in any field plus six (6) years of the required experience "
+     "will meet the requirements.\nA master's degree or higher in a stated field plus two (2) years "
+     "of the hands-on technical support experience will meet the requirements.", 4),
 ])
 def test_the_requirement_is_the_floor_the_posting_states(text, years):
     got = minimum_years_required(text, degree_level=2)
@@ -252,7 +260,14 @@ def test_a_settled_location_or_silent_sponsorship_claim_advances_at_the_gate(rea
 def test_claims_that_stand():
     # About fit, not place.
     assert _t1("Job is for a Senior Product Manager, not a technical role.")[0] == 30.0
-    assert _t1("Job requires 5 years experience and is location specific.")[0] == 30.0
+    # Years stand when the POSTING states a gap of 2+ (the final would be
+    # capped under the bar anyway) ...
+    assert _t1("Job requires 8 years experience and is location specific.",
+               desc="8+ years of software engineering experience required.")[0] == 30.0
+    # ... and not when the posting asks 5 of a candidate with 4, or nothing.
+    assert _t1("Job requires 5 years experience and is location specific.",
+               desc="5+ years of software engineering experience required.")[0] == 40.0
+    assert _t1("Job requires 5 years experience and is location specific.")[0] == 40.0
     # No verified location verdict to overrule with.
     assert _t1("Job located outside United States.", eligibility=None)[0] == 30.0
     # The posting's own words limit sponsorship.
@@ -263,6 +278,32 @@ def test_claims_that_stand():
                desc="Although this supports US work, this role is located in Wiesbaden, Germany.")[0] == 30.0
     # Already advancing: untouched.
     assert _t1("Job based in Seattle, no remote option.", score=55.0)[0] == 55.0
+
+
+@pytest.mark.parametrize("reason,desc,advances", [
+    # Production 2026-10-29, one profile (4 years, Master's, open to relocation).
+    ("Role requires on-site presence and no relocation support offered.",
+     "We require people to be on-site, 4 days/week at our NYC or Denver office and are unable "
+     "to offer relocation support. 5+ years of experience in full stack software development.",
+     True),                                    # "role" opened a LOCATION sentence
+    ("No stated blockers, but focuses on marketing software, not strongly aligned.",
+     "Build backend services for an AI-powered marketing platform.", True),   # the 40-59 band
+    ("Requires 5+ years in DevOps, candidate has 4 years in Software Development.",
+     "5+ years of experience in DevOps, Cloud Engineering, or Site Reliability Engineering.",
+     True),                                    # one year short: the final decides
+    ("Requires 6+ years in solutions architecture, substantial seniority gap.",
+     "6+ years in solutions architecture, data engineering, or technical pre-sales.", False),
+    ("Requires TS/SCI clearance, significant focus on front-end development.",
+     "Minimum Clearance Required to Start: TS/SCI.", False),
+    ("No relevant skills mentioned and relocation assistance not offered.",
+     "Full-stack role.", False),               # a fit clause stands with any location one
+    ("No overlap in core stack; role focuses on Java development.", "Java, Spring.", False),
+])
+def test_tier_one_reasons_are_read_clause_by_clause(reason, desc, advances):
+    score, why = _t1(reason, desc=desc)
+    assert (score == 40.0) is advances, why
+    if advances:
+        assert "overruled" in why
 
 
 def test_a_sponsorship_claim_is_irrelevant_to_a_citizen():

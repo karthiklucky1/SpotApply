@@ -990,11 +990,45 @@ _TITLE_TOKENS = frozenset({
 _UNIGRAM_VERBS = _NON_SKILL_TOKENS - {"design", "designing"}
 
 
+# Never a skill, for anyone in any field: where the job is, and the hiring
+# paperwork around it. Real postings (2026-10-29) handed the tailor "nyc office",
+# "los angeles county", "san francisco", "united states", "fair chance ordinance"
+# and "job posting" as ATS phrases to work into a resume, and the review listed
+# them as skills to learn.
+_PLACE_TOKENS = frozenset({
+    "county", "office", "offices", "city", "downtown", "headquarters", "hq", "campus",
+    "remote", "onsite", "on-site", "hybrid", "nyc", "metro",
+})
+_HUB_CITIES = frozenset({
+    "new york", "san francisco", "bay area", "los angeles", "seattle", "boston", "austin",
+    "chicago", "denver", "atlanta", "dallas", "houston", "san jose", "san diego",
+    "mountain view", "palo alto", "menlo park", "sunnyvale", "redmond", "london", "toronto",
+    "berlin", "bangalore", "bengaluru", "hyderabad", "singapore", "sydney", "dublin",
+    "paris", "amsterdam", "tel aviv",
+})
+_HIRING_TOKENS = frozenset({
+    "ordinance", "posting", "postings", "applicant", "applicants", "employer", "employers",
+    "eeo", "accommodation", "accommodations", "sponsorship", "visa", "salary",
+    "compensation", "benefits", "perks", "pto", "401k",
+})
+
+
+_HUB_CITY_RE = re.compile(r"(?<![a-z])(?:" + "|".join(sorted(map(re.escape, _HUB_CITIES))) + r")(?![a-z])")
+
+
+def _names_a_place(p: str) -> bool:
+    if any(t in _PLACE_TOKENS for t in p.split()) or _HUB_CITY_RE.search(p):
+        return True
+    from app.common.geo import detect_country, detect_region, detect_us_state
+    return bool(detect_country(p) or detect_region(p) or detect_us_state(p))
+
+
 def is_skill_like(phrase: str) -> bool:
     """True when a phrase names something a candidate can actually possess.
 
     Curated technology terms always qualify. Anything else must be free of
-    sentence glue, generic verbs, marketing nouns and job-title words.
+    sentence glue, generic verbs, marketing nouns, job-title words, places and
+    hiring paperwork.
     """
     p = (phrase or "").strip().lower()
     if not p:
@@ -1003,6 +1037,8 @@ def is_skill_like(phrase: str) -> bool:
         return True
     tokens = p.split()
     if not tokens:
+        return False
+    if any(t in _HIRING_TOKENS for t in tokens) or (not _is_known_skill(p) and _names_a_place(p)):
         return False
     # Mid-phrase stop words are the tell for a clause fragment: the ranker
     # already refuses to START or END on one, so "backbone for enterprise" and
@@ -1019,6 +1055,28 @@ def is_skill_like(phrase: str) -> bool:
 def skill_phrases(phrases: List[str]) -> List[str]:
     """Filter a ranked phrase list down to the ones safe to target verbatim."""
     return [p for p in phrases if is_skill_like(p)]
+
+
+# One-word business nouns a posting repeats ("payments", "risk", "workflows",
+# "enterprise"). Fine as a gap to mention; as a phrase the TAILOR is told to work
+# in, each is an invitation to claim a domain the resume never shows.
+_VAGUE_SINGLE = frozenset({
+    "move", "real", "shared", "context", "workflows", "workflow", "flows", "flow", "online",
+    "risk", "financial", "finance", "operational", "operations", "research", "security",
+    "payments", "commercial", "enterprise", "analytics", "supplier", "suppliers", "shape",
+    "cases", "forward", "teams", "team", "customers", "customer", "clients", "client",
+    "product", "products", "business", "growth", "impact", "quality", "mission", "culture",
+    "platform", "platforms", "solutions", "solution", "services", "service", "tools",
+    "technology", "technologies", "systems", "data", "users", "partners", "stakeholders",
+    "law", "legal", "early-stage", "startup", "fintech", "healthcare", "compliance",
+})
+
+
+def tailor_targets(phrases: List[str]) -> List[str]:
+    """The phrases the tailor may be asked to use verbatim: skill-like, and
+    not a lone business noun unless it is itself a known skill or tool."""
+    return [p for p in skill_phrases(phrases)
+            if not (len(p.split()) == 1 and p.lower() in _VAGUE_SINGLE and not _is_known_skill(p))]
 
 
 def analyze(jd_text: str, resume_text: str, top_n: int = 18,
