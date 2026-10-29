@@ -81,6 +81,12 @@ def _job(title="Software Engineer", desc="Build APIs in Python.", **kw):
     ("10+ years of experience in data architecture, data engineering, or analytics platform "
      "design, with at least 3–5 years in a pre-sales capacity", 10),
     ("<h3>Minimum Qualifications</h3><ul><li>7+ years of experience with Go</li></ul>", 7),
+    # Random-pool cases (2026-10-28): ladders across lines, the nearest number owns a no-degree phrase.
+    ("8+ years aerospace manufacturing experience\r5+ years experience with advanced degree", 5),
+    ("Master’s degree with 3 years of experience, or a Bachelor's degree with 5 years of experience, "
+     "or an Associates degree with 7 years of experience; a High School diploma or equivalent with 9 "
+     "years of experience may be considered in lieu of a completed degree.", 3),
+    ("4–6 years in analytics or data analysis, with regulated industry experience preferred.", 4),
     ("Minimum eight years of progressively responsible experience administering systems", 8),
 ])
 def test_the_requirement_is_the_floor_the_posting_states(text, years):
@@ -96,6 +102,10 @@ def test_the_requirement_is_the_floor_the_posting_states(text, years):
     "<h3>Preferred Qualifications</h3><ul><li>7+ years of experience with Go</li></ul>",
     "Candidates with 5+ years of Python experience preferred.",
     "Up to 5 years of experience",
+    "Bachelor's degree required.\n10 years of direct relevant technical experience may be substituted for education",
+    "Associate's Degree and 7 years of directly relevant experience may be considered in lieu of a Bachelor’s degree.",
+    "Bachelor's degree or additional 4 years equivalent experience",
+    "1-3 years’ BA or BS in Business, Accounting, Communication or related field experience preferred",
     "Experience with Kafka is a plus. We offer a 3 year vesting schedule.",
     # A benefit, from a posting the real scorer rated 78.
     "6-Week Paid Sabbatical after 10 years of service (and every 5 years thereafter). "
@@ -191,6 +201,25 @@ def test_city_region_code_addresses(site, country):
         assert detect_us_state(site) == ""
 
 
+@pytest.mark.parametrize("site,state", [
+    # From a random 300 of the shared pool: 1 in 25 was held "no location" for these.
+    ("WI, Minocqua", "wi"), ("TX - Fort Worth", "tx"), ("OH-Twinsburg-Cardinal Health at-Home", "oh"),
+    ("Dallas TX", "tx"), ("Tempe AZ", "az"), ("Orlando - FL", "fl"),
+    ("Store 2723882 Charleston SC", "sc"), ("JD: 01246 Riverside, California (Galleria)", "ca"),
+    ("Portland, Maine", "me"),
+])
+def test_ats_location_formats_read_as_us(site, state):
+    assert detect_country(site) == "united states" and detect_us_state(site) == state
+
+
+@pytest.mark.parametrize("site", [
+    "Mexicali, Baja California", "Angers, Maine-et-Loire", "IN - Bangalore", "Bangalore IN",
+    "Seneffe (BEL)", "ESP - MD - LAS ROZAS", "Midland, Georgia",
+])
+def test_foreign_or_ambiguous_places_are_not_us(site):
+    assert detect_country(site) != "united states"
+
+
 def test_a_structured_country_owns_its_code_in_the_sites():
     from app.discovery.geo_verify import derive
     raw = RawJob(source="smartrecruiters", external_id="pfa-geo", company="Acme",
@@ -275,6 +304,8 @@ def _final(desc, title="Software Engineer", score=72.0, **kw):
      "software development experience.\nAdvanced proficiency in PHP."),
     ("Senior Software Engineer, Portal Application", "6+ years of overall software development "
      "experience, preferably secure, scalable web applications with NodeJS, TypeScript, React."),
+    ("Distinguished AI Engineer", "Requires a bachelor's degree in Computer Science and a minimum of "
+     "15 years of experience in software engineering, or any combination of education and experience."),
 ])
 def test_a_stated_gap_of_two_years_is_a_stretch_not_a_match(title, desc):
     score, _r, concerns, _b = _final(desc, title)
@@ -299,8 +330,14 @@ def test_what_is_left_alone():
                   "Senior Software Engineer, Backend (AI Platform)")[0] == 72.0
     # One year short is a judgement for the scorer, not a cap.
     assert _final("5+ years of experience in software engineering.")[0] == 72.0
-    # A senior associate is not an entry role.
+    # A senior associate, an associate principal and an "I/II" opening are not entry roles.
     assert _final("Consulting delivery.", "AI Consulting Engineer - Senior Associate")[0] == 72.0
+    assert _final("Lead .NET work.", "Associate Principal Engineer - Senior .NET")[0] == 72.0
+    assert _final("Build APIs.", "Software Engineer I/II")[0] == 72.0
+    assert _final("0-3 years of experience.", "Software Engineer", score=82.0)[0] == 82.0
+    # A minimum a 4-year engineer meets is never "below level".
+    assert _final("2+ years of professional software engineering experience.", score=82.0)[0] == 82.0
+    assert _final("1-2 years of experience with Python and REST APIs.", score=82.0)[0] == 82.0
     # An entry role is not "below" a candidate who is starting out.
     assert _final("0–2 years of experience.", "Junior AI Engineer", score=88.0,
                   years_experience=1)[0] == 88.0

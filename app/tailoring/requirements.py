@@ -296,17 +296,29 @@ def parse_requirements(jd_text: str, *, limit: int = 12) -> List[ExperienceRequi
 # ── the years a posting will not go below (the matching pre-filter) ──────────
 
 _DEGREE_WORDS = (r"bachelor['’]?s?|b\.?s\.?c?|b\.a\.|master['’]?s?|m\.?s\.?c?|mba|ph\.?\s?d|"
-                 r"doctora(?:te|l)|advanced degree|graduate degree")
+                 r"doctora(?:te|l)|advanced degree|graduate degree|associate['’]?s?\s+degree|"
+                 r"high school(?:\s+diploma)?|ged")
 #: A rung of a degree ladder: "MS with 6+ years", "8 years with a bachelor's",
 #: "or 6 years and an advanced degree".
 _RUNG_BEFORE_RE = re.compile(rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?[^.;\n\d]{{0,20}}$", re.I)
 _RUNG_AFTER_RE = re.compile(
-    rf"^[^.;\n\d]{{0,45}}?\b(?:with|and|plus)\s+(?:an?\s+|the\s+)?(?P<deg>{_DEGREE_WORDS})", re.I)
+    rf"^[^.;\n\d]{{0,45}}?\b(?:with|and|plus|for)\s+(?:an?\s+|the\s+)?(?P<deg>{_DEGREE_WORDS})", re.I)
 #: The no-degree path, which a candidate holding a degree is not on.
 _NO_DEGREE_PATH_RE = re.compile(
-    r"\bin lieu of (?:an?\s+|the\s+)?(?:\w+\s+)?degree\b|\bwithout an?\s+(?:\w+\s+)?degree\b|"
-    r"\bno degree\b|\beducation and/or\b|\bcombination of (?:\w+\s+)?education\b|"
-    r"\bcombined\s+(?:\w+\s+)?education\b", re.I)
+    r"\bin lieu of (?:an?\s+|the\s+)?(?:[\w'’-]+\s+){0,2}(?:degree|education)\b|"
+    r"\bsubstitut\w*\s+for\s+(?:an?\s+|the\s+)?(?:[\w'’-]+\s+){0,2}(?:degree|education)\b|"
+    r"\bwithout an?\s+(?:[\w'’-]+\s+)?degree\b|\bno degree\b|\beducation and/or\b|"
+    r"\bor\s+(?:an?\s+)?additional\s+\w+\s+(?:\(\d+\)\s+)?years?\b", re.I)
+# Not "or any combination of education and experience": that is the degree's
+# equivalence clause, and it took the 15 from "a bachelor's and a minimum of
+# 15 years …, or any combination of education and experience".
+#: Every kind of line end — postings separate lines with \r and U+2028 too.
+_LINE_BREAK_RE = re.compile(r"[\n\r\u2028\u2029\x85\x0b\x0c]")
+#: "… related field experience preferred." — the whole clause is a preference,
+#: unless a "with …" sub-clause owns it ("4–6 years in analytics, with
+#: regulated industry experience preferred").
+_TAIL_PREFERENCE_RE = re.compile(
+    r"\b(?:preferred|desired|a plus|nice[- ]to[- ]have|a bonus)\W*$", re.I)
 #: The employer's own history: "Curtiss-Wright has over 50 years of experience".
 _COMPANY_HISTORY_RE = re.compile(
     r"(?:\bwe(?: have|'ve)(?: been)?(?:\s+\w+){0,2}|\b(?:has|have) been(?:\s+\w+){0,2}"
@@ -353,6 +365,8 @@ def stated_clauses(jd_text: str) -> List[Tuple[str, Optional[bool]]]:
 
 def _rung_level(word: str) -> Optional[int]:
     w = (word or "").lower().replace(".", "").replace(" ", "")
+    if w.startswith(("associate", "highschool", "high", "ged")):
+        return 0
     if w.startswith(("phd", "doctor")):
         return 3
     if w.startswith(("master", "ms", "mba", "advanced", "graduate")):
@@ -388,8 +402,33 @@ def _rung(text: str, m: re.Match) -> Optional[Tuple[float, Optional[int]]]:
     return None
 
 
+def _no_degree_rungs(text: str) -> set:
+    """Start offsets of the quantities a no-degree phrase belongs to.
+
+    A phrase belongs to the NEAREST quantity on its line — the one before it,
+    or the first after it when it opens the sentence ("In lieu of a degree, a
+    combined minimum of 9 years"). A fixed window around each number gave it
+    to the wrong one: "Bachelor's and 4+ years, or 8+ years … in lieu of a
+    degree" belongs to the 8, and "… with 9 years of experience may be
+    considered in lieu of a completed degree" sat just past the window."""
+    # Keyed by where the NUMBER starts: a match may begin at the whitespace
+    # before it on the whole text and at the digit on a clause.
+    spans = [(m.start("qty"), m.end()) for m in _REQ_RE.finditer(text)]
+    owned = set()
+    for ph in _NO_DEGREE_PATH_RE.finditer(text):
+        inside = [s for s in spans if s[0] < ph.end() and s[1] > ph.start()]
+        before = [s for s in spans if s[1] <= ph.start()
+                  and not _LINE_BREAK_RE.search(text, s[1], ph.start())]
+        after = [s for s in spans if s[0] >= ph.end()
+                 and not _LINE_BREAK_RE.search(text, ph.end(), s[0])]
+        pick = (inside or before[-1:] or after[:1] or [None])[0]
+        if pick:
+            owned.add(pick[0])
+    return owned
+
+
 def _smallest_alternative(text: str, p0: int, p1: int, years: float,
-                          degree_level: Optional[int]) -> float:
+                          degree_level: Optional[int], no_degree: set) -> float:
     """The lowest rung of the requirement at text[p0:p1] that the candidate can use.
 
     "PhD with 2+ years, MS with 6+ years, or BS with 8+ years" is ONE
@@ -404,17 +443,17 @@ def _smallest_alternative(text: str, p0: int, p1: int, years: float,
             continue
         lo, hi = (m.end(), p0) if m.start() < p0 else (p1, m.start())
         between = text[lo:hi]
-        if "\n" in between:
-            continue                      # another line is another requirement
         rung = _rung(text, m)
         alt = _years_of(m)
         if alt is None:
             continue
-        if degree_level is not None and degree_level >= 1:
-            # Read around THIS rung only, never back into the requirement itself.
-            start = max(m.start() - 60, p1) if m.start() > p0 else m.start()
-            if _NO_DEGREE_PATH_RE.search(text[start:m.end() + 60]):
-                continue                  # the no-degree rung is not this candidate's
+        if _LINE_BREAK_RE.search(between) and not (rung and rung[1] is not None and rung[1] >= 2):
+            # Another line is another requirement — except an advanced-degree
+            # rung, which postings list on its own line ("8+ years …" /
+            # "5+ years experience with advanced degree").
+            continue
+        if degree_level is not None and degree_level >= 1 and m.start("qty") in no_degree:
+            continue                      # the no-degree rung is not this candidate's
         joined_by_or = _OR_ALTERNATIVE_RE.search(between) is not None
         if rung is None and not joined_by_or:
             continue
@@ -444,6 +483,7 @@ def minimum_years_required(jd_text: str, *,
     """
     text = _plain(jd_text)
     has_degree = degree_level is not None and degree_level >= 1
+    no_degree = _no_degree_rungs(text) if has_degree else set()
     best: Optional[Tuple[float, str]] = None
     cursor = 0
     for clause, heading_pref in _clauses(text):
@@ -460,9 +500,13 @@ def minimum_years_required(jd_text: str, *,
             # companies" the companies are preferred, not the years.
             comma = re.search(r"[,(]", clause[m.end():])
             scope = clause[:m.end() + (comma.start() if comma else len(clause))]
+            tail = _TAIL_PREFERENCE_RE.search(clause)
             if _REQUIRED_RE.search(scope):
                 required = True
             elif _PREFERRED_RE.search(scope):
+                required = False
+            elif tail and tail.start() > m.end() \
+                    and not re.search(r"\bwith\b", clause[m.end():tail.start()], re.I):
                 required = False
             else:
                 required = heading_pref if heading_pref is not None else True
@@ -478,16 +522,14 @@ def minimum_years_required(jd_text: str, *,
             if not (_EXPERIENCE_NEAR_RE.search(text[max(0, p0 - 20):p1 + 80])
                     or _LEADS_WITH_YEARS_RE.match(clause[:m.start()])):
                 continue
-            # The no-degree path, read inside this clause only: the line above
-            # ("…may substitute if no degree") belongs to another requirement.
-            if has_degree and _NO_DEGREE_PATH_RE.search(
-                    clause[max(0, m.start() - 60):m.end() + 60]):
+            # The no-degree path (see `_no_degree_rungs`) is not this candidate's.
+            if at + m.start("qty") in no_degree:
                 continue
             own = _rung(text, m)
             if own is not None and own[1] is not None and degree_level is not None \
                     and own[1] > degree_level:
                 continue                  # the PhD rung of a ladder is not this candidate's
-            years = _smallest_alternative(text, p0, p1, years, degree_level)
+            years = _smallest_alternative(text, p0, p1, years, degree_level, no_degree)
             if best is None or years > best[0]:
                 best = (years, " ".join(clause.split())[:160])
     return best

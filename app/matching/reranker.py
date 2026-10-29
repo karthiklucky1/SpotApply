@@ -1038,10 +1038,17 @@ STRETCH_OVERALL_CAP = 65.0
 
 _ENTRY_TITLE_RE = re.compile(
     r"\b(?:junior|jr\.?|entry[- ]level|new grad(?:uate)?|graduate|apprentice)\b"
-    r"|(?<!senior )(?<!sr\. )(?<!sr )\bassociate\s+(?:\w+\s+){0,2}(?:engineer|developer)\b"
-    r"|\b(?:engineer|developer)\s+i\b(?!i)")
-#: "0–2 years", "0-1 year", "1-2 years" — the posting's own range for the role.
-_ENTRY_RANGE_RE = re.compile(r"\b[01]\s*(?:[-–—]|to)\s*[12]\s*\+?\s*(?:years?|yrs?)\b", re.I)
+    # "Associate Software Engineer" — never "Senior Associate" or "Associate
+    # Principal / Director / Staff …", which are senior levels at some firms.
+    r"|(?<!senior )(?<!sr\. )(?<!sr )\bassociate\s+"
+    r"(?!(?:principal|director|manager|partner|vice|staff|architect|consultant|lead)\b)"
+    r"(?:\w+\s+){0,2}(?:engineer|developer)\b"
+    # "Software Engineer I" / "… 1" — not "Engineer I/II", which takes mid-level too.
+    r"|\b(?:engineer|developer)\s+(?:i|1)\b(?!i)(?!\s*[/-]\s*(?:ii|2)\b)")
+#: "0–2 years", "0-1 year" — a range that STARTS at zero is a role for someone
+#: starting out. "1-2 years" or "2+ years" is a minimum a 4-year engineer
+#: meets; employers do not reject on it, so neither do we.
+_ENTRY_RANGE_RE = re.compile(r"\b0\s*(?:[-–—]|to)\s*[12]\s*\+?\s*(?:years?|yrs?)\b", re.I)
 _ENTRY_LEVEL_TEXT_RE = re.compile(
     r"\b(?:as an? |this is an? )(?:software |ai |ml )?(?:engineer|developer) i\b(?!i)"
     r"|\bentry[- ]level (?:role|position)\b|\bnew grad(?:uate)? (?:role|position)\b", re.I)
