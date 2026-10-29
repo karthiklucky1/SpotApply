@@ -350,6 +350,12 @@ _LEADS_WITH_YEARS_RE = re.compile(
 _NOT_EXPERIENCE_BEFORE_RE = re.compile(r"\b(?:after|every|within|for the first)\s*$", re.I)
 _NOT_EXPERIENCE_AFTER_RE = re.compile(r"^\s*(?:of\s+(?:service|age|tenure)|old\b|thereafter\b|warranty\b)", re.I)
 _ALT_WINDOW = 160
+#: How far either side of a number its requirement wording is read. A real
+#: sentence is shorter; a posting stored as one line is not, and reading the
+#: whole of it once per number was quadratic.
+_SCOPE_CHARS = 400
+_SCOPE_END_RE = re.compile(r"[,(]")
+_WITH_RE = re.compile(r"\bwith\b", re.I)
 #: Nothing asks for more; a bigger number is the employer's age.
 _MAX_REQUIRED_YEARS = 25
 
@@ -425,15 +431,35 @@ def _no_degree_rungs(text: str) -> set:
     considered in lieu of a completed degree" sat just past the window."""
     # Keyed by where the NUMBER starts: a match may begin at the whitespace
     # before it on the whole text and at the digit on a clause.
+    from bisect import bisect_left, bisect_right
     spans = [(m.start("qty"), m.end()) for m in _REQ_RE.finditer(text)]
+    if not spans:
+        return set()
+    # Regex matches never overlap, so in start order their ends ascend too.
+    starts = [sp[0] for sp in spans]
+    ends = [sp[1] for sp in spans]
+    breaks = [m.start() for m in _LINE_BREAK_RE.finditer(text)]
+
+    def unbroken(a: int, b: int) -> bool:          # no line break in text[a:b]
+        return bisect_left(breaks, a) == bisect_left(breaks, b)
+
+    # Binary search, not a scan per phrase: on one long line the old version
+    # rescanned every number and the text between it and every phrase — 2 s
+    # for 50 KB and minutes for an adversarial posting (review 2026-10-29).
+    # Only the nearest span on each side can share the phrase's line.
     owned = set()
     for ph in _NO_DEGREE_PATH_RE.finditer(text):
-        inside = [s for s in spans if s[0] < ph.end() and s[1] > ph.start()]
-        before = [s for s in spans if s[1] <= ph.start()
-                  and not _LINE_BREAK_RE.search(text, s[1], ph.start())]
-        after = [s for s in spans if s[0] >= ph.end()
-                 and not _LINE_BREAK_RE.search(text, ph.end(), s[0])]
-        pick = (inside or before[-1:] or after[:1] or [None])[0]
+        a, b = ph.start(), ph.end()
+        first_after_a = bisect_right(ends, a)        # first span ending after the phrase starts
+        first_from_b = bisect_left(starts, b)        # first span starting at/after its end
+        if first_after_a < first_from_b:
+            pick = spans[first_after_a]              # overlaps the phrase
+        elif first_after_a > 0 and unbroken(ends[first_after_a - 1], a):
+            pick = spans[first_after_a - 1]          # the number before it, same line
+        elif first_from_b < len(spans) and unbroken(b, starts[first_from_b]):
+            pick = spans[first_from_b]               # the number after it, same line
+        else:
+            pick = None
         if pick:
             owned.add(pick[0])
     return owned
@@ -510,6 +536,11 @@ def minimum_years_required(jd_text: str, *,
         if at < 0:
             continue
         cursor = at + len(clause)
+        # Once per clause, and every per-number test below reads a bounded
+        # window: on a posting stored as one 50 KB line ("one clause"), slicing
+        # and re-scanning the whole clause for each of its numbers took 8 s,
+        # per candidate, in the rule filter (review 2026-10-29).
+        tail = _TAIL_PREFERENCE_RE.search(clause)
         for m in _REQ_RE.finditer(clause):
             years = _years_of(m)
             if years is None:
@@ -517,15 +548,15 @@ def minimum_years_required(jd_text: str, *,
             # A preference after a comma qualifies what follows it: in "8+
             # years of full-stack development, preferably in high-growth
             # companies" the companies are preferred, not the years.
-            comma = re.search(r"[,(]", clause[m.end():])
-            scope = clause[:m.end() + (comma.start() if comma else len(clause))]
-            tail = _TAIL_PREFERENCE_RE.search(clause)
+            comma = _SCOPE_END_RE.search(clause, m.end(), m.end() + _SCOPE_CHARS)
+            scope = clause[max(0, m.start() - _SCOPE_CHARS):
+                           comma.start() if comma else m.end() + _SCOPE_CHARS]
             if _REQUIRED_RE.search(scope):
                 required = True
             elif _PREFERRED_RE.search(scope):
                 required = False
             elif tail and tail.start() > m.end() \
-                    and not re.search(r"\bwith\b", clause[m.end():tail.start()], re.I):
+                    and not _WITH_RE.search(clause, m.end(), tail.start()):
                 required = False
             else:
                 required = heading_pref if heading_pref is not None else True
@@ -535,11 +566,11 @@ def minimum_years_required(jd_text: str, *,
             if _COMPANY_HISTORY_RE.search(text[max(0, p0 - 40):p0]):
                 continue
             # An experience requirement, not a benefit, a warranty or a timeline.
-            if _NOT_EXPERIENCE_BEFORE_RE.search(clause[:m.start()]) \
-                    or _NOT_EXPERIENCE_AFTER_RE.search(clause[m.end():]):
+            if _NOT_EXPERIENCE_BEFORE_RE.search(clause[max(0, m.start() - 40):m.start()]) \
+                    or _NOT_EXPERIENCE_AFTER_RE.search(clause[m.end():m.end() + 40]):
                 continue
             if not (_EXPERIENCE_NEAR_RE.search(text[max(0, p0 - 20):p1 + 80])
-                    or _LEADS_WITH_YEARS_RE.match(clause[:m.start()])):
+                    or (m.start() <= 80 and _LEADS_WITH_YEARS_RE.match(clause[:m.start()]))):
                 continue
             # The no-degree path (see `_no_degree_rungs`) is not this candidate's.
             if at + m.start("qty") in no_degree:

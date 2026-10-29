@@ -153,3 +153,30 @@ def test_american_in_a_name_is_not_a_region():
     from app.common.geo import detect_region
     assert detect_region("American Express, New York, NY") == ""
     assert detect_region("Bank of America Plaza, Charlotte, NC") == ""
+
+
+def test_the_market_settles_the_country_not_the_city():
+    """Review 2026-10-29: the market probe carried no sites, so a stored
+    "Atlanta, GA" row was re-decided as eligible for someone staying in Boston,
+    and a paid final followed. The stored sites go into the probe."""
+    boston = GeoPrefs(country="united states", remote_ok=True, open_to_relocation=False,
+                      home_location="Boston, MA")
+    page = page_evidence("https://www.adzuna.com/land/ad/9", "adzuna",
+                         description="Backend role.", sites=["Atlanta, GA"])
+    assert page.geo is not None and page.geo.sites == ["Atlanta, GA"]
+    assert decide(page.geo, boston).status != ELIGIBLE
+    assert decide(page.geo, US_MOVER).status == ELIGIBLE
+
+
+def test_the_waiting_read_stops_at_the_deadline_and_rotates(monkeypatch):
+    import time as _time
+
+    import app.discovery.geo_verify as gv
+    from app.db.init_db import get_session
+    with get_session() as s:
+        assert gv._waiting_rows(s, 5, gv.datetime.utcnow(), 3, owners=["a", "b", "c"],
+                                deadline=_time.monotonic() - 1) == []
+    assert gv._WAITING_RESUME == ["b"], "the next sweep starts one owner later"
+    with get_session() as s:
+        gv._waiting_rows(s, 5, gv.datetime.utcnow(), 3, owners=["a", "b", "c"])
+    assert gv._WAITING_RESUME == ["c"]

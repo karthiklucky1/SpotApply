@@ -1464,9 +1464,13 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     # built right below; whatever it cannot waits with backoff. Never fatal.
     # AFTER the fast-exit guards on purpose: a full provider outage must not
     # keep paying a fetch budget every 90 s for postings nobody can score yet.
+    # The cycle's owners, read ONCE: the geography sweep starts from the
+    # copies these users are waiting on, then the queue below is built from
+    # the same list (it was read twice per cycle — review 2026-10-29).
+    users = _scorable_user_ids()
     try:
         from app.discovery.geo_verify import verify_pending as _verify_geo
-        _geo = _verify_geo(deadline=deadline)
+        _geo = _verify_geo(deadline=deadline, owners=users)
         if _geo.get("pending_examined"):
             stats["geo_pending_examined"] = _geo["pending_examined"]
             stats["geo_resolved"] = _geo["resolved"]
@@ -1478,7 +1482,6 @@ def _run_scoring_cycle(deadline: Optional[float]) -> dict:
     except Exception as e:
         log.warning("geo verification sweep failed (non-fatal): %s", e)
 
-    users = _scorable_user_ids()
     if not users:
         return stats
 
