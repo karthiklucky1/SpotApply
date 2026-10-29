@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DASH = (ROOT / "app" / "templates" / "dashboard.html").read_text()
 
 # Form-only controls that the JS converts before saving.
-_CONVERTED = {"_history_state", "resume_location_mode"}
+# mode_hybrid / mode_onsite are folded with remote_ok into `work_modes`, which
+# the read returns and the update accepts.
+_CONVERTED = {"_history_state", "resume_location_mode", "mode_hybrid", "mode_onsite"}
 
 
 def _form_names() -> set:

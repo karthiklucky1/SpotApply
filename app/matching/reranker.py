@@ -580,6 +580,12 @@ def _profile_system_prompt(profile) -> str:
                 f"remote one — score location high.")
     else:
         move = " Not open to relocating: an on-site or hybrid role far from home scores location low."
+    from app.common.tenant_prefs import work_modes as _work_modes
+    _modes = _work_modes(profile)
+    if _modes:
+        _names = {"remote": "remote", "hybrid": "hybrid", "onsite": "on-site"}
+        move += (f" Wants {' or '.join(_names[m] for m in _modes)} work only; a posting that states "
+                 f"another work style scores location low.")
     loc_rule = (f"- LOCATION & COUNTRY: the candidate wants jobs in {country}"
                 f"{' plus fully-remote roles open to ' + country + ' (or truly global remote)' if remote_ok else ''}. "
                 f"{'Lives in ' + home + '.' if home else 'Home city not stated.'}{move} "

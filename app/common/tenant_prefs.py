@@ -43,8 +43,31 @@ def effective_country(profile, user_id: str | None = None) -> str:
     return fallback
 
 
+WORK_MODES = ("remote", "hybrid", "onsite")
+_MODE_ALIASES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite", "on-site": "onsite",
+                 "on site": "onsite", "in office": "onsite", "office": "onsite"}
+
+
+def canonical_work_modes(value) -> str:
+    """"Hybrid, On-site" -> "hybrid,onsite"; all three or none -> "" (= all)."""
+    parts = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    got = {_MODE_ALIASES.get(str(p).strip().lower()) for p in parts} - {None}
+    picked = [m for m in WORK_MODES if m in got]
+    return "" if len(picked) in (0, len(WORK_MODES)) else ",".join(picked)
+
+
+def work_modes(profile) -> tuple:
+    """The work styles the user wants; () = all of them."""
+    v = canonical_work_modes(getattr(profile, "work_modes", "") or "")
+    return tuple(v.split(",")) if v else ()
+
+
 def effective_remote_ok(profile) -> bool:
-    """Whether fully-remote roles open to the user's own country are kept."""
+    """Whether fully-remote roles open to the user's own country are kept.
+    A saved work-style choice decides it: "Hybrid, On-site" means no remote."""
+    modes = work_modes(profile)
+    if modes:
+        return "remote" in modes
     return bool(getattr(profile, "remote_ok", True))
 
 
@@ -62,6 +85,7 @@ def geo_prefs(profile, user_id: str | None = None):
         open_to_relocation=bool(getattr(profile, "open_to_relocation", False)),
         home_location=(getattr(profile, "location", "") or "").strip(),
         relocation_targets=tuple(parse_targets(getattr(profile, "relocation_targets", "") or "")),
+        work_modes=work_modes(profile),
     )
 
 
@@ -85,7 +109,7 @@ def geo_prefs_for_user(user_id: str | None):
             row = session.exec(
                 select(UserProfile.preferred_country, UserProfile.remote_ok,
                        UserProfile.open_to_relocation, UserProfile.location,
-                       UserProfile.relocation_targets)
+                       UserProfile.relocation_targets, UserProfile.work_modes)
                 .where(UserProfile.user_id == uid)
             ).first()
     except Exception as e:
@@ -98,7 +122,7 @@ def geo_prefs_for_user(user_id: str | None):
     p = _P()
     if row is not None:
         (p.preferred_country, p.remote_ok, p.open_to_relocation, p.location,
-         p.relocation_targets) = row
+         p.relocation_targets, p.work_modes) = row
     return geo_prefs(p if row is not None else None, uid)
 
 

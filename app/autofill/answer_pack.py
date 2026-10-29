@@ -162,12 +162,23 @@ def _llm_essay_answer(question: str, job: Job, profile: UserProfile, resume_text
     # An answer goes to the employer under the user's name: never one that
     # obeys a sentence the posting planted for AI tools.
     from app.common.posting_text import DATA_NOTICE, clean_posting
+    from app.common.tenant_prefs import work_modes as _work_modes
+    _names = {"remote": "remote", "hybrid": "hybrid", "onsite": "on-site"}
+    _modes = _work_modes(profile)
+    # The user's OWN work style for "are you open to hybrid / on-site?"
+    # questions — not the shared answers file's "open to remote, hybrid, or
+    # onsite", which was the only source before this field existed.
+    work_style = (" or ".join(_names[m] for m in _modes) if _modes
+                  else "open to remote, hybrid or on-site")
+    relocate = "yes" if getattr(profile, "open_to_relocation", False) else "no"
     prompt = f"""Candidate profile:
 - Name: {profile.first_name} {profile.last_name}
 - Title: {profile.current_title}
 - Experience: {profile.years_experience} years
 - Summary: {profile.professional_summary[:800] if profile.professional_summary else ""}
 - Key skills: {profile.key_skills[:400] if profile.key_skills else ""}
+- Work style wanted: {work_style}
+- Open to relocating: {relocate}
 
 Job:
 - Company: {job.company}

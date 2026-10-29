@@ -851,6 +851,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   held copies expired "Location pending". Adzuna reads `location.area` ("City, ST",
   structured country) and stored rows resolve from the market host (adzuna.com = US);
   regions `namer`/`amer` include the US. Guard: `test_adzuna_and_regions`.
+  **Work style is the user's** (`UserProfile.work_modes`, "remote,hybrid,onsite", "" = all;
+  both profile screens, Remote = `remote_ok` kept in step): a posting whose STATED mode
+  is not picked is ineligible (`work_mode_not_wanted`), an unstated one is not; the
+  Tier-2 prompt and form answers read it. Guard: `test_work_style`. A kept Tier-1
+  verdict (prescore on a queued row) is REUSED by every lane, never re-bought;
+  `realign.forget_kept_prescores` clears them on resume/role/job-type change.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list
