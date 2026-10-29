@@ -455,3 +455,36 @@ def test_a_user_with_an_unreadable_resume_is_told_once(monkeypatch):
         with get_session() as s:
             s.exec(delete(UserNotification).where(UserNotification.user_id == uid))
             s.commit()
+
+
+def test_a_stored_file_that_cannot_be_opened_is_cached_not_redownloaded(monkeypatch):
+    """Review 2026-10-29: a corrupt/encrypted PDF raised inside the parse, the
+    loop moved on, and the final "No resume found" miss was never cached — one
+    full download per lane tick, ~1,250 a day for that user."""
+    import app.db.supabase_client as sc
+    from app.matching import pipeline as pl
+    bucket = _Bucket([{"name": "resume.pdf", "updated_at": "T"}], {"u1/resume.pdf": b"not a pdf"})
+    monkeypatch.setattr(sc, "service_client", lambda: _SB(bucket))
+    monkeypatch.setattr(pl, "_RESUME_CACHE", {})
+    monkeypatch.setattr(pl.settings.__class__, "use_supabase",
+                        property(lambda self: True), raising=False)
+    seen = []
+    for _ in range(4):
+        with pytest.raises(pl.UnreadableResumeError) as exc:
+            pl._load_resume_file("u1")
+        assert "could not open" in str(exc.value)
+        seen.append(exc.value)
+    assert bucket.downloads == 1
+    # a fresh exception per raise: re-raising one cached object grows its
+    # traceback and keeps every caller's frame alive until the TTL
+    assert len({id(e) for e in seen}) == len(seen)
+
+
+def test_word_support_stays_linear_on_a_repetitive_resume():
+    import time
+
+    from app.tailoring.evidence import text_supports
+    master = "\n".join(["Engineer Engineer Engineer Engineer"] * 6000)    # ~200k chars
+    t0 = time.perf_counter()
+    assert not text_supports("Engineer Manager", master)
+    assert time.perf_counter() - t0 < 2.0

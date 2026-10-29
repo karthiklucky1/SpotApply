@@ -292,7 +292,9 @@ def _load_resume_file(user_id: str | None = None) -> str:
             hit = _RESUME_CACHE.get(key)
             if hit and now - hit[0] < _RESUME_CACHE_TTL_S:
                 if isinstance(hit[1], UnreadableResumeError):
-                    raise hit[1]
+                    # A FRESH exception each time: re-raising the cached one
+                    # grows its traceback and pins every caller's frame.
+                    raise UnreadableResumeError(hit[1].args[0])
                 return hit[1]
         try:
             text = _fetch_resume_from_storage(user_id)
@@ -301,7 +303,7 @@ def _load_resume_file(user_id: str | None = None) -> str:
             # next upload (which invalidates), and re-downloading it on every
             # scoring cycle is the Storage egress this cache exists to stop.
             with _RESUME_CACHE_LOCK:
-                _RESUME_CACHE[key] = (now, e)
+                _RESUME_CACHE[key] = (now, UnreadableResumeError(e.args[0]))
             raise
         with _RESUME_CACHE_LOCK:
             _RESUME_CACHE[key] = (now, text)
@@ -474,12 +476,21 @@ def _fetch_resume_from_storage(user_id: str) -> str:
     for name in names:
         try:
             data = sb.storage.from_("resume").download(f"{user_id}/{name}")
-            if data:
-                text = resume_text_from_bytes(name, data)
         except Exception:
-            continue
+            continue          # transient, or this name is absent: try the next
         if not data:
             continue
+        try:
+            text = resume_text_from_bytes(name, data)
+        except Exception as e:
+            # Downloaded but cannot be opened (corrupt, encrypted, not really
+            # a PDF). That is as stable as a picture of a resume, so it is the
+            # same cached answer — a plain miss here re-downloaded the file on
+            # every lane tick, ~1,250 times a day per user.
+            log.info("stored resume %s for %s cannot be parsed: %s", name, user_id, e)
+            raise UnreadableResumeError(
+                "We could not open your resume file. Save it again as a PDF from Word "
+                "or Google Docs, or as a DOCX, and upload that.") from None
         # Only an uploaded FILE can be a picture of a résumé. resume.md/.txt is
         # text the user typed (the onboarding stub is one), short or not.
         if name.lower().endswith((".pdf", ".docx")):

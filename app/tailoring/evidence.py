@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -915,16 +916,18 @@ def _master_ranges(text: str) -> list:
 
 def _segment_spans(seg: List[str], index: Dict[str, List[int]]) -> List[Tuple[int, int]]:
     """Where ``seg``'s words occur in order with at most _MAX_GAP words between
-    neighbours — (first, last) positions of each such run."""
+    neighbours — (first, last) positions of each such run. Position lists are
+    ascending, so each step is a bisect, never a scan."""
     spans = []
     for start in index.get(seg[0], ()):
         pos, ok = start, True
         for w in seg[1:]:
-            nxt = next((i for i in index.get(w, ()) if pos < i <= pos + _MAX_GAP + 1), None)
-            if nxt is None:
+            positions = index.get(w, ())
+            i = bisect_right(positions, pos)
+            if i == len(positions) or positions[i] > pos + _MAX_GAP + 1:
                 ok = False
                 break
-            pos = nxt
+            pos = positions[i]
         if ok:
             spans.append((start, pos))
     return spans

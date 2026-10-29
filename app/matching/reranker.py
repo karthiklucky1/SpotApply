@@ -750,7 +750,7 @@ Title: {job.title}
 Company: {job.company}
 {_prescore_location_lines(job)}
 Description:
-{clean_posting(job.description or '')[:1800]}
+{clean_posting((job.description or '')[:4000])[:1800]}
 </job>
 
 Return the JSON object."""
