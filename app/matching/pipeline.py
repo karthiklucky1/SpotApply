@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import load_only
@@ -218,6 +218,68 @@ def invalidate_resume_cache(user_id: str | None) -> None:
     fresh upload is picked up by the very next scoring cycle."""
     with _RESUME_CACHE_LOCK:
         _RESUME_CACHE.pop(user_id or "local", None)
+    _UNREADABLE_NOTIFIED.discard(user_id)
+
+
+class UnreadableResumeError(ValueError):
+    """The user's résumé file is on file but holds almost no text: a scanned
+    image, a photo or a design export. Every consumer treats it as "no résumé"
+    (scoring skips the user, tailoring refuses before any model call) and the
+    message says what to upload instead."""
+
+
+# A real one-page résumé is 250-600 words. Below BOTH bars the file is a picture
+# of a résumé: production 2026-10-21, a 300 KB PDF read back as a few words, the
+# tailor was asked to rewrite a résumé it could not see — it answered "I don't
+# see a master resume provided", then invented "ABC Engineering Solutions".
+RESUME_MIN_WORDS = 80
+RESUME_MIN_LETTERS = 600
+
+
+def unreadable_resume_reason(text: str) -> Optional[str]:
+    """Why an uploaded file's ``text`` is too thin to score or tailor from, or
+    None when it is fine. Letters are counted too: a PDF that extracts without
+    spaces is one long "word" per line and is perfectly readable."""
+    words = re.findall(r"[A-Za-z][A-Za-z'’.\-]+", text or "")
+    letters = sum(ch.isalpha() for ch in text or "")
+    if len(words) >= RESUME_MIN_WORDS or letters >= RESUME_MIN_LETTERS:
+        return None
+    return (f"We could read only {len(words)} words from your resume file, so it is "
+            "probably a scanned image or a design export (Canva, Figma, a photo). Upload "
+            "a PDF saved from Word or Google Docs, or a DOCX, so we can read your "
+            "experience.")
+
+
+_UNREADABLE_NOTIFIED: set = set()
+
+
+def notify_unreadable_resume(user_id: str | None, reason: str) -> None:
+    """Tell the user ONCE (per upload) that matching is waiting on a readable
+    resume. The lanes skip such a user the way they skip one with no resume at
+    all, so without this nothing on their dashboard would ever say why their
+    feed stays empty. One DB look per user per process; never raises."""
+    if not user_id or user_id in _UNREADABLE_NOTIFIED:
+        return
+    _UNREADABLE_NOTIFIED.add(user_id)
+    try:
+        from app.db.models import UserNotification, UserProfile
+        with get_session() as session:
+            uploaded = session.exec(select(UserProfile.resume_uploaded_at).where(
+                UserProfile.user_id == user_id)).first()
+            q = select(UserNotification.id).where(
+                UserNotification.user_id == user_id,
+                UserNotification.type == "resume_unreadable")
+            if uploaded:
+                q = q.where(UserNotification.created_at >= uploaded)
+            if session.exec(q.limit(1)).first():
+                return
+            session.add(UserNotification(
+                user_id=user_id, title="We can't read your resume yet",
+                message=reason + " Matching starts as soon as a readable file is uploaded.",
+                type="resume_unreadable", link="/dashboard"))
+            session.commit()
+    except Exception as e:
+        log.debug("unreadable-resume notice skipped for %s: %s", user_id, e)
 
 
 def _load_resume_file(user_id: str | None = None) -> str:
@@ -229,8 +291,18 @@ def _load_resume_file(user_id: str | None = None) -> str:
         with _RESUME_CACHE_LOCK:
             hit = _RESUME_CACHE.get(key)
             if hit and now - hit[0] < _RESUME_CACHE_TTL_S:
+                if isinstance(hit[1], UnreadableResumeError):
+                    raise hit[1]
                 return hit[1]
-        text = _fetch_resume_from_storage(user_id)
+        try:
+            text = _fetch_resume_from_storage(user_id)
+        except UnreadableResumeError as e:
+            # Cached like a hit: an unreadable file is a stable answer until the
+            # next upload (which invalidates), and re-downloading it on every
+            # scoring cycle is the Storage egress this cache exists to stop.
+            with _RESUME_CACHE_LOCK:
+                _RESUME_CACHE[key] = (now, e)
+            raise
         with _RESUME_CACHE_LOCK:
             _RESUME_CACHE[key] = (now, text)
         return text
@@ -283,16 +355,109 @@ def resume_text_from_bytes(name: str, data: bytes) -> str:
     """Plain text from an uploaded résumé file, by extension."""
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext == "docx":
-        import io
-        from docx import Document
-        doc = Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        return _docx_text(data)
     if ext == "pdf":
         import io
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
         return "\n".join((page.extract_text() or "") for page in reader.pages)
     return data.decode("utf-8", errors="ignore")
+
+
+def _docx_text(data: bytes) -> str:
+    """Every line of a DOCX in reading order — tables and text boxes included.
+
+    ``Document.paragraphs`` is only the body's top-level paragraphs, and résumé
+    templates put the history in TABLES (a dates column beside a role column)
+    or TEXT BOXES (two-column designs): that text never reached scoring or
+    tailoring. A table row of short single-line cells reads as one line
+    ("Apr 2006 | Dec 2007 | Engineer"), the way a person reads it; a text box
+    shipped twice (the modern drawing and its legacy VML fallback) is read once.
+    """
+    import io
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(io.BytesIO(data))
+    W_P, W_T, W_TBL, W_TR, W_TC = qn("w:p"), qn("w:t"), qn("w:tbl"), qn("w:tr"), qn("w:tc")
+    W_TAB, W_BR, TXBX = qn("w:tab"), qn("w:br"), qn("w:txbxContent")
+    FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+    lines: list[str] = []
+
+    def inside(el, stop, tags) -> bool:
+        anc = el.getparent()
+        while anc is not None and anc is not stop:
+            if anc.tag in tags:
+                return True
+            anc = anc.getparent()
+        return False
+
+    def para_text(p) -> str:
+        out = []
+        for el in p.iter():
+            # a run inside a text box anchored here is the box's text, read below
+            if el.tag in (W_T, W_TAB, W_BR) and inside(el, p, (TXBX, FALLBACK)):
+                continue
+            if el.tag == W_T:
+                out.append(el.text or "")
+            elif el.tag == W_TAB:
+                out.append("\t")
+            elif el.tag == W_BR:
+                out.append("\n")
+        return "".join(out).strip()
+
+    def walk(container) -> None:
+        for el in container:
+            if el.tag == W_P:
+                t = para_text(el)
+                if t:
+                    lines.append(t)
+                for box in el.iter(TXBX):
+                    # the outermost box only (walk reads the ones inside it), and
+                    # never the legacy VML copy of a box already read
+                    if not inside(box, el, (TXBX, FALLBACK)):
+                        walk(box)
+            elif el.tag == W_TBL:
+                for row in el.findall(W_TR):
+                    cells = []
+                    for cell in row.findall(W_TC):
+                        texts = [para_text(p) for p in cell.iter(W_P)]
+                        cells.append([t for t in texts if t])
+                    if cells and all(len(c) <= 1 for c in cells) and \
+                            sum(len(c[0]) for c in cells if c) <= 160:
+                        joined = " | ".join(c[0] for c in cells if c)
+                        if joined:
+                            lines.append(joined)
+                    else:
+                        for c in cells:
+                            lines.extend(c)
+            elif el.tag in (qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")):
+                walk(el)
+
+    def flat(raw: list[str]) -> list[str]:
+        out: list[str] = []
+        for line in raw:
+            for part in line.split("\n"):
+                part = part.strip()
+                if part and (not out or out[-1] != part):   # a box read twice, once
+                    out.append(part)
+        return out
+
+    walk(doc.element.body)
+    body = flat(lines)
+    # The name and contact line often sit in the page HEADER — read first,
+    # minus anything the body already says.
+    head: list[str] = []
+    try:
+        first = doc.sections[0] if doc.sections else None
+        if first is not None and not first.header.is_linked_to_previous:
+            lines = []
+            walk(first.header._element)
+            in_body = set(body)
+            head = [h for h in flat(lines) if h not in in_body]
+    except Exception as e:
+        log.debug("docx header not read: %s", e)
+    return "\n".join(head + body)
 
 
 def _fetch_resume_from_storage(user_id: str) -> str:
@@ -310,9 +475,18 @@ def _fetch_resume_from_storage(user_id: str) -> str:
         try:
             data = sb.storage.from_("resume").download(f"{user_id}/{name}")
             if data:
-                return resume_text_from_bytes(name, data)
+                text = resume_text_from_bytes(name, data)
         except Exception:
             continue
+        if not data:
+            continue
+        # Only an uploaded FILE can be a picture of a résumé. resume.md/.txt is
+        # text the user typed (the onboarding stub is one), short or not.
+        if name.lower().endswith((".pdf", ".docx")):
+            reason = unreadable_resume_reason(text)
+            if reason:
+                raise UnreadableResumeError(reason)
+        return text
     raise ValueError("No resume found. Please upload your resume in the Profile page first.")
 
 

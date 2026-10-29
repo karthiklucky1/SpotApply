@@ -659,6 +659,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   removes the other extensions; `/api/resume/synthesize` never overwrites one); the
   extension route charges a credit only after the ERROR re-check. Guard:
   `test_tailor_fixes`.
+- **Guards compare VALUES and WORDS, never spellings** (2026-10-29): 13 of 16 tailor
+  ERRORs in 45 days were the fact guard / Doctor misreading the user's OWN plain-text
+  history ("Apr-2006 to Dec-2007", a client in brackets, "Jabil (via Lorien)"). Dates
+  parse any common form (`evidence.date_ranges`; a draft may be LESS precise, never
+  more); an employer/title/degree/school/credential needs every word in the master, in
+  order, close together, on a NAMING line — not a bullet, not Skills/Summary
+  (`words_supported`: "Integrated the Google Maps API" never makes Google an employer).
+  A PDF/DOCX reading < 80 words AND < 600 letters is `UnreadableResumeError` (cached
+  like a hit, lanes skip, one notice, upload 422s BEFORE storing); DOCX reads tables,
+  text boxes, header. The Skills LIST is pruned to what the master shows
+  (`skills_guard.prune_skills`; review checked ≤6 JD terms). Posting text is DATA:
+  `common/posting_text.clean_posting` drops sentences addressed to AI tools before
+  tailor/cover/Tier-1/Tier-2/autofill, `DATA_NOTICE` in each prompt. Guard:
+  `test_tailoring_production_shapes`.
 - **The owner's resume rules** (2026-10-08, `tailoring/rules.py` + `render.py`):
   every tailor is a FULL rewrite (L0 skip off) under `TAILOR_SYSTEM`; then
   deterministic steps: em dashes scrubbed (date facts canonicalized in

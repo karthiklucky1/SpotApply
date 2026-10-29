@@ -130,6 +130,99 @@ def _canon_date(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# ── dates, read the way people write them ────────────────────────────────────
+# A plain-text master (every PDF/DOCX upload) writes dates any way its author
+# liked: "Apr-2006", "04/2006", "Nov'07", "2007 – Till Date". The tailored draft
+# writes them "Apr 2006 - Dec 2007". Comparing spellings blocked truthful drafts
+# for "inventing" the user's own dates (production 2026-10-26: three ranges of
+# one user's real history, on two tailors). A range is compared as VALUES —
+# (year, month) at each end, any open end is "present" — and a draft may write
+# a date LESS precisely than the master (drop a month), never more: "2007" for
+# "Nov 2007" adds nothing, "Jan 2020" for "2020" invents a month.
+_MONTH_NUM = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
+              "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+_MONTH_ABBR = {v: k for k, v in _MONTH_NUM.items()}
+_MONTH_WORDS = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+                r"aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_ENDPOINT = (
+    rf"(?:(?P<{{p}}mw>{_MONTH_WORDS})\.?(?:[\s,\-/]*(?P<{{p}}my>(?:19|20)\d{{{{2}}}})"
+    rf"|\s*['’]\s*(?P<{{p}}my2>\d{{{{2}}}}))"
+    rf"|(?<![\d.,])(?P<{{p}}mn>0?[1-9]|1[0-2])\s*[/.\-]\s*(?P<{{p}}ny>(?:19|20)\d{{{{2}}}})"
+    rf"|(?<![\d.,])(?P<{{p}}iy>(?:19|20)\d{{{{2}}}})\s*[/\-]\s*(?P<{{p}}im>0[1-9]|1[0-2])(?!\d)"
+    rf"|(?<![\d.,$])(?P<{{p}}y>(?:19|20)\d{{{{2}}}}))(?![\d%])"
+)
+_OPEN_END = r"(?P<open>(?:(?:till|until)\s+)?(?:present|current(?:ly)?|now|ongoing|today|date))\b"
+_RANGE_SEP = r"\s*(?:[-–—‒−~]|\bto\b|\btill\b|\buntil\b|\bthrough\b|\bthru\b)\s*"
+# The master side also accepts two dates side by side with only a cell break
+# between them ("Apr 2006 | Dec 2007", a table row read back as text): being
+# generous about what the MASTER says can only make the guard block less.
+_LOOSE_SEP = r"(?:[\s|,:\-–—‒−~]|\b(?:to|till|until|through|thru|from)\b){1,8}"
+
+
+def _range_re(sep: str) -> "re.Pattern[str]":
+    start = _ENDPOINT.format(p="a")
+    end = _ENDPOINT.format(p="b")
+    return re.compile(rf"(?i)\b(?:{start}){sep}(?:{end}|{_OPEN_END})")
+
+
+_STRICT_RANGE_RE = _range_re(_RANGE_SEP)
+_LOOSE_RANGE_RE = _range_re(_LOOSE_SEP)
+
+PRESENT = (9999, 0)
+
+
+def _endpoint(m: "re.Match[str]", p: str) -> Optional[Tuple[int, Optional[int]]]:
+    g = m.groupdict()
+    if g.get(f"{p}mw"):
+        month = _MONTH_NUM[g[f"{p}mw"].lower()[:3]]
+        if g.get(f"{p}my"):
+            return int(g[f"{p}my"]), month
+        yy = int(g[f"{p}my2"])
+        return (2000 + yy if yy <= 40 else 1900 + yy), month
+    if g.get(f"{p}ny"):
+        return int(g[f"{p}ny"]), int(g[f"{p}mn"])
+    if g.get(f"{p}iy"):
+        return int(g[f"{p}iy"]), int(g[f"{p}im"])
+    if g.get(f"{p}y"):
+        return int(g[f"{p}y"]), None
+    return None
+
+
+def _canon_endpoint(ep: Tuple[int, Optional[int]]) -> str:
+    if ep == PRESENT:
+        return "present"
+    year, month = ep
+    return f"{_MONTH_ABBR[month]} {year}" if month else str(year)
+
+
+def date_ranges(text: str, *, loose: bool = False) -> List[Tuple[tuple, tuple]]:
+    """Every employment-style date range in ``text`` as ((y, m), (y, m)) pairs,
+    month None when not written, ``PRESENT`` for an open end."""
+    out: List[Tuple[tuple, tuple]] = []
+    for m in (_LOOSE_RANGE_RE if loose else _STRICT_RANGE_RE).finditer(text or ""):
+        start = _endpoint(m, "a")
+        end = PRESENT if m.group("open") else _endpoint(m, "b")
+        if start and end:
+            out.append((start, end))
+    return out
+
+
+def canon_range(rng: Tuple[tuple, tuple]) -> str:
+    return f"{_canon_endpoint(rng[0])} - {_canon_endpoint(rng[1])}"
+
+
+def _covers(source: tuple, claim: tuple) -> bool:
+    """``claim`` says no more than ``source``: the same moment, or the same
+    year with the month left out."""
+    if claim == PRESENT or source == PRESENT:
+        return claim == source
+    return source[0] == claim[0] and (claim[1] is None or claim[1] == source[1])
+
+
+def range_supported(claim: Tuple[tuple, tuple], sources) -> bool:
+    return any(_covers(s[0], claim[0]) and _covers(s[1], claim[1]) for s in sources)
+
+
 def _numbers(text: str) -> FrozenSet[str]:
     out = set()
     for m in _NUMBER_RE.finditer(text or ""):
@@ -205,7 +298,8 @@ def extract_facts(md: str) -> FactSet:
             seg = _norm_fact(seg)
             if not seg or len(seg) > 60:
                 continue
-            if _DATE_RANGE_RE.search(seg) or _STANDALONE_MONTH_YEAR_RE.search(seg):
+            if (_DATE_RANGE_RE.search(seg) or _STANDALONE_MONTH_YEAR_RE.search(seg)
+                    or date_ranges(seg)):
                 continue
             if _YEAR_RE.match(seg):
                 continue          # "**B.S.** | 2019" — a graduation year, not an employer
@@ -214,7 +308,7 @@ def extract_facts(md: str) -> FactSet:
                 continue
             employers.add(seg)
 
-    dates = {_canon_date(_norm_fact(m.group(0))) for m in _DATE_RANGE_RE.finditer(text)}
+    dates = {canon_range(r) for r in date_ranges(text)}
     degrees = {_norm_fact(m.group(0)) for m in _DEGREE_RE.finditer(text)}
     degrees.discard("")
     institutions = {_norm_fact(m.group(0)) for m in _INSTITUTION_RE.finditer(text)
@@ -360,17 +454,33 @@ def fabrication_violations(master_md: str, tailored_md: str) -> List[Tuple[str, 
     """
     master = build_evidence(master_md)
     added = extract_facts(tailored_md or "").added_against(master.facts)
-    if added and not master.facts.employers and not master.facts.titles:
-        # A master with no "**Title** | Employer | dates" lines — every PDF or
-        # DOCX upload, read back as plain text — has no structured roles to
-        # compare against, so a tailored resume that writes its roles in that
-        # shape "added" every employer and title it kept. Against such a
-        # master, an employer or title counts as present when the master's
-        # text says it. A renamed company or an upgraded title still does not.
-        hay = _presence_text(master.text)
-        added = [(kind, value) for kind, value in added
-                 if not (kind in ("employer", "job title") and _appears_in(value, hay))]
-    return added
+    if not added:
+        return []
+    # The sets above are a fast first pass. They compare SPELLINGS, and the
+    # master is usually plain text (every PDF/DOCX upload) laid out however its
+    # author liked, while the draft is markdown in one house shape — so a
+    # set difference reads reformatting as invention: "Master of Science in
+    # Information Systems" against a PDF line that ran on into "… Systems Aug
+    # 2023", a degree line the draft wrote as a role header, a client named in
+    # brackets. Each candidate is therefore re-asked against the master's TEXT,
+    # as words and values: every word of an employer, title, degree, school or
+    # credential must stand in the master in that order, close together; every
+    # date range must be one the master states (or the same range, less
+    # precise). A word the master never puts there ("Principal", "Stripe", a
+    # second credential) still fails, and so does a moved year.
+    stream = _support_stream(master.text)
+    sources = _master_ranges(master.text)
+    kept = []
+    for kind, value in added:
+        if kind == "employment date":
+            claim = date_ranges(value)
+            if claim and range_supported(claim[0], sources):
+                continue
+        elif kind in ("employer", "job title", "degree", "institution", "certification"):
+            if words_supported(value, stream):
+                continue
+        kept.append((kind, value))
+    return kept
 
 
 # ── the summary ──────────────────────────────────────────────────────────────
@@ -673,12 +783,169 @@ def remove_summary_sentences(md: str, sentences, master_md: str = "") -> Tuple[s
     return new_md, removed
 
 
-def _presence_text(text: str) -> str:
-    t = re.sub(r"[*_`#>]", " ", (text or "").lower())
-    t = re.sub(r"[|•·]", " ", t)
-    return re.sub(r"\s+", " ", t)
+# ── word-level support: "does the other document say this?" ──────────────────
+# One comparison for both directions: the fabrication guard asks it of the
+# MASTER (is every word of this employer/title/degree there?), the Doctor asks
+# it of the DRAFT (did the master's employer survive?). Words, not spellings:
+# case, punctuation, bullets, line breaks, "B.S." vs "Bachelor of Science" and
+# a legal suffix are formatting; a word that is not there is not.
+_FILLER_WORDS = frozenset({
+    "of", "in", "the", "and", "at", "for", "a", "an", "with", "on", "to", "from",
+    # legal suffixes: "Acme Corp" and "Acme Inc." are one employer
+    "inc", "llc", "ltd", "limited", "corp", "corporation", "co", "company", "pvt",
+    "private", "plc", "gmbh", "llp", "lp",
+})
+_DEGREE_SPELLINGS = (
+    (r"\bph\.?\s?d\b\.?", " doctor philosophy "),
+    (r"\bm\.?\s?b\.?\s?a\b\.?", " master business administration "),
+    (r"\bb\.?\s?tech\b\.?", " bachelor technology "),
+    (r"\bm\.?\s?tech\b\.?", " master technology "),
+    (r"\bb\.?\s?sc?\b\.?", " bachelor science "),
+    (r"\bm\.\s?sc?\b\.?|\bmsc\b", " master science "),   # bare "ms" is milliseconds
+    (r"\bb\.\s?a\.|\bb\.\s?e\.", " bachelor "),
+    (r"\bm\.\s?a\.|\bm\.\s?e\.", " master "),
+    (r"\b(bachelor|master|doctor|associate)(?:['’]?s)?\b", r" \1 "),
+)
+_WORD_RE = re.compile(r"[a-z0-9+#]+")
+_MONTH_ONLY_RE = re.compile(_MONTH_WORDS)
+_SEGMENT_SPLIT_RE = re.compile(r"[,()\[\]/;:|]+|\s[-–—]\s")
+_MAX_GAP = 2          # words the master may carry between two of the claim's
+_SEGMENT_WINDOW = 40  # how far apart a claim's comma-separated parts may sit
 
 
-def _appears_in(value: str, hay: str) -> bool:
-    v = re.sub(r"\s+", " ", (value or "").lower()).strip()
-    return bool(v) and re.search(rf"(?<!\w){re.escape(v)}(?!\w)", hay) is not None
+def _support_words(text: str) -> List[str]:
+    t = (text or "").lower()
+    for pattern, repl in _DEGREE_SPELLINGS:
+        t = re.sub(pattern, repl, t)
+    words = []
+    for w in _WORD_RE.findall(t):
+        w = w.strip("+#") or w
+        if w in _FILLER_WORDS or w.isdigit() or _MONTH_ONLY_RE.fullmatch(w):
+            continue          # dates and numbers are compared as values elsewhere
+        words.append(w)
+    return words
+
+
+_LIST_GLYPH_RE = re.compile(r"^\s*(?:[-*+]\s|[•·–—‣▪◦●»✓➢►]\s?|\d+[.)]\s)")
+_CREDENTIAL_LEAD_RE = re.compile(r"^(?:certified|licensed|registered|accredited)$", re.I)
+_BARRIER = ("\x00",) * (_MAX_GAP + 1)
+
+
+def _is_header_line(line: str) -> bool:
+    """A line that NAMES things (role, employer, school, credential) rather
+    than describing work. An employer is supported only where the master names
+    one: "Integrated the Google Maps API" mentions Google, it does not make it
+    an employer, and a draft that promotes it to one has invented a job."""
+    s = line.strip()
+    if not s or _LIST_GLYPH_RE.match(s):
+        return False
+    if date_ranges(s):
+        return True
+    core = re.sub(r"[#*_`>]", " ", s).strip()
+    words = core.split()
+    if not words or len(words) > 14 or core.endswith("."):
+        return False
+    lead = re.sub(r"[^A-Za-z]", "", words[0])
+    if (_LEAD_VERB_RE.match(lead) and lead.lower() not in _ING_NOUNS
+            and not _CREDENTIAL_LEAD_RE.match(lead)):
+        return False          # "Integrated Google Maps for routing" — a bullet without a glyph
+    return True
+
+
+# Sections that LIST or DESCRIBE rather than name: "Languages: Python, SQL" is
+# short enough to look like a header line, and a draft that turns "Python" or
+# "OpenAI" into an employer must not find it there.
+_LIST_SECTION_RE = re.compile(
+    r"\b(?:skills?|technolog|tools?\b|competenc|stack|expertise|languages|summary|profile|"
+    r"objective|about|interests|hobbies|coursework|highlights)", re.I)
+_NAMING_SECTION_RE = re.compile(r"\b(?:experience|employment|work|education|projects?|certif)", re.I)
+
+
+def _header_words(text: str) -> List[str]:
+    from app.tailoring.inventory import _bare_section
+    words: List[str] = []
+    listing = False
+
+    def barrier() -> None:
+        if words and words[-1] != _BARRIER[-1]:
+            words.extend(_BARRIER)      # a run never bridges a bullet or a section
+
+    for line in (text or "").splitlines():
+        heading = _SECTION_RE.match(line)
+        name = heading.group(1) if heading else _bare_section(line)
+        if name:
+            listing = bool(_LIST_SECTION_RE.search(name)) and not _NAMING_SECTION_RE.search(name)
+            barrier()
+            continue
+        if not listing and _is_header_line(line):
+            words.extend(_support_words(line))
+        else:
+            barrier()
+    return words
+
+
+_STREAM_CACHE: Dict[str, Tuple[Tuple[str, ...], Dict[str, List[int]]]] = {}
+
+
+def _support_stream(text: str) -> Tuple[Tuple[str, ...], Dict[str, List[int]]]:
+    key = _hash(text or "")
+    hit = _STREAM_CACHE.get(key)
+    if hit is None:
+        words = tuple(_header_words(text))
+        index: Dict[str, List[int]] = {}
+        for i, w in enumerate(words):
+            index.setdefault(w, []).append(i)
+        if len(_STREAM_CACHE) >= _EVIDENCE_CACHE_MAX:
+            _STREAM_CACHE.clear()
+        hit = _STREAM_CACHE[key] = (words, index)
+    return hit
+
+
+_RANGE_CACHE: Dict[str, list] = {}
+
+
+def _master_ranges(text: str) -> list:
+    key = _hash(text or "")
+    if key not in _RANGE_CACHE:
+        if len(_RANGE_CACHE) >= _EVIDENCE_CACHE_MAX:
+            _RANGE_CACHE.clear()
+        _RANGE_CACHE[key] = date_ranges(text, loose=True)
+    return _RANGE_CACHE[key]
+
+
+def _segment_spans(seg: List[str], index: Dict[str, List[int]]) -> List[Tuple[int, int]]:
+    """Where ``seg``'s words occur in order with at most _MAX_GAP words between
+    neighbours — (first, last) positions of each such run."""
+    spans = []
+    for start in index.get(seg[0], ()):
+        pos, ok = start, True
+        for w in seg[1:]:
+            nxt = next((i for i in index.get(w, ()) if pos < i <= pos + _MAX_GAP + 1), None)
+            if nxt is None:
+                ok = False
+                break
+            pos = nxt
+        if ok:
+            spans.append((start, pos))
+    return spans
+
+
+def words_supported(value: str, stream) -> bool:
+    """True when every word of ``value`` stands in the stream's document: each
+    comma/bracket-separated part as an ordered run, the parts near each other."""
+    _words, index = stream
+    segments = [s for s in (_support_words(p) for p in _SEGMENT_SPLIT_RE.split(value or "")) if s]
+    if not segments:
+        return True           # nothing but dates, numbers and filler
+    found = [_segment_spans(s, index) for s in segments]
+    if any(not f for f in found):
+        return False
+    for first, _last in found[0]:
+        if all(any(abs(a - first) <= _SEGMENT_WINDOW for a, _b in f) for f in found[1:]):
+            return True
+    return False
+
+
+def text_supports(value: str, text: str) -> bool:
+    """``words_supported`` against a document given as text."""
+    return words_supported(value, _support_stream(text))

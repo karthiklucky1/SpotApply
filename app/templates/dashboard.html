@@ -2593,8 +2593,15 @@
                     welcomeStarting(null);
                     openProfileReview({});
                 } else {
-                    showToast('Upload failed — please fill manually.', 'error');
-                    obSkipToManual();
+                    // 422 = a file we cannot read (scan, photo, design export):
+                    // say so, and keep the user on the upload step to try another.
+                    const err = await res.json().catch(() => ({}));
+                    if (res.status === 422 && err.detail) {
+                        showToast(err.detail, 'error');
+                    } else {
+                        showToast('Upload failed — please fill manually.', 'error');
+                        obSkipToManual();
+                    }
                 }
             } catch(e) {
                 showToast('Upload error — please fill manually.', 'error');

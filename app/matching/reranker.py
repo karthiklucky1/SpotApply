@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple
 
+from app.common.posting_text import DATA_NOTICE, clean_posting
 from app.config import settings
 from app.db.models import Job
 from app.qa_store.resolver import QAResolver
@@ -641,8 +642,8 @@ def _get_system_prompt(profile=None) -> str:
     """Build the scoring rubric. Prefers the signed-in user's own profile;
     falls back to the bundled QA-resolver defaults when no profile signal exists."""
     if _profile_has_signal(profile):
-        return _profile_system_prompt(profile)
-    return _legacy_system_prompt()
+        return _profile_system_prompt(profile) + "\n\n" + DATA_NOTICE
+    return _legacy_system_prompt() + "\n\n" + DATA_NOTICE
 
 
 # ── Tier-1 cheap prescore (cascade) ──────────────────────────────────────────
@@ -724,12 +725,12 @@ def _prescore_system_prompt(profile=None) -> str:
             f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
             f"Candidate targets: {roles}. Core skills: {skills}. ~{yoe} years. "
             f"Wants jobs in {country} (or fully-remote roles open to {country}).{sponsor}\n"
-            + bands.replace("{country}", country)
+            + bands.replace("{country}", country) + "\n" + DATA_NOTICE
         )
     return (
         f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
         "Judge fit purely from the resume provided (do not assume facts not in it).\n"
-        + bands.replace("{country}", "the candidate's country")
+        + bands.replace("{country}", "the candidate's country") + "\n" + DATA_NOTICE
     )
 
 
@@ -749,7 +750,7 @@ Title: {job.title}
 Company: {job.company}
 {_prescore_location_lines(job)}
 Description:
-{(job.description or '')[:1800]}
+{clean_posting(job.description or '')[:1800]}
 </job>
 
 Return the JSON object."""
@@ -978,7 +979,7 @@ Company: {job.company}
 {_location_lines(job)}
 {_sponsor_note(job, profile)}
 Description:
-{_jd_slice(job.description)}
+{_jd_slice(clean_posting(job.description or ''))}
 </job>
 
 Return the JSON object."""

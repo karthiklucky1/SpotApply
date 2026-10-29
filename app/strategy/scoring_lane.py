@@ -914,6 +914,9 @@ def _make_ctx(uid: Optional[str], spend_gate=None,
     try:
         resume = _load_resume(user_id=uid_arg)
     except Exception as e:
+        from app.matching.pipeline import UnreadableResumeError, notify_unreadable_resume
+        if isinstance(e, UnreadableResumeError):
+            notify_unreadable_resume(uid_arg, str(e))
         log.debug("scoring: no resume for %s (%s) — skipping", uid, e)
         return None
     profile = None
