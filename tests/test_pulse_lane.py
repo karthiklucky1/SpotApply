@@ -234,6 +234,56 @@ def test_fast_path_prescore_drains_misfit(monkeypatch):
         assert "Pre-screened" in (job.rerank_reasoning or "")
 
 
+def test_fast_path_never_rebuys_a_kept_prescore(monkeypatch):
+    """Production 2026-10-29: a job Tier-1 judged and KEPT (prescore on the
+    row, waiting for finals budget) was re-selected and re-prescored every
+    60 s tick for its 15-minute window — 1,557 prescores for one user, which
+    tripped the 2,000-call daily backstop and stopped that user's scoring."""
+    with get_session() as session:
+        _clean(session)
+        kept = Job(title="Backend Engineer", company="Acme", location="Remote", remote=True,
+                   description="Python APIs", source=JobSource.GREENHOUSE,
+                   external_id="fp-kept", url="https://x/kept", user_id="u_ml",
+                   first_seen=datetime.utcnow(), posted_at=datetime.utcnow(), prescore=55.0)
+        new = Job(title="Backend Engineer II", company="Beta", location="Remote", remote=True,
+                  description="Python APIs", source=JobSource.GREENHOUSE,
+                  external_id="fp-new", url="https://x/new", user_id="u_ml",
+                  first_seen=datetime.utcnow(), posted_at=datetime.utcnow())
+        session.add(kept)
+        session.add(new)
+        session.commit()
+        kept_id, new_id = kept.id, new.id
+
+    asked = []
+
+    class FakeReranker:
+        def __init__(self, profile=None, feedback=""):
+            pass
+        def has_prescore_backend(self):
+            return True
+        def prescore(self, resume, job):
+            asked.append(job.id)
+            return 8.0, "unrelated"
+        def score(self, resume, job):
+            raise AssertionError("no final expected")
+
+    monkeypatch.setattr("app.matching.reranker.Reranker", FakeReranker)
+    monkeypatch.setattr("app.matching.pipeline._load_resume", lambda user_id=None: "resume")
+
+    class _G:
+        is_ghost = False
+        ghost_score = 0.0
+        flags_json = None
+        flags = []
+    monkeypatch.setattr("app.matching.filters.score_ghost", lambda job, session: _G())
+
+    for _ in range(3):                       # three ticks
+        pl._fast_path_user("u_ml", score_budget=10)
+    assert asked == [new_id], "the kept job was never re-prescored; the new one once"
+    with get_session() as session:
+        assert session.get(Job, kept_id).rerank_score is None      # still queued for the scoring lane
+
+
 # ── watchlist API ─────────────────────────────────────────────────────────────
 
 def test_target_companies_api_roundtrip_and_pull_forward():
@@ -304,3 +354,27 @@ def test_fast_path_prioritizes_on_role_over_noise(monkeypatch):
     # Budget of 1 → the single slot must go to the on-role title.
     pl._fast_path_user("u_ml", score_budget=1)
     assert scored_titles == ["Senior Machine Learning Engineer"]
+
+
+def test_a_new_resume_or_roles_forget_kept_prescores():
+    """Every lane now reuses a kept prescore, so a verdict must not outlive
+    the resume or roles it was given against."""
+    from app.strategy.realign import forget_kept_prescores
+    with get_session() as session:
+        _clean(session)
+        kept = Job(title="Backend Engineer", company="Acme", location="Remote", remote=True,
+                   description="Python", source=JobSource.GREENHOUSE, external_id="fp-forget",
+                   url="https://x/f", user_id="u_ml", first_seen=datetime.utcnow(), prescore=60.0,
+                   prescored_at=datetime.utcnow())
+        done = Job(title="Data Engineer", company="Beta", location="Remote", remote=True,
+                   description="SQL", source=JobSource.GREENHOUSE, external_id="fp-done",
+                   url="https://x/d", user_id="u_ml", first_seen=datetime.utcnow(), prescore=20.0,
+                   rerank_score=20.0)
+        session.add(kept)
+        session.add(done)
+        session.commit()
+        kept_id, done_id = kept.id, done.id
+    assert forget_kept_prescores("u_ml") == 1
+    with get_session() as session:
+        assert session.get(Job, kept_id).prescore is None
+        assert session.get(Job, done_id).prescore == 20.0, "a scored job keeps its record"

@@ -534,6 +534,13 @@ def _fast_path_user(uid: str, score_budget: int,
         q = select(Job.id, Job.title).where(
             Job.user_id == uid_arg,
             Job.rerank_score == None,  # noqa: E711
+            # A job Tier-1 already judged and KEPT (its prescore is on the row,
+            # waiting for finals budget) is the scoring lane's, which orders by
+            # that prescore. Re-selecting it here re-bought the same verdict
+            # every 60 s tick for its whole 15-minute window: 1,557 prescores
+            # for one user on 2026-10-29 tripped the 2,000-call daily backstop
+            # and stopped that user's scoring for the rest of the day.
+            Job.prescore == None,  # noqa: E711
             Job.is_closed == False,  # noqa: E712
             Job.first_seen >= cutoff,
             # Fast-path LLM spend is reserved for genuinely fresh postings.
@@ -638,7 +645,13 @@ def _fast_path_user(uid: str, score_budget: int,
                 # Spend for this call (if it happens — the rule pre-filter and
                 # the empty-JD guard return without one) is recorded by the
                 # Reranker itself, with the backend and tokens it actually used.
-                pre = reranker.prescore(resume, job)
+                # A verdict already on the row is reused, never re-bought (the
+                # query above skips such rows; another lane may have written
+                # one since).
+                if getattr(job, "prescore", None) is not None:
+                    pre = (float(job.prescore), "kept prescore")
+                else:
+                    pre = reranker.prescore(resume, job)
                 if pre is not None:
                     prescore_val = float(pre[0])
                 if pre is not None and pre[0] < gate:

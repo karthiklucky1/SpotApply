@@ -153,8 +153,31 @@ def realign_job_type(user_id: Optional[str]) -> dict:
             .execution_options(synchronize_session=False))
         stats["reopened"] = int(res.rowcount or 0)
         session.commit()
-    log.info("Job-type realign for %s → %s", user_id or "local", stats)
+    cleared = forget_kept_prescores(user_id)
+    log.info("Job-type realign for %s → %s (%d kept prescores cleared)",
+             user_id or "local", stats, cleared)
     return stats
+
+
+def forget_kept_prescores(user_id: Optional[str]) -> int:
+    """Drop the Tier-1 verdicts kept on a user's QUEUED jobs (prescore on the
+    row, no final yet). Every lane now reuses a kept prescore instead of
+    re-buying it, so a verdict must not outlive the resume or roles it was
+    given against. One UPDATE on ix_job_unscored's rows; never raises."""
+    from sqlalchemy import update as _upd
+    uid_arg = None if (not user_id or user_id == "local") else user_id
+    owner = (Job.user_id == uid_arg) if uid_arg else Job.user_id.is_(None)
+    try:
+        with get_session() as session:
+            res = session.execute(
+                _upd(Job).where(owner, Job.rerank_score.is_(None), Job.prescore.is_not(None))
+                .values(prescore=None, prescored_at=None)
+                .execution_options(synchronize_session=False))
+            session.commit()
+            return int(res.rowcount or 0)
+    except Exception as e:
+        log.warning("kept prescores not cleared for %s: %s", user_id or "local", e)
+        return 0
 
 
 def roles_changed(old_roles: Iterable[str], new_roles: Iterable[str]) -> bool:
@@ -388,7 +411,9 @@ def rescore_board_for_new_resume(user_id: Optional[str]) -> dict:
                 .execution_options(synchronize_session=False))
             session.commit()
         stats["rescore"] = len(ids)
-    log.info("New resume for %s: re-judging the board → %s", user_id or "local", stats)
+    cleared = forget_kept_prescores(user_id)
+    log.info("New resume for %s: re-judging the board → %s (%d kept prescores cleared)",
+             user_id or "local", stats, cleared)
     return stats
 
 
@@ -400,4 +425,5 @@ def realign_if_roles_changed(user_id: Optional[str], old_roles: list[str],
         return {"skipped": "roles unchanged"}
     log.info("Roles changed for %s (%s → %s) — realigning the pool",
              user_id or "local", old_roles, new_roles)
+    forget_kept_prescores(user_id)
     return realign_pool_to_roles(user_id, new_roles, old_roles=old_roles)
