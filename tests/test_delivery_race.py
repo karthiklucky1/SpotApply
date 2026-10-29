@@ -209,7 +209,7 @@ def test_the_matching_lane_holds_its_claim_until_the_slate_has_written():
          patch("app.matching.filters.EmbeddingFilter.filter",
                return_value=(True, 0.7, "ok")), \
          patch("app.matching.reranker.Reranker.score",
-               return_value=(70.0, "good fit", [], {})), \
+               return_value=(80.0, "good fit", [], {})), \
          patch("app.discovery.verify.check_job_alive", return_value=(True, None)), \
          patch("app.strategy.slate.place", side_effect=_spy), \
          patch("app.matching.pipeline.score_ghost") as mock_ghost:

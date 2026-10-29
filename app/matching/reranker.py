@@ -15,6 +15,7 @@ the outage ran 2+ days with nobody noticing.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import random
@@ -24,6 +25,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple
 
+from app.common.posting_text import DATA_NOTICE, clean_posting
 from app.config import settings
 from app.db.models import Job
 from app.qa_store.resolver import QAResolver
@@ -540,7 +542,9 @@ def _profile_system_prompt(profile) -> str:
   * JD requires roughly within {yoe}±1 years: score experience high (75-100).
   * JD requires up to ~{yoe + 2} years: moderate stretch (50-70).
   * JD requires more than ~{yoe + 3} years (or Staff/Principal/Distinguished with senior reqs): hard gap, experience ≤ 25.
-  * JD asks for less experience than the candidate, or is silent on years: score experience normally (not a penalty)."""
+  * JD asks for less experience than the candidate, or is silent on years: score experience normally (not a penalty).
+  * Judge years ONLY against a number the posting STATES. A title word (Senior, Staff, III, Lead)
+    never implies years the posting does not state: "Senior …, 4+ years" asks for 4."""
 
     if needs_sponsor:
         # An F-1 OPT/CPT student is authorized NOW and needs sponsorship LATER.
@@ -603,7 +607,10 @@ Candidate profile:
 {exp_rules}
 {auth_rule}
 {loc_rule}
-- Judge the SKILLS factor on overlap between the candidate's skills/target roles and the job's requirements.
+- Judge the SKILLS factor on overlap between the candidate's skills/target roles and the job's REQUIRED skills.
+  A requirement written as alternatives ("Python or Go", "Java, Python, or similar") is met by any one of them.
+  If the role is built on a PRIMARY language or platform the candidate's skills do not show (e.g. PHP/Laravel,
+  Apex/LWC, ASP.NET, a Java/Kotlin or Node.js backend), skills ≤ 50 and the overall ≤ 65.
 
 Be fair and realistic — do not invent disqualifications. Return JSON only."""
 
@@ -635,8 +642,8 @@ def _get_system_prompt(profile=None) -> str:
     """Build the scoring rubric. Prefers the signed-in user's own profile;
     falls back to the bundled QA-resolver defaults when no profile signal exists."""
     if _profile_has_signal(profile):
-        return _profile_system_prompt(profile)
-    return _legacy_system_prompt()
+        return _profile_system_prompt(profile) + "\n\n" + DATA_NOTICE
+    return _legacy_system_prompt() + "\n\n" + DATA_NOTICE
 
 
 # ── Tier-1 cheap prescore (cascade) ──────────────────────────────────────────
@@ -676,15 +683,23 @@ def _prescore_system_prompt(profile=None) -> str:
     #    anchor (model split the difference at 30, all samples). The rule is
     #    now its own band-level bullet with an exact number, listed WITH the
     #    bands, before the fence line.
+    # v4 (2026-10-28): location left the blocker band. On one profile's queue
+    # the model put 120 jobs our geography check had VERIFIED eligible at
+    # exactly 30 — "Job location is not in the United States" for Los Angeles,
+    # San Mateo and Saint Paul, "no remote option" for a user who relocates —
+    # and 62 more on "no sponsorship mentioned". Location is decided before
+    # this step (RuleFilter + the eligibility verdict), so it is not part of
+    # this score at all; `_overrule_cleared_blocker` backs that up in code.
     bands = (
-        "Score 0-100 how well THIS candidate fits the job.\n"
-        "- 0-30 — hard blocker STATED in the posting: the job is based in a country\n"
-        "  other than {country}; remote restricted to another country/region; explicit\n"
-        "  no-sponsorship when needed; or a different profession entirely.\n"
+        "Score 0-100 how well THIS candidate's skills, target roles and seniority fit\n"
+        "the job. Location and remote policy are NOT part of this score: verified rules\n"
+        "already checked them before this step, and this job passed.\n"
+        "- 0-30 — hard blocker STATED in the posting: a different profession entirely,\n"
+        "  no real overlap with the candidate's stack, or an explicit refusal below.\n"
         "- Jobs based in {country} are never location blockers — onsite, hybrid, or\n"
         "  remote alike.\n"
         "- 40-59 — adjacent: neighboring role or partial stack overlap, or a 2+ level\n"
-        "  seniority jump.\n"
+        "  seniority jump. A gap in years alone is never below 40.\n"
         "- 60+ — genuine role + stack match with no stated blocker.\n"
         '- Posting has no usable description: score exactly 60, reason "no description".\n'
         "When torn between adjacent bands pick the higher — a stronger model re-checks\n"
@@ -701,20 +716,21 @@ def _prescore_system_prompt(profile=None) -> str:
         country = effective_country(profile)
         from app.common.tenant_prefs import needs_sponsorship
         needs_sponsor = needs_sponsorship(profile)
-        sponsor = (" The candidate needs visa sponsorship — score low only if the posting "
-                   "explicitly refuses sponsorship or requires citizenship/clearance. "
-                   'Phrases like "must be authorized to work" are NOT a refusal.'
+        sponsor = (" The candidate needs visa sponsorship — score low only if the posting's "
+                   "own words refuse sponsorship or require citizenship/clearance. A posting "
+                   "that does not mention sponsorship is NOT a refusal, and neither is "
+                   '"must be authorized to work".'
                    if needs_sponsor else "")
         return (
             f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
             f"Candidate targets: {roles}. Core skills: {skills}. ~{yoe} years. "
             f"Wants jobs in {country} (or fully-remote roles open to {country}).{sponsor}\n"
-            + bands.replace("{country}", country)
+            + bands.replace("{country}", country) + "\n" + DATA_NOTICE
         )
     return (
         f"You are a fast first-pass job-fit filter. {_PRESCORE_CONTRACT}\n"
         "Judge fit purely from the resume provided (do not assume facts not in it).\n"
-        + bands.replace("{country}", "the candidate's country")
+        + bands.replace("{country}", "the candidate's country") + "\n" + DATA_NOTICE
     )
 
 
@@ -732,12 +748,25 @@ def _build_prescore_prompt(resume_text: str, job: Job) -> str:
 <job>
 Title: {job.title}
 Company: {job.company}
-{_location_lines(job)}
+{_prescore_location_lines(job)}
 Description:
-{(job.description or '')[:1800]}
+{clean_posting((job.description or '')[:4000])[:1800]}
 </job>
 
 Return the JSON object."""
+
+
+def _prescore_location_lines(job: Job) -> str:
+    """Tier-1's location block: where the job is and, once the geography check
+    has run, that it passed. No "Remote: no" line — Tier-1 does not judge the
+    arrangement, and that line was the cue for "no remote option" on jobs the
+    verdict had already found the user could take."""
+    from app.common.geo import clean_location
+    loc = clean_location(getattr(job, "location", "") or "")
+    line = f"Location: {loc if loc else 'not stated in the posting'}"
+    if getattr(job, "eligibility", None) == "eligible":
+        line += "\nLocation check: passed for this candidate"
+    return line
 
 
 def _parse_prescore(text: str) -> Tuple[float, str]:
@@ -747,6 +776,70 @@ def _parse_prescore(text: str) -> Tuple[float, str]:
     data = json.loads(text)
     score = max(0.0, min(100.0, float(data["score"])))
     return score, str(data.get("reason", "") or "")[:160]
+
+
+# What a Tier-1 reason is about. A reason that names ONLY where the job is or
+# the candidate's work authorization is a claim the deterministic gates have
+# already decided; one that also names the role, stack or level is a fit
+# judgement and stands.
+_T1_GEO_RE = re.compile(
+    r"locat|remote|on-?site|in[- ]office|in person|hybrid|relocat|outside|countr|"
+    r"based in|\bcity\b|region|metro|commut|presence", re.I)
+_T1_AUTH_RE = re.compile(r"sponsor|visa|citizen|clearance|work auth|authoriz|\bopt\b|f-1|h-?1b", re.I)
+_T1_CITIZEN_RE = re.compile(r"citizen|clearance", re.I)
+_T1_FIT_RE = re.compile(
+    r"\b(?:role|title|profession|skills?|stack|experience|years?|senior|junior|seniority|"
+    r"level|lead|manager|java|c#|\.net|ios|android|sales|product|domain|degree|phd|"
+    r"research|unrelated|mismatch|expertise|technical|language|bilingual)\b|c\+\+", re.I)
+#: The posting's own words limiting who can be hired. A Tier-1 work-auth claim
+#: stands only if the description says something like this.
+_AUTH_LIMIT_RE = re.compile(
+    r"\b(?:no|not|unable|cannot|can't|won't|will not|does not|do not|without)\b[^.\n]{0,60}\bsponsor"
+    r"|\bsponsor\w*\b[^.\n]{0,40}\b(?:not|unavailable)\b"
+    r"|\bcitizen(?:s|ship)?\b[^.\n]{0,40}\brequired\b|\brequires?\b[^.\n]{0,30}\bcitizen"
+    r"|\bmust\s+(?:be|hold)\s+(?:an?\s+)?(?:u\.?s\.?\s+)?citizens?\b|\bclearance\b", re.I)
+
+
+def _overrule_cleared_blocker(score: float, reason: str, job: Job, profile) -> Tuple[float, str]:
+    """Advance a low prescore whose only reason is a question the gates settled.
+
+    Location and work authorization are decided BEFORE Tier-1 — the geography
+    verdict (`Job.eligibility`) and RuleFilter's refusal check — and the cheap
+    model invents both: on one profile 120 verified-eligible US jobs were
+    scored 30 "not in the United States" (Los Angeles, San Mateo, Saint Paul)
+    and 62 more on "no sponsorship mentioned" for postings that never refused.
+    Such a job goes to the final scorer at the gate, like an unknown prescore.
+    A claim stands when it is about fit, when the job has no location verdict,
+    when it names a foreign place the posting names too ("this role is located
+    in Wiesbaden, Germany" under a Washington, D.C. location field), or when
+    the posting's own words limit sponsorship/citizenship/clearance.
+    """
+    from app.matching.finals_budget import normal_gate
+    gate = float(normal_gate())
+    r = reason or ""
+    if score >= gate or _T1_FIT_RE.search(r):
+        return score, reason
+    geo, auth = bool(_T1_GEO_RE.search(r)), bool(_T1_AUTH_RE.search(r))
+    if not (geo or auth):
+        return score, reason
+    if geo and getattr(job, "eligibility", None) != "eligible":
+        return score, reason
+    if geo:
+        from app.common.geo import foreign_places_named
+        from app.common.tenant_prefs import effective_country
+        home = effective_country(profile)
+        named = foreign_places_named(r, home)
+        if named and named & foreign_places_named(job.description or "", home):
+            return score, reason
+    if auth:
+        from app.common.tenant_prefs import needs_sponsorship
+        irrelevant = not _T1_CITIZEN_RE.search(r) and not needs_sponsorship(profile)
+        flat = " ".join(re.sub(r"<[^>]+>", " ", html.unescape(job.description or "")).split())
+        if not irrelevant and _AUTH_LIMIT_RE.search(flat):
+            return score, reason
+    log.info("Tier-1 claim overruled (already verified) for job %s: %s",
+             getattr(job, "id", "?"), r[:80])
+    return gate, f"{r} — overruled: location/work authorization already verified"
 
 
 def _sponsor_note(job: Job, profile) -> str:
@@ -886,7 +979,7 @@ Company: {job.company}
 {_location_lines(job)}
 {_sponsor_note(job, profile)}
 Description:
-{_jd_slice(job.description)}
+{_jd_slice(clean_posting(job.description or ''))}
 </job>
 
 Return the JSON object."""
@@ -939,22 +1032,58 @@ def tidy_years_claims(text: str) -> str:
 #: The contract's "a factor <=15 from an explicit blocker caps the overall at
 #: 25" — the same number card_match.BLOCKER_OVERALL_CAP enforces.
 BLOCKER_OVERALL_CAP = 25.0
+#: A posting that states 2+ more years than the resume shows, or is an entry
+#: role for someone with 4+ years: a real job, never a match for THIS resume.
+#: Under the shortlist bar, so it stays in All Jobs and off the board.
+STRETCH_OVERALL_CAP = 65.0
+
+_ENTRY_TITLE_RE = re.compile(
+    r"\b(?:junior|jr\.?|entry[- ]level|new grad(?:uate)?|graduate|apprentice)\b"
+    # "Associate Software Engineer" — never "Senior Associate" or "Associate
+    # Principal / Director / Staff …", which are senior levels at some firms.
+    r"|(?<!senior )(?<!sr\. )(?<!sr )\bassociate\s+"
+    r"(?!(?:principal|director|manager|partner|vice|staff|architect|consultant|lead)\b)"
+    r"(?:\w+\s+){0,2}(?:engineer|developer)\b"
+    # "Software Engineer I" / "… 1" — not "Engineer I/II", which takes mid-level too.
+    r"|\b(?:engineer|developer)\s+(?:i|1)\b(?!i)(?!\s*[/-]\s*(?:ii|2)\b)")
+#: "0–2 years", "0-1 year" — a range that STARTS at zero is a role for someone
+#: starting out. "1-2 years" or "2+ years" is a minimum a 4-year engineer
+#: meets; employers do not reject on it, so neither do we.
+_ENTRY_RANGE_RE = re.compile(r"\b0\s*(?:[-–—]|to)\s*[12]\s*\+?\s*(?:years?|yrs?)\b", re.I)
+_ENTRY_LEVEL_TEXT_RE = re.compile(
+    r"\b(?:as an? |this is an? )(?:software |ai |ml )?(?:engineer|developer) i\b(?!i)"
+    r"|\bentry[- ]level (?:role|position)\b|\bnew grad(?:uate)? (?:role|position)\b", re.I)
+
+
+def _entry_level(title: str, description: str) -> bool:
+    """The posting itself says it is for someone starting out."""
+    t = (title or "").lower()
+    if _ENTRY_TITLE_RE.search(t):
+        return True
+    return bool(_ENTRY_RANGE_RE.search(description or "") or _ENTRY_LEVEL_TEXT_RE.search(description or ""))
 
 
 def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
-                           description: str = "") -> Tuple[float, str, List[str], dict]:
+                           description: str = "", title: str = "") -> Tuple[float, str, List[str], dict]:
     """Hold a parsed verdict to facts we already hold, before it is stored:
     the work_auth factor to the user's visa status (work_auth.py) and years
     figures to what the resume can show. Never raises.
 
-    The overall score changes in ONE case: the posting itself refuses this
-    user (`find_refusal`: no sponsorship, U.S. citizens only, a required
-    security clearance) and the user needs sponsorship. Then it is capped at
-    BLOCKER_OVERALL_CAP, as the JSON contract promised and the model did not
-    deliver: on 2026-10-28 a posting requiring "U.S. Citizenship with
-    eligibility for DoD Secret clearance" came back work_auth 10, overall 72,
-    and reached an F-1 OPT user's board. The model's own judgement never
-    causes the cap — only the posting's words do."""
+    The overall score changes only on the POSTING's own words:
+      * it refuses this user (`find_refusal`: no sponsorship, U.S. citizens
+        only, a required security clearance) and the user needs sponsorship →
+        BLOCKER_OVERALL_CAP. On 2026-10-28 a posting requiring "U.S.
+        Citizenship with eligibility for DoD Secret clearance" came back
+        work_auth 10, overall 72, and reached an F-1 OPT user's board;
+      * it states 2+ more years than the resume shows ("6+ years", "minimum
+        of 7 years"), read as written by `minimum_years_required` →
+        STRETCH_OVERALL_CAP. The rubric's own band calls that a stretch, yet
+        "7+ years, advanced PHP" for a 4-year Python developer came back 72;
+      * it is an entry-level role (0–2 years, Junior, Associate, Engineer I)
+        and the resume shows 4+ years → STRETCH_OVERALL_CAP too. "Junior AI
+        Engineer, 0–2 years" came back 92, "Excellent match".
+    Each cap keeps the job (All Jobs still shows it) and says why; none of
+    them follows from the model's own judgement."""
     score, reason, concerns, breakdown = result
     try:
         reason = tidy_years_claims(reason)
@@ -975,6 +1104,19 @@ def reconcile_with_profile(result: Tuple[float, str, List[str], dict], profile,
             if refusal is not None and score > BLOCKER_OVERALL_CAP and needs_sponsorship(profile):
                 score = BLOCKER_OVERALL_CAP
                 concerns = [f'Posting rules this out: "{refusal.sentence[:90]}"'] + list(concerns)[:2]
+            cand = int(getattr(profile, "years_experience", 0) or 0)
+            if cand > 0 and score > STRETCH_OVERALL_CAP:
+                from app.matching.filters.rule_filter import _degree_level
+                from app.tailoring.requirements import minimum_years_required
+                req = minimum_years_required(
+                    description, degree_level=_degree_level(getattr(profile, "degree", "") or ""))
+                if req and req[0] - cand >= 2:
+                    score = STRETCH_OVERALL_CAP
+                    concerns = ([f"Posting asks {req[0]:g}+ years; resume shows about {cand}"]
+                                + list(concerns)[:2])
+            if cand >= 4 and score > STRETCH_OVERALL_CAP and _entry_level(title, description):
+                score = STRETCH_OVERALL_CAP
+                concerns = ([f"Entry-level role; below your ~{cand} years"] + list(concerns)[:2])
         elif profile is not None and isinstance(breakdown, dict) \
                 and isinstance(breakdown.get("work_auth"), dict):
             # No posting text = not known, which is never "silent".
@@ -1360,7 +1502,8 @@ class Reranker:
             try:
                 call = _as_call(call_fn(prompt), self._prescore_model_for(name))
                 _note_provider_ok(name)
-                return _parse_prescore(call.text)
+                score, reason = _parse_prescore(call.text)
+                return _overrule_cleared_blocker(score, reason, job, self._profile)
             except Exception as e:
                 if _is_exhaustion_error(str(e).lower()):
                     _mark_provider_down(name, error=str(e))
@@ -1505,7 +1648,8 @@ class Reranker:
                     # (visa status) before they are stored; the score changes
                     # only when the posting itself refuses this user.
                     result = reconcile_with_profile(result, self._profile,
-                                                    getattr(job, "description", "") or "")
+                                                    getattr(job, "description", "") or "",
+                                                    title=getattr(job, "title", "") or "")
                     # The verdict feeds the adaptive budget's marginal-yield
                     # test. Recorded AFTER the parse (a score is needed) but the
                     # spend above is recorded BEFORE it — an unparseable

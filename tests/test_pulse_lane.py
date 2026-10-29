@@ -170,7 +170,7 @@ def test_fast_path_scores_shortlists_and_alerts(monkeypatch):
         def has_prescore_backend(self):
             return False
         def score(self, resume, job):
-            return 74.0, "Strong fit", [], {}
+            return 80.0, "Strong fit", [], {}
 
     monkeypatch.setattr("app.matching.reranker.Reranker", FakeReranker)
     monkeypatch.setattr("app.matching.pipeline._load_resume", lambda user_id=None: "resume")
@@ -188,7 +188,7 @@ def test_fast_path_scores_shortlists_and_alerts(monkeypatch):
 
     with get_session() as session:
         job = session.get(Job, jid)
-        assert job.rerank_score == 74.0
+        assert job.rerank_score == 80.0
         apps = session.exec(select(Application).where(Application.job_id == jid)).all()
         assert len(apps) == 1 and apps[0].user_id == "u_ml"
         notes = session.exec(select(UserNotification)).all()

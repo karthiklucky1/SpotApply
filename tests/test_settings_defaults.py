@@ -79,15 +79,17 @@ def test_user_job_retention_outlives_the_shortlist_window():
 # ── the score thresholds ─────────────────────────────────────────────────────
 
 def test_shortlist_thresholds_are_the_calibrated_values():
-    """The QUALIFIED bar. 35 -> 60 -> 70.
+    """The QUALIFIED bar. 35 -> 60 -> 70 -> 75.
 
     With a handful of users there is no sample to calibrate a finer cut on, so
     the bar is set where the founder is willing to stand behind every row on the
     board rather than where a distribution says the volume is. Lowering it to
     fill a thin board is the one change this test exists to make deliberate.
+    75 (2026-10-28): the scoring rubric's 60-74 band is "a visible stretch", and
+    the founder asked for perfect matches only — no misleads on the board.
     """
-    assert settings.shortlist_score_threshold == 70
-    assert settings.shortlist_strong_threshold == 70
+    assert settings.shortlist_score_threshold == 75
+    assert settings.shortlist_strong_threshold == 75
 
 
 def test_the_tier_one_gate_matches_the_banded_prompt():

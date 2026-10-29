@@ -4,7 +4,7 @@ Running out of credits used to fill the board with weak matches, because the
 local cross-encoder's score cleared the same 60 bar a Claude final does. The
 rules under test:
 
-* a LOCAL score must clear the degraded bar (75), a real one still clears 60;
+* a LOCAL score must clear the degraded bar (80), a real one the normal bar (75);
 * the recovery recheck looks back over the OUTAGE's own duration — 2 hours out
   means 2 hours of jobs — capped at 48h and 20 jobs per user;
 * the outage window closes exactly once, so the recheck can never run twice.

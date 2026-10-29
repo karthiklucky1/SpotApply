@@ -67,3 +67,16 @@ def test_dashboard_css_covers_js_built_classes():
     dash = (ROOT / "app" / "templates" / "dashboard.html").read_text()
     for phantom in ("slate-850", "slate-750", "slate-350"):
         assert phantom not in dash, f"nonexistent Tailwind class {phantom} reintroduced"
+
+
+def test_dashboard_css_covers_the_board_partials():
+    """The job detail's action row lives in _board_macros.html. While only
+    dashboard.html was scanned, its `lg:ml-auto` (actions to the right of
+    Priority / Hiring Intent) and 19 other partial-only classes never compiled,
+    and the row ran together in production (2026-10-28)."""
+    config = (ROOT / "tailwind.dashboard.config.js").read_text()
+    for partial in ("_board_macros.html", "_board_pane.html"):
+        assert partial in config, f"{partial} is rendered by the dashboard but not scanned"
+    css = (ROOT / "app" / "static" / "tailwind.css").read_text()
+    for cls in (r".lg\:ml-auto", ".gap-x-4", ".pb-3\\.5"):
+        assert cls in css, f"{cls} missing — run `npm run build`"

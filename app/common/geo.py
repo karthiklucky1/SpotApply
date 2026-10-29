@@ -89,7 +89,11 @@ US_STATE_LABELS = {code: name.title() for name, code in _US_STATE_NAME_TO_CODE.i
                                    "washington, d.c")}
 US_STATE_LABELS["dc"] = "Washington, DC"
 # Longest names first so "west virginia" is not read as "virginia".
-_US_STATE_NAME_RES = [(re.compile(rf"(?<![a-z]){re.escape(n)}(?![a-z])"), c)
+# The one foreign place each of two names collides with is excluded:
+# "Mexicali, Baja California" is Mexico, "Angers, Maine-et-Loire" is France.
+_STATE_NAME_GUARDS = {"california": (r"(?<!baja )", ""), "maine": ("", r"(?!-)")}
+_US_STATE_NAME_RES = [(re.compile(rf"(?<![a-z]){_STATE_NAME_GUARDS.get(n, ('', ''))[0]}"
+                                  rf"{re.escape(n)}(?![a-z]){_STATE_NAME_GUARDS.get(n, ('', ''))[1]}"), c)
                       for n, c in sorted(_US_STATE_NAME_TO_CODE.items(),
                                          key=lambda kv: -len(kv[0]))]
 
@@ -353,7 +357,14 @@ def _compile(tokens) -> list:
     return [re.compile(rf"(?<![a-z]){re.escape(t.strip())}(?![a-z])") for t in tokens]
 
 
-_US_RES = _compile(_US_SIGNALS)
+_US_RES = _compile(_US_SIGNALS) + [
+    # The two state names left out of _US_STATE_NAMES above, with their one
+    # foreign collision excluded instead of the whole name: "Riverside,
+    # California" and "Portland, Maine" are US; Baja California and
+    # Maine-et-Loire are not.
+    re.compile(r"(?<![a-z])(?<!baja )california(?![a-z])"),
+    re.compile(r"(?<![a-z])maine(?![a-z-])"),
+]
 _NAME_RES = {c: _compile(toks) for c, toks in _COUNTRY_NAMES.items()}
 _CITY_RES = {c: _compile(toks) for c, toks in _COUNTRY_CITIES.items()}
 
@@ -550,6 +561,58 @@ def _match_country(loc: str, table: dict) -> str:
 _SITE_SPLIT = re.compile(r"\s*(?:·|\||;|/|\n)\s*")
 
 
+def _trailing_iso_country(loc: str) -> str:
+    """The country a one-site "City, Region, XX" address ends in, or ''.
+
+    Structured ATS and JSON-LD addresses put the ISO-2 country LAST, after a
+    region ("Heusweiler, SAARLAND, DE", "San Ġiljan, Europe, MT"). Read as a US
+    state code that was Delaware and Montana, and 191 German postings resolved
+    to [germany, united states] — eligible for every US user (2026-10-28). Only
+    with a third part that is not itself a US state: "Dover, DE" stays
+    Delaware, "Kansas City, Missouri, MO" stays Missouri.
+    """
+    if re.search(r"[·|;/\n]", loc):
+        return ""                         # several sites: each is read on its own
+    parts = [p.strip() for p in loc.split(",") if p.strip()]
+    if len(parts) < 3:
+        return ""
+    code, middle = parts[-1], parts[-2]
+    if not re.fullmatch(r"[a-z]{2}", code) or code == "us" or code not in ISO2_COUNTRIES:
+        return ""
+    if middle in _US_STATE_CODES or any(rx.search(f" {middle} ") for rx, _c in _US_STATE_NAME_RES):
+        return ""
+    return ISO2_COUNTRIES[code]
+
+
+def site_code_names_country(site: str, country: str) -> bool:
+    """Does ``site`` end in ", XX" where XX is ``country``'s own ISO-2 code?
+    "Darmstadt, DE" under a structured country of Germany is Germany's code,
+    not Delaware's."""
+    m = re.search(r",\s*([A-Za-z]{2})\s*$", site or "")
+    return bool(m) and ISO2_COUNTRIES.get(m.group(1).lower()) == norm_country(country)
+
+
+#: A US state code as the FIRST or LAST token of one site, as ATS location
+#: fields write it without the ", XX" comma: "TX - Fort Worth", "OH-Twinsburg-…",
+#: "WI, Minocqua", "Dallas TX", "Orlando - FL". Upper case only — read from the
+#: original string, so the French "de"/"la" or a lowercase word never counts.
+#: 1 in 25 random postings (2026-10-28) was held "no location" for this alone.
+_LEADING_STATE_RE = re.compile(r"^\s*([A-Z]{2})\s*(?:[-–,]|\s-\s)\s*[A-Za-z]")
+_TRAILING_STATE_RE = re.compile(r"(?:^|[\s,(\-–])([A-Z]{2})\)?\s*$")
+
+
+def _loose_us_state(location: str) -> str:
+    """The state code a single-site location leads or ends with, or ''."""
+    s = (location or "").strip()
+    if not s or re.search(r"[·|;/\n]", s):
+        return ""                         # several sites: each is read on its own
+    for rx in (_LEADING_STATE_RE, _TRAILING_STATE_RE):
+        m = rx.search(s)
+        if m and m.group(1).lower() in _US_STATE_CODES:
+            return m.group(1).lower()
+    return ""
+
+
 def detect_country(location: str) -> str:
     """Best-effort country guess from a free-text location. '' when unknown.
 
@@ -574,6 +637,10 @@ def detect_country(location: str) -> str:
     if named:
         return named
 
+    iso = _trailing_iso_country(loc)
+    if iso:
+        return iso
+
     city = _match_country(loc, _CITY_RES)
 
     state_codes = {c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES}
@@ -582,6 +649,8 @@ def detect_country(location: str) -> str:
         # country's ISO-2 ("Toronto, CA").
         if not (city and _ISO2_US_STATE_COLLISIONS.get(city) in state_codes):
             return "united states"
+    if not city and _loose_us_state(location):
+        return "united states"            # never over a known foreign city ("IN - Bangalore")
 
     return city
 
@@ -602,9 +671,14 @@ def stated_country(location: str) -> str:
     named = _match_country(loc, _NAME_RES)
     if named:
         return named
+    iso = _trailing_iso_country(loc)
+    if iso:
+        return iso
     city = _match_country(loc, _CITY_RES)
     state_codes = {c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES}
     if state_codes and not (city and _ISO2_US_STATE_COLLISIONS.get(city) in state_codes):
+        return "united states"
+    if not city and _loose_us_state(location):
         return "united states"
     return ""
 
@@ -625,11 +699,16 @@ def detect_us_state(text: str) -> str:
     for rx, code in _US_STATE_NAME_RES:
         if rx.search(loc):
             return code
+    if _trailing_iso_country(loc):
+        return ""                 # "Zwickau, SAXONY, DE" ends in Germany, not Delaware
     codes = [c for c in re.findall(r",\s*([a-z]{2})\b", loc) if c in _US_STATE_CODES]
     if codes:
         city = _match_country(loc, _CITY_RES)
         if not (city and _ISO2_US_STATE_COLLISIONS.get(city) in codes):
             return codes[-1]
+    loose = _loose_us_state(text)
+    if loose and not _match_country(loc, _CITY_RES):
+        return loose
     return ""
 
 
@@ -689,6 +768,24 @@ def country_named_in(text: str, country: str) -> bool:
         if any(r.search(loc) for r in table.get(country, ())):
             return True
     return False
+
+
+_MEA_RE = re.compile(r"(?<![a-z])mea(?![a-z])")
+
+
+def foreign_places_named(text: str, home_country: str) -> set:
+    """Countries (canonical names, by name or city) and regions ('emea',
+    'apac', …) that ``text`` names, other than ``home_country``. Used to
+    check a model's location claim against the posting: "located in Germany"
+    stands only if the posting itself names Germany."""
+    home = norm_country(home_country)
+    loc = " " + (text or "").lower() + " "
+    out = {c for table in (_NAME_RES, _CITY_RES) for c, res in table.items()
+           if c != home and any(r.search(loc) for r in res)}
+    out |= {region for region in _REGION_ORDER if any(r.search(loc) for r in _REGION_RES[region])}
+    if _MEA_RE.search(loc):
+        out.add("emea")
+    return out
 
 
 def location_allowed(location: str, remote: bool, preferred_country: str, remote_ok: bool) -> bool:

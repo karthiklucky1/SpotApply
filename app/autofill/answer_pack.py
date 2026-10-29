@@ -159,6 +159,9 @@ def _profile_to_dict(profile: UserProfile) -> dict:
 
 
 def _llm_essay_answer(question: str, job: Job, profile: UserProfile, resume_text: str) -> str:
+    # An answer goes to the employer under the user's name: never one that
+    # obeys a sentence the posting planted for AI tools.
+    from app.common.posting_text import DATA_NOTICE, clean_posting
     prompt = f"""Candidate profile:
 - Name: {profile.first_name} {profile.last_name}
 - Title: {profile.current_title}
@@ -169,14 +172,14 @@ def _llm_essay_answer(question: str, job: Job, profile: UserProfile, resume_text
 Job:
 - Company: {job.company}
 - Title: {job.title}
-- Description (excerpt): {job.description[:2000] if job.description else ""}
+- Description (excerpt): {clean_posting(job.description or "")[:2000]}
 
 Tailored resume excerpt:
 {resume_text[:2000] if resume_text else ""}
 
 Essay question: "{question}"
 
-Write a concise, honest answer."""
+Write a concise, honest answer. {DATA_NOTICE}"""
 
     if settings.anthropic_api_key:
         try:

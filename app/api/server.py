@@ -2576,6 +2576,23 @@ async def upload_resume(request: Request, background_tasks: BackgroundTasks):
             detail=f"Resume too large — max {_MAX_RESUME_BYTES // (1024 * 1024)} MB.")
     content_type = file.content_type
 
+    if ext in ("pdf", "docx"):
+        # A picture of a resume (scan, photo, design export) reads back as a
+        # few words. Refuse it HERE, before it replaces a readable resume and
+        # every score and tailor is computed against nothing.
+        def _readability() -> str | None:
+            from app.matching.pipeline import resume_text_from_bytes, unreadable_resume_reason
+            try:
+                return unreadable_resume_reason(resume_text_from_bytes(filename or f"r.{ext}", content))
+            except Exception as e:
+                log.info("resume upload for %s could not be parsed: %s", uid, e)
+                return ("We could not open this file. Save it again as a PDF from Word "
+                        "or Google Docs, or as a DOCX, and upload that.")
+        import anyio
+        _unreadable = await anyio.to_thread.run_sync(_readability)
+        if _unreadable:
+            raise HTTPException(status_code=422, detail=_unreadable)
+
     def _store() -> dict:
         # Sync DB delete + Storage HTTP upload — runs in the threadpool so the
         # event loop keeps serving other users (was inline on the loop).
@@ -10491,7 +10508,8 @@ def _tailoring_rejected(application_id: int) -> tuple[bool, str]:
     return False, ""
 
 
-def _notify_tailor_rejected(uid: str, application_id: int, reason: str) -> None:
+def _notify_tailor_rejected(uid: str, application_id: int, reason: str,
+                            *, lead: str | None = None) -> None:
     """Tell the user we refused to hand over the document, and why.
 
     Distinct from _notify_tailor_failed on purpose: "the provider was down" and
@@ -10505,9 +10523,9 @@ def _notify_tailor_rejected(uid: str, application_id: int, reason: str) -> None:
             session.add(UserNotification(
                 user_id=uid or "local",
                 title="Tailoring blocked — no credit used",
-                message=("We stopped this resume before sending it to you because "
-                         "it did not pass verification. Your daily credit was NOT "
-                         "used. " + detail),
+                message=((lead or "We stopped this resume before sending it to you because "
+                          "it did not pass verification.")
+                         + " Your daily credit was NOT used. " + detail),
                 type="tailor_rejected",
                 link=f"/dashboard?app={application_id}" if application_id else "/dashboard",
             ))
@@ -10571,8 +10589,15 @@ def _tailor_and_settle(application_id: int, uid: str, instruction: str | None = 
 
 def _tailor_and_settle_owned(application_id: int, uid: str, instruction: str | None) -> bool:
     from app.tailoring.tailor import tailor_for_application
+    from app.matching.pipeline import UnreadableResumeError
     try:
         tailor_for_application(application_id, instruction)
+    except UnreadableResumeError as e:
+        # Not an outage, and not something a retry fixes: say what to upload.
+        log.info("tailor refused for app %s (user %s): unreadable resume", application_id, uid)
+        _notify_tailor_rejected(uid, application_id, str(e),
+                                lead="Nothing was generated: we could not read your resume.")
+        return False
     except Exception as e:
         log.warning("tailor failed for app %s (user %s): %s", application_id, uid, e)
         _notify_tailor_failed(uid, application_id)

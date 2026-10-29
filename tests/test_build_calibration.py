@@ -65,8 +65,9 @@ def test_full_loop_fit_certify_route(tmp_path, monkeypatch):
     # qualify (llm ~ U(5,95): 39% clear 60, only 28% clear 70), and at 1500 rows
     # the holdout ran out of certifiable slice at 70. The fit refusing to
     # certify is the correct fail-safe, but it left the routing assertions below
-    # measuring the threshold instead of the router.
-    _seed_shadow(3000)
+    # measuring the threshold instead of the router. At the 75 bar (2026-10-28)
+    # only ~22% clear it: 3000 and 4500 rows ran out again, 6000 certify.
+    _seed_shadow(6000)
     rc, out = _run_build(tmp_path, monkeypatch)
     assert rc == 0 and out.exists()
 

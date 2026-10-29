@@ -1,40 +1,46 @@
-"""Unit tests for pipeline door filter integration."""
-import pytest
-from unittest.mock import patch, MagicMock
-from sqlmodel import select
-from app.db.init_db import get_session
-from app.db.models import Job, JobSource, Application, ApplicationStatus, UserProfile
-from app.matching.pipeline import run_matching
+"""The matching lane does not hard-filter on the door-match verdict (2026-10-28).
 
-# Needs the ML stack (torch via sentence-transformers). It is a real production
-# dependency (requirements.txt) but absent in lightweight envs — skip rather than
-# fail so an environment gap never masquerades as a regression.
-pytest.importorskip("torch", reason="ML stack not installed in this environment")
+`classify_door` is advisory by its own contract ("it does NOT hide or filter
+jobs"), and with JD text alone its axis reader called a posting "enterprise"
+for "dental insurance" in its benefits and "elite-outlier" for a salary over
+$200k. As a gate it stamped "Applied AI Engineer" and "Full Stack Developer
+(Python, React.js)" Wrong Door for an AI developer — in this lane only, so a
+job's fate depended on which lane found it. Location, years and seniority are
+decided by the eligibility verdict, RuleFilter and the scorers.
+"""
+import inspect
+
+import pytest
+from unittest.mock import patch
+from sqlmodel import select
+
+from app.db.init_db import get_session
+from app.db.models import Application, Job, JobSource, UserProfile
+from app.matching import pipeline
+
+
+def test_the_matching_lane_never_asks_the_door_verdict():
+    src = inspect.getsource(pipeline.run_matching)
+    assert "classify_door(" not in src and 'f"Wrong Door:' not in src
 
 
 def _seed():
     with get_session() as s:
-        # Clean old test runs
         for j in s.exec(select(Job).where(Job.external_id.like("pipe-test-%"))).all():
             for a in s.exec(select(Application).where(Application.job_id == j.id)).all():
                 s.delete(a)
             s.delete(j)
-        # Create user profile if none exists
         prof = s.exec(select(UserProfile).where(UserProfile.user_id == "local")).first()
         if not prof:
-            prof = UserProfile(user_id="local", first_name="Karthik", remote_ok=True, open_to_relocation=False, location="Cincinnati, OH")
-            s.add(prof)
-        else:
-            prof.remote_ok = True
-            prof.open_to_relocation = False
-            prof.location = "Cincinnati, OH"
-            s.add(prof)
-        
-        # This job is strictly on-site in Miami, FL (mismatch since candidate is remote-only in Cincinnati, OH)
+            prof = UserProfile(user_id="local", first_name="Karthik", remote_ok=True,
+                               open_to_relocation=False, location="Cincinnati, OH")
+        s.add(prof)
         j = Job(source=JobSource.MANUAL, external_id="pipe-test-1",
-                company="Miami Corp", title="AI Engineer",
-                url="http://x", description="On-site Miami, FL. 3+ years experience.")
-        s.add(j); s.commit(); s.refresh(j)
+                company="Acme Insurance", title="Applied AI Engineer", url="http://x",
+                description="Python, FastAPI, LangChain. Benefits include dental insurance.")
+        s.add(j)
+        s.commit()
+        s.refresh(j)
         return j.id
 
 
@@ -47,24 +53,16 @@ def _cleanup():
         s.commit()
 
 
-def test_pipeline_door_filter_skips_wrong_door():
+def test_an_insurance_benefit_no_longer_stamps_wrong_door():
+    pytest.importorskip("torch", reason="ML stack not installed in this environment")
     job_id = _seed()
     try:
-        # Mock Matcher.search_for_resume to return our seeded job with a similarity score of 0.8
         with patch("app.matching.matcher.Matcher.search_for_resume", return_value=[(job_id, 0.8)]), \
-             patch("app.matching.matcher.Matcher.rebuild") as mock_rebuild, \
+             patch("app.matching.matcher.Matcher.rebuild"), \
              patch("app.matching.pipeline._load_resume", return_value="Resume text"):
-             
-            shortlisted = run_matching(user_id="local")
-            
-            # Since the job is strictly on-site in Miami, FL, it should be filtered out by the door match check
-            # (Wrong Door) and not shortlisted!
-            assert job_id not in shortlisted
-            
-            # Check that the job's score in the DB is set to 20.0 and reasoning contains "Wrong Door"
-            with get_session() as s:
-                job = s.get(Job, job_id)
-                assert job.rerank_score == 20.0
-                assert "Wrong Door" in job.rerank_reasoning
+            pipeline.run_matching(user_id="local")
+        with get_session() as s:
+            job = s.get(Job, job_id)
+            assert not (job.rerank_reasoning or "").startswith("Wrong Door")
     finally:
         _cleanup()

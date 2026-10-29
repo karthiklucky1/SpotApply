@@ -36,6 +36,7 @@ Nothing in this module calls an LLM or the network.
 """
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -59,7 +60,7 @@ _REQ_RE = re.compile(
     rf"(?P<qty>{_QTY})\s*"
     rf"(?:\(\s*(?P<paren>\d{{1,2}})\s*\))?\s*"
     rf"(?P<plus>\+)?\s*"
-    rf"(?:(?:[-–—]|\bto\b)\s*(?P<qty2>{_QTY})\s*(?P<plus2>\+)?\s*)?"
+    rf"(?:(?:[-–—]|\bto\b)\s*(?P<qty2>{_QTY})\s*(?:\(\s*\d{{1,2}}\s*\))?\s*(?P<plus2>\+)?\s*)?"
     rf"(?P<unit>years?|yrs?\.?|months?|mos?\.?)\b",
     re.I,
 )
@@ -188,6 +189,8 @@ _HEADING_RE = re.compile(
 _REQUIRED_HEADING_RE = re.compile(
     r"\b(?:minimum|basic|required|requirements|must[- ]haves?|essential|"
     r"what you(?:'ll)? need|qualifications)\b", re.I)
+_ITEM_QUALIFIER_RE = re.compile(
+    r"\([^)]*\b(?:preferred|required|a plus|optional)\b[^)]*\)\s*:?\s*$", re.I)
 
 
 def _is_heading(line: str) -> bool:
@@ -200,6 +203,8 @@ def _is_heading(line: str) -> bool:
     s = (line or "").strip()
     if not s or _REQ_RE.search(s):
         return False
+    if _ITEM_QUALIFIER_RE.search(s):
+        return False        # "CISSP (preferred)" is a list item, not a section
     if s.startswith("#") or s.endswith(":"):
         return True
     return bool(_HEADING_RE.match(s)) and len(s.split()) <= 6
@@ -286,6 +291,248 @@ def parse_requirements(jd_text: str, *, limit: int = 12) -> List[ExperienceRequi
             if len(out) >= limit:
                 return out
     return out
+
+
+# ── the years a posting will not go below (the matching pre-filter) ──────────
+
+_DEGREE_WORDS = (r"bachelor['’]?s?|b\.?s\.?c?|b\.a\.|master['’]?s?|m\.?s\.?c?|mba|ph\.?\s?d|"
+                 r"doctora(?:te|l)|advanced degree|graduate degree|associate['’]?s?\s+degree|"
+                 r"high school(?:\s+diploma)?|ged")
+#: A rung of a degree ladder: "MS with 6+ years", "8 years with a bachelor's",
+#: "or 6 years and an advanced degree".
+_RUNG_BEFORE_RE = re.compile(rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?[^.;\n\d]{{0,20}}$", re.I)
+_RUNG_AFTER_RE = re.compile(
+    rf"^[^.;\n\d]{{0,45}}?\b(?:with|and|plus|for)\s+(?:an?\s+|the\s+)?(?P<deg>{_DEGREE_WORDS})", re.I)
+#: The no-degree path, which a candidate holding a degree is not on.
+_NO_DEGREE_PATH_RE = re.compile(
+    r"\bin lieu of (?:an?\s+|the\s+)?(?:[\w'’-]+\s+){0,2}(?:degree|education)\b|"
+    r"\bsubstitut\w*\s+for\s+(?:an?\s+|the\s+)?(?:[\w'’-]+\s+){0,2}(?:degree|education)\b|"
+    r"\bwithout an?\s+(?:[\w'’-]+\s+)?degree\b|\bno degree\b|\beducation and/or\b|"
+    r"\bor\s+(?:an?\s+)?additional\s+\w+\s+(?:\(\d+\)\s+)?years?\b", re.I)
+# Not "or any combination of education and experience": that is the degree's
+# equivalence clause, and it took the 15 from "a bachelor's and a minimum of
+# 15 years …, or any combination of education and experience".
+#: Every kind of line end — postings separate lines with \r and U+2028 too.
+_LINE_BREAK_RE = re.compile(r"[\n\r\u2028\u2029\x85\x0b\x0c]")
+#: "… related field experience preferred." — the whole clause is a preference,
+#: unless a "with …" sub-clause owns it ("4–6 years in analytics, with
+#: regulated industry experience preferred").
+_TAIL_PREFERENCE_RE = re.compile(
+    r"\b(?:preferred|desired|a plus|nice[- ]to[- ]have|a bonus)\W*$", re.I)
+#: The employer's own history: "Curtiss-Wright has over 50 years of experience".
+_COMPANY_HISTORY_RE = re.compile(
+    r"(?:\bwe(?: have|'ve)(?: been)?(?:\s+\w+){0,2}|\b(?:has|have) been(?:\s+\w+){0,2}"
+    r"|(?<!candidate )(?<!applicant )(?<!individual )(?<!person )\bhas\s+"
+    r"(?:over|more than|nearly|almost|close to)"
+    r"|\bfor\s+(?:over|more than|nearly|almost|close to)"
+    r"|\b(?:the\s+)?(?:last|past))\s*$", re.I)
+#: "…, or 11 years", "or BS with 8+ years", "; or 6 years and an advanced
+#: degree": only connective and degree words between the "or" and the number.
+#: "…engineering, platform, or technology delivery teams. 3+ years" is a list.
+_OR_ALTERNATIVE_RE = re.compile(
+    rf"\bor\b(?:\s+(?:a|an|the|with|and|of|at|least|minimum|equivalent|degree|"
+    rf"{_DEGREE_WORDS}))*\s*$", re.I)
+_EXPERIENCE_NEAR_RE = re.compile(r"experien", re.I)
+#: A bullet that IS the requirement: "8+ years in SRE, DevOps, or infrastructure"
+#: — the years quantity itself opens the clause.
+_LEADS_WITH_YEARS_RE = re.compile(
+    r"^\W*(?:(?:typically\s+)?(?:requires?|minimum(?:\s+of)?|at\s+least|min\.?)\s*)?$", re.I)
+#: Years that are a benefit or a tenure, not experience: "Paid Sabbatical after
+#: 10 years of service", "every 5 years thereafter".
+_NOT_EXPERIENCE_BEFORE_RE = re.compile(r"\b(?:after|every|within|for the first)\s*$", re.I)
+_NOT_EXPERIENCE_AFTER_RE = re.compile(r"^\s*(?:of\s+(?:service|age|tenure)|old\b|thereafter\b|warranty\b)", re.I)
+_ALT_WINDOW = 160
+#: Nothing asks for more; a bigger number is the employer's age.
+_MAX_REQUIRED_YEARS = 25
+
+
+_BLOCK_TAG_RE = re.compile(r"<\s*/?\s*(?:p|li|ul|ol|h[1-6]|div|br|tr|section)\b[^>]*>", re.I)
+
+
+def _plain(jd_text: str) -> str:
+    """Posting text with block tags as line breaks, so a "Preferred
+    Qualifications" <h3> above a <ul> is a heading and each <li> a line —
+    most ATS descriptions arrive as one line of HTML."""
+    text = _BLOCK_TAG_RE.sub("\n", jd_text or "")
+    return html.unescape(re.sub(r"<[^>]+>", " ", text))
+
+
+def stated_clauses(jd_text: str) -> List[Tuple[str, Optional[bool]]]:
+    """The posting's clauses in order, each with the preference its heading
+    gives it (True required, False preferred, None unstated) — see `_clauses`."""
+    return _clauses(_plain(jd_text))
+
+
+def _rung_level(word: str) -> Optional[int]:
+    w = (word or "").lower().replace(".", "").replace(" ", "")
+    if w.startswith(("associate", "highschool", "high", "ged")):
+        return 0
+    if w.startswith(("phd", "doctor")):
+        return 3
+    if w.startswith(("master", "ms", "mba", "advanced", "graduate")):
+        return 2
+    if w.startswith(("bachelor", "bs", "ba")):
+        return 1
+    return None
+
+
+def _years_of(m: re.Match) -> Optional[float]:
+    """The FLOOR a quantity states, in years — a range counts by its lower bound."""
+    if (m.group("lead") or "").strip().lower() == "up to":
+        return None
+    if m.group("unit").lower().startswith(("month", "mo")):
+        return None                       # a months requirement is never a years gap
+    qty = _qty(m.group("paren") or m.group("qty"))
+    if qty is None or qty <= 0 or qty > _MAX_REQUIRED_YEARS:
+        return None
+    return qty
+
+
+def _rung(text: str, m: re.Match) -> Optional[Tuple[float, Optional[int]]]:
+    """(years, degree level) when this quantity is a rung of a degree ladder."""
+    years = _years_of(m)
+    if years is None:
+        return None
+    after = _RUNG_AFTER_RE.search(text[m.end():m.end() + 70])
+    if after:
+        return years, _rung_level(after.group("deg"))
+    before = _RUNG_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
+    if before:
+        return years, _rung_level(before.group(0).split()[0])
+    return None
+
+
+def _no_degree_rungs(text: str) -> set:
+    """Start offsets of the quantities a no-degree phrase belongs to.
+
+    A phrase belongs to the NEAREST quantity on its line — the one before it,
+    or the first after it when it opens the sentence ("In lieu of a degree, a
+    combined minimum of 9 years"). A fixed window around each number gave it
+    to the wrong one: "Bachelor's and 4+ years, or 8+ years … in lieu of a
+    degree" belongs to the 8, and "… with 9 years of experience may be
+    considered in lieu of a completed degree" sat just past the window."""
+    # Keyed by where the NUMBER starts: a match may begin at the whitespace
+    # before it on the whole text and at the digit on a clause.
+    spans = [(m.start("qty"), m.end()) for m in _REQ_RE.finditer(text)]
+    owned = set()
+    for ph in _NO_DEGREE_PATH_RE.finditer(text):
+        inside = [s for s in spans if s[0] < ph.end() and s[1] > ph.start()]
+        before = [s for s in spans if s[1] <= ph.start()
+                  and not _LINE_BREAK_RE.search(text, s[1], ph.start())]
+        after = [s for s in spans if s[0] >= ph.end()
+                 and not _LINE_BREAK_RE.search(text, ph.end(), s[0])]
+        pick = (inside or before[-1:] or after[:1] or [None])[0]
+        if pick:
+            owned.add(pick[0])
+    return owned
+
+
+def _smallest_alternative(text: str, p0: int, p1: int, years: float,
+                          degree_level: Optional[int], no_degree: set) -> float:
+    """The lowest rung of the requirement at text[p0:p1] that the candidate can use.
+
+    "PhD with 2+ years, MS with 6+ years, or BS with 8+ years" is ONE
+    requirement with three rungs, and "8 years of related experience; or 6
+    years and an advanced degree" is one with two. A rung tied to a degree
+    above the candidate's is not theirs; with no known degree every rung
+    counts (the gate is meant to be permissive).
+    """
+    best = years
+    for m in _REQ_RE.finditer(text, max(0, p0 - _ALT_WINDOW), p1 + _ALT_WINDOW):
+        if m.start() == p0:
+            continue
+        lo, hi = (m.end(), p0) if m.start() < p0 else (p1, m.start())
+        between = text[lo:hi]
+        rung = _rung(text, m)
+        alt = _years_of(m)
+        if alt is None:
+            continue
+        if _LINE_BREAK_RE.search(between) and not (rung and rung[1] is not None and rung[1] >= 2):
+            # Another line is another requirement — except an advanced-degree
+            # rung, which postings list on its own line ("8+ years …" /
+            # "5+ years experience with advanced degree").
+            continue
+        if degree_level is not None and degree_level >= 1 and m.start("qty") in no_degree:
+            continue                      # the no-degree rung is not this candidate's
+        joined_by_or = _OR_ALTERNATIVE_RE.search(between) is not None
+        if rung is None and not joined_by_or:
+            continue
+        if rung is not None and rung[1] is not None and degree_level is not None \
+                and rung[1] > degree_level:
+            continue
+        best = min(best, alt)
+    return best
+
+
+def minimum_years_required(jd_text: str, *,
+                           degree_level: Optional[int] = None) -> Optional[Tuple[float, str]]:
+    """The most years of experience a posting REQUIRES, as (years, wording).
+
+    For the matching pre-filter, which drops a posting that asks far more years
+    than the candidate has. Every misreading of that number is a job the
+    candidate never sees, and on one profile's 2026-10-28 queue the old
+    `(\\d+)\\+?\\s*years?` scan read "6–8 years" as 8, "5 to 8+ years" as 8,
+    "BS with 8+, MS with 6+, PhD with 2+" as 8, "8 years; or 6 years and an
+    advanced degree" as 8, "a combined minimum of 9 years education and/or
+    experience in lieu of a degree" as 9 for a candidate with a master's, and
+    "gtreasury has more than 40 years of experience" as a requirement. So: a
+    range counts by its LOWER bound, a degree ladder by the candidate's lowest
+    rung, the no-degree path only for a candidate without one (`degree_level`
+    None), a preference (clause or "Preferred Qualifications" heading) never,
+    and the employer's own history never.
+    """
+    text = _plain(jd_text)
+    has_degree = degree_level is not None and degree_level >= 1
+    no_degree = _no_degree_rungs(text) if has_degree else set()
+    best: Optional[Tuple[float, str]] = None
+    cursor = 0
+    for clause, heading_pref in _clauses(text):
+        at = text.find(clause, cursor)
+        if at < 0:
+            continue
+        cursor = at + len(clause)
+        for m in _REQ_RE.finditer(clause):
+            years = _years_of(m)
+            if years is None:
+                continue
+            # A preference after a comma qualifies what follows it: in "8+
+            # years of full-stack development, preferably in high-growth
+            # companies" the companies are preferred, not the years.
+            comma = re.search(r"[,(]", clause[m.end():])
+            scope = clause[:m.end() + (comma.start() if comma else len(clause))]
+            tail = _TAIL_PREFERENCE_RE.search(clause)
+            if _REQUIRED_RE.search(scope):
+                required = True
+            elif _PREFERRED_RE.search(scope):
+                required = False
+            elif tail and tail.start() > m.end() \
+                    and not re.search(r"\bwith\b", clause[m.end():tail.start()], re.I):
+                required = False
+            else:
+                required = heading_pref if heading_pref is not None else True
+            if not required:
+                continue
+            p0, p1 = at + m.start(), at + m.end()
+            if _COMPANY_HISTORY_RE.search(text[max(0, p0 - 40):p0]):
+                continue
+            # An experience requirement, not a benefit, a warranty or a timeline.
+            if _NOT_EXPERIENCE_BEFORE_RE.search(clause[:m.start()]) \
+                    or _NOT_EXPERIENCE_AFTER_RE.search(clause[m.end():]):
+                continue
+            if not (_EXPERIENCE_NEAR_RE.search(text[max(0, p0 - 20):p1 + 80])
+                    or _LEADS_WITH_YEARS_RE.match(clause[:m.start()])):
+                continue
+            # The no-degree path (see `_no_degree_rungs`) is not this candidate's.
+            if at + m.start("qty") in no_degree:
+                continue
+            own = _rung(text, m)
+            if own is not None and own[1] is not None and degree_level is not None \
+                    and own[1] > degree_level:
+                continue                  # the PhD rung of a ladder is not this candidate's
+            years = _smallest_alternative(text, p0, p1, years, degree_level, no_degree)
+            if best is None or years > best[0]:
+                best = (years, " ".join(clause.split())[:160])
+    return best
 
 
 # ── assessing one requirement against the inventory ──────────────────────────

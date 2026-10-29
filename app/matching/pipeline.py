@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import load_only
@@ -218,6 +218,68 @@ def invalidate_resume_cache(user_id: str | None) -> None:
     fresh upload is picked up by the very next scoring cycle."""
     with _RESUME_CACHE_LOCK:
         _RESUME_CACHE.pop(user_id or "local", None)
+    _UNREADABLE_NOTIFIED.discard(user_id)
+
+
+class UnreadableResumeError(ValueError):
+    """The user's résumé file is on file but holds almost no text: a scanned
+    image, a photo or a design export. Every consumer treats it as "no résumé"
+    (scoring skips the user, tailoring refuses before any model call) and the
+    message says what to upload instead."""
+
+
+# A real one-page résumé is 250-600 words. Below BOTH bars the file is a picture
+# of a résumé: production 2026-10-21, a 300 KB PDF read back as a few words, the
+# tailor was asked to rewrite a résumé it could not see — it answered "I don't
+# see a master resume provided", then invented "ABC Engineering Solutions".
+RESUME_MIN_WORDS = 80
+RESUME_MIN_LETTERS = 600
+
+
+def unreadable_resume_reason(text: str) -> Optional[str]:
+    """Why an uploaded file's ``text`` is too thin to score or tailor from, or
+    None when it is fine. Letters are counted too: a PDF that extracts without
+    spaces is one long "word" per line and is perfectly readable."""
+    words = re.findall(r"[A-Za-z][A-Za-z'’.\-]+", text or "")
+    letters = sum(ch.isalpha() for ch in text or "")
+    if len(words) >= RESUME_MIN_WORDS or letters >= RESUME_MIN_LETTERS:
+        return None
+    return (f"We could read only {len(words)} words from your resume file, so it is "
+            "probably a scanned image or a design export (Canva, Figma, a photo). Upload "
+            "a PDF saved from Word or Google Docs, or a DOCX, so we can read your "
+            "experience.")
+
+
+_UNREADABLE_NOTIFIED: set = set()
+
+
+def notify_unreadable_resume(user_id: str | None, reason: str) -> None:
+    """Tell the user ONCE (per upload) that matching is waiting on a readable
+    resume. The lanes skip such a user the way they skip one with no resume at
+    all, so without this nothing on their dashboard would ever say why their
+    feed stays empty. One DB look per user per process; never raises."""
+    if not user_id or user_id in _UNREADABLE_NOTIFIED:
+        return
+    _UNREADABLE_NOTIFIED.add(user_id)
+    try:
+        from app.db.models import UserNotification, UserProfile
+        with get_session() as session:
+            uploaded = session.exec(select(UserProfile.resume_uploaded_at).where(
+                UserProfile.user_id == user_id)).first()
+            q = select(UserNotification.id).where(
+                UserNotification.user_id == user_id,
+                UserNotification.type == "resume_unreadable")
+            if uploaded:
+                q = q.where(UserNotification.created_at >= uploaded)
+            if session.exec(q.limit(1)).first():
+                return
+            session.add(UserNotification(
+                user_id=user_id, title="We can't read your resume yet",
+                message=reason + " Matching starts as soon as a readable file is uploaded.",
+                type="resume_unreadable", link="/dashboard"))
+            session.commit()
+    except Exception as e:
+        log.debug("unreadable-resume notice skipped for %s: %s", user_id, e)
 
 
 def _load_resume_file(user_id: str | None = None) -> str:
@@ -229,8 +291,20 @@ def _load_resume_file(user_id: str | None = None) -> str:
         with _RESUME_CACHE_LOCK:
             hit = _RESUME_CACHE.get(key)
             if hit and now - hit[0] < _RESUME_CACHE_TTL_S:
+                if isinstance(hit[1], UnreadableResumeError):
+                    # A FRESH exception each time: re-raising the cached one
+                    # grows its traceback and pins every caller's frame.
+                    raise UnreadableResumeError(hit[1].args[0])
                 return hit[1]
-        text = _fetch_resume_from_storage(user_id)
+        try:
+            text = _fetch_resume_from_storage(user_id)
+        except UnreadableResumeError as e:
+            # Cached like a hit: an unreadable file is a stable answer until the
+            # next upload (which invalidates), and re-downloading it on every
+            # scoring cycle is the Storage egress this cache exists to stop.
+            with _RESUME_CACHE_LOCK:
+                _RESUME_CACHE[key] = (now, UnreadableResumeError(e.args[0]))
+            raise
         with _RESUME_CACHE_LOCK:
             _RESUME_CACHE[key] = (now, text)
         return text
@@ -283,16 +357,109 @@ def resume_text_from_bytes(name: str, data: bytes) -> str:
     """Plain text from an uploaded résumé file, by extension."""
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if ext == "docx":
-        import io
-        from docx import Document
-        doc = Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        return _docx_text(data)
     if ext == "pdf":
         import io
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
         return "\n".join((page.extract_text() or "") for page in reader.pages)
     return data.decode("utf-8", errors="ignore")
+
+
+def _docx_text(data: bytes) -> str:
+    """Every line of a DOCX in reading order — tables and text boxes included.
+
+    ``Document.paragraphs`` is only the body's top-level paragraphs, and résumé
+    templates put the history in TABLES (a dates column beside a role column)
+    or TEXT BOXES (two-column designs): that text never reached scoring or
+    tailoring. A table row of short single-line cells reads as one line
+    ("Apr 2006 | Dec 2007 | Engineer"), the way a person reads it; a text box
+    shipped twice (the modern drawing and its legacy VML fallback) is read once.
+    """
+    import io
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(io.BytesIO(data))
+    W_P, W_T, W_TBL, W_TR, W_TC = qn("w:p"), qn("w:t"), qn("w:tbl"), qn("w:tr"), qn("w:tc")
+    W_TAB, W_BR, TXBX = qn("w:tab"), qn("w:br"), qn("w:txbxContent")
+    FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+    lines: list[str] = []
+
+    def inside(el, stop, tags) -> bool:
+        anc = el.getparent()
+        while anc is not None and anc is not stop:
+            if anc.tag in tags:
+                return True
+            anc = anc.getparent()
+        return False
+
+    def para_text(p) -> str:
+        out = []
+        for el in p.iter():
+            # a run inside a text box anchored here is the box's text, read below
+            if el.tag in (W_T, W_TAB, W_BR) and inside(el, p, (TXBX, FALLBACK)):
+                continue
+            if el.tag == W_T:
+                out.append(el.text or "")
+            elif el.tag == W_TAB:
+                out.append("\t")
+            elif el.tag == W_BR:
+                out.append("\n")
+        return "".join(out).strip()
+
+    def walk(container) -> None:
+        for el in container:
+            if el.tag == W_P:
+                t = para_text(el)
+                if t:
+                    lines.append(t)
+                for box in el.iter(TXBX):
+                    # the outermost box only (walk reads the ones inside it), and
+                    # never the legacy VML copy of a box already read
+                    if not inside(box, el, (TXBX, FALLBACK)):
+                        walk(box)
+            elif el.tag == W_TBL:
+                for row in el.findall(W_TR):
+                    cells = []
+                    for cell in row.findall(W_TC):
+                        texts = [para_text(p) for p in cell.iter(W_P)]
+                        cells.append([t for t in texts if t])
+                    if cells and all(len(c) <= 1 for c in cells) and \
+                            sum(len(c[0]) for c in cells if c) <= 160:
+                        joined = " | ".join(c[0] for c in cells if c)
+                        if joined:
+                            lines.append(joined)
+                    else:
+                        for c in cells:
+                            lines.extend(c)
+            elif el.tag in (qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")):
+                walk(el)
+
+    def flat(raw: list[str]) -> list[str]:
+        out: list[str] = []
+        for line in raw:
+            for part in line.split("\n"):
+                part = part.strip()
+                if part and (not out or out[-1] != part):   # a box read twice, once
+                    out.append(part)
+        return out
+
+    walk(doc.element.body)
+    body = flat(lines)
+    # The name and contact line often sit in the page HEADER — read first,
+    # minus anything the body already says.
+    head: list[str] = []
+    try:
+        first = doc.sections[0] if doc.sections else None
+        if first is not None and not first.header.is_linked_to_previous:
+            lines = []
+            walk(first.header._element)
+            in_body = set(body)
+            head = [h for h in flat(lines) if h not in in_body]
+    except Exception as e:
+        log.debug("docx header not read: %s", e)
+    return "\n".join(head + body)
 
 
 def _fetch_resume_from_storage(user_id: str) -> str:
@@ -309,10 +476,28 @@ def _fetch_resume_from_storage(user_id: str) -> str:
     for name in names:
         try:
             data = sb.storage.from_("resume").download(f"{user_id}/{name}")
-            if data:
-                return resume_text_from_bytes(name, data)
         except Exception:
+            continue          # transient, or this name is absent: try the next
+        if not data:
             continue
+        try:
+            text = resume_text_from_bytes(name, data)
+        except Exception as e:
+            # Downloaded but cannot be opened (corrupt, encrypted, not really
+            # a PDF). That is as stable as a picture of a resume, so it is the
+            # same cached answer — a plain miss here re-downloaded the file on
+            # every lane tick, ~1,250 times a day per user.
+            log.info("stored resume %s for %s cannot be parsed: %s", name, user_id, e)
+            raise UnreadableResumeError(
+                "We could not open your resume file. Save it again as a PDF from Word "
+                "or Google Docs, or as a DOCX, and upload that.") from None
+        # Only an uploaded FILE can be a picture of a résumé. resume.md/.txt is
+        # text the user typed (the onboarding stub is one), short or not.
+        if name.lower().endswith((".pdf", ".docx")):
+            reason = unreadable_resume_reason(text)
+            if reason:
+                raise UnreadableResumeError(reason)
+        return text
     raise ValueError("No resume found. Please upload your resume in the Profile page first.")
 
 
@@ -434,6 +619,134 @@ def _reset_incident_frozen_scores(user_id: str | None) -> int:
         log.info("Reset %d incident-frozen cheap-gate scores for re-ranking (user=%s)",
                  cleared, user_id)
     return cleared
+
+
+_PREFILTER_FIX_MARKER = "prefilter_fix_2026_10_28"
+_PREFILTER_FIX_MAX_ROWS = 600
+#: Stamps written by the gates fixed on 2026-10-28 (see RuleFilter sections 3,
+#: 4 and 6, `reranker._overrule_cleared_blocker`, and the removed door gate).
+_PREFILTER_FIX_PREFIXES = ("Wrong Door:%", "Rule filtered: Experience pre-filtered:%",
+                           "Pre-screened (Tier-1 fit %")
+
+
+def _reopen_misjudged_prefilter_stamps(user_id: str | None, profile) -> int:
+    """One-time per user: put back in the queue the RECENT jobs that the gates
+    fixed on 2026-10-28 would now keep.
+
+    On one AI-developer profile those gates had drained, among others,
+    "Applied AI Engineer" (Wrong Door: "enterprise", from a dental-insurance
+    benefit), "Senior Full-Stack Engineer" ("6–8 years" read as 8), "Member of
+    Technical Staff" (read as staff-level) and 108 US jobs the cheap model
+    called "not in the United States". A stamp keeps a job out of the queue
+    for good, so the fixes alone would only help postings found after deploy.
+
+    Each candidate is RE-JUDGED with the new rules and only those they keep
+    are re-opened; the rest keep their stamp. No LLM call here — a re-opened
+    job is scored by the lanes like any unscored one. Bounded to jobs inside
+    the scoring window and `_PREFILTER_FIX_MAX_ROWS`; guarded by a persisted
+    marker so restarts don't re-scan. Non-fatal."""
+    import json as _json
+    from sqlalchemy import or_
+    from app.common import freshness
+    from app.db.models import FunnelEvent
+    from app.matching.reranker import _overrule_cleared_blocker
+
+    if profile is None:
+        return 0
+    marker = f"user={user_id}"
+    reopened = 0
+    try:
+        with get_session() as session:
+            if session.exec(select(FunnelEvent.id).where(
+                    FunnelEvent.stage == _PREFILTER_FIX_MARKER,
+                    FunnelEvent.reason == marker).limit(1)).first():
+                return 0
+            cutoff = datetime.utcnow() - timedelta(days=max(1, settings.scoring_max_job_age_days))
+            owner = (Job.user_id == user_id) if user_id else Job.user_id.is_(None)
+            rows = session.exec(
+                select(Job).options(load_only(
+                    Job.id, Job.source, Job.external_id, Job.title, Job.company, Job.location,
+                    Job.remote, Job.description, Job.eligibility, Job.eligibility_reason,
+                    Job.rerank_score, Job.rerank_reasoning, Job.scored_at, Job.prescore,
+                    Job.prescored_at))
+                .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
+                       Job.is_closed == False,  # noqa: E712
+                       or_(*[Job.rerank_reasoning.like(p) for p in _PREFILTER_FIX_PREFIXES]),
+                       freshness.known_on_or_after_expr(cutoff))
+                .order_by(Job.id.desc())
+                .limit(_PREFILTER_FIX_MAX_ROWS)
+            ).all()
+            rf = RuleFilter(profile=profile)
+            for job in rows:
+                reason = job.rerank_reasoning or ""
+                m = re.match(r"Pre-screened \(Tier-1 fit (\d+(?:\.\d+)?)\): (.*)", reason, re.S)
+                if not rf.filter(job).passed:
+                    continue                  # the new rules still reject it
+                if m and not re.match(r"(?:Experience|Title) pre-filtered|Hire-probability", m.group(2)):
+                    # A cheap-model verdict: re-open only a claim the gates settled.
+                    old = float(m.group(1))
+                    if _overrule_cleared_blocker(old, m.group(2), job, profile)[0] == old:
+                        continue
+                job.rerank_score = None
+                job.rerank_reasoning = None
+                job.scored_at = None
+                job.prescore = None
+                job.prescored_at = None
+                session.add(job)
+                reopened += 1
+            lowered = _recheck_shortlisted_against_posting(session, user_id, profile)
+            session.add(FunnelEvent(
+                job_id=None, stage=_PREFILTER_FIX_MARKER, passed=True, reason=marker,
+                metadata_json=_json.dumps({"examined": len(rows), "reopened": reopened,
+                                           "shortlist_lowered": lowered}),
+            ))
+            session.commit()
+    except Exception as e:
+        log.warning("Pre-filter fix re-open failed (non-fatal): %s", e)
+        return 0
+    if reopened:
+        log.info("Re-opened %d job(s) the 2026-10-28 gate fixes now keep (user=%s)",
+                 reopened, user_id)
+    return reopened
+
+
+def _recheck_shortlisted_against_posting(session, user_id: str | None, profile) -> int:
+    """Hold the user's CURRENT shortlist to the posting's own words, once.
+
+    New verdicts pass through `reranker.reconcile_with_profile`; jobs already
+    on the board kept scores written before it read refusals, stated years
+    and entry-level roles ("Junior AI Engineer, 0–2 years" at 92). Same
+    function, same caps, no model call. Only the score and its stated reason
+    move — the application keeps its status, so nothing the user opened
+    disappears; below the bar it leaves the board's default view."""
+    from app.matching.reranker import reconcile_with_profile
+    owner = (Job.user_id == user_id) if user_id else Job.user_id.is_(None)
+    app_owner = (Application.user_id == user_id) if user_id else Application.user_id.is_(None)
+    rows = session.exec(
+        select(Job).options(load_only(Job.id, Job.title, Job.description, Job.rerank_score,
+                                      Job.rerank_reasoning))
+        .where(owner, Job.rerank_score.isnot(None),  # type: ignore[union-attr]
+               Job.id.in_(select(Application.job_id).where(
+                   app_owner, Application.status == ApplicationStatus.SHORTLISTED)))
+        .limit(_PREFILTER_FIX_MAX_ROWS)
+    ).all()
+    lowered = 0
+    for job in rows:
+        old = float(job.rerank_score)
+        new, _r, concerns, _b = reconcile_with_profile(
+            (old, "", [], {}), profile, job.description or "", title=job.title or "")
+        if new >= old or not concerns:
+            continue
+        reasoning = job.rerank_reasoning or ""
+        if "\nConcerns: " in reasoning:
+            reasoning = reasoning.replace("\nConcerns: ", f"\nConcerns: {concerns[0]}; ", 1)
+        else:
+            reasoning = f"{reasoning}\nConcerns: {concerns[0]}".strip()
+        job.rerank_score = new
+        job.rerank_reasoning = reasoning[:2000]
+        session.add(job)
+        lowered += 1
+    return lowered
 
 
 def _held_verdicts() -> list:
@@ -603,6 +916,9 @@ def run_matching(user_id: str | None = None) -> List[int]:
         _user_profile = _get_or_create_profile(user_id=user_id)
     except Exception as _pe:
         log.debug("RuleFilter profile unavailable (using legacy defaults): %s", _pe)
+    # One-time: re-open recent jobs the 2026-10-28 gate fixes now keep, BEFORE
+    # retrieval so this very pass can see them.
+    _reopen_misjudged_prefilter_stamps(user_id, _user_profile)
 
     # Retrieval runs over UNSCORED jobs only (newest first): scored jobs never
     # need another retrieval pass, and letting them compete starved fresh
@@ -626,14 +942,6 @@ def run_matching(user_id: str | None = None) -> List[int]:
                      "so this user's fresh jobs still get scored", soft_floor, len(candidates))
 
     rule_filter = RuleFilter(profile=_user_profile)
-    candidate = None
-    if _user_profile:
-        try:
-            from app.intelligence.door_match import CandidateProfile
-            candidate = CandidateProfile.from_user_profile(_user_profile)
-        except Exception as _ce:
-            log.warning("Could not create CandidateProfile for door filter: %s", _ce)
-
     embedding_filter = EmbeddingFilter(matcher=matcher)
 
     # Interaction learning: revealed preferences (dismissals/applies) calibrate
@@ -762,24 +1070,16 @@ def run_matching(user_id: str | None = None) -> List[int]:
                 session.commit()
                 continue
 
-            # 4. Door Filter (Cheap JD-only check)
-            if candidate:
-                try:
-                    from app.intelligence.role_bar import build_role_bar
-                    from app.intelligence.door_match import classify_door
-                    bar = build_role_bar(job.title, job.description or "")
-                    verdict = classify_door(candidate, bar, winners_n=0, data_quality="thin")
-                    if verdict.wrong_door:
-                        log.info("Job '%s' @ '%s' filtered by door match: %s", job.title, job.company, verdict.top_reason)
-                        job.similarity_score = sim
-                        job.rerank_score = 20.0
-                        job.rerank_reasoning = f"Wrong Door: {verdict.top_reason}"
-                        job.scored_at = datetime.utcnow()
-                        session.add(job)
-                        session.commit()
-                        continue
-                except Exception as de:
-                    log.warning("Door filter check failed for job %d: %s", job.id, de)
+            # No door-match gate here (removed 2026-10-28). `classify_door` is
+            # advisory by its own contract ("does NOT hide or filter jobs") and
+            # with JD text alone (no winners, confidence LOW) its axis reader
+            # called every posting with "dental insurance" in its benefits
+            # "enterprise" and every salary over $200k "elite-outlier": on one
+            # AI-developer profile it stamped "Applied AI Engineer", "Mid Level
+            # AI Engineer", "Backend Software Engineer (Python)" and "Full Stack
+            # Developer (Python, React.js)" Wrong Door — and only this lane ran
+            # it, so a job's fate depended on which lane found it. Years,
+            # seniority and location are decided by RuleFilter and the scorers.
 
             # Survived all cheap gates — persist similarity + ghost score, queue for LLM.
             job.similarity_score = sim

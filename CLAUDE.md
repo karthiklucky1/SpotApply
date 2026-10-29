@@ -279,12 +279,12 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   the session closes). Admin surfaces: `/api/admin/settings` (secrets shown only
   as `configured: bool` — guard: `test_admin_observability`) and
   `/api/admin/health` (breakers, budget, stripe mode, pool, memory, last ticks).
-- **Tuning lives in env/Settings:** `shortlist_score_threshold` (60 — of real
-  Claude finals 44.5% cleared 35 but only 11.6% cleared 65, so the old bar
-  shortlisted ~1,800 jobs/user that the board's own default filter
-  (`shortlist_strong_threshold`=65) then hid. **Raise `PRESCORE_ADVANCE_THRESHOLD`
-  in lockstep** — the Tier-1 gate is `min(advance, shortlist)`), `top_k_rerank`,
-  `MIN_MATCH_SCORE`, `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
+- **Tuning lives in env/Settings:** `shortlist_score_threshold` (75 since
+  2026-10-28 — the rubric's 60-74 band is "a visible stretch"; 35→60→70→75;
+  `shortlist_strong_threshold` and `fresh_alert_min_score` equal it,
+  `degraded_shortlist_threshold` stays above it; the Tier-1 gate is
+  `min(advance, shortlist)`), `top_k_rerank`, `MIN_MATCH_SCORE`,
+  `DAILY_APPLY_LIMIT`, `*_BOARDS` slugs.
 - **Freshness has TWO bounds** (`app/common/freshness.py` — read it before
   touching any age gate): KNOWN age = `coalesce(first_seen, discovered_at)`,
   how long WE have held the posting (tight: `SCORING_MAX_JOB_AGE_DAYS` /
@@ -659,6 +659,20 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   removes the other extensions; `/api/resume/synthesize` never overwrites one); the
   extension route charges a credit only after the ERROR re-check. Guard:
   `test_tailor_fixes`.
+- **Guards compare VALUES and WORDS, never spellings** (2026-10-29): 13 of 16 tailor
+  ERRORs in 45 days were the fact guard / Doctor misreading the user's OWN plain-text
+  history ("Apr-2006 to Dec-2007", a client in brackets, "Jabil (via Lorien)"). Dates
+  parse any common form (`evidence.date_ranges`; a draft may be LESS precise, never
+  more); an employer/title/degree/school/credential needs every word in the master, in
+  order, close together, on a NAMING line — not a bullet, not Skills/Summary
+  (`words_supported`: "Integrated the Google Maps API" never makes Google an employer).
+  A PDF/DOCX reading < 80 words AND < 600 letters is `UnreadableResumeError` (cached
+  like a hit, lanes skip, one notice, upload 422s BEFORE storing); DOCX reads tables,
+  text boxes, header. The Skills LIST is pruned to what the master shows
+  (`skills_guard.prune_skills`; review checked ≤6 JD terms). Posting text is DATA:
+  `common/posting_text.clean_posting` drops sentences addressed to AI tools before
+  tailor/cover/Tier-1/Tier-2/autofill, `DATA_NOTICE` in each prompt. Guard:
+  `test_tailoring_production_shapes`.
 - **The owner's resume rules** (2026-10-08, `tailoring/rules.py` + `render.py`):
   every tailor is a FULL rewrite (L0 skip off) under `TAILOR_SYSTEM`; then
   deterministic steps: em dashes scrubbed (date facts canonicalized in
@@ -811,6 +825,22 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   7 ahead; ProfileUpdate refuses others, forms blank them) and the OPT clock needs
   one — it used to start from the status alone and read a 2002 date as "expired
   8,966 days ago". Guard: `test_opt_clock_dates`.
+- **The cheap gates drop only what the user truly cannot take** (2026-10-28; a
+  replay of one profile's 839 drained jobs found 183 dropped wrongly). Years are
+  read AS WRITTEN (`requirements.minimum_years_required`: a range by its lower
+  bound, a degree ladder by the user's rung; never a preference, a benefit or the
+  employer's history). "Member of Technical Staff" is not staff. A hire-probability
+  signal counts only in a clause that REQUIRES it. No door-match gate (advisory by
+  contract; it read "dental insurance" as "enterprise"). Tier-1 does not judge
+  location: `reranker._overrule_cleared_blocker` sends a location or silent-
+  sponsorship claim on a verified-eligible job to Tier-2 at the gate. `find_refusal`
+  reads markup, wrapped lines and ITAR lists. "City, Region, DE" is Germany, not
+  Delaware (`geo._trailing_iso_country`). The final score answers to the posting's
+  words (`reconcile_with_profile`): a stated gap of 2+ years, or an entry role
+  (0–2 years / Junior / Associate / Engineer I) for 4+ years, caps at
+  `STRETCH_OVERALL_CAP` (65, under the bar, still in All Jobs). Recent stamps
+  re-open, and the current shortlist is re-held to those caps, once per user
+  (`pipeline._reopen_misjudged_prefilter_stamps`). Guard: `test_prefilter_accuracy`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list

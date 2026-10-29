@@ -87,14 +87,34 @@ def _derive_anchors(master_md: str) -> List[Tuple[str, str]]:
     employer names + employment date ranges (from '… | Company | Jun 2020 -
     Mar 2022 | …' style experience lines), degree phrases, and institutions.
     Returns [] when nothing parseable is found (integrity check is skipped)."""
-    anchors: List[Tuple[str, str]] = []
+    return [(pattern, desc) for pattern, desc, _text in _anchors(master_md)]
+
+
+def _anchor_kept(pattern: str, desc: str, text: str, tailored_md: str) -> bool:
+    """Did the draft keep this piece of the master's history? The literal
+    pattern first; then as VALUES and WORDS, because the draft is markdown in
+    one house style and the master is whatever its author typed: "January 2024
+    - Present" keeps "Jan 2024 – Current", and "Jabil (via Lorien)" keeps
+    "Jabil, via Lorien" (production 2026-10-13: both were reported "altered" on
+    seven tailors of one user, and integrity parks a draft at ERROR)."""
+    if re.search(pattern, tailored_md.lower(), re.IGNORECASE):
+        return True
+    from app.tailoring.evidence import date_ranges, range_supported, text_supports
+    if desc == "employment dates":
+        anchor = date_ranges(text)
+        return bool(anchor) and any(range_supported(r, anchor) for r in date_ranges(tailored_md))
+    return text_supports(text, tailored_md)
+
+
+def _anchors(master_md: str) -> List[Tuple[str, str, str]]:
+    anchors: List[Tuple[str, str, str]] = []
     seen: set[str] = set()
 
     def _add(text: str, desc: str) -> None:
         key = " ".join(text.lower().split())
         if key and key not in seen and len(anchors) < _MAX_ANCHORS:
             seen.add(key)
-            anchors.append((_anchor_pattern(key), desc))
+            anchors.append((_anchor_pattern(key), desc, key))
 
     for line in master_md.splitlines():
         s = line.strip()
@@ -194,8 +214,8 @@ class ResumeDoctor:
 
         # ── 4. Integrity check — anchors come from THIS user's master resume ──
         integrity_issues: List[str] = []
-        for pattern, desc in _derive_anchors(master_md):
-            if not re.search(pattern, text_lower, re.IGNORECASE):
+        for pattern, desc, anchor_text in _anchors(master_md):
+            if not _anchor_kept(pattern, desc, anchor_text, tailored_md):
                 integrity_issues.append(f"Missing or altered: {desc}")
         if integrity_issues:
             issues.extend(integrity_issues)
