@@ -8,15 +8,63 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
 from app.config import settings
-from app.discovery.base import RawJob
+from app.discovery.base import GeoEvidence, RawJob
 from app.discovery.title_filter import matches_title
 
 log = logging.getLogger(__name__)
+
+# Adzuna runs one site per market and every result names its market twice: the
+# API's `location.area` starts with it ("US", "UK", then state, county, city),
+# and `redirect_url` sits on that market's host. The display name alone does
+# not: "Atlanta, Fulton County" has no state and no country, so every US
+# posting from this source was held "Location pending" until it expired
+# (production 2026-10-29: 55 of one user's 83 held copies).
+_MARKET_HOSTS = {
+    "adzuna.com": "US", "adzuna.co.uk": "GB", "adzuna.ca": "CA", "adzuna.com.au": "AU",
+    "adzuna.in": "IN", "adzuna.de": "DE", "adzuna.fr": "FR", "adzuna.nl": "NL",
+    "adzuna.com.br": "BR", "adzuna.pl": "PL", "adzuna.co.za": "ZA", "adzuna.co.nz": "NZ",
+    "adzuna.at": "AT", "adzuna.it": "IT", "adzuna.ru": "RU", "adzuna.com.mx": "MX",
+    "adzuna.sg": "SG", "adzuna.es": "ES", "adzuna.ch": "CH", "adzuna.be": "BE",
+}
+
+
+def market_from_url(url: str) -> str:
+    """The ISO-2 market an Adzuna link belongs to ("US" for adzuna.com), or ''."""
+    host = (urlparse(url or "").hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return _MARKET_HOSTS.get(host, "")
+
+
+def adzuna_location(location_obj: dict, url: str) -> Tuple[str, GeoEvidence]:
+    """(display location, geo evidence) from one result's `location` object.
+
+    A US result becomes "City, ST" — the state is area[1], and under a US
+    market "Georgia" is the state, not Tbilisi's country."""
+    from app.common.geo import _US_STATE_NAME_TO_CODE
+    loc = location_obj if isinstance(location_obj, dict) else {}
+    display = str(loc.get("display_name") or "").strip()
+    area = [a.strip() for a in (loc.get("area") or []) if isinstance(a, str) and a.strip()]
+    market, field = (area[0], "location.area[0]") if area else (market_from_url(url), "redirect_url host")
+    location, site = display or "Remote", display
+    if market.upper() == "US" and len(area) >= 2:
+        state = area[1].lower()
+        code = _US_STATE_NAME_TO_CODE.get(state) or ("ga" if state == "georgia" else "")
+        city = display.split(",")[0].strip() if display else ""
+        if city.lower() in (state, area[2].lower() if len(area) > 2 else ""):
+            city = ""                 # the display named the state or county, not a town
+        if code:
+            site = f"{city}, {code.upper()}" if city else f"{area[1]}, US"
+            location = site
+    geo = GeoEvidence(sites=[site] if site else [], sites_field="location.area",
+                      country=market, country_field=field if market else "")
+    return location, geo
 
 _API_BASE = "https://api.adzuna.com/v1/api/jobs/{country}/search/{{page}}"
 _RESULTS_PER_PAGE = 50
@@ -109,8 +157,8 @@ class AdzunaSource:
                                     continue
                                 seen.add(ext_id)
 
-                                location_obj = item.get("location", {})
-                                location = location_obj.get("display_name", "Remote")
+                                url = (item.get("redirect_url") or "").strip()
+                                location, geo = adzuna_location(item.get("location") or {}, url)
                                 remote = "remote" in location.lower()
 
                                 posted_at: datetime | None = None
@@ -130,9 +178,10 @@ class AdzunaSource:
                                     title=title,
                                     location=location,
                                     remote=remote,
-                                    url=(item.get("redirect_url") or "").strip(),
+                                    url=url,
                                     description=(item.get("description") or "").strip(),
                                     posted_at=posted_at,
+                                    geo=geo,
                                 ))
                             except Exception as e:
                                 log.debug("Adzuna: parse error %s: %s", item.get("id"), e)

@@ -800,6 +800,46 @@ def test_a_due_row_nobody_is_waiting_on_cannot_starve_a_held_posting(monkeypatch
     assert gv.verify_pending(budget=gv.Budget(seconds=60, items=3))["pending_examined"] == 1
 
 
+def test_a_held_posting_is_reached_however_long_the_due_window_is(monkeypatch):
+    """Production 2026-10-29: ~435k due rows, the held copy's row with no
+    next_attempt_at (which sorts LAST), and a scan of 1,000 per sweep — so the
+    posting a user waited on was never reached and expired held. The sweep now
+    starts from the held copies themselves."""
+    _profile(U1)
+    now = datetime.utcnow()
+    with get_session() as s:
+        for i in range(30):
+            s.add(JobGeography(source="teamtailor", external_id=f"{_P}deep{i}", status="unknown",
+                               next_attempt_at=now - timedelta(hours=5, minutes=i), location_hash="h",
+                               created_at=now - timedelta(hours=6)))
+        s.commit()
+    _held_posting("deepwait")
+    with get_session() as s:
+        row = s.exec(select(JobGeography).where(JobGeography.external_id == _P + "deepwait")).one()
+        row.next_attempt_at = None                      # sorts after every timestamped row
+        s.add(row)
+        s.commit()
+    monkeypatch.setattr(gv, "_PENDING_PAGE", 4)
+    monkeypatch.setattr(gv, "_PENDING_PAGES", 1)        # the old scan would see 4 orphans only
+    monkeypatch.setattr(gv, "_fetch", lambda url, timeout: _page(_jsonld(
+        jobLocation={"address": {"addressLocality": "Austin", "addressRegion": "TX",
+                                 "addressCountry": "US"}})))
+    out = gv.verify_pending(budget=gv.Budget(seconds=60, items=1))
+    assert out["pending_examined"] == 1 and out["resolved"] == 1
+    assert _copy(U1, "deepwait").eligibility == ELIGIBLE
+
+
+def test_one_big_pool_cannot_take_the_whole_sweep(monkeypatch):
+    _profile(U1)
+    _profile(U2)
+    for i in range(4):
+        _held_posting(f"big{i}", users=(U1,))
+    _held_posting("small0", users=(U2,))
+    picked = [r.external_id for r in gv._pending_rows(2)]
+    assert len(picked) == 2
+    assert _P + "small0" in picked, "each waiting owner gets a turn"
+
+
 @pytest.mark.compute_policy
 def test_a_copy_held_only_for_a_dormant_user_is_not_waiting():
     """Production 2026-10-24/25: every user holding unknown copies was dormant,

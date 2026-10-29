@@ -66,7 +66,10 @@ _REQ_RE = re.compile(
 )
 
 _PREFERRED_RE = re.compile(
-    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]have|a plus|plus\b|bonus|"
+    # "plus" alone is a CONNECTOR in "a master's degree plus two (2) years" —
+    # read as "a plus", it took the master's path out of a degree ladder. Only
+    # "a plus" and a "Plus:" label mean preferred.
+    r"\b(?:preferred|preferab\w*|prefer|nice[- ]to[- ]have|a plus|plus\s*:|bonus|"
     r"desirable|desired|ideally|ideal candidate|would be great|advantage|"
     r"good to have|not required)\b", re.I)
 _REQUIRED_RE = re.compile(
@@ -300,7 +303,12 @@ _DEGREE_WORDS = (r"bachelor['’]?s?|b\.?s\.?c?|b\.a\.|master['’]?s?|m\.?s\.?c
                  r"high school(?:\s+diploma)?|ged")
 #: A rung of a degree ladder: "MS with 6+ years", "8 years with a bachelor's",
 #: "or 6 years and an advanced degree".
-_RUNG_BEFORE_RE = re.compile(rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?[^.;\n\d]{{0,20}}$", re.I)
+#: The long form needs the connector: "A master's degree or higher in a stated
+#: field plus two (2) years" is a rung; "Bachelor's degree in Computer Science.
+#: 5 years …" is not (and a full stop already ends the window).
+_RUNG_BEFORE_RE = re.compile(
+    rf"\b(?:{_DEGREE_WORDS})(?:\s+degree)?(?:[^.;\n\d]{{0,20}}"
+    rf"|[^.;\n\d]{{0,80}}\b(?:plus|with|and)(?:\s+a\s+minimum\s+of|\s+at\s+least)?\s*)$", re.I)
 _RUNG_AFTER_RE = re.compile(
     rf"^[^.;\n\d]{{0,45}}?\b(?:with|and|plus|for)\s+(?:an?\s+|the\s+)?(?P<deg>{_DEGREE_WORDS})", re.I)
 #: The no-degree path, which a candidate holding a degree is not on.
@@ -388,15 +396,19 @@ def _years_of(m: re.Match) -> Optional[float]:
     return qty
 
 
-def _rung(text: str, m: re.Match) -> Optional[Tuple[float, Optional[int]]]:
-    """(years, degree level) when this quantity is a rung of a degree ladder."""
+def _rung(text: str, m: re.Match, offset: int = 0) -> Optional[Tuple[float, Optional[int]]]:
+    """(years, degree level) when this quantity is a rung of a degree ladder.
+    ``offset`` = where the text ``m`` was matched in starts inside ``text``: a
+    clause-level match read against the whole posting looked at the wrong
+    words, so a rung was found only when the two happened to line up."""
     years = _years_of(m)
     if years is None:
         return None
-    after = _RUNG_AFTER_RE.search(text[m.end():m.end() + 70])
+    start, end = m.start() + offset, m.end() + offset
+    after = _RUNG_AFTER_RE.search(text[end:end + 70])
     if after:
         return years, _rung_level(after.group("deg"))
-    before = _RUNG_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
+    before = _RUNG_BEFORE_RE.search(text[max(0, start - 110):start])
     if before:
         return years, _rung_level(before.group(0).split()[0])
     return None
@@ -485,6 +497,13 @@ def minimum_years_required(jd_text: str, *,
     has_degree = degree_level is not None and degree_level >= 1
     no_degree = _no_degree_rungs(text) if has_degree else set()
     best: Optional[Tuple[float, str]] = None
+    # Degree level -> the requirement on that PATH. A ladder ("high school +
+    # 8 / associate + 6 / bachelor's + 4 / master's + 2") is alternatives: the
+    # candidate takes the cheapest path their degree opens, so paths combine by
+    # MIN below, never by MAX with everything else — that read a city posting
+    # whose master's path was 2 years as "requires 8" for a master's holder
+    # with 4 (production 2026-10-29).
+    paths: dict = {}
     cursor = 0
     for clause, heading_pref in _clauses(text):
         at = text.find(clause, cursor)
@@ -525,13 +544,23 @@ def minimum_years_required(jd_text: str, *,
             # The no-degree path (see `_no_degree_rungs`) is not this candidate's.
             if at + m.start("qty") in no_degree:
                 continue
-            own = _rung(text, m)
+            own = _rung(text, m, at)
             if own is not None and own[1] is not None and degree_level is not None \
                     and own[1] > degree_level:
                 continue                  # the PhD rung of a ladder is not this candidate's
             years = _smallest_alternative(text, p0, p1, years, degree_level, no_degree)
+            wording = " ".join(clause.split())[:160]
+            if own is not None and own[1] is not None:
+                held = paths.get(own[1])
+                if held is None or years > held[0]:
+                    paths[own[1]] = (years, wording)      # one path may state two things
+                continue
             if best is None or years > best[0]:
-                best = (years, " ".join(clause.split())[:160])
+                best = (years, wording)
+    if paths:
+        path = min(paths.values(), key=lambda p: p[0])
+        if best is None or path[0] > best[0]:
+            best = path
     return best
 
 

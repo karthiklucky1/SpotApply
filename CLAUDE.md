@@ -841,6 +841,16 @@ UI-relevant `Job`/`Application` fields: `rerank_score` (0–100 fit), `rerank_re
   `STRETCH_OVERALL_CAP` (65, under the bar, still in All Jobs). Recent stamps
   re-open, and the current shortlist is re-held to those caps, once per user
   (`pipeline._reopen_misjudged_prefilter_stamps`). Guard: `test_prefilter_accuracy`.
+  **2026-10-29:** a degree LADDER is alternatives — paths combine by MIN over the rungs
+  the user's degree opens ("HS + 8 / master's + 2" read as 8 for a master's holder);
+  "plus" between a degree and years is a connector, not "a plus". Tier-1 reasons are
+  read CLAUSE by clause (`_t1_clause_kind`): location/work-auth/years-gap<2/soft
+  ("not strongly aligned") are the rules', any fit clause stands. **The geo sweep
+  starts from the WAITING copies** (`geo_verify._waiting_rows`, per owner on
+  ix_job_unscored, round-robin): it scanned 1,000 of ~435k due rows oldest-first, so
+  held copies expired "Location pending". Adzuna reads `location.area` ("City, ST",
+  structured country) and stored rows resolve from the market host (adzuna.com = US);
+  regions `namer`/`amer` include the US. Guard: `test_adzuna_and_regions`.
 - **Every field, not only tech** (2026-09-28): departments (`server._DEPARTMENT_ROLES`,
   clinical ones BEFORE the broad healthcare bucket) now cover nursing, pharmacy,
   allied health, education, HR, sales and legal. The title filter's junk list

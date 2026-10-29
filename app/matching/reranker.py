@@ -800,46 +800,107 @@ _AUTH_LIMIT_RE = re.compile(
     r"|\bmust\s+(?:be|hold)\s+(?:an?\s+)?(?:u\.?s\.?\s+)?citizens?\b|\bclearance\b", re.I)
 
 
+#: A Tier-1 reason is read clause by clause: "Role requires on-site presence and
+#: no relocation support offered" is two LOCATION clauses, though "role" alone
+#: reads as fit.
+_T1_CLAUSE_SPLIT = re.compile(r"[;,.]+|\s+(?:and|but|while|though)\s+", re.I)
+_T1_YEARS_RE = re.compile(r"\b\d{1,2}\s*\+?\s*(?:years?|yrs?)\b", re.I)
+#: The rubric's OWN words for the 40-59 band ("adjacent: neighboring role or
+#: partial stack overlap"). A reason that says one of these and nothing harder
+#: is not a 0-30 reason, whatever number came with it ("No stated blockers, but
+#: focuses on marketing software, not strongly aligned" for a Backend Engineer
+#: target, scored 30).
+_T1_SOFT_RE = re.compile(
+    r"\bno (?:stated |hard |explicit )?blockers?\b|\bnot strongly\b|\bsomewhat\b|\bpartial(?:ly)?\b"
+    r"|\bsome overlap\b|\badjacent\b|\bloosely\b|\bmoderate(?:ly)?\b", re.I)
+
+
+def _t1_clause_kind(clause: str) -> str:
+    if _T1_GEO_RE.search(clause):
+        return "geo"
+    if _T1_AUTH_RE.search(clause):
+        return "auth"
+    if _T1_YEARS_RE.search(clause):
+        return "years"
+    if _T1_SOFT_RE.search(clause):
+        return "soft"
+    if _T1_FIT_RE.search(clause):
+        return "fit"
+    return "neutral"
+
+
+def _years_gap_settled(job: Job, profile) -> bool:
+    """A years claim is the rules' to make, not Tier-1's: settled when the
+    posting's own stated minimum (read as written) is under 2 years above the
+    candidate's, or states none. A 2+ year gap would be capped under the bar by
+    the final score anyway (`reconcile_with_profile`), so that claim stands and
+    no final is spent on it."""
+    cand = getattr(profile, "years_experience", None)
+    try:
+        cand = float(cand) if cand is not None else None
+    except (TypeError, ValueError):
+        cand = None
+    if cand is None:
+        return False
+    from app.matching.filters.rule_filter import _degree_level
+    from app.tailoring.requirements import minimum_years_required
+    req = minimum_years_required(job.description or "",
+                                 degree_level=_degree_level(getattr(profile, "degree", "") or ""))
+    return req is None or req[0] - cand < 2
+
+
 def _overrule_cleared_blocker(score: float, reason: str, job: Job, profile) -> Tuple[float, str]:
-    """Advance a low prescore whose only reason is a question the gates settled.
+    """Advance a low prescore whose only reasons are questions the gates settled.
 
     Location and work authorization are decided BEFORE Tier-1 — the geography
     verdict (`Job.eligibility`) and RuleFilter's refusal check — and the cheap
     model invents both: on one profile 120 verified-eligible US jobs were
     scored 30 "not in the United States" (Los Angeles, San Mateo, Saint Paul)
     and 62 more on "no sponsorship mentioned" for postings that never refused.
-    Such a job goes to the final scorer at the gate, like an unknown prescore.
-    A claim stands when it is about fit, when the job has no location verdict,
-    when it names a foreign place the posting names too ("this role is located
-    in Wiesbaden, Germany" under a Washington, D.C. location field), or when
-    the posting's own words limit sponsorship/citizenship/clearance.
+    Years are the requirement reader's (a gap in years alone is never below 40
+    by the rubric), and a soft remark is the 40-59 band by definition. Such a
+    job goes to the final scorer at the gate, like an unknown prescore.
+
+    Read clause by clause. Any FIT clause stands ("no overlap in core stack;
+    role focuses on Java"). So does a location claim on a job with no location
+    verdict, or naming a foreign place the posting names too ("this role is
+    located in Wiesbaden, Germany" under a Washington, D.C. location field); a
+    work-auth claim where the posting's own words limit sponsorship,
+    citizenship or clearance; and a years claim 2+ years past the candidate by
+    the posting's stated number.
     """
     from app.matching.finals_budget import normal_gate
     gate = float(normal_gate())
     r = reason or ""
-    if score >= gate or _T1_FIT_RE.search(r):
+    if score >= gate:
         return score, reason
-    geo, auth = bool(_T1_GEO_RE.search(r)), bool(_T1_AUTH_RE.search(r))
-    if not (geo or auth):
+    kinds = [k for k in (_t1_clause_kind(c) for c in _T1_CLAUSE_SPLIT.split(r) if c.strip())
+             if k != "neutral"]
+    if not kinds or "fit" in kinds:
         return score, reason
-    if geo and getattr(job, "eligibility", None) != "eligible":
-        return score, reason
-    if geo:
+    if "geo" in kinds:
+        if getattr(job, "eligibility", None) != "eligible":
+            return score, reason
         from app.common.geo import foreign_places_named
         from app.common.tenant_prefs import effective_country
         home = effective_country(profile)
         named = foreign_places_named(r, home)
         if named and named & foreign_places_named(job.description or "", home):
             return score, reason
-    if auth:
+    if "auth" in kinds:
         from app.common.tenant_prefs import needs_sponsorship
         irrelevant = not _T1_CITIZEN_RE.search(r) and not needs_sponsorship(profile)
         flat = " ".join(re.sub(r"<[^>]+>", " ", html.unescape(job.description or "")).split())
         if not irrelevant and _AUTH_LIMIT_RE.search(flat):
             return score, reason
+    if "years" in kinds and not _years_gap_settled(job, profile):
+        return score, reason
     log.info("Tier-1 claim overruled (already verified) for job %s: %s",
              getattr(job, "id", "?"), r[:80])
-    return gate, f"{r} — overruled: location/work authorization already verified"
+    labels = {"geo": "location", "auth": "work authorization", "years": "years",
+              "soft": "a partial match"}
+    what = sorted({labels[k] for k in kinds})
+    return gate, f"{r} — overruled: {', '.join(what)} already settled by the rules"
 
 
 def _sponsor_note(job: Job, profile) -> str:
