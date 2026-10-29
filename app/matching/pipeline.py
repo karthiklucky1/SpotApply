@@ -1217,6 +1217,10 @@ def run_matching(user_id: str | None = None) -> List[int]:
                     if not job:
                         return jid, None
                     s.expunge(job)
+                if job.prescore is not None:
+                    # A kept verdict (any lane) is reused, never re-bought: a
+                    # queued job is retrieved again every 15-minute pass.
+                    return jid, (float(job.prescore), "kept prescore")
                 return jid, reranker.prescore(resume, job)
             except Exception as e:
                 log.debug("Prescore worker failed for job %s: %s", jid, e)

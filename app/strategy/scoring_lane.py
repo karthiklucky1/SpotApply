@@ -553,6 +553,11 @@ def _score_job_owned(jid: int, ctx: _Ctx) -> Optional[Tuple[str, int, Optional[f
     # retries only re-pay the step that actually failed.
     if ctx.use_prescore:
         pre = _prescore_memo.get(jid)
+        if pre is None and getattr(job, "prescore", None) is not None:
+            # Kept on the row by any lane: the same verdict, already paid for
+            # (the in-process memo is empty after every restart). Cleared on a
+            # resume or role change (realign.forget_kept_prescores).
+            pre = (float(job.prescore), "kept prescore")
         if pre is None:
             pre = ctx.reranker.prescore(ctx.resume, job)
         if pre is not None and pre[0] < ctx.gate:
