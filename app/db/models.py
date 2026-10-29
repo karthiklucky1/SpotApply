@@ -455,6 +455,11 @@ class UserProfile(SQLModel, table=True):
     preferred_country: str = ""
     # When true, fully-remote roles are kept even if located in another country.
     remote_ok: bool = True
+    # Work styles the user wants, from "remote,hybrid,onsite" ("" = all three).
+    # Remote is also `remote_ok` (kept in step on save); a posting whose STATED
+    # work mode is not in the list is ineligible, an unstated one is not
+    # (common/eligibility.decide). There was no hybrid/on-site choice at all.
+    work_modes: str = ""
     # ── Referral program ─────────────────────────────────────────────────────
     referral_code: Optional[str] = Field(default=None, index=True)   # this user's own code
     referred_by_id: Optional[str] = Field(default=None, index=True)  # user_id who referred them

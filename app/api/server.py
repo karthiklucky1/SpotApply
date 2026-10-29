@@ -10811,6 +10811,7 @@ _USERPROFILE_COLUMNS = [
     ("search_paused_at", "TIMESTAMP", "TIMESTAMP"),
     ("pause_reason", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("remote_ok", "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE"),
+    ("work_modes", "VARCHAR DEFAULT ''", "VARCHAR DEFAULT ''"),
     ("referral_code", "VARCHAR", "VARCHAR"),
     ("referred_by_id", "VARCHAR", "VARCHAR"),
     # Trust Profile (Phase 0)
@@ -10955,6 +10956,7 @@ def get_profile(request: Request) -> dict:
         "industry": getattr(profile, "industry", ""),
         "preferred_country": getattr(profile, "preferred_country", "United States"),
         "remote_ok": getattr(profile, "remote_ok", True),
+        "work_modes": getattr(profile, "work_modes", "") or "",
         "autofill_resume_source": (
             getattr(profile, "autofill_resume_source", "") or "tailored"),
         # Were missing: the form ticks only the fields returned here, so "Open
@@ -11018,6 +11020,7 @@ class ProfileUpdate(BaseModel):
     industry: Optional[str] = None
     preferred_country: Optional[str] = None
     remote_ok: Optional[bool] = None
+    work_modes: Optional[str] = None
     availability: Optional[str] = None
     open_to_relocation: Optional[bool] = None
     relocation_resume_optin: Optional[bool] = None
@@ -11078,6 +11081,14 @@ class ProfileUpdate(BaseModel):
             raise ValueError("Authorization end date must be your real card date "
                              "(within 2 years ago to 7 years ahead) — or leave it blank")
         return end.isoformat()
+
+    @field_validator("work_modes")
+    @classmethod
+    def _canonical_work_modes(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from app.common.tenant_prefs import canonical_work_modes
+        return canonical_work_modes(v)
 
     @field_validator("how_heard_answer")
     @classmethod
@@ -11153,7 +11164,7 @@ def _record_document_downloaded(kind: str, application_id: int | None,
 
 
 # The saved preferences `eligibility.decide` reads (tenant_prefs.geo_prefs).
-_LOCATION_PREF_FIELDS = ("preferred_country", "location", "remote_ok",
+_LOCATION_PREF_FIELDS = ("preferred_country", "location", "remote_ok", "work_modes",
                          "open_to_relocation", "relocation_targets")
 _JOB_TYPE_PREF_FIELDS = ("job_type_preference", "include_internships_in_discovery")
 
@@ -11239,6 +11250,11 @@ def update_profile(request: Request, update: ProfileUpdate) -> dict:
                 db_profile.experience_json = _json.dumps(exp[:15])
             _before = {f: getattr(db_profile, f, None) for f in _LOCATION_PREF_FIELDS}
             _before_type = {f: getattr(db_profile, f, None) for f in _JOB_TYPE_PREF_FIELDS}
+            if "work_modes" in payload:
+                # One choice: "Remote" among the work styles IS remote_ok, so a
+                # client sending either cannot leave the two disagreeing.
+                payload["remote_ok"] = (not payload["work_modes"]
+                                        or "remote" in payload["work_modes"].split(","))
             for field, value in payload.items():
                 setattr(db_profile, field, value)
             if any(k in payload for k in ("gender", "ethnicity", "veteran_status", "disability_status")):

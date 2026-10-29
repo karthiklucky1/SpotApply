@@ -88,6 +88,9 @@ class GeoPrefs:
     # cities/states. Willingness to move to Chicago is not willingness to move
     # to Dallas (audit 2026-09-25, finding 3).
     relocation_targets: tuple = ()
+    # Work styles wanted (tenant_prefs.work_modes): () = all. Remote is also
+    # carried by `remote_ok`; this adds hybrid and on-site.
+    work_modes: tuple = ()
 
     def relocation_covers(self, sites: Iterable[str]) -> bool:
         """Would this user move to (one of) these physical sites?"""
@@ -336,6 +339,16 @@ def decide(geo: Optional[Geography], prefs: GeoPrefs) -> Decision:
     # Will they move to where this job is? The flag alone used to answer it, so
     # "relocate to Chicago only" admitted an on-site role in Dallas.
     will_move = prefs.relocation_covers(physical)
+
+    # The user's work-style choice: a role whose STATED mode they did not pick
+    # is not a job they asked for. An unstated mode is not decided here (most
+    # boards never say, and guessing it would drop real matches).
+    wanted = tuple(prefs.work_modes or ())
+    if wanted and geo.work_mode in ("hybrid", "onsite") and geo.work_mode not in wanted:
+        label = {"hybrid": "Hybrid", "onsite": "On-site"}[geo.work_mode]
+        names = {"remote": "remote", "hybrid": "hybrid", "onsite": "on-site"}
+        return Decision(INELIGIBLE, "work_mode_not_wanted",
+                        f"{label} role; you asked for {' or '.join(names[m] for m in wanted)} work")
 
     # The user's remote preference ("Include remote roles" off): a remote role
     # is not a job they asked for, unless it also offers an office in their

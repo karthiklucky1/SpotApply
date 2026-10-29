@@ -437,6 +437,7 @@ def init_db() -> None:
         ("industry", "VARCHAR DEFAULT ''"),
         ("preferred_country", "VARCHAR DEFAULT 'United States'"),
         ("remote_ok", "BOOLEAN DEFAULT TRUE"),
+        ("work_modes", "VARCHAR DEFAULT ''"),
         ("referral_code", "VARCHAR"),
         ("referred_by_id", "VARCHAR"),
         ("email_verified", "BOOLEAN DEFAULT FALSE"),
